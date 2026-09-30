@@ -375,6 +375,56 @@ async fn skipped_only_gate_runs_are_blocked_not_passed_and_do_not_update_learnin
     assert_eq!(variant_trials, Some(0));
 }
 
+/// gap-88c547: an attempt without a learning label (S01 §4.1), such as an
+/// unverified success, is logged and priced, and provider health hears how
+/// the provider did, but no learner updates from it.
+#[tokio::test]
+async fn unlabelled_attempts_update_no_runtime_learner() {
+    let tmp = TempDir::new().unwrap();
+    let mut runtime = LearningRuntime::open_with_models(
+        LearningPaths::under(tmp.path()),
+        RegressionConfig::default(),
+        vec!["claude-opus-4-6".to_string()],
+    )
+    .await
+    .unwrap();
+    runtime.set_update_frequency(UpdateFrequency {
+        router_every_n_episodes: 1,
+        gate_thresholds_every_n: 1,
+        experiments_every_n: 1,
+        skill_mining_every_n: 1,
+        pattern_discovery_every_n: 1,
+        distiller_every_n: 1,
+    });
+
+    let mut episode = sample_episode(true);
+    episode.gate_verdicts.clear();
+    episode.extra.insert(
+        crate::episode_logger::LEARNING_LABEL_KEY.to_string(),
+        serde_json::Value::Null,
+    );
+    let mut input =
+        CompletedRunInput::from_episode(episode).with_task_metric(sample_metric(1, true, 0.42));
+    input.provider = Some("anthropic".to_string());
+    input.matched_skill_id = Some("skill-unlabelled".to_string());
+
+    let update = runtime.record_completed_run(input).await.unwrap();
+
+    assert_eq!(update.episode_logged, ApplyStatus::Applied);
+    assert_eq!(update.cost_logged, ApplyStatus::Applied);
+    assert_eq!(update.provider_updated, ApplyStatus::Applied);
+    assert_eq!(update.provider_model_outcome_recorded, ApplyStatus::Skipped);
+    assert_eq!(update.matched_skill_updated, ApplyStatus::Skipped);
+    assert_eq!(update.knowledge_seed_recorded, ApplyStatus::Skipped);
+    assert!(!update.router_updated);
+    assert!(update.extracted_skill_id.is_none());
+    assert!(update.regression_report.is_none());
+    assert_eq!(runtime.local_reward_score("router", "claude-opus-4-6"), 0.5);
+    assert_eq!(runtime.cascade_router().total_observations(), 0);
+    assert_eq!(runtime.skill_library().len(), 0);
+    assert!(!runtime.paths().task_metrics_jsonl.exists());
+}
+
 #[tokio::test]
 async fn append_efficiency_event_updates_section_effectiveness_registry() {
     let tmp = TempDir::new().unwrap();
@@ -778,6 +828,42 @@ async fn open_under_loads_persisted_cascade_router_state() {
     assert_eq!(
         routed.stage,
         crate::cascade_router::CascadeStage::Confidence
+    );
+}
+
+#[tokio::test]
+async fn a_failed_episode_earns_zero_router_reward() {
+    // bug-3ea1f5: Path A rewards a failure with 0, as every other path does,
+    // however cheap and fast the failed attempt was.
+    let tmp = TempDir::new().unwrap();
+    let runtime = LearningRuntime::open_under(tmp.path().join("learn"))
+        .await
+        .unwrap();
+    let mut episode = sample_episode(false);
+    episode
+        .extra
+        .insert("model".to_string(), serde_json::json!("claude-sonnet-4-5"));
+    episode.usage.cost_usd = 0.001;
+    episode.usage.wall_ms = 500;
+
+    let update = runtime
+        .record_completed_run(CompletedRunInput::from_episode(episode))
+        .await
+        .unwrap();
+    assert!(update.router_updated);
+
+    let router = runtime.cascade_router();
+    assert_eq!(router.confidence_snapshot()["claude-sonnet-4-5"], (1, 0));
+    let arm = router
+        .linucb()
+        .arm_stats()
+        .into_iter()
+        .find(|arm| arm.slug == "claude-sonnet-4-5")
+        .expect("arm for the episode's model");
+    assert_eq!(arm.observations, 1, "the failure reached LinUCB");
+    assert!(
+        arm.b_vector.iter().all(|b| *b == 0.0),
+        "a failure earns no reward, however cheap and fast"
     );
 }
 

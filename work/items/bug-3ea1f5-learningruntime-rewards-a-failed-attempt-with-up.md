@@ -3,13 +3,14 @@ id = "bug-3ea1f5"
 kind = "bug"
 title = "LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/runtime-feedback", "roko-learn/cascade-router"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-router's report on bug-8da8ba, branch work/bug-8da8ba)"
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::update_cascade_router", "crates/roko-learn/src/runtime_feedback/routing.rs::compute_reward_with_latency", "crates/roko-learn/src/model_router.rs::compute_routing_reward_with_weights"]
@@ -56,3 +57,6 @@ Checked at BASE and on `work/bug-8da8ba` (`26947cd62`): bug-8da8ba leaves Path A
 
 - Depends on bug-8da8ba, which sets the reward-0 rule on the other paths (Rust batch 3).
 - WAL entries written before the fix replay with their old reward. Decide whether replay should also clamp failure rewards to 0.
+- Implemented on `work/bug-f68404` at `7e930d2cb`. Checked in the worker's own target dir: `cargo test -p roko-learn --lib` (1184 passed, including `a_failed_episode_earns_zero_router_reward` and `a_replayed_failure_earns_zero_reward`), fmt, and clippy `-D warnings`. The batch check re-verifies after merge.
+- The rule is `cascade_router::outcome_reward`, applied in `observe_internal`, which Path A, the gateway, Path B, overrides and WAL replay all go through; the Graph sinks' multi-objective path already gave failures 0.
+- Replay decision: replay clamps too. A WAL entry journaled before the fix replays a failure with reward 0 (`a_replayed_failure_earns_zero_reward`).

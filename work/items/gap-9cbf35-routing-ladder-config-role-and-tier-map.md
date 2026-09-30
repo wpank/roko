@@ -3,13 +3,15 @@ id = "gap-9cbf35"
 kind = "gap"
 title = "Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "ed0c33bd5"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/DECISIONS.md (D11); tldr/05 §6 decisions 1 and 3; tldr/research/B3-routing-cost.md (Gaps 1)"
 anchors = ["crates/roko-core/src/config/routing.rs::RoutingConfig", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-cli/src/dispatch/model_routing.rs::ModelChoiceSource", "crates/roko-cli/src/dispatch/factory.rs::SharedAgentFactory::new", "roko.toml"]
@@ -85,3 +87,7 @@ the `zai` and `openai` providers exist.
 - Whether the ladder is on by default is the author's call (epic Notes).
 - **Hot files:** `dispatch/model_routing.rs` and `dispatch/factory.rs`. S01.P0-8 edits `route_logged` in the same file.
 - **Decided 2026-09-29 (Will):** the ladder is on by default. Rungs whose model has no configured provider are skipped.
+- 2026-09-29 (wk-tiers): implemented on `work/gap-8c0a20` (shared with gap-8c0a20) at `f0c4e7bae`; cargo verification deferred to the batch check. Locally, both `[[verify]]` tests pass, plus `an_unhinted_task_runs_on_its_ladder_start_rung` (a Graph dispatch through a fake Claude CLI) and `ladder_survives_a_config_load`.
+- Role overrides are `[[routing.ladder.roles]]` entries with a `role` field, not `[routing.ladder.roles.<role>]` tables. The config loader drops any map section its schema tree does not list (`loader.rs::build_schema_tree`, wk-onboard's file). The map form needs `routing.ladder.roles` in `DYNAMIC_MAP_SECTIONS` plus a sentinel.
+- The built-in rungs name slugs (`gpt-oss-120b`, `glm-4.7`, `gpt-5.4-mini`, `claude-sonnet-4-6`); roko.toml names `[models.*]` keys. A rung resolves by key, then by slug, and dispatch gets the slug unless another entry shares it.
+- Step 4 needed no feedback change: `graph_task_dispatch/feedback.rs` derives `Router` for any unhinted, unforced task, so ladder outcomes already reach `observe_router_outcome` (test `ladder_outcomes_are_recorded_like_router_outcomes`). `RunnerDispatchPlan.source` now carries `Ladder { rung }` for that file to read; gap-460230 needs the rung per attempt.

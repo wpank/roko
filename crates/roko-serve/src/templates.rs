@@ -19,7 +19,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roko_agent::mcp::find_mcp_config;
+use roko_agent::mcp::workspace_mcp_config;
 use roko_core::{Body, Signal};
 
 /// The expected output shape for an agent template.
@@ -483,7 +483,7 @@ fn load_configured_mcp_servers(
     workdir: &Path,
     report: &mut TemplateLoadReport,
 ) -> Option<HashSet<String>> {
-    match find_mcp_config(workdir) {
+    match workspace_mcp_config(workdir) {
         Some(Ok((_path, config))) => Some(
             config
                 .servers

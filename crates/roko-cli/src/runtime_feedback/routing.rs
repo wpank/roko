@@ -25,7 +25,9 @@
 //! When [`ModelChoiceSource::Override`] tagged a task, the sink records
 //! it via `record_override_outcome` so manual operator overrides do not
 //! pollute the bandit signal that drives router decisions on
-//! non-overridden tasks.
+//! non-overridden tasks. A `[routing.ladder]` rung
+//! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
+//! so the learner sees every rung.
 
 use std::sync::Arc;
 
@@ -34,7 +36,7 @@ use roko_core::agent::AgentRole;
 use roko_core::config::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{BehavioralState, DaimonPolicy};
-use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::cascade_router::{CascadeRouter, normalized_cost_and_latency};
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -114,8 +116,14 @@ impl FeedbackSink for RoutingObservationSink {
         // Route them through the dampened `record_override_outcome` path
         // instead of the full router-outcome path.
         if *model_source == ModelChoiceSource::Override {
-            self.router
-                .record_override_outcome(&outcome.model, &ctx, succeeded, None);
+            self.router.record_override_outcome(
+                &outcome.model,
+                &ctx,
+                succeeded,
+                outcome.cost_usd,
+                outcome.duration_ms,
+                None,
+            );
             return Ok(());
         }
 
@@ -152,11 +160,7 @@ pub(crate) fn observe_router_outcome(
     };
 
     // P0-05: Feed real cost from the agent outcome into the bandit.
-    // Normalize against a $1.00 per-task ceiling and latency against a
-    // 5-minute ceiling so both signals stay in [0, 1] for the LinUCB
-    // reward computation.
-    let normalized_cost = (cost_usd / 1.0).clamp(0.0, 1.0);
-    let normalized_latency = (duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
+    let (normalized_cost, normalized_latency) = normalized_cost_and_latency(cost_usd, duration_ms);
     let weights = RewardWeights::default();
     router.observe_multi_objective_outcome(
         ctx.to_features(),
@@ -362,9 +366,7 @@ mod tests {
     /// router's pick, so it earns the substitute no credit (bug-35379d).
     #[tokio::test]
     async fn a_failover_substitute_earns_no_router_credit() {
-        use roko_learn::telemetry::{
-            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord,
-        };
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
 
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
@@ -398,6 +400,37 @@ mod tests {
             .map_or(0, |(trials, _)| *trials);
         assert_eq!(trials, 0, "the substitute is not credited");
         assert_eq!(r.total_observations(), 0, "LinUCB is not updated");
+    }
+
+    /// gap-9cbf35: a ladder rung's settled outcome teaches the router like
+    /// its own pick would, so the learner sees every rung.
+    #[tokio::test]
+    async fn ladder_outcomes_are_recorded_like_router_outcomes() {
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source: ModelChoiceSource::Ladder { rung: 3 },
+            succeeded: true,
+            routing_context: Some(test_routing_context()),
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        };
+        sink.on_event(&event).await.unwrap();
+        assert_eq!(
+            r.confidence_snapshot().get("claude-sonnet-4-6").copied(),
+            Some((1, 1)),
+            "a ladder outcome is a full confidence trial, not a dampened override"
+        );
+        assert_eq!(r.total_observations(), 1);
     }
 
     #[tokio::test]
@@ -471,10 +504,9 @@ mod tests {
             initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
-        // record_override_outcome uses observe_multi_objective with
-        // dampened quality (0.5), so LinUCB observations advance but
-        // the confidence_stats snapshot should NOT be touched by the
-        // override path (it only goes through the LinUCB bandit).
+        // record_override_outcome counts the override as a confidence trial
+        // and gives LinUCB a dampened (half-weight) update, so the bandit's
+        // observation count still advances (bug-f68404).
         assert!(
             r.total_observations() >= 1,
             "override must still advance LinUCB observations via dampened path",

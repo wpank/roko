@@ -576,6 +576,26 @@ fn parse_from_resolved_path(
         })?;
     }
 
+    // A secret in a config file that is not a key file keeps working, but
+    // agents are refused the whole file while it is there
+    // (`child_env::is_config_with_secrets`), and a command that searches the
+    // project can still read it. Say so once per file.
+    if let (Some(p), Some(text)) = (path, &raw_text)
+        && !crate::child_env::is_key_file(p)
+        && config_text_holds_secrets(text)
+    {
+        let first = emitted_diagnostics()
+            .lock()
+            .insert(format!("secret-in:{}", p.display()));
+        if first {
+            tracing::warn!(
+                path = %p.display(),
+                "config file holds a secret such as serve.auth.api_key, so agents may not read \
+                 it; move secrets to ROKO__* variables in .roko/.env (ROKO__SERVE__AUTH__API_KEY)"
+            );
+        }
+    }
+
     // 3. Parse to a value tree, migrate, then deserialize. Migrations must run
     // before serde so renamed fields are not silently discarded.
     match (&path, raw_text) {
@@ -1397,6 +1417,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "agent.roles",
     "agent.tier_models",
     "gates.domain_gates",
+    "gates.max_output_tokens",
     "retrieval.role_token_budgets",
     "tools.profiles",
 ];
@@ -1666,6 +1687,12 @@ fn build_schema_tree() -> toml::Value {
         .domain_gates
         .insert("_schema_sentinel".to_string(), Vec::new());
     config.gates.max_rung = Some(0);
+    // `max_output_tokens` maps roles to output-token caps (a dynamic map
+    // section).
+    config
+        .gates
+        .max_output_tokens
+        .insert("_schema_sentinel".to_string(), 0);
     // `weights` flattens its default `RewardWeights` and may override them
     // per tier.
     let sentinel_weights = RewardWeights {
@@ -2095,19 +2122,52 @@ fn redact_secrets_in_toml(value: &mut toml::Value) {
     }
 }
 
-/// Recursive inner helper that knows the current key name.
-fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
-    let key_lower = key.to_ascii_lowercase();
-    // `*_env` fields contain environment-variable names, not secret values.
-    let is_env_reference = key_lower.ends_with("_env");
-    let is_secret_key = !is_env_reference
+/// Whether a config key names a secret-bearing field: it contains one of
+/// [`SECRET_KEY_FRAGMENTS`] and is not an `*_env` field, which holds an
+/// environment variable's name rather than a secret.
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    !key.ends_with("_env")
         && SECRET_KEY_FRAGMENTS
             .iter()
-            .any(|frag| key_lower.contains(frag));
-    let is_extra_headers = key_lower == "extra_headers";
+            .any(|fragment| key.contains(fragment))
+}
+
+/// Whether a config tree holds a secret: a value that
+/// `roko config show --effective` would redact.
+#[must_use]
+pub fn holds_secrets(value: &toml::Value) -> bool {
+    let mut redacted = value.clone();
+    redact_secrets_in_toml(&mut redacted);
+    redacted != *value
+}
+
+/// Whether config text holds a secret ([`holds_secrets`]). Text that does
+/// not parse is read line by line instead: a `key = "value"` line whose key
+/// names a secret field counts.
+#[must_use]
+pub fn config_text_holds_secrets(text: &str) -> bool {
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return text.lines().any(|line| {
+            line.split_once('=').is_some_and(|(key, value)| {
+                let key = key.trim().trim_matches(['"', '\'']);
+                let value = value.trim_start();
+                is_secret_key(key.rsplit('.').next().unwrap_or(key))
+                    && (value.starts_with('"') || value.starts_with('\''))
+                    && !(value.starts_with("\"\"") || value.starts_with("''"))
+            })
+        });
+    };
+    holds_secrets(&value)
+}
+
+/// Recursive inner helper that knows the current key name.
+fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
+    let secret_key = is_secret_key(key);
+    let is_extra_headers = key.eq_ignore_ascii_case("extra_headers");
 
     match value {
-        toml::Value::String(secret) if is_secret_key && !secret.is_empty() => {
+        toml::Value::String(secret) if secret_key && !secret.is_empty() => {
             *value = toml::Value::String(REDACTED_MARKER.to_string());
         }
         toml::Value::Table(table) if is_extra_headers => {
@@ -2125,7 +2185,7 @@ fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
         }
         toml::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                if is_secret_key {
+                if secret_key {
                     if item.as_str().is_some_and(|secret| !secret.is_empty()) {
                         *item = toml::Value::String(REDACTED_MARKER.to_string());
                     }

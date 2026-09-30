@@ -278,6 +278,7 @@ graph LR
 | **Models** | All Anthropic models via `--model` flag |
 | **Config** | `command` (default: `"claude"`), `args`, `timeout_ms` |
 | **Limitations** | Drives its own internal tool loop; Roko's ToolDispatcher/SafetyLayer are bypassed (Claude CLI has its own safety). Cost reported natively. `bare_mode = true` replaces built-in prompt via `--system-prompt` |
+| **Isolation** | Every Claude Code run Roko starts, plan tasks and `roko chat` included, passes `--add-dir <workdir>`, `--setting-sources ""` and `--strict-mcp-config` and sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` (`ClaudeIsolation` in `claude_cli_agent.rs`). The user's own `~/.claude` settings, hooks, plugins, permission rules, CLAUDE.md files, auto-memory and MCP servers do not apply. The workdir's own `CLAUDE.md`, `.claude/CLAUDE.md` and `.claude/rules` do, and so does Roko's `--settings` (the guard hooks and key-file deny rules). On a machine with a managed `managed-mcp.json`, which already keeps exclusive control of MCP servers, `--strict-mcp-config` is left off, because Claude Code refuses it there. A run that would pass an MCP config is refused before it starts, since Claude Code refuses `--mcp-config` too. Not isolated: the Bash tool's snapshot of the user's shell (`~/.claude/shell-snapshots/`, from `~/.zshrc` or `~/.bashrc`), for which Claude Code has no switch. Each `ClaudeCliAgent` output carries `setting_sources`, `mcp_servers` (`roko` or `managed`) and `shell_snapshot=user` tags |
 
 ### 3.3 CodexCli
 
@@ -653,9 +654,14 @@ MCP (Model Context Protocol) integration operates at two levels:
 ### CLI passthrough
 
 For CLI-based providers (ClaudeCli, CodexCli, GeminiCli), MCP config is passed
-directly via `--mcp-config` flag. The config file at `.roko/mcp-config.json` is
-authored solely by `PlanRunner::resolve_mcp_config_path` in
-`roko-cli/src/runner/event_loop.rs`.
+directly via the `--mcp-config` flag. Plan tasks pass only `[agent] mcp_config`
+from `roko.toml`. Other Claude runs (`ClaudeCliAgent`, ACP sessions, serve
+templates) pass it, or else the workspace's own `.mcp.json`
+(`workspace_mcp_config`). A `.mcp.json` in a directory above the workspace or in
+`$HOME` never reaches a run. `find_mcp_config` still finds one for
+`roko config mcp` and `roko doctor`, which report where a config is. `roko chat`
+has its own order: `[agent] mcp_config`, then `.roko/mcp.json`, then
+`~/.claude/mcp-config.json`.
 
 ```rust
 // crates/roko-agent/src/process/mcp.rs

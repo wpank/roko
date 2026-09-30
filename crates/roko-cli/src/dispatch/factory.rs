@@ -30,7 +30,9 @@ use crate::dispatch_v2::{
 
 use super::plugin_mcp::CliPluginMcpBridge;
 
-use super::{Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, WarmPool};
+use super::{
+    Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, RoutingLadder, WarmPool,
+};
 
 /// Shared, reusable components for agent dispatch.
 ///
@@ -226,6 +228,14 @@ impl SharedAgentFactory {
             dispatcher.with_tool_capability_filter(models_without_tools)
         };
 
+        // `[routing.ladder]`: a task's role and tier pick its start rung
+        // unless `--model` or its `model_hint` pins one. Rungs this workspace
+        // cannot dispatch are skipped and logged here, once per factory.
+        let dispatcher = match RoutingLadder::from_config(&config) {
+            Some(ladder) => dispatcher.with_routing_ladder(ladder),
+            None => dispatcher,
+        };
+
         Self {
             config,
             semaphores,
@@ -401,6 +411,11 @@ impl SharedAgentFactory {
             .collect();
         if !models_without_tools.is_empty() {
             dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
+        }
+        // Keep the ladder bound at construction rather than logging its
+        // skipped rungs again.
+        if let Some(ladder) = self.dispatcher.routing_ladder() {
+            dispatcher = dispatcher.with_routing_ladder(ladder.clone());
         }
         self.dispatcher = dispatcher;
     }

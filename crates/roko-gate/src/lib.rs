@@ -79,6 +79,7 @@ pub mod chaos;
 
 pub mod acceptance_contract;
 pub mod artifact_store;
+pub mod attempt_diff;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;

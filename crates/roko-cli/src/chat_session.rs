@@ -14,7 +14,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::agent::{Agent, AgentResult};
-use roko_agent::claude_cli_agent::ClaudeCliAgent;
+use roko_agent::claude_cli_agent::{ClaudeCliAgent, ClaudeIsolation};
 use roko_agent::model_call_service::ModelCallService;
 use roko_agent::process::{
     GRACE_STDIN_CLOSE_MS, apply_credential_scrub, config_file_env_names, kill_tree,
@@ -1213,8 +1213,12 @@ impl ChatAgentSession {
     }
 }
 
-/// Build the Claude CLI command used by the streaming turn path.
+/// Build the Claude CLI command used by the streaming turn path. Like every
+/// `ClaudeCliAgent` run, it is isolated from the user's own Claude Code
+/// configuration (`--add-dir`, `--setting-sources`, `--strict-mcp-config`
+/// and their environment, from [`ClaudeIsolation`]).
 fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioCommand {
+    let isolation = ClaudeIsolation::new(&session.workdir);
     let mut cmd = TokioCommand::new(program);
     cmd.arg("--print")
         .arg("--verbose")
@@ -1225,7 +1229,8 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         .arg("--effort")
         .arg(&session.effort)
         .arg("--settings")
-        .arg(roko_agent::claude_cli_agent::build_settings_json());
+        .arg(roko_agent::claude_cli_agent::build_settings_json())
+        .args(isolation.args());
 
     if session.model_selection.backend_slug != "claude-haiku-4-5" {
         cmd.arg("--fallback-model").arg("claude-haiku-4-5");
@@ -1239,7 +1244,6 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
     }
     if let Some(ref mcp_config) = session.mcp_config {
         cmd.arg("--mcp-config").arg(mcp_config);
-        cmd.arg("--strict-mcp-config");
     }
     if let Some(ref resume) = session.session_id
         && !resume.trim().is_empty()
@@ -1258,9 +1262,17 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         .kill_on_drop(true);
     set_process_group(&mut cmd);
     apply_credential_scrub(&mut cmd, &session.credential_scrub());
+    for (key, value) in isolation.env() {
+        cmd.env(key, value);
+    }
     cmd.env("CARGO_INCREMENTAL", "0");
     cmd.env("CARGO_BUILD_JOBS", "2");
     cmd.env_remove("CLAUDECODE");
+    tracing::debug!(
+        isolation = ?isolation.tags(),
+        mcp_config = ?session.mcp_config,
+        "chat turn isolated from the user's Claude Code configuration"
+    );
     cmd
 }
 
@@ -1303,6 +1315,19 @@ async fn send_turn_streaming_with_program(
 
     let started = Instant::now();
     let timeout_duration = session.timeout.unwrap_or(Duration::from_secs(300));
+    // A managed MCP config makes Claude Code refuse the session's own; say
+    // so instead of failing at start.
+    if session.mcp_config.is_some()
+        && let Some(reason) = ClaudeIsolation::new(&session.workdir).mcp_config_refusal()
+    {
+        let _ = tx
+            .send(AgentRuntimeEvent::Error {
+                message: reason.clone(),
+            })
+            .await;
+        drop(tx);
+        return Err(anyhow::anyhow!(reason).into());
+    }
     let mut cmd = build_streaming_command(session, program);
 
     let mut child = match cmd.spawn() {
@@ -2070,6 +2095,94 @@ mod tests {
 
     fn agent_debug(session: &ChatAgentSession) -> String {
         format!("{:?}", session.build_agent().expect("build agent"))
+    }
+
+    /// The values `env` gives `name`, in order.
+    fn env_values<'a>(env: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+        env.iter()
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    /// `roko chat`'s streaming turn and the CLI dispatcher that runs plan
+    /// tasks carry the same isolation as every `ClaudeCliAgent` run.
+    #[test]
+    fn claude_spawns_carry_the_isolation_flags() {
+        use crate::dispatch_v2::{CliDispatchProvider, CliDispatchRequest, CliProviderConfig};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().to_path_buf();
+        let mcp_config = workdir.join("mcp.json");
+        let isolation = ClaudeIsolation::new(&workdir).args();
+
+        let mut session = streaming_test_session(workdir.clone());
+        session.mcp_config = Some(mcp_config.clone());
+        let chat = build_streaming_command(&session, Path::new("claude"));
+        let chat_args: Vec<String> = chat
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let chat_env: Vec<(String, String)> = chat
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: String::new(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: workdir.clone(),
+            max_turns: 10,
+            effort: None,
+            dangerously_skip_permissions: true,
+            mcp_config: Some(mcp_config),
+            resume_session: None,
+            env: vec![(
+                "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD".to_string(),
+                "0".to_string(),
+            )],
+            agent_id: "p/claude-isolation".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+        let dispatch = CliProviderConfig::claude("claude_cli", "claude")
+            .build_invocation(&request)
+            .expect("claude invocation");
+
+        for (spawn, args, env) in [
+            ("chat", &chat_args, &chat_env),
+            ("dispatch", &dispatch.args, &dispatch.env),
+        ] {
+            let start = args
+                .iter()
+                .position(|arg| arg == "--add-dir")
+                .unwrap_or_else(|| panic!("{spawn}: no isolation flags in {args:?}"));
+            assert_eq!(
+                args.get(start..start + isolation.len()),
+                Some(&isolation[..]),
+                "{spawn}"
+            );
+            let strict = args
+                .iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count();
+            assert_eq!(strict, 1, "{spawn}: with an MCP config too");
+            let auto_memory = env_values(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+            assert_eq!(auto_memory, ["1"], "{spawn}");
+        }
+        let workdir_claude_md = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
+        assert_eq!(env_values(&chat_env, workdir_claude_md), ["1"]);
+        // A variable the request sets itself wins over the isolation's.
+        assert_eq!(env_values(&dispatch.env, workdir_claude_md), ["0"]);
     }
 
     #[test]

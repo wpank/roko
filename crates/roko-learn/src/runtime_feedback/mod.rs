@@ -57,7 +57,7 @@ use roko_core::metric::TaskMetric;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_daimon::{AffectEngine as _, AffectEvent, DaimonState, queue_wait_arousal};
 
-use crate::cascade_router::CascadeRouter;
+use crate::cascade_router::{CascadeRouter, outcome_reward};
 use crate::cfactor::CFactor;
 use crate::context_pack_cache::ContextPackCache;
 use crate::costs_db::CostsDb;
@@ -1417,6 +1417,10 @@ impl LearningRuntime {
             }
             update.provider_updated = ApplyStatus::Applied;
         }
+        // An attempt without a learning label (S01 §4.1) has told provider
+        // health how the provider did, but, like one whose gates all
+        // skipped, it teaches no learner.
+        let skip_only = skip_only || input.episode.learning_success().is_none();
 
         if let Some(outcome) = ProviderModelOutcomeRecord::from_episode(
             &input.episode,
@@ -1643,8 +1647,9 @@ impl LearningRuntime {
             episode.task_id.clone()
         };
         let mut engine = self.affect_engine.lock();
-        let skip_only =
-            gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
+        // An attempt without a learning label (S01 §4.1) moves no affect.
+        let skip_only = episode.learning_success().is_none()
+            || gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
         if !skip_only {
             for (rung, verdict) in episode.gate_verdicts.iter().enumerate() {
                 let _ = engine.appraise(AffectEvent::GateResult {
@@ -1729,12 +1734,17 @@ impl LearningRuntime {
         let provider = extra_string(episode, "provider")
             .or_else(|| extra_string(episode, "backend"))
             .unwrap_or_else(|| "unknown-provider".to_string());
-        let reward = self.compute_routing_reward_with_latency(
+        // A failure earns 0 however cheap and fast it was, as on every other
+        // path (bug-3ea1f5), and the journal records the reward applied.
+        let reward = outcome_reward(
             episode.success,
-            episode.usage.cost_usd,
-            episode.usage.wall_ms,
-            &slug,
-            &provider,
+            self.compute_routing_reward_with_latency(
+                episode.success,
+                episode.usage.cost_usd,
+                episode.usage.wall_ms,
+                &slug,
+                &provider,
+            ),
         );
         let context_features = ctx.to_features();
         let model_idx = self.cascade_router.model_index_for_slug(&slug).unwrap_or(0);

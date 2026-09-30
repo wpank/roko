@@ -2,14 +2,16 @@
 id = "gap-a3fc5b"
 kind = "gap"
 title = "Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude-cli"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "546d90ae1"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-cc-isolate's report on gap-8be530, branch work/gap-8be530)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_command"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-8be530"], blocks = [], related = ["gap-c4f364", "ga
 
 [[verify]]
 command = "grep -rqw 'fn a_managed_mcp_config_is_reported_before_the_run' crates/roko-agent/src/ && cargo test -p roko-agent --lib a_managed_mcp_config_is_reported_before_the_run"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "With Claude's managed-mcp.json present, runs drop --strict-mcp-config and are tagged mcp_servers=managed, and a run with an MCP config is refused before spawn (McpConfigUnsupported); shell snapshots can't be isolated in claude 2.1.282, so runs record shell_snapshot=user and the docs explain why (13f6c9578; merged 546d90ae1). Batch 10 gate (dedicated target dir; batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-dreams -p roko-agent -p roko-serve -p roko-acp --no-deps -D warnings clean; lib tests roko-cli 3100, roko-agent 2256, roko-learn 1182, roko-serve 956, roko-acp 197, roko-dreams pass, 0 failed."
 +++
 
 ## Problem
@@ -57,3 +64,17 @@ No code in `crates/` mentions shell snapshots or a managed MCP config (checked a
 ## Notes
 
 - Confirm both behaviours on the Claude Code version the benchmark pins before building on them.
+- Implemented on `work/gap-b7a2d5` at `13f6c9578`; cargo verification deferred to the batch check.
+- **Managed MCP, the option chosen:** leave `--strict-mcp-config` off and record `mcp_servers=managed`. In Claude Code
+  2.1.282 a usable `managed-mcp.json` keeps exclusive control of MCP servers, and the CLI refuses both
+  `--strict-mcp-config` and any non-SDK `--mcp-config` server while it exists. A run that would pass an MCP config is
+  refused before spawning, with the reason: `ClaudeCliAgent` fails the run, `roko chat` fails the turn, and dispatch_v2
+  returns `McpConfigUnsupported` and logs the reason. The file sits in Claude Code's managed-settings directory:
+  `/Library/Application Support/ClaudeCode` on macOS, `C:\Program Files\ClaudeCode` on Windows, `/etc/claude-code`
+  elsewhere. 2.1.282 has no override for it.
+- **Shell snapshots, recorded:** 2.1.282 has no switch for them. `CLAUDE_CODE_SHELL` must still name bash or zsh, and
+  the snapshot sources `homedir()/.zshrc` or `.bashrc` from a login shell. Without a snapshot, every command runs as a
+  login shell (`-c -l`) that reads the user's profile. Every `ClaudeCliAgent` output carries `shell_snapshot=user`, the
+  spawn logs include it, and `ClaudeIsolation`'s docs and `docs/v3/05-AGENT.md` explain why.
+- Tests that pass an MCP config or expect `--strict-mcp-config` assume the host has no managed MCP config.
+  `a_managed_mcp_config_is_reported_before_the_run` injects a temporary managed directory instead.

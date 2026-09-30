@@ -20,16 +20,17 @@
 //! this via the §36.46 capability system when necessary.
 //!
 //! Provider key files ([`roko_core::child_env::is_key_file`], such as
-//! `.roko/.env`) are refused with [`ToolError::KeyFileBlocked`], inside the
-//! worktree too, by the path as given and with symlinks resolved, and the
-//! `bash` tool refuses a command that names one
-//! ([`refuse_key_file_in_command`]). The tools check this themselves, so
-//! the block holds whichever dispatcher runs them, with or without
-//! roko-agent's `SafetyLayer`.
+//! `.roko/.env`), and a roko config file such as `roko.toml` while it holds
+//! a secret ([`roko_core::child_env::is_config_with_secrets`]), are refused
+//! with [`ToolError::KeyFileBlocked`], inside the worktree too, by the path
+//! as given and with symlinks resolved, and the `bash` tool refuses a
+//! command that names one ([`refuse_key_file_in_command`]). The tools check
+//! this themselves, so the block holds whichever dispatcher runs them, with
+//! or without roko-agent's `SafetyLayer`.
 
 use std::path::{Component, Path, PathBuf};
 
-use roko_core::child_env::{KEY_FILE_NAMES, is_key_file};
+use roko_core::child_env::{KEY_FILE_NAMES, is_config_with_secrets, is_key_file};
 use roko_core::tool::ToolError;
 
 /// Resolve `rel` against `worktree` and ensure the result stays inside
@@ -57,18 +58,19 @@ pub fn require_within_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, To
     Ok(normalized)
 }
 
-/// Refuse `path` if it is a provider key file, as given or with symlinks
+/// Refuse `path` if it is a provider key file, or a roko config file that
+/// holds a secret ([`is_config_with_secrets`]), as given or with symlinks
 /// resolved: a symlink in the worktree can point at one.
 ///
 /// # Errors
 ///
-/// Returns [`ToolError::KeyFileBlocked`] naming the form that is a key file.
+/// Returns [`ToolError::KeyFileBlocked`] naming the form that is refused.
 pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
-    if is_key_file(path) {
+    if is_key_file(path) || is_config_with_secrets(path) {
         return Err(ToolError::KeyFileBlocked(path.to_path_buf()));
     }
     let resolved = resolve_symlinks(path);
-    if is_key_file(&resolved) {
+    if is_key_file(&resolved) || is_config_with_secrets(&resolved) {
         return Err(ToolError::KeyFileBlocked(resolved));
     }
     Ok(())
@@ -456,6 +458,37 @@ mod tests {
             shell_words("a 'b c' \"d\\\"e\" f\\ g h;i"),
             ["a", "b c", "d\"e", "f g", "h", "i"]
         );
+    }
+
+    #[tokio::test]
+    async fn std_file_tools_refuse_a_config_holding_a_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        let config = root.join("roko.toml");
+        std::fs::write(
+            &config,
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .expect("write roko.toml");
+        let ctx = ToolContext::testing(&root);
+
+        let read = run_tool(&ctx, "read_file", json!({ "path": "roko.toml" })).await;
+        assert!(
+            matches!(read, ToolResult::Err(ToolError::KeyFileBlocked(_))),
+            "{read:?}"
+        );
+        let grep = run_tool(&ctx, "grep", json!({ "pattern": "sk-serve" })).await;
+        assert!(!grep.text_content().contains("sk-serve-test"), "{grep:?}");
+        assert!(matches!(
+            refuse_key_file_in_command("cat roko.toml", &root),
+            Err(ToolError::KeyFileBlocked(_))
+        ));
+
+        // Without the secret, the project config is an ordinary file again.
+        std::fs::write(&config, "[serve.auth]\nenabled = true\n").expect("rewrite roko.toml");
+        let read = run_tool(&ctx, "read_file", json!({ "path": "roko.toml" })).await;
+        assert!(matches!(read, ToolResult::Ok { .. }), "{read:?}");
+        assert!(refuse_key_file_in_command("cat roko.toml", &root).is_ok());
     }
 
     #[tokio::test]

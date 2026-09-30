@@ -3,13 +3,15 @@ id = "gap-8c0a20"
 kind = "gap"
 title = "One tier enum shared by the plan parser, router, budget and turn caps"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-core/task", "roko-cli/graph_task_dispatch", "roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "ed0c33bd5"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (Tier → model routing row); tldr/05 P1 #8"
 anchors = ["crates/roko-core/src/task.rs::TaskComplexityBand", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::is_express_task", "crates/roko-core/src/config/budget.rs::BudgetConfig::task_limit_usd", "crates/roko-core/src/config/gates.rs::PipelineConfig::for_tier", "crates/roko-cli/src/plan_generate.rs::TaskTier", "crates/roko-cli/src/dispatch/model_routing.rs::tier_to_complexity"]
@@ -84,3 +86,7 @@ Checked at `41c7ffbd6`: as described above. Nothing validates tier strings.
   bands, which shifts cascade-router statistics; that is intended.
 - **Hot file:** `graph_task_dispatch.rs`. This item waits for gap-96f7ed (E4.2), which also edits `dispatch()`. It runs
   before gap-0f3980's routing part, which edits `build_routing_context` too.
+- 2026-09-29 (wk-tiers): implemented on `work/gap-8c0a20` at `c7bbc58e0`; cargo verification deferred to the batch check. Locally, `cargo check -p roko-cli --lib --tests` and both `[[verify]]` tests pass (targeted `cargo test`).
+- Premise partly false at `ed0c33bd5`: unknown tiers were already rejected. `TasksFile::validate_against_schema` (since `d89c20293`) makes one a PLAN_035 error in `plan validate`, and `load_plan` refuses the plan in `plan run`. No new PLAN code was added. That check now reads through `TaskTier::parse`, so aliases (`T0`, `premium`) pass and typos still fail (`unknown_tier_is_a_schema_error_and_tier_aliases_pass`).
+- Plan step 5 not done: `CostRecord.complexity_band` and `VerifiedAttempt.task_type` still carry the raw tier, because `graph_task_dispatch/feedback.rs` belongs to wk-settle. The follow-up after both merge is one line each: `task.tier_class().label().to_string()`.
+- Other tier tables remain outside the five consumers: roko-learn's `conductor::complexity_bucket` reads `complex` as architectural (TaskTier reads it as integrative); `cost_projection::normalize_tier` and the TUI's `default_model_for_tier` keep their own.

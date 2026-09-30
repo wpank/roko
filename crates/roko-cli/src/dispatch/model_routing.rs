@@ -15,11 +15,13 @@
 //!    preserves the operator's ability to pin a model during incidents —
 //!    and the choice is recorded so the feedback loop can learn from
 //!    operator preferences.
-//! 2. **Task hint**. `task_def.model_hint` (if any). Hints are author
-//!    intent — not learned policy — and always beat the router.
+//! 2. **Task hint**. `task_def.model_hint`, else the task's `preferred_model`
+//!    (if any). Hints are author intent — not learned policy — and always
+//!    beat the router.
 //! 3. **Ladder**. With a [`RoutingLadder`] attached (`[routing.ladder]`, on
-//!    by default), the task's role and tier pick its start rung. The
-//!    cascade router's pick is only logged beside it (shadow).
+//!    by default), the task's role and tier pick its start rung, unless its
+//!    `rung` hint names one. The cascade router's pick is only logged beside
+//!    it (shadow).
 //! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
 //! 5. **Safe default**. With no router and no hint, fall back to the
@@ -41,7 +43,7 @@ use indexmap::IndexMap;
 use roko_core::agent::ModelSpec;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
-use roko_core::task::{TaskCategory, TaskTier};
+use roko_core::task::{TaskCategory, TaskSpeedPriority, TaskTier};
 use roko_learn::cascade_router::{CascadeModel, CascadeRouter, RoutingBias};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
@@ -75,8 +77,12 @@ pub struct RoutingInputs {
     /// Task tier, read by [`TaskDef::tier_class`] (an unknown tier is
     /// focused).
     pub task_tier: TaskTier,
-    /// Author-provided model hint (`task.model_hint`).
+    /// Author-provided model hint (`task.model_hint`, else the task's
+    /// `preferred_model`).
     pub task_model_hint: Option<String>,
+    /// Author-provided `[routing.ladder]` rung the task starts on
+    /// (`rung = "strong"`).
+    pub task_rung: Option<String>,
     /// Operator override from the unified CLI `--model` flag.
     /// Highest priority: when set, the router returns this slug immediately.
     pub force_backend: Option<String>,
@@ -101,20 +107,58 @@ pub struct RoutingInputs {
 
 impl RoutingInputs {
     /// Extract router inputs from a task + per-call context.
+    ///
+    /// A task's `model_hint` beats its `preferred_model`, and a
+    /// `speed_priority = "latency"` task asks the router for cheaper models
+    /// the way budget pressure does.
     #[must_use]
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
+        let hints = &task.hints;
+        let routing_bias = if hints.speed_priority == Some(TaskSpeedPriority::Latency) {
+            Some(prefer_cheaper(
+                ctx.routing_bias.clone(),
+                "speed_priority = latency",
+            ))
+        } else {
+            ctx.routing_bias.clone()
+        };
         Self {
             task_domain: task.domain.as_ref().map(|d| d.label().to_string()),
             task_tier: task.tier_class(),
-            task_model_hint: task.model_hint.clone().or_else(|| ctx.model_hint.clone()),
+            task_model_hint: task
+                .model_hint
+                .clone()
+                .or_else(|| hints.preferred_model.clone())
+                .or_else(|| ctx.model_hint.clone()),
+            task_rung: hints.rung.clone(),
             force_backend: ctx.force_backend.clone(),
             budget_remaining_usd: ctx.budget_remaining_usd,
             attempt: ctx.attempt,
             role: ctx.role.clone(),
             routing_context: ctx.routing_context.clone(),
-            routing_bias: ctx.routing_bias.clone(),
+            routing_bias,
             budget_pressure: false,
         }
+    }
+}
+
+/// `bias` asking for cheaper models, with `reason` added to its reason.
+fn prefer_cheaper(bias: Option<RoutingBias>, reason: &str) -> RoutingBias {
+    match bias {
+        Some(bias) => RoutingBias {
+            prefer_cheaper: true,
+            reason: if bias.reason.is_empty() {
+                reason.to_string()
+            } else {
+                format!("{}; {reason}", bias.reason)
+            },
+            ..bias
+        },
+        None => RoutingBias {
+            deprioritize: Vec::new(),
+            prefer_cheaper: true,
+            reason: reason.to_string(),
+        },
     }
 }
 
@@ -511,10 +555,11 @@ impl ModelRouter {
     /// beside the cascade router's own pick (shadow). `None` without a
     /// ladder, or when no rung of the task's ladder can run.
     fn ladder_choice(&self, inputs: &RoutingInputs) -> Option<ModelChoice> {
-        let start = self
-            .ladder
-            .as_ref()?
-            .start(&inputs.role, inputs.task_tier)?;
+        let start = self.ladder.as_ref()?.start(
+            &inputs.role,
+            inputs.task_tier,
+            inputs.task_rung.as_deref(),
+        )?;
         let shadow = self
             .cascade
             .as_ref()
@@ -673,12 +718,18 @@ impl RoutingLadder {
     }
 
     /// The rung a task of `tier` in `role` starts on, or `None` when no rung
-    /// of its ladder can run.
+    /// of its ladder can run. A `rung_hint` naming one of the task's rungs
+    /// replaces the tier's start rung.
     #[must_use]
-    pub fn start(&self, role: &str, tier: TaskTier) -> Option<LadderStartRung> {
-        let resolved = self
-            .config
-            .resolve(role, tier, |model| self.runnable.contains_key(model))?;
+    pub fn start(
+        &self,
+        role: &str,
+        tier: TaskTier,
+        rung_hint: Option<&str>,
+    ) -> Option<LadderStartRung> {
+        let resolved = self.config.resolve(role, tier, rung_hint, |model| {
+            self.runnable.contains_key(model)
+        })?;
         let rung = resolved.start_rung();
         Some(LadderStartRung {
             index: resolved.start,
@@ -766,6 +817,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -895,6 +947,79 @@ mod tests {
             t.tier = tier.into();
             assert_eq!(RoutingInputs::from_task(&t, &ctx()).task_tier, expected);
         }
+    }
+
+    /// gap-0f3980: a task's `preferred_model` is its model hint unless it
+    /// sets `model_hint`, and `speed_priority = "latency"` asks the router
+    /// for cheaper models, merged into any conductor bias.
+    #[test]
+    fn routing_inputs_read_the_task_hints() {
+        let mut t = task();
+        t.hints.preferred_model = Some("claude-opus-4-1".into());
+        let inputs = RoutingInputs::from_task(&t, &ctx());
+        assert_eq!(inputs.task_model_hint.as_deref(), Some("claude-opus-4-1"));
+        let choice = ModelRouter::new(None).route(&inputs).unwrap();
+        assert_eq!(
+            routed(&choice),
+            ("claude-opus-4-1", ModelChoiceSource::TaskHint)
+        );
+        t.model_hint = Some("claude-haiku-4-5".into());
+        assert_eq!(
+            RoutingInputs::from_task(&t, &ctx())
+                .task_model_hint
+                .as_deref(),
+            Some("claude-haiku-4-5")
+        );
+
+        assert!(RoutingInputs::from_task(&t, &ctx()).routing_bias.is_none());
+        t.hints.speed_priority = Some(TaskSpeedPriority::Latency);
+        let bias = RoutingInputs::from_task(&t, &ctx())
+            .routing_bias
+            .expect("a latency task asks for cheaper models");
+        assert!(bias.prefer_cheaper);
+        assert_eq!(bias.reason, "speed_priority = latency");
+        let mut conductor = ctx();
+        conductor.routing_bias = Some(RoutingBias {
+            deprioritize: vec!["gpt-5".into()],
+            prefer_cheaper: false,
+            reason: "recent failure".into(),
+        });
+        let bias = RoutingInputs::from_task(&t, &conductor)
+            .routing_bias
+            .expect("merged bias");
+        assert_eq!(bias.deprioritize, ["gpt-5"]);
+        assert!(bias.prefer_cheaper);
+        assert_eq!(bias.reason, "recent failure; speed_priority = latency");
+        t.hints.speed_priority = Some(TaskSpeedPriority::Accuracy);
+        assert!(RoutingInputs::from_task(&t, &ctx()).routing_bias.is_none());
+    }
+
+    /// gap-dbf2a6: a task with `rung = "strong"` and no `model_hint` starts
+    /// on that rung, moving up past it when it cannot run; `model_hint`
+    /// still wins.
+    #[test]
+    fn rung_hint_starts_the_task_on_that_rung() {
+        let everywhere = ladder(&ladder_config(), |_| true);
+        let mut t = task();
+        t.tier = "mechanical".into();
+        t.hints.rung = Some("strong".into());
+        let choice = ladder_route(everywhere.clone(), &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("gpt-5.4-mini", ModelChoiceSource::Ladder { rung: 2 })
+        );
+        let no_mini = ladder(&ladder_config(), |key| key != "gpt-5-4-mini");
+        let choice = ladder_route(no_mini, &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("claude-sonnet-4-6", ModelChoiceSource::Ladder { rung: 3 })
+        );
+        t.model_hint = Some("claude-haiku-4-5".into());
+        let choice = ladder_route(everywhere, &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("claude-haiku-4-5", ModelChoiceSource::TaskHint)
+        );
     }
 
     // ── Routing ladder (gap-9cbf35) ────────────────────────────────────

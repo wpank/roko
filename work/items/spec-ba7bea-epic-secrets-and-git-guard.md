@@ -79,7 +79,7 @@ This is the implementation plan.
 - [x] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
 - [x] bug-7de5df: The agent git guard misses reset, stash and clean, and commands after the first in a chain
 - [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
-- [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
+- [x] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
 - [ ] gap-8f8544: Sandbox levels are enforced only in-process: no OS sandbox confines agent processes
 - [x] bug-f4e133: The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c
 - [x] bug-66f5a1: A git alias such as co = checkout bypasses the agent git guard

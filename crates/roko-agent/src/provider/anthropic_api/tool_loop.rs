@@ -936,11 +936,15 @@ fn normalize_usage(usage: &Value) -> Value {
         .get("cache_creation_input_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    // Anthropic's `input_tokens` leave out cache reads; the OpenAI-shaped
+    // `prompt_tokens` include them, and the usage parser takes the cached
+    // tokens back out (bug-b72a37).
+    let prompt_tokens = input_tokens + cached_tokens;
 
     json!({
-        "prompt_tokens": input_tokens,
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
+        "total_tokens": prompt_tokens + output_tokens,
         "prompt_tokens_details": {
             "cached_tokens": cached_tokens,
         },

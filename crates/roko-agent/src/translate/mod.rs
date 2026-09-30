@@ -845,10 +845,11 @@ mod tests {
                 }
             }
         }));
+        // 3 of the 12 prompt tokens were cached (bug-b72a37).
         assert_eq!(
             r.extract_usage(),
             Usage {
-                input_tokens: 12,
+                input_tokens: 9,
                 output_tokens: 5,
                 cache_read_tokens: 3,
                 ..Default::default()

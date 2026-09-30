@@ -194,10 +194,11 @@ async fn tool_loop_glm_e2e() {
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].id, "call-read-1");
     assert_eq!(result.tool_calls[0].name, "read_file");
+    // 21 + 17 prompt tokens, 4 + 2 of them cached (bug-b72a37).
     assert_eq!(
         result.total_usage,
         Usage {
-            input_tokens: 38,
+            input_tokens: 32,
             output_tokens: 13,
             cache_read_tokens: 6,
             ..Default::default()

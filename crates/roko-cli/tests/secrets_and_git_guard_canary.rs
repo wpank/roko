@@ -426,7 +426,6 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
 /// models reach through roko's tool loop) see no provider key either, the
 /// provider's own included.
 #[test]
-#[ignore = "bug-0d9ac4"]
 fn agent_tool_shells_exclude_provider_keys() {
     const TOOLS_PLAN: &str = "c2-tools";
     let tasks = TASKS

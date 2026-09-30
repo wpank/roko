@@ -22,16 +22,19 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-/// The fake agent. It logs only the calls whose prompt names exactly one
-/// canary task; any other model call just gets a result. Log lines are
-/// appended in the order the calls happen, so their order is the timeline.
+/// The fake agent. A task's prompt names the task on its `Task: <id>:`
+/// lines (it also quotes every sibling task's definition). The agent logs
+/// only the calls that name exactly one task; any other model call just gets
+/// a result. Log lines are appended in the order the calls happen, so their
+/// order is the timeline.
 const FAKE_AGENT: &str = r#"#!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ids=$({ cat; printf '%s\n' "$@"; } | grep -o 'canary-id-T[0-9]*' | sort -u || true)
+prompt=$(cat; printf '%s\n' "$@")
+ids=$(printf '%s\n' "$prompt" | grep -o '^Task: T[0-9]*' | sort -u || true)
 count=$(printf '%s\n' "$ids" | grep -c . || true)
 if [ "$count" -eq 1 ]; then
-  id=${ids#canary-id-}
+  id=${ids#Task: }
   printf 'start %s\n' "$id" >> "$root/events"
   if [ "$id" = T4 ]; then sleep 2; else sleep 1; fi
   printf 'end %s\n' "$id" >> "$root/events"
@@ -58,7 +61,7 @@ fn task(id: &str, depends_on: &[&str], files: &[&str]) -> String {
 [[task]]
 id = "{id}"
 title = "Scheduler canary {id}"
-description = "Scheduler canary task canary-id-{id}."
+description = "Scheduler canary task {id}."
 role = "implementer"
 status = "ready"
 tier = "focused"

@@ -3612,6 +3612,7 @@ max_retries = 0
             output_count: 0,
             is_stub: false,
             blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
         };
         let output = roko_graph::GraphOutput {
             graph_name: "verdicts".to_string(),

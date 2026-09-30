@@ -20,7 +20,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use clap::ValueEnum;
-use roko_core::{ConfigHash, TaskMetric};
 use roko_learn::cfactor::CFactor;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, Usage};
@@ -880,11 +879,12 @@ async fn record_learning(
     episode.usage = Usage {
         input_tokens: estimate_tokens(&instance.problem_statement),
         output_tokens: estimate_tokens(patch),
-        cost_usd: 0.0,
-        cost_usd_without_cache: 0.0,
         wall_ms: row.duration_ms,
         ..Usage::default()
     };
+    // The harness never sees what the agent under test spent. `Usage` has no
+    // null, so its cost stays a 0 placeholder that readers must skip.
+    episode.mark_cost_unknown();
     episode.gate_verdicts = vec![
         EpisodeGateVerdict::new("bench:format", row.format_valid),
         EpisodeGateVerdict::new("bench:git_apply_check", row.apply_check),
@@ -910,37 +910,14 @@ async fn record_learning(
             .insert("touched_tests".to_string(), json!(row.touched_tests));
     }
 
-    let mut metric = TaskMetric {
-        timestamp: Utc::now().to_rfc3339(),
-        run_id: "roko-bench".to_string(),
-        config_hash: ConfigHash("roko-bench".to_string()),
-        plan_id: "swe-bench-proxy".to_string(),
-        task_id: task_id.clone(),
-        iteration: 1,
-        role: "BenchAgent".to_string(),
-        backend: "roko-bench".to_string(),
-        model: format!("roko-bench/{}", options.agent_mode.label()),
-        complexity_band: "standard".to_string(),
-        gate: "swe-proxy".to_string(),
-        gate_passed: row.resolved,
-        wall_time_ms: row.duration_ms,
-        input_tokens: episode.usage.input_tokens,
-        output_tokens: episode.usage.output_tokens,
-        cached_tokens: 0,
-        cost_usd: 0.0,
-        sections_included: 1,
-        sections_dropped: 0,
-        context_tokens: episode.usage.input_tokens,
-        cache_hit_rate: 0.0,
-    };
-    if metric.timestamp.is_empty() {
-        metric.timestamp = Utc::now().to_rfc3339();
-    }
-
+    // No TaskMetric: its cost_usd cannot say "unknown", and a $0 would drag
+    // down the cost baseline that the regression check compares against.
     runtime
-        .record_completed_run(CompletedRunInput::from_episode(episode).with_task_metric(metric))
+        .record_completed_run(CompletedRunInput::from_episode(episode))
         .await?;
 
+    // The efficiency event keeps cost_usd at 0 with non-zero tokens, which the
+    // dashboard already reads as an unknown cost rather than a free one.
     let mut event = AgentEfficiencyEvent::default_event();
     event.agent_id = format!("swe-bench-{}", options.agent_mode.label());
     event.role = "BenchAgent".to_string();
@@ -1376,6 +1353,46 @@ mod tests {
     fn write_jsonl(path: &Path, rows: &[Value]) {
         let lines: Vec<String> = rows.iter().map(Value::to_string).collect();
         fs::write(path, lines.join("\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn swe_episodes_record_unmeasured_cost_as_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let predictions = tmp.path().join("predictions.jsonl");
+        let rows: Vec<Value> = create_builtin_smoke_dataset(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|instance| {
+                json!({ "instance_id": instance.instance_id, "model_patch": instance.patch })
+            })
+            .collect();
+        write_jsonl(&predictions, &rows);
+
+        run_swe_bench(SweBenchOptions {
+            predictions: Some(predictions),
+            ..smoke_options(tmp.path(), SweAgentMode::PredictionFile)
+        })
+        .await
+        .unwrap();
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all_lossy(
+            tmp.path().join(".roko/episodes.jsonl"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(episodes.len(), 2);
+        for episode in &episodes {
+            // Nobody measured what the agent spent: its 0 is a placeholder.
+            assert!(!episode.cost_known(), "{} claims a cost", episode.task_id);
+            assert_eq!(
+                episode.extra.get(roko_learn::episode_logger::COST_KNOWN_KEY),
+                Some(&json!(false))
+            );
+        }
+        // A TaskMetric cannot say "unknown", so none is written.
+        let metrics = fs::read_to_string(tmp.path().join(".roko/learn/task-metrics.jsonl"))
+            .unwrap_or_default();
+        assert!(metrics.trim().is_empty(), "task metrics written: {metrics}");
     }
 
     /// A repo whose `add` subtracts, graded by `test_calc.py`.

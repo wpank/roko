@@ -20,7 +20,7 @@ parent = "spec-a78d57"
 links = { depends_on = ["gap-439794"], blocks = [], related = ["gap-4d835d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn a_task_holds_its_files_from_executor_to_gate' crates/roko-graph/src/ && cargo test -p roko-graph --lib a_task_holds_its_files_from_executor_to_gate"
+command = "grep -rqw 'fn plan_gate_fails_closed_without_worktree' crates/roko-graph/src/cells/plan_gate.rs && cargo test -p roko-graph --lib plan_gate"
 +++
 
 ## Problem
@@ -70,3 +70,4 @@ On `work/gap-4d835d` (`c5466b5cb`). The test `executor_and_gate_hold_the_task_fi
     The window itself is harmless, and gap-19e596 clears `exclusive` under `--worktree-per-task` anyway.
   - Suggest closing as `wontfix` (superseded by bug-50caf2). The `[[verify]]` test was not written, because it would
     assert a lease that is no longer needed.
+- 2026-09-30 (coordinator): the verify now names bug-50caf2's plan-gate tests, which cover the executor-to-gate handoff that made this item's premise false; the originally named test was never written (no behaviour left to test).

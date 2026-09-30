@@ -166,6 +166,7 @@ semantics and built-in profiles.
 | `clippy_enabled` | bool | false | Enable clippy gate |
 | `skip_tests` | bool | false | Skip test gate |
 | `max_iterations` | u32 | 3 | Global gate retry ceiling |
+| `rungs` | array of tables (`name`, `command`, `timeout_secs`, `required`, `parallel_with`) | none | Declared gate rungs. The `required` ones are `roko run`'s verify steps, and every `roko plan run` task runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
 
 ---
 

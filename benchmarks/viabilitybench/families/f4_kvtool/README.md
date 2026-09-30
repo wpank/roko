@@ -20,8 +20,11 @@ store, tells them apart.
 script hangs unless it passes `--yes` (or pipes a `y`). `--dry-run` previews, and `--apply` is accepted and ignored,
 so a script written the v1 way hangs rather than failing. The partial failure is unchanged, with `--resume TOKEN
 --yes`. The help, the docs, the exemplars and their notes follow v2, and the plan, the stores and the task are the
-same, so a model that learned v1 on earlier tasks has to notice the flip. After `ANSWER_WAIT_S` (15 minutes) an
-unanswered kvtool gives up and exits 1, so a hung run that nobody kills still ends.
+same, so a model that learned v1 on earlier tasks has to notice the flip. After `ANSWER_WAIT_S` (150 s) an
+unanswered kvtool gives up and exits 1. That is longer than any arm waits for a command (60 s in the direct arms, 120 s
+for Roko's verify step and Claude Code's default), so the agent still sees a hang, and the hidden suite stops the
+script at its own 60 s. But it bounds the census's clean rerun of the visible check, which waits up to 600 s: a v1
+script under v2 fails it after about 150 s.
 
 ## Layout
 
@@ -197,6 +200,10 @@ under latent v2, and `test_f4_v2_holds_the_script_to_the_flipped_convention` sho
 
 - **A possible null result** (W10, spec-567e52): the visible check passes dry runs in every arm, so a harness
   effect may not show on F4. Report that; do not tune it away.
+- **`flaky_verify`** (`driver/vb_verify.py`): the visible-verify wrapper counts, and may fail, a command only when it
+  holds the visible check verbatim, `sh tests/visible/run.sh`, as whole words. An agent that runs the check another
+  way (`bash tests/visible/run.sh`, `./tests/visible/run.sh`, or the migration script itself) meets no injected
+  flake, and those runs are not counted in the record's `visible.verify_runs`.
 - **Out of scope:**
   - the vague spec variant (S07's `D-v1`, S08.T10);
   - running every family together (`ci/verify_verifiers.py`, gap-7ee7c2). It can drive F4 as it drives F1, through

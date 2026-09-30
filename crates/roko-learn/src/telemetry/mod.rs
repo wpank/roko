@@ -36,7 +36,7 @@ pub use manifest::AttemptTally;
 pub use records::{
     AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptOpenRecord,
     AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame, CostSource,
-    DecisionSource, ExecutedModel, GateVerdictTag, HelperCallsUsage, RunFile,
+    DecisionSource, ExecutedModel, FailoverRefusal, GateVerdictTag, HelperCallsUsage, RunFile,
     RunProvenanceManifest, Stamped, TelemetryRecord, VerifyStepVerdict,
 };
 pub use writer::{

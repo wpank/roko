@@ -31,11 +31,13 @@ disturbances of one kind may not cover the same position. The hooks:
   visible-verify wrapper (`vb_verify.py`) fails with probability `params.p` (default 0.25, S06 §4.9), drawn from the
   spec's seed. A run that names it gives every task the wrapper, with p = 0 outside the positions it covers, so the
   arms see the same thing throughout. Ground truth: each record's `visible.flake_injected` and `visible.flakes`.
-
-One hook is not built yet, and a spec that names it is refused:
-- `model_swap`: the proxy could rewrite a request's model, but the driver's model checks would then make every
-  swapped task `infra_error` (records' served-model check, and run_roko's, which gap-dad97b owns). They must first
-  learn to expect the swap on the tasks it covers.
+- `model_swap` (gap-8bdf5e): for the tasks it covers, the metering proxy sends `params.to` upstream in place of the
+  pinned model, so the provider serves that model and says so: S06's silent swap. The spec declares it, so the model
+  checks (`records.final_status`, and `run_roko`'s) accept exactly that served model on those tasks and mark each
+  attempt it served `model_swapped`; any other model is still a mismatch, and so is the swap outside its positions.
+  It needs the proxy, as `provider_fault` does, so the Claude Code arm, whose CLI signs in by itself and cannot go
+  through the proxy, cannot run it; and `params.to` needs a row in the run's price snapshot. Ground truth: the proxy
+  log's `model_swap`, and each attempt's `model_reported` and `model_swapped`.
 
 API:
     Disturbance(kind, start_at=1, end_at=None, seed=0, params={}); .covers(position) -> bool; .as_json() -> dict
@@ -46,6 +48,7 @@ API:
     profile(disturbances, position) -> faultproxy.Profile
     latent(disturbances, position) -> str | None                      # None: the family's default
     flake(disturbances, position) -> tuple[float, int]                # flaky_verify's (p, seed); (0.0, 0) if none
+    swap(disturbances, position) -> str | None                        # model_swap's model; None if none
 """
 
 from __future__ import annotations
@@ -62,11 +65,8 @@ import faultproxy
 
 SCHEMA = "vb.disturbance/1"
 KINDS = ("provider_fault", "model_swap", "harder_mix", "budget_cut", "convention_flip", "flaky_verify")
-NOT_BUILT = {
-    "model_swap": "the driver's model checks would make every swapped task infra_error (module docstring)",
-}
 DEFAULTS = {"budget_cut": {"factor": 0.5}, "harder_mix": {"levels": [4, 5]}, "convention_flip": {"latent": "v2"},
-            "flaky_verify": {"p": 0.25}}
+            "flaky_verify": {"p": 0.25}, "model_swap": {"to": None}}  # model_swap's `to` has no default
 LEVELS = range(1, 6)
 
 
@@ -149,14 +149,18 @@ def flake(disturbances: Sequence[Disturbance], position: int) -> tuple[float, in
     return (float(flaky[0].params["p"]), flaky[0].seed) if flaky else (0.0, 0)
 
 
+def swap(disturbances: Sequence[Disturbance], position: int) -> str | None:
+    """The model the proxy serves in place of the pin for the task at `position`: the covering `model_swap`'s."""
+    swapped = [one for one in disturbances if one.kind == "model_swap" and one.covers(position)]
+    return swapped[0].params["to"] if swapped else None
+
+
 def _parse(table: object, where: str) -> Disturbance:
     if not isinstance(table, dict) or set(table) - {"kind", "start_at", "end_at", "seed", "params"}:
         raise DisturbanceError(f"{where}: a disturbance has only kind, start_at, end_at, seed and params")
     kind = table.get("kind")
     if kind not in KINDS:
         raise DisturbanceError(f"{where}: kind must be one of {', '.join(KINDS)}, not {kind!r}")
-    if kind in NOT_BUILT:
-        raise DisturbanceError(f"{where}: {kind} is not built: {NOT_BUILT[kind]}")
     start, end, seed = table.get("start_at", 1), table.get("end_at"), table.get("seed", 0)
     if not (_whole(start) and start >= 1 and (end is None or (_whole(end) and end >= start)) and _whole(seed)):
         raise DisturbanceError(f"{where}: start_at must be a position from 1, end_at none before it, and seed an "
@@ -182,6 +186,8 @@ def _parse(table: object, where: str) -> Disturbance:
     elif kind == "flaky_verify" and not (isinstance(params["p"], (int, float)) and not isinstance(
             params["p"], bool) and 0 <= params["p"] <= 1):
         raise DisturbanceError(f"{where}: flaky_verify's p must be a probability from 0 to 1")
+    elif kind == "model_swap" and not (isinstance(params["to"], str) and params["to"]):
+        raise DisturbanceError(f"{where}: model_swap's to must name the model the proxy serves instead")
     return Disturbance(kind=kind, start_at=start, end_at=end, seed=seed, params=params)
 
 

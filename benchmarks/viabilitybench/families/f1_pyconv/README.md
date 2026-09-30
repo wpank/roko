@@ -139,6 +139,13 @@ markers when it renders, and a test checks that no rendered workdir or spec hold
 the canary, which is one more reason it stays out of the workdir. The secret is read only from a 0600
 `--secret-file`, never from argv or the environment.
 
+## `flaky_verify`
+
+The visible-verify wrapper (`driver/vb_verify.py`, S08 §4.6) counts, and may fail, a command only when it holds the
+visible check verbatim, `python3 -m unittest discover -s tests/visible`, as whole words. An agent that runs the check
+another way (`python3 -m unittest tests/visible/...`, `pytest`, arguments in another order) meets no injected flake,
+and those runs are not counted in the record's `visible.verify_runs`.
+
 ## Out of scope
 
 The vague spec variant (S07 `D-v1`) is not built.

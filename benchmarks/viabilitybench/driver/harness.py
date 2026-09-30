@@ -60,6 +60,8 @@ class TaskContext:
     files_in_scope: tuple[str, ...] = ()
     # The visible-verify wrapper the arm's visible checks go through (`vb_verify`); None unless the run is flaky.
     verify_wrapper: Path | None = None
+    # The model the proxy serves in place of the pin (`model_swap`), which the model checks accept; None if none.
+    model_swap: str | None = None
 
     @property
     def chain_key(self) -> str:

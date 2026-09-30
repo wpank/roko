@@ -468,6 +468,20 @@ impl<T> ExecutedRow<T> {
     }
 }
 
+/// An efficiency row whose turn fields may be unknown. `turns_unknown`
+/// marks a row whose `iteration` and `turn_number` are 0 because the agent
+/// reported no count (bug-ad5487); [`ExecutedRow`] carries the same marker
+/// on an attempt's dispatch row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnsRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// The agent reported no turn count.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
+}
+
 // ─── Grade ──────────────────────────────────────────────────────────────────
 
 /// Letter grade for prompt efficiency.

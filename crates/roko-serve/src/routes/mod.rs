@@ -1925,6 +1925,77 @@ mod tests {
         assert_eq!(body["code"], "unauthorized");
     }
 
+    /// Opening `/ws/terminal/{id}` starts a shell, so a read-only key is
+    /// refused at the upgrade and a `terminal:write` key gets past auth.
+    #[tokio::test]
+    async fn terminal_websocket_requires_terminal_write() {
+        fn key(name: &str, plaintext: &str, scope: &str) -> roko_core::config::ApiKeyEntry {
+            roko_core::config::ApiKeyEntry {
+                name: name.into(),
+                key_hash: middleware::hash_api_key(plaintext),
+                scope: scope.into(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            }
+        }
+
+        let mut config = RokoConfig::default();
+        config.serve.terminal_enabled = true;
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![
+            key("reader", "read-only-secret", "read"),
+            key("terminal", "terminal-secret", "terminal:write"),
+        ];
+        let (_dir, state, app) = build_test_state_and_router(config);
+
+        // No upgrade headers: the auth layers decide before the handler, and
+        // without them the handler returns the WebSocket rejection before it
+        // attaches a session, so no shell can start in this test.
+        let open_terminal = |api_key: &str| {
+            Request::builder()
+                .method(Method::GET)
+                .uri("/ws/terminal/scope-check")
+                .header("X-Api-Key", api_key)
+                .body(Body::empty())
+                .expect("build request")
+        };
+
+        let response = app
+            .clone()
+            .oneshot(open_terminal("read-only-secret"))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(body["code"], "insufficient_scope", "{body}");
+
+        // A terminal:write key clears the scope and RBAC layers.
+        let response = app
+            .oneshot(open_terminal("terminal-secret"))
+            .await
+            .expect("oneshot");
+        assert!(
+            !matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ),
+            "terminal:write must pass auth, got {}",
+            response.status()
+        );
+        assert!(
+            state.terminal_sessions.list_sessions().is_empty(),
+            "no shell may start without a WebSocket upgrade"
+        );
+    }
+
     /// Terminal routes require `terminal:write` (or `write`/`admin`) scope.
     #[tokio::test]
     async fn terminal_requires_scope() {
@@ -1935,9 +2006,10 @@ mod tests {
         let scope = required_scope_for(&Method::POST, "/api/terminal/sessions");
         assert_eq!(scope, "terminal:write");
 
-        // GET is read-only — scope is "read".
+        // Opening the WebSocket is a GET, but it starts a shell, so it needs
+        // terminal:write too (bug-af1020).
         let ws_scope = required_scope_for(&Method::GET, "/ws/terminal/abc-123");
-        assert_eq!(ws_scope, "read");
+        assert_eq!(ws_scope, "terminal:write");
 
         // DELETE (destroy session) requires terminal:write.
         let del_scope = required_scope_for(&Method::DELETE, "/api/terminal/sessions/abc-123");
@@ -2385,6 +2457,8 @@ mod tests {
             ("/api/secrets/ns/key/test", "admin"),
             ("/api/config", "admin"),
             ("/api/config/reload", "admin"),
+            ("/api/relay-tokens", "admin"),
+            ("/api/relay-tokens/tok-1", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),
@@ -2475,13 +2549,19 @@ mod tests {
             );
         }
 
-        // Read-only methods must always return "read" regardless of path.
+        // Read-only methods return "read", except on a route whose GET opens
+        // an interactive session, which keeps its table scope.
         for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
-            for (path, _) in router_routes {
+            for (path, scope) in router_routes {
+                let expected = if route_permissions::opens_interactive_session(path) {
+                    *scope
+                } else {
+                    "read"
+                };
                 assert_eq!(
                     required_scope_for(&method, path),
-                    "read",
-                    "{method} {path} must be 'read'"
+                    expected,
+                    "{method} {path} must be '{expected}'"
                 );
             }
         }

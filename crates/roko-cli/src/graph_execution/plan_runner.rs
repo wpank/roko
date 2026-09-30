@@ -941,10 +941,21 @@ async fn run_graph_plan_body(
     // learning wiring census inspects the same object graph.
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
+    // Routing outcomes are journaled in the learning WAL until the run saves
+    // the router at its end, so a crash keeps them (bug-dfb28f).
+    let cascade_journal = graph_run_config.cascade_router.as_ref().map(|_| {
+        Arc::new(
+            roko_learn::model_call_feedback::ModelCallJournal::for_snapshot(
+                &graph_layout.cascade_router_path(),
+            ),
+        )
+    });
     let graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
         graph_run_config.cascade_router.as_ref(),
+        cascade_journal.as_ref(),
+        shared_factory.error_pattern_store(),
     );
     let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
@@ -1526,17 +1537,18 @@ async fn run_graph_plan_body(
     //
     // Save learned routing state (confidence stats, LinUCB weights, Pareto
     // frontier) so that force_backend override outcomes and all other
-    // routing observations survive across runs. Without this, in-memory
-    // learning accumulated during plan execution was lost on exit.
-    if let Some(cascade) = &graph_run_config.cascade_router {
-        let cascade_path = graph_layout.cascade_router_path();
-        if let Err(err) = cascade.save(&cascade_path) {
-            tracing::warn!(
-                path = %cascade_path.display(),
-                error = %err,
-                "failed to persist cascade router state (non-fatal)"
-            );
-        }
+    // routing observations survive across runs. Saving through the run's
+    // journal truncates it once the snapshot holds its observations, so a
+    // later load does not replay them again (bug-dfb28f). If the save fails,
+    // the journal keeps them for that load.
+    if let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
+        && let Err(err) = journal.save(cascade)
+    {
+        tracing::warn!(
+            path = %journal.snapshot_path().display(),
+            error = %err,
+            "failed to persist cascade router state (non-fatal)"
+        );
     }
 
     // ── Persist holdout experiment state ────────────────────────────
@@ -1686,7 +1698,9 @@ async fn run_graph_plan_body(
 
 /// The learning and feedback wiring of a Graph plan run under `workdir`: the
 /// feedback facade ([`build_graph_feedback_facade`]) and every learning store
-/// a task attempt's feedback writes.
+/// a task attempt's feedback writes. `cascade_journal` is the journal the run
+/// saves `cascade_router` through; `error_patterns` is the dispatch
+/// factory's error-pattern store, which prompts read.
 ///
 /// It builds the same feedback infrastructure that Runner-v2 used, so Graph
 /// engine runs produce episodes, efficiency events, playbook outcomes,
@@ -1698,6 +1712,8 @@ pub fn build_graph_feedback_context(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
+    error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -1758,7 +1774,9 @@ pub fn build_graph_feedback_context(
             workdir,
             config,
             cascade_router,
+            cascade_journal,
             shared_daimon_state.as_ref(),
+            error_patterns,
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -1824,14 +1842,18 @@ fn graph_daimon_state(
 
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
-/// routing when there is a cascade router, and the plan-completion dream,
-/// daimon, theta and delta sinks). `daimon_state` is the state dispatch
-/// modulates, persisted when a plan completes.
+/// error patterns, routing when there is a cascade router, and the
+/// plan-completion dream, daimon, theta and delta sinks). The routing sink
+/// journals its observations in `cascade_journal`, when there is one;
+/// `daimon_state` is the state dispatch modulates, persisted when a plan
+/// completes; `error_patterns` is the store dispatch formats into prompts.
 pub fn build_graph_feedback_facade(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
+    error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -1852,11 +1874,21 @@ pub fn build_graph_feedback_facade(
         // progression included) under `.roko/neuro/`.
         .with_sink(std::sync::Arc::new(
             crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir),
+        ))
+        // A failure of the agent's work goes into the error-pattern store
+        // dispatch formats into prompts, and to `learn/error-patterns.json`.
+        .with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::ErrorPatternSink::new(
+                std::sync::Arc::clone(error_patterns),
+                graph_learn_dir.join("error-patterns.json"),
+            ),
         ));
     if let Some(cascade) = cascade_router {
-        facade = facade.with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
-        ));
+        let mut routing = crate::runtime_feedback::RoutingObservationSink::new(cascade.clone());
+        if let Some(journal) = cascade_journal {
+            routing = routing.with_journal(Arc::clone(journal));
+        }
+        facade = facade.with_sink(std::sync::Arc::new(routing));
     }
 
     // ── #143: Dream consolidation trigger on plan completion ────────
@@ -2314,8 +2346,12 @@ async fn run_one_plan(
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
     let run_id = checkpoint.run_id().to_string();
-    // A new run's manifest, or one more invocation of a resumed run.
-    ctx.run_manifests.open(&run_id, &plan.id);
+    // A new run's manifest, or one more invocation of a resumed run; the
+    // run's attempt records carry the invocation's ordinal.
+    if let Some(inv) = ctx.run_manifests.open(&run_id, &plan.id) {
+        ctx.graph_task_dispatcher
+            .attach_run_invocation(&run_id, inv);
+    }
     // A resumed run's attempts continue from the plan branch its earlier
     // process accepted work onto, and re-attach the checkouts it kept
     // (bug-056b40).
@@ -3676,6 +3712,8 @@ max_retries = 0
         assert_eq!(invocation.len(), 1);
         assert_eq!((invocation[0].inv, invocation[0].resumed), (1, false));
         assert_eq!(invocation[0].pid, std::process::id());
+        assert_eq!(invocation[0].harness.as_ref(), Some(&manifest.harness));
+        assert_eq!(invocation[0].config.as_ref(), Some(&manifest.config));
         let closed = manifest.closed.as_ref().expect("the run closed");
         assert_eq!(closed.status, "succeeded");
         let counts = (
@@ -3699,8 +3737,70 @@ max_retries = 0
             .map(|invocation| (invocation.inv, invocation.resumed))
             .collect();
         assert_eq!(invocations, [(1, false), (2, true)]);
+        assert!(
+            !resumed.mixed_provenance,
+            "the same build resumed the run: {:?}",
+            resumed.invocations
+        );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// bug-0ba3d9: attempt records carry the invocation ordinal the run's
+    /// manifest gave their process. T1 fails on the first run and passes
+    /// when the run resumes, so its two attempts come from invocations 1
+    /// and 2 of one run.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attempt_records_carry_the_invocation_ordinal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No auto-fix re-run: T1's verify step must run once per attempt.
+        fake_provider_workspace(dir.path(), 0.0, "cargo_fix_enabled = false\n");
+        write_verify_plan(
+            dir.path(),
+            "resume",
+            "max_parallel = 1",
+            &[("T1", &[], "test -f resumed || { touch resumed; false; }")],
+        );
+
+        let (first, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(first, EXIT_FAILURE, "T1 fails on the first run");
+        let (second, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(second, EXIT_SUCCESS, "the resumed run runs T1 again");
+
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(dir.path().join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(
+            run_dirs.len(),
+            1,
+            "the resume continues the run: {run_dirs:?}"
+        );
+        let attempts = std::fs::read_to_string(run_dirs[0].join("attempts.jsonl"))
+            .expect("read attempts.jsonl");
+        let records: Vec<(String, u64, Option<u64>)> = attempts
+            .lines()
+            .map(|line| {
+                let record: serde_json::Value = serde_json::from_str(line).expect("a record");
+                (
+                    record["schema_version"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    record["attempt"].as_u64().unwrap_or(0),
+                    record["inv"].as_u64(),
+                )
+            })
+            .collect();
+        let expected = [
+            ("roko.attempt_open/1", 1, Some(1)),
+            ("roko.verdict/1", 1, Some(1)),
+            ("roko.attempt_open/1", 2, Some(2)),
+            ("roko.verdict/1", 2, Some(2)),
+        ]
+        .map(|(schema, attempt, inv)| (schema.to_string(), attempt, inv));
+        assert_eq!(records, expected);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

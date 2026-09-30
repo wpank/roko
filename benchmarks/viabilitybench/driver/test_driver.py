@@ -501,11 +501,15 @@ def test_vb_run_applies_the_chosen_disturbance_profile(places, tmp_path, monkeyp
     with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
         # A spec the run cannot apply is refused before anything runs.
         refused = {"model_swap": 'kind = "model_swap"', "convention_flip": 'kind = "convention_flip"',
-                   "no proxy": 'kind = "provider_fault"\nparams = { name = "http_5xx", p = 1.0 }'}
+                   "no proxy": 'kind = "provider_fault"\nparams = { name = "http_5xx", p = 1.0 }',
+                   "swap unproxied": 'kind = "model_swap"\nparams = { to = "glm-4.7" }',
+                   "swap unpriced": 'kind = "model_swap"\nparams = { to = "llama-3.3-70b" }'}
         for name, table in refused.items():
             bad = tmp_path / f"{name.replace(' ', '_')}.toml"
             bad.write_text(f'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\n{table}\n')
-            assert run(bad) == 2, name  # the toy family renders no latent v2; provider_fault needs the proxy
+            # a swap names its model, which needs a price row; the toy family renders no latent v2; provider_fault
+            # and model_swap need the proxy
+            assert run(bad, *(["--proxy"] if name == "swap unpriced" else [])) == 2, name
         assert not places["results"].exists()
         assert run(spec, "--proxy") == 0
     out = run_dir(places)
@@ -605,6 +609,26 @@ def test_flaky_verify_is_injected_through_the_visible_verify_wrapper(places, tmp
     config = json.loads((out / "manifest.json").read_text())["config"]
     assert [(one["kind"], one["seed"], one["params"]) for one in config["disturbances"]] == [
         ("flaky_verify", 11, {"p": 1.0})]
+
+
+def test_a_declared_model_swap_runs_on_the_direct_arm(places, tmp_path):
+    # gap-8bdf5e: from position 2 the metering proxy sends glm-4.7 in place of the pinned model. The provider serves
+    # and reports it, and the record counts the task as a declared swap; position 1 runs on the pin.
+    spec = tmp_path / "swap.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "model_swap"\nstart_at = 2\n'
+                    'params = { to = "glm-4.7" }\n')
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert run_vb(places, stub.url, "--proxy", "--disturbance", str(spec)) == 0
+        sent = [request["model"] for request in stub.requests]
+    rows = {record["stream"]["position"]: record for record in read_jsonl(run_dir(places) / "records.jsonl")}
+    assert sent == ["gpt-oss-120b", "glm-4.7"]
+    assert rows[1]["execution"]["status"] == rows[2]["execution"]["status"] == "completed"
+    [first], [second] = rows[1]["execution"]["attempts"], rows[2]["execution"]["attempts"]
+    assert (first["model_reported"], "model_swapped" in first) == ("gpt-oss-120b", False)
+    assert (second["model_requested"], second["model_reported"], second["model_swapped"]) == (
+        "gpt-oss-120b", "glm-4.7", True)
+    assert rows[2]["stream"]["perturbations_active"] == ["model_swap"]
+    assert all(validate.validate("run-record", row) == [] for row in rows.values())
 
 
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):

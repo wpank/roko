@@ -1683,7 +1683,7 @@ Examples:
     /// Run a native SWE-bench-style proxy batch.
     #[command(after_help = "\
 Examples:
-  roko bench swe --batch-size 2 --agent-mode gold
+  roko bench swe --batch-size 2 --agent-mode gold      (control: checks the harness)
   roko bench swe --dataset ./swe-smoke.jsonl --predictions ./predictions.jsonl --agent-mode prediction-file
   roko bench swe --agent-mode command --agent-command './my-agent.sh'")]
     Swe {
@@ -1696,8 +1696,9 @@ Examples:
         /// Offset into the dataset.
         #[arg(long, default_value_t = 0)]
         offset: usize,
-        /// Agent adapter to use.
-        #[arg(long, value_enum, default_value_t = roko_cli::bench::SweAgentMode::Gold)]
+        /// Agent adapter to use (required). `gold` and `empty` are controls: they check the
+        /// harness, not a model, and are never recorded as learning.
+        #[arg(long, value_enum)]
         agent_mode: roko_cli::bench::SweAgentMode,
         /// Predictions JSONL path for --agent-mode prediction-file.
         #[arg(long)]
@@ -2895,7 +2896,13 @@ enum ConfigCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Set a dotted key (e.g. `agent.command = ollama`) in the chosen layer.
+    /// Set a dotted key (e.g. `agent.command = ollama`) in the global or
+    /// project config.
+    ///
+    /// A secret key such as `serve.auth.api_key` goes to the project's
+    /// `.roko/.env` instead, as its `ROKO__` variable
+    /// (`ROKO__SERVE__AUTH__API_KEY`), whatever the flags, and is removed
+    /// from the config files agents can read.
     Set {
         /// Dotted key path.
         key: String,
@@ -3319,6 +3326,10 @@ fn main() {
             std::process::exit(EXIT_SYSTEM_ERROR);
         }
     };
+    // One scrubber for the process: the log layers scrub with it, and the
+    // persistence writers redact its secrets (the `.env` values and provider
+    // keys) from what they write.
+    let scrubber = roko_fs::observability::RunScrubber::install(&startup_env_redactions);
 
     let mut cli = Cli::parse();
     apply_env_overrides(&mut cli);
@@ -3433,8 +3444,11 @@ fn main() {
     let (non_blocking_writer, _log_guard) = tracing_appender::non_blocking(rolling_appender);
     let file_layer = Some(
         tracing_subscriber::fmt::layer()
-            .with_target(true)
             .with_ansi(false)
+            .event_format(RedactingFormat::new(
+                tracing_subscriber::fmt::format().with_target(true),
+                scrubber.clone(),
+            ))
             .with_writer(non_blocking_writer),
     );
 
@@ -3448,7 +3462,6 @@ fn main() {
             || std::env::var("RUST_LOG").is_ok()
             || raw_logs);
     let stderr_layer = if show_stderr {
-        let scrubber = build_log_scrubber(&startup_env_redactions);
         Some(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
@@ -3597,21 +3610,13 @@ fn error_hint(msg: &str) -> Option<&'static str> {
 #[derive(Debug)]
 struct RedactingFormat<E> {
     inner: E,
-    scrubber: roko_core::obs::LogScrubber,
+    scrubber: std::sync::Arc<roko_core::obs::LogScrubber>,
 }
 
 impl<E> RedactingFormat<E> {
-    fn new(inner: E, scrubber: roko_core::obs::LogScrubber) -> Self {
+    fn new(inner: E, scrubber: std::sync::Arc<roko_core::obs::LogScrubber>) -> Self {
         Self { inner, scrubber }
     }
-}
-
-fn build_log_scrubber(env_redactions: &[(String, String)]) -> roko_core::obs::LogScrubber {
-    let scrubber = roko_core::obs::LogScrubber::new();
-    for (name, value) in env_redactions {
-        let _ = scrubber.add_literal_value(value, name);
-    }
-    scrubber
 }
 
 impl<S, N, E> FormatEvent<S, N> for RedactingFormat<E>
@@ -4512,9 +4517,10 @@ fn dashboard_page_slugs() -> Vec<&'static str> {
 
 /// Load `~/.roko/.env` and `./.roko/.env` into the process environment.
 ///
-/// Returns the loaded entries for log redaction, and records the loaded
-/// names (never values) in [`roko_core::child_env`] so gate commands and
-/// provider CLIs treat them as secrets instead of inheriting them.
+/// Returns the loaded entries, the secrets the process's scrubber redacts
+/// from its logs and persisted records, and records the loaded names (never
+/// values) in [`roko_core::child_env`] so gate commands and provider CLIs
+/// treat them as secrets instead of inheriting them.
 fn load_startup_env_files() -> Result<Vec<(String, String)>> {
     let mut redactions = Vec::new();
     let mut dotenv_names = roko_core::child_env::DotenvNames::new();
@@ -4703,6 +4709,26 @@ mod tests {
             Some(Command::Learn {
                 cmd: LearnCmd::Inspect {
                     subsystem: InspectSubsystem::Budget { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_bench_swe_requires_agent_mode() {
+        // A forgotten flag must not silently run the gold control.
+        let err = Cli::try_parse_from(["roko", "bench", "swe"])
+            .expect_err("bench swe without --agent-mode should not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(["roko", "bench", "swe", "--agent-mode", "command"])
+            .expect("parse bench swe --agent-mode command");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Bench {
+                cmd: BenchCmd::Swe {
+                    agent_mode: roko_cli::bench::SweAgentMode::Command,
+                    ..
                 },
             })
         ));
@@ -7460,7 +7486,7 @@ mod tests {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let writer = BufWriter(Arc::clone(&buffer));
 
-        let scrubber = build_log_scrubber(&[]);
+        let scrubber = roko_fs::observability::RunScrubber::build(&[]);
         let fmt_layer = tracing_subscriber::fmt::layer()
             .event_format(RedactingFormat::new(
                 tracing_subscriber::fmt::format(),
@@ -7550,9 +7576,9 @@ mod tests {
     }
 
     #[test]
-    fn build_log_scrubber_adds_env_redactions() {
+    fn log_scrubber_adds_env_redactions() {
         let scrubber =
-            build_log_scrubber(&[("MY_TOKEN".to_string(), "super-secret-42".to_string())]);
+            roko_fs::observability::RunScrubber::build(&[("MY_TOKEN", "super-secret-42")]);
         let output = scrubber.scrub("leaked super-secret-42 in logs");
         assert!(
             !output.contains("super-secret-42"),

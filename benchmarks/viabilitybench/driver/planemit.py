@@ -15,9 +15,9 @@
   the arm's dollar cap, priced at the snapshot's rates rather than roko.toml's defaults (S08 D9), whose per-dispatch
   reservation (`max_turn_usd`, a tenth of it, with one agent) satisfies Roko's config invariants and still leaves
   room for every retry; retries fixed at
-  `max_retries`; force-accept, cargo fix, replanning, playbook refresh and dreams off. At 33e107da1 `plan run` runs
-  only the authored `[[task.verify]]` steps: Roko reports `gates.rungs` as inert on the Graph engine
-  (`graph_task_dispatch/inert_settings.rs`), so the rungs guard the paths that do read them.
+  `max_retries`; force-accept, cargo fix, replanning, playbook refresh and dreams off. `plan run` runs a workspace's
+  required rungs after each task's own `[[task.verify]]` steps, but not a rung whose command a step already runs
+  (gap-3506f1), so the visible check, which is both the verify step and the rung, runs once per attempt.
 
 Agents see verify commands (A4), so no hidden check goes into either file: every command in them is one of the
 manifest's visible commands, which the spec states, and `emit` refuses to write a file that holds a canary. The

@@ -128,7 +128,10 @@ class GraphRunCase(unittest.TestCase):
         (self.ws / "fake-claude").chmod(0o755)
         (self.ws / ".roko").mkdir()
         (self.ws / "README.md").write_text("# evidence fixture\n", encoding="utf-8")
-        (self.ws / ".gitignore").write_text(".roko/\nout/\n", encoding="utf-8")
+        # The artifacts under out/ stay visible to git: the pre-verify screen
+        # rejects an implementer attempt that leaves the git-visible tree
+        # unchanged (gap-b72761).
+        (self.ws / ".gitignore").write_text(".roko/\n", encoding="utf-8")
         (self.ws / "roko.toml").write_text(ROKO_TOML.format(fake=self.ws / "fake-claude"), encoding="utf-8")
         write_plan(self.ws, "one", "Write the artifact.", "test -f out/one.txt")
         write_plan(self.ws, "early", "Crash before any output. EXIT_EARLY 3", "test -f out/early.txt")
@@ -281,6 +284,10 @@ class GraphBundleScenarios(GraphRunCase):
 
         first_result, first = self.collect("one")
         resumed_result, resumed = self.collect("one")
+        # --fresh redoes the task from the start. Without the first run's
+        # artifact its attempt changes the tree, as the pre-verify screen
+        # requires; the fake agent would rewrite identical bytes.
+        (self.ws / "out" / "one.txt").unlink()
         fresh_result, fresh = self.collect("one", "--fresh")
         for result in (first_result, resumed_result, fresh_result):
             self.assertEqual(result.returncode, 0, result.stderr[-3000:])

@@ -3,13 +3,15 @@ id = "bug-af1020"
 kind = "bug"
 title = "GET /ws/terminal/{id} opens a shell with only the read scope and no RBAC check"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/routes/middleware", "roko-serve/terminal"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-serve-sec's report, checked on work/bug-928add at 090b81f3e)"
 anchors = ["crates/roko-serve/src/routes/middleware.rs::required_scope_for", "crates/roko-serve/src/terminal.rs::ws_terminal"]
@@ -42,3 +44,7 @@ Release blocker, p1: a read-only token becomes a shell on the host.
 
 - [ ] Opening a terminal needs `terminal:write` and passes RBAC.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-serve-sec): Implemented on `work/bug-af1020` at `fcdfec7bf`; cargo verification deferred to the batch check. `route_permissions::opens_interactive_session` names the routes whose GET opens a shell (`/ws/terminal`). For those, `required_scope_for` returns the table scope (`terminal:write`), `require_scope` checks it, and `required_permission_for` requires `agent:spawn` through a new `/ws/terminal` RBAC row. Other GETs are unchanged. Test `routes::tests::terminal_websocket_requires_terminal_write`: a read key gets 403 `insufficient_scope`, a `terminal:write` key clears both layers, and no shell starts. The portal's session cookie carries `admin`, so it still opens terminals. Left as found: `check_cookie_same_origin` skips GETs, so a WebSocket upgrade with a cookie is not Origin-checked; the cookie is `SameSite=Strict`, which keeps cross-site pages from sending it.

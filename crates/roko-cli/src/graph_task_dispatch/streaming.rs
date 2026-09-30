@@ -176,7 +176,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             prompt: dispatch_plan.prompt.user_prompt.clone(),
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: lease.path.clone(),
-            immune_root: Some(lease.path.clone()),
+            // Immune state belongs to the workspace, not the attempt checkout.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,

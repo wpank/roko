@@ -1978,7 +1978,13 @@ model_hint = "claude-sonnet-4-6"
         let diagnostics = ladder_diagnostics(&tasks, "demo", &LadderConfig::default());
         let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
             .iter()
-            .map(|diag| (diag.rule_id.as_str(), diag.severity, diag.task_id.as_deref()))
+            .map(|diag| {
+                (
+                    diag.rule_id.as_str(),
+                    diag.severity,
+                    diag.task_id.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             found,

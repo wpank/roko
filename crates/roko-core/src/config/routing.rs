@@ -639,7 +639,9 @@ mod tests {
         // router's Sonnet default did.
         for tier in TaskTier::ALL {
             let resolved = ladder
-                .resolve("implementer", tier, None, |model| model == "claude-sonnet-4-6")
+                .resolve("implementer", tier, None, |model| {
+                    model == "claude-sonnet-4-6"
+                })
                 .expect("the top rung runs");
             assert_eq!(resolved.start, 3);
             assert_eq!(resolved.usable, [3]);

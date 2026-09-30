@@ -159,7 +159,10 @@ fn preferred_provider_model_with(
     provider: Option<&str>,
     available: impl Fn(&str) -> bool,
 ) -> String {
-    let Some(provider) = provider.map(str::trim).filter(|provider| !provider.is_empty()) else {
+    let Some(provider) = provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+    else {
         return model.to_string();
     };
     let models = config.effective_models();
@@ -172,7 +175,10 @@ fn preferred_provider_model_with(
             profile.slug == slug
                 && profile.provider == provider
                 && profile.supports_tools
-                && !config.routing.disabled_providers.contains(&profile.provider)
+                && !config
+                    .routing
+                    .disabled_providers
+                    .contains(&profile.provider)
                 && available(key)
         })
         .map_or_else(|| model.to_string(), |(key, _)| key.clone())
@@ -713,10 +719,7 @@ mod tests {
         let task = parse_task("tier = \"mechanical\"\n");
         let mut routing = build_routing_context("implementer", &task, &None);
         mark_attempt(&mut routing, &task, 0);
-        assert_eq!(
-            (routing.iteration, routing.has_prior_failure),
-            (0, false)
-        );
+        assert_eq!((routing.iteration, routing.has_prior_failure), (0, false));
         mark_attempt(&mut routing, &task, 2);
         assert_eq!((routing.iteration, routing.has_prior_failure), (2, true));
         assert_eq!(routing.complexity, TaskComplexityBand::Fast);
@@ -761,18 +764,35 @@ mod tests {
             preferred_provider_model_with(config, routed, provider, |key| key != "offline")
         };
         // By slug or by key, the preferred provider's entry runs the model.
-        assert_eq!(pick(&config, "claude-sonnet-4-6", Some("anthropic")), "sonnet-api");
+        assert_eq!(
+            pick(&config, "claude-sonnet-4-6", Some("anthropic")),
+            "sonnet-api"
+        );
         assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-api");
         // No preference, or a provider without that model: as routed.
-        assert_eq!(pick(&config, "claude-sonnet-4-6", None), "claude-sonnet-4-6");
-        assert_eq!(pick(&config, "gpt-4o-mini", Some("anthropic")), "gpt-4o-mini");
+        assert_eq!(
+            pick(&config, "claude-sonnet-4-6", None),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            pick(&config, "gpt-4o-mini", Some("anthropic")),
+            "gpt-4o-mini"
+        );
         // An unusable entry is never picked.
         config.routing.disabled_providers = vec!["anthropic".to_string()];
         assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-cli");
         config.routing.disabled_providers.clear();
-        config.models.get_mut("sonnet-api").expect("entry").supports_tools = false;
+        config
+            .models
+            .get_mut("sonnet-api")
+            .expect("entry")
+            .supports_tools = false;
         assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-cli");
-        config.models.get_mut("sonnet-api").expect("entry").supports_tools = true;
+        config
+            .models
+            .get_mut("sonnet-api")
+            .expect("entry")
+            .supports_tools = true;
         assert_eq!(
             preferred_provider_model_with(&config, "sonnet-cli", Some("anthropic"), |_| false),
             "sonnet-cli"

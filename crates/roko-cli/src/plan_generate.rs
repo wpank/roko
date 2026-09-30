@@ -1041,7 +1041,9 @@ mod tests {
         assert!(prompt.contains("## Model hints"));
         assert!(prompt.contains("NEVER set `model_hint`"));
         // gap-dbf2a6: a task that needs a stronger start names a ladder rung.
-        assert!(prompt.contains("Set `rung` only when a task needs more than its tier's start rung"));
+        assert!(
+            prompt.contains("Set `rung` only when a task needs more than its tier's start rung")
+        );
         // Must NOT contain hardcoded model names that break non-Claude providers.
         assert!(!prompt.contains("claude-haiku-4-5"));
         assert!(!prompt.contains("claude-sonnet-4-6"));

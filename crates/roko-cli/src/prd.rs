@@ -4035,7 +4035,13 @@ role = "implementer"
 tier = "mechanical"
 depends_on = ["T1"]
 "#;
-        let result = validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None, &LadderConfig::default());
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
     }
 
@@ -4054,8 +4060,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None, &LadderConfig::default()).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(
             parsed["meta"]["plan"].as_str().unwrap(),
@@ -4079,8 +4091,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "correct-slug", &empty_models(), None, &LadderConfig::default()).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "correct-slug",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(parsed["meta"]["plan"].as_str().unwrap(), "correct-slug");
     }
@@ -4104,7 +4122,14 @@ tier = "focused"
 pha = "test"
 command = "cargo test"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default()).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let verify = parsed["task"][0]["verify"][0].as_table().unwrap();
         assert!(
@@ -4131,9 +4156,14 @@ tier = "focused"
 model_hint = "gpt-nonexistent"
 "#;
         let models = sample_models();
-        let result =
-            validate_and_fix_generated_plan(toml, "test", &models, Some("claude-sonnet-4-6"), &LadderConfig::default())
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &models,
+            Some("claude-sonnet-4-6"),
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
@@ -4158,7 +4188,9 @@ tier = "focused"
 model_hint = "haiku"
 "#;
         let models = sample_models();
-        let result = validate_and_fix_generated_plan(toml, "test", &models, None, &LadderConfig::default()).unwrap();
+        let result =
+            validate_and_fix_generated_plan(toml, "test", &models, None, &LadderConfig::default())
+                .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
@@ -4235,7 +4267,13 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default());
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[meta] section is missing"), "msg: {msg}");
@@ -4249,7 +4287,13 @@ plan = "test"
 total = 0
 status = "pending"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default());
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[[task]] array is missing"), "msg: {msg}");
@@ -4266,7 +4310,13 @@ status = "pending"
 [[task]]
 id = "T1"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default());
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("missing required field 'title'"), "msg: {msg}");
@@ -4281,7 +4331,13 @@ id = "T1"
     #[test]
     fn validate_rejects_invalid_toml_syntax() {
         let toml = "this is not valid toml {{{}}}";
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default());
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("invalid TOML"), "msg: {msg}");
@@ -4302,7 +4358,14 @@ stat = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &LadderConfig::default()).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let task = parsed["task"][0].as_table().unwrap();
         assert!(
@@ -4332,9 +4395,14 @@ files = ["crates/<relevant-lib>/src/lib.rs"]
 phase = "build"
 command = "cargo check -p <crate>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "btc-funding-alert-cli", &empty_models(), None, &LadderConfig::default())
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "btc-funding-alert-cli",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         assert!(
             !result.contains("<relevant-lib>"),
             "placeholder <relevant-lib> should be replaced"
@@ -4375,8 +4443,14 @@ command = "cargo check -p <binary-crate>"
 phase = "test"
 command = "cargo test -p <crate> -- <test_name>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-cool-tool", &empty_models(), None, &LadderConfig::default()).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-cool-tool",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         // <binary-crate> and <crate> replaced with slug.
         assert!(
             !result.contains("<binary-crate>"),

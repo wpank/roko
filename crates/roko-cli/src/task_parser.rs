@@ -2137,10 +2137,12 @@ command = "cargo check -p roko-cli"
         assert_eq!(serde_json::to_value(&reread).unwrap(), parsed_json);
 
         // A task without hints parses as before and serializes no hint keys.
-        let plain = TasksFile::parse_str("[meta]\nplan = \"hints\"\n\n[[task]]\nid = \"T02\"\ntitle = \"Plain\"\n")
-            .expect("parse a plain task")
-            .tasks
-            .remove(0);
+        let plain = TasksFile::parse_str(
+            "[meta]\nplan = \"hints\"\n\n[[task]]\nid = \"T02\"\ntitle = \"Plain\"\n",
+        )
+        .expect("parse a plain task")
+        .tasks
+        .remove(0);
         assert_eq!(plain.hints, TaskHints::default());
         assert!(plain.context.is_none());
         assert_eq!(

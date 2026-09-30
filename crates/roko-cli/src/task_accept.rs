@@ -929,7 +929,14 @@ command = "true"
     fn pinned_sha256_reads_back_the_hash_a_step_checks() {
         let fx = fixture();
         let mut task = demo_task();
-        pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task).expect("pin");
+        pin_task(
+            &fx.store,
+            &fx.workdir,
+            "accept-demo",
+            &fx.plan_dir,
+            &mut task,
+        )
+        .expect("pin");
         assert_eq!(
             pinned_sha256(&task.verify[0].command),
             Some(sha256_hex(PINNED_TEST.as_bytes()).as_str())

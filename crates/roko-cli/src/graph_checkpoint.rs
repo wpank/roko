@@ -517,9 +517,10 @@ fn record_pinned_hashes(task: &mut serde_json::Value, hashes: &[String]) -> Opti
         return None;
     }
     for (entry, hash) in entries.iter_mut().zip(hashes) {
-        entry
-            .as_object_mut()?
-            .insert("sha256".to_string(), serde_json::Value::String(hash.clone()));
+        entry.as_object_mut()?.insert(
+            "sha256".to_string(),
+            serde_json::Value::String(hash.clone()),
+        );
     }
     Some(())
 }
@@ -2289,7 +2290,10 @@ depends_on = ["T1"]
         let elsewhere = pinned_accept_plan(dir.path(), &dir.path().join("store-b"), test);
         let elsewhere_graph = plan_graph(&elsewhere, &ResumeOptions::default());
         let elsewhere = GraphIdentity::of(dir.path(), &elsewhere_graph).expect("identity");
-        assert_eq!(elsewhere.current, identity.current, "the store's place is not identity");
+        assert_eq!(
+            elsewhere.current, identity.current,
+            "the store's place is not identity"
+        );
         assert_ne!(elsewhere.legacy, identity.legacy);
 
         let changed = pinned_accept_plan(
@@ -2299,7 +2303,10 @@ depends_on = ["T1"]
         );
         let changed_graph = plan_graph(&changed, &ResumeOptions::default());
         let changed = GraphIdentity::of(dir.path(), &changed_graph).expect("identity");
-        assert_ne!(changed.current, identity.current, "the pinned hash is identity");
+        assert_ne!(
+            changed.current, identity.current,
+            "the pinned hash is identity"
+        );
 
         std::fs::write(
             plan.dir.join("tasks.toml"),
@@ -2307,7 +2314,10 @@ depends_on = ["T1"]
         )
         .expect("edit tasks.toml");
         let edited = GraphIdentity::of(dir.path(), &graph).expect("identity");
-        assert_eq!(edited.current, edited.legacy, "an edited tasks.toml mismatches");
+        assert_eq!(
+            edited.current, edited.legacy,
+            "an edited tasks.toml mismatches"
+        );
     }
 
     #[test]

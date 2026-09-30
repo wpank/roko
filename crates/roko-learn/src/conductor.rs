@@ -10,6 +10,7 @@
 //!   avoid obviously wasted retries
 
 use crate::model_router::ThompsonArm;
+use roko_core::task::TaskTier;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
@@ -420,13 +421,16 @@ fn model_tier_bucket(label: &str) -> ModelTierBucket {
     }
 }
 
+/// The bucket of a task complexity label. The label is read by
+/// [`TaskTier::parse`], so it names the same tier here as in dispatch
+/// (bug-a6b433: `complex` is integrative); anything else is `Other`.
 fn complexity_bucket(label: &str) -> ComplexityBucket {
-    match label.trim().to_ascii_lowercase().as_str() {
-        "mechanical" | "fast" | "low" => ComplexityBucket::Mechanical,
-        "focused" | "standard" | "medium" => ComplexityBucket::Focused,
-        "integrative" => ComplexityBucket::Integrative,
-        "architectural" | "complex" | "high" => ComplexityBucket::Architectural,
-        _ => ComplexityBucket::Other,
+    match TaskTier::parse(label) {
+        Some(TaskTier::Mechanical) => ComplexityBucket::Mechanical,
+        Some(TaskTier::Focused) => ComplexityBucket::Focused,
+        Some(TaskTier::Integrative) => ComplexityBucket::Integrative,
+        Some(TaskTier::Architectural) => ComplexityBucket::Architectural,
+        None => ComplexityBucket::Other,
     }
 }
 
@@ -594,5 +598,31 @@ mod tests {
             abort_count >= 24,
             "expected abort to dominate Thompson samples, got {abort_count}/32"
         );
+    }
+
+    /// bug-a6b433: every label the shared tier parser accepts lands in the
+    /// bucket of the tier it names, so a `complex` task is integrative here
+    /// as it is in dispatch.
+    #[test]
+    fn complexity_bucket_agrees_with_task_tier() {
+        for (label, tier) in TaskTier::LABELS {
+            let expected = match tier {
+                TaskTier::Mechanical => ComplexityBucket::Mechanical,
+                TaskTier::Focused => ComplexityBucket::Focused,
+                TaskTier::Integrative => ComplexityBucket::Integrative,
+                TaskTier::Architectural => ComplexityBucket::Architectural,
+            };
+            assert_eq!(complexity_bucket(label), expected, "{label}");
+            let padded = format!(" {} ", label.to_ascii_uppercase());
+            assert_eq!(complexity_bucket(&padded), expected, "{padded:?}");
+        }
+        assert_eq!(complexity_bucket("complex"), ComplexityBucket::Integrative);
+        for unknown in ["", "unknown", "high", "t4"] {
+            assert_eq!(
+                complexity_bucket(unknown),
+                ComplexityBucket::Other,
+                "{unknown}"
+            );
+        }
     }
 }

@@ -155,7 +155,33 @@ impl TaskTier {
         Self::Architectural,
     ];
 
-    /// Read a tier label or alias, ignoring case and surrounding whitespace.
+    /// Every label [`Self::parse`] accepts, in lowercase, with its tier: the
+    /// one alias table.
+    pub const LABELS: [(&'static str, Self); 20] = [
+        ("mechanical", Self::Mechanical),
+        ("trivial", Self::Mechanical),
+        ("fast", Self::Mechanical),
+        ("quick", Self::Mechanical),
+        ("t0", Self::Mechanical),
+        ("0", Self::Mechanical),
+        ("focused", Self::Focused),
+        ("standard", Self::Focused),
+        ("t1", Self::Focused),
+        ("1", Self::Focused),
+        ("integrative", Self::Integrative),
+        ("complex", Self::Integrative),
+        ("t2", Self::Integrative),
+        ("2", Self::Integrative),
+        ("architectural", Self::Architectural),
+        ("premium", Self::Architectural),
+        ("expert", Self::Architectural),
+        ("deep", Self::Architectural),
+        ("t3", Self::Architectural),
+        ("3", Self::Architectural),
+    ];
+
+    /// Read a tier label or alias ([`Self::LABELS`]), ignoring case and
+    /// surrounding whitespace.
     ///
     /// | Tier | Accepted |
     /// |---|---|
@@ -167,15 +193,11 @@ impl TaskTier {
     /// Anything else, including an empty string, is `None`.
     #[must_use]
     pub fn parse(tier: &str) -> Option<Self> {
-        match tier.trim().to_ascii_lowercase().as_str() {
-            "mechanical" | "trivial" | "fast" | "quick" | "t0" | "0" => Some(Self::Mechanical),
-            "focused" | "standard" | "t1" | "1" => Some(Self::Focused),
-            "integrative" | "complex" | "t2" | "2" => Some(Self::Integrative),
-            "architectural" | "premium" | "expert" | "deep" | "t3" | "3" => {
-                Some(Self::Architectural)
-            }
-            _ => None,
-        }
+        let tier = tier.trim().to_ascii_lowercase();
+        Self::LABELS
+            .iter()
+            .find(|(label, _)| *label == tier)
+            .map(|&(_, parsed)| parsed)
     }
 
     /// Canonical `tasks.toml` label.
@@ -846,6 +868,11 @@ mod tests {
             assert_eq!(tier.to_string(), tier.label());
         }
         assert_eq!(table.map(|(tier, _)| tier), TaskTier::ALL);
+        let listed: usize = table.iter().map(|(_, aliases)| aliases.len()).sum();
+        assert_eq!(TaskTier::LABELS.len(), listed, "LABELS holds exactly these");
+        for (label, tier) in TaskTier::LABELS {
+            assert_eq!(TaskTier::parse(label), Some(tier), "{label}");
+        }
 
         for unknown in ["mechancial", "", "  ", "unknown", "t4", "4", "fast-ish"] {
             assert_eq!(TaskTier::parse(unknown), None, "{unknown:?}");

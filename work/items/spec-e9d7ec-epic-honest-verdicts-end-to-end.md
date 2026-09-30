@@ -73,7 +73,7 @@ This is the implementation plan.
 - [x] bug-7eb27e: Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed
 - [x] gap-29a84b: A plan can succeed while some of its tasks never ran a verify step
 - [ ] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface
-- [ ] bug-5b43a9: A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt
+- [x] bug-5b43a9: A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt
 - [ ] gap-3506f1: [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do
 - [ ] bug-b4c565: The T0 reflex shortcut can pass a task without running the workspace rungs
 - [ ] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run

@@ -2,14 +2,16 @@
 id = "bug-453481"
 kind = "bug"
 title = "Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::git_merge", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
@@ -19,6 +21,11 @@ links = { depends_on = ["bug-a3760a"], blocks = [], related = ["spec-f830c4", "g
 
 [[verify]]
 command = "grep -rqw 'fn merge_takes_the_verified_commit_not_the_branch_head' crates/roko-cli/src/ && cargo test -p roko-cli --lib merge_takes_the_verified_commit_not_the_branch_head"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. Delivery merges the verified commit_oid, never the branch head; a bad or rewritten id merges nothing. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -54,3 +61,8 @@ On `work/bug-a3760a` (`809ae920d`), `commit_oid` is used in only two places: in 
 ## Notes
 
 - Depends on bug-a3760a, which rewrote `git_merge`. It is not on BASE yet.
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-453481` at `55a97258a`; cargo verification deferred to the batch check.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-execution --no-deps -D warnings` clean; nightly rustfmt clean. `cargo test -p roko-cli --lib graph_execution::delivery`: 26 passed (27 with bug-aaa924).
+  - `GitDeliveryBackend::git_merge` merges `request.commit_oid`, never the branch head. The id must be a commit id (hex; a ref name is refused), must resolve, and must be on the branch (`merge-base --is-ancestor <oid> <head>`); otherwise nothing is merged and no ref moves. When the branch moved past it, the summary names the head and says its later commits wait for a verified delivery of their own. The merge commit's message names the commit.
+  - The existing real-git delivery tests now deliver the plan head's id (`git_request`); they passed a fake `abc123`.
+  - Tests: `merge_takes_the_verified_commit_not_the_branch_head`, `merge_fails_closed_without_the_verified_commit_on_the_branch`.

@@ -74,7 +74,8 @@ pub struct DeliveryPublicationOutcome {
 /// This lets tests inject fakes without depending on git or GitHub.
 #[async_trait::async_trait]
 pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
-    /// Apply the merge: merge the branch into the target branch.
+    /// Apply the merge: merge the request's verified commit (`commit_oid`)
+    /// into the target branch.
     async fn merge(&self, request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome;
 
     /// Run the post-merge regression gate against `merge_commit`.
@@ -116,17 +117,27 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 pub struct GitDeliveryBackend {
     workdir: PathBuf,
     regression_command: Vec<String>,
+    /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
+    /// temporary checkout, so the build output outlives it and the next
+    /// delivery starts warm.
+    regression_target_dir: PathBuf,
 }
 
 impl GitDeliveryBackend {
     /// Create a git-backed delivery backend for the repository at `workdir`.
+    ///
+    /// The regression builds into the target dir gates use: the process's
+    /// `CARGO_TARGET_DIR` when set, else `workdir`'s own `target/`.
     #[must_use]
     pub fn new(workdir: PathBuf) -> Self {
+        let regression_target_dir =
+            shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
         Self {
             workdir,
             regression_command: ["cargo", "check", "--workspace", "--quiet"]
                 .map(String::from)
                 .into(),
+            regression_target_dir,
         }
     }
 
@@ -139,7 +150,22 @@ impl GitDeliveryBackend {
         self
     }
 
-    /// Merge the request's branch into its target with git plumbing only.
+    /// Replace the regression's target dir. A relative dir is taken from
+    /// `workdir`, never from the temporary checkout.
+    #[must_use]
+    pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
+        self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
+        self
+    }
+
+    /// Merge the request's verified commit into its target with git plumbing
+    /// only.
+    ///
+    /// The merged commit is `request.commit_oid`, the one the plan's gates
+    /// verified, never whatever the branch holds now: commits added to the
+    /// branch after verification wait for a delivery of their own. The
+    /// verified commit must be on the branch; a branch rewritten since
+    /// verification fails closed.
     ///
     /// `Err` carries the summary of a merge that did not happen. Apart from
     /// the parked result for a checked-out target, no ref has changed.
@@ -153,19 +179,30 @@ impl GitDeliveryBackend {
         let old = resolve_commit(workdir, &target_ref)
             .await
             .map_err(|e| format!("target branch '{target}' does not resolve to a commit: {e}"))?;
-        let theirs = resolve_commit(workdir, branch)
+        let head = resolve_commit(workdir, branch)
             .await
             .map_err(|e| format!("branch '{branch}' does not resolve to a commit: {e}"))?;
+        let theirs = verified_commit(workdir, request, &head).await?;
+        let later = if theirs == head {
+            String::new()
+        } else {
+            format!(
+                "; branch '{branch}' has moved on to {head}, and its later commits wait for a \
+                 verified delivery of their own"
+            )
+        };
 
         if is_ancestor(workdir, &theirs, &old).await? {
             return Ok(DeliveryMergeOutcome {
                 merged: true,
                 merge_commit: Some(old),
-                summary: format!("'{target}' already contains branch '{branch}'"),
+                summary: format!(
+                    "'{target}' already contains {theirs} of branch '{branch}'{later}"
+                ),
             });
         }
         let merge = if is_ancestor(workdir, &old, &theirs).await? {
-            theirs
+            theirs.clone()
         } else {
             let tree = match git_merge_tree(workdir, &old, &theirs).await {
                 Ok(MergeTree::Clean { tree }) => tree,
@@ -177,7 +214,7 @@ impl GitDeliveryBackend {
                 }
                 Err(e) => return Err(format!("git merge-tree failed (needs git 2.38+): {e}")),
             };
-            let message = format!("Merge branch '{branch}' into {target}");
+            let message = format!("Merge {theirs} of branch '{branch}' into {target}");
             git_output(
                 workdir,
                 &[
@@ -211,7 +248,7 @@ impl GitDeliveryBackend {
         Ok(DeliveryMergeOutcome {
             merged: true,
             merge_commit: Some(merge),
-            summary: format!("merged branch '{branch}' into '{target}'"),
+            summary: format!("merged {theirs} of branch '{branch}' into '{target}'{later}"),
         })
     }
 
@@ -242,9 +279,11 @@ impl GitDeliveryBackend {
         }
         scratch.cleanup_required = true;
 
+        // Only the build output is shared: the sources are the checkout's.
         let output = tokio::process::Command::new(program)
             .args(args)
             .current_dir(&scratch.checkout)
+            .env("CARGO_TARGET_DIR", &self.regression_target_dir)
             .kill_on_drop(true)
             .output()
             .await
@@ -270,6 +309,43 @@ async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
     )
     .await
     .map(|oid| oid.trim().to_string())
+}
+
+/// The target dir a build of `workdir` shares with gates and earlier
+/// deliveries: `configured` (a `CARGO_TARGET_DIR` value) when set, relative
+/// to `workdir` if it is relative, else `workdir`'s own `target/`.
+fn shared_target_dir(workdir: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
+    match configured.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        Some(dir) => workdir.join(dir),
+        None => workdir.join("target"),
+    }
+}
+
+/// The commit `request` verified, resolved in `workdir`: `request.commit_oid`
+/// must name a commit, by its id, that is on the request's branch, whose head
+/// is `head`.
+async fn verified_commit(
+    workdir: &Path,
+    request: &CompletionDeliveryRequest,
+    head: &str,
+) -> Result<String, String> {
+    let (oid, branch) = (&request.commit_oid, &request.branch);
+    if oid.is_empty() || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "the verified commit '{oid}' is not a commit id, so nothing was merged"
+        ));
+    }
+    let verified = resolve_commit(workdir, oid).await.map_err(|e| {
+        format!("the verified commit '{oid}' does not resolve, so nothing was merged: {e}")
+    })?;
+    if !is_ancestor(workdir, &verified, head).await? {
+        return Err(format!(
+            "the verified commit {verified} is not on branch '{branch}' (its head is {head}): \
+             the branch was rewritten after verification, so nothing was merged"
+        ));
+    }
+    Ok(verified)
 }
 
 /// Whether `ancestor` is `descendant` or one of its ancestors.
@@ -1198,6 +1274,15 @@ mod tests {
         git(repo, &["commit", "--quiet", "-m", message]);
     }
 
+    /// A request delivering `roko/plan-a` of `repo` as verified at its
+    /// current head.
+    fn git_request(id: &str, repo: &Path) -> CompletionDeliveryRequest {
+        CompletionDeliveryRequest {
+            commit_oid: git(repo, &["rev-parse", "roko/plan-a"]),
+            ..test_request(id)
+        }
+    }
+
     /// A repository where `main` and `roko/plan-a` each added their own file
     /// on top of `shared.txt`, so they merge cleanly. `main` is checked out.
     fn diverged_repo() -> tempfile::TempDir {
@@ -1231,7 +1316,7 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-merge")).await;
+        let outcome = backend.merge(&git_request("d-git-merge", path)).await;
 
         assert!(outcome.merged, "{}", outcome.summary);
         assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
@@ -1260,7 +1345,7 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-checked-out")).await;
+        let outcome = backend.merge(&git_request("d-git-checked-out", path)).await;
 
         let summary = &outcome.summary;
         assert!(!outcome.merged, "{summary}");
@@ -1297,7 +1382,7 @@ mod tests {
         let head = git(path, &["rev-parse", "HEAD"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-conflict")).await;
+        let outcome = backend.merge(&git_request("d-git-conflict", path)).await;
 
         let summary = &outcome.summary;
         assert!(!outcome.merged, "{summary}");
@@ -1319,14 +1404,14 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
         let backend = GitDeliveryBackend::new(path.to_path_buf());
 
-        let outcome = backend.merge(&test_request("d-git-ff")).await;
+        let outcome = backend.merge(&git_request("d-git-ff", path)).await;
 
         assert!(outcome.merged, "{}", outcome.summary);
         assert_eq!(outcome.merge_commit.as_deref(), Some(plan_head.as_str()));
         assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
 
         // Delivering the branch again finds nothing left to merge.
-        let again = backend.merge(&test_request("d-git-ff-again")).await;
+        let again = backend.merge(&git_request("d-git-ff-again", path)).await;
 
         assert!(again.merged, "{}", again.summary);
         assert_eq!(again.merge_commit.as_deref(), Some(plan_head.as_str()));
@@ -1354,10 +1439,11 @@ mod tests {
         ]);
         let service = CliCompletionDeliveryService::new(Arc::new(backend));
 
-        let receipt = service
-            .deliver(test_request_no_publish("d-git-regression"))
-            .await
-            .unwrap();
+        let request = CompletionDeliveryRequest {
+            publish: false,
+            ..git_request("d-git-regression", path)
+        };
+        let receipt = service.deliver(request).await.unwrap();
 
         assert_eq!(
             receipt.state,
@@ -1376,5 +1462,135 @@ mod tests {
         assert!(!ran_in.exists(), "the regression checkout was not removed");
         assert_eq!(git(path, &["worktree", "list", "--porcelain"]), worktrees);
         assert_eq!(git(path, &["status", "--porcelain"]), status);
+    }
+
+    /// bug-453481: delivery merges the commit the plan's gates verified.
+    /// A commit added to the branch afterwards stays off the target, and the
+    /// summary says it waits for a delivery of its own.
+    #[tokio::test]
+    async fn merge_takes_the_verified_commit_not_the_branch_head() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        let request = git_request("d-git-verified", path);
+        let verified = request.commit_oid.clone();
+        // After verification, a late write lands on the plan branch.
+        git(path, &["checkout", "--quiet", "roko/plan-a"]);
+        std::fs::write(path.join("late.txt"), "not verified\n").unwrap();
+        commit_all(path, "late, unverified commit");
+        let late = git(path, &["rev-parse", "roko/plan-a"]);
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let main_before = git(path, &["rev-parse", "main"]);
+
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let outcome = backend.merge(&request).await;
+
+        let summary = &outcome.summary;
+        assert!(outcome.merged, "{summary}");
+        let main_after = git(path, &["rev-parse", "main"]);
+        assert_eq!(outcome.merge_commit.as_deref(), Some(main_after.as_str()));
+        assert_eq!(git(path, &["rev-parse", "main^1"]), main_before);
+        assert_eq!(git(path, &["rev-parse", "main^2"]), verified);
+        let late_reached = std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", &late, "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        assert!(
+            !late_reached.success(),
+            "the unverified commit reached main"
+        );
+        assert!(summary.contains(&late), "{summary}");
+        assert_eq!(git(path, &["rev-parse", "roko/plan-a"]), late);
+    }
+
+    /// bug-453481: without its verified commit on the branch, delivery merges
+    /// nothing and moves no ref: the commit id is missing, names no commit,
+    /// or is not on the branch any more.
+    #[tokio::test]
+    async fn merge_fails_closed_without_the_verified_commit_on_the_branch() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let refs = git(path, &["for-each-ref"]);
+        let off_branch = git(path, &["rev-parse", "main"]);
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+
+        for (commit_oid, reason) in [
+            ("", "not a commit id"),
+            ("roko/plan-a", "not a commit id"),
+            (
+                "0123456789abcdef0123456789abcdef01234567",
+                "does not resolve",
+            ),
+            (off_branch.as_str(), "not on branch"),
+        ] {
+            let request = CompletionDeliveryRequest {
+                commit_oid: commit_oid.to_string(),
+                ..test_request("d-git-unverified")
+            };
+            let outcome = backend.merge(&request).await;
+            let summary = &outcome.summary;
+            assert!(!outcome.merged, "{commit_oid}: {summary}");
+            assert!(outcome.merge_commit.is_none(), "{commit_oid}");
+            assert!(summary.contains(reason), "{commit_oid}: {summary}");
+            assert_eq!(git(path, &["for-each-ref"]), refs, "{commit_oid}");
+        }
+    }
+
+    /// bug-aaa924: the regression builds into a target dir that is outside
+    /// its temporary checkout and outlives it, so later deliveries start
+    /// warm; by default the one gates use.
+    #[tokio::test]
+    async fn regression_checkout_reuses_a_warm_target_dir() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let (seen, ran_in) = (record.path().join("seen"), record.path().join("ran-in"));
+        let script = format!(
+            "printf '%s\\n' \"$CARGO_TARGET_DIR\" >> '{}' && pwd -P > '{}'",
+            seen.display(),
+            ran_in.display()
+        );
+        let shared = record.path().join("shared-target");
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_command(vec!["sh".into(), "-c".into(), script])
+            .with_regression_target_dir(shared.clone());
+        let merge = git(path, &["rev-parse", "roko/plan-a"]);
+        let request = git_request("d-git-warm", path);
+
+        for _ in 0..2 {
+            let outcome = backend.run_regression(&request, &merge).await;
+            assert!(outcome.passed, "{}", outcome.summary);
+        }
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let expected = format!("{}\n", shared.display());
+        assert_eq!(
+            seen,
+            expected.repeat(2),
+            "each delivery shares one target dir"
+        );
+        let ran_in = PathBuf::from(std::fs::read_to_string(&ran_in).unwrap().trim());
+        assert!(
+            !shared.starts_with(&ran_in),
+            "the target dir is inside the checkout"
+        );
+
+        // By default: the configured CARGO_TARGET_DIR, else the checkout's own.
+        let workdir = Path::new("/repo");
+        assert_eq!(shared_target_dir(workdir, None), workdir.join("target"));
+        assert_eq!(
+            shared_target_dir(workdir, Some("".into())),
+            workdir.join("target")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("/t".into())),
+            PathBuf::from("/t")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("out".into())),
+            workdir.join("out")
+        );
     }
 }

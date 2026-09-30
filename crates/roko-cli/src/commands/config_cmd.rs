@@ -2805,8 +2805,8 @@ pub(crate) async fn run_claude_cli_provider_test(
     }
 
     let started = Instant::now();
-    let output = tokio::process::Command::new(cmd)
-        .arg("--version")
+    let scrub = roko_core::child_env::CredentialScrub::for_kind(provider.kind);
+    let output = tokio::process::Command::from(roko_cli::auth_detect::version_probe(cmd, &scrub))
         .output()
         .await
         .with_context(|| format!("spawn '{cmd} --version'"))?;

@@ -8,12 +8,14 @@
 //! broken integration branch can be detected and surfaced as a merge
 //! failure instead of a silent success.
 //!
-//! The actual git plumbing (`git merge --no-ff`, conflict resolution,
-//! batch branch handling) still lives outside this module. `PlanMerger`
-//! reuses the existing `MergeQueue` for queue / lock semantics and adds a
-//! pluggable post-merge regression gate so the runner can drive a real
-//! check (for example a `cargo check --workspace`) against the merged
-//! tree before flipping the executor to `MergeSucceeded`.
+//! `PlanMerger` reuses the existing `MergeQueue` for queue / lock semantics
+//! and runs an injected merge backend and post-merge regression gate. It has
+//! no built-in ones: a merge without both fails closed. Roko merges plan
+//! results with `graph_execution::delivery::GitDeliveryBackend`, which never
+//! stages, commits or merges in a checkout (git plumbing only).
+//!
+//! The git helpers at the end of this module (`git_command`, `git_output`,
+//! `git_merge_tree`) are shared with delivery and worktree acceptance.
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -132,18 +134,17 @@ pub struct PlanMergerConfig {
     pub workdir: PathBuf,
     /// Wall-clock timeout for the regression gate.
     pub regression_timeout: Duration,
-    /// Optional merge backend. When `None`, the merger uses
-    /// [`PlanMerger::default_merge_backend`].
+    /// Merge backend. There is no built-in one: without it, a merge fails
+    /// closed.
     pub merge_backend: Option<Arc<dyn MergeBackend>>,
-    /// Optional post-merge regression gate. When `None`, the merger uses
-    /// [`PlanMerger::default_regression_gate`] (a `cargo check` runner).
+    /// Post-merge regression gate. There is no built-in one: without it, a
+    /// merge fails closed.
     pub regression_gate: Option<Arc<dyn RegressionGate>>,
 }
 
 impl PlanMergerConfig {
-    /// Construct a config rooted at `workdir`. The regression gate is left
-    /// unset so the caller can install a custom gate (or fall back to the
-    /// built-in `cargo check` runner).
+    /// Construct a config rooted at `workdir`, with no merge backend and no
+    /// regression gate: install both before preparing a merge.
     #[must_use]
     pub fn new(workdir: PathBuf, regression_timeout: Duration) -> Self {
         Self {
@@ -237,177 +238,6 @@ pub trait MergeBackend: Send + Sync + std::fmt::Debug {
     -> MergeBackendOutcome;
 }
 
-/// Git-backed merge backend.
-///
-/// Runner v2 requires branch/worktree mode: `request.branch_name` must exist
-/// and is merged with `git merge --no-ff --no-edit` before the post-merge
-/// regression gate can complete the executor merge phase.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct GitMergeBackend;
-
-#[async_trait::async_trait]
-impl MergeBackend for GitMergeBackend {
-    async fn merge(
-        &self,
-        request: &MergeRequest,
-        config: &PlanMergerConfig,
-    ) -> MergeBackendOutcome {
-        use std::time::Instant;
-
-        let started = Instant::now();
-        let branch_exists = git_success(
-            &config.workdir,
-            &["rev-parse", "--verify", "--quiet", &request.branch_name],
-        )
-        .await;
-        if !branch_exists {
-            let duration_ms = started.elapsed().as_millis() as u64;
-            return MergeBackendOutcome::fail(
-                format!(
-                    "merge branch `{}` is absent; isolated runner execution requires a plan worktree branch",
-                    request.branch_name
-                ),
-                RunnerFailureKind::Structural,
-                duration_ms,
-            );
-        }
-
-        // G06: Pre-merge feasibility check via `git merge-tree --write-tree` (git 2.38+).
-        // This predicts conflicts without side effects — no checkout, no ref updates,
-        // no working tree changes. When conflicts are predicted, we fail closed and
-        // return the conflicted paths so the caller can trigger a conflict-aware replan
-        // (G04) without ever touching the working tree.
-        match git_merge_tree(&config.workdir, "HEAD", &request.branch_name).await {
-            Ok(MergeTree::Conflicted { paths }) => {
-                let duration_ms = started.elapsed().as_millis() as u64;
-                tracing::info!(
-                    branch = %request.branch_name,
-                    conflicts = ?paths,
-                    "merge-tree predicts conflicts; skipping real merge (G06)"
-                );
-                return MergeBackendOutcome::fail_with_conflicts(
-                    format!(
-                        "merge-tree predicts conflicts for `{}`; conflicted paths: {}",
-                        request.branch_name,
-                        paths.join(",")
-                    ),
-                    RunnerFailureKind::Structural,
-                    duration_ms,
-                    paths,
-                );
-            }
-            Ok(MergeTree::Clean { .. }) => {
-                tracing::debug!(
-                    "pre-merge check: no conflicts predicted for branch `{}`",
-                    request.branch_name,
-                );
-            }
-            Err(e) => {
-                // git merge-tree unavailable (git < 2.38) or failed — log and
-                // continue; the actual merge will catch any real conflicts.
-                tracing::debug!(
-                    "pre-merge feasibility check skipped (git merge-tree not available or failed): {e}",
-                );
-            }
-        }
-
-        // G02: Auto-commit dirty state before merge to prevent "would be overwritten" errors.
-        // Mori did this; without it, uncommitted changes in the target worktree cause
-        // git merge to fail with "Your local changes would be overwritten by merge."
-        let status = tokio::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&config.workdir)
-            .output()
-            .await;
-        if let Ok(out) = &status {
-            if !out.stdout.is_empty() {
-                let _ = tokio::process::Command::new("git")
-                    .args(["add", "-A"])
-                    .current_dir(&config.workdir)
-                    .output()
-                    .await;
-                let _ = tokio::process::Command::new("git")
-                    .args([
-                        "commit",
-                        "--allow-empty",
-                        "-m",
-                        "chore: auto-commit before merge",
-                    ])
-                    .current_dir(&config.workdir)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .output()
-                    .await;
-            }
-        }
-
-        // G05: try fast-forward first to avoid unnecessary merge commits.
-        // Fall back to --no-ff only when the history has diverged.
-        let ff_result = tokio::process::Command::new("git")
-            .args(["merge", "--ff-only", &request.branch_name])
-            .current_dir(&config.workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await;
-        let output = match &ff_result {
-            Ok(o) if o.status.success() => ff_result,
-            _ => {
-                tokio::process::Command::new("git")
-                    .args(["merge", "--no-ff", "--no-edit", &request.branch_name])
-                    .current_dir(&config.workdir)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .output()
-                    .await
-            }
-        };
-        let duration_ms = started.elapsed().as_millis() as u64;
-        match output {
-            Ok(output) if output.status.success() => MergeBackendOutcome::pass(
-                format!("merged branch `{}` into working tree", request.branch_name),
-                duration_ms,
-            ),
-            Ok(output) => {
-                let conflicted_paths = git_conflicted_paths(&config.workdir).await;
-                let _ = tokio::process::Command::new("git")
-                    .args(["merge", "--abort"])
-                    .current_dir(&config.workdir)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .output()
-                    .await;
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let details = if stderr.trim().is_empty() {
-                    stdout.trim().to_string()
-                } else {
-                    stderr.trim().to_string()
-                };
-                let conflict_summary = if conflicted_paths.is_empty() {
-                    String::new()
-                } else {
-                    format!("; conflicted paths: {}", conflicted_paths.join(","))
-                };
-                // G04: carry conflicted paths through to enable conflict-aware replan.
-                MergeBackendOutcome::fail_with_conflicts(
-                    format!(
-                        "git merge `{}` failed: {details}{conflict_summary}",
-                        request.branch_name
-                    ),
-                    RunnerFailureKind::Structural,
-                    duration_ms,
-                    conflicted_paths,
-                )
-            }
-            Err(err) => MergeBackendOutcome::fail(
-                format!(
-                    "failed to spawn git merge for `{}`: {err}",
-                    request.branch_name
-                ),
-                RunnerFailureKind::Resource,
-                duration_ms,
-            ),
-        }
-    }
-}
-
 // ─── Regression gate ────────────────────────────────────────────────────
 
 /// Outcome of a post-merge regression gate.
@@ -452,68 +282,6 @@ pub trait RegressionGate: Send + Sync + std::fmt::Debug {
     async fn run(&self, request: &MergeRequest, config: &PlanMergerConfig) -> RegressionOutcome;
 }
 
-/// Built-in cargo-check regression gate. Spawns `cargo check --workspace`
-/// in the merger's workdir and converts the exit status into a verdict.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CargoCheckRegressionGate;
-
-#[async_trait::async_trait]
-impl RegressionGate for CargoCheckRegressionGate {
-    async fn run(&self, request: &MergeRequest, config: &PlanMergerConfig) -> RegressionOutcome {
-        use std::time::Instant;
-        let start = Instant::now();
-        let workdir = config.workdir.clone();
-        let plan_id = request.plan_id.clone();
-        let branch = request.branch_name.clone();
-        let timeout = config.regression_timeout;
-
-        let join = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("cargo")
-                .args(["check", "--workspace", "--quiet"])
-                .current_dir(&workdir)
-                .output()
-        });
-
-        let result = tokio::time::timeout(timeout, join).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-        match result {
-            Ok(Ok(Ok(output))) => {
-                if output.status.success() {
-                    RegressionOutcome::pass(
-                        format!("post-merge cargo check passed for {plan_id}@{branch}"),
-                        duration_ms,
-                    )
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let summary = format!(
-                        "post-merge cargo check failed for {plan_id}@{branch}: {}",
-                        stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
-                    );
-                    RegressionOutcome::fail(summary, RunnerFailureKind::Permanent, duration_ms)
-                }
-            }
-            Ok(Ok(Err(err))) => RegressionOutcome::fail(
-                format!("post-merge cargo check failed to spawn: {err}"),
-                RunnerFailureKind::Resource,
-                duration_ms,
-            ),
-            Ok(Err(join_err)) => RegressionOutcome::fail(
-                format!("post-merge cargo check task aborted: {join_err}"),
-                RunnerFailureKind::Resource,
-                duration_ms,
-            ),
-            Err(_) => RegressionOutcome::fail(
-                format!(
-                    "post-merge cargo check timed out after {}s",
-                    config.regression_timeout.as_secs()
-                ),
-                RunnerFailureKind::Transient,
-                duration_ms,
-            ),
-        }
-    }
-}
-
 /// A `git` command run in `workdir`. It drops the variables that point git
 /// at another repository, checkout or index, which git sets for hooks.
 pub(crate) fn git_command(workdir: &std::path::Path) -> tokio::process::Command {
@@ -525,15 +293,6 @@ pub(crate) fn git_command(workdir: &std::path::Path) -> tokio::process::Command 
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
     command
-}
-
-async fn git_success(workdir: &std::path::Path, args: &[&str]) -> bool {
-    git_command(workdir)
-        .args(args)
-        .output()
-        .await
-        .map(|output| output.status.success())
-        .unwrap_or(false)
 }
 
 pub(crate) async fn git_output(workdir: &std::path::Path, args: &[&str]) -> Result<String, String> {
@@ -552,17 +311,6 @@ pub(crate) async fn git_output(workdir: &std::path::Path, args: &[&str]) -> Resu
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-async fn git_conflicted_paths(workdir: &std::path::Path) -> Vec<String> {
-    git_output(workdir, &["diff", "--name-only", "--diff-filter=U"])
-        .await
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 /// Result of [`git_merge_tree`].
@@ -629,19 +377,6 @@ impl PlanMerger {
     #[must_use]
     pub fn new(queue: MergeQueue, config: PlanMergerConfig) -> Self {
         Self { queue, config }
-    }
-
-    /// Default merge backend.
-    #[must_use]
-    pub fn default_merge_backend() -> Arc<dyn MergeBackend> {
-        Arc::new(GitMergeBackend)
-    }
-
-    /// Default regression gate (cargo check workspace) used when none has
-    /// been explicitly installed.
-    #[must_use]
-    pub fn default_regression_gate() -> Arc<dyn RegressionGate> {
-        Arc::new(CargoCheckRegressionGate)
     }
 
     /// Submit a `MergeRequest` to the queue and (if the queue grants the
@@ -716,16 +451,11 @@ impl PlanMerger {
         };
         let request = launch.request;
         let config = self.config.clone();
-        let merge_backend = self
+        let backends = self
             .config
             .merge_backend
             .clone()
-            .unwrap_or_else(Self::default_merge_backend);
-        let gate = self
-            .config
-            .regression_gate
-            .clone()
-            .unwrap_or_else(Self::default_regression_gate);
+            .zip(self.config.regression_gate.clone());
 
         let (start, start_rx) = oneshot::channel();
         let handle = tokio::spawn(async move {
@@ -733,6 +463,15 @@ impl PlanMerger {
                 return;
             }
             let worker = AssertUnwindSafe(async {
+                // No built-in backend: a merger missing one fails closed.
+                let Some((merge_backend, gate)) = backends else {
+                    return RegressionOutcome::fail(
+                        "no merge backend or regression gate is configured, so nothing was \
+                         merged",
+                        RunnerFailureKind::Structural,
+                        0,
+                    );
+                };
                 let merge_outcome = merge_backend.merge(&request, &config).await;
                 if merge_outcome.passed {
                     let gate_outcome = gate.run(&request, &config).await;
@@ -835,8 +574,6 @@ impl PlanMerger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::process::Command;
     use std::sync::Mutex;
 
     #[derive(Debug, Default)]
@@ -910,115 +647,30 @@ mod tests {
         PlanMerger::new(MergeQueue::new(), cfg)
     }
 
-    fn git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
-            args,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn init_repo() -> tempfile::TempDir {
-        let repo = tempfile::tempdir().unwrap();
-        git(repo.path(), &["init"]);
-        git(repo.path(), &["checkout", "-b", "main"]);
-        git(repo.path(), &["config", "user.name", "roko"]);
-        git(repo.path(), &["config", "user.email", "roko@nunchi.dev"]);
-        repo
-    }
-
-    fn commit_all(repo: &Path, message: &str) {
-        git(repo, &["add", "-A"]);
-        git(repo, &["commit", "-m", message]);
-    }
-
+    /// bug-207f35: there is no built-in merge backend or regression gate
+    /// (the old ones staged, committed and merged in the checkout they were
+    /// given), so a merger missing one fails the merge closed.
     #[tokio::test]
-    async fn git_backend_merges_existing_branch() {
-        let repo = init_repo();
-        let file = repo.path().join("state.txt");
-        std::fs::write(&file, "base\n").unwrap();
-        commit_all(repo.path(), "base");
+    async fn merge_without_backends_fails_closed() {
+        let config = PlanMergerConfig::new(PathBuf::from("/tmp"), Duration::from_secs(5));
+        let merger = PlanMerger::new(MergeQueue::new(), config);
+        let (tx, mut rx) = mpsc::channel(4);
+        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["src/lib.rs".to_string()], 0);
+        let MergeDispatch::Reserved { launch } = merger.submit(request) else {
+            panic!("expected reservation");
+        };
 
-        git(repo.path(), &["checkout", "-b", "roko/plan-a"]);
-        std::fs::write(&file, "base\nplan-a\n").unwrap();
-        commit_all(repo.path(), "plan-a");
+        let producer = merger.prepare(launch, tx);
+        producer.start.send(()).unwrap();
+        let completion = rx.recv().await.expect("completion");
 
-        git(repo.path(), &["checkout", "main"]);
-        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["state.txt".into()], 0);
-        let config = PlanMergerConfig::new(repo.path().to_path_buf(), Duration::from_secs(5));
-
-        let outcome = GitMergeBackend.merge(&request, &config).await;
-
-        assert!(outcome.passed, "{}", outcome.summary);
-        assert!(std::fs::read_to_string(&file).unwrap().contains("plan-a"));
-    }
-
-    #[tokio::test]
-    async fn git_backend_reports_conflict_and_aborts() {
-        let repo = init_repo();
-        let file = repo.path().join("state.txt");
-        std::fs::write(&file, "base\n").unwrap();
-        commit_all(repo.path(), "base");
-
-        git(repo.path(), &["checkout", "-b", "roko/plan-a"]);
-        std::fs::write(&file, "branch change\n").unwrap();
-        commit_all(repo.path(), "branch");
-
-        git(repo.path(), &["checkout", "main"]);
-        std::fs::write(&file, "main change\n").unwrap();
-        commit_all(repo.path(), "main");
-
-        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["state.txt".into()], 0);
-        let config = PlanMergerConfig::new(repo.path().to_path_buf(), Duration::from_secs(5));
-
-        let outcome = GitMergeBackend.merge(&request, &config).await;
-        let status = git_output(repo.path(), &["status", "--porcelain"])
-            .await
-            .unwrap();
-
-        assert!(!outcome.passed);
-        assert_eq!(outcome.failure_kind, Some(RunnerFailureKind::Structural));
-        // G06: merge-tree pre-check catches conflicts before real merge is attempted.
+        assert!(!completion.passed);
+        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Structural));
         assert!(
-            outcome.summary.contains("merge-tree predicts conflicts")
-                || outcome.summary.contains("git merge"),
-            "expected conflict summary, got: {}",
-            outcome.summary
+            completion.output.contains("nothing was merged"),
+            "{}",
+            completion.output
         );
-        assert!(
-            outcome.summary.contains("state.txt"),
-            "expected state.txt in conflict summary, got: {}",
-            outcome.summary
-        );
-        assert!(
-            status.trim().is_empty(),
-            "merge conflict should have been aborted, status:\n{status}"
-        );
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "main change\n");
-    }
-
-    #[tokio::test]
-    async fn git_backend_fails_when_branch_is_absent() {
-        let repo = init_repo();
-        std::fs::write(repo.path().join("state.txt"), "base\n").unwrap();
-        commit_all(repo.path(), "base");
-
-        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["state.txt".into()], 0);
-        let config = PlanMergerConfig::new(repo.path().to_path_buf(), Duration::from_secs(5));
-
-        let outcome = GitMergeBackend.merge(&request, &config).await;
-
-        assert!(!outcome.passed);
-        assert_eq!(outcome.failure_kind, Some(RunnerFailureKind::Structural));
-        assert!(outcome.summary.contains("branch `roko/plan-a` is absent"));
     }
 
     #[tokio::test]

@@ -945,8 +945,9 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
         tracing::warn!(
             "serve.auth.enabled = true but no API key or JWKS provider is configured. \
              Every /api/* request will be rejected with 401. \
-             Add an API key via `roko config set-secret api_key <secret>` \
-             or set serve.auth.api_key in roko.toml."
+             Add an API key with `roko config set serve.auth.api_key <secret>`, which \
+             stores it as ROKO__SERVE__AUTH__API_KEY in .roko/.env, where agents cannot \
+             read it; roko.toml may not hold it."
         );
     }
 }

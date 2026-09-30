@@ -68,6 +68,11 @@ pub struct AgentConfig {
     /// variable roko loaded from `~/.roko/.env` or `.roko/.env`, and roko's
     /// own `ROKO_*` credentials. A provider's `api_key_env` is always kept for
     /// that provider. See `roko_core::child_env::CredentialScrub`.
+    ///
+    /// The commands agents run through roko's own tools (`bash`, `run_tests`,
+    /// ACP's `bash`) get the gate allowlist instead, as verify steps do
+    /// (`roko_core::child_env::apply_gate_env`); names listed here reach them
+    /// too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
     /// Legacy per-tier model mapping used before `[models.*]` existed.

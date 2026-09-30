@@ -94,10 +94,10 @@ This is the implementation plan.
 - [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
 - [x] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
 - [x] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
-- [ ] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
-- [ ] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
-- [ ] bug-c6ad88: ACP's builtin tools don't check for key files
-- [ ] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
+- [x] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
+- [x] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
+- [x] bug-c6ad88: ACP's builtin tools don't check for key files
+- [x] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
 - [ ] bug-41bea4: Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 

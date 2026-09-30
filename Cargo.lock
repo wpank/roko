@@ -6136,6 +6136,7 @@ dependencies = [
  "roko-neuro",
  "roko-runtime",
  "roko-serve",
+ "roko-std",
  "serde",
  "serde_json",
  "tempfile",

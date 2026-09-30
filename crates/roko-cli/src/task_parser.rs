@@ -58,6 +58,12 @@ pub struct TaskMeta {
     /// out; unset runs them ([`Self::runs_workspace_rungs`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_rungs: Option<bool>,
+    /// The whole-plan gate (gap-60233f): steps that check the plan's
+    /// integrated result once every task has passed, in the same shape as a
+    /// task's `[[task.verify]]`. Unset, a Cargo workspace checks formatting,
+    /// lints and tests over the crates the plan affects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify: Vec<VerifyStep>,
 }
 
 impl TaskMeta {
@@ -1088,6 +1094,13 @@ impl TasksFile {
             }
 
             // Check numeric bounds.
+        }
+
+        // The whole-plan gate's steps need a command, like a task's.
+        for (index, step) in self.meta.verify.iter().enumerate() {
+            if step.command.trim().is_empty() {
+                issues.push(format!("meta: verify step #{} has no 'command'", index + 1));
+            }
         }
 
         issues
@@ -2449,6 +2462,7 @@ depends_on = []
                 source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
+                verify: Vec::new(),
             },
             tasks: Vec::new(),
         };

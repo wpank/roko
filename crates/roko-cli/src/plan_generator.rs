@@ -244,6 +244,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "estimated_total_minutes",
     "skip_enrichment",
     "workspace_rungs",
+    "verify",
 ];
 
 #[allow(dead_code)]

@@ -646,6 +646,7 @@ mod tests {
                     source_prd: None,
                     failure_policy: None,
                     workspace_rungs: None,
+                    verify: Vec::new(),
                 },
                 tasks,
             },

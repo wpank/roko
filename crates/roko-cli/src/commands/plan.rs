@@ -1521,6 +1521,10 @@ async fn cmd_plan_dir_status(
         "in progress"
     };
 
+    // Why the plan's whole-plan check failed, when it did (gap-60233f).
+    let plan_check_failure =
+        roko_cli::graph_checkpoint::recorded_plan_check_failure(workdir, &plan_id);
+
     if cli.json {
         let task_entries: Vec<serde_json::Value> = tasks_file
             .tasks
@@ -1545,6 +1549,7 @@ async fn cmd_plan_dir_status(
                 "tasks_total": effective_total,
                 "completed": status_str == "complete",
                 "status": status_str,
+                "plan_check_failure": plan_check_failure,
                 "tasks": task_entries,
             }))?
         );
@@ -1553,6 +1558,9 @@ async fn cmd_plan_dir_status(
         println!("directory:       {}", plan_dir.display());
         println!("tasks:           {done_tasks}/{effective_total}");
         println!("status:          {status_str}");
+        if let Some(failure) = &plan_check_failure {
+            println!("plan check:      {failure}");
+        }
         println!();
         if tasks_file.tasks.is_empty() {
             println!("  (no tasks)");

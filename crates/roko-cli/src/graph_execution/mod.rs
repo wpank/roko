@@ -18,6 +18,7 @@
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
 //! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
+//! | [`plan_verify`] | The whole-plan gate: `[meta] verify` on a plan's integrated result |
 //! | [`run_manifest`] | Each checkpoint run's `manifest.json`: harness, config hash, invocations |
 //! | [`runtime_event_adapter`] | Graph event to canonical runtime event conversion |
 //! | [`view_state`] | TUI/HTTP graph status projection |
@@ -34,6 +35,7 @@ pub mod feedback;
 pub mod identity_map;
 pub mod plan_runner;
 pub mod plan_set;
+pub mod plan_verify;
 pub mod run_manifest;
 pub mod runtime_event_adapter;
 pub mod view_state;

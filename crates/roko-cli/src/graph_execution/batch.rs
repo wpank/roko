@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use roko_graph::delivery::{
     CompletionDeliveryReceiptV1, CompletionDeliveryRequest, CompletionDeliveryService,
-    DeliveryError, DeliveryReceiptStore,
+    CompletionDeliveryState, DeliveryError, DeliveryReceiptStore,
 };
 
 use super::delivery::{CliCompletionDeliveryService, DeliveryBackend, GitDeliveryBackend};
@@ -153,7 +153,8 @@ impl BatchIntegration {
     /// the run, is continued from its next step: a delivered plan is not
     /// merged again, and one that stopped after its merge only reruns its
     /// regression check. A recorded failure, or a receipt of another request,
-    /// is delivered afresh.
+    /// is delivered afresh. A merge whose regression check failed is taken
+    /// back out of the batch.
     ///
     /// # Errors
     ///
@@ -166,20 +167,50 @@ impl BatchIntegration {
         recorded: Option<CompletionDeliveryReceiptV1>,
     ) -> Result<CompletionDeliveryReceiptV1, DeliveryError> {
         let _turn = self.queue.lock().await;
+        let branch_ref = format!("refs/heads/{}", self.branch);
+        let before = commit_of(&self.repo, &branch_ref).await;
         let resumable = recorded.filter(|receipt| {
             receipt.request.delivery_id == request.delivery_id
                 && receipt.request_fingerprint == request.fingerprint()
                 && !receipt.state.is_failed()
         });
-        let Some(receipt) = resumable else {
-            return service.deliver(request).await;
+        let mut receipt = match resumable {
+            None => service.deliver(request).await?,
+            Some(receipt) => {
+                let delivery_id = receipt.request.delivery_id.clone();
+                if self.store.get(&delivery_id).is_none() {
+                    self.store.insert_or_get(&receipt.request)?;
+                    self.store.update(&receipt);
+                }
+                service.reconcile(&delivery_id).await?
+            }
         };
-        let delivery_id = receipt.request.delivery_id.clone();
-        if self.store.get(&delivery_id).is_none() {
-            self.store.insert_or_get(&receipt.request)?;
+        // The batch holds only plans that passed their regression check: a
+        // merge whose check failed is undone, so no later plan builds on it.
+        if receipt.state == CompletionDeliveryState::RegressionFailed
+            && let (Some(merge), Some(before)) = (receipt.merge_commit.clone(), before)
+            && merge != before
+        {
+            let undone = git_output(
+                &self.repo,
+                &[
+                    "update-ref",
+                    "-m",
+                    "roko: undo a delivery whose regression check failed",
+                    &branch_ref,
+                    &before,
+                    &merge,
+                ],
+            )
+            .await;
+            let note = match undone {
+                Ok(_) => format!("; {} was reset to {before}", self.branch),
+                Err(e) => format!("; {} could not be reset to {before}: {e}", self.branch),
+            };
+            receipt.error = Some(receipt.error.unwrap_or_default() + &note);
             self.store.update(&receipt);
         }
-        service.reconcile(&delivery_id).await
+        Ok(receipt)
     }
 
     /// Promote the batch into `target` once every plan is delivered: merge
@@ -341,8 +372,6 @@ async fn commit_of(repo: &Path, rev: &str) -> Option<String> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use roko_graph::delivery::CompletionDeliveryState;
 
     use super::*;
     use crate::graph_execution::delivery::{

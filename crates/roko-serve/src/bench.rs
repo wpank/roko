@@ -543,6 +543,28 @@ pub async fn load_bench_run(workdir: &Path, run_id: &str) -> anyhow::Result<Opti
     Ok(Some(run))
 }
 
+/// Load every stored bench run, from the directory [`save_bench_run`] writes
+/// to. Files that are not bench runs are skipped.
+pub async fn load_bench_runs(workdir: &Path) -> Vec<BenchRun> {
+    let mut runs = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(runs_dir(workdir)).await else {
+        return runs;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let Ok(data) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        if let Ok(run) = serde_json::from_str::<BenchRun>(&data) {
+            runs.push(run);
+        }
+    }
+    runs
+}
+
 /// Delete a bench run from disk.
 pub async fn delete_bench_run(workdir: &Path, run_id: &str) -> anyhow::Result<()> {
     let path = run_path(workdir, run_id);

@@ -28,9 +28,12 @@ use crate::events::ServerEvent;
 use crate::state::{AppState, BenchRunHandle, MatrixRunHandle};
 use roko_agent::CostTable;
 use roko_core::Usage as CoreUsage;
+use roko_core::metric::{ConfigHash, TaskMetric};
 use roko_core::{Body, Kind, Signal, Verify};
 use roko_gate::{GatePayload, ShellGate};
+use roko_learn::baseline::compute_baseline;
 use roko_learn::playbook::PlaybookStore;
+use roko_learn::regression::{RegressionReport, RegressionThresholds, detect_regressions};
 use roko_neuro::KnowledgeStore;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -546,7 +549,7 @@ async fn execute_bench_run(
     //
     // Convert current bench results into TaskMetric records and compare
     // against a baseline computed from prior completed bench runs.
-    run_bench_regression(&state, &run_id, &suite.id, &results, &overrides);
+    run_bench_regression(&state, &run_id, &suite.id, &results, &overrides).await;
 
     // Clean up handle.
     state.active_bench_runs.write().await.remove(&run_id);
@@ -1136,131 +1139,20 @@ async fn current_learning_totals(
     })
 }
 
-/// Convert bench results to `TaskMetric` records and compare against a baseline
-/// built from prior completed runs of the same suite.
-fn run_bench_regression(
+/// Check a finished run for regressions against earlier runs of its suite,
+/// and publish the report.
+async fn run_bench_regression(
     state: &AppState,
     run_id: &str,
     suite_id: &str,
     results: &[BenchTaskResult],
     overrides: &BenchConfigOverrides,
 ) {
-    use roko_core::metric::{ConfigHash, TaskMetric};
-    use roko_learn::baseline::compute_baseline;
-    use roko_learn::regression::{RegressionThresholds, detect_regressions};
-
-    let model = overrides.model.as_deref().unwrap_or("unknown");
-    let config_hash = ConfigHash(format!("bench-{suite_id}"));
-    let now = chrono::Utc::now().to_rfc3339();
-
-    // Convert current results to TaskMetric records. Ungraded tasks neither
-    // passed nor failed, so they stay out of the comparison.
-    let current: Vec<TaskMetric> = results
-        .iter()
-        .filter(|r| !r.skipped())
-        .map(|r| TaskMetric {
-            timestamp: now.clone(),
-            run_id: run_id.to_string(),
-            config_hash: config_hash.clone(),
-            plan_id: suite_id.to_string(),
-            task_id: r.task_id.clone(),
-            iteration: 1,
-            role: "bench".to_string(),
-            backend: "bench".to_string(),
-            model: model.to_string(),
-            complexity_band: "standard".to_string(),
-            gate: "bench".to_string(),
-            gate_passed: r.passed(),
-            wall_time_ms: r.duration_ms,
-            input_tokens: r.tokens_in,
-            output_tokens: r.tokens_out,
-            cached_tokens: 0,
-            cost_usd: r.cost_usd,
-            sections_included: 0,
-            sections_dropped: 0,
-            context_tokens: 0,
-            cache_hit_rate: 0.0,
-        })
-        .collect();
-
-    if current.len() < 5 {
-        // Not enough data for regression detection.
+    let Some(report) =
+        bench_regression_report(&state.workdir, run_id, suite_id, results, overrides).await
+    else {
         return;
-    }
-
-    // Load prior runs for the same suite as baseline.
-    let bench_dir = state.workdir.join(".roko").join("bench");
-    let mut baseline_metrics = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(&bench_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
-                continue;
-            }
-            // Skip the current run.
-            if path
-                .file_stem()
-                .is_some_and(|s| s.to_string_lossy().contains(run_id))
-            {
-                continue;
-            }
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let run: BenchRun = match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if run.suite_id != suite_id
-                || run.status != BenchRunStatus::Completed
-                || run.results.is_empty()
-            {
-                continue;
-            }
-            let run_model = run.overrides.model.as_deref().unwrap_or("unknown");
-            for r in run.results.iter().filter(|r| !r.skipped()) {
-                baseline_metrics.push(TaskMetric {
-                    timestamp: String::new(),
-                    run_id: run.id.clone(),
-                    config_hash: config_hash.clone(),
-                    plan_id: suite_id.to_string(),
-                    task_id: r.task_id.clone(),
-                    iteration: 1,
-                    role: "bench".to_string(),
-                    backend: "bench".to_string(),
-                    model: run_model.to_string(),
-                    complexity_band: "standard".to_string(),
-                    gate: "bench".to_string(),
-                    gate_passed: r.passed(),
-                    wall_time_ms: r.duration_ms,
-                    input_tokens: r.tokens_in,
-                    output_tokens: r.tokens_out,
-                    cached_tokens: 0,
-                    cost_usd: r.cost_usd,
-                    sections_included: 0,
-                    sections_dropped: 0,
-                    context_tokens: 0,
-                    cache_hit_rate: 0.0,
-                });
-            }
-        }
-    }
-
-    let thresholds = RegressionThresholds::default();
-
-    if baseline_metrics.len() < thresholds.min_records {
-        tracing::debug!(
-            run_id,
-            baseline_count = baseline_metrics.len(),
-            "not enough baseline data for bench regression detection"
-        );
-        return;
-    }
-
-    let baseline = compute_baseline(&baseline_metrics, thresholds.min_records);
-    let report = detect_regressions(&baseline, &current, &thresholds);
+    };
 
     if report.has_regressions {
         tracing::warn!(
@@ -1277,6 +1169,91 @@ fn run_bench_regression(
         has_regressions: report.has_regressions,
         report: serde_json::to_value(&report).unwrap_or_default(),
     });
+}
+
+/// Compare a finished run's graded results with those of earlier completed
+/// runs of the same suite, read from where `bench::save_bench_run` stores
+/// them. `None` when either side has too few graded results.
+async fn bench_regression_report(
+    workdir: &std::path::Path,
+    run_id: &str,
+    suite_id: &str,
+    results: &[BenchTaskResult],
+    overrides: &BenchConfigOverrides,
+) -> Option<RegressionReport> {
+    let thresholds = RegressionThresholds::default();
+    let now = chrono::Utc::now().to_rfc3339();
+    let model = overrides.model.as_deref().unwrap_or("unknown");
+
+    // Ungraded tasks neither passed nor failed, so they stay out of the
+    // comparison.
+    let current: Vec<TaskMetric> = results
+        .iter()
+        .filter(|result| !result.skipped())
+        .map(|result| bench_task_metric(run_id, suite_id, model, &now, result))
+        .collect();
+    if current.len() < thresholds.min_records {
+        return None;
+    }
+
+    let runs = bench::load_bench_runs(workdir).await;
+    let baseline_metrics: Vec<TaskMetric> = runs
+        .iter()
+        .filter(|run| {
+            run.id != run_id && run.suite_id == suite_id && run.status == BenchRunStatus::Completed
+        })
+        .flat_map(|run| {
+            let model = run.overrides.model.as_deref().unwrap_or("unknown");
+            run.results
+                .iter()
+                .filter(|result| !result.skipped())
+                .map(move |result| bench_task_metric(&run.id, suite_id, model, "", result))
+        })
+        .collect();
+    if baseline_metrics.len() < thresholds.min_records {
+        tracing::debug!(
+            run_id,
+            baseline_count = baseline_metrics.len(),
+            "not enough baseline data for bench regression detection"
+        );
+        return None;
+    }
+
+    let baseline = compute_baseline(&baseline_metrics, thresholds.min_records);
+    Some(detect_regressions(&baseline, &current, &thresholds))
+}
+
+/// A graded bench result as a `TaskMetric` for the regression check.
+fn bench_task_metric(
+    run_id: &str,
+    suite_id: &str,
+    model: &str,
+    timestamp: &str,
+    result: &BenchTaskResult,
+) -> TaskMetric {
+    TaskMetric {
+        timestamp: timestamp.to_string(),
+        run_id: run_id.to_string(),
+        config_hash: ConfigHash(format!("bench-{suite_id}")),
+        plan_id: suite_id.to_string(),
+        task_id: result.task_id.clone(),
+        iteration: 1,
+        role: "bench".to_string(),
+        backend: "bench".to_string(),
+        model: model.to_string(),
+        complexity_band: "standard".to_string(),
+        gate: "bench".to_string(),
+        gate_passed: result.passed(),
+        wall_time_ms: result.duration_ms,
+        input_tokens: result.tokens_in,
+        output_tokens: result.tokens_out,
+        cached_tokens: 0,
+        cost_usd: result.cost_usd,
+        sections_included: 0,
+        sections_dropped: 0,
+        context_tokens: 0,
+        cache_hit_rate: 0.0,
+    }
 }
 
 struct BenchWorkdirCleanup {
@@ -2088,6 +2065,65 @@ mod tests {
         assert!(first.workspace.starts_with(&first.root));
         assert!(first.baseline.starts_with(&first.root));
         assert_ne!(first.workspace, first.baseline);
+    }
+
+    fn graded_result(idx: usize, status: &str) -> BenchTaskResult {
+        BenchTaskResult {
+            task_id: format!("task-{idx}"),
+            task_name: format!("Task {idx}"),
+            status: status.to_string(),
+            duration_ms: 1_000,
+            model: "test-model".to_string(),
+            tokens_in: 100,
+            tokens_out: 50,
+            cost_usd: 0.01,
+            gate_verdicts: Vec::new(),
+            retries_used: 0,
+            output_preview: None,
+            error: None,
+            skip_reason: None,
+        }
+    }
+
+    /// A completed run of `suite` with five tasks, all graded `status`.
+    fn stored_run(id: &str, status: &str, overrides: &BenchConfigOverrides) -> BenchRun {
+        BenchRun {
+            id: id.to_string(),
+            suite_id: "suite".to_string(),
+            suite_name: "Suite".to_string(),
+            kind: BenchRunKind::Manual,
+            overrides: overrides.clone(),
+            label: None,
+            status: BenchRunStatus::Completed,
+            started_at: 1_700_000_000,
+            finished_at: Some(1_700_000_100),
+            results: (0..5).map(|idx| graded_result(idx, status)).collect(),
+            summary: None,
+            current_task_index: 5,
+            total_tasks: 5,
+        }
+    }
+
+    #[tokio::test]
+    async fn bench_regression_reads_the_stored_runs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let overrides = BenchConfigOverrides {
+            model: Some("test-model".to_string()),
+            ..BenchConfigOverrides::default()
+        };
+        // Every task passed in the stored run, where save_bench_run put it...
+        let earlier = stored_run("earlier", "pass", &overrides);
+        bench::save_bench_run(tmp.path(), &earlier)
+            .await
+            .expect("save the earlier run");
+
+        // ...and every task fails now.
+        let failing: Vec<BenchTaskResult> = (0..5).map(|idx| graded_result(idx, "fail")).collect();
+        let report = bench_regression_report(tmp.path(), "now", "suite", &failing, &overrides)
+            .await
+            .expect("the stored run gives the check a baseline");
+        assert!(report.sufficient_data);
+        assert!(report.has_regressions, "{report:?}");
     }
 
     #[test]

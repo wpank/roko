@@ -674,6 +674,7 @@ fn prompt_tasks_file(
             skip_enrichment: true,
             source_prd: None,
             failure_policy: None,
+            workspace_rungs: None,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

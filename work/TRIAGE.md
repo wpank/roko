@@ -105,7 +105,7 @@
 
 ### docs/whitepaper (2)
 - **P1** [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) Epic: whitepaper v1 [spec] · size L
-- **P3** [gap-daa246](items/gap-daa246-whitepaper-figures-readme-still-says-pandoc-converts.md) Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does · size S
+- **P3** [bug-1f098f](items/bug-1f098f-whitepaper-pdf-drops-the-space-before-the.md) Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips [bug] · size S
 
 ### benchmarks/viabilitybench/experiments (3)
 - **P1** [gap-c33709](items/gap-c33709-pilot-a-the-direct-arms-on-20.md) Pilot A: the direct arms on 20 tasks (S09.E1a) · size S

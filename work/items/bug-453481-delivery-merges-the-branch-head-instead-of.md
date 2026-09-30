@@ -2,7 +2,7 @@
 id = "bug-453481"
 kind = "bug"
 title = "Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::git_merge", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-a3760a"], blocks = [], related = ["spec-f830c4", "g
 
 [[verify]]
 command = "grep -rqw 'fn merge_takes_the_verified_commit_not_the_branch_head' crates/roko-cli/src/ && cargo test -p roko-cli --lib merge_takes_the_verified_commit_not_the_branch_head"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. Delivery merges the verified commit_oid, never the branch head; a bad or rewritten id merges nothing. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

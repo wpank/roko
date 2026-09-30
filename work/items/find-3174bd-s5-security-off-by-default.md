@@ -2,15 +2,15 @@
 id = "find-3174bd"
 kind = "finding"
 title = "Security-Off-By-Default"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 subsystem = ["roko-serve"]
 created = 2026-04-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/archive/08-15-26/binary-issues/MASTER-INDEX.md#S5. Security-Off-By-Default"
 discovered_from = "audit:tmp/archive/08-15-26/binary-issues/MASTER-INDEX.md#S5. Security-Off-By-Default"
 anchors = ["crates/roko-serve/src/terminal.rs::CreateSessionRequest", "crates/roko-serve/src/terminal.rs:962", "crates/roko-serve/src/routes/mod.rs:305", "crates/roko-cli/src/agent_exec.rs:151", "crates/roko-serve/src/dispatch.rs::build_agent", "crates/roko-agent/src/claude_cli_agent.rs:126"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'dangerously_skip_permissions: true' crates/roko-agent/src/claude_cli_agent.rs && ! grep -q 'dangerously_skip_permissions: true' crates/roko-cli/src/agent_exec.rs && ! grep -q 'dangerously_skip_permissions: true' crates/roko-serve/src/dispatch.rs && grep -q 'fn allowed_command' crates/roko-serve/src/terminal.rs && cargo test -p roko-serve terminal::tests && cargo test -p roko-core terminal_defaults_refuse_commands_and_bound_sessions && cargo test -p roko-agent new_agent_keeps_claude_permission_checks_on && cargo test -p roko-cli --lib chat_skips_permissions_only_when_configured"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in b6906c9f8 (plus the coordinator's clone_for_test fix 77f76ebce). Terminal sessions run the login shell unless [serve] terminal_commands lists the command; workdir must be inside the workspace; sessions capped (8) with an 8h TTL reaper; ClaudeCliAgent keeps permission checks on unless runner.dangerously_skip_permissions. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 Systemic audit finding (2026-04-28) with 10 open checklist fixes: S5.1 Enable auth by default (or auto-enable on 0; S5.2 Move terminal routes inside auth middleware; S5.3 Warn/block when PORT is set without auth en; S5.4 Restrict default CORS to localhost; S5.5 Default to private gists, run…
 

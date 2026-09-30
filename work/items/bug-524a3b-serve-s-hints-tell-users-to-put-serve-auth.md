@@ -2,7 +2,7 @@
 id = "bug-524a3b"
 kind = "bug"
 title = "serve's hints tell users to put serve.auth.api_key in roko.toml; point them, and config set, at ROKO__SERVE__AUTH__API_KEY in .roko/.env"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve", "roko-cli/config", "roko-cli/doctor"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report on bug-34c16c)"
 anchors = ["crates/roko-serve/src/lib.rs", "crates/roko-cli/src/serve_client.rs", "crates/roko-cli/src/auth.rs", "crates/roko-cli/src/doctor.rs", "crates/roko-cli/src/config_cmd.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-34c16c", "gap-e9660f"], 
 
 [[verify]]
 command = "! grep -q 'serve.auth.api_key in roko.toml' crates/roko-serve/src/lib.rs && ! grep -q 'api_key in roko.toml' crates/roko-cli/src/serve_client.rs && grep -rqw 'fn config_set_writes_a_serve_secret_to_the_env_file' crates/roko-cli/src/ && cargo test -p roko-cli config_set_writes_a_serve_secret_to_the_env_file"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in e1e6159f7. config set writes a secret field as its ROKO__ variable to .roko/.env and removes it from roko.toml, ROKO_CONFIG and the legacy global file; hints name the ROKO__ variables. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

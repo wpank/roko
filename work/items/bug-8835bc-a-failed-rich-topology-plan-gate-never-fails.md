@@ -2,7 +2,7 @@
 id = "bug-8835bc"
 kind = "bug"
 title = "A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-graph/cells", "roko-execution/workflow"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, branch work/bug-50caf2 at f0445319f)"
 anchors = ["crates/roko-graph/src/cells/plan_gate.rs", "crates/roko-execution/src/workflow/templates.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-50caf2", "bug-056b40", "
 
 [[verify]]
 command = "grep -rqw 'fn a_failed_plan_gate_fails_its_task' crates/roko-graph/src/ crates/roko-execution/src/ crates/roko-cli/src/ && cargo test -p roko-graph -p roko-execution -p roko-cli --lib a_failed_plan_gate_fails_its_task"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. A failed PlanGateCell returns a Verify error, so its Success edge no longer fires; a_failed_plan_gate_fails_its_task runs a two-task rich topology through GraphEngine. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

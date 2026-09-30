@@ -2,7 +2,7 @@
 id = "gap-e9660f"
 kind = "gap"
 title = "Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-std/sandbox", "roko-agent/claude_cli_guard", "roko-core/confi
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report on bug-34c16c, branch work/bug-ceab60 at f80d4eb50)"
 anchors = ["crates/roko-std/src/tool/builtin/sandbox.rs", "crates/roko-agent/src/claude_cli_guard.py", "crates/roko-core/src/config/serve.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["bug-34c16c"], blocks = [], related = ["bug-34c16c", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_secret_in_the_project_roko_toml_is_moved_or_refused' crates/roko-core/src/ && cargo test -p roko-core --lib a_secret_in_the_project_roko_toml_is_moved_or_refused"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in e1e6159f7. The loader and serve's PUT refuse a readable config file holding a literal secret (empty values and ${VAR} references allowed). Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-aaa924"
 kind = "bug"
 title = "The delivery regression check builds the workspace from a cold target dir on every delivery"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::regression_output", "crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-a3760a"], blocks = [], related = ["spec-f830c4", "g
 
 [[verify]]
 command = "grep -rqw 'fn regression_checkout_reuses_a_warm_target_dir' crates/roko-cli/src/ && cargo test -p roko-cli --lib regression_checkout_reuses_a_warm_target_dir"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. The regression check builds into the gates' target dir outside the temporary checkout. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

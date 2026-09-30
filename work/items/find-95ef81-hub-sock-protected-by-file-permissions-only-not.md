@@ -2,15 +2,15 @@
 id = "find-95ef81"
 kind = "finding"
 title = ".roko/runtime/hub.sock is protected by file permissions only, not by [serve.auth]"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 subsystem = ["roko-cli/state-hub", "roko-serve/auth"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "plan:portal-programme/03b-backend-workspace-server#T16"
 discovered_from = "plan:portal-programme/03b-backend-workspace-server#T16"
 anchors = ["crates/roko-cli/src/state_hub_ipc.rs::start_hub_ipc_server", "crates/roko-cli/src/state_hub_ipc.rs::handle_hub_connection", "crates/roko-serve/src/routes/middleware.rs::api_credential"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn hub_ipc_rejects_connection_without_token' crates/roko-cli/ && cargo test -p roko-cli --test hub_ipc hub_ipc_rejects_connection_without_token"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in b6906c9f8. hub.sock streams nothing until the client presents the per-run token from .roko/runtime/hub.token (0600). Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. cargo test -p roko-cli --test hub_ipc: 6 passed."
 +++
 
 `.roko/runtime/hub.sock` is a Unix domain socket bound by `start_hub_ipc_server` with mode `0600`, so only the owning user can connect to it. This is the sole access control: the socket carries a live stream of `DashboardEvent` frames (plan starts, task completions, agent output, cost/token events) with no authentication challenge.

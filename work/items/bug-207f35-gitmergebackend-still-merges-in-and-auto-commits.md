@@ -2,7 +2,7 @@
 id = "bug-207f35"
 kind = "bug"
 title = "GitMergeBackend still merges in, and auto-commits, the checkout it is given"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/runner"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/runner/merge.rs::GitMergeBackend", "crates/roko-cli/src/runner/merge.rs::default_merge_backend", "crates/roko-cli/tests/merge_proof.rs", "crates/roko-cli/tests/runner_integration.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-a3760a", "spec-f830c4"],
 
 [[verify]]
 command = "! grep -rq 'auto-commit before merge' crates/roko-cli/src/ && ! grep -qF '\"merge\", \"--no-ff\"' crates/roko-cli/src/runner/merge.rs"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. GitMergeBackend and CargoCheckRegressionGate are deleted; PlanMerger fails closed without injected backends. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: static checks pass on MAIN."
 +++
 
 ## Problem

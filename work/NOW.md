@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 27 anchor gone · 164 changed since checked · 16 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 26 anchor gone · 189 changed since checked · 7 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 
-_19 more open · on hold: gap-8f8544 · 25 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_10 more open · on hold: gap-8f8544 · 20 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -23,21 +23,23 @@ _0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whi
 
 ## 3. Roko tells the truth and is safe (P0)
 
+- **P2** [gap-3506f1](items/gap-3506f1-gates-rungs-is-inert-on-roko-plan.md) [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do · size M · verified 2026-09-30
 - **P2** [gap-c7c946](items/gap-c7c946-roko-learn-telemetry-check-and-route-report.md) roko learn telemetry: check and route-report over the attempt records (S01.P0-13) · size S · verified 2026-09-29
 
-_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- nothing checked and open
+- **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
+- **P2** [gap-6daad9](items/gap-6daad9-plan-runner-injects-no-cellresources-so-rich.md) plan_runner injects no CellResources, so --rich-topology still stops at every gate · size S · verified 2026-09-30
 
-_0 more open · 40 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 32 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 24 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 22 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

@@ -2,16 +2,16 @@
 id = "bug-0eb8e2"
 kind = "bug"
 title = "MCP servers, provider probes and git hooks still inherit roko's full environment, including provider keys"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-agent/mcp", "roko-agent/harness", "roko-cli"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
 anchors = ["crates/roko-agent/src/mcp/client.rs::spawn_with_env", "crates/roko-agent/src/mcp/client.rs::spawn_diagnostic", "crates/roko-agent/src/harness/probe_runner.rs::run_probe_command", "crates/roko-cli/src/commands/config_cmd.rs::run_claude_cli_provider_test", "crates/roko-cli/src/worker/cloud.rs::git_commit", "crates/roko-acp/src/runner.rs::run_commit"]
@@ -22,6 +22,11 @@ command = "grep -rqw 'fn stdio_mcp_server_env_excludes_provider_keys' crates/rok
 
 [[verify]]
 command = "grep -qE 'credential_scrub|CredentialScrub|hooksPath' crates/roko-cli/src/worker/cloud.rs && { ! grep -q 'async fn run_commit(' crates/roko-acp/src/runner.rs || grep -qE 'credential_scrub|CredentialScrub|hooksPath' crates/roko-acp/src/runner.rs; }"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in ca834b178. MCP stdio servers, Hermes/OpenClaw probes, roko-cli --version probes and roko's git commits get a scrubbed env (CredentialScrub). Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

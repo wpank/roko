@@ -2,15 +2,15 @@
 id = "find-a1284b"
 kind = "finding"
 title = "Default Privy JWKS URL returns 404 and degrades health"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/jwks.rs::PRIVY_JWKS_URL", "crates/roko-serve/src/state.rs:1145", "crates/roko-serve/src/lib.rs:1148", "crates/roko-serve/src/routes/status/health.rs:86"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'privy_app_id = Some(crate::jwks::NUNCHI_PRIVY_APP_ID' crates/roko-serve/src/lib.rs && ! grep -q 'jwks_configured && jwks_health.fail_closed' crates/roko-serve/src/routes/status/health.rs"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in b6906c9f8. With no jwks_providers the JWKS cache uses Privy's per-app endpoint (/api/v1/apps/<app-id>/jwks.json, probed 200 with ES256 keys; the generic URL is 404); /api/health reports degraded with HTTP 200 on missing or stale keys. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: static checks pass on MAIN."
 +++
 
 serve defaults to `PRIVY_JWKS_URL = "https://auth.privy.io/.well-known/jwks.json"` (`jwks.rs:22`). A local audit found this endpoint returns 404 (Privy serves per-app JWKS URLs) and the failed fetch makes the health endpoint return 503 while Privy auth is on by default; not re-checked here (needs network).

@@ -2,7 +2,7 @@
 id = "gap-af00b1"
 kind = "gap"
 title = "Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches tasks that break together"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/tests"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "207f91da2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e6"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canaries C3 and C4)"
 anchors = ["crates/roko-cli/tests/plan_branch_integration.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f",
 
 [[verify]]
 command = "grep -rqw 'fn c3_each_passed_task_commits_once_on_the_plan_branch' crates/roko-cli/tests/ && grep -rqw 'fn c4_meta_verify_catches_tasks_that_break_together' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 207f91da2. Integration tests C3 (per-task commits on a plan branch; kill mid-task, then resume) and C4 (a whole-plan gate catches tasks that break together) in crates/roko-cli/tests/plan_branch_integration.rs. Batch 16d gate on dd58c3db2 (MAIN 207f91da2 has the same code), after the coordinator's scope fix for plan_verify (cfed1c6f2): cargo check --workspace --tests, nightly fmt, clippy -p roko-cli -p roko-core -p roko-execution --keep-going -D warnings clean; lib tests pass: roko-cli 3236 (two known load flakes, turn_policy's 1 s test and gate_rows' writer wait), roko-core 1953, roko-execution 245; integration: --test plan_branch_integration 2 passed (C3 kill-and-resume, C4 whole-plan gate), --test merge_proof 4, --test runner_integration 6."
 +++
 
 ## Problem

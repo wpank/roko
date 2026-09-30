@@ -2,7 +2,7 @@
 id = "gap-60233f"
 kind = "gap"
 title = "[meta] verify: a whole-plan gate that runs on the integrated result"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-cli/task_parser"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "207f91da2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e6"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (G4, canary C4); evidence/field/CASES.md (CASE-006)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskMeta", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::plan_outcome", "crates/roko-cli/src/graph_execution/plan_verify.rs"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn meta_verify_failure_fails_a_plan_whose_tasks_passed' cr
 
 [[verify]]
 command = "grep -rqw 'fn default_meta_verify_covers_the_touched_crates' crates/roko-cli/src/ && cargo test -p roko-cli --lib default_meta_verify_covers_the_touched_crates"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 207f91da2. [meta] verify runs on the integrated result; without it a Cargo plan runs fmt, clippy and tests of the crates it touched; in worktree mode it is the delivery's post-merge regression and a failure undoes the merge into the batch; the failure is recorded and shown by plan status. Batch 16d gate on dd58c3db2 (MAIN 207f91da2 has the same code), after the coordinator's scope fix for plan_verify (cfed1c6f2): cargo check --workspace --tests, nightly fmt, clippy -p roko-cli -p roko-core -p roko-execution --keep-going -D warnings clean; lib tests pass: roko-cli 3236 (two known load flakes, turn_policy's 1 s test and gate_rows' writer wait), roko-core 1953, roko-execution 245; integration: --test plan_branch_integration 2 passed (C3 kill-and-resume, C4 whole-plan gate), --test merge_proof 4, --test runner_integration 6. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

@@ -100,19 +100,19 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 
 - [x] gap-3b5361: Successful plan attempts are never accepted: accept_attempt has no production caller (existing item)
 - [x] bug-a3760a: The Graph engine's merge step runs git checkout in the user's working tree (existing item)
-- [ ] spec-f830c4: #404 — Batch Branch Integration (existing item)
-- [ ] gap-60233f: [meta] verify: a whole-plan gate that runs on the integrated result
+- [x] spec-f830c4: #404 — Batch Branch Integration (existing item)
+- [x] gap-60233f: [meta] verify: a whole-plan gate that runs on the integrated result
 - [x] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)
 - [ ] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
-- [ ] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
+- [x] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
 - [ ] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
 - [x] bug-aaa924: The delivery regression check builds the workspace from a cold target dir on every delivery
 - [x] bug-453481: Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified
 - [x] bug-207f35: GitMergeBackend still merges in, and auto-commits, the checkout it is given
-- [ ] bug-056b40: On resume, attempts start from HEAD instead of the plan branch, and retained attempt worktrees aren't re-attached
+- [x] bug-056b40: On resume, attempts start from HEAD instead of the plan branch, and retained attempt worktrees aren't re-attached
 - [x] bug-8835bc: A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success
 - [x] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
-- [ ] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
+- [x] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
 - [ ] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
 - [ ] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
       tasks that break together

@@ -2,7 +2,7 @@
 id = "spec-f830c4"
 kind = "spec"
 title = "#404 — Batch Branch Integration"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
@@ -10,8 +10,8 @@ goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-21
 updated = 2026-09-30
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified = 2026-09-30
+last_verified_rev = "207f91da2"
 source = "tmp/backlog/archive/404-batch-branch-integration.md##404 — Batch Branch Integration"
 discovered_from = "audit:tmp/backlog/archive/404-batch-branch-integration.md##404 — Batch Branch Integration"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/runner/merge.rs::PlanMerger", "crates/roko-cli/src/orchestrator/merge_queue.rs::MergeQueue", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeManager::accept_attempt", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-415c54"], supersedes = [
 
 [[verify]]
 command = "grep -rq 'roko/batch/' crates/roko-cli/src && grep -qE 'CliCompletionDeliveryService::(new|with_store)' crates/roko-cli/src/graph_execution/plan_runner.rs crates/roko-cli/src/commands/plan.rs && grep -rqw 'fn batch_branch_merges_plan_in_temp_worktree' crates/roko-cli/src && cargo test -p roko-cli batch_branch_merges_plan_in_temp_worktree"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 9c0b9aed0 (batch 15a) and 207f91da2 (batch 16d). Under --worktree-per-task a run delivers each passed plan into roko/batch/<run-id> by plumbing merges with a post-merge regression, records roko.batch@1 and the receipt in the checkpoint, resumes safely, and --promote tags roko/run/<id> without pushing. Done-when tests: a_worktree_run_delivers_each_plan_into_its_batch_branch; c4_meta_verify_catches_tasks_that_break_together (RegressionFailed, plan branch kept, exit 1 naming the plan); promotion_moves_the_target_and_tags_the_run; batch_branch_is_created_at_head_and_continued_on_resume; batch_branch_merges_plan_in_temp_worktree (also the stale-base case that replaces the cherry-pick refresh); a_resumed_delivery_continues_after_its_merge. Batch 16d gate on dd58c3db2 (MAIN 207f91da2 has the same code), after the coordinator's scope fix for plan_verify (cfed1c6f2): cargo check --workspace --tests, nightly fmt, clippy -p roko-cli -p roko-core -p roko-execution --keep-going -D warnings clean; lib tests pass: roko-cli 3236 (two known load flakes, turn_policy's 1 s test and gate_rows' writer wait), roko-core 1953, roko-execution 245; integration: --test plan_branch_integration 2 passed (C3 kill-and-resume, C4 whole-plan gate), --test merge_proof 4, --test runner_integration 6."
 +++
 
 ## Problem

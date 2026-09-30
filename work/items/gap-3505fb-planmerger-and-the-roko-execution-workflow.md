@@ -2,7 +2,7 @@
 id = "gap-3505fb"
 kind = "gap"
 title = "PlanMerger and the roko-execution workflow templates' gate builders have no production caller"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/runner/merge", "roko-execution/workflow"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "207f91da2"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, checked on work/bug-453481 at 2eeda438d)"
 anchors = ["crates/roko-cli/src/runner/merge.rs", "crates/roko-execution/src/workflow/templates.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-453481"], blocks = [], related = ["bug-453481", "bu
 
 [[verify]]
 command = "! grep -rq 'pub struct PlanMerger' crates/"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 207f91da2. PlanMerger (test-only Runner-v2 residue) is deleted. Batch 16d gate on dd58c3db2 (MAIN 207f91da2 has the same code), after the coordinator's scope fix for plan_verify (cfed1c6f2): cargo check --workspace --tests, nightly fmt, clippy -p roko-cli -p roko-core -p roko-execution --keep-going -D warnings clean; lib tests pass: roko-cli 3236 (two known load flakes, turn_policy's 1 s test and gate_rows' writer wait), roko-core 1953, roko-execution 245; integration: --test plan_branch_integration 2 passed (C3 kill-and-resume, C4 whole-plan gate), --test merge_proof 4, --test runner_integration 6. Verify: static check passes on MAIN."
 +++
 
 ## Problem

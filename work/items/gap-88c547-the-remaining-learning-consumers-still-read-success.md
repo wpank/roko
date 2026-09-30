@@ -2,15 +2,16 @@
 id = "gap-88c547"
 kind = "gap"
 title = "The remaining learning consumers still read success instead of the settled learning label"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["learn"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (23:00, wk-settle's report on bug-07bc75 and gap-eb82c9)"
 anchors = ["crates/roko-learn/src/", "crates/roko-cli/src/runtime_feedback/", "crates/roko-dreams/src/"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-eb82c9"], blocks = [], related = ["gap-8f6206", "ga
 
 [[verify]]
 command = "grep -rqw 'fn remaining_consumers_use_the_learning_label' crates/ && cargo test -p roko-learn --lib remaining_consumers_use_the_learning_label"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8a0fac0a8. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: remaining_consumers_use_the_learning_label passes (roko-learn lib)."
 +++
 
 ## Problem

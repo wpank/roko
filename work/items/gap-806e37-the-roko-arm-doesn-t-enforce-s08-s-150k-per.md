@@ -2,14 +2,16 @@
 id = "gap-806e37"
 kind = "gap"
 title = "The Roko arm doesn't enforce S08's 150K per-attempt input cap, so S08-SC6 can't hold for that arm"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/arms", "benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "dd98cf866"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-appAB's report)"
 anchors = ["benchmarks/viabilitybench/arms/roko_fixed.toml", "benchmarks/viabilitybench/driver/run_roko.py", "benchmarks/viabilitybench/driver/faultproxy.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-b7ab99", "bug-c30764", "
 
 [[verify]]
 command = "grep -qw 'def test_the_roko_arm_enforces_the_per_attempt_input_cap' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -k test_the_roko_arm_enforces_the_per_attempt_input_cap -q"
+
+[closed]
+at = 2026-09-30
+commit = "dd98cf866"
+by = "wk-bench-fix1"
+evidence = "dd98cf866: option (b), the proxy enforces it. faultproxy draws each task's attempts as conversations from the requests (a strict extension continues its prompt's conversation, an unanswered repeat is a retry, anything else starts one) and holds each to a per-task attempt_input_cap; vb run sets it from input_tokens_per_attempt for runners whose PROXY_CAPS name it (run_roko); a capped attempt ends attempt_input_tokens. Real roko (33e107da1, three attempts) fell into one conversation per attempt, its aux calls apart. Verify passes (test_the_roko_arm_enforces_the_per_attempt_input_cap); driver tests 74 passed with the prebuilt roko."
 +++
 
 ## Problem

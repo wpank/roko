@@ -2,16 +2,16 @@
 id = "gap-9cbf35"
 kind = "gap"
 title = "Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "ed0c33bd5"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/DECISIONS.md (D11); tldr/05 §6 decisions 1 and 3; tldr/research/B3-routing-cost.md (Gaps 1)"
 anchors = ["crates/roko-core/src/config/routing.rs::RoutingConfig", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-cli/src/dispatch/model_routing.rs::ModelChoiceSource", "crates/roko-cli/src/dispatch/factory.rs::SharedAgentFactory::new", "roko.toml"]
@@ -24,6 +24,11 @@ command = "grep -rqw 'fn default_ladder_follows_d11' crates/roko-core/src/ && ca
 
 [[verify]]
 command = "grep -rqw 'fn ladder_routes_by_role_and_tier' crates/roko-cli/src/ && cargo test -p roko-cli --lib ladder_routes_by_role_and_tier"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in a13873ad2 (with the coordinator's test fix bc532aba3: the ladder test settles its attempt, as bug-c34782 requires). Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: default_ladder_follows_d11 (roko-core lib) and ladder_routes_by_role_and_tier (roko-cli lib) pass."
 +++
 
 ## Problem

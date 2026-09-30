@@ -2,15 +2,16 @@
 id = "bug-efd2b0"
 kind = "bug"
 title = "roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-serve/dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report)"
 anchors = ["crates/roko-serve/src/dispatch.rs::drain_dispatch_learning_events", "crates/roko-serve/src/dispatch.rs::record_cascade_router_outcome_with_layout"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-8b0d0a", "bug-84de98", "
 
 [[verify]]
 command = "grep -rqw 'fn a_template_dispatch_is_observed_once_on_the_router' crates/roko-serve/src/ && cargo test -p roko-serve --lib a_template_dispatch_is_observed_once_on_the_router"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8b26e4839. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: a_template_dispatch_is_observed_once_on_the_router passes (roko-serve lib)."
 +++
 
 ## Problem

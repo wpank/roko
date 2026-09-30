@@ -2,16 +2,16 @@
 id = "bug-50caf2"
 kind = "bug"
 title = "PlanGateCell gates the process working directory as attempt 0"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
 goal = "core"
 subsystem = ["roko-graph/cells", "roko-gate"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::build_request", "crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::execute", "crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/runner/gate_adapter.rs::RunnerProductionGateAdapter"]
@@ -22,6 +22,11 @@ command = '! grep -q "std::env::current_dir()" crates/roko-graph/src/cells/plan_
 
 [[verify]]
 command = "! grep -q 'std::env::current_dir()' crates/roko-graph/src/cells/plan_gate.rs && ! grep -q 'attempt_id: 0' crates/roko-graph/src/cells/plan_gate.rs && grep -qw 'fn plan_gate_fails_closed_without_worktree' crates/roko-graph/src/cells/plan_gate.rs && cargo test -p roko-graph plan_gate"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 4787ee6ed. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: plan_gate.rs has no current_dir()/attempt_id: 0; cargo test -p roko-graph plan_gate: 13 passed (incl. plan_gate_fails_closed_without_worktree)."
 +++
 
 ## Problem

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P2 #17â
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5", "bug-84de98", "bug-7a2630", "bug-8b0d0a", "bug-07bc75", "gap-eb82c9", "bug-efd2b0", "gap-88c547", "bug-f81e9b"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5", "bug-84de98", "bug-7a2630", "bug-8b0d0a", "bug-07bc75", "gap-eb82c9", "bug-efd2b0", "gap-88c547", "bug-f81e9b", "bug-9ab6b8", "bug-b8af02", "gap-2ce86f"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && grep -rqw 'fn gate_pass_increments_selected_playbook' crates/roko-cli/src/ && grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src/ && cargo test -p roko-learn failed_override_lowers_success_rate && cargo test -p roko-cli --lib gate_pass_increments_selected_playbook && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
@@ -109,7 +109,7 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 
 ## Done when
 
-- [ ] bug-f68404: Manual --model overrides are always recorded as router successes (existing item)
+- [x] bug-f68404: Manual --model overrides are always recorded as router successes (existing item)
 - [x] bug-8da8ba: Router-chosen failures never update the LinUCB model (existing item)
 - [x] bug-9c88ac: roko serve overwrites router state learned by concurrent CLI runs (existing item)
 - [x] bug-012303: Serve dispatch paths build CascadeRouter instances whose learning is never saved (existing item)
@@ -119,15 +119,18 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] gap-fdd27f: Prompt experiments are never assigned on the Graph execution path (existing item)
 - [ ] gap-644040: No way to run with learning frozen: prompts and routing change from run to run (existing item)
 - [ ] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
-- [ ] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
+- [x] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
 - [x] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
 - [x] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
 - [x] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
 - [x] bug-07bc75: The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch
 - [x] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
-- [ ] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
-- [ ] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
+- [x] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
+- [x] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
 - [ ] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
+- [ ] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
+- [ ] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
+- [ ] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1â€“M4 items join.
 

@@ -2,15 +2,16 @@
 id = "gap-abbd22"
 kind = "gap"
 title = "Attempt diff check: flag edits to tests, verify scripts, accept/ or gate config, and to files outside the task"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-gate/attempt_diff", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/specs/S05-deep-audits.md (§4.3, check A1); tldr/05 P1 #13"
 anchors = ["crates/roko-gate/src/attempt_diff.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn attempt_diff_flags_each_tamper_kind' crates/roko-gate/s
 
 [[verify]]
 command = "grep -rqw 'fn tampering_attempt_fails_before_verify' crates/roko-cli/src/ && cargo test -p roko-cli --lib tampering_attempt_fails_before_verify"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 7f9d1fcbc. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: attempt_diff_flags_each_tamper_kind (roko-gate lib) and tampering_attempt_fails_before_verify (roko-cli lib) pass."
 +++
 
 ## Problem

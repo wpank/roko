@@ -92,8 +92,8 @@ This is the implementation plan.
 - [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
 - [x] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
 - [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
-- [ ] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
-- [ ] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
+- [x] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
+- [x] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
 - [ ] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
 - [ ] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
 - [ ] bug-c6ad88: ACP's builtin tools don't check for key files

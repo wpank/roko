@@ -1085,6 +1085,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // stop. Never unbounded.
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt.key.attempt_key()),
         };
 
         // Bind the prompt treatments to the exact final prompt before launch;

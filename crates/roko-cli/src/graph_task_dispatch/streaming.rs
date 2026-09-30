@@ -194,6 +194,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt_key.clone()),
         };
         let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
             prompt_experiment,

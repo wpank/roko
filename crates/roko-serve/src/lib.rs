@@ -4000,6 +4000,8 @@ mod tests {
                 latency_ms: 1_500,
                 success: true,
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
             .expect("record the model call");

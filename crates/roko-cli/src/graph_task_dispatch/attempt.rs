@@ -646,7 +646,7 @@ mod tests {
 
         // The dispatch row's id is the key; the gate-pass row extends it. The
         // provider bridge logs its own `model_call` rows to the same file,
-        // under the feedback schema and with no attempt key.
+        // under the feedback schema.
         let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
             row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
         })
@@ -658,6 +658,14 @@ mod tests {
             field(&efficiency, "attempt_key"),
             [key.as_str(), key.as_str()]
         );
+        // The bridge's own `model_call` row names the attempt and the model
+        // the provider reported (bug-92f655).
+        let model_calls = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
+            row["kind"] == "model_call"
+        })
+        .await;
+        assert_eq!(field(&model_calls, "attempt_key"), [key.as_str()]);
+        assert_eq!(model_calls[0]["model_reported"], "claude-sonnet-4-6");
         let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
         assert_eq!(field(&costs, "attempt_key"), [key.as_str()]);
         let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)

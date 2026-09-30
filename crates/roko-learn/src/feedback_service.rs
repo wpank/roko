@@ -207,6 +207,8 @@ impl FeedbackService {
                     latency_ms,
                     success,
                     error_class,
+                    model_reported,
+                    attempt_key,
                 } => serde_json::json!({
                     "kind": "model_call",
                     "schema": FEEDBACK_EVENT_SCHEMA,
@@ -225,6 +227,10 @@ impl FeedbackService {
                     "latency_ms": latency_ms,
                     "success": success,
                     "error_class": error_class,
+                    // `null` when the provider named no model, or the
+                    // call belongs to no attempt.
+                    "model_reported": model_reported,
+                    "attempt_key": attempt_key,
                     "ts": ts,
                 }),
                 FeedbackEvent::GateResult {
@@ -873,6 +879,8 @@ mod tests {
             latency_ms: 2000,
             success: true,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();
@@ -933,6 +941,8 @@ mod tests {
             latency_ms: 200,
             success: true,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();
@@ -1079,6 +1089,8 @@ mod tests {
             latency_ms: 2000,
             success: true,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();
@@ -1114,6 +1126,8 @@ mod tests {
             latency_ms: 2000,
             success: true,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();
@@ -1146,6 +1160,8 @@ mod tests {
             latency_ms: 2000,
             success: false,
             error_class: Some("timeout".into()),
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();
@@ -1177,6 +1193,8 @@ mod tests {
             latency_ms: 2000,
             success: true,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         })
         .await
         .unwrap();

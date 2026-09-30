@@ -3323,6 +3323,8 @@ max_retries = 0
         assert_eq!(invocation.len(), 1);
         assert_eq!((invocation[0].inv, invocation[0].resumed), (1, false));
         assert_eq!(invocation[0].pid, std::process::id());
+        assert_eq!(invocation[0].harness.as_ref(), Some(&manifest.harness));
+        assert_eq!(invocation[0].config.as_ref(), Some(&manifest.config));
         let closed = manifest.closed.as_ref().expect("the run closed");
         assert_eq!(closed.status, "succeeded");
         let counts = (
@@ -3346,6 +3348,11 @@ max_retries = 0
             .map(|invocation| (invocation.inv, invocation.resumed))
             .collect();
         assert_eq!(invocations, [(1, false), (2, true)]);
+        assert!(
+            !resumed.mixed_provenance,
+            "the same build resumed the run: {:?}",
+            resumed.invocations
+        );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
     }

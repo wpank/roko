@@ -3,10 +3,12 @@
 //! Every checkpoint run keeps `.roko/runs/<run_id>/manifest.json` beside its
 //! `attempts.jsonl`. It says which harness build, which config (by its
 //! secret-redacted fingerprint) and which invocations produced the run's
-//! records. [`RunManifests::open`] records an invocation when a plan's run
-//! starts or resumes, and [`RunManifests::close`] records how it ended and
-//! how many attempts it opened, settled and abandoned. A manifest that
-//! cannot be written is logged; it never stops a run.
+//! records. [`RunManifests::open`] records an invocation, with the build
+//! and config it runs under, when a plan's run starts or resumes; a resume
+//! under another build or config marks the run's provenance mixed.
+//! [`RunManifests::close`] records how the run ended and how many attempts it
+//! opened, settled and abandoned. A manifest that cannot be written is
+//! logged; it never stops a run.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,22 +80,9 @@ impl RunManifests {
     pub fn open(&self, run_id: &str, plan_id: &str) -> Option<u32> {
         let run_dir = self.runs_dir.join(run_id);
         let mut manifest = match RunProvenanceManifest::load(&run_dir) {
-            Ok(Some(manifest)) => {
-                if manifest.harness.sha != self.harness.sha
-                    || manifest.config.hash != self.config.hash
-                {
-                    tracing::warn!(
-                        run_id,
-                        "run resumed under another harness build or config; its manifest keeps \
-                         the provenance of the invocation that started it"
-                    );
-                }
-                manifest
-            }
+            Ok(Some(manifest)) => manifest,
             Ok(None) => {
                 let mut manifest = RunProvenanceManifest::new(run_id, PLAN_RUN_KIND);
-                manifest.harness = self.harness.clone();
-                manifest.config = self.config.clone();
                 manifest.workspace = self.workspace.clone();
                 manifest
             }
@@ -110,6 +99,9 @@ impl RunManifests {
                 .lock()
                 .insert(run_id.to_string(), closed.telemetry_dropped);
         }
+        // The invocation records the build and config it runs under; a
+        // resume under others marks the run's provenance mixed.
+        let was_mixed = manifest.mixed_provenance;
         let inv = manifest.begin_invocation(RunInvocation {
             inv: 0,
             started_at: now_iso(),
@@ -117,7 +109,17 @@ impl RunManifests {
             pid: std::process::id(),
             host: "local".to_string(),
             args_sha256: Some(self.args_sha256.clone()),
+            harness: Some(self.harness.clone()),
+            config: Some(self.config.clone()),
         });
+        if manifest.mixed_provenance && !was_mixed {
+            tracing::warn!(
+                run_id,
+                inv,
+                "run resumed under another harness build or config; its manifest records each \
+                 invocation's and marks the run's provenance mixed"
+            );
+        }
         match manifest.store(&run_dir) {
             Ok(()) => Some(inv),
             Err(error) => {

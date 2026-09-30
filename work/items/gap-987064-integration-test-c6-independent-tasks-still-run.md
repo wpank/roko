@@ -2,7 +2,7 @@
 id = "gap-987064"
 kind = "gap"
 title = "Integration test C6: independent tasks still run after a failure, and tasks with overlapping files never run together"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/tests"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "4d79f0016"
+last_verified_rev = "6a62e0eeb"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e7"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G6, canary C6)"
 anchors = ["crates/roko-cli/tests/scheduler_canary.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-4d835d", "gap-96d348", "gap-439794", "gap-272448"],
 
 [[verify]]
 command = "grep -rqw 'fn scheduler_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test scheduler_canary"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 626e182a9 (batch 16c). Integration test C6 (crates/roko-cli/tests/scheduler_canary.rs, through the built binary): independent tasks still run after a failure, and tasks with overlapping files never run together. cargo test -p roko-cli --test scheduler_canary on the batch-16c tree (same code as MAIN): 1 passed in 15.3 s. wk-scheduler showed it fails ('T5 and T6 ran together') with write-set admission switched off by hand."
 +++
 
 ## Problem

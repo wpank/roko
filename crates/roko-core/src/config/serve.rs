@@ -228,7 +228,11 @@ impl JwksProvider {
 #[serde(deny_unknown_fields)]
 pub struct ServeAuthConfig {
     /// Whether `/api/*` routes require an `X-Api-Key` header.
-    #[serde(default)]
+    ///
+    /// On unless a config says `enabled = false`: a `[serve.auth]` table
+    /// that leaves the key out (one holding only `api_key`, say) keeps auth
+    /// on, the same as no table at all.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Shared API key expected in `X-Api-Key` (legacy single-key mode).
     #[serde(default)]

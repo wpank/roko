@@ -4339,6 +4339,78 @@ max_concurrent_plans = 3
         load_config_file(&key_file, &opts).expect("a key file may hold a secret");
     }
 
+    /// bug-ba8d42: `enabled` fell back to `bool::default()`, false, whenever
+    /// a `[serve.auth]` table left it out, while `ServeAuthConfig::default()`
+    /// says true. A table holding only the key, in the key file or through a
+    /// reference, therefore turned serve auth off. Auth now stays on unless a
+    /// config says `enabled = false`, also when the key comes only from
+    /// `ROKO__SERVE__AUTH__API_KEY`.
+    #[test]
+    fn serve_auth_table_without_enabled_keeps_auth_on() {
+        let _env_guard = super::TEST_ENV_LOCK.lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let opts = |apply_hierarchical_env| LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env,
+            strict_validation: false,
+        };
+        let load = |file: &str, text: &str, apply_env: bool| {
+            let path = dir.path().join(file);
+            std::fs::write(&path, text).expect("write config");
+            load_config_file(&path, &opts(apply_env)).expect("load config")
+        };
+
+        // Serde alone: a partial table keeps the secure default.
+        let partial: crate::config::ServeConfig =
+            toml::from_str("[auth]\napi_key = \"sk-ba8d42\"\n").expect("parse serve config");
+        assert!(partial.auth.enabled, "a table with only api_key");
+
+        // The key file, which may hold the key itself.
+        let config = load(
+            ".roko/config.toml",
+            "[serve.auth]\napi_key = \"sk-ba8d42\"\n",
+            false,
+        );
+        assert!(config.serve.auth.enabled, "a key-file table with only api_key");
+        assert_eq!(config.serve.auth.api_key, "sk-ba8d42");
+
+        // roko.toml tables that set other auth fields but not `enabled`.
+        for table in [
+            "[serve.auth]\napi_key = \"${ROKO_TEST_BA8D42_KEY}\"\n",
+            "[serve.auth]\nprivy_app_id = \"privy-app\"\n",
+            "[serve.auth]\nenforcement_mode = \"audit\"\n",
+        ] {
+            // SAFETY: serialized by TEST_ENV_LOCK; no other test reads it.
+            unsafe { std::env::set_var("ROKO_TEST_BA8D42_KEY", "sk-ba8d42") };
+            let config = load("roko.toml", table, false);
+            // SAFETY: serialized by TEST_ENV_LOCK.
+            unsafe { std::env::remove_var("ROKO_TEST_BA8D42_KEY") };
+            assert!(config.serve.auth.enabled, "{table}");
+        }
+
+        // Only the environment sets the key, as `.roko/.env` does.
+        // SAFETY: serialized by TEST_ENV_LOCK; removed before the asserts.
+        unsafe { std::env::set_var("ROKO__SERVE__AUTH__API_KEY", "sk-ba8d42-env") };
+        let from_env = load("roko.toml", "config_version = 2\n", true);
+        let partial_with_env = load(
+            "roko.toml",
+            "[serve.auth]\nprivy_app_id = \"privy-app\"\n",
+            true,
+        );
+        // SAFETY: serialized by TEST_ENV_LOCK.
+        unsafe { std::env::remove_var("ROKO__SERVE__AUTH__API_KEY") };
+        assert!(from_env.serve.auth.enabled, "env-only key");
+        assert_eq!(from_env.serve.auth.api_key, "sk-ba8d42-env");
+        assert!(partial_with_env.serve.auth.enabled, "env key over a partial table");
+        assert_eq!(partial_with_env.serve.auth.api_key, "sk-ba8d42-env");
+
+        // An explicit opt-out still turns auth off.
+        let config = load("roko.toml", "[serve.auth]\nenabled = false\n", false);
+        assert!(!config.serve.auth.enabled, "enabled = false");
+    }
+
     /// bug-8f8704: `${VAR}` was expanded only in provider fields, so a
     /// reference in `serve.auth.api_key` loaded as a literal key. A secret
     /// field that holds a reference, which the loader accepts in a readable

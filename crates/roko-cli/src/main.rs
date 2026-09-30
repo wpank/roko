@@ -4367,13 +4367,19 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
         // [providers.*] table) rather than the legacy agent.command field.  When
         // providers are configured the command field remains "cat" (its sentinel
         // default) even though a real backend is wired, so the original check
-        // would incorrectly gate those workspaces.
-        let has_providers = !resolved.config.providers.is_empty();
+        // would incorrectly gate those workspaces. A provider key exported in
+        // the environment is a provider too: `effective_providers` adds one
+        // for each well-known key variable, as dispatch does.
+        let mut registry = RokoConfig::default();
+        registry.providers.clone_from(&resolved.config.providers);
+        let has_providers = !registry.effective_providers().is_empty();
         if fully_default && resolved.config.agent.command == "cat" && !has_providers {
             eprintln!("error: no LLM provider configured.\n");
             eprintln!("To get started, either:");
             eprintln!("  1. Run `roko init` to create a workspace with default config");
-            eprintln!("  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY");
+            eprintln!(
+                "  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or PERPLEXITY_API_KEY"
+            );
             eprintln!("  3. Edit roko.toml to configure a provider");
             eprintln!("\n  hint: run `roko doctor` to diagnose your setup");
             std::process::exit(EXIT_FAILURE);

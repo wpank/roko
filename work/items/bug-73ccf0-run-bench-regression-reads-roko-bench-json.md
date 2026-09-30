@@ -3,13 +3,15 @@ id = "bug-73ccf0"
 kind = "bug"
 title = "run_bench_regression reads .roko/bench/*.json, but runs live in runs/, so the regression check never fires"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/routes/bench"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-28becc at abb181f65)"
 anchors = ["crates/roko-serve/src/routes/bench.rs", "crates/roko-serve/src/bench.rs"]
@@ -41,3 +43,7 @@ Release: a regression check that can never fire looks like "no regressions".
 
 - [ ] A regression between stored runs produces a `BenchRegressionReport`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-32d57f` at `61fa24884`; cargo verification deferred to the batch check. `bench::load_bench_runs` is the shared reader for the runs directory that `save_bench_run` writes.

@@ -3,13 +3,15 @@ id = "bug-32d57f"
 kind = "bug"
 title = "roko bench swe's --agent-mode still defaults to gold; the flag should be required"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/main", "roko-cli/bench"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-28becc at abb181f65)"
 anchors = ["crates/roko-cli/src/main.rs"]
@@ -40,3 +42,7 @@ The `--agent-mode` argument in `main.rs`.
 
 - [ ] `roko bench swe` refuses to run without an explicit `--agent-mode`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-32d57f` at `bad522714`; cargo verification deferred to the batch check. Parse test: `cli_bench_swe_requires_agent_mode` (main.rs). The v2 and v3 CLI references now list the flag as required.

@@ -3,13 +3,15 @@ id = "bug-bca443"
 kind = "bug"
 title = "In roko bench swe's proxy scoring, a model patch can edit the tests that grade it"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/bench"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-28becc at abb181f65)"
 anchors = ["crates/roko-cli/src/bench.rs"]
@@ -41,3 +43,7 @@ The swe scoring path in `crates/roko-cli/src/bench.rs`.
 
 - [ ] Grading always runs the task's own tests, whatever the patch did to them.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-32d57f` at `0152e1e67`; cargo verification deferred to the batch check. Custom datasets must now name their grading tests (`test_files` and/or `test_patch`); `demo/demo-resources/benchmark-flow/README.md` documents it. The two swe tests need `python3`.

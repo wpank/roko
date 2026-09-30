@@ -3,13 +3,15 @@ id = "bug-a445eb"
 kind = "bug"
 title = "roko bench swe and prediction-file episodes record cost_usd 0.0 for cost nobody measured"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/bench"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-28becc at abb181f65)"
 anchors = ["crates/roko-cli/src/bench.rs"]
@@ -41,3 +43,7 @@ The two episode constructions in `bench.rs`.
 
 - [ ] No bench episode records $0 for a cost it didn't measure.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-32d57f` at `a261d070b` and `0b073b879`; cargo verification deferred to the batch check. Reader contract: `Episode::cost_known()` / `COST_KNOWN_KEY` in roko-learn; `derive_cost_record` skips such episodes, and `compute_compounding_metrics` leaves them out of cost per success (that function has no caller yet: gap-14f08e). Not covered: `EfficiencySummaryRecord::from_episode` still copies the 0 into efficiency-summaries.jsonl, which has no unknown-cost flag.

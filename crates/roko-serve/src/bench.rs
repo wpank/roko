@@ -163,6 +163,14 @@ pub enum BenchStrategy {
     Demo,
 }
 
+impl BenchStrategy {
+    /// Whether runs with this strategy report simulated tokens and cost
+    /// rather than measured ones. Only [`BenchStrategy::Demo`] does.
+    pub const fn is_simulated(self) -> bool {
+        matches!(self, Self::Demo)
+    }
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_bench_strategy(strategy: &BenchStrategy) -> bool {
     matches!(strategy, BenchStrategy::Minimal)
@@ -402,6 +410,12 @@ pub struct BenchRun {
     /// Optional label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Whether the run's tokens and cost were simulated (the Demo strategy).
+    /// A simulated run is stored so it can be read by id, but it never
+    /// enters the index, so the run list, the pareto frontier, the cost
+    /// summary and regression baselines leave it out.
+    #[serde(default)]
+    pub simulated: bool,
     /// Run status.
     pub status: BenchRunStatus,
     /// When the run started — serialized as ISO 8601.
@@ -541,6 +555,28 @@ pub async fn load_bench_run(workdir: &Path, run_id: &str) -> anyhow::Result<Opti
     };
     let run: BenchRun = serde_json::from_str(&data)?;
     Ok(Some(run))
+}
+
+/// Load every stored bench run, from the directory [`save_bench_run`] writes
+/// to. Files that are not bench runs are skipped.
+pub async fn load_bench_runs(workdir: &Path) -> Vec<BenchRun> {
+    let mut runs = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(runs_dir(workdir)).await else {
+        return runs;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let Ok(data) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        if let Ok(run) = serde_json::from_str::<BenchRun>(&data) {
+            runs.push(run);
+        }
+    }
+    runs
 }
 
 /// Delete a bench run from disk.
@@ -714,25 +750,6 @@ pub fn list_models_from_config(config: &roko_core::config::schema::RokoConfig) -
         models.push("claude-sonnet-4-6".to_string());
     }
     models
-}
-
-/// Estimate cost in USD from token counts and model slug.
-///
-/// Uses approximate per-1K-token pricing. Falls back to Sonnet pricing
-/// when the model is unknown.
-pub fn estimate_cost_usd(model: Option<&str>, input_tokens: u64, output_tokens: u64) -> f64 {
-    let (input_rate, output_rate) = match model.unwrap_or("") {
-        m if m.contains("haiku") => (0.00025, 0.00125),
-        m if m.contains("sonnet") => (0.003, 0.015),
-        m if m.contains("opus") => (0.015, 0.075),
-        m if m.contains("gpt-5.4-mini") || m.contains("gpt-4o-mini") => (0.00015, 0.0006),
-        m if m.contains("gpt-5") || m.contains("gpt-4o") => (0.005, 0.015),
-        m if m.contains("o3-mini") => (0.0011, 0.0044),
-        m if m.contains("gemini") => (0.00125, 0.01),
-        m if m.contains("llama") || m.contains("cerebras") => (0.0001, 0.0001),
-        _ => (0.003, 0.015),
-    };
-    (input_tokens as f64 * input_rate / 1000.0) + (output_tokens as f64 * output_rate / 1000.0)
 }
 
 use tokio::io::AsyncWriteExt;

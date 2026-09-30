@@ -3,13 +3,15 @@ id = "gap-cd3529"
 kind = "gap"
 title = "Integration test C1: one fixture run shows the same honest verdicts on every surface"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "7490cb94b"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canary C1)"
 anchors = ["crates/roko-cli/tests/"]
@@ -77,3 +79,38 @@ No such test exists. The fake-provider pattern exists, and the Graph budget and 
 - The test builds `roko-cli` but edits no hot file. It can be written while the fixes are in progress, and it merges
   last.
 - Keep it under a minute: fake provider only, no network.
+- 2026-09-30 (wk-gates): Implemented on `work/bug-7e1b6b` at `357d8448d`, after the two fixes it depends on: bug-a843d4
+  at `361f1546d` and bug-7e1b6b at `18ef631da`. The `[[verify]]` command passes in the worker's own target clone (the
+  test takes about 7 s); the batch check re-runs it.
+  - **Fixture:** five tasks in two plans, not four in one. T1–T4 are as planned. T5 has no verify step and is served
+    by a T0 reflex rule, so that bug-94151f is exercised. T1, T2 and T5 form their own plan, so that its outcome
+    depends on gap-29a84b; beside failed tasks, a plan fails either way.
+  - **Surfaces:** the run's JSON report (plan outcomes), both checkpoints (status, gate verdicts, failed tasks),
+    `roko plan status` (plan-level only: its task rows come from `tasks.toml`), `.roko/learn/run-metrics.jsonl` (run
+    and per plan), a `DashboardSnapshot` rebuilt from the `--log-file` hub events (the events the TUI and SSE clients
+    get) with `classify_task_outcome` on each outcome, the `run.completed` line's task outcomes, `.roko/episodes.jsonl`
+    and the reflex store. Episodes are checked by `outcome` and `learning_label`, which learners read; `success` keeps
+    its older meaning (the call succeeded and no verify step failed), so it is true for T2 too.
+  - **Revert check, by hand, once each:** C1 fails with each fix reverted on its own. bug-7e1b6b (`node_outcome` says
+    `passed` without a passed verdict): the dashboard outcomes differ. bug-a843d4 (a disabled role completes): the
+    second checkpoint's failed tasks differ. bug-7eb27e (run metrics count tasks by their plan's outcome): the metrics
+    differ. gap-29a84b (unverified counts as success): the plan outcomes differ. bug-94151f (a reflex match credits its
+    rule at once): the rule's `success_count` differs.
+  - **Also changed:** the run metrics were appended by a spawned task that a process exit could drop, so the canary
+    could miss them. They are now written before the run returns.
+- 2026-09-30 (wk-gates), notes for the two bugs this depends on, whose item files had uncommitted edits in the main
+  checkout:
+  - **bug-a843d4** (`361f1546d`): a task whose role is disabled now fails with a rejection naming the role and its
+    config key, without a dispatch; a rejection is not retried, and a resume runs the task again. New test
+    `disabled_role_task_fails_without_dispatch`; the plan runner's disabled-role fixtures now expect a failed plan.
+    Its `[[verify]]` command passes.
+  - **bug-7e1b6b** (`18ef631da`): the plan runner's status polls report each finished task with its gate verdict (the
+    Activity log's record while the plan runs, the graph's output at the end), and a completed task without a passed
+    verdict is `unverified`. `classify_task_outcome` gains `Unverified` and `Skipped` classes. The snapshot counts them
+    apart; `tasks_completed` and the plan's new `tasks_passed` count passes only, while `tasks_done` stays the progress
+    count. A task that finishes without a `TaskStarted` (it never ran, or it ran between two polls) is now counted. The
+    TUI shows unverified tasks in amber and skipped ones as skipped; the portal gains an `unverified` task status in
+    amber (`tsc` is clean, and vitest passes 788 tests in 80 files). Both its committed `[[verify]]` command and the
+    main checkout's pending one (`skipped_and_unverified_tasks_are_not_counted_as_passed`) pass. Left as it was: the
+    portal reducer still ignores a `task_completed` for a task it never saw start; its rows show such tasks as skipped
+    once the plan ends.

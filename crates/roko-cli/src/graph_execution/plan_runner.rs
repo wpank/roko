@@ -1107,7 +1107,7 @@ async fn run_graph_plan_body(
     }
     // The same provider settles the worktrees the rich topology's executors
     // hand on to their gates.
-    let cell_resources = plan_cell_resources(rich_topology, workspace_provider);
+    let cell_resources = plan_cell_resources(rich_topology, &roko_config.gates, workspace_provider);
 
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
     // `[conductor] max_agents` caps concurrently executing tasks across
@@ -1948,18 +1948,22 @@ struct PlanRunContext<'a> {
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
-/// topology's `plan.gate` cells run the gates, and settle the worktree each
-/// task executor hands on through `workspaces`, the provider the executors
-/// acquire them from. The default topology needs neither.
+/// topology's `plan.gate` cells run the gates, with the run's `[gates]`,
+/// and settle the worktree each task executor hands on through `workspaces`,
+/// the provider the executors acquire them from. The default topology needs
+/// neither.
 fn plan_cell_resources(
     rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
     workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
 ) -> roko_graph::cell::CellResources {
     if !rich_topology {
         return roko_graph::cell::CellResources::default();
     }
     roko_graph::cell::CellResources {
-        gates: Some(Arc::new(crate::runner::gate_adapter::default_gate_adapter())),
+        gates: Some(Arc::new(
+            crate::runner::gate_adapter::default_gate_adapter().with_gates_config(gates.clone()),
+        )),
         workspaces,
     }
 }
@@ -3995,9 +3999,10 @@ max_retries = 0
             ),
         );
 
-        let resources = plan_cell_resources(true, Some(provider.clone()));
+        let gates = roko_core::config::GatesConfig::default();
+        let resources = plan_cell_resources(true, &gates, Some(provider.clone()));
         assert!(resources.gates.is_some() && resources.workspaces.is_some());
-        let default_topology = plan_cell_resources(false, Some(provider.clone()));
+        let default_topology = plan_cell_resources(false, &gates, Some(provider.clone()));
         assert!(default_topology.gates.is_none() && default_topology.workspaces.is_none());
 
         let task = roko_graph::TopologyTaskInfo {

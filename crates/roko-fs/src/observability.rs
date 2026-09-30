@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use roko_core::obs::LogScrubber;
+use roko_core::obs::scrub::MIN_SECRET_LEN;
 use roko_core::tool::{MetricsSink, TraceSink};
 use serde::{Deserialize, Serialize};
 
@@ -182,7 +183,10 @@ impl FsObservabilitySinks {
 /// all sinks in a single run.
 ///
 /// Construction: call [`RunScrubber::build`] with secret key-value pairs
-/// sourced from `roko.toml [secrets]` or environment variables.
+/// sourced from `roko.toml [secrets]` or environment variables. The `roko`
+/// binary calls [`RunScrubber::install`] once at startup: its log layers
+/// scrub with the result, and the persistence writers scrub what they write
+/// with its literal values (see [`roko_core::obs::scrub`]).
 pub struct RunScrubber;
 
 impl RunScrubber {
@@ -190,13 +194,14 @@ impl RunScrubber {
     /// 1. All built-in regex patterns (API keys, tokens, etc.)
     /// 2. Each `(name, value)` pair as a literal-match pattern.
     ///
-    /// Empty values are silently skipped. Invalid patterns are logged and
-    /// skipped — they never prevent construction.
+    /// Values shorter than [`MIN_SECRET_LEN`] are skipped: short values also
+    /// occur in ordinary text. Invalid patterns are logged and skipped — they
+    /// never prevent construction.
     #[must_use]
     pub fn build(configured_secrets: &[(&str, &str)]) -> Arc<LogScrubber> {
         let scrubber = LogScrubber::new();
         for &(name, value) in configured_secrets {
-            if value.is_empty() {
+            if value.len() < MIN_SECRET_LEN {
                 continue;
             }
             if let Err(e) = scrubber.add_literal_value(value, name) {
@@ -228,6 +233,36 @@ impl RunScrubber {
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
         Self::build(&refs)
+    }
+
+    /// Build the process's scrubber and install it as its secret scrubber
+    /// ([`roko_core::obs::install_secret_scrubber`]). Its secrets are
+    /// `env_file_secrets`, the `(name, value)` pairs loaded from `.env`
+    /// files, then the values of the provider key variables roko knows
+    /// ([`roko_core::child_env::PROVIDER_KEY_VARS`] and the provider
+    /// catalog's), so a key exported in the shell is scrubbed too. Every
+    /// `.env` value counts as a secret, as it does for child environments
+    /// ([`roko_core::child_env`]); a setting that is not a secret belongs in
+    /// `roko.toml`. Returns the scrubber for the log layers.
+    pub fn install(env_file_secrets: &[(String, String)]) -> Arc<LogScrubber> {
+        let secrets: Vec<(&str, &str)> = env_file_secrets
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let scrubber = Self::build(&secrets);
+        roko_core::obs::install_secret_scrubber(Some(Arc::clone(&scrubber)));
+        roko_core::obs::add_secret_env_values(
+            roko_core::child_env::PROVIDER_KEY_VARS
+                .iter()
+                .copied()
+                .chain(
+                    roko_core::provider_catalog::catalog()
+                        .iter()
+                        .map(|entry| entry.api_key_env)
+                        .filter(|name| !name.is_empty()),
+                ),
+        );
+        scrubber
     }
 }
 
@@ -699,6 +734,54 @@ mod tests {
         let input = "body: aGVsbG8= abc123def456 d29ybGQ=";
         let output = scrubber.scrub(input);
         assert!(!output.contains("abc123def456"));
+    }
+
+    #[test]
+    fn run_scrubber_skips_short_values() {
+        let scrubber = RunScrubber::build(&[("PORT", "8080"), ("MODE", "debug")]);
+        assert_eq!(
+            scrubber.scrub("port 8080 mode debug"),
+            "port 8080 mode debug"
+        );
+    }
+
+    #[test]
+    fn installed_run_scrubber_reaches_jsonl_appends() {
+        let previous = roko_core::obs::secret_scrubber();
+        let scrubber = RunScrubber::install(&[(
+            "CANARY_TOKEN".to_string(),
+            "fs-canary-secret-01".to_string(),
+        )]);
+        assert!(
+            scrubber
+                .scrub("x fs-canary-secret-01")
+                .contains("[REDACTED:CANARY_TOKEN]")
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("records.jsonl");
+        let record = serde_json::json!({
+            "output": "the agent printed fs-canary-secret-01",
+            "created_at_ms": 1_727_700_000_000_u64,
+        });
+        crate::log_rotation::append_jsonl_line_sync(&path, record.to_string().as_bytes(), 10)
+            .expect("append record");
+        crate::log_rotation::append_jsonl_line_relaxed_sync(&path, br#"{"clean":true}"#, 10)
+            .expect("append clean record");
+        roko_core::obs::install_secret_scrubber(previous);
+
+        let written = std::fs::read_to_string(&path).expect("read records");
+        assert!(!written.contains("fs-canary-secret-01"), "{written}");
+        let lines: Vec<serde_json::Value> = written
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("record still parses"))
+            .collect();
+        assert_eq!(
+            lines[0]["output"],
+            "the agent printed [REDACTED:CANARY_TOKEN]"
+        );
+        assert_eq!(lines[0]["created_at_ms"], 1_727_700_000_000_u64);
+        assert_eq!(lines[1], serde_json::json!({ "clean": true }));
     }
 
     // ── T020: SinkTelemetry tests ───────────────────────────────────────────

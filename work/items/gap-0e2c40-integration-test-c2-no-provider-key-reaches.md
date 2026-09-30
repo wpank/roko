@@ -3,13 +3,14 @@ id = "gap-0e2c40"
 kind = "gap"
 title = "Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G2, canary C2)"
 anchors = ["crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
@@ -69,3 +70,5 @@ No such test at `41c7ffbd6`. `secret_canary.rs` tests the scrubbers in isolation
 - The test builds `roko-cli` but edits no hot file. It can be written now and merged last.
 - A provider may receive the one key it is configured with. The fake provider has none, so it must receive none.
 - Use the fake provider only, with no network, and keep the test under a minute.
+- 2026-09-30 (wk-canary): Implemented on `work/gap-5f4852` at `0483ba61c`, on top of gap-5f4852 (`551a339e1`). `cargo test -p roko-cli --test secrets_and_git_guard_canary` passes in the worktree in about 1 s. The fake agent's reply quotes a home key, so the file scan also depends on gap-5f4852. `agent_tool_shells_exclude_provider_keys` (roko's own `run_tests` and `bash` through a fake OpenAI-compatible provider) is `#[ignore = "bug-0d9ac4"]`: run with `--include-ignored`, it fails only on `run_tests`; `bash` is clean. Un-ignore it once bug-0d9ac4 merges. The by-hand revert check in Done-when was not run (each revert needs a rebuild). Each fix maps to an assertion: agent and verify environments (bug-7d7200), `--setting-sources` (gap-8be530), the file scan (gap-5f4852), git denials (bug-7de5df), `cat ~/.roko/.env` (bug-a66941). Re-run after merging batch 12a (telemetry2) at `09e0a93ff`: still passes; batch 12b (model-truth) not yet covered.
+- 2026-09-30 (wk-canary): the log scrubber learns config secrets only from providers' `api_key_env` (bug-5a6636), so `extra_headers`, file secrets and `serve.auth.api_key` can reach records; and it treats every `.env` value of 8+ characters as a secret (bug-cef888). C2 should cover both.

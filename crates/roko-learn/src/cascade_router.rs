@@ -1392,6 +1392,30 @@ impl CascadeRouter {
         reward: f64,
         success: bool,
     ) {
+        self.replay_weighted_observation(
+            model_slug,
+            context_features,
+            model_idx,
+            reward,
+            success,
+            1.0,
+        );
+    }
+
+    /// Apply a WAL-replayed observation that carried `weight` (0.0 to 1.0)
+    /// of a full one, as [`Self::observe_weighted_outcome`] applied it. Does
+    /// NOT write a WAL entry.
+    ///
+    /// Validates the slug/index pair as [`Self::replay_observation`] does.
+    pub fn replay_weighted_observation(
+        &self,
+        model_slug: &str,
+        context_features: &[f64],
+        model_idx: usize,
+        reward: f64,
+        success: bool,
+        weight: f64,
+    ) {
         // Validate the slug/index pair is still valid after potential config changes.
         let current_idx = self.model_index_for_slug(model_slug);
         let effective_idx = match current_idx {
@@ -1420,7 +1444,7 @@ impl CascadeRouter {
             success,
             None,
             None,
-            1.0,
+            weight.clamp(0.0, 1.0),
         );
     }
 
@@ -1789,6 +1813,26 @@ impl CascadeRouter {
         success: bool,
     ) {
         self.observe_internal(&context_vec, model_idx, reward, success, None, None, 1.0);
+    }
+
+    /// Record an observation that carries `weight` (0.0 to 1.0) of a full
+    /// one: a full confidence trial, and a `LinUCB` update scaled by
+    /// `weight`, as [`Self::record_override_outcome`] makes for an
+    /// operator's override.
+    ///
+    /// This applies the same update as [`Self::replay_weighted_observation`],
+    /// so an observation journaled in the WAL replays exactly as it was
+    /// applied.
+    pub fn observe_weighted_outcome(
+        &self,
+        context_vec: &[f64],
+        model_idx: usize,
+        reward: f64,
+        success: bool,
+        weight: f64,
+    ) {
+        let weight = weight.clamp(0.0, 1.0);
+        self.observe_internal(context_vec, model_idx, reward, success, None, None, weight);
     }
 
     /// Record a successful multi-objective observation from a raw context vector.

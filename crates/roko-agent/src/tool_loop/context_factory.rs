@@ -50,6 +50,7 @@ pub struct ToolExecutionContextFactory {
     cancel_token: Arc<dyn CancelToken>,
     correlation: CorrelationEnvelope,
     taint_level: CamelTaintLevel,
+    env_passthrough: Vec<String>,
 }
 
 impl ToolExecutionContextFactory {
@@ -77,6 +78,7 @@ impl ToolExecutionContextFactory {
             cancel_token: Arc::new(NeverCancel),
             correlation: CorrelationEnvelope::empty(),
             taint_level: CamelTaintLevel::External,
+            env_passthrough: Vec::new(),
         }
     }
 
@@ -144,6 +146,15 @@ impl ToolExecutionContextFactory {
         self
     }
 
+    /// Let the commands tool calls run (`bash`, `run_tests`) inherit the
+    /// variables matching `patterns` (`[agent] env_passthrough`) besides
+    /// what the gate policy admits.
+    #[must_use]
+    pub fn with_env_passthrough(mut self, patterns: Vec<String>) -> Self {
+        self.env_passthrough = patterns;
+        self
+    }
+
     /// Stamp out a fresh production [`ToolContext`] using the factory's
     /// configured sinks, cancel token, capabilities, and correlation data.
     #[must_use]
@@ -164,6 +175,7 @@ impl ToolExecutionContextFactory {
                 .unwrap_or(&self.worktree_path),
         )
         .with_taint_level(self.taint_level)
+        .with_env_passthrough(self.env_passthrough.clone())
     }
 }
 
@@ -176,6 +188,7 @@ impl std::fmt::Debug for ToolExecutionContextFactory {
             .field("capabilities", &self.capabilities)
             .field("taint_level", &self.taint_level)
             .field("correlation", &self.correlation)
+            .field("env_passthrough", &self.env_passthrough)
             .finish_non_exhaustive()
     }
 }
@@ -241,6 +254,17 @@ mod tests {
         let ctx = factory.build();
         assert_eq!(ctx.worktree(), Path::new("/tmp/attempt-wt"));
         assert_eq!(ctx.immune_root(), Path::new("/tmp/canonical-ws"));
+    }
+
+    #[test]
+    fn factory_carries_env_passthrough_to_every_context() {
+        let factory = ToolExecutionContextFactory::new("/tmp/passthrough")
+            .with_env_passthrough(vec!["DATABASE_URL".to_string()]);
+
+        assert_eq!(factory.build().env_passthrough, ["DATABASE_URL"]);
+        assert_eq!(factory.build().env_passthrough, ["DATABASE_URL"]);
+        let default = ToolExecutionContextFactory::new("/tmp/none").build();
+        assert!(default.env_passthrough.is_empty());
     }
 
     #[test]

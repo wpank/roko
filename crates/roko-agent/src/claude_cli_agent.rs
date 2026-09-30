@@ -531,7 +531,7 @@ impl ClaudeCliAgent {
             output = output.tag("num_turns", num_turns.to_string());
         }
         let output = output.build();
-        AgentResult::fail(output).with_usage_obs(self.usage_observation(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(Self::usage_observation(stream_usage, wall_ms))
     }
 
     /// The run stopped at `--max-turns`: the final stream-json `result` has
@@ -787,8 +787,9 @@ impl ClaudeCliAgent {
 
     /// Canonical usage for a run, keeping the source of `stream_usage`:
     /// provider-reported, estimated from what a killed run streamed, or
-    /// unknown.
-    fn usage_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+    /// unknown. Its model is the one the CLI's output named, `None` when it
+    /// named none (bug-2379dc): the configured slug is only the request.
+    fn usage_observation(stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
         UsageObservation {
             input_tokens: stream_usage.input_tokens,
             output_tokens: stream_usage.output_tokens,
@@ -797,10 +798,7 @@ impl ClaudeCliAgent {
             reasoning_tokens: None,
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
-            model: stream_usage
-                .model
-                .clone()
-                .or_else(|| Some(self.model.clone())),
+            model: stream_usage.model.clone(),
             wall_ms,
         }
     }
@@ -1416,7 +1414,7 @@ impl ClaudeCliAgent {
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage_obs(self.usage_observation(&stream_usage, wall_ms))
+            .with_usage_obs(Self::usage_observation(&stream_usage, wall_ms))
     }
 }
 
@@ -1826,6 +1824,9 @@ mod tests {
             "ssh -o ProxyCommand='rm -rf x' host",
             "parallel rm -rf ::: a b",
             "parallel 'rm -rf {}' ::: a b",
+            // A delete that parallel runs, like one xargs runs.
+            "parallel rm ::: a b c",
+            "ls | parallel rm",
             // Multi-call binaries.
             "busybox rm -rf x",
             "/bin/busybox sh -c 'rm -rf x'",
@@ -1855,6 +1856,9 @@ mod tests {
             "ssh host ls -la",
             "ssh -l git host uptime",
             "parallel echo ::: a b",
+            // git rm removes tracked files, which git can restore.
+            "sudo git -C dir rm -r x",
+            "parallel git rm --cached ::: a",
             "busybox ls",
             "ionice -c 3 cargo build",
             "git commit -m \"watch 'rm -rf x'\"",
@@ -2114,12 +2118,39 @@ mod tests {
         assert_eq!(file_code("Grep", rust_only), Some(0));
         assert_eq!(bash_code("cat roko.toml"), Some(2));
         assert_eq!(bash_code("cargo test"), Some(0));
+        // A glob or a recursive search reads it too, unless a filter
+        // leaves it out.
+        fs::create_dir(workdir.path().join("src")).unwrap();
+        for read_all in [
+            "cat *",
+            "grep -r api_key .",
+            "rg api_key",
+            "grep -rn key src/..",
+        ] {
+            assert_eq!(
+                bash_code(read_all),
+                Some(2),
+                "`{read_all}` should be denied"
+            );
+        }
+        for filtered in [
+            "rg -g '*.rs' api_key",
+            "grep -r --include='*.rs' key .",
+            "grep -r key src",
+        ] {
+            assert_eq!(
+                bash_code(filtered),
+                Some(0),
+                "`{filtered}` should be allowed"
+            );
+        }
 
         // Without the secret, roko.toml is an ordinary file.
         fs::write(&config, "[serve.auth]\nenabled = true\n").unwrap();
         assert_eq!(file_code("Read", read), Some(0));
         assert_eq!(file_code("Grep", grep), Some(0));
         assert_eq!(bash_code("cat roko.toml"), Some(0));
+        assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
     #[test]
@@ -2879,6 +2910,36 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         let observation = result.usage_obs.expect("usage observation");
         assert_eq!(observation.source, UsageSource::ProviderReported);
         assert_eq!(observation.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    /// A run whose output names no model records the served model as
+    /// unknown; the configured slug stays the model asked for, on the
+    /// output's `model` tag (bug-2379dc).
+    #[tokio::test]
+    async fn a_cli_that_names_no_model_leaves_the_served_model_unknown() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"hello"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-1","total_cost_usd":0.25,"usage":{"input_tokens":11,"output_tokens":22}}'
+"#;
+        fs::write(&script, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(result.success);
+        assert_eq!(result.output.tag("model"), Some("claude-test-model"));
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::ProviderReported);
+        assert_eq!(observation.model, None, "nobody reported a model");
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #12;
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::TaskMeta"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1", "gap-0d64d5", "bug-aaa924", "bug-453481", "bug-207f35", "bug-056b40", "bug-8835bc", "gap-6daad9", "bug-8cf581"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1", "gap-0d64d5", "bug-aaa924", "bug-453481", "bug-207f35", "bug-056b40", "bug-8835bc", "gap-6daad9", "bug-8cf581", "bug-4862cf", "bug-9c5973"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn c3_each_passed_task_commits_once_on_the_plan_branch' crates/roko-cli/tests/ && grep -rqw 'fn c4_meta_verify_catches_tasks_that_break_together' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration"
@@ -111,8 +111,10 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] bug-207f35: GitMergeBackend still merges in, and auto-commits, the checkout it is given
 - [ ] bug-056b40: On resume, attempts start from HEAD instead of the plan branch, and retained attempt worktrees aren't re-attached
 - [x] bug-8835bc: A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success
-- [ ] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
+- [x] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
 - [ ] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
+- [ ] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
+- [ ] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.
 

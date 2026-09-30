@@ -93,9 +93,9 @@ This is the implementation plan.
 - [x] bug-4e7d40: roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists
 - [ ] bug-ab8118: A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning
 - [x] bug-524a3b: serve's hints tell users to put serve.auth.api_key in roko.toml; point them, and config set, at ROKO__SERVE__AUTH__API_KEY in .roko/.env
-- [ ] bug-8f8704: ${VAR} is expanded only in provider fields, so serve.auth.api_key = "${X}" loads as a literal key
+- [x] bug-8f8704: ${VAR} is expanded only in provider fields, so serve.auth.api_key = "${X}" loads as a literal key
 - [ ] dec-648cce: Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys?
-- [ ] gap-ed511d: docs/v3's auth pages, docker/RAILWAY.md and config set --help still put secrets in roko.toml, which roko now refuses
+- [x] gap-ed511d: docs/v3's auth pages, docker/RAILWAY.md and config set --help still put secrets in roko.toml, which roko now refuses
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

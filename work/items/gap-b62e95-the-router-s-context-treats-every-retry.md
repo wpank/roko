@@ -34,3 +34,4 @@ Rechecked 2026-09-29 at d9e79e9d8. The production site is build_routing_context 
 - `build_fallback_routing_context(model, attempt)` takes the attempt ordinal, from the settled record in the routing
   sink and from the receipt in the Graph settlement sink.
 - The streaming path (`streaming.rs`, owned elsewhere) still routes every attempt as a first one.
+- 2026-09-30 (wk-taskdef): the first half of this item's verify reads `build_routing_context` from `crates/roko-cli/src/graph_task_dispatch.rs`, but the function moved to `graph_task_dispatch/routing_context.rs` (:363 at 52119c146, declared `pub(super) fn`). The `sed` prints nothing, so that half passes vacuously. Point it at the new file, and match `pub(super) fn build_routing_context(`. The cargo half also needs a `grep -rqw 'fn routing_context_marks_retry_after_failure'` guard, since a filter that matches no test exits 0 (`check --lint` flags it).

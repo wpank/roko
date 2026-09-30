@@ -137,12 +137,13 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
             }
         }
     }
-    let successful = episodes
-        .iter()
+    // An episode whose cost nobody measured holds a placeholder 0, not a
+    // free success: leave it out of both sides of cost per success.
+    let costed = || episodes.iter().filter(|episode| episode.cost_known());
+    let successful = costed()
         .filter(|episode| episode.learning_success() == Some(true))
         .count();
-    let total_cost = episodes
-        .iter()
+    let total_cost = costed()
         .map(|episode| episode.usage.cost_usd)
         .filter(|cost| cost.is_finite() && *cost >= 0.0)
         .sum::<f64>();
@@ -804,6 +805,23 @@ mod tests {
         assert_eq!(metrics.routing_accuracy, 1.0);
         assert_eq!(metrics.error_dedup_rate, 0.5);
         assert_eq!(metrics.cost_per_success, 3.0);
+    }
+
+    #[test]
+    fn cost_per_success_leaves_out_unmeasured_costs() {
+        let mut measured = Episode::new("agent-a", "task-a");
+        measured.success = true;
+        measured.usage.cost_usd = 2.0;
+
+        // A bench run of an external agent: it passed, but nobody saw what
+        // it spent, so its placeholder 0 must not halve the cost per success.
+        let mut unmeasured = Episode::new("agent-b", "task-b");
+        unmeasured.success = true;
+        unmeasured.mark_cost_unknown();
+        assert!(!unmeasured.cost_known());
+
+        let metrics = compute_compounding_metrics(&[measured, unmeasured]);
+        assert_eq!(metrics.cost_per_success, 2.0);
     }
 
     fn sample_event(timestamp: DateTime<Utc>, idx: usize) -> AgentEfficiencyEvent {

@@ -565,6 +565,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             log_file: None,
             worktree_per_task: false,
             rich_topology: false,
+            promote: None,
             no_tui: true,
             state_hub: Some(hub.clone()),
             interrupt: Some(interrupt),

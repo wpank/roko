@@ -46,6 +46,9 @@ const MAX_EXTRA_BYTES: usize = 16 * 1024;
 /// Key of the settled verdict's learning label in [`Episode::extra`]
 /// (S01 §4.1): `1`, `0`, or `null` when the attempt teaches nothing.
 pub const LEARNING_LABEL_KEY: &str = "learning_label";
+/// Key in [`Episode::extra`] that is `false` when nobody measured the
+/// episode's cost; see [`Episode::cost_known`].
+pub const COST_KNOWN_KEY: &str = "cost_known";
 const TEXT_FINGERPRINT_KEY: &str = "text_fingerprint";
 const METADATA_FINGERPRINT_KEY: &str = "metadata_fingerprint";
 const TEMPLATE_SUGGESTION_MIN_SIMILARITY: f64 = 0.7;
@@ -374,6 +377,28 @@ impl Episode {
             Some(0) => Some(false),
             _ => None,
         }
+    }
+
+    /// Whether `usage.cost_usd` was measured.
+    ///
+    /// A runner that cannot observe the spend (a bench run of an external
+    /// agent, say) leaves the 0 in `usage.cost_usd` as a placeholder and
+    /// sets `extra.cost_known = false`. That 0 does not mean free: cost sums
+    /// and averages must leave the episode out. Episodes without the key
+    /// keep their cost.
+    #[must_use]
+    pub fn cost_known(&self) -> bool {
+        self.extra
+            .get(COST_KNOWN_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+    }
+
+    /// Record that nobody measured this episode's cost; see
+    /// [`Episode::cost_known`].
+    pub fn mark_cost_unknown(&mut self) {
+        self.extra
+            .insert(COST_KNOWN_KEY.to_string(), serde_json::Value::Bool(false));
     }
 
     /// Attach an emotional tag to the episode.

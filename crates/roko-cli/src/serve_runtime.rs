@@ -889,6 +889,7 @@ fn run_plan_on_local_runtime(
                 log_file: None,
                 worktree_per_task: false,
                 rich_topology: false,
+                promote: None,
                 // Never launch an interactive TUI from an HTTP handler.
                 no_tui: true,
                 // Publish into the server's hub so API/SSE clients see the run.

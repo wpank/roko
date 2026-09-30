@@ -62,6 +62,7 @@ mod helper_calls;
 mod inert_settings;
 mod prompt_experiment;
 mod red_flags;
+mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
@@ -686,6 +687,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 // Settle the budget reservation at zero cost (no LLM call).
                 budget_reservation.settle(0.0)?;
+                // The rule serves this attempt, and only the attempt's settled
+                // record credits or demotes it (`reflex_credit`). Unverified,
+                // it teaches the rule nothing.
+                let mut attempt = self.open_attempt(spec, &task, ctx);
+                attempt.served_by_reflex(rule_id);
+                let settlement = Settlement::verified(&Ok(TaskGateVerdict::Unverified));
+                let settled = attempt.settle(settlement, "", None);
+                self.publish_settlement(spec, &task, &settled).await;
                 let output_signal = Signal::builder(Kind::AgentOutput)
                     .body(Body::text(cached_output))
                     .build();
@@ -1055,7 +1064,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
@@ -1094,7 +1103,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
-            immune_root: Some(effective_workdir.clone()),
+            // Immune state (tool controls, evidence, the quarantine vault)
+            // belongs to the workspace, not the attempt checkout, so it
+            // survives checkout cleanup and the safety routes see it.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,
@@ -1115,6 +1127,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // stop. Never unbounded.
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt.key.attempt_key()),
         };
 
         // Bind the prompt treatments to the exact final prompt before launch;
@@ -1202,7 +1215,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Consume the immediate first tick so we don't fire at t=0.
             heartbeat.tick().await;
-            let dispatch_future = self.run_bridge_with_failover(spec, &task.id, request);
+            let dispatch_future =
+                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request);
             tokio::pin!(dispatch_future);
             loop {
                 tokio::select! {

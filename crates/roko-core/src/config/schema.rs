@@ -1033,13 +1033,17 @@ impl RokoConfig {
 
     /// Interpolate `${VAR}` patterns in provider config strings.
     ///
-    /// **Scope**: Interpolation currently only applies to provider fields:
-    /// `base_url`, `api_key_env`, `command`, and `extra_headers`. Other
-    /// config sections (agent, budget, gates, etc.) do NOT support `${VAR}`
-    /// syntax -- literal strings are used as-is.
+    /// **Scope**: This covers the provider fields `base_url`, `api_key_env`,
+    /// `command` and `extra_headers`, where an unset variable becomes an
+    /// empty string. The loader expands the secret fields elsewhere
+    /// (`serve.auth.api_key`, `server.auth_token`, secret `agent.env`
+    /// entries), where an unset variable fails the load. Other fields (agent,
+    /// budget, gates, etc.) do NOT support `${VAR}` syntax -- literal strings
+    /// are used as-is.
     ///
     /// To set non-provider fields dynamically, use the named environment
-    /// variable overrides (e.g., `ROKO_MODEL`, `ROKO_BACKEND`) instead.
+    /// variable overrides (e.g., `ROKO_MODEL`, `ROKO_BACKEND`) or the
+    /// `ROKO__SECTION__FIELD` overrides instead.
     pub fn interpolate_env_vars(&mut self) {
         Self::interpolate_env_vars_with(&mut self.providers, &|key| std::env::var(key).ok());
     }

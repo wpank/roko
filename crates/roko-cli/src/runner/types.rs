@@ -2541,7 +2541,10 @@ impl RunConfig {
         model_slugs.sort();
         model_slugs.dedup();
 
-        let cascade_router = Arc::new(roko_learn::cascade_router::CascadeRouter::load_or_new(
+        // The snapshot first takes what the learning WAL journaled for it:
+        // the routing outcomes of a run that died before it saved them
+        // (bug-dfb28f).
+        let cascade_router = Arc::new(roko_learn::model_call_feedback::load_recovered_router(
             &router_path,
             model_slugs,
         ));

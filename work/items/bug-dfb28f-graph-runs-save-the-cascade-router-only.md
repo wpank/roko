@@ -2,14 +2,16 @@
 id = "bug-dfb28f"
 kind = "bug"
 title = "Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/graph-execution", "roko-learn/cascade-router"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "9c0b9aed0"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-router's report on bug-8da8ba, branch work/bug-8da8ba)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs:1556", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs", "crates/roko-learn/src/model_call_feedback.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = ["bug-8da8ba"], blocks = [], related = ["find-0dc1d5", "b
 
 [[verify]]
 command = "grep -rqw 'fn graph_run_routing_observations_survive_a_crash' crates/roko-cli/src/ && cargo test -p roko-cli --lib graph_run_routing_observations_survive_a_crash"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 4c0722281 (rustfmt a0a680212). The Graph routing sink journals each outcome through ModelCallJournal; a crashed run's journal replays through load_recovered_router before the next run loads the router. Batch 15a gate on 9005da604, re-assembled as 8a2ee8bca with only settle's rustfmt commit changing two files' formatting (MAIN 9c0b9aed0 has the same code): cargo check --workspace --tests clean; nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-compose -p roko-core -p roko-learn -p roko-serve --keep-going -D warnings clean; lib tests pass: roko-cli 3190 (two flakes, the turn_policy escalated-timeout test and graph_run_routing_observations_survive_a_crash, pass alone and in their module), roko-agent 2268, roko-core 1952, roko-learn 1204, roko-serve 986, roko-compose 560; cargo test -p roko-cli --test learning_wiring_census: 2 passed. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -58,3 +65,11 @@ Checked on `work/bug-8da8ba` (`26947cd62`, not merged at BASE `2a9312985`): `pla
 - Depends on bug-8da8ba (`ModelCallJournal`), which is in Rust batch 3.
 - `plan_runner.rs` is a hot file: coordinate with other Graph workers.
 - bug-3ea1f5 (the Path A failure reward) touches the same learning path but different files.
+- Implemented on `work/bug-f81e9b` at `6a5e1e3af` (`75a76d62c` plus a test fix); cargo verification deferred to the
+  batch check.
+  The run journals each outcome in the learning WAL before applying it: `ModelCallJournal::observe_task_outcome`,
+  and `observe_override_outcome`, whose dampened weight the WAL entry now records. It saves through the journal
+  at the end. `RunConfig::from_roko_config` loads the router with `load_recovered_router`, which runs the
+  `LearningRuntime` WAL recovery first.
+- Not journaled: per-category stats, which the snapshot does not persist either. Also not journaled: the routing
+  sink of the receipt settler (`graph_execution/feedback.rs`), because `build_settler` has no production caller.

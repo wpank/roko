@@ -362,6 +362,8 @@ pub async fn run_direct_provider_chat(
                 success: result.success,
                 provider_success: Some(result.success),
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
         {

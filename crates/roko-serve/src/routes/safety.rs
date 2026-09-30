@@ -3,13 +3,18 @@
 //! * `GET /api/safety/quarantine` -- quarantine vault entries.
 //! * `GET /api/safety/incidents` -- incident log from the immune system.
 //!
-//! Both read the review vault the tool immune boundary writes when it
-//! withholds a tool result (`roko_agent::quarantine_vault_path`, under the
-//! workspace root). Until the boundary quarantines its first result the vault
-//! does not exist, and the responses say so instead of reporting a silent zero.
+//! Both read the review vaults the tool immune boundary writes when it
+//! withholds a tool result (`roko_agent::quarantine_vault_path` under an
+//! immune root). Dispatch roots the vault at the workspace it runs in, and
+//! Graph plan runs root it at the plan's workspace rather than the attempt
+//! checkout. Plan runs from before that change left it in the attempt checkout
+//! in `.roko/worktrees/` under `--worktree-per-task`, so the routes also read
+//! one vault per checkout still found there. Until the boundary quarantines
+//! its first result no vault exists, and the responses say so instead of
+//! reporting a silent zero.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
@@ -34,36 +39,98 @@ pub fn routes() -> Router<Arc<AppState>> {
 const NO_VAULT_REASON: &str = "no tool result has been quarantined in this workspace yet; \
      the tool immune boundary creates the vault when it withholds its first result";
 
-/// The vault the tool immune boundary writes under `workdir`, its
-/// workspace-relative path for display, and whether it exists yet.
+/// One review vault the tool immune boundary wrote.
+struct LoadedVault {
+    /// Workspace-relative path, for display.
+    path: String,
+    vault: QuarantineVault,
+}
+
+/// The review vaults under `workdir`, with the display path of the
+/// workspace's own vault.
 ///
-/// A vault that exists but cannot be read or fails validation is an error,
-/// never an empty vault.
-fn load_vault(workdir: &Path) -> Result<(Option<QuarantineVault>, String), ApiError> {
-    let path = roko_agent::quarantine_vault_path(workdir);
-    let display = path
-        .strip_prefix(workdir)
-        .unwrap_or(&path)
-        .display()
-        .to_string();
-    match QuarantineVault::load(&path) {
-        Ok(vault) => Ok((Some(vault), display)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((None, display)),
-        Err(error) => Err(ApiError::internal(format!(
-            "read quarantine vault {display}: {error}"
-        ))),
+/// The workspace vault comes first, then one per plan-run attempt checkout
+/// in `.roko/worktrees/` (vaults written before Graph dispatch rooted plan
+/// runs at the workspace), in path order. Missing vaults are skipped. A vault
+/// that exists but cannot be read or fails validation is an error, never an
+/// empty vault.
+fn load_vaults(workdir: &Path) -> Result<(Vec<LoadedVault>, String), ApiError> {
+    let workspace_vault = roko_agent::quarantine_vault_path(workdir);
+    let workspace_display = display_path(workdir, &workspace_vault);
+    let mut candidates = vec![workspace_vault];
+    for checkout in attempt_checkouts(workdir) {
+        candidates.push(roko_agent::quarantine_vault_path(&checkout));
     }
+
+    let mut loaded = Vec::new();
+    for path in candidates {
+        let display = display_path(workdir, &path);
+        match QuarantineVault::load(&path) {
+            Ok(vault) => loaded.push(LoadedVault {
+                path: display,
+                vault,
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ApiError::internal(format!(
+                    "read quarantine vault {display}: {error}"
+                )));
+            }
+        }
+    }
+    Ok((loaded, workspace_display))
+}
+
+/// The attempt checkouts plan runs create under `.roko/worktrees/`, sorted.
+fn attempt_checkouts(workdir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(workdir.join(".roko").join("worktrees")) else {
+        return Vec::new();
+    };
+    let mut checkouts: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    checkouts.sort();
+    checkouts
+}
+
+/// `path` relative to `workdir` when it lies below it, for display.
+fn display_path(workdir: &Path, path: &Path) -> String {
+    path.strip_prefix(workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// Where each vault read came from, and how many entries it holds.
+#[derive(Serialize)]
+struct VaultSummary {
+    path: String,
+    entries: usize,
+}
+
+fn vault_summaries(vaults: &[LoadedVault]) -> Vec<VaultSummary> {
+    vaults
+        .iter()
+        .map(|loaded| VaultSummary {
+            path: loaded.path.clone(),
+            entries: loaded.vault.stats().total,
+        })
+        .collect()
 }
 
 // ── Quarantine ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct QuarantineResponse {
-    /// Workspace-relative path of the vault this response reads.
+    /// Workspace-relative path of the workspace's own vault.
     vault: String,
-    /// Whether the tool immune boundary has created the vault yet.
+    /// Whether the tool immune boundary has created any vault yet.
     vault_exists: bool,
-    /// Why the response is empty, when the vault does not exist yet.
+    /// Every vault read: the workspace's and those of plan-run checkouts.
+    vaults: Vec<VaultSummary>,
+    /// Why the response is empty, when no vault exists yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
     total: usize,
@@ -81,50 +148,61 @@ struct QuarantineEntrySummary {
     status: String,
     quarantined_at: String,
     incident_links: usize,
+    /// Workspace-relative path of the vault holding the entry.
+    vault: String,
 }
 
 async fn quarantine_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<QuarantineResponse>, ApiError> {
-    let (vault, vault_display) = load_vault(&state.workdir)?;
-    let vault_exists = vault.is_some();
-    let vault = vault.unwrap_or_default();
-    let stats = vault.stats();
+    let (vaults, workspace_vault) = load_vaults(&state.workdir)?;
+    let vault_exists = !vaults.is_empty();
 
-    let entries: Vec<QuarantineEntrySummary> = vault
-        .pending()
-        .into_iter()
-        .map(|entry| QuarantineEntrySummary {
-            hash: format!("{:?}", entry.hash),
-            score: entry.anomaly_score.score,
-            status: format!("{:?}", entry.status),
-            quarantined_at: entry.quarantined_at.to_rfc3339(),
-            incident_links: entry.incident_links.len(),
-        })
-        .collect();
-
-    Ok(Json(QuarantineResponse {
-        vault: vault_display,
+    let mut response = QuarantineResponse {
+        vault: workspace_vault,
         vault_exists,
+        vaults: vault_summaries(&vaults),
         reason: (!vault_exists).then_some(NO_VAULT_REASON),
-        total: stats.total,
-        pending: stats.pending,
-        approved: stats.approved,
-        rejected: stats.rejected,
-        escalated: stats.escalated,
-        entries,
-    }))
+        total: 0,
+        pending: 0,
+        approved: 0,
+        rejected: 0,
+        escalated: 0,
+        entries: Vec::new(),
+    };
+    for loaded in &vaults {
+        let stats = loaded.vault.stats();
+        response.total += stats.total;
+        response.pending += stats.pending;
+        response.approved += stats.approved;
+        response.rejected += stats.rejected;
+        response.escalated += stats.escalated;
+        for entry in loaded.vault.pending() {
+            response.entries.push(QuarantineEntrySummary {
+                hash: format!("{:?}", entry.hash),
+                score: entry.anomaly_score.score,
+                status: format!("{:?}", entry.status),
+                quarantined_at: entry.quarantined_at.to_rfc3339(),
+                incident_links: entry.incident_links.len(),
+                vault: loaded.path.clone(),
+            });
+        }
+    }
+
+    Ok(Json(response))
 }
 
 // ── Incidents ─────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct IncidentsResponse {
-    /// Workspace-relative path of the vault this response reads.
+    /// Workspace-relative path of the workspace's own vault.
     vault: String,
-    /// Whether the tool immune boundary has created the vault yet.
+    /// Whether the tool immune boundary has created any vault yet.
     vault_exists: bool,
-    /// Why the response is empty, when the vault does not exist yet.
+    /// Every vault read: the workspace's and those of plan-run checkouts.
+    vaults: Vec<VaultSummary>,
+    /// Why the response is empty, when no vault exists yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
     incidents: Vec<IncidentSummary>,
@@ -136,30 +214,35 @@ struct IncidentSummary {
     related_hash: String,
     relation: String,
     linked_at: String,
+    /// Workspace-relative path of the vault holding the entry.
+    vault: String,
 }
 
 async fn incidents_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<IncidentsResponse>, ApiError> {
-    let (vault, vault_display) = load_vault(&state.workdir)?;
-    let vault_exists = vault.is_some();
-    let vault = vault.unwrap_or_default();
+    let (vaults, workspace_vault) = load_vaults(&state.workdir)?;
+    let vault_exists = !vaults.is_empty();
 
     let mut incidents = Vec::new();
-    for entry in vault.pending() {
-        for link in &entry.incident_links {
-            incidents.push(IncidentSummary {
-                hash: format!("{:?}", entry.hash),
-                related_hash: format!("{:?}", link.related_hash),
-                relation: format!("{:?}", link.relation),
-                linked_at: link.linked_at.to_rfc3339(),
-            });
+    for loaded in &vaults {
+        for entry in loaded.vault.pending() {
+            for link in &entry.incident_links {
+                incidents.push(IncidentSummary {
+                    hash: format!("{:?}", entry.hash),
+                    related_hash: format!("{:?}", link.related_hash),
+                    relation: format!("{:?}", link.relation),
+                    linked_at: link.linked_at.to_rfc3339(),
+                    vault: loaded.path.clone(),
+                });
+            }
         }
     }
 
     Ok(Json(IncidentsResponse {
-        vault: vault_display,
+        vault: workspace_vault,
         vault_exists,
+        vaults: vault_summaries(&vaults),
         reason: (!vault_exists).then_some(NO_VAULT_REASON),
         incidents,
     }))
@@ -291,6 +374,82 @@ mod tests {
         );
     }
 
+    /// Plan runs from before the workspace-rooted vault left theirs in the
+    /// attempt checkout in `.roko/worktrees/`; the routes still list those
+    /// entries beside the workspace's own, each tagged with its vault
+    /// (bug-633b68).
+    #[tokio::test]
+    async fn quarantine_route_lists_plan_run_vaults() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let checkout = workdir
+            .path()
+            .join(".roko")
+            .join("worktrees")
+            .join("attempt-0123456789abcdef0123");
+        std::fs::create_dir_all(&checkout).expect("create attempt checkout");
+        // A checkout with no vault, and a stray file, are skipped.
+        std::fs::create_dir_all(workdir.path().join(".roko/worktrees/attempt-empty"))
+            .expect("create empty checkout");
+        std::fs::write(workdir.path().join(".roko/worktrees/notes.txt"), "x")
+            .expect("write stray file");
+
+        let from_chat = ContentHash::of(b"quarantined in the workspace");
+        let from_plan = ContentHash::of(b"quarantined by a plan run");
+        let from_plan_too = ContentHash::of(b"quarantined by the same plan run");
+        quarantine_like_immune_layer(workdir.path(), from_chat, "mcp:docs", false);
+        quarantine_like_immune_layer(&checkout, from_plan, "mcp:search", false);
+        quarantine_like_immune_layer(&checkout, from_plan_too, "mcp:search", false);
+        let state = test_state(workdir.path());
+
+        let (status, body) = get_json(&state, "/safety/quarantine").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["vault_exists"], true);
+        assert_eq!(body["total"], 3, "{body}");
+        assert_eq!(body["pending"], 3, "{body}");
+        let plan_vault =
+            ".roko/worktrees/attempt-0123456789abcdef0123/.roko/immune/quarantine-vault.json";
+        let vaults: Vec<(&str, u64)> = body["vaults"]
+            .as_array()
+            .expect("vaults array")
+            .iter()
+            .map(|vault| {
+                (
+                    vault["path"].as_str().expect("vault path"),
+                    vault["entries"].as_u64().expect("vault entries"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            vaults,
+            [(".roko/immune/quarantine-vault.json", 1), (plan_vault, 2)]
+        );
+        let entries = body["entries"].as_array().expect("entries array");
+        for (hash, vault) in [
+            (from_chat, ".roko/immune/quarantine-vault.json"),
+            (from_plan, plan_vault),
+            (from_plan_too, plan_vault),
+        ] {
+            let hash = format!("{hash:?}");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry["hash"] == hash.as_str() && entry["vault"] == vault),
+                "{hash} from {vault} missing: {body}"
+            );
+        }
+
+        // The plan run's two results share a source, so they are linked.
+        let (status, body) = get_json(&state, "/safety/incidents").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let incidents = body["incidents"].as_array().expect("incidents array");
+        assert!(
+            incidents
+                .iter()
+                .any(|incident| incident["vault"] == plan_vault),
+            "{body}"
+        );
+    }
+
     #[tokio::test]
     async fn quarantine_routes_explain_a_missing_vault() {
         let workdir = tempfile::tempdir().expect("tempdir");
@@ -327,6 +486,7 @@ mod tests {
         let response = QuarantineResponse {
             vault: ".roko/immune/quarantine-vault.json".to_string(),
             vault_exists: false,
+            vaults: Vec::new(),
             reason: Some(NO_VAULT_REASON),
             total: 0,
             pending: 0,
@@ -345,6 +505,7 @@ mod tests {
         let response = IncidentsResponse {
             vault: ".roko/immune/quarantine-vault.json".to_string(),
             vault_exists: true,
+            vaults: Vec::new(),
             reason: None,
             incidents: Vec::new(),
         };

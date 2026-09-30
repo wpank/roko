@@ -61,6 +61,10 @@ such as Roko's error diagnosis and quality rating, are conversations of their ow
   `usage`; `rename_finish_reason` renames each choice's `finish_reason` to `stop_reason`; `stringify_tool_args`
   JSON-encodes each tool call's `function.arguments` once more. `kinds` defaults to all three.
 
+**Model swap** (S08 §4.6's `model_swap`, gap-8bdf5e). `model_swap` names a model the proxy sends upstream in place of
+the one each request names, until it is set to null: the provider then serves that model, and its answer says so.
+The log keeps the client's `model_requested`, and `model_swap` names what was sent instead.
+
 Whether a task's k-th request gets the fault, and the latency drawn, come from `hmac_seed.surface_stream` keyed by
 (profile seed, task, k): the same profile, task and k give the same fault on every host, whatever ran before. k counts
 the task's requests from 1, refused ones included. Faults are balanced within blocks of `FAULT_BLOCK` requests: a block
@@ -69,8 +73,8 @@ still has probability p, but the rate over n requests stays close to p. Independ
 1,000 requests one time in seven at p = 0.3 (S08 T13's acceptance).
 
 **Control.** `POST /_vb/control` with `Authorization: Bearer <proxy.token>` and a JSON object sets any of `task` (the
-active task id), `profile` (a name, or a table with `name` and parameters), `input_token_cap` and
-`attempt_input_cap` (null for none).
+active task id), `profile` (a name, or a table with `name` and parameters), `input_token_cap`, `attempt_input_cap`
+and `model_swap` (null for none).
 `GET` returns the state with each task's meter totals. In the driver's own process, `configure` and `state` do the
 same. The token is random per proxy, so an agent that finds the port can neither switch faults off nor move its calls
 to another task.
@@ -79,12 +83,13 @@ to another task.
 a caller whose call has returned finds it in the log and in `state`. Each appends one JSON line to `log_path`, flushed
 but not fsynced: `ts` (when the request arrived, in UTC to the microsecond, so a runner can tell apart attempts that
 end within one second: bug-09fac4), `task`, `ordinal`, `profile`, `fault_injected` (the profile's name when its fault
-fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`,
-`status` (what the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when
-none came back), `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
-`price_snapshot_id`, `refused` (`input_token_cap`, `attempt_input_cap` or `unbounded_input` when the proxy refused
-the call, else null), `input_bound` (the most input the call could have been billed for; null for one that is not
-text only), `conversation` (its conversation in the task, from 1) and `elapsed_ms`.
+fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_swap` (the model sent
+in its place, else null), `model_reported`, `stream`, `status` (what the client got; null when it got none),
+`forwarded`, `usage_source`, `usage` (the classes; null when none came back), `api_equiv_usd`, `without_cache_usd`,
+`cost_source` (`provider_usage`, `unknown` or `not_billed`), `price_snapshot_id`, `refused` (`input_token_cap`,
+`attempt_input_cap` or `unbounded_input` when the proxy refused the call, else null), `input_bound` (the most input
+the call could have been billed for; null for one that is not text only), `conversation` (its conversation in the
+task, from 1) and `elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
@@ -94,7 +99,8 @@ API:
                attempt_input_cap=None)
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
-    FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=...) -> dict; .state()
+    FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=..., model_swap=...) -> dict
+    FaultProxy.state() -> dict
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
     ProxyError
 """
@@ -362,6 +368,7 @@ class FaultProxy:
         self._profile = Profile()
         self._cap = _cap(input_token_cap)
         self._attempt_cap = _cap(attempt_input_cap)
+        self._swap: str | None = None  # the model sent upstream in place of the requested one (model_swap)
         self._meters: dict[str | None, _Meter] = {}
         self._prompts: dict[str | None, dict[str, _Prompt]] = {}  # per task: a prompt's digest -> its latest call
         self._conversations: dict[str | None, list[_Conversation]] = {}  # per task, numbered from 1
@@ -408,10 +415,14 @@ class FaultProxy:
         self.close()
 
     def configure(self, *, task: str | None = _UNSET, profile: str | Mapping | Profile = _UNSET,
-                  input_token_cap: int | None = _UNSET, attempt_input_cap: int | None = _UNSET) -> dict:
-        """Set the active task id, the fault profile and the input-token caps; returns the new state."""
+                  input_token_cap: int | None = _UNSET, attempt_input_cap: int | None = _UNSET,
+                  model_swap: str | None = _UNSET) -> dict:
+        """Set the active task id, the fault profile, the input-token caps and the model swap; returns the new
+        state."""
         if task is not _UNSET and task is not None and not isinstance(task, str):
             raise ProxyError(f"task must be a string or null, not {task!r}")
+        if model_swap is not _UNSET and model_swap is not None and not (isinstance(model_swap, str) and model_swap):
+            raise ProxyError(f"model_swap must name a model, or be null, not {model_swap!r}")
         profile = profile if profile is _UNSET else Profile.parse(profile)
         cap = input_token_cap if input_token_cap is _UNSET else _cap(input_token_cap)
         attempt_cap = attempt_input_cap if attempt_input_cap is _UNSET else _cap(attempt_input_cap)
@@ -420,13 +431,15 @@ class FaultProxy:
             self._profile = self._profile if profile is _UNSET else profile
             self._cap = self._cap if cap is _UNSET else cap
             self._attempt_cap = self._attempt_cap if attempt_cap is _UNSET else attempt_cap
+            self._swap = self._swap if model_swap is _UNSET else model_swap
         return self.state()
 
     def state(self) -> dict:
         """The active settings, and each task's meter with its conversations' counted input."""
         with self._lock:
             return {"task": self._task, "profile": self._profile.as_json(), "input_token_cap": self._cap,
-                    "attempt_input_cap": self._attempt_cap, "price_snapshot_id": self.snapshot.id,
+                    "attempt_input_cap": self._attempt_cap, "model_swap": self._swap,
+                    "price_snapshot_id": self.snapshot.id,
                     "tasks": [{"task": task, **asdict(meter), "conversations": [
                         talk.counted for talk in self._conversations.get(task, [])]}
                         for task, meter in self._meters.items()]}
@@ -438,7 +451,7 @@ class FaultProxy:
         digests, sizes = _prompt_digests(request)
         media = _unbounded_part(request)
         with self._lock:
-            task, profile, cap, attempt_cap = self._task, self._profile, self._cap, self._attempt_cap
+            task, profile, cap, attempt_cap, swap = self._task, self._profile, self._cap, self._attempt_cap, self._swap
             meter = self._meters.setdefault(task, _Meter())
             meter.requests += 1
             ordinal = meter.requests
@@ -455,7 +468,8 @@ class FaultProxy:
         call = _Call(self, handler, meter, bound, digests[-1], talk if refusal is None else None, started, {
             "ts": _now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
             "fault_injected": None, "fault": None, "upstream": upstream.name, "path": path,
-            "model_requested": _text(request.get("model")), "model_reported": None,
+            "model_requested": _text(request.get("model")), "model_swap": swap if "model" in request else None,
+            "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
             "usage": None, "refused": refusal, "input_bound": None if media else bound, "conversation": conversation})
         try:
@@ -496,12 +510,16 @@ class FaultProxy:
 
     def _forward(self, call: _Call, relay: _Relay, upstream: Upstream, path: str, body: bytes,
                  request: dict) -> None:
-        handler, injected = call.handler, False
+        handler, injected, changes = call.handler, False, {}
+        if call.entry["model_swap"]:
+            changes["model"] = call.entry["model_swap"]
         if call.entry["stream"] and upstream.stream_usage:
             options = request.get("stream_options") if isinstance(request.get("stream_options"), dict) else {}
             if options.get("include_usage") is not True:
-                body = json.dumps({**request, "stream_options": {**options, "include_usage": True}}).encode("utf-8")
+                changes["stream_options"] = {**options, "include_usage": True}
                 injected = True
+        if changes:
+            body = json.dumps({**request, **changes}).encode("utf-8")
         target = urllib.parse.urlsplit(upstream.base_url)
         headers = {"Content-Type": "application/json", "Accept": handler.headers.get("Accept") or "application/json"}
         if handler.headers.get("User-Agent"):
@@ -694,9 +712,10 @@ class FaultProxy:
             table = json.loads(body)
         except ValueError:
             table = None
-        if not isinstance(table, dict) or set(table) - {"task", "profile", "input_token_cap", "attempt_input_cap"}:
+        if not isinstance(table, dict) or set(table) - {"task", "profile", "input_token_cap", "attempt_input_cap",
+                                                        "model_swap"}:
             handler.send_json(400, _error("invalid_request", "send a JSON object with task, profile, "
-                                          "input_token_cap or attempt_input_cap"))
+                                          "input_token_cap, attempt_input_cap or model_swap"))
             return
         try:
             handler.send_json(200, self.configure(**table))

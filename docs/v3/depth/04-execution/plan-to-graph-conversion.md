@@ -138,6 +138,9 @@ The executor and the gate both take the task's `files` as their `exclusive`
 paths: the executor writes them and the gate checks them. No other node of
 the subgraph holds any paths. Each node holds the paths only while it runs,
 so an overlapping task can still run between a task's executor and its gate.
+That cannot change what the gate checks. The gate judges the attempt's own
+isolated checkout, never the shared working tree, and fails closed when the
+attempt ran in the shared tree (run the plan with `--worktree-per-task`).
 
 ### Why the Workflow/Activity distinction matters
 

@@ -92,8 +92,10 @@ roko serve
 # Custom bind and port
 roko serve --bind 0.0.0.0 --port 8080
 
-# Enable API key authentication
-roko serve --api-key sk-my-secret-key
+# API key authentication is on by default. Set a key, stored as
+# ROKO__SERVE__AUTH__API_KEY in .roko/.env, or use the launch token
+# roko serve prints when it binds a loopback address without one.
+roko config set serve.auth.api_key sk-my-secret-key
 
 # Enable PTY terminal (disabled by default for security)
 roko serve --enable-terminal
@@ -145,7 +147,7 @@ terminal_session_ttl_secs = 28800 # PTY lifetime (8 h); 0 lifts it
 cors_origins = []
 
 [serve.auth]
-enabled = false
+enabled = true            # the default; false turns auth off for local use
 # The legacy single key never goes here: roko.toml is readable by agents, and
 # roko refuses to load it with a secret. Set ROKO__SERVE__AUTH__API_KEY in
 # .roko/.env (`roko config set serve.auth.api_key <key>` does).
@@ -162,8 +164,12 @@ expires_at = "2027-01-01T00:00:00Z"  # optional
 
 ## 3. Authentication
 
-Authentication is **opt-in**. When `serve.auth.enabled = false` (the default),
-all routes are open. Enable it when you expose the server beyond localhost.
+Authentication is **on by default**: `serve.auth.enabled` defaults to `true`.
+With no key configured, `roko serve` on a loopback address mints a per-run
+launch token and prints a sign-in link, and
+`roko config set serve.auth.api_key <key>` sets a lasting key. For local use
+you can turn auth off with `serve.auth.enabled = false`, and then all routes are
+open; a bind beyond localhost also needs `serve.acknowledge_public_risk = true`.
 
 When enabled, all `/api/*` routes require a credential. The `/health`,
 `/ready`, `/metrics`, `/webhooks/*`, and `/runs/{id}` routes are always public.
@@ -264,7 +270,7 @@ block-beta
     D["4. Global Rate Limit\n(100 req/s backstop)"]
     E["5. Body Limit\n(4 MiB cap)"]
     F["6. Secret Scrubber\n(redact API key patterns)"]
-    G["7. Auth (opt-in)\nAPI Key → Scope → RBAC"]
+    G["7. Auth (on by default)\nAPI Key → Scope → RBAC"]
     H["Route Handler"]
   end
   A --> B --> C --> D --> E --> F --> G --> H

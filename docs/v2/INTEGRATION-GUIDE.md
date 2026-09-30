@@ -1068,8 +1068,9 @@ terminal_enabled = false  # expose PTY terminal routes (shell access!), default:
 auto_orchestrate = true   # orchestrate follow-up work on publish events, default: true
 
 [serve.auth]
-enabled = false           # require X-Api-Key header on /api/* routes, default: false
-api_key = ""              # shared API key (legacy single-key mode)
+enabled = true            # require X-Api-Key header on /api/* routes, default: true
+# api_key, the shared key (legacy single-key mode), never goes here: set
+# ROKO__SERVE__AUTH__API_KEY in .roko/.env (`roko config set serve.auth.api_key <key>`).
 # Named keys with scopes:
 # [[serve.auth.api_keys]]
 # name = "github-actions"
@@ -1134,7 +1135,8 @@ signal_kind = "scheduler:cron:weekly-digest"  # signal kind emitted when fires
 
 ```toml
 [webhooks.github]
-secret = "my-webhook-secret"   # shared secret for X-Hub-Signature-256 verification
+# secret, the shared secret for X-Hub-Signature-256 verification, never goes
+# here: set ROKO__WEBHOOKS__GITHUB__SECRET in .roko/.env.
 ```
 
 The webhook endpoint is `POST /webhooks/github`. Roko verifies the
@@ -1235,7 +1237,7 @@ The effective tool set for a domain is:
 [chain]
 rpc_url = "https://mirage-devnet.up.railway.app"
 chain_id = 1
-wallet_key = "0x..."                  # hex-encoded private key
+# wallet_key, the hex-encoded private key: set ROKO__CHAIN__WALLET_KEY in .roko/.env
 identity_registry = "0x..."           # ERC-8004 IdentityRegistry address
 reputation_registry = "0x..."         # ERC-8004 ReputationRegistry address
 validation_registry = "0x..."         # ERC-8004 ValidationRegistry address
@@ -1328,7 +1330,7 @@ enabled = true
 ```toml
 [deploy]
 backend = "manual"                           # "railway-api", "railway-cli", "manual"
-railway_api_token = "..."                    # Railway API token (optional)
+# railway_api_token: set ROKO__DEPLOY__RAILWAY_API_TOKEN in .roko/.env, never here
 project_id = "..."                           # Railway project ID (optional)
 environment_id = "..."                       # Railway environment ID (optional)
 worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"  # Docker image for workers
@@ -2228,7 +2230,8 @@ Single shared key:
 ```toml
 [serve.auth]
 enabled = true
-api_key = "my-secret-key"
+# The key goes in ROKO__SERVE__AUTH__API_KEY (for example in .roko/.env), never in
+# roko.toml: `roko config set serve.auth.api_key <key>` stores it there.
 ```
 
 Named keys with scopes:

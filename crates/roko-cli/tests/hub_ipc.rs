@@ -196,8 +196,8 @@ async fn hub_ipc_rejects_connection_without_token() {
         tasks_total: 1,
     });
 
-    let _server = start_hub_ipc_server(hub, workdir.path(), shutdown.clone())
-        .expect("bind IPC server");
+    let _server =
+        start_hub_ipc_server(hub, workdir.path(), shutdown.clone()).expect("bind IPC server");
     let sock = hub_socket_path(workdir.path());
 
     // No hello at all: the client closes its write half, as a client that

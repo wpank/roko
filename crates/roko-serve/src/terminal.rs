@@ -1807,7 +1807,8 @@ mod tests {
             ttl: None,
         };
 
-        let (first, _first_reader, _) = manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        let (first, _first_reader, _) =
+            manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
         let Err(refused) = manager.create_session(80, 24, Some("/bin/sleep 5"), None) else {
             panic!("a second session must be refused while the cap is reached");
         };

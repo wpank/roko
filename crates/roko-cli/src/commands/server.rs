@@ -445,7 +445,10 @@ fn check_security_posture(
             anyhow::bail!(
                 "deployment blocked: serve.auth is not configured.\n\
                  Add to roko.toml:\n\
-                 \n  [serve.auth]\n  enabled = true\n  api_key = \"<secret>\"\n\n\
+                 \n  [serve.auth]\n  enabled = true\n\n\
+                 and set the key in the ROKO__SERVE__AUTH__API_KEY variable, not in \
+                 roko.toml: `roko config set serve.auth.api_key <secret>` stores it in \
+                 .roko/.env, and the deployed server needs the variable too.\n\
                  Or bypass with: roko deploy railway --unsafe-public"
             );
         }

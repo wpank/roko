@@ -16,7 +16,8 @@ pub enum ApiKeySource {
     CliFlag,
     /// Read from the `ROKO_API_KEY` environment variable.
     EnvVar,
-    /// Read from `[serve.auth] api_key` in `roko.toml`.
+    /// Read from `serve.auth.api_key` in the loaded config, which
+    /// `ROKO__SERVE__AUTH__API_KEY` sets (for example in `.roko/.env`).
     Config,
     /// Read from `~/.roko/credentials.json` (stored by `roko login`).
     StoredCredential,
@@ -29,7 +30,7 @@ impl ApiKeySource {
         match self {
             Self::CliFlag => "CLI flag (--api-key)",
             Self::EnvVar => "ROKO_API_KEY env var",
-            Self::Config => "roko.toml [serve.auth]",
+            Self::Config => "serve.auth.api_key (ROKO__SERVE__AUTH__API_KEY)",
             Self::StoredCredential => "~/.roko/credentials.json (roko login)",
         }
     }
@@ -67,7 +68,8 @@ impl ResolvedApiKey {
 ///
 /// 1. Explicit CLI flag (`cli_override`)
 /// 2. `ROKO_API_KEY` environment variable
-/// 3. `config.serve.auth.api_key` from `roko.toml`
+/// 3. `config.serve.auth.api_key`, which `ROKO__SERVE__AUTH__API_KEY` sets
+///    (for example in `.roko/.env`)
 /// 4. Stored credential from `~/.roko/credentials.json` (`roko login`)
 ///
 /// Returns `None` when no key is available from any source.

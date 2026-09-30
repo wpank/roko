@@ -1138,6 +1138,21 @@ fn hierarchical_env_to_path(key: &str) -> Option<String> {
     Some(suffix.to_ascii_lowercase().replace("__", "."))
 }
 
+/// The `ROKO__` variable that sets config field `path`, if one can.
+///
+/// `serve.auth.api_key` is set by `ROKO__SERVE__AUTH__API_KEY`. A variable
+/// name holds only ASCII letters, digits and underscores, and the loader
+/// reads it back in lowercase, so a field such as `providers.My-Key.api_key`
+/// has no variable.
+#[must_use]
+pub fn env_override_name(path: &str) -> Option<String> {
+    let name = format!("ROKO__{}", path.to_ascii_uppercase().replace('.', "__"));
+    let valid = name
+        .bytes()
+        .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+    (valid && hierarchical_env_to_path(&name).as_deref() == Some(path)).then_some(name)
+}
+
 /// Collect all `ROKO__*` env vars that represent hierarchical config paths.
 ///
 /// Returns the list of dotted config paths that were found in the environment.
@@ -1209,7 +1224,9 @@ where
 /// Set a value in a TOML value tree at a dotted path.
 ///
 /// Creates intermediate tables as needed. The value is parsed as a TOML
-/// literal (bool, integer, float) or stored as a string.
+/// literal (bool, integer, float) or stored as a string. A field that holds
+/// a string keeps the value as a string, so a key such as `12345` does not
+/// become a number that fails to load.
 fn set_toml_value_at_path(root: &mut toml::Value, path: &str, raw_value: &str) {
     let segments: Vec<&str> = path.split('.').collect();
     if segments.is_empty() {
@@ -1231,7 +1248,10 @@ fn set_toml_value_at_path(root: &mut toml::Value, path: &str, raw_value: &str) {
     // Set the leaf value.
     let leaf_key = segments[segments.len() - 1];
     if let Some(table) = current.as_table_mut() {
-        let parsed_value = parse_env_value_to_toml(raw_value);
+        let parsed_value = match table.get(leaf_key) {
+            Some(toml::Value::String(_)) => toml::Value::String(raw_value.to_string()),
+            _ => parse_env_value_to_toml(raw_value),
+        };
         table.insert(leaf_key.to_string(), parsed_value);
     }
 }
@@ -2214,13 +2234,13 @@ pub fn refuse_readable_secrets(path: &Path, value: &toml::Value) -> Result<(), L
     }
     let fields = fields
         .iter()
-        .map(|field| {
-            if field.contains(".extra_headers.") || field.starts_with("agent.env.") {
-                format!("{field} (give a ${{VAR}} reference or set it in the environment)")
-            } else {
-                let variable = field.to_ascii_uppercase().replace('.', "__");
-                format!("{field} (set ROKO__{variable} in .roko/.env)")
+        .map(|field| match env_override_name(field) {
+            Some(variable)
+                if !field.contains(".extra_headers.") && !field.starts_with("agent.env.") =>
+            {
+                format!("{field} (set {variable} in .roko/.env)")
             }
+            _ => format!("{field} (give a ${{VAR}} reference or set it in the environment)"),
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -3566,6 +3586,33 @@ x-api-key = "live-header-key"
 
         super::apply_hierarchical_env_overrides_from(&mut config, vars);
         assert_eq!(config.agent.default_model, "from-hierarchical");
+    }
+
+    /// bug-524a3b: `roko config set` stores a secret in its `ROKO__`
+    /// variable, which must set the field it names, digits and all.
+    #[test]
+    fn env_override_names_set_their_field() {
+        assert_eq!(
+            super::env_override_name("serve.auth.api_key").as_deref(),
+            Some("ROKO__SERVE__AUTH__API_KEY")
+        );
+        assert_eq!(
+            super::env_override_name("server.auth_token").as_deref(),
+            Some("ROKO__SERVER__AUTH_TOKEN")
+        );
+        for unnamed in ["providers.My-Key.api_key", "providers.MyKey.api_key"] {
+            assert_eq!(super::env_override_name(unnamed), None, "{unnamed}");
+        }
+
+        let mut config = RokoConfig::default();
+        let vars = [
+            ("ROKO__SERVE__AUTH__API_KEY", "12345"),
+            ("ROKO__CONDUCTOR__MAX_AGENTS", "16"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        super::apply_hierarchical_env_overrides_from(&mut config, vars);
+        assert_eq!(config.serve.auth.api_key, "12345");
+        assert_eq!(config.conductor.max_agents, 16);
     }
 
     #[test]

@@ -860,7 +860,11 @@ fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {
                 .as_ref()
                 .map(|path| path.display().to_string()),
             url: None,
-            fix: Some("roko config set serve.auth.api_key <your-key>".to_string()),
+            fix: Some(
+                "roko config set serve.auth.api_key <your-key> \
+                 (stores ROKO__SERVE__AUTH__API_KEY in .roko/.env)"
+                    .to_string(),
+            ),
         };
     }
 

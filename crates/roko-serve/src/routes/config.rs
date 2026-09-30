@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use roko_core::config::LoadConfigError;
 use roko_core::config::hot_reload;
 use roko_core::config::loader::{
-    LoadOptions, load_config_unified, load_config_validated,
+    LoadOptions, env_override_name, load_config_unified, load_config_validated,
     normalize_and_validate_dispatch_models, normalize_source_and_effective_dispatch_models,
     refuse_readable_secrets, resolve_config_source,
 };
@@ -516,26 +516,11 @@ fn strip_json_nulls(value: &mut Value) {
 }
 
 fn mask_secret_fields(value: &mut Value) {
-    mask_secret_field(
-        value,
-        &["serve", "auth"],
-        "api_key",
-        "ROKO_SERVE_AUTH_API_KEY",
-    );
-    mask_secret_field(value, &["server"], "auth_token", "ROKO_SERVER_AUTH_TOKEN");
-    mask_secret_field(
-        value,
-        &["deploy"],
-        "railway_api_token",
-        "ROKO_DEPLOY_RAILWAY_API_TOKEN",
-    );
-    mask_secret_field(value, &["chain"], "wallet_key", "ROKO_CHAIN_WALLET_KEY");
-    mask_secret_field(
-        value,
-        &["webhooks", "github"],
-        "secret",
-        "ROKO_WEBHOOKS_GITHUB_SECRET",
-    );
+    mask_secret_field(value, &["serve", "auth"], "api_key");
+    mask_secret_field(value, &["server"], "auth_token");
+    mask_secret_field(value, &["deploy"], "railway_api_token");
+    mask_secret_field(value, &["chain"], "wallet_key");
+    mask_secret_field(value, &["webhooks", "github"], "secret");
     if let Some(providers) = value.get_mut("providers").and_then(|v| v.as_object_mut()) {
         for (_name, provider) in providers.iter_mut() {
             if let Some(obj) = provider.as_object_mut() {
@@ -547,7 +532,9 @@ fn mask_secret_fields(value: &mut Value) {
     }
 }
 
-fn mask_secret_field(value: &mut Value, path: &[&str], field: &str, env_var: &str) {
+/// Mask `field` under `path`, and note the `ROKO__` variable that sets it:
+/// roko.toml, which agents read, may not hold it.
+fn mask_secret_field(value: &mut Value, path: &[&str], field: &str) {
     let mut cursor = value;
     for key in path {
         let Some(next) = cursor.get_mut(*key) else {
@@ -562,10 +549,10 @@ fn mask_secret_field(value: &mut Value, path: &[&str], field: &str, env_var: &st
 
     if map.contains_key(field) {
         map.insert(field.to_string(), Value::String("***".to_string()));
-        map.insert(
-            format!("{field}_note"),
-            Value::String(format!("Set `{env_var}` in the environment.")),
-        );
+        if let Some(variable) = env_override_name(&format!("{}.{field}", path.join("."))) {
+            let note = format!("Set `{variable}` in .roko/.env or the environment.");
+            map.insert(format!("{field}_note"), Value::String(note));
+        }
     }
 }
 
@@ -897,17 +884,17 @@ mod tests {
         assert_eq!(value["serve"]["auth"]["api_key"], "***");
         assert_eq!(
             value["serve"]["auth"]["api_key_note"],
-            "Set `ROKO_SERVE_AUTH_API_KEY` in the environment."
+            "Set `ROKO__SERVE__AUTH__API_KEY` in .roko/.env or the environment."
         );
         assert_eq!(value["server"]["auth_token"], "***");
         assert_eq!(
             value["server"]["auth_token_note"],
-            "Set `ROKO_SERVER_AUTH_TOKEN` in the environment."
+            "Set `ROKO__SERVER__AUTH_TOKEN` in .roko/.env or the environment."
         );
         assert_eq!(value["deploy"]["railway_api_token"], "***");
         assert_eq!(
             value["deploy"]["railway_api_token_note"],
-            "Set `ROKO_DEPLOY_RAILWAY_API_TOKEN` in the environment."
+            "Set `ROKO__DEPLOY__RAILWAY_API_TOKEN` in .roko/.env or the environment."
         );
     }
 
@@ -926,12 +913,12 @@ mod tests {
         assert_eq!(value["chain"]["wallet_key"], "***");
         assert_eq!(
             value["chain"]["wallet_key_note"],
-            "Set `ROKO_CHAIN_WALLET_KEY` in the environment."
+            "Set `ROKO__CHAIN__WALLET_KEY` in .roko/.env or the environment."
         );
         assert_eq!(value["webhooks"]["github"]["secret"], "***");
         assert_eq!(
             value["webhooks"]["github"]["secret_note"],
-            "Set `ROKO_WEBHOOKS_GITHUB_SECRET` in the environment."
+            "Set `ROKO__WEBHOOKS__GITHUB__SECRET` in .roko/.env or the environment."
         );
         assert_eq!(value["providers"]["anthropic"]["api_key"], "****");
     }

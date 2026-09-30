@@ -103,20 +103,14 @@ fn operator_state(repo: &Path) -> [String; 3] {
     ]
 }
 
-/// `roko plan run <plan> --worktree-per-task` in `repo`, building into
-/// `target`.
+/// `roko --json plan run <plan> --worktree-per-task` in `repo`, building
+/// into `target`.
 fn plan_run(repo: &Path, plan: &str, target: &Path) -> StdCommand {
     let mut command = StdCommand::new(cargo_bin("roko"));
+    command.arg("--json");
     command
         .current_dir(repo)
-        .args([
-            "--json",
-            "plan",
-            "run",
-            plan,
-            "--worktree-per-task",
-            "--workdir",
-        ])
+        .args(["plan", "run", plan, "--worktree-per-task", "--workdir"])
         .arg(repo)
         .env("CARGO_TARGET_DIR", target);
     command
@@ -336,7 +330,13 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     let before = operator_state(&repo);
     let target = temp.path().join("target");
 
-    let run = plan_run(&repo, "plans/c4", &target)
+    // A plain-text run, whose summary names the plans that failed.
+    let run = StdCommand::new(cargo_bin("roko"))
+        .current_dir(&repo)
+        .args(["plan", "run", "plans/c4", "--worktree-per-task", "--no-tui"])
+        .arg("--workdir")
+        .arg(&repo)
+        .env("CARGO_TARGET_DIR", &target)
         .output()
         .expect("run roko");
     let log = format!(
@@ -354,8 +354,13 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
         git(&repo, &["show", "roko/plan/c4:b/src/lib.rs"]).contains("pub fn quad"),
         "{log}"
     );
-    // ...but the plan did not succeed, and nothing reached the batch.
-    assert!(!run.status.success(), "the plan succeeded: {log}");
+    // ...but the plan did not succeed: the command exits 1 naming it, the
+    // plan branch is kept, and nothing reached the batch.
+    assert_eq!(run.status.code(), Some(1), "{log}");
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("Plans that did not succeed: c4"),
+        "{log}"
+    );
     let batch = git(
         &repo,
         &[
@@ -366,7 +371,8 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
     );
     assert_eq!(batch, base, "{log}");
 
-    // `roko plan status` names the failed step.
+    // The delivery ended `RegressionFailed`, and `roko plan status` names the
+    // plan and the failed step.
     let status = Command::new(cargo_bin("roko"))
         .current_dir(&repo)
         .args(["--json", "plan", "status", "plans/c4", "--workdir"])
@@ -375,10 +381,13 @@ command = "grep -q 'pub fn quad' b/src/lib.rs"
         .expect("plan status");
     let status: Value = serde_json::from_slice(&status.stdout).expect("plan status JSON");
     let failure = status["plan_check_failure"].as_str().unwrap_or_default();
-    assert!(
-        failure.contains("cargo check --workspace --quiet"),
-        "plan status: {status}"
-    );
+    for expected in [
+        "ended regression_failed",
+        "regression failed for c4",
+        "cargo check --workspace --quiet",
+    ] {
+        assert!(failure.contains(expected), "{expected}: {status}");
+    }
     assert_ne!(status["status"], "complete", "plan status: {status}");
     assert_eq!(operator_state(&repo), before);
 }

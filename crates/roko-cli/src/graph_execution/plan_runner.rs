@@ -1663,6 +1663,16 @@ async fn run_graph_plan_body(
                 plan_count, total_tasks, total_cost_usd,
             );
         }
+        // Name the plans that did not succeed, such as one whose delivery
+        // into the batch branch failed its regression check (spec-f830c4).
+        let failed_plans = plan_outcomes
+            .iter()
+            .filter(|(_, succeeded)| !**succeeded)
+            .map(|(plan_id, _)| plan_id.as_str())
+            .collect::<Vec<_>>();
+        if !failed_plans.is_empty() {
+            println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
     }
 
     Ok(match stopped_by {

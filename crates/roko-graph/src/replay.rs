@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cells::task_executor::TaskGateVerdict;
+use crate::engine::NodeTiming;
 
 /// A single recorded Activity node execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +45,14 @@ pub struct RecordEntry {
     /// Outputs produced by the node's cell execution.
     #[serde(alias = "engrams")]
     pub signals: Vec<roko_core::Signal>,
+    /// When the node became ready: every node it depends on had settled
+    /// (milliseconds since the Unix epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_at_ms: Option<u64>,
+    /// When the node got a slot and its cell started. The time it waited for
+    /// a slot is `dispatched_at_ms - ready_at_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatched_at_ms: Option<u64>,
 }
 
 /// Writes Activity node outputs to a JSONL file for later replay.
@@ -118,12 +127,30 @@ impl ActivityRecorder {
         tick: u64,
         signals: Vec<roko_core::Signal>,
     ) -> std::io::Result<()> {
+        self.record_timed(graph_id, node_id, tick, signals, NodeTiming::default())
+    }
+
+    /// Append a completed Activity node execution, with when the node became
+    /// ready and when it was dispatched, to the JSONL file.
+    ///
+    /// # Errors
+    /// Returns an `std::io::Error` if the write or flush fails.
+    pub fn record_timed(
+        &mut self,
+        graph_id: &str,
+        node_id: &str,
+        tick: u64,
+        signals: Vec<roko_core::Signal>,
+        timing: NodeTiming,
+    ) -> std::io::Result<()> {
         let entry = RecordEntry {
             graph_id: graph_id.to_string(),
             run_id: self.run_id.clone(),
             node_id: node_id.to_string(),
             tick,
             signals,
+            ready_at_ms: timing.ready_at_ms,
+            dispatched_at_ms: timing.dispatched_at_ms,
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -527,5 +554,36 @@ mod tests {
         // Nothing rejected: the file is left as-is.
         let unchanged = retain_recorded_activities(tmp.path(), |_| true).unwrap();
         assert!(unchanged.is_empty());
+    }
+
+    /// gap-3006e9: `record_timed` writes when the node became ready and was
+    /// dispatched. `record` writes neither time, like records from before
+    /// they existed, and both kinds still load.
+    #[test]
+    fn records_carry_the_node_timing_and_untimed_records_still_load() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        let timing = NodeTiming {
+            ready_at_ms: Some(1_000),
+            dispatched_at_ms: Some(1_250),
+        };
+        rec.record_timed("g", "new", 0, vec![make_signal("a")], timing)
+            .unwrap();
+        rec.record("g", "old", 0, vec![make_signal("b")]).unwrap();
+        drop(rec);
+
+        let written = std::fs::read_to_string(tmp.path()).unwrap();
+        let entries: Vec<RecordEntry> = written
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries[0].ready_at_ms, Some(1_000));
+        assert_eq!(entries[0].dispatched_at_ms, Some(1_250));
+        assert_eq!(entries[1].ready_at_ms, None);
+        assert_eq!(entries[1].dispatched_at_ms, None);
+        assert!(!written.lines().nth(1).unwrap().contains("ready_at_ms"));
+
+        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
+        assert_eq!(rep.entry_count(), 2);
     }
 }

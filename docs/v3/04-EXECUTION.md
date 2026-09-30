@@ -781,8 +781,14 @@ pub struct RecordEntry {
     pub node_id:  String,
     pub tick:     u64,
     pub signals:  Vec<Signal>,
+    pub ready_at_ms:      Option<u64>,  // every dependency had settled
+    pub dispatched_at_ms: Option<u64>,  // the node got a slot and started
 }
 ```
+
+The two times (Unix ms) are also on each node's `NodeResult.timing`. Their
+difference is the time the node waited for a slot. Older records have
+neither.
 
 The file is flushed after every write. On resume, the `ActivityReplayer`
 loads recorded entries and substitutes them for re-execution, avoiding

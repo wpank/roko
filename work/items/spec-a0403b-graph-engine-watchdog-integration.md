@@ -10,7 +10,7 @@ goal = "core"
 subsystem = ["roko-cli"]
 created = 2026-09-21
 updated = 2026-09-29
-last_verified = 2026-09-29
+last_verified = 2026-09-30
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
 discovered_from = "audit:tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
@@ -114,6 +114,7 @@ Two parts. Part A is the P0 safety net and satisfies the verify command. Part B 
 - Nudge and ForceAdvance, the TUI conductor panel and an HTTP `/conductor` route are out of scope: `gap-ebd656` and later items.
 - Do not reintroduce `RunnerEvent` for this. Graph runs surface state through StateHub `DashboardEvent`s.
 - Size L overall. Part A alone is about M.
+- Implemented on `work/spec-a0403b` at `4e4572802` (part A `21f83c618`, part B `4e4572802`); cargo verification deferred to the batch check. Locally, `graph_watchdog_intervenes_on_stalled_task` and the `graph_task_dispatch::`, `graph_execution::` and `runner::conductor_adapter` lib suites pass, and clippy `-D warnings` is clean. Silence counts only after an attempt's first live event (the Codex CLI reports nothing until it finishes) and pauses while a tool call runs, so a long `cargo test` is not killed. With both thresholds 0 there is no watchdog, conductor or ticker. Part B feeds only live messages and tool calls, so in practice only the ghost-turn watcher can fire; cost and gate signals arrive after the provider call and are not evaluated. Follow-ups: bug-739dcc (Claude CLI has no cancel path), bug-aa2044 (stalled attempts record no cost).
 
 ## Original notes
 

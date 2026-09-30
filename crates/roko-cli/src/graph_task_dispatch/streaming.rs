@@ -208,44 +208,71 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         )
         .await;
 
-        // ── Live output forwarder (streaming path) ────────────────────────
-        let request = {
-            let mut req = request;
-            if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
-                let (live_tx, mut live_rx) =
-                    tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
-                let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
-                req.live_output = Some(roko_agent::live_output::LiveOutput {
-                    sink: live_tx,
-                    trusted,
-                });
-                let tui_clone = tui.clone();
-                let agent_id_s = format!(
-                    "{}/{}",
-                    spec.plan_id,
-                    ctx.cell_id.as_deref().unwrap_or(&task.id)
-                );
-                let plan_id_s = spec.plan_id.clone();
-                let task_id_s = task.id.clone();
-                tokio::spawn(async move {
-                    while let Some(event) = live_rx.recv().await {
-                        forward_live_event_to_tui(
-                            &tui_clone,
-                            &agent_id_s,
-                            &plan_id_s,
-                            &task_id_s,
-                            event,
-                        );
-                    }
-                });
-            }
-            req
+        // ── Live output tap and stall watchdog (streaming path) ───────────
+        let mut request = request;
+        let agent_id = request.agent_id.clone();
+        let watched = WatchedAttempt {
+            agent_id: &agent_id,
+            plan_id: &spec.plan_id,
+            task_id: &task.id,
+            attempt_key: &attempt_key,
         };
+        let stall_watch = self.stall_watch();
+        let supervised = self.supervise_attempt(&watched);
+        request.live_output = self.live_output_tap(
+            &watched,
+            stall_watch.as_ref().map(StallWatch::progress),
+            supervised.as_ref().map(SupervisedAttempt::feed),
+        );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let mut dispatch_result = self.factory.run_shared_agent_bridge(request).await;
+        let watched_result = self
+            .run_watched(
+                self.factory.run_shared_agent_bridge(request),
+                stall_watch,
+                supervised.as_ref(),
+                &watched,
+            )
+            .await;
         attempt.dispatch_ended();
+        let mut dispatch_result = match watched_result {
+            Ok(dispatch_result) => dispatch_result,
+            // The stall watchdog or the conductor cancelled the provider
+            // call: the attempt ends timed out or cancelled, and the engine
+            // retries it.
+            Err(interrupted) => {
+                let error = interrupted.error(&watched);
+                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
+                self.publish_settlement(spec, &task, &settled).await;
+                let interrupted_outcome = TaskDispatchOutcome {
+                    attempt_id: attempt_id.clone(),
+                    outcome: interrupted.outcome(),
+                    provider_id: "graph-task-executor".to_string(),
+                    model: String::new(),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    changed_files: Vec::new(),
+                    wall_duration: started_at.elapsed(),
+                    output: Vec::new(),
+                };
+                let _ = recorder
+                    .record_terminal(&attempt_id, &interrupted_outcome)
+                    .await;
+                let _ = event_tx
+                    .send(GraphTaskEvent::AttemptTerminal {
+                        attempt_id,
+                        outcome: interrupted.outcome(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Some(supervised) = supervised {
+            supervised.end(matches!(&dispatch_result, Ok(dispatch) if dispatch.result.success));
+        }
         // A model the provider substituted is priced by the model that
         // served (bug-31438d). Under a `--model` pin it fails the attempt,
         // as on the batch path (bug-b2dd44); this path runs no failover.

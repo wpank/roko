@@ -1165,14 +1165,7 @@ impl AppState {
         let feed_bus_bridge = FeedBusBridge::new(Arc::clone(&pulse_bus));
         let groups = crate::group_runtime::GroupRuntime::open(&workdir, &roko_config.groups)
             .map_err(|error| anyhow::anyhow!("open group runtime: {error}"))?;
-        let jwks_providers = if roko_config.serve.auth.jwks_providers.is_empty() {
-            vec![roko_core::config::JwksProvider::new(
-                crate::jwks::PRIVY_JWKS_URL,
-                "privy.io",
-            )]
-        } else {
-            roko_config.serve.auth.jwks_providers.clone()
-        };
+        let jwks_providers = crate::jwks::jwks_providers_for(&roko_config.serve.auth);
         let auth_registry = Arc::new(crate::routes::auth::AuthRegistry::load(
             &workdir,
             &roko_config.serve.auth.api_keys,

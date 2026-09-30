@@ -244,8 +244,8 @@ pub struct ServeAuthConfig {
     /// rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
-    /// Additional issuer-bound JWKS endpoints. An empty list uses Privy's
-    /// built-in endpoint for backwards compatibility.
+    /// Issuer-bound JWKS endpoints. An empty list uses Privy's per-app
+    /// endpoint for `privy_app_id`; a non-empty list replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jwks_providers: Vec<JwksProvider>,
     /// Privy workspace / org ID that the JWT `org_id` claim must match.

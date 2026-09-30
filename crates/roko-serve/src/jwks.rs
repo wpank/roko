@@ -14,6 +14,7 @@ use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinHandle;
 
 pub use roko_core::config::JwksProvider;
+use roko_core::config::ServeAuthConfig;
 
 /// The Nunchi Privy application ID. Project-level constant, not a secret.
 ///
@@ -22,8 +23,8 @@ pub use roko_core::config::JwksProvider;
 /// `serve.auth.privy_app_id` together with an allow-list.
 pub const NUNCHI_PRIVY_APP_ID: &str = "cmhw01vut003tjx0d5lmqc8zs";
 
-/// Default JWKS endpoint for Privy.
-pub const PRIVY_JWKS_URL: &str = "https://auth.privy.io/.well-known/jwks.json";
+/// Issuer claim Privy puts in its access tokens.
+const PRIVY_ISSUER: &str = "privy.io";
 
 /// Cache TTL: keys are refreshed after this duration.
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -37,8 +38,35 @@ const FAIL_CLOSED_STALE: Duration = Duration::from_secs(48 * 60 * 60);
 /// Default HTTP request timeout for JWKS fetches when none is configured.
 const DEFAULT_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn privy_provider() -> JwksProvider {
-    JwksProvider::new(PRIVY_JWKS_URL, "privy.io")
+/// Privy's JWKS endpoint for the app `app_id`.
+///
+/// Privy serves signing keys per app. The generic
+/// `https://auth.privy.io/.well-known/jwks.json` returns 404 (checked
+/// 2026-09-30), so a cache pointed at it never holds a key and every Privy
+/// JWT fails closed.
+pub fn privy_jwks_url(app_id: &str) -> String {
+    format!("https://auth.privy.io/api/v1/apps/{app_id}/jwks.json")
+}
+
+/// The issuer-bound JWKS provider for the Privy app `app_id`.
+pub fn privy_jwks_provider(app_id: &str) -> JwksProvider {
+    JwksProvider::new(privy_jwks_url(app_id), PRIVY_ISSUER)
+}
+
+/// The JWKS providers `roko serve` verifies JWTs against: the operator's
+/// `serve.auth.jwks_providers` when it lists any, otherwise Privy's endpoint
+/// for `serve.auth.privy_app_id`, and none while Privy JWT auth is off.
+pub fn jwks_providers_for(auth: &ServeAuthConfig) -> Vec<JwksProvider> {
+    if !auth.jwks_providers.is_empty() {
+        return auth.jwks_providers.clone();
+    }
+    auth.privy_app_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|app_id| !app_id.is_empty())
+        .map(privy_jwks_provider)
+        .into_iter()
+        .collect()
 }
 
 /// Operator-facing cache health summary.
@@ -124,14 +152,20 @@ impl Drop for RefreshGuard<'_> {
 }
 
 impl JwksCache {
-    /// Create a cache for the default Privy provider.
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::with_providers_and_timeout(http, vec![privy_provider()], DEFAULT_JWKS_FETCH_TIMEOUT)
+    /// Create a cache for the Privy app `privy_app_id`.
+    pub fn new(http: reqwest::Client, privy_app_id: &str) -> Self {
+        Self::with_timeout(http, privy_app_id, DEFAULT_JWKS_FETCH_TIMEOUT)
     }
 
-    /// Create a default-provider cache with a configurable fetch timeout.
-    pub fn with_timeout(http: reqwest::Client, fetch_timeout: Duration) -> Self {
-        Self::with_providers_and_timeout(http, vec![privy_provider()], fetch_timeout)
+    /// Create a cache for the Privy app `privy_app_id` with a configurable
+    /// fetch timeout.
+    pub fn with_timeout(
+        http: reqwest::Client,
+        privy_app_id: &str,
+        fetch_timeout: Duration,
+    ) -> Self {
+        let providers = vec![privy_jwks_provider(privy_app_id)];
+        Self::with_providers_and_timeout(http, providers, fetch_timeout)
     }
 
     /// Create a cache for one or more issuer-bound JWKS providers.
@@ -463,17 +497,19 @@ fn ec_decoding_key(jwk: &Jwk) -> Option<DecodingKey> {
     DecodingKey::from_ec_components(jwk.x.as_deref()?, jwk.y.as_deref()?).ok()
 }
 
-/// Create a default-provider cache wrapped in [`Arc`].
-pub fn new_jwks_cache(http: reqwest::Client) -> Arc<JwksCache> {
-    Arc::new(JwksCache::new(http))
+/// Create a cache for the Privy app `privy_app_id`, wrapped in [`Arc`].
+pub fn new_jwks_cache(http: reqwest::Client, privy_app_id: &str) -> Arc<JwksCache> {
+    Arc::new(JwksCache::new(http, privy_app_id))
 }
 
-/// Create a default-provider cache with a configurable fetch timeout.
+/// Create a cache for the Privy app `privy_app_id` with a configurable fetch
+/// timeout.
 pub fn new_jwks_cache_with_timeout(
     http: reqwest::Client,
+    privy_app_id: &str,
     fetch_timeout: Duration,
 ) -> Arc<JwksCache> {
-    Arc::new(JwksCache::with_timeout(http, fetch_timeout))
+    Arc::new(JwksCache::with_timeout(http, privy_app_id, fetch_timeout))
 }
 
 /// Create a multi-provider cache with a configurable fetch timeout.
@@ -570,6 +606,28 @@ mod tests {
     use super::*;
 
     const TEST_APP_ID: &str = "test-app";
+
+    /// With no `jwks_providers`, serve verifies Privy JWTs against Privy's
+    /// per-app endpoint (the generic `/.well-known/jwks.json` returns 404),
+    /// and it fetches nothing while Privy JWT auth is off (find-a1284b).
+    #[test]
+    fn default_providers_use_the_privy_app_endpoint() {
+        let mut auth = ServeAuthConfig::default();
+        assert!(jwks_providers_for(&auth).is_empty());
+
+        auth.privy_app_id = Some(" app-123 ".to_string());
+        assert_eq!(
+            jwks_providers_for(&auth),
+            vec![JwksProvider::new(
+                "https://auth.privy.io/api/v1/apps/app-123/jwks.json",
+                "privy.io",
+            )]
+        );
+
+        let custom = JwksProvider::new("https://identity.example/jwks", "identity.example");
+        auth.jwks_providers = vec![custom.clone()];
+        assert_eq!(jwks_providers_for(&auth), vec![custom]);
+    }
 
     #[derive(Clone)]
     struct TestServerState {

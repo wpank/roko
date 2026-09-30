@@ -2191,8 +2191,12 @@ async fn run_one_plan(
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
     let run_id = checkpoint.run_id().to_string();
-    // A new run's manifest, or one more invocation of a resumed run.
-    ctx.run_manifests.open(&run_id, &plan.id);
+    // A new run's manifest, or one more invocation of a resumed run; the
+    // run's attempt records carry the invocation's ordinal.
+    if let Some(inv) = ctx.run_manifests.open(&run_id, &plan.id) {
+        ctx.graph_task_dispatcher
+            .attach_run_invocation(&run_id, inv);
+    }
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
@@ -3437,6 +3441,63 @@ max_retries = 0
         );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// bug-0ba3d9: attempt records carry the invocation ordinal the run's
+    /// manifest gave their process. T1 fails on the first run and passes
+    /// when the run resumes, so its two attempts come from invocations 1
+    /// and 2 of one run.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attempt_records_carry_the_invocation_ordinal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No auto-fix re-run: T1's verify step must run once per attempt.
+        fake_provider_workspace(dir.path(), 0.0, "cargo_fix_enabled = false\n");
+        write_verify_plan(
+            dir.path(),
+            "resume",
+            "max_parallel = 1",
+            &[("T1", &[], "test -f resumed || { touch resumed; false; }")],
+        );
+
+        let (first, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(first, EXIT_FAILURE, "T1 fails on the first run");
+        let (second, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(second, EXIT_SUCCESS, "the resumed run runs T1 again");
+
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(dir.path().join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(
+            run_dirs.len(),
+            1,
+            "the resume continues the run: {run_dirs:?}"
+        );
+        let attempts = std::fs::read_to_string(run_dirs[0].join("attempts.jsonl"))
+            .expect("read attempts.jsonl");
+        let records: Vec<(String, u64, Option<u64>)> = attempts
+            .lines()
+            .map(|line| {
+                let record: serde_json::Value = serde_json::from_str(line).expect("a record");
+                (
+                    record["schema_version"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    record["attempt"].as_u64().unwrap_or(0),
+                    record["inv"].as_u64(),
+                )
+            })
+            .collect();
+        let expected = [
+            ("roko.attempt_open/1", 1, Some(1)),
+            ("roko.verdict/1", 1, Some(1)),
+            ("roko.attempt_open/1", 2, Some(2)),
+            ("roko.verdict/1", 2, Some(2)),
+        ]
+        .map(|(schema, attempt, inv)| (schema.to_string(), attempt, inv));
+        assert_eq!(records, expected);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

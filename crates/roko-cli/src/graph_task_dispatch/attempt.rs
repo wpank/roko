@@ -113,6 +113,10 @@ pub(super) struct AttemptBook {
     /// dispatcher, so keys stay unique across processes.
     fallback_run_id: String,
     runs: parking_lot::Mutex<HashMap<String, Arc<RunAttempts>>>,
+    /// This process's invocation ordinal of each run, from the run's
+    /// manifest ([`GraphTaskDispatcher::attach_run_invocation`]). Attempt
+    /// records carry it as `inv`.
+    invocations: parking_lot::Mutex<HashMap<String, u32>>,
 }
 
 impl Default for AttemptBook {
@@ -120,6 +124,7 @@ impl Default for AttemptBook {
         Self {
             fallback_run_id: format!("graph-{}", uuid::Uuid::new_v4().simple()),
             runs: parking_lot::Mutex::new(HashMap::new()),
+            invocations: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -146,6 +151,11 @@ impl AttemptBook {
             .entry(run_id.to_string())
             .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id)));
         Arc::clone(run)
+    }
+
+    /// Record that this process is invocation `inv` of run `run_id`.
+    fn attach_invocation(&self, run_id: &str, inv: u32) {
+        self.invocations.lock().insert(run_id.to_string(), inv);
     }
 
     /// Close run `run_id`'s writer once no attempt of the run is open, and
@@ -186,6 +196,7 @@ impl AttemptBook {
         let key = run.ordinals.mint(run_id, plan_id, &task.id);
         let mut identity = AttemptIdentity::new(&key);
         identity.node_id = node_id.map(str::to_string);
+        identity.inv = self.invocations.lock().get(run_id).copied();
         let task_spec_hash = b3_digest(spec.task_def_json.as_bytes());
         let started_at = now_ms();
         let mut open = AttemptOpenRecord::new(identity.clone(), started_at);
@@ -438,6 +449,15 @@ impl GraphTaskDispatcher {
     /// of the run reopens the log where it left off.
     pub fn close_run_attempts(&self, run_id: &str) -> Option<TelemetryWriterStats> {
         self.attempts.close(run_id)
+    }
+
+    /// Record that this process is invocation `inv` of run `run_id`: the
+    /// ordinal the run's manifest gave it. The run's attempt-open lines and
+    /// verdicts then carry it as `inv` (S01 §4.2: carried, not part of the
+    /// key), so a resumed run's attempts say which invocation, and so which
+    /// build and config, they ran under.
+    pub fn attach_run_invocation(&self, run_id: &str, inv: u32) {
+        self.attempts.attach_invocation(run_id, inv);
     }
 
     /// Settle `attempt`, which the harness failed after its open line with

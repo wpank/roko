@@ -3,13 +3,14 @@ id = "bug-453481"
 kind = "bug"
 title = "Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::git_merge", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
@@ -54,3 +55,8 @@ On `work/bug-a3760a` (`809ae920d`), `commit_oid` is used in only two places: in 
 ## Notes
 
 - Depends on bug-a3760a, which rewrote `git_merge`. It is not on BASE yet.
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-453481` at `55a97258a`; cargo verification deferred to the batch check.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-execution --no-deps -D warnings` clean; nightly rustfmt clean. `cargo test -p roko-cli --lib graph_execution::delivery`: 26 passed (27 with bug-aaa924).
+  - `GitDeliveryBackend::git_merge` merges `request.commit_oid`, never the branch head. The id must be a commit id (hex; a ref name is refused), must resolve, and must be on the branch (`merge-base --is-ancestor <oid> <head>`); otherwise nothing is merged and no ref moves. When the branch moved past it, the summary names the head and says its later commits wait for a verified delivery of their own. The merge commit's message names the commit.
+  - The existing real-git delivery tests now deliver the plan head's id (`git_request`); they passed a fake `abc123`.
+  - Tests: `merge_takes_the_verified_commit_not_the_branch_head`, `merge_fails_closed_without_the_verified_commit_on_the_branch`.

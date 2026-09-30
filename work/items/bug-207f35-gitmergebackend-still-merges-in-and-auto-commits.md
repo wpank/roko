@@ -3,13 +3,14 @@ id = "bug-207f35"
 kind = "bug"
 title = "GitMergeBackend still merges in, and auto-commits, the checkout it is given"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/runner/merge.rs::GitMergeBackend", "crates/roko-cli/src/runner/merge.rs::default_merge_backend", "crates/roko-cli/tests/merge_proof.rs", "crates/roko-cli/tests/runner_integration.rs"]
@@ -56,3 +57,7 @@ Design choice:
 
 - Keep `git_merge_tree`, `git_output` and `git_command`, which delivery uses.
 - Run the tests' git commands in temp repos only, never in the repository itself.
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-453481` at `ace875c56`; cargo verification deferred to the batch check.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-execution --no-deps -D warnings` clean; nightly rustfmt clean. `cargo test -p roko-cli --lib runner::merge`: 14 passed; `--test runner_integration --test merge_proof`: 6 + 6 passed.
+  - Option A: deleted `GitMergeBackend` (the auto-commit and `git merge` in the checkout it was given) and `CargoCheckRegressionGate` (a `cargo check` in that same checkout), the defaults `default_merge_backend` and `default_regression_gate`, the helpers only they used (`git_success`, `git_conflicted_paths`) and `GitMergeBackend`'s three tests. `git_command`, `git_output`, `git_merge_tree` and `merge_tree_result` stay.
+  - `PlanMerger` stays: `tests/runner_integration.rs` and `tests/merge_proof.rs` still drive it, with injected backends. With no built-in backend, a merger missing either fails the merge closed (`merge_without_backends_fails_closed`). No production code calls it; roko merges with `GitDeliveryBackend`.

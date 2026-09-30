@@ -63,9 +63,10 @@ pub struct CompletionDeliveryRequest {
     pub plan_id: String,
     /// Workspace lease ID from the outer controller.
     pub lease_id: String,
-    /// Branch name to merge from.
+    /// Branch the verified commit is on.
     pub branch: String,
-    /// Accepted merge commit OID (hex SHA).
+    /// The commit the plan's gates verified (hex SHA). Delivery merges this
+    /// commit, never a later head of `branch`.
     pub commit_oid: String,
     /// Target branch to merge into (e.g. `main`).
     pub target_branch: String,

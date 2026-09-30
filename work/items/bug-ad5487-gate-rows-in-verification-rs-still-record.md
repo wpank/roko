@@ -3,13 +3,15 @@ id = "bug-ad5487"
 kind = "bug"
 title = "Gate rows in verification.rs still record turn 1 when the attempt's turn count is unknown"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "45570299f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report on branch work/bug-31438d at ee6a541ef)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -46,3 +48,4 @@ The two fallbacks in `verification.rs`.
 ## Notes
 
 - Build on bug-31438d's branch.
+- Implemented on `work/bug-b8af02` at `45570299f`; cargo verification deferred to the batch check. `gate_rows_carry_the_attempts_turns_or_unknown` (targeted `cargo test` passed at the branch head). The gate-pass and gate-fail rows take their turn count from `attempt::reported_turns`, which also feeds the verdict's `executed.turns`. When the count is unknown they write `turn_number` 0 and mark `turns_unknown` (via `roko_learn::efficiency::TurnsRow`), as the episode does. The verification.rs change is limited to those two row sites.

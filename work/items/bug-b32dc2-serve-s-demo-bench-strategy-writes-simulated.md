@@ -3,13 +3,15 @@ id = "bug-b32dc2"
 kind = "bug"
 title = "serve's Demo bench strategy writes simulated tokens and cost into runs and the index (pareto, cost-summary)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/bench"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "0b84bc9fa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-28becc at abb181f65)"
 anchors = ["crates/roko-serve/src/bench.rs"]
@@ -41,3 +43,7 @@ The `Demo` strategy and the run and index writers in `bench.rs`.
 
 - [ ] No summary or index mixes demo runs with real ones.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-32d57f` at `2ae0b2887`; cargo verification deferred to the batch check. Demo runs no longer appear in `GET /bench/runs` (index-backed), so the portal's run list will not list them; they stay readable by id with `simulated: true`.

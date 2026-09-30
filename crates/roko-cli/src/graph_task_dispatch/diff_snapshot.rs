@@ -54,6 +54,11 @@ struct DiffBase {
 #[derive(Default)]
 pub(super) struct DiffBases {
     bases: parking_lot::Mutex<HashMap<String, DiffBase>>,
+    /// The paths each task's latest attempt changed, by attempt key, kept
+    /// from the screen's diff for the dispatch outcome
+    /// ([`GraphTaskDispatcher::take_changed_files`]): once the task passes,
+    /// its base is gone.
+    changed: parking_lot::Mutex<HashMap<String, Vec<String>>>,
 }
 
 /// One path a task changed, as `git diff --raw` reports it.
@@ -162,9 +167,9 @@ impl GraphTaskDispatcher {
         }
     }
 
-    /// What the task of `attempt_key` changed in `workdir` since its base.
-    /// `None` when dispatch recorded no base (the streaming path records
-    /// none yet), or git could not snapshot or diff the tree.
+    /// What the task of `attempt_key` changed in `workdir` since its base,
+    /// whose paths are kept for [`Self::take_changed_files`]. `None` when
+    /// dispatch recorded no base, or git could not snapshot or diff the tree.
     pub(super) async fn attempt_diff(
         &self,
         spec: &TaskExecutionSpec,
@@ -226,6 +231,10 @@ impl GraphTaskDispatcher {
                 changes.push(change);
             }
         }
+        self.keep_changed_files(
+            attempt_key,
+            changes.iter().map(|change| change.path.clone()).collect(),
+        );
         Some(AttemptDiff {
             workdir: workdir.to_path_buf(),
             base,
@@ -234,6 +243,26 @@ impl GraphTaskDispatcher {
             sibling_paths,
             base_is_this_attempts,
         })
+    }
+
+    /// Keep the paths the attempt of `attempt_key` changed, in place of
+    /// those of the task's earlier attempts.
+    fn keep_changed_files(&self, attempt_key: &str, paths: Vec<String>) {
+        let chain = attempt_chain(attempt_key);
+        let mut kept = self.diff_bases.changed.lock();
+        kept.retain(|key, _| attempt_chain(key) != chain);
+        kept.insert(attempt_key.to_string(), paths);
+    }
+
+    /// The paths the attempt of `attempt_key` changed since its task's base,
+    /// once: empty when the screen computed no diff for it, as for an
+    /// attempt whose provider call failed.
+    pub(super) fn take_changed_files(&self, attempt_key: &str) -> Vec<String> {
+        self.diff_bases
+            .changed
+            .lock()
+            .remove(attempt_key)
+            .unwrap_or_default()
     }
 }
 
@@ -422,7 +451,13 @@ fn blob_id(id: &str) -> Option<String> {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use roko_graph::cells::NoopAttemptRecorder;
+
     use super::*;
+    use crate::graph_task_dispatch::streaming_event_channel_capacity;
+    use crate::graph_task_dispatch::tests::{
+        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+    };
 
     /// Run git in `dir` and return its trimmed stdout.
     pub(in crate::graph_task_dispatch) fn git(dir: &Path, args: &[&str]) -> String {
@@ -539,5 +574,69 @@ pub(super) mod tests {
 
         let outside = tempfile::tempdir().expect("tempdir");
         assert!(snapshot_tree(outside.path()).await.is_none());
+    }
+
+    /// A fake Claude CLI that adds `two` to `src/lib.rs`, then answers.
+    const ADDS_TWO: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf 'pub fn two() -> u8 {\n    one() + one()\n}\n' >> src/lib.rs
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Stream one attempt of a task that must change `src/lib.rs`, in a git
+    /// repository whose fake Claude CLI runs `provider`.
+    async fn stream_attempt(provider: &str) -> Result<TaskDispatchOutcome> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            provider,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step("structural", "true")];
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        dispatcher
+            .dispatch_streaming(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-STREAM".to_string()),
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn streaming_attempts_record_their_diff_base_and_changed_files() {
+        // With a base recorded, the screen's diff checks see a streamed
+        // attempt: one that changes nothing is rejected before its verify
+        // steps.
+        let error = stream_attempt(VERIFY_PROVIDER)
+            .await
+            .expect_err("a streamed attempt that changed nothing");
+        assert!(
+            matches!(&error, RokoError::Verify { gate, .. } if gate == "pre_verify:no_changes"),
+            "{error}"
+        );
+
+        // A streamed attempt that changes a file reports it.
+        let outcome = stream_attempt(ADDS_TWO)
+            .await
+            .expect("the streamed change passes");
+        assert_eq!(outcome.outcome, TaskDispatchOutcomeKind::Succeeded);
+        assert_eq!(outcome.changed_files, ["src/lib.rs"]);
     }
 }

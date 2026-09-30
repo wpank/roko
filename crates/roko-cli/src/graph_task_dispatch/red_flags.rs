@@ -84,12 +84,10 @@ impl GraphTaskDispatcher {
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> Result<()> {
         let role = task.role.as_deref().unwrap_or("implementer");
+        // First, so the attempt's changed files are kept whatever the screen
+        // decides (`take_changed_files`).
+        let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
         let mut rejection = output_red_flag(&self.config, role, dispatch);
-        let diff = if rejection.is_none() {
-            self.attempt_diff(spec, task, attempt_key, workdir).await
-        } else {
-            None
-        };
         // Findings recorded without blocking, carried into the feedback of a
         // rejection by a later check.
         let mut notes = Vec::new();

@@ -842,8 +842,8 @@ Supervised HTTP JSON connectors.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/safety/quarantine` | Quarantine vault entries |
-| GET | `/api/safety/incidents` | Incident log from immune system |
+| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld: the workspace vault plus one per plan-run checkout in `.roko/worktrees/`, each entry tagged with its `vault` |
+| GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
 
 ### 8.28 Affect (Daimon)
 

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #1-2
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a", "gap-d4466f"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
@@ -78,6 +78,7 @@ This is the implementation plan.
 - [x] bug-b4c565: The T0 reflex shortcut can pass a task without running the workspace rungs
 - [x] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run
 - [x] gap-a0f18a: planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run
+- [ ] gap-d4466f: The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

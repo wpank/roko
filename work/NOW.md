@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 23 anchor gone · 198 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 23 anchor gone · 198 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 
-_9 more open · on hold: gap-8f8544 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_9 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -25,25 +25,25 @@ _0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
-_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - nothing checked and open
 
-_0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -51,7 +51,7 @@ _0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_72 more open · `goal = "core"`_
+_72 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 

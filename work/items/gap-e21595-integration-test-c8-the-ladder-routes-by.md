@@ -3,13 +3,15 @@ id = "gap-e21595"
 kind = "gap"
 title = "Integration test C8: the ladder routes by tier and escalates after two failures"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "41228d7b2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G8, canary C8)"
 anchors = ["crates/roko-cli/tests/tier_ladder_canary.rs"]
@@ -71,3 +73,4 @@ No such test exists at `41c7ffbd6`.
 ## Notes
 
 The test edits no hot file. It can be written while the E5 items are in progress, and it merges last.
+- 2026-09-30 (wk-tiers): implemented on `work/gap-e21595` at `245927910`. The canary passes in the worktree in about 13 s of test time, with the fake provider only. Disabling gap-460230's escalation by hand (`climb(&inputs.role, start, 0)` in `ladder_choice`) makes it fail: T2 ran four times on the cheap rung. Beyond the plan, T4 checks that a `rung` hint picks the start rung, T5 (integrative) that the tier picks it, and T3 retries twice, so a pin that moved would show on its third attempt. Workspace verification is deferred to the batch check.

@@ -363,13 +363,19 @@ mod tests {
 
     const RUN: &str = "graph-helper-run";
 
-    /// A task fails its gate once, then passes. After the failure the
-    /// quality judge, the error diagnosis and the gate reflection each call
-    /// the helper model once; every call is on the first attempt's cost and
-    /// efficiency rows, verdict and episode, and on the plan's spend.
-    #[tokio::test]
-    async fn helper_calls_after_a_failed_gate_are_costed() {
-        let temp = tempdir().expect("tempdir");
+    /// A dispatcher whose helper model, `helper-1` on an OpenAI-compatible
+    /// mock ($1 in and $2 out per 1M tokens), answers three calls, with the
+    /// quality judge, the error diagnosis and the gate reflection all on;
+    /// its task's verify step fails on its first run and passes on its
+    /// second. Returns the requests the helper model saw.
+    async fn helper_fixture(
+        temp: &tempfile::TempDir,
+        feedback: GraphFeedbackContext,
+    ) -> (
+        Arc<GraphTaskDispatcher>,
+        TaskDef,
+        Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+    ) {
         let mut answer = final_turn("0.5");
         answer["model"] = serde_json::json!("helper-1");
         answer["usage"] = serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 });
@@ -380,10 +386,10 @@ mod tests {
             ))),
             replan_on_gate_failure: true,
             post_gate_reflection_path: Some(temp.path().join(".roko/learn/reflections.json")),
-            ..recording_feedback(temp.path())
+            ..feedback
         };
         let (dispatcher, mut task) = make_test_dispatcher(
-            &temp,
+            temp,
             VERIFY_PROVIDER,
             |config| {
                 no_auto_fix(config);
@@ -430,6 +436,18 @@ mod tests {
             "check",
             "test -f passed-once || { touch passed-once; exit 1; }",
         )];
+        (dispatcher, task, requests)
+    }
+
+    /// A task fails its gate once, then passes. After the failure the
+    /// quality judge, the error diagnosis and the gate reflection each call
+    /// the helper model once; every call is on the first attempt's cost and
+    /// efficiency rows, verdict and episode, and on the plan's spend.
+    #[tokio::test]
+    async fn helper_calls_after_a_failed_gate_are_costed() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task, requests) =
+            helper_fixture(&temp, recording_feedback(temp.path())).await;
         let spec = make_spec(&task);
         let ctx = CellContext::new().with_run_id(RUN.to_string());
         dispatcher
@@ -516,5 +534,54 @@ mod tests {
             .find(|episode| episode.success)
             .expect("passed attempt");
         assert!(!passed.extra.contains_key("helper_calls"));
+    }
+
+    /// Helper calls give the cascade router no credit (bug-b8af02). The
+    /// router learns from each attempt's settled verdict alone
+    /// (`RoutingObservationSink`), and the provider bridge keeps no router
+    /// of its own, so after a failed gate and its three helper calls it
+    /// holds the attempt's failure and nothing for the helper model.
+    #[tokio::test]
+    async fn helper_calls_give_the_cascade_router_no_credit() {
+        let temp = tempdir().expect("tempdir");
+        let router = Arc::new(roko_learn::cascade_router::CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "helper-1".into(),
+        ]));
+        let facade = crate::runtime_feedback::FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::RoutingObservationSink::new(Arc::clone(&router)),
+        ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            ..recording_feedback(temp.path())
+        };
+        let (dispatcher, task, requests) = helper_fixture(&temp, feedback).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the first attempt fails its gate");
+        assert_eq!(requests.lock().len(), 3, "the helper model saw three calls");
+
+        let snapshot = router.confidence_snapshot();
+        assert_eq!(
+            snapshot.get("helper-1").copied().unwrap_or_default(),
+            (0, 0),
+            "a helper call is not a routing trial"
+        );
+        assert_eq!(
+            snapshot.get("claude-sonnet-4-6").copied(),
+            Some((1, 0)),
+            "the attempt's settled failure is"
+        );
+        assert!(
+            !temp.path().join(".roko/learn/cascade-router.json").exists(),
+            "the provider bridge trained a router of its own"
+        );
+        let helper_costs =
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 3, |row| {
+                row["role"] == HELPER_ROLE
+            })
+            .await;
+        assert_eq!(helper_costs.len(), 3, "the helper calls stay helper rows");
     }
 }

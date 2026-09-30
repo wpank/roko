@@ -676,7 +676,7 @@ fn prompt_tasks_file(
             done: 0,
             status: "ready".to_string(),
             superseded_by: None,
-            max_parallel: 1,
+            max_parallel: Some(1),
             estimated_total_minutes: 0,
             // The prompt is the whole task definition.
             skip_enrichment: true,

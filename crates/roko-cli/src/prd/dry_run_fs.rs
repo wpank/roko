@@ -151,7 +151,10 @@ fn print_tasks_preview(path: &Path, tasks_file: &TasksFile) {
         tasks_file.meta.plan,
         tasks_file.tasks.len(),
         tasks_file.meta.status,
-        tasks_file.meta.max_parallel,
+        tasks_file
+            .meta
+            .max_parallel
+            .map_or_else(|| "auto".to_string(), |limit| limit.to_string()),
         tasks_file.meta.estimated_total_minutes,
     );
     for task in &tasks_file.tasks {

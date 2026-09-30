@@ -135,7 +135,6 @@ plan = "slug-matches-prd"
 total = 2
 done = 0
 status = "ready"
-max_parallel = 1
 
 [[task]]
 id = "T1"
@@ -203,7 +202,7 @@ plan = "add-funding-rate"  # MUST match the PRD slug exactly
 total = 3
 done = 0
 status = "ready"
-max_parallel = 1  # default to 1 for safety; only increase when tasks are truly independent
+# max_parallel is omitted: tasks that do not depend on each other run together
 
 [[task]]
 id = "T1"
@@ -327,7 +326,7 @@ Detect the project language and use the right commands:
 
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the PRD slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
-- [ ] `meta.max_parallel` is 1 unless tasks are truly independent (shared files = not independent)
+- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
 - [ ] Every task has ≤ max_loc lines of change for its tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
@@ -361,7 +360,6 @@ plan = "add-health-check"
 total = 1
 done = 0
 status = "ready"
-max_parallel = 1
 
 [[task]]
 id = "T1"

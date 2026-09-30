@@ -35,8 +35,12 @@ pub struct TaskMeta {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
-    #[serde(default = "default_max_parallel")]
-    pub max_parallel: u32,
+    /// Tasks of this plan that may run at the same time. Omitted, the plan
+    /// runs as wide as its DAG allows when every task that can write
+    /// declares its `files`, and one task at a time otherwise
+    /// ([`crate::plan_policy::plan_max_parallel`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u32>,
     #[serde(default)]
     pub estimated_total_minutes: u32,
     /// When `true`, skip the enrichment pipeline and transition directly to
@@ -53,10 +57,6 @@ pub struct TaskMeta {
     /// `[conductor] plan_failure_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_policy: Option<roko_core::config::PlanFailurePolicy>,
-}
-
-fn default_max_parallel() -> u32 {
-    1
 }
 
 /// A single task definition.
@@ -2416,7 +2416,7 @@ depends_on = []
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
                 source_prd: None,

@@ -64,7 +64,14 @@ pub fn plan_to_graph(
    `unified-task-dag.md`).
 
 5. **Set policy.** `graph.policy.max_concurrent_nodes` is set from the
-   `max_parallel` argument (minimum 1).
+   `max_parallel` argument (minimum 1). A plan run passes `--max-tasks`, else
+   the plan's `[meta] max_parallel`. A plan that omits `max_parallel` converts
+   with 1, as it did before an omitted value meant "as wide as the DAG
+   allows", so its checkpoint identity is unchanged. Once the identity is
+   taken, the run raises the limit to the plan's task count if every task
+   that can write declares its `files` (`plan_policy::plan_max_parallel`).
+   Otherwise, it logs the task whose writes are unknown and runs one task at a
+   time.
 
 6. **Cycle check.** The graph validates that no cycles exist via
    `petgraph::algo::toposort` inside `Graph::validate()`.

@@ -222,18 +222,19 @@ pub fn validate_plan_budgets(
             ),
         ));
     }
-    if tasks.meta.max_parallel == 0 {
+    if tasks.meta.max_parallel == Some(0) {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             "meta.max_parallel must be at least 1",
         ));
     }
-    if tasks.meta.max_parallel as usize > tasks.tasks.len().max(1) {
+    if let Some(max_parallel) = tasks.meta.max_parallel
+        && max_parallel as usize > tasks.tasks.len().max(1)
+    {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             format!(
-                "meta.max_parallel is {} but only {} tasks exist",
-                tasks.meta.max_parallel,
+                "meta.max_parallel is {max_parallel} but only {} tasks exist",
                 tasks.tasks.len()
             ),
         ));
@@ -397,7 +398,7 @@ pub fn validate_plan_budgets(
     }
 
     // With one task at a time no two tasks run together, whatever they write.
-    if tasks.meta.max_parallel > 1 {
+    if plan_max_parallel(tasks) > 1 {
         issues.extend(concurrent_overlaps(tasks));
     }
 
@@ -445,6 +446,32 @@ fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
         }
     }
     issues
+}
+
+/// How many of a plan's tasks may run at the same time.
+///
+/// `[meta] max_parallel` when the plan sets it. Omitted, as many as the plan
+/// has tasks when every task that can write declares its `files`: the Graph
+/// engine keeps tasks whose files overlap apart, and the DAG and
+/// `[conductor] max_agents` bound the rest. Otherwise one, since what the
+/// task [`task_with_unknown_writes`] names writes is unknown.
+#[must_use]
+pub fn plan_max_parallel(tasks: &TasksFile) -> u32 {
+    match tasks.meta.max_parallel {
+        Some(max_parallel) => max_parallel,
+        None if task_with_unknown_writes(tasks).is_some() => 1,
+        None => u32::try_from(tasks.tasks.len().max(1)).unwrap_or(u32::MAX),
+    }
+}
+
+/// The first task whose role can write files but that declares none. No
+/// other task may run beside it, since what it writes is unknown.
+#[must_use]
+pub fn task_with_unknown_writes(tasks: &TasksFile) -> Option<&TaskDef> {
+    tasks.tasks.iter().find(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.files.is_empty() && crate::task_parser::role_capabilities(role).write
+    })
 }
 
 fn check_count(
@@ -1052,7 +1079,7 @@ mod tests {
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
                 source_prd: None,
@@ -1143,7 +1170,7 @@ mod tests {
         second.id = "T2".into();
         let mut plan = tasks(task());
         plan.meta.total = 2;
-        plan.meta.max_parallel = 2;
+        plan.meta.max_parallel = Some(2);
         plan.tasks.push(second);
         plan
     }
@@ -1189,7 +1216,40 @@ mod tests {
         assert!(!flags_concurrent_overlap(&plan), "T2 runs after T1");
 
         plan.tasks[1].depends_on.clear();
-        plan.meta.max_parallel = 1;
+        plan.meta.max_parallel = Some(1);
         assert!(!flags_concurrent_overlap(&plan), "one task at a time");
+    }
+
+    /// gap-272448: an omitted `max_parallel` lets as many tasks run at once
+    /// as the plan has, when every task that can write declares its files,
+    /// and one otherwise. An authored value wins.
+    #[test]
+    fn omitted_max_parallel_resolves_from_declared_files() {
+        let mut plan = two_writers_of_one_file();
+        plan.meta.max_parallel = None;
+        assert_eq!(plan_max_parallel(&plan), 2);
+        // Now the two tasks can run together, so their shared file counts.
+        assert!(flags_concurrent_overlap(&plan));
+
+        // A researcher cannot write, so it declares no files and changes
+        // nothing.
+        let mut researcher = task();
+        researcher.id = "T3".into();
+        researcher.role = Some("researcher".into());
+        researcher.files.clear();
+        plan.tasks.push(researcher);
+        assert_eq!(task_with_unknown_writes(&plan).map(|task| &task.id), None);
+        assert_eq!(plan_max_parallel(&plan), 3);
+
+        // An implementer that declares no files writes something unknown.
+        plan.tasks[1].files.clear();
+        assert_eq!(
+            task_with_unknown_writes(&plan).map(|task| task.id.as_str()),
+            Some("T2")
+        );
+        assert_eq!(plan_max_parallel(&plan), 1);
+
+        plan.meta.max_parallel = Some(2);
+        assert_eq!(plan_max_parallel(&plan), 2);
     }
 }

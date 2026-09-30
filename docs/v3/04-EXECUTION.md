@@ -3,7 +3,8 @@
 > **Implementation status (corrected 2026-09-29 at `7c556bc0a`):** WIRED -- The
 > plan-execute-verify-persist pipeline works end-to-end through the Graph engine. Plan
 > directories load as Graph topologies, each task starts as soon as its dependencies
-> finish (up to the plan's `max_parallel`, which defaults to 1), each task's authored
+> finish (up to the plan's `max_parallel`; omitted, as wide as the DAG allows when every
+> writing task declares its `files`, else 1), each task's authored
 > `verify` commands check it, and durable checkpoints allow resume after crash. Three
 > parts of the design are not on this path. Tasks run in the operator's working tree:
 > `--worktree-per-task` is opt-in, and its worktrees are never merged back (section 10).

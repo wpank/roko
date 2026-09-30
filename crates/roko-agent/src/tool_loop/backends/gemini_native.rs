@@ -385,6 +385,8 @@ impl LlmBackend for GeminiNativeBackend {
             let mut acc_input: u64 = 0;
             let mut acc_output: u64 = 0;
             let mut acc_cache_read: Option<u64> = None;
+            // The model version the chunks name (bug-a5f181).
+            let mut acc_model: Option<String> = None;
 
             loop {
                 match response.chunk().await {
@@ -408,8 +410,14 @@ impl LlmBackend for GeminiNativeBackend {
                             };
 
                             if data == "[DONE]" {
-                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
-                                    .await;
+                                emit_accumulated_usage(
+                                    acc_input,
+                                    acc_output,
+                                    acc_cache_read,
+                                    acc_model.clone(),
+                                    &tx,
+                                )
+                                .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -424,6 +432,13 @@ impl LlmBackend for GeminiNativeBackend {
                             let Ok(chunk_json) = serde_json::from_str::<Value>(data) else {
                                 continue;
                             };
+                            if let Some(version) = chunk_json
+                                .get("modelVersion")
+                                .and_then(Value::as_str)
+                                .filter(|version| !version.is_empty())
+                            {
+                                acc_model = Some(version.to_string());
+                            }
 
                             // Extract usageMetadata from this chunk.
                             if let Some(usage) = chunk_json.get("usageMetadata") {
@@ -459,8 +474,14 @@ impl LlmBackend for GeminiNativeBackend {
                                 // before emitting Done.
                                 emit_gemini_content_events(&chunk_json, &tx).await;
 
-                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
-                                    .await;
+                                emit_accumulated_usage(
+                                    acc_input,
+                                    acc_output,
+                                    acc_cache_read,
+                                    acc_model.clone(),
+                                    &tx,
+                                )
+                                .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -478,7 +499,14 @@ impl LlmBackend for GeminiNativeBackend {
                     }
                     Ok(None) => {
                         // Stream ended.
-                        emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx).await;
+                        emit_accumulated_usage(
+                            acc_input,
+                            acc_output,
+                            acc_cache_read,
+                            acc_model.clone(),
+                            &tx,
+                        )
+                        .await;
                         if !sent_done {
                             let _ = tx
                                 .send(Ok(StreamEvent::now(StreamEventKind::Done {
@@ -570,11 +598,13 @@ async fn emit_gemini_content_events(
 /// Gemini SSE chunks may contain `usageMetadata` with `promptTokenCount` and
 /// `candidatesTokenCount`. This function emits a Usage event only when at least
 /// one token count is non-zero, ensuring the tool loop can track usage from
-/// streaming responses.
+/// streaming responses. The event carries the `modelVersion` the chunks
+/// named, as the model that served (bug-a5f181).
 async fn emit_accumulated_usage(
     input: u64,
     output: u64,
     cache_read: Option<u64>,
+    model: Option<String>,
     tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
 ) {
     if input == 0 && output == 0 {
@@ -588,7 +618,9 @@ async fn emit_accumulated_usage(
         ..Default::default()
     };
     let _ = tx
-        .send(Ok(StreamEvent::now(StreamEventKind::Usage(usage))))
+        .send(Ok(
+            StreamEvent::now(StreamEventKind::Usage(usage)).with_model(model)
+        ))
         .await;
 }
 

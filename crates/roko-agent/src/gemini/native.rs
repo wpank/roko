@@ -192,7 +192,8 @@ impl GeminiNativeAgent {
             reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::Unknown,
-            model: Some(self.model.slug.clone()),
+            // No response named the model that served (bug-a5f181).
+            model: None,
             wall_ms,
         })
     }
@@ -404,10 +405,10 @@ impl GeminiNativeAgent {
             content: text_parts.join(""),
             reasoning: None,
             tool_calls,
-            usage: gemini_observation(usage_metadata, 0, Some(self.model.slug.clone())).into(),
+            usage: gemini_observation(usage_metadata, 0, response.model_version.clone()).into(),
             finish_reason,
             metadata: ResponseMetadata {
-                model_used: Some(self.model.slug.clone()),
+                model_used: response.model_version.clone(),
                 cached_tokens,
                 extra: serde_json::to_value(metadata).ok(),
                 raw_finish_reason,
@@ -498,10 +499,13 @@ impl Agent for GeminiNativeAgent {
         }
 
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // The model that served is the response's `modelVersion`, unknown
+        // when it names none; the configured slug stays on the `model` tag
+        // (bug-a5f181).
         let observation = gemini_observation(
             response.usage_metadata.as_ref(),
             wall_ms,
-            Some(self.model.slug.clone()),
+            response.model_version.clone(),
         );
 
         let content = self.safety.scrub_text(&parsed.content);
@@ -880,7 +884,8 @@ mod tests {
                 "totalTokenCount": 29,
                 "cachedContentTokenCount": 5,
                 "thinkingTokenCount": 3
-            }
+            },
+            "modelVersion": "gemini-2.5-pro-002"
         }))
         .expect("parse response");
 
@@ -902,7 +907,7 @@ mod tests {
         );
         assert_eq!(
             parsed.metadata.model_used.as_deref(),
-            Some("gemini-2.5-pro")
+            Some("gemini-2.5-pro-002")
         );
         assert_eq!(parsed.metadata.cached_tokens, Some(5));
         assert_eq!(parsed.metadata.raw_finish_reason.as_deref(), Some("STOP"));
@@ -1029,6 +1034,53 @@ mod tests {
                 .iter()
                 .any(|tool| tool.get("code_execution").is_some())
         );
+    }
+
+    /// The model that served a native Gemini call is the response's
+    /// `modelVersion`, and unknown when it names none; the configured slug
+    /// stays the model asked for, on the `model` tag (bug-a5f181).
+    #[tokio::test]
+    async fn gemini_native_records_the_model_version() {
+        let run_answering = |response: serde_json::Value| async move {
+            let poster = Arc::new(MockPoster::ok(
+                Arc::new(Mutex::new(Captured::default())),
+                response,
+            ));
+            GeminiNativeAgent::new(
+                "test-key".to_string(),
+                "https://generativelanguage.googleapis.com".to_string(),
+                base_model(),
+                &AgentOptions::default(),
+                SafetyLayer::with_defaults(),
+            )
+            .with_http_poster(poster)
+            .run(&prompt("hello"), &Context::now())
+            .await
+        };
+        let answer = json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "hi" }] },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 15
+            }
+        });
+
+        let mut versioned = answer.clone();
+        versioned["modelVersion"] = json!("gemini-2.5-flash-001");
+        let served = run_answering(versioned).await;
+        assert!(served.success);
+        assert_eq!(served.output.tag("model"), Some("gemini-2.5-pro"));
+        let observation = served.usage_obs.expect("usage observation");
+        assert_eq!(observation.model.as_deref(), Some("gemini-2.5-flash-001"));
+
+        let unnamed = run_answering(answer).await;
+        assert!(unnamed.success);
+        let observation = unnamed.usage_obs.expect("usage observation");
+        assert_eq!(observation.model, None, "nobody reported a model");
     }
 
     #[tokio::test]

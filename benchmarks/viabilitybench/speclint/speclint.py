@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""speclint: the static spec-quality score (SQS v1, linter id ``sq-1``) for roko task specs.
+"""speclint: the static spec-quality score (SQS v1, linter id ``sq-2``) for roko task specs.
 
 Scores every ``[[task]]`` of ``plans/**/tasks.toml`` against rules SQ01-SQ12 and the static hard
 fails of S07 section 4.2 (``tmp/cybernetic-harness/specs/S07-spec-quality.md``), writes one
@@ -19,9 +19,15 @@ steps on a clean checkout of the base commit and passes the task's ``red_on_base
 
     python3 benchmarks/viabilitybench/speclint/speclint.py plans/ --dynamic [--base REV]
 
-The rule definitions below are frozen as ``sq-1``: the Rust port (``roko plan validate
+The rule definitions below are frozen as ``sq-2``: the Rust port (``roko plan validate
 --spec-quality``, gap-46ab3f) must match them within 0.5 points on the golden fixtures in
 ``fixtures/``. Change a definition only together with the linter id.
+
+Linter ids:
+
+- ``sq-1``: SQ01-SQ12 and the static hard fails as S07 section 4.2 defines them.
+- ``sq-2``: well-formed ``[task.accept]`` entries count as scoped test verify steps and as observable
+  acceptance (bug-019f02).
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-LINTER = "sq-1"
+LINTER = "sq-2"
 
 WEIGHTS = {
     "SQ01": 10,

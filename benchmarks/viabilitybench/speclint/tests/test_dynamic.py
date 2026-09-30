@@ -341,7 +341,7 @@ def test_cli_dynamic_fixture_mode(tmp_path):
         text=True,
     )
     assert proc.returncode == 1, proc.stderr  # HF3 is a hard fail under --strict
-    assert "speclint sq-1 (dynamic): 2 files, 8 tasks" in proc.stdout
+    assert "speclint sq-2 (dynamic): 2 files, 8 tasks" in proc.stdout
     assert "Red on base (tasks)" in proc.stdout
     records = [json.loads(line) for line in out.read_text().splitlines()]
     got = {f"{r['plan_path']} {r['task_id']}": r["red_on_base"] for r in records}

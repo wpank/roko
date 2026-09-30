@@ -1,13 +1,14 @@
-//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-1` (S07.7).
+//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-2` (S07.7).
 //!
 //! [`lint_files`] scores every `[[task]]` of a set of `tasks.toml` files against rules SQ01–SQ12
 //! and the hard fails HF1–HF5 of S07 §4.2 (`tmp/cybernetic-harness/specs/S07-spec-quality.md`),
 //! one [`SpecQualityRecord`] per task. `roko plan validate --spec-quality` prints the records.
 //!
 //! The rules are a port of speclint (`benchmarks/viabilitybench/speclint/speclint.py`), whose
-//! definitions are frozen as `sq-1`. The test `spec_quality_matches_speclint_golden_fixtures`
+//! definitions are frozen as `sq-2`. The test `spec_quality_matches_speclint_golden_fixtures`
 //! holds this port to speclint's golden fixtures, vendored under `tests/fixtures/speclint/`.
-//! Change a rule only together with speclint and the linter id.
+//! Change a rule only together with speclint and the linter id; speclint's docstring lists what
+//! each id changed.
 //!
 //! Static mode runs nothing, so SQ06 (red on base) scores 0 and HF3 is not evaluated; every
 //! static record lists both under `unknown`. A caller that ran the verify steps on the unchanged
@@ -28,7 +29,7 @@ use toml::{Table, Value};
 pub use shell::{Scope, StepAnalysis, VerifyClass, analyze_step, vacuous_reason};
 
 /// The linter id. The rule definitions in this module are frozen under it.
-pub const LINTER: &str = "sq-1";
+pub const LINTER: &str = "sq-2";
 
 /// One weighted rule of the score.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1611,7 +1612,7 @@ mod tests {
             .expect("the hf2 fixture");
         let report = lint_files(&[dir.join("tasks.toml")], &dir);
         let text = render_text(&report);
-        assert!(text.starts_with("spec quality (sq-1, static: HF3 and SQ06 not evaluated)\n"));
+        assert!(text.starts_with("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"));
         assert!(text.contains("\ntasks.toml\n"), "{text}");
         assert!(
             text.contains("T3  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1"),

@@ -130,7 +130,7 @@ def test_corpus_one_record_per_task_and_runs_differ_only_in_ts(tmp_path):
     files = speclint.discover([ROOT / "plans"])
     tasks = sum(len(tomllib.loads(path.read_text()).get("task", [])) for path in files)
     assert len(runs[0]) == tasks
-    assert all(r["ev"] == "spec.quality" and r["linter"] == "sq-1" and r["ts"] for r in runs[0])
+    assert all(r["ev"] == "spec.quality" and r["linter"] == "sq-2" and r["ts"] for r in runs[0])
 
     def without_ts(records):
         return [{key: value for key, value in record.items() if key != "ts"} for record in records]

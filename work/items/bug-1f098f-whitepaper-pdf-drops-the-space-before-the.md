@@ -3,13 +3,14 @@ id = "bug-1f098f"
 kind = "bug"
 title = "Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-wp-figures report on gap-daa246 (2026-09-30)"
 anchors = ["docs/whitepaper/figures/fig2-golden-path.svg"]
@@ -44,6 +45,10 @@ Found while checking gap-daa246's build: `build.sh` renders 32 pages, and every 
 
 ## Done when
 
-- [ ] Both chips render with the space in the PDF.
-- [ ] `python3 tools/status_matrix.py --check` still passes.
-- [ ] The `[[verify]]` command passes.
+- [x] Both chips render with the space in the PDF.
+- [x] `python3 tools/status_matrix.py --check` still passes.
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- **`&#160;` does not work.** librsvg 2.63.2 drops a no-break space at the start of a `<tspan>` as well as a plain space, so the PDF still read "merge queue· ORPHANED". The fix moves the space before the `<tspan>`, where librsvg keeps it (Figure 1's "records under `.roko/`" already relies on that).

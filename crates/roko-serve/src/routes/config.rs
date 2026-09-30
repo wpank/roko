@@ -16,7 +16,7 @@ use roko_core::config::hot_reload;
 use roko_core::config::loader::{
     LoadOptions, load_config_unified, load_config_validated,
     normalize_and_validate_dispatch_models, normalize_source_and_effective_dispatch_models,
-    resolve_config_source,
+    refuse_readable_secrets, resolve_config_source,
 };
 use roko_core::config::schema::RokoConfig;
 
@@ -166,6 +166,10 @@ where
 
     let mut source_updated: RokoConfig = serde_json::from_value(source_value)
         .map_err(|e| ApiError::bad_request(format!("invalid config after merge: {e}")))?;
+    // roko.toml is readable by agents, so a secret never goes into it.
+    let source_tree = toml::Value::try_from(&source_updated)
+        .map_err(|e| ApiError::internal(format!("serialize source config: {e}")))?;
+    refuse_readable_secrets(&config_path, &source_tree).map_err(map_load_config_error)?;
 
     // Derive the prospective live generation entirely before the authoritative
     // write. This reapplies global/env/interpolation/file-secret layers with
@@ -302,6 +306,7 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
         | LoadConfigError::UnresolvedModel { .. }
         | LoadConfigError::InvariantViolation { .. }
         | LoadConfigError::Migration { .. }
+        | LoadConfigError::SecretInConfig { .. }
         | LoadConfigError::GlobalConfigRead { .. }
         | LoadConfigError::GlobalConfigParse { .. } => ApiError::bad_request(err.to_string()),
     }
@@ -1129,6 +1134,39 @@ default_model = "first"
         assert!(
             !workdir.join("roko.toml").exists(),
             "invalid config must not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_config_refuses_a_secret_without_writing() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let state = test_state(workdir.clone(), RokoConfig::default());
+        let patch = serde_json::json!({ "serve": { "auth": { "api_key": "sk-serve-test" } } });
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        // roko.toml is readable by agents; the key belongs in .roko/.env.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.load_roko_config().serve.auth.api_key.is_empty());
+        assert!(
+            !workdir.join("roko.toml").exists(),
+            "a secret must not be persisted"
         );
     }
 

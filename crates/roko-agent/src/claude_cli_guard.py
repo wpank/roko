@@ -53,7 +53,10 @@
 # A roko config file outside .roko (roko.toml, the file ROKO_CONFIG names,
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
 # such as serve.auth.api_key, and so is a Grep of the directory that holds
-# such a roko.toml, unless its glob or type leaves the file out.
+# such a roko.toml, unless its glob or type leaves the file out. roko itself
+# refuses to load such a file (the secret belongs in .roko/.env), so this
+# matters for a secret added while roko runs; a command that reads the whole
+# project (grep -r, rg) is not caught.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -508,11 +511,18 @@ SECRET_CONFIG_KEY = re.compile(
     r"api_key|secret|token|password|credential|authorization|private_key|wallet_key|passphrase",
     re.I,
 )
-# key = "a non-empty string", on its own line or in an inline table, and a
-# table header.
-CONFIG_STRING = re.compile(r"""["']?([\w.-]+)["']?\s*=\s*(?:"[^"\n]|'[^'\n])""")
+# key = "string", on its own line or in an inline table; a table header; an
+# inline extra_headers table; and an agent.env pair ["NAME", "value"].
+CONFIG_STRING = re.compile(r"""["']?([\w.-]+)["']?\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)')""")
 CONFIG_TABLE = re.compile(r"\s*\[\[?\s*([^\]]*?)\s*\]\]?")
-INLINE_HEADERS = re.compile(r"""extra_headers\s*=\s*\{[^}]*=\s*(?:"[^"\n]|'[^'\n])""")
+INLINE_HEADERS = re.compile(r"extra_headers\s*=\s*\{([^}]*)\}")
+ENV_PAIR = re.compile(r"""\[\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\]""")
+# Name segments of an environment variable that holds a credential
+# (roko_core::child_env::SECRET_SEGMENTS).
+SECRET_ENV_SEGMENTS = {
+    "KEY", "KEYS", "APIKEY", "TOKEN", "AUTHTOKEN", "SECRET", "SECRETS", "PASSWORD", "PASSWD",
+    "PASSPHRASE", "CREDENTIAL", "CREDENTIALS",
+}
 
 
 def command_words(text, depth=0):
@@ -602,13 +612,36 @@ def config_holds_secret(path):
             table = header.group(1).strip("\"'")
             continue
         headers = table.rsplit(".", 1)[-1] == "extra_headers"
-        for key in CONFIG_STRING.findall(line):
-            field = key.rsplit(".", 1)[-1].lower()
-            if headers or (SECRET_CONFIG_KEY.search(field) and not field.endswith("_env")):
-                return True
-        if INLINE_HEADERS.search(line):
+        pairs = config_strings(INLINE_HEADERS.sub("", line))
+        if any(secret_config_pair(key, value, headers) for key, value in pairs):
             return True
+        for inline in INLINE_HEADERS.findall(line):
+            if any(secret_config_pair(key, value, True) for key, value in config_strings(inline)):
+                return True
+        if table == "agent" and re.match(r"\s*env\s*=", line):
+            for name, value in ENV_PAIR.findall(line):
+                if SECRET_ENV_SEGMENTS & set(name.upper().split("_")) and literal_secret(value):
+                    return True
     return False
+
+
+def config_strings(line):
+    """The (key, string value) pairs on a line of TOML."""
+    return [(key, double or single) for key, double, single in CONFIG_STRING.findall(line)]
+
+
+def secret_config_pair(key, value, headers):
+    """Whether `key = value` holds a secret: a literal in a secret-named
+    field or, other than a *_file path, in extra_headers."""
+    field = key.rsplit(".", 1)[-1].lower()
+    if headers:
+        return not field.endswith("_file") and literal_secret(value)
+    return bool(SECRET_CONFIG_KEY.search(field)) and not field.endswith("_env") and literal_secret(value)
+
+
+def literal_secret(value):
+    """Whether a config string is a literal: not empty, and no ${VAR} reference."""
+    return bool(value) and "${" not in value
 
 
 def greps_secret_config(tool_input, cwd):

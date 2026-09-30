@@ -94,7 +94,7 @@ serialized default config lacks.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live enforcement: `none`, `observe`, `restrict`, `isolate`, or `quarantine` |
-| `dangerously_skip_permissions` | bool | false | Skip permission checks (rejected in strict/shared config) |
+| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`roko prd`, `plan generate`, `research`, `do`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
 
 ---
 

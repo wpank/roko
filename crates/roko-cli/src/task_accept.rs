@@ -248,6 +248,7 @@ pub fn pinned_verify_step(task_id: &str, entry: &AcceptFile, pinned: &PinnedAcce
             entry.src
         )),
         timeout_ms: entry.timeout_ms.unwrap_or_else(default_verify_timeout),
+        scope: Vec::new(),
     }
 }
 
@@ -830,6 +831,7 @@ command = "true"
                     .to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         });
         let issues = accept_issues(&task, &fx.plan_dir);
         let errors: Vec<&str> = issues

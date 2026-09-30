@@ -11,7 +11,7 @@ subsystem = ["roko-graph", "roko-cli/graph-task-dispatch"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "f712a8e7a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794, branch work/gap-4d835d)"
 anchors = ["crates/roko-graph/src/exclusion.rs", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs"]
@@ -99,3 +99,22 @@ Steps for Option A:
     gap-0f3980 lands.
   - The `tasks.toml` keys `exclusive_files` (an `Option<bool>`; `None` means true) and `parallel_group` parse into
     `task.hints`. If the scheduler starts reading either, drop it from `TaskDef::unused_hints()` (PLAN_039).
+- 2026-09-30, wk-scheduler: implemented on `work/gap-1920ba` at `11b426da5`, branched from `f712a8e7a`. Cargo
+  verification is deferred to the batch check.
+  - `VerifyStep.scope` holds the declared reads. `sibling_settle/verify_scope.rs` infers the scope from the command
+    when none is declared: `cargo -p X` reads `crates/X`, file tools read their operands, a tool run after `cd dir`
+    reads `dir`, and anything else reads the whole project. `sibling_settle/verify_lease.rs` holds the waits:
+    `begin_verify`, `begin_step` and `register_when_unread`. `verification.rs` and the attempt start in
+    `graph_task_dispatch.rs` call them.
+  - One refinement of the design: a scoped step does not always run at once. It waits only for siblings whose `files`
+    fall inside its scope, and new edits wait only for running steps that read their files. The verifying flag is
+    dropped while `cargo fix` runs, because that writes files.
+  - The two settle tests needed no restructuring. Their commands name absolute marker files, which infer as path
+    reads, so they still run beside the editing sibling and exercise the settle path.
+  - Checks run in the clone:
+    - `cargo check --all-targets` on roko-core, roko-cli and roko-serve;
+    - the verify test and the new `verify_scope` and `verify_lease` tests;
+    - the `graph_task_dispatch`, `task_parser` and `gate_dispatch` lib tests. 250 passed, and one failure is
+      unrelated: `turn_policy::tests::a_timed_out_attempt_is_resumed_with_an_escalated_timeout` (a 1 s timeout under
+      machine load), which passed 2 of 2 times on its own;
+    - nightly fmt, and clippy `-D warnings` on the same crates.

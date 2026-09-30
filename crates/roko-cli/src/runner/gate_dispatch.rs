@@ -2345,6 +2345,7 @@ mod tests {
             command: command.to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         }
     }
 
@@ -2945,6 +2946,7 @@ path = "src/shared.rs"
             command: "false | tail -1".to_string(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -2962,6 +2964,7 @@ path = "src/shared.rs"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -2989,6 +2992,7 @@ path = "src/shared.rs"
                     command: "false".into(),
                     fail_msg: None,
                     timeout_ms: 10_000,
+                    scope: Vec::new(),
                 }],
                 Some(Vec::new()),
                 10,
@@ -3041,6 +3045,7 @@ path = "src/shared.rs"
                 command: "printf 'after\\n' > tracked.txt".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             Some(Vec::new()),
             10,
@@ -3081,6 +3086,7 @@ path = "src/shared.rs"
             command: "false".into(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
         let baseline = run_gate_once(
             gate_effect(GateCompletionKind::Preflight),
@@ -3155,6 +3161,7 @@ path = "src/shared.rs"
                 command: "ln -sfn b input".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             Some(Vec::new()),
             10,
@@ -3384,6 +3391,7 @@ path = "src/shared.rs"
                 command: "true".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             None,
             10,
@@ -3653,6 +3661,7 @@ cargo_fix_enabled = false
             command: "cargo test".into(),
             fail_msg: Some("tests failed".into()),
             timeout_ms: 60_000,
+            scope: Vec::new(),
         }];
         let cancel = tokio_util::sync::CancellationToken::new();
         let request = RunnerProductionGateAdapter::build_request(

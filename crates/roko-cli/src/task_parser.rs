@@ -826,6 +826,13 @@ pub struct VerifyStep {
     /// Timeout in milliseconds.
     #[serde(default = "default_verify_timeout")]
     pub timeout_ms: u64,
+    /// Paths this step reads, relative to the working tree; a directory
+    /// covers what it holds. Tasks that share the tree and write elsewhere
+    /// may edit while the step runs. Omitted, the scope is inferred from
+    /// `command`, and a command whose reads are unknown reads the whole
+    /// project, so it waits for every sibling that is mid-edit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
 }
 
 pub(crate) fn default_verify_timeout() -> u64 {
@@ -844,6 +851,7 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
             command: rung.command.clone(),
             fail_msg: None,
             timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+            scope: Vec::new(),
         }
     }
 }
@@ -2492,6 +2500,7 @@ depends_on = []
                     command: "cargo check".into(),
                     fail_msg: None,
                     timeout_ms: 60_000,
+                    scope: Vec::new(),
                 }],
                 timeout_secs: 600,
                 max_retries: 3,

@@ -3,13 +3,14 @@ id = "bug-b0fd73"
 kind = "bug"
 title = "For accept plans, authored_plan_running reports that tasks.toml no longer matches on every run"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_checkpoint"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-accept's report on gap-d14a43, branch work/gap-d14a43 at 37b6d7c95)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs"]
@@ -52,3 +53,11 @@ This exists only on the unmerged branch, which gap-d14a43 merges.
 ## Notes
 
 - Merge gap-d14a43 first.
+- Implemented on `work/bug-b0fd73` at `21c8df33f`; cargo verification deferred to the batch check.
+- 2026-09-30: premise re-checked at `4d79f0016`. `authored_plan_running` compared the converted tasks, which
+  have the generated `# roko accept:` steps in front of their own verify steps, with the file's tasks, which do
+  not. The comparison now sets those steps aside. Plan step 1 alone would also have dropped the pinned hashes
+  from the identity: the legacy fingerprint covered them only because every accept plan fell back to it. So each
+  pinned sha256 is now recorded on its authored `[task.accept]` entry. A re-pinned test with other content still
+  changes the identity, and the store's place on disk does not. Existing accept-plan checkpoints recorded the
+  legacy fingerprint and resume through the legacy match.

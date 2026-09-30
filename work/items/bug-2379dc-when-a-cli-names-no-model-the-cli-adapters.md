@@ -3,13 +3,15 @@ id = "bug-2379dc"
 kind = "bug"
 title = "When a CLI names no model, the CLI adapters still record the configured slug as the served model"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/cli_adapters"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "366d63a91"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report on branch work/bug-31438d at ee6a541ef)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-agent/src/codex_agent.rs"]
@@ -51,3 +53,4 @@ The two adapters' usage construction.
 ## Notes
 
 - Build on bug-31438d's branch.
+- Implemented on `work/bug-b8af02` at `366d63a91`; cargo verification deferred to the batch check. `a_cli_that_names_no_model_leaves_the_served_model_unknown` (targeted `cargo test` passed at the branch head). When the output names no model, the adapters now leave `usage_obs.model` as None: the Claude CLI (its stream usage, on success and failure), Codex, and the same pattern in Cursor and the Anthropic API adapter. Failure paths with no response record None. The configured slug stays on the output's `model` tag, which dispatch records as `model_dispatched`. Codex's `usage_obs_falls_back_to_configured_model` became `usage_obs_leaves_an_unnamed_model_unknown`. Not done: the native Gemini adapter still fills it with the configured slug, because its response type does not parse `modelVersion` (follow-up).

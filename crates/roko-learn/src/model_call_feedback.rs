@@ -52,6 +52,11 @@ pub struct ModelCallFeedback {
     /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
     /// `None` on success.
     pub error_class: Option<String>,
+    /// Model the provider reported serving the call; `None` when it named
+    /// none.
+    pub model_reported: Option<String>,
+    /// Key of the attempt the call belongs to, when the caller has one.
+    pub attempt_key: Option<String>,
 }
 
 impl ModelCallFeedback {
@@ -161,6 +166,8 @@ impl ModelCallFeedbackRecorder {
                 latency_ms: feedback.latency_ms,
                 success: feedback.success,
                 error_class: feedback.error_class.clone(),
+                model_reported: feedback.model_reported,
+                attempt_key: feedback.attempt_key,
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -432,6 +439,8 @@ mod tests {
             latency_ms: 1_500,
             success,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         }
     }
 
@@ -627,6 +636,8 @@ mod tests {
                 success: true,
                 provider_success: None,
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
             .expect("record feedback");

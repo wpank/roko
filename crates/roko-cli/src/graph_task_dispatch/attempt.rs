@@ -514,6 +514,7 @@ fn executed_model(
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
         failover_chain: failover.models,
         failover_reason: failover.reason,
+        failover_refusals: failover.refusals,
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {
@@ -523,12 +524,19 @@ fn executed_model(
         executed.model_reported = served.reported;
         executed.models_reported = served.all_reported;
         executed.model_mismatch = served.mismatch;
-        executed.turns = dispatch.events.iter().rev().find_map(|event| match event {
-            roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
-            _ => None,
-        });
+        executed.turns = reported_turns(dispatch);
     }
     executed
+}
+
+/// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
+/// the model calls of roko's tool loop. `None` when the agent reported no
+/// count, which records read as unknown (bug-55fd84, bug-ad5487).
+pub(super) fn reported_turns(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Option<u32> {
+    dispatch.events.iter().rev().find_map(|event| match event {
+        roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
+        _ => None,
+    })
 }
 
 /// Where the attempt's priced usage came from (S01 §4.4); gap-ad0d39 prices
@@ -645,7 +653,7 @@ mod tests {
 
         // The dispatch row's id is the key; the gate-pass row extends it. The
         // provider bridge logs its own `model_call` rows to the same file,
-        // under the feedback schema and with no attempt key.
+        // under the feedback schema.
         let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
             row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
         })
@@ -657,6 +665,14 @@ mod tests {
             field(&efficiency, "attempt_key"),
             [key.as_str(), key.as_str()]
         );
+        // The bridge's own `model_call` row names the attempt and the model
+        // the provider reported (bug-92f655).
+        let model_calls = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
+            row["kind"] == "model_call"
+        })
+        .await;
+        assert_eq!(field(&model_calls, "attempt_key"), [key.as_str()]);
+        assert_eq!(model_calls[0]["model_reported"], "claude-sonnet-4-6");
         let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
         assert_eq!(field(&costs, "attempt_key"), [key.as_str()]);
         let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
@@ -664,6 +680,51 @@ mod tests {
             .expect("episodes");
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].extra["attempt_key"], key.as_str());
+    }
+
+    /// The gate row agrees with the attempt's dispatch row on the turns
+    /// (bug-ad5487): the reported count when the agent gave one, and 0
+    /// marked `turns_unknown` when it gave none.
+    #[tokio::test]
+    async fn gate_rows_carry_the_attempts_turns_or_unknown() {
+        const FOUR_TURNS_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-6","num_turns":4,"total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        for (provider, turns) in [(VERIFY_PROVIDER, None), (FOUR_TURNS_PROVIDER, Some(4))] {
+            let temp = tempdir().expect("tempdir");
+            let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+            let feedback = GraphFeedbackContext {
+                efficiency_path: Some(efficiency_path.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, provider, no_auto_fix, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+                .await
+                .expect("the verify step passes");
+
+            let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+            })
+            .await;
+            assert_eq!(rows.len(), 2, "the dispatch row and the gate-pass row");
+            for row in &rows {
+                let id = row["attempt_id"].as_str().unwrap_or_default();
+                assert_eq!(row["turn_number"], turns.unwrap_or(0), "{id}");
+                assert_eq!(row["iteration"], turns.unwrap_or(0), "{id}");
+                assert_eq!(
+                    row.get("turns_unknown")
+                        .and_then(serde_json::Value::as_bool),
+                    turns.is_none().then_some(true),
+                    "{id}: {row}"
+                );
+            }
+        }
     }
 
     /// Provider whose first call hangs until the attempt is killed; later

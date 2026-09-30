@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -358,3 +359,114 @@ def test_dynamic_options_need_dynamic():
     )
     assert proc.returncode == 2
     assert "need --dynamic" in proc.stderr
+
+
+# For test_dynamic_mode_runs_pinned_accept_tests. Each pinned test "reports" libtest-style passes.
+ACCEPT_PLAN = """
+[meta]
+plan = "p"
+
+# Red: greet.sh does not exist on the base. The task has no verify step of its own.
+[[task]]
+id = "T1"
+title = "Greeting script"
+role = "implementer"
+files = ["greet.sh"]
+
+[[task.accept.files]]
+src = "accept/greet.accept.sh"
+dest = "tests/greet.accept.sh"
+runner = "bash {dest}"
+count = 2
+
+# HF3: the pinned test already passes on the base, though the task's own step declares pass_on_base.
+[[task]]
+id = "T2"
+title = "Retry limit"
+role = "implementer"
+files = ["config.ini"]
+
+[[task.accept.files]]
+src = "accept/retries.accept.sh"
+dest = "tests/retries.accept.sh"
+runner = "bash {dest}"
+count = 1
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '^retries' config.ini"
+expect = "pass_on_base"
+
+# Red: the runner exits 0 but reports 1 passing test where the plan pins 2, so the task's own step
+# never runs.
+[[task]]
+id = "T3"
+title = "Retry count"
+role = "implementer"
+files = ["config.ini"]
+
+[[task.accept.files]]
+src = "accept/retries.accept.sh"
+dest = "tests/retries.accept.sh"
+runner = "bash {dest}"
+count = 2
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '^retries' config.ini"
+"""
+GREET_ACCEPT = """if [ "$(bash greet.sh 2>/dev/null)" = "hello, world" ]; then
+  echo "test result: ok. 2 passed; 0 failed"
+else
+  echo "test result: FAILED. 0 passed; 2 failed"
+  exit 1
+fi
+"""
+RETRIES_ACCEPT = """grep -q '^retries' config.ini && echo "test result: ok. 1 passed; 0 failed"
+"""
+
+
+def test_dynamic_mode_runs_pinned_accept_tests(tmp_path):
+    """[task.accept] tests run first, as the Graph path runs them (bug-c1b845)."""
+    repo = make_repo(
+        tmp_path / "repo",
+        {
+            "config.ini": "retries = 3\n",
+            "plans/p/tasks.toml": ACCEPT_PLAN,
+            "plans/p/accept/greet.accept.sh": GREET_ACCEPT,
+            "plans/p/accept/retries.accept.sh": RETRIES_ACCEPT,
+        },
+    )
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    got = lint_repo(repo, scratch=scratch)
+
+    # T1 pins its only test, which fails on the base: red, where before the task was not run at all.
+    t1 = got["T1"]
+    assert (t1["red_on_base"], t1["rules"]["SQ06"], t1["hard_fail"]) == ("fail", 1.0, [])
+    runs = t1["red_on_base_detail"]["runs"]
+    assert [[(step["step"], step["accept"]) for step in run] for run in runs] == [[(1, "accept/greet.accept.sh")]] * 2
+    assert "its runner exited with status 1" in runs[0][0]["tail"]
+
+    # T2's pinned test already passes on the base: HF3, though its own step declares pass_on_base.
+    t2 = got["T2"]
+    assert (t2["red_on_base"], t2["hard_fail"]) == ("pass", ["HF3"])
+    assert [[step["exit"] for step in run] for run in t2["red_on_base_detail"]["runs"]] == [[0, 0], [0, 0]]
+
+    # T3's runner exits 0 but reports 1 passing test where the plan pins 2: red, and its own step,
+    # which comes after the pinned one, never runs.
+    t3 = got["T3"]
+    assert t3["red_on_base"] == "fail"
+    runs = t3["red_on_base_detail"]["runs"]
+    assert [len(run) for run in runs] == [1, 1]
+    assert "must pass exactly 2 tests; the runner reported 1" in runs[0][0]["tail"]
+    assert list(scratch.iterdir()) == []
+
+
+def test_passed_count_awk_matches_task_accept():
+    """dynamic.PASSED_COUNT_AWK copies the Graph path's pass counter; the two must not drift."""
+    rust = SPECLINT_DIR.parents[2] / "crates" / "roko-cli" / "src" / "task_accept.rs"
+    if not rust.is_file():
+        pytest.skip(f"{rust} is not in this checkout")
+    match = re.search(r'const PASSED_COUNT_AWK: &str = r#"(.*?)"#;', rust.read_text(), re.S)
+    assert match and match.group(1) == dynamic.PASSED_COUNT_AWK

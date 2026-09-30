@@ -1035,7 +1035,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never

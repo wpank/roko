@@ -780,7 +780,7 @@ impl ClaudeCliAgent {
             }
         }
         if usage.source == UsageSource::Unknown {
-            return streamed.into_stream_usage(fallback_model);
+            return streamed.stream_usage(fallback_model);
         }
         usage
     }
@@ -1205,6 +1205,7 @@ impl ClaudeCliAgent {
         let stdout_name = self.name.clone();
         let stdout_activity = has_activity.clone();
         let stdout_stream_tx = stream_tx;
+        let stdout_model = self.model.clone();
         let stdout_handle = tokio::spawn(async move {
             let Some(pipe) = stdout_pipe else {
                 return String::new();
@@ -1214,6 +1215,7 @@ impl ClaudeCliAgent {
             let mut collected = String::new();
             let mut text_bytes: usize = 0;
             let mut tool_count: usize = 0;
+            let mut streamed = StreamedMessages::default();
 
             while let Ok(Some(line)) = lines.next_line().await {
                 collected.push_str(&line);
@@ -1240,6 +1242,13 @@ impl ClaudeCliAgent {
                         for kind in Self::event_kinds_from_value(&event) {
                             // Ignore send errors: receiver may have dropped.
                             let _ = tx.send(StreamEvent::now(kind)).await;
+                        }
+                        // The run is one call to the stream: each `Usage`
+                        // is its estimated total so far.
+                        if let Some(usage) = streamed.observe_live(&event, &stdout_model) {
+                            let _ = tx
+                                .send(StreamEvent::now(StreamEventKind::Usage(usage)))
+                                .await;
                         }
                     }
                 }
@@ -1560,10 +1569,23 @@ impl StreamedMessages {
             .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
     }
 
+    /// [`Self::observe`] `event` and, when it changed what the run streamed,
+    /// return the new totals for the live stream: the run's usage so far,
+    /// which the stall watchdog records for a run it drops (bug-aa2044).
+    fn observe_live(&mut self, event: &Value, fallback_model: &str) -> Option<Usage> {
+        if event.get("type").and_then(Value::as_str) != Some("assistant") {
+            return None;
+        }
+        let before = self.stream_usage(fallback_model);
+        self.observe(event);
+        let after = self.stream_usage(fallback_model);
+        (after != before).then(|| ClaudeCliAgent::usage_observation(&after, 0).into())
+    }
+
     /// The streamed totals as [`UsageSource::Estimated`] usage, each message
     /// priced from the model pricing table (`fallback_model` when it names
     /// none). Unknown when nothing was streamed.
-    fn into_stream_usage(self, fallback_model: &str) -> StreamUsage {
+    fn stream_usage(&self, fallback_model: &str) -> StreamUsage {
         if self.messages.is_empty() {
             return StreamUsage::default();
         }

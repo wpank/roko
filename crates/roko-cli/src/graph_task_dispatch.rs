@@ -1209,6 +1209,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         attempt.dispatch_started();
         let started_at = Instant::now();
+        let progress = stall_watch.as_ref().map(StallWatch::progress);
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
         // While it runs, heartbeats keep the TUI's elapsed-time counter live.
@@ -1217,7 +1218,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // and retries under `max_retries`.
         let dispatch_result = self
             .run_watched(
-                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request),
+                self.run_bridge_with_failover(
+                    spec,
+                    &task.id,
+                    attempt.key.attempt_key(),
+                    request,
+                    progress.as_ref(),
+                ),
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -1251,6 +1258,44 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // never leaves an agent stuck in the "running" state.
                 if let Some(tui) = &self.tui_bridge {
                     tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+                }
+                // A call the stall watchdog or the conductor cancelled is
+                // accounted like any failed call, with the usage it streamed
+                // (bug-aa2044).
+                if let Some(interrupted) = progress
+                    .as_ref()
+                    .and_then(|progress| progress.interrupted_call())
+                {
+                    let wall_duration = started_at.elapsed();
+                    let (dispatch, failover) = interrupted.into_dispatch(
+                        &error.to_string(),
+                        u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                    );
+                    let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+                    self.task_spend.record(&task_spend_key, cost_usd);
+                    if let Err(budget_error) = budget_reservation.settle(cost_usd) {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            %budget_error,
+                            "could not settle a cancelled call's spend"
+                        );
+                    }
+                    attempt.record_failover(failover);
+                    let settlement = Settlement::provider_failure(&error.to_string(), false);
+                    let settled =
+                        attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+                    self.emit_feedback(
+                        spec,
+                        &task,
+                        &settled,
+                        &dispatch,
+                        wall_duration,
+                        &dispatch_plan,
+                        Some(routing_ctx_for_feedback),
+                    )
+                    .await;
+                    return Err(error);
                 }
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.

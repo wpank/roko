@@ -227,6 +227,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
+        let progress = stall_watch.as_ref().map(StallWatch::progress);
+        if let Some(progress) = &progress {
+            progress.call_started(
+                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                    .resolve(&request.model_key),
+                Default::default(),
+            );
+        }
         let watched_result = self
             .run_watched(
                 self.factory.run_shared_agent_bridge(request),
@@ -244,16 +252,61 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
                 let settlement = Settlement::provider_failure(&error.to_string(), false);
-                let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
-                self.publish_settlement(spec, &task, &settled).await;
+                // The cancelled call is accounted like any failed call, with
+                // the usage it streamed (bug-aa2044).
+                let streamed = match progress
+                    .as_ref()
+                    .and_then(|progress| progress.interrupted_call())
+                {
+                    Some(call) => {
+                        let wall_duration = started_at.elapsed();
+                        let (dispatch, _) = call.into_dispatch(
+                            &error.to_string(),
+                            u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                        );
+                        let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+                        self.task_spend
+                            .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                        if let Err(budget_error) = budget_reservation.settle(cost_usd) {
+                            tracing::warn!(
+                                attempt = %attempt_id,
+                                %budget_error,
+                                "could not settle a cancelled call's spend"
+                            );
+                        }
+                        let settled =
+                            attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+                        self.emit_feedback(
+                            spec,
+                            &task,
+                            &settled,
+                            &dispatch,
+                            wall_duration,
+                            &dispatch_plan,
+                            Some(routing_ctx_for_feedback),
+                        )
+                        .await;
+                        dispatch
+                            .result
+                            .usage_obs
+                            .as_ref()
+                            .filter(|usage| usage.source == roko_core::UsageSource::Estimated)
+                            .map(|_| dispatch.result.usage)
+                    }
+                    None => {
+                        let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
+                        self.publish_settlement(spec, &task, &settled).await;
+                        None
+                    }
+                };
                 let interrupted_outcome = TaskDispatchOutcome {
                     attempt_id: attempt_id.clone(),
                     outcome: interrupted.outcome(),
                     provider_id: "graph-task-executor".to_string(),
                     model: String::new(),
-                    input_tokens: None,
-                    output_tokens: None,
-                    cost_usd: None,
+                    input_tokens: streamed.map(|usage| u64::from(usage.input_tokens)),
+                    output_tokens: streamed.map(|usage| u64::from(usage.output_tokens)),
+                    cost_usd: streamed.map(|usage| f64::from(usage.cost_usd)),
                     changed_files: Vec::new(),
                     wall_duration: started_at.elapsed(),
                     output: Vec::new(),

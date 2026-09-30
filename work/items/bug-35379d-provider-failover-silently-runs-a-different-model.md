@@ -2,15 +2,15 @@
 id = "bug-35379d"
 kind = "bug"
 title = "Provider failover silently runs a different model and records it as if it had been chosen"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "6f8286d48"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch/failover.rs::failover_model", "roko.toml:282"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = ["find-229e9c", "bug-f68404"],
 
 [[verify]]
 command = "grep -rqE 'planned_model|substituted_from' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-learn/src/efficiency.rs && cargo test -p roko-cli --lib failover_records_planned_and_substitute_model"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 6f8286d48. Failover records the planned and the substitute model, and a substitute earns no router credit. Batch 12b gate on the merged tree (MAIN 6f8286d48 has the same crates and Cargo.lock as gated b0ede92d7): check, nightly fmt and clippy -p roko-cli -p roko-agent -p roko-learn -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3167, roko-agent 2262, roko-learn 1200, roko-serve 977 (two load flakes, a_timed_out_attempt_reports_the_usage_it_streamed and a_timed_out_attempt_is_resumed_with_an_escalated_timeout, pass alone); cargo test -p roko-cli --test learning_wiring_census: 2 passed. Verify: failover_records_planned_and_substitute_model passes (roko-cli lib)."
 +++
 When the planned provider is blocked or reports usage exhaustion, `run_bridge_with_failover` runs `failover_model()` instead. The substitution is only logged (`tracing::warn!("model substitution: …")`, `graph_task_dispatch.rs:4600`).
 - `dispatch.target` names the model that actually ran, and nothing on the attempt, episode or efficiency record marks it as a substitute.

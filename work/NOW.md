@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 26 anchor gone · 190 changed since checked · 6 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 25 anchor gone · 191 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -25,7 +25,7 @@ _0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - **P2** [gap-3506f1](items/gap-3506f1-gates-rungs-is-inert-on-roko-plan.md) [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do · size M · verified 2026-09-30
 
-_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -52,7 +52,7 @@ _0 more open · 3 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_73 more open · `goal = "core"`_
+_72 more open · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 

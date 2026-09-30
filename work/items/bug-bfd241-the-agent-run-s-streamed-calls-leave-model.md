@@ -3,13 +3,15 @@ id = "bug-bfd241"
 kind = "bug"
 title = "The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch/streaming", "roko-agent/dispatcher"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "7faf89805"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix1's report, checked on work/gap-dad97b at f39777257)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/streaming.rs"]
@@ -46,3 +48,4 @@ The streaming dispatch path, where chunks are turned into the attempt's usage.
 ## Notes
 
 - Build on bug-31438d, once merged.
+- Implemented on `work/bug-739dcc` at `7faf89805`; cargo verification deferred to the batch check. `streamed_attempts_record_the_provider_reported_model` (targeted `cargo test` passed; the test asserts the call streamed). Root cause: with live output on (the stall watchdog's tap, on by default) the tool loop streams each model call and rebuilds the response with `collect_stream_to_response`, which dropped the chunks' model; helper calls are not streamed, so only they named it. `StreamEvent` gains `model`: `parse_sse_line`, Anthropic's `message_start` and `response_to_synthetic_stream` set it, and the collector writes the last one back as the response's `model`.

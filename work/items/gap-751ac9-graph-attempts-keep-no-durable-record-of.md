@@ -3,13 +3,15 @@ id = "gap-751ac9"
 kind = "gap"
 title = "Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-agent/claude_cli"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "e4771e454"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-cc-isolate's report on gap-b7a2d5, branch work/gap-b7a2d5 at 42859fc78)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs"]
@@ -46,3 +48,4 @@ One settled record per attempt (epic spec-b7303f): isolation is part of the cond
 ## Notes
 
 - Build on gap-b7a2d5's branch.
+- Implemented on `work/bug-739dcc` at `e4771e454`; cargo verification deferred to the batch check. `attempt_records_carry_the_claude_isolation_settings` (targeted `cargo test` passed). `ClaudeIsolation::tags()` adds `auto_memory` (off while `ISOLATION_ENV` switches it off) and `config_dir` (`user`), and `TAG_KEYS` lists all five. The verdict gains `isolation`, the map of those tags the attempt's output carried. Not done: episodes do not carry them, and `config_dir` says `user` even if a caller passes `CLAUDE_CONFIG_DIR` through the agent's env.

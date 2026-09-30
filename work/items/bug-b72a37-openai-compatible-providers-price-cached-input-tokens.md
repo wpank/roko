@@ -2,7 +2,7 @@
 id = "bug-b72a37"
 kind = "bug"
 title = "OpenAI-compatible providers price cached input tokens twice"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["agent", "cost"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "f1c4fcece"
+last_verified_rev = "27deb61d8"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:03, wk-specs' report on gap-3c430e)"
 anchors = ["crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/streaming.rs", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-ad0d39", "gap-3c430e"], 
 
 [[verify]]
 command = "grep -rqw 'fn openai_compat_usage_prices_cached_input_once' crates/roko-agent/src/ && cargo test -p roko-agent --lib openai_compat_usage_prices_cached_input_once"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in f16908be6. The OpenAI usage parse takes cached tokens out of prompt_tokens and the shared usage_to_wire writes prompt_tokens = input + cached, so cached input is priced once on the OpenAI-compatible, Codex and Hermes paths (200 uncached + 800 cached now costs $0.00048, was $0.00128). Batch 16a gate on 4169ecaba, re-assembled as 22f4a8791 with only runstate's rustfmt commit (MAIN 27deb61d8 has the same code): cargo check --workspace --tests clean; nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-core --keep-going -D warnings clean; lib tests pass: roko-agent 2270, roko-cli 3204 (one background-writer wait flake, gate_rows_carry_the_attempts_turns_or_unknown, passes alone in 1.2 s), roko-core 1953. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

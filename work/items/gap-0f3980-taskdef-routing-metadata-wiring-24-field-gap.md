@@ -2,7 +2,7 @@
 id = "gap-0f3980"
 kind = "gap"
 title = "TaskDef Routing Metadata Wiring (24-field gap)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-09-21
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "b128de876"
+last_verified_rev = "27deb61d8"
 source = "tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
 discovered_from = "audit:tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskDefSerde", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/src/task_parser.rs::TaskDef::build_prompt", "crates/roko-core/src/task.rs::Task", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingInputs::from_task", "crates/roko-compose/src/templates/mod.rs::format_enhancements"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn parses_every_task_routing_field' crates/roko-cli/src/ && grep -rqw 'fn routing_context_uses_authored_task_metadata' crates/roko-cli/src/ && cargo test -p roko-cli --lib parses_every_task_routing_field && cargo test -p roko-cli --lib routing_context_uses_authored_task_metadata"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 27deb61d8. roko_core::TaskHints (Task's 25 routing, gate, prompt and scheduling hints plus rung) is flattened into TaskDef and read by routing, the prompt, context_files, preferred_model/provider, the latency bias and plan validate PLAN_039-041. Batch 16a gate on 4169ecaba, re-assembled as 22f4a8791 with only runstate's rustfmt commit (MAIN 27deb61d8 has the same code): cargo check --workspace --tests clean; nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-core --keep-going -D warnings clean; lib tests pass: roko-agent 2270, roko-cli 3204 (one background-writer wait flake, gate_rows_carry_the_attempts_turns_or_unknown, passes alone in 1.2 s), roko-core 1953. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

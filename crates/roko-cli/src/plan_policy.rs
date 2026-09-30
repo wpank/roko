@@ -173,14 +173,21 @@ impl PlanPolicyViolation {
         }
     }
 
-    /// Whether the plan may still run with this finding. Tasks that could run
-    /// together but write overlapping files (`PLAN_CONCURRENT_OVERLAP`) run
-    /// safely one after the other, so that finding is for the plan's author,
-    /// not a reason to refuse the run.
+    /// Whether the plan may still run with this finding; see
+    /// [`is_advisory_code`].
     #[must_use]
     pub fn is_advisory(&self) -> bool {
-        self.code == "PLAN_CONCURRENT_OVERLAP"
+        is_advisory_code(self.code)
     }
+}
+
+/// Whether a finding with this code leaves the plan runnable. Tasks that
+/// could run together but write overlapping files (`PLAN_CONCURRENT_OVERLAP`)
+/// run safely one after the other, so that finding is for the plan's author,
+/// not a reason to refuse the run.
+#[must_use]
+pub fn is_advisory_code(code: &str) -> bool {
+    code == "PLAN_CONCURRENT_OVERLAP"
 }
 
 impl fmt::Display for PlanPolicyViolation {

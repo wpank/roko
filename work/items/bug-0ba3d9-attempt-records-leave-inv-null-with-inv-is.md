@@ -3,13 +3,14 @@ id = "bug-0ba3d9"
 kind = "bug"
 title = "Attempt records leave inv null: with_inv is called only in tests"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/telemetry", "roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-telemetry2's report, branch work/gap-8cb382 at c5090e9a5)"
 anchors = ["crates/roko-learn/src/telemetry/records.rs", "crates/roko-learn/src/telemetry/manifest.rs"]
@@ -46,3 +47,5 @@ The places that build attempt records on the Graph path, and the manifest's curr
 ## Notes
 
 - Build on gap-8cb382's branch.
+- Implemented on `work/bug-0ba3d9` at `09906922e`; cargo verification deferred to the batch check. On the branch, `attempt_records_carry_the_invocation_ordinal` passes: a failed run resumed, with attempts 1 and 2 under invocations 1 and 2. So do `graph_plan_run_writes_run_manifest` and the `graph_task_dispatch::attempt` tests. Check, clippy with `-D warnings` and nightly fmt are clean.
+- `run_one_plan` passes the ordinal from `RunManifests::open` to `GraphTaskDispatcher::attach_run_invocation`, and `AttemptBook::open` stamps it on every identity. The attempt-open line, the verdict and the settled record all carry it. The `attempt.rs` change is purely additive.

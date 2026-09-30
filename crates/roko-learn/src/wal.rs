@@ -401,6 +401,11 @@ impl Drop for WalSegment {
         if self.entry_count == 0 {
             let _ = std::fs::remove_file(&self.path);
         }
+        // Closing the file alone would keep the lock while another copy of
+        // the descriptor lives, such as the one a child process spawned right
+        // now holds until it execs, and an opener would skip the segment as
+        // a live writer's (bug-779ae7).
+        let _ = self.file.unlock();
     }
 }
 
@@ -664,6 +669,30 @@ mod tests {
             orphan.remove().unwrap();
         }
         assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_gone_writer_leaves_no_lock_in_a_descriptor_that_outlives_it() {
+        // bug-779ae7: a child process spawned while the writer lived holds a
+        // copy of its descriptor until it execs.
+        let dir = TempDir::new().unwrap();
+        let mut writer = WalSegment::create(dir.path()).unwrap();
+        writer
+            .append(&WalEntry::GateThresholdUpdate {
+                rung: 1,
+                passed: true,
+                ts_ms: 1,
+            })
+            .unwrap();
+        let inherited = writer.file.try_clone().unwrap();
+
+        drop(writer);
+        assert_eq!(
+            orphaned_segments(dir.path()).unwrap().len(),
+            1,
+            "the writer is gone, so its segment is an orphan"
+        );
+        drop(inherited);
     }
 
     #[test]

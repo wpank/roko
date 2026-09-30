@@ -245,7 +245,7 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, batch_ctx, make_batch_dispatcher,
+        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, batch_ctx, make_batch_dispatcher,
         make_scripted_batch_dispatcher, make_spec, make_task_def,
     };
     use crate::graph_task_dispatch::verification::verify_failure_summary;
@@ -630,33 +630,48 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
 
     #[tokio::test]
     async fn a_timed_out_attempt_is_resumed_with_an_escalated_timeout() {
-        let temp = tempdir().expect("tempdir");
-        let (dispatcher, mut task) =
-            make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {}).await;
-        task.timeout_secs = 1;
-        let spec = make_spec(&task);
+        for timeout_secs in TIMEOUT_SECS_UNDER_LOAD {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, mut task) =
+                make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {})
+                    .await;
+            task.timeout_secs = timeout_secs;
+            let spec = make_spec(&task);
+            let (first_ms, resumed_ms) = (timeout_secs * 1_000, timeout_secs * 1_500);
 
-        for expected in ["timed out after 1000 ms", "timed out after 1500 ms"] {
-            let error = dispatcher
-                .dispatch(&spec, Vec::new(), &batch_ctx())
-                .await
-                .expect_err("the attempt runs out of time");
+            for timeout_ms in [first_ms, resumed_ms] {
+                let expected = format!("timed out after {timeout_ms} ms");
+                let error = dispatcher
+                    .dispatch(&spec, Vec::new(), &batch_ctx())
+                    .await
+                    .expect_err("the attempt runs out of time");
+                assert!(
+                    matches!(&error, RokoError::Agent { message, .. } if *message == expected),
+                    "the retry must not rerun the same timeout: got {error:?}"
+                );
+            }
+
+            let prompt = |n: u32| std::fs::read_to_string(temp.path().join(format!("prompt-{n}")));
+            let (Ok(first_prompt), Ok(resumed_prompt)) = (prompt(1), prompt(2)) else {
+                // A provider ran out of time before it recorded its prompt.
+                continue;
+            };
+            assert!(!first_prompt.contains("Resuming"));
             assert!(
-                matches!(&error, RokoError::Agent { message, .. } if message == expected),
-                "the retry must not rerun the same timeout: got {error:?}"
+                resumed_prompt.contains("# Resuming a timed-out task"),
+                "{resumed_prompt}"
             );
+            let limit = |ms| format!("{:?}", std::time::Duration::from_millis(ms));
+            assert!(
+                resumed_prompt.contains(&format!("ran out of its {} time limit", limit(first_ms))),
+                "{resumed_prompt}"
+            );
+            assert!(
+                resumed_prompt.contains(&format!("This attempt has {}.", limit(resumed_ms))),
+                "{resumed_prompt}"
+            );
+            return;
         }
-
-        let first_prompt =
-            std::fs::read_to_string(temp.path().join("prompt-1")).expect("first prompt");
-        assert!(!first_prompt.contains("Resuming"));
-        let resumed_prompt =
-            std::fs::read_to_string(temp.path().join("prompt-2")).expect("second prompt");
-        assert!(
-            resumed_prompt.contains("# Resuming a timed-out task"),
-            "{resumed_prompt}"
-        );
-        assert!(resumed_prompt.contains("ran out of its 1s time limit"));
-        assert!(resumed_prompt.contains("This attempt has 1.5s."));
+        panic!("no provider recorded its prompt before its time ran out");
     }
 }

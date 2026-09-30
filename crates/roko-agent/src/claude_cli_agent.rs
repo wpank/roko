@@ -2991,35 +2991,44 @@ sleep 30
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
 
-        let agent =
-            ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6").with_timeout_ms(1_000);
-        let result = agent.run(&prompt("build it"), &Context::now()).await;
+        // A loaded machine may not deliver the whole stream before a short
+        // timeout: each timeout doubles the last until the run is killed
+        // after both messages arrived (bug-779ae7).
+        for timeout_ms in [1_000, 2_000, 4_000, 8_000, 16_000] {
+            let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+                .with_timeout_ms(timeout_ms);
+            let result = agent.run(&prompt("build it"), &Context::now()).await;
 
-        assert!(!result.success);
-        let text = result.output.body.as_text().expect("failure text");
-        assert_eq!(text, "timed out after 1000 ms");
-        assert!(crate::provider::error_classify::detect_attempt_timeout(
-            text
-        ));
-        assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
-        assert_eq!(result.output.tag("num_turns"), Some("2"));
-        assert_eq!(result.usage.input_tokens, 1_010);
-        assert_eq!(result.usage.output_tokens, 250);
-        assert_eq!(result.usage.cache_create_tokens, 3_000);
-        assert_eq!(result.usage.cache_read_tokens, 11_000);
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
-        assert!(
-            (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
-            "{:?}",
-            result.usage
-        );
-        let observation = result.usage_obs.expect("usage observation");
-        assert_eq!(
-            observation.source,
-            UsageSource::Estimated,
-            "a killed run's usage is partial"
-        );
+            assert!(!result.success);
+            let text = result.output.body.as_text().expect("failure text");
+            assert_eq!(text, format!("timed out after {timeout_ms} ms"));
+            assert!(crate::provider::error_classify::detect_attempt_timeout(
+                text
+            ));
+            if result.output.tag("num_turns") != Some("2") {
+                continue;
+            }
+            assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
+            assert_eq!(result.usage.input_tokens, 1_010);
+            assert_eq!(result.usage.output_tokens, 250);
+            assert_eq!(result.usage.cache_create_tokens, 3_000);
+            assert_eq!(result.usage.cache_read_tokens, 11_000);
+            // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+            let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+            assert!(
+                (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
+                "{:?}",
+                result.usage
+            );
+            let observation = result.usage_obs.expect("usage observation");
+            assert_eq!(
+                observation.source,
+                UsageSource::Estimated,
+                "a killed run's usage is partial"
+            );
+            return;
+        }
+        panic!("no run was killed after both messages arrived");
     }
 
     #[tokio::test]

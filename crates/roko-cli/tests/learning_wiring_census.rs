@@ -23,6 +23,7 @@ use assert_cmd::cargo::cargo_bin;
 use roko_cli::graph_execution::plan_runner::build_graph_feedback_context;
 use roko_cli::graph_task_dispatch::{GraphTaskDispatcher, WiringReport};
 use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::model_call_feedback::ModelCallJournal;
 use serde_json::Value;
 
 /// Every learning component of S01 §5.8, in census order.
@@ -46,7 +47,6 @@ const S01_COMPONENTS: &[&str] = &[
 /// It only shrinks. The census fails when one of them is wired, so take it
 /// off the list then.
 const EXPECTED_MISSING: &[&str] = &[
-    "sink.error_pattern",
     "sink.section_effect",
     "store.decision_writer",
     "store.exposure_writer",
@@ -170,22 +170,34 @@ max_retries = 0
 "#;
 
 /// The dispatcher a Graph plan run builds, with the production feedback
-/// wiring for `workdir` and `cascade_router`, as the census sees it.
+/// wiring for `workdir` and `cascade_router` (journaled, as a run journals
+/// it), as the census sees it.
 async fn production_census(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<CascadeRouter>>,
 ) -> WiringReport {
-    let feedback = build_graph_feedback_context(workdir, config, cascade_router);
-    let config = Arc::new(config.clone());
+    let shared_config = Arc::new(config.clone());
     let factory = roko_cli::dispatch::SharedAgentFactory::new(
-        Arc::clone(&config),
+        Arc::clone(&shared_config),
         None,
         cascade_router.cloned(),
         None,
     )
     .await;
-    GraphTaskDispatcher::new(Arc::new(factory), config, workdir.to_path_buf())
+    let journal = cascade_router.map(|_| {
+        Arc::new(ModelCallJournal::for_learn_dir(
+            &workdir.join(".roko/learn"),
+        ))
+    });
+    let feedback = build_graph_feedback_context(
+        workdir,
+        config,
+        cascade_router,
+        journal.as_ref(),
+        factory.error_pattern_store(),
+    );
+    GraphTaskDispatcher::new(Arc::new(factory), shared_config, workdir.to_path_buf())
         .with_feedback(feedback)
         .wiring_report()
 }

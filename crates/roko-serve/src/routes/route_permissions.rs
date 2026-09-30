@@ -187,12 +187,40 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/relay",
         permission: Permission::AgentSpawn,
     },
+    RoutePermission {
+        prefix: "/ws/terminal",
+        permission: Permission::AgentSpawn,
+    },
 ];
+
+/// Routes whose GET opens an interactive session: a WebSocket upgrade into a
+/// shell. A GET there is not a read, so it takes the route's write scope and
+/// RBAC permission like a mutation.
+const SESSION_OPENING_ROUTES: &[&str] = &["/ws/terminal"];
+
+/// Whether a request to `path` opens an interactive session (see
+/// [`SESSION_OPENING_ROUTES`]).
+pub(crate) fn opens_interactive_session(path: &str) -> bool {
+    SESSION_OPENING_ROUTES
+        .iter()
+        .any(|prefix| path_has_segment_prefix(path, prefix))
+}
+
+/// Whether `path` is `prefix` itself or lies below it.
+///
+/// A prefix matches only at a path-segment boundary, so `/relay` covers
+/// `/relay/agents` but not `/relay-tokens`. A prefix that ends in `/` is
+/// already at a boundary.
+pub(crate) fn path_has_segment_prefix(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/'))
+}
 
 /// Resolve the typed permission required for a request.
 ///
 /// Read-only requests normally rely on authentication plus their route's
-/// existing scope. Audit and secret reads are intentionally stronger. Every
+/// existing scope. Audit and secret reads are intentionally stronger, and a
+/// GET that opens an interactive session is treated as a mutation. Every
 /// mutation receives a typed permission: unmatched mutations fail closed to
 /// [`Permission::ConfigEdit`] rather than bypassing RBAC.
 pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Permission> {
@@ -216,7 +244,9 @@ pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Per
         return Some(Permission::SecretsRead);
     }
 
-    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        && !opens_interactive_session(path)
+    {
         return None;
     }
 
@@ -248,10 +278,7 @@ fn is_root_mounted(path: &str) -> bool {
     ROUTE_PERMISSION_MANIFEST
         .iter()
         .filter(|entry| !entry.prefix.starts_with("/api/"))
-        .any(|entry| {
-            path.strip_prefix(entry.prefix)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-        })
+        .any(|entry| path_has_segment_prefix(path, entry.prefix))
 }
 
 #[cfg(test)]
@@ -435,6 +462,30 @@ mod tests {
             required_permission_for(&Method::POST, "/relayed"),
             Some(Permission::ConfigEdit)
         );
+    }
+
+    #[test]
+    fn opening_a_terminal_websocket_requires_agent_spawn() {
+        for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert_eq!(
+                required_permission_for(&method, "/ws/terminal/abc-123"),
+                Some(Permission::AgentSpawn),
+                "{method}"
+            );
+        }
+        // Only the session-opening route changes; other reads stay open.
+        assert_eq!(required_permission_for(&Method::GET, "/ws/events"), None);
+        assert_eq!(required_permission_for(&Method::GET, "/ws/terminals"), None);
+    }
+
+    #[test]
+    fn segment_prefixes_stop_at_path_boundaries() {
+        assert!(path_has_segment_prefix("/relay", "/relay"));
+        assert!(path_has_segment_prefix("/relay/agents", "/relay"));
+        assert!(!path_has_segment_prefix("/relay-tokens", "/relay"));
+        assert!(!path_has_segment_prefix("/relayed/x", "/relay"));
+        assert!(path_has_segment_prefix("/hooks/plugin/x", "/hooks/"));
+        assert!(!path_has_segment_prefix("/api", "/api/"));
     }
 
     #[test]

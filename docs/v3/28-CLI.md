@@ -1464,7 +1464,10 @@ roko config edit [--global] [--project] [--workdir <path>]
 
 #### `roko config set`
 
-Set a dotted key in the chosen config layer.
+Set a dotted key in the global config, or in the project's `roko.toml` with
+`--project`. A secret key such as `serve.auth.api_key` goes to the project's
+`.roko/.env` instead, as its `ROKO__` variable (`ROKO__SERVE__AUTH__API_KEY`),
+whatever the flags, and is removed from the config files agents can read.
 
 ```
 roko config set <key> <value> [--global] [--project] [--workdir <path>]
@@ -1473,6 +1476,7 @@ roko config set <key> <value> [--global] [--project] [--workdir <path>]
 ```bash
 roko config set agent.command claude
 roko config set agent.model claude-opus-4-5 --project
+roko config set serve.auth.api_key <key>   # stored in .roko/.env
 ```
 
 #### `roko config set-secret`
@@ -2049,7 +2053,7 @@ Run a native SWE-bench-style proxy batch.
 
 ```
 roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
-               [--agent-mode gold|prediction-file|command]
+               --agent-mode gold|empty|prediction-file|command
                [--predictions <path>] [--agent-command <cmd>]
                [--report <path>] [--export-predictions <path>]
                [--no-learning] [--keep-workdirs] [--workdir <path>]
@@ -2060,7 +2064,7 @@ roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
 | `--dataset <path>` | built-in smoke | Local JSONL dataset. |
 | `--batch-size <n>` | 2 | Number of instances to run. |
 | `--offset <n>` | 0 | Offset into the dataset. |
-| `--agent-mode <mode>` | `gold` | Agent adapter: `gold`, `prediction-file`, `command`. |
+| `--agent-mode <mode>` | required | Agent adapter: `prediction-file` or `command` measure an agent; `gold` and `empty` are controls that check the harness and are never recorded as learning. |
 | `--no-learning` | false | Disable episode, efficiency, and C-factor writes. |
 | `--keep-workdirs` | false | Keep per-instance benchmark workdirs for debugging. |
 

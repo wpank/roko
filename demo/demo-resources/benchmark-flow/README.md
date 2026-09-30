@@ -112,11 +112,14 @@ Each JSONL row should have this shape:
   "repo_path": "./fixtures/case-1",
   "problem_statement": "Fix the failing behavior.",
   "patch": "diff --git a/file.py b/file.py\n...",
-  "test_cmd": "python3 -m unittest"
+  "test_cmd": "python3 -m unittest",
+  "test_files": ["test_file.py"]
 }
 ```
 
 `repo_path` is copied into an isolated benchmark workdir before patch validation. Relative `repo_path` values are resolved relative to the dataset file.
+
+Every row must name the tests that grade it: `test_files` (paths in the repo), a SWE-bench-style `test_patch`, or both. Before `test_cmd` runs, those files are reset over the agent's patch and `test_patch` is applied, so a patch cannot rewrite the tests that grade it. A row with no grading tests, or with no `test_cmd`, is an error. The agent never sees `patch`, `test_cmd`, `test_patch` or `test_files`.
 
 ## Agent Modes
 

@@ -17,7 +17,7 @@ import kvstore  # noqa: E402
 VERSION = "kvtool 2.0.1"
 DEFAULT_STORE = os.path.join(ROOT, "data", "store.db")
 EXIT_OK, EXIT_USAGE, EXIT_STORE, EXIT_INTERRUPTED, EXIT_PENDING = 0, 1, 2, 3, 4
-ANSWER_WAIT_S = 900  # how long a confirmation question waits for its answer before kvtool gives up
+ANSWER_WAIT_S = 150  # how long a confirmation question waits for its answer before kvtool gives up
 
 HELP = """__HELP__"""
 HINTS = "__HINTS__"

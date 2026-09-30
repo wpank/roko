@@ -135,7 +135,8 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
 - **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
-  some of them at random; the census's own rerun never meets a flake.
+  some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
+  another model than the pin, and the model checks accept that one model as a declared swap (`model_swapped`).
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests

@@ -144,7 +144,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it
 - [x] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
 - [x] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
-- [ ] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
+- [x] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
 - [x] bug-d34a29: The metering proxy's input-token bound (request bytes + 256) assumes text-only requests; an image by URL can cost more
 - [x] gap-806e37: The Roko arm doesn't enforce S08's 150K per-attempt input cap, so S08-SC6 can't hold for that arm
 - [x] gap-15bb83: vb run always uses the proxy's clean profile, and the other disturbance hooks aren't built, so H6 has no disturbance mechanism
@@ -152,7 +152,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-a6abd5: S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json
 - [ ] gap-29ac83: The benchmark has no sandbox on Linux, so records there say sandbox: none
 - [x] gap-4e8795: flaky_verify needs a visible-verify wrapper, and no arm has one
-- [ ] gap-8bdf5e: model_swap needs served-model checks, in records and run_roko, that accept a declared swap
+- [x] gap-8bdf5e: model_swap needs served-model checks, in records and run_roko, that accept a declared swap
 - [x] gap-98516b: F1 and F4 render latent v1 only, so the convention_flip disturbance is refused
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.

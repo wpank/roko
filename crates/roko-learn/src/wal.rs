@@ -109,8 +109,8 @@ pub enum WalEntry {
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
-    /// A cascade router observation journaled by a model-call surface before
-    /// it was applied.
+    /// A cascade router observation journaled by a model-call surface, or by
+    /// a Graph run's routing sink, before it was applied.
     ///
     /// Replay skips it once a [`WalEntry::ModelCallObservationsFolded`]
     /// marker names its `id`.
@@ -127,6 +127,15 @@ pub enum WalEntry {
         reward: f64,
         /// Whether the call counts as a success.
         success: bool,
+        /// Share of a full observation the `LinUCB` update carried, from 0.0
+        /// to 1.0: below 1 for a dampened override outcome, which a Graph run
+        /// journals too (bug-dfb28f). An entry leaves a full observation's
+        /// weight out, and entries written before the field carried one.
+        #[serde(
+            default = "full_observation_weight",
+            skip_serializing_if = "is_full_observation_weight"
+        )]
+        weight: f64,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -221,6 +230,19 @@ impl WalWriter {
         self.entry_count = 0;
         Ok(())
     }
+}
+
+/// The weight of a full observation, which a [`WalEntry::ModelCallObservation`]
+/// without one carried.
+const fn full_observation_weight() -> f64 {
+    1.0
+}
+
+/// Whether an observation carried a full observation's weight, which its
+/// entry leaves out.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+fn is_full_observation_weight(weight: &f64) -> bool {
+    (weight - 1.0).abs() < f64::EPSILON
 }
 
 /// Append one `entry` to the WAL at `path`, creating it if absent, and sync
@@ -586,6 +608,7 @@ mod tests {
                     model_idx: 0,
                     reward: 1.0,
                     success: true,
+                    weight: 1.0,
                     ts_ms: 1,
                 },
             )
@@ -644,6 +667,16 @@ mod tests {
     }
 
     #[test]
+    fn a_model_call_observation_without_a_weight_carried_a_full_one() {
+        let line = r#"{"kind":"model_call_observation","id":"obs-1","model_slug":"model-a","context_features":[],"model_idx":0,"reward":1.0,"success":true,"ts_ms":1}"#;
+        let entry: WalEntry = serde_json::from_str(line).unwrap();
+        let WalEntry::ModelCallObservation { weight, .. } = &entry else {
+            panic!("a model-call observation: {entry:?}");
+        };
+        assert!((weight - 1.0).abs() < f64::EPSILON, "{weight}");
+    }
+
+    #[test]
     fn replay_missing_file_returns_empty() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.jsonl");
@@ -679,7 +712,18 @@ mod tests {
                 model_idx: 2,
                 reward: 0.0,
                 success: false,
+                weight: 1.0,
                 ts_ms: 400,
+            },
+            WalEntry::ModelCallObservation {
+                id: "obs-2".into(),
+                model_slug: "model-c".into(),
+                context_features: vec![0.0; 18],
+                model_idx: 2,
+                reward: 0.4,
+                success: true,
+                weight: 0.5,
+                ts_ms: 450,
             },
             WalEntry::ModelCallObservationsFolded {
                 ids: vec!["obs-1".into()],

@@ -212,7 +212,8 @@ impl RetryFeedbackBook {
 
 /// Rewrite `plan_id`'s file from `state`, removing it once nothing is
 /// pending and no task stands above its start rung. Returns the file on
-/// success.
+/// success. Gate output and diagnoses can quote a secret, so the process's
+/// secrets are redacted from the file; a resumed attempt sees the redaction.
 fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
     let (path, run_id) = state.files.get(plan_id)?;
     let tasks: BTreeMap<String, PendingFeedback> = state
@@ -240,9 +241,12 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
             tasks,
             ladder,
         };
-        serde_json::to_vec_pretty(&file)
+        serde_json::to_string_pretty(&file)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| roko_core::io::atomic_write(path, &bytes))
+            .and_then(|text| {
+                let text = roko_core::obs::scrub_secrets_in_json(&text);
+                roko_core::io::atomic_write(path, text.as_bytes())
+            })
     };
     match written {
         Ok(()) => Some(path.clone()),

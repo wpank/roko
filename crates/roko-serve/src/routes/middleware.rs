@@ -21,6 +21,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::error::ApiError;
 use crate::rbac::{Permission, Role, enforce_permission};
 use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339};
+use crate::routes::route_permissions::{opens_interactive_session, path_has_segment_prefix};
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
@@ -154,7 +155,7 @@ pub fn register_extension_route_scopes(entries: impl IntoIterator<Item = (String
 fn extension_scope_for(path: &str) -> Option<&str> {
     let entries = EXTENSION_ROUTE_SCOPES.get()?;
     for (prefix, scope) in entries {
-        if path.starts_with(prefix.as_str()) {
+        if path_has_segment_prefix(path, prefix) {
             return Some(scope.as_str());
         }
     }
@@ -1071,7 +1072,9 @@ pub async fn require_api_key(
 /// fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RouteScopeEntry {
-    /// Path prefix matched via `starts_with`. Order matters: first match wins.
+    /// Path prefix, matched only at a path-segment boundary: the path equals
+    /// it or continues with `/`, so `/api/run` covers `/api/run/x` but not
+    /// `/api/runs`. Order matters: first match wins.
     pub prefix: &'static str,
     /// Required scope for mutating requests (POST/PUT/DELETE/PATCH).
     pub scope: &'static str,
@@ -1091,6 +1094,11 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     },
     RouteScopeEntry {
         prefix: "/api/agent-tokens",
+        scope: "admin",
+    },
+    // Issuing a relay token needs `token:issue`, which only admins hold.
+    RouteScopeEntry {
+        prefix: "/api/relay-tokens",
         scope: "admin",
     },
     RouteScopeEntry {
@@ -1127,6 +1135,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/prd",
         scope: "plan:write",
     },
+    RouteScopeEntry {
+        prefix: "/api/prds",
+        scope: "plan:write",
+    },
     // --- terminal:write ------------------------------------------------------
     RouteScopeEntry {
         prefix: "/api/terminal",
@@ -1155,6 +1167,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     },
     RouteScopeEntry {
         prefix: "/api/run",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/runs",
         scope: "write",
     },
     RouteScopeEntry {
@@ -1270,8 +1286,11 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 
 /// Determine the required scope for a given HTTP method and path.
 ///
-/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) always return `"read"`.
-/// Mutating methods are classified in priority order:
+/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) return `"read"`, except on a
+/// route whose GET opens an interactive session (a WebSocket shell, see
+/// `route_permissions::opens_interactive_session`): that GET is classified
+/// like a mutation, so `/ws/terminal` needs `terminal:write`. Mutating
+/// methods are classified in priority order:
 ///
 /// 1. [`ROUTE_SCOPE_MANIFEST`] — static first-party route prefixes.
 /// 2. Extension route registry populated by [`register_extension_route_scopes`]
@@ -1282,8 +1301,8 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 /// The static manifest takes precedence over extension routes so that a
 /// misconfigured plugin cannot downgrade scope requirements for core routes.
 pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
-    // Read-only methods always pass.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods pass, unless the GET opens an interactive session.
+    if is_read_only_method(method) && !opens_interactive_session(path) {
         return "read";
     }
     // Middleware on the nested API router can observe `/registries/...`
@@ -1291,12 +1310,13 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // forms so an admin route never falls back to the weaker generic write
     // scope merely because Axum stripped the nest prefix.
     let nested_path = (!path.starts_with("/api/")).then(|| format!("/api{path}"));
-    // 1. Static first-party manifest (O(n), n ≤ ~30 entries).
+    // 1. Static first-party manifest (O(n), n ≤ ~45 entries), matched at
+    //    segment boundaries so `/relay` does not claim `/relay-tokens`.
     for entry in ROUTE_SCOPE_MANIFEST {
-        if path.starts_with(entry.prefix)
+        if path_has_segment_prefix(path, entry.prefix)
             || nested_path
                 .as_deref()
-                .is_some_and(|path| path.starts_with(entry.prefix))
+                .is_some_and(|path| path_has_segment_prefix(path, entry.prefix))
         {
             return entry.scope;
         }
@@ -1310,6 +1330,11 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // 3. Fail-closed: any unclassified mutating route gets the sentinel scope
     //    which behaves as "write" at runtime but is detectable by the CI guard.
     SCOPE_WRITE_UNCLASSIFIED
+}
+
+/// `GET`, `HEAD` and `OPTIONS`: methods that read rather than change state.
+fn is_read_only_method(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
@@ -1383,8 +1408,9 @@ pub async fn require_scope(
         return Ok(next.run(req).await);
     }
 
-    // Read-only methods bypass scope checks.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods bypass scope checks, except a GET that opens an
+    // interactive session: `required_scope_for` classifies it like a mutation.
+    if is_read_only_method(&method) && !opens_interactive_session(&path) {
         return Ok(next.run(req).await);
     }
 
@@ -2945,6 +2971,32 @@ mod tests {
         assert_eq!(required_scope_for(&Method::GET, "/api/secrets"), "read");
     }
 
+    /// A table prefix covers its own path and the paths below it, never a
+    /// longer route name that merely starts with the same letters, so
+    /// `POST /api/relay-tokens` no longer gets the `/relay` scope
+    /// (bug-44320f).
+    #[test]
+    fn scope_prefixes_match_whole_path_segments() {
+        for (method, path, expected) in [
+            (Method::POST, "/relay/agents", "agent:write"),
+            (Method::POST, "/api/relay-tokens", "admin"),
+            (Method::POST, "/relay-tokens", "admin"),
+            (Method::DELETE, "/relay-tokens/tok-1", "admin"),
+            (Method::POST, "/api/prd/consolidate", "plan:write"),
+            (Method::POST, "/prds/ideas", "plan:write"),
+            (Method::POST, "/api/run", "write"),
+            (Method::POST, "/runs/abc/share", "write"),
+            (Method::POST, "/api/secretsx", SCOPE_WRITE_UNCLASSIFIED),
+            (Method::POST, "/api/configure", SCOPE_WRITE_UNCLASSIFIED),
+        ] {
+            assert_eq!(
+                required_scope_for(&method, path),
+                expected,
+                "{method} {path}"
+            );
+        }
+    }
+
     #[test]
     fn registry_reads_require_read_and_mutations_require_admin() {
         assert_eq!(
@@ -3557,6 +3609,9 @@ mod tests {
         // --- /relay (agent:write) ---
         (Method::POST, "/relay/agents"),
         (Method::DELETE, "/relay/agents/123"),
+        // --- /api/relay-tokens (admin) ---
+        (Method::POST, "/api/relay-tokens"),
+        (Method::DELETE, "/api/relay-tokens/tok-1"),
     ];
 
     /// CI guard: every mutating route registered in the router must have an

@@ -529,9 +529,36 @@ pub struct ExecutedModel {
     pub failover_chain: Vec<String>,
     /// Why the first model of `failover_chain`, the planned one, did not run.
     pub failover_reason: Option<String>,
+    /// Each model of `failover_chain`, with why it was refused and whether
+    /// a call reached its provider first (bug-220385).
+    pub failover_refusals: Vec<FailoverRefusal>,
     /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
     /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+}
+
+/// One model provider failover passed over before the one that ran
+/// (`executed.failover_refusals`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FailoverRefusal {
+    /// The refused `[models.*]` key.
+    pub model: String,
+    /// The refused model's provider.
+    pub provider: String,
+    /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
+    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured` or
+    /// `not_dispatchable`.
+    pub class: String,
+    /// The provider's own words, or why it could not be called.
+    pub reason: String,
+    /// Whether a call reached the provider before it refused; that call's
+    /// cost and efficiency rows carry the role `failover_refused`.
+    pub called: bool,
+    /// Unix ms of the refusal.
+    pub at: Option<i64>,
+    /// When the provider is expected to take work again (unix ms).
+    pub until: Option<i64>,
 }
 
 /// Helper model calls one attempt made outside its agent run: after a failed
@@ -890,12 +917,18 @@ pub struct RunProvenanceManifest {
     /// One entry per process that worked on the run; a resume appends one.
     #[serde(default)]
     pub invocations: Vec<RunInvocation>,
-    /// The harness build.
+    /// The harness build of the run's first invocation. Each invocation
+    /// records its own ([`RunInvocation::harness`]).
     #[serde(default)]
     pub harness: HarnessProvenance,
-    /// The configuration fingerprint.
+    /// The configuration fingerprint of the run's first invocation. Each
+    /// invocation records its own ([`RunInvocation::config`]).
     #[serde(default)]
     pub config: ConfigHashProvenance,
+    /// Whether a later invocation ran under another harness build or
+    /// config than the first, so the run's records come from more than one.
+    #[serde(default)]
+    pub mixed_provenance: bool,
     /// The price snapshot.
     #[serde(default)]
     pub prices: PriceProvenance,
@@ -921,6 +954,7 @@ impl RunProvenanceManifest {
             invocations: Vec::new(),
             harness: HarnessProvenance::default(),
             config: ConfigHashProvenance::default(),
+            mixed_provenance: false,
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
@@ -952,6 +986,12 @@ pub struct RunInvocation {
     pub host: String,
     /// `sha256` of the command-line arguments.
     pub args_sha256: Option<String>,
+    /// The harness build this invocation ran; `None` in manifests written
+    /// before invocations recorded their own.
+    pub harness: Option<HarnessProvenance>,
+    /// The configuration fingerprint this invocation ran with; `None` in
+    /// manifests written before invocations recorded their own.
+    pub config: Option<ConfigHashProvenance>,
 }
 
 /// The harness build behind a run.

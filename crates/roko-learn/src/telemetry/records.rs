@@ -635,6 +635,10 @@ pub struct AttemptOpenRecord {
     /// Unix ms when the attempt started.
     #[serde(default)]
     pub attempt_started_at: Option<i64>,
+    /// The task's tier label (`roko_core::task::TaskTier`), which
+    /// [`crate::tier_limits`] groups attempts by. Older lines lack it.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 impl AttemptOpenRecord {
@@ -647,6 +651,7 @@ impl AttemptOpenRecord {
             role: None,
             max_retries: None,
             attempt_started_at: Some(attempt_started_at),
+            tier: None,
         }
     }
 }

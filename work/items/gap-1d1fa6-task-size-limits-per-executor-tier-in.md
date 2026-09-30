@@ -3,13 +3,15 @@ id = "gap-1d1fa6"
 kind = "gap"
 title = "Task size limits per executor tier in plan validate"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (step 3); tldr/research/B1-plan-authoring.md (tier LOC budgets)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::PlanExecutionPolicy", "crates/roko-cli/src/plan_generate.rs::TaskTier"]
@@ -69,3 +71,6 @@ Checked at `41c7ffbd6`: no tier-aware rule in `plan_policy.rs` or `plan_validate
 - Waits for gap-8c0a20, the shared tier enum. Do not key the limits on raw tier strings.
 - Keep the check static. Measuring each attempt's actual diff size belongs with the diff check (epic E9).
 - Refitting the defaults from per-tier pass rates needs the attempt records (epic E4) and is later work.
+- 2026-09-30 (wk-tiers): implemented on `work/gap-1d1fa6` at `afd17b79e`; cargo verification deferred to the batch check (no cargo was allowed for this item).
+- The Done-when example conflicts with plan step 1: its `max_loc = 200` is over integrative's 150-line budget, so the task is flagged as integrative too (it fits architectural). `task_over_its_tier_limits_is_flagged` uses `max_loc = 150`, which only a lower tier flags.
+- Default limits (files, description words, verify steps): mechanical 3/300/3, focused 5/350/4, integrative 10/500/6, architectural 32/800/8; the line budgets are 20/50/150/300. On 2026-09-30 they flag 107 of the 551 tasks in `plans/` (56 of 132 plans), 73 of them for a declared `max_loc` over the tier's budget, so `plan validate --strict` now fails those plans.

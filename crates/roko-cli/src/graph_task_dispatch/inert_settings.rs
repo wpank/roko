@@ -29,6 +29,7 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                           plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
+    const NOT_WIRED: &str = "dispatch does not read the learned tier limits yet (gap-5a6e01)";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
@@ -152,6 +153,11 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                 != defaults.runner.warm_pool_idle_timeout_secs,
             "runner.warm_pool_idle_timeout_secs",
             NO_WARM_POOL,
+        ),
+        (
+            config.pipeline.learned_limits != defaults.pipeline.learned_limits,
+            "pipeline.learned_limits",
+            NOT_WIRED,
         ),
     ];
     for (key, band, default_band) in [

@@ -1,6 +1,8 @@
 //! Limits and failure reasons of one Graph task attempt: express tasks, turn caps,
 //! attempt timeouts, and the class-prefixed reason a failed attempt records.
 
+use roko_learn::tier_limits::LearnedTierLimits;
+
 use super::*;
 
 /// P3-AGT-2: Express mode turn limit for mechanical/trivial tasks.
@@ -36,7 +38,22 @@ pub(super) fn is_express_task(
 /// how the cap binds (`ProviderAdapter::turn_cap_enforcement`), and agent
 /// construction warns when a provider can treat it only as advisory.
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
-    let tier_limit = config.pipeline.max_turns_for_tier(task.tier_class());
+    task_turn_limit_with(config, None, task, express_active)
+}
+
+/// [`task_turn_limit`] with the workspace's learned tier limits: with
+/// `[pipeline] learned_limits = "on"`, a tier with enough history gets its
+/// learned cap instead of `[pipeline.<tier>] max_turns` (gap-5a6e01).
+pub(super) fn task_turn_limit_with(
+    config: &RokoConfig,
+    learned: Option<&LearnedTierLimits>,
+    task: &TaskDef,
+    express_active: bool,
+) -> u32 {
+    let tier = task.tier_class();
+    let tier_limit = learned
+        .and_then(|learned| learned.applied(tier).max_turns)
+        .unwrap_or_else(|| config.pipeline.max_turns_for_tier(tier));
     if express_active {
         tier_limit.min(EXPRESS_MAX_TURNS)
     } else {
@@ -84,12 +101,30 @@ const MAX_TIMEOUT_ESCALATION: u64 = 4;
 /// Wall-clock budget of one Graph task attempt, in ms: the task's authored
 /// `timeout_secs`, else `timeouts.agent_dispatch_secs`.
 pub(super) fn base_attempt_timeout_ms(config: &RokoConfig, spec: &TaskExecutionSpec) -> u64 {
-    let secs = if spec.timeout_secs == 0 {
-        config.timeouts.agent_dispatch_secs
-    } else {
-        spec.timeout_secs
-    };
-    secs.max(1).saturating_mul(1_000)
+    base_attempt_timeout_ms_with(config, None, spec)
+}
+
+/// [`base_attempt_timeout_ms`] with the workspace's learned tier limits: an
+/// authored `timeout_secs` always wins; otherwise, with `[pipeline]
+/// learned_limits = "on"`, a tier with enough history gets its learned
+/// timeout (gap-5a6e01).
+pub(super) fn base_attempt_timeout_ms_with(
+    config: &RokoConfig,
+    learned: Option<&LearnedTierLimits>,
+    spec: &TaskExecutionSpec,
+) -> u64 {
+    if spec.timeout_secs != 0 {
+        return spec.timeout_secs.saturating_mul(1_000);
+    }
+    let tier = roko_core::task::TaskTier::parse(&spec.tier).unwrap_or_default();
+    let configured = config
+        .timeouts
+        .agent_dispatch_secs
+        .max(1)
+        .saturating_mul(1_000);
+    learned
+        .and_then(|learned| learned.applied(tier).timeout_ms)
+        .unwrap_or(configured)
 }
 
 /// Timeout for the attempt after one that ran out of `timeout_ms`: half
@@ -410,6 +445,85 @@ mod tests {
         );
         assert_eq!(raised_attempt_timeout_ms(1_000, 1_000), 1_500);
         assert_eq!(raised_attempt_timeout_ms(u64::MAX, u64::MAX), u64::MAX);
+    }
+
+    /// gap-5a6e01: with `learned_limits = "on"` a tier's learned cap and
+    /// timeout replace the configured ones; `shadow` and `off` change nothing,
+    /// and an authored timeout always wins.
+    #[test]
+    fn learned_tier_limits_reach_turn_cap_and_timeout() {
+        use roko_core::config::gates::LearnedLimitsMode;
+        use roko_core::task::TaskTier;
+        use roko_learn::telemetry::AttemptOutcome;
+        use roko_learn::tier_limits::TierAttempt;
+
+        let passed = |turns: u32, agent_ms: u64| TierAttempt {
+            tier: TaskTier::Focused,
+            outcome: AttemptOutcome::Passed,
+            passed: true,
+            turns: Some(turns),
+            agent_ms: Some(agent_ms),
+            settled_at: None,
+        };
+        // 40 focused passes, half at 20 turns and 200 s, half at 40 turns and
+        // 400 s: the p95 times 1.25 is 50 turns and 500 s.
+        let attempts: Vec<TierAttempt> = (0..40)
+            .map(|n| {
+                if n % 2 == 0 {
+                    passed(20, 200_000)
+                } else {
+                    passed(40, 400_000)
+                }
+            })
+            .collect();
+        let mut config = RokoConfig::default();
+        config.timeouts.agent_dispatch_secs = 600;
+        config.pipeline.learned_limits = LearnedLimitsMode::On;
+        let learned = LearnedTierLimits::from_attempts(&config, &attempts);
+        let focused = make_task_def("focused");
+        let spec = make_spec(&focused);
+
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &focused, false),
+            50
+        );
+        assert_eq!(
+            base_attempt_timeout_ms_with(&config, Some(&learned), &spec),
+            500_000
+        );
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &focused, true),
+            EXPRESS_MAX_TURNS,
+            "express still lowers the learned cap"
+        );
+        let mechanical = make_task_def("mechanical");
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &mechanical, false),
+            40,
+            "a tier without history keeps its configured cap"
+        );
+        let mut authored = focused.clone();
+        authored.timeout_secs = 900;
+        assert_eq!(
+            base_attempt_timeout_ms_with(&config, Some(&learned), &make_spec(&authored)),
+            900_000,
+            "an authored timeout wins"
+        );
+
+        for mode in [LearnedLimitsMode::Shadow, LearnedLimitsMode::Off] {
+            config.pipeline.learned_limits = mode;
+            let learned = LearnedTierLimits::from_attempts(&config, &attempts);
+            assert_eq!(
+                task_turn_limit_with(&config, Some(&learned), &focused, false),
+                60
+            );
+            assert_eq!(
+                base_attempt_timeout_ms_with(&config, Some(&learned), &spec),
+                600_000
+            );
+        }
+        assert_eq!(task_turn_limit(&config, &focused, false), 60);
+        assert_eq!(base_attempt_timeout_ms(&config, &spec), 600_000);
     }
 
     #[test]

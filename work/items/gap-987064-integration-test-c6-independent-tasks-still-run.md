@@ -78,4 +78,7 @@ No such test at `41c7ffbd6`. The ready queue and `SkipFailed` are merged (`bbf65
     stays portable: macOS `date` has no `%N`.
   - Running this fixture through `roko plan run` needed `ff47a28ab`. Without it, the CLI pre-flight refuses the plan
     on T5/T6's `PLAN_CONCURRENT_OVERLAP` finding.
-  - Still to do by hand: show once that the canary fails on a build without write-set admission (T5 and T6 overlap).
+  - Passes: `cargo test -p roko-cli --test scheduler_canary`, 1 passed in 6.2 s (`be4e3567f`; the fake agent now reads
+    the id from the prompt's `Task: <id>:` line, because every prompt quotes all sibling tasks).
+  - Checked by hand on 2026-09-30: with `exclusion_conflict` forced to `None`, the canary fails with "T5 and T6 ran
+    together" (`start T6` … `start T5` … `end T6`). The change was reverted and not committed.

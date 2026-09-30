@@ -9,7 +9,7 @@ goal = "golden-path"
 size = "M"
 subsystem = ["roko-learn/tier_limits", "roko-cli/graph_task_dispatch", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 last_verified = 2026-09-30
 last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
@@ -84,3 +84,4 @@ carry turns and wall time but not the tier.
 - **Hot file:** `graph_task_dispatch.rs` (two small functions).
 - 2026-09-30 (wk-tiers): implemented on `work/gap-1d1fa6` at `a9661848c`; cargo verification deferred to the batch check (no cargo was allowed for this item).
 - Not wired yet, so the first Done-when box holds only at the function level: dispatch builds no `LearnedTierLimits`. The calls to `task_turn_limit` and `base_attempt_timeout_ms` are in `graph_task_dispatch.rs` and `streaming.rs`, and `attempt.rs` does not fill `AttemptOpenRecord.tier`; batch 12 owns all three. Until then, tiers come from `learn/costs.jsonl` by attempt key, and config doctor lists `pipeline.learned_limits` as inert. The wiring is planned with gap-460230, after batch 12 merges.
+- 2026-09-30 (wk-tiers): wired on `work/gap-460230` at `483190bc7`: batch and streaming dispatch read `LearnedTierLimits` once per dispatcher from `feedback.runs_dir` and `costs_path`, attempt-open lines carry the tier, and `pipeline.learned_limits` is no longer listed as inert. `dispatch_reads_learned_tier_limits_from_its_runs` covers the wiring. Both `[[verify]]` tests pass in the worktree; workspace verification is deferred to the batch check.

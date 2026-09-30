@@ -714,17 +714,28 @@ pub async fn run_graph_plan_in_run(
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
-    let hub_sender = params
+    // The body, `status.json` and `RunCompleted` share it; a caller without a
+    // hub gets a private one.
+    let mut params = params;
+    let hub = params
         .state_hub
-        .as_ref()
-        .map(|hub| hub.sender())
-        .unwrap_or_else(|| crate::state_hub::shared_state_hub().sender());
+        .get_or_insert_with(crate::state_hub::shared_state_hub)
+        .clone();
+    let hub_sender = hub.sender();
+    // `.roko/state/status.json` shows the live run to `roko status` and the
+    // evidence collector's status sampling (gap-568056).
+    let status = crate::runner::status_file::GraphStatusWriter::spawn(
+        &hub,
+        RokoLayout::for_project(&params.workdir).state_dir(),
+        super::event_log::evidence_run_id()
+            .or_else(|| run_id.clone())
+            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4())),
+    );
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
     // one now and put it back so the body and this wrapper share the same
     // Arc<AtomicU8>.  Clone *after* the insert so both ends observe the same
     // stop flag.
-    let mut params = params;
     if params.interrupt.is_none() {
         params.interrupt = Some(PlanRunInterruptHandle::default());
     }
@@ -745,6 +756,7 @@ pub async fn run_graph_plan_in_run(
         surviving_agent_ids: vec![],
         surviving_agent_pids: vec![],
     });
+    status.finish(outcome).await;
 
     result
 }
@@ -2801,6 +2813,31 @@ files = ["README.md"]
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
             Some(GraphCheckpointStatus::Unverified)
         );
+    }
+
+    /// gap-568056: a Graph run keeps `.roko/state/status.json` current and
+    /// leaves its terminal status there, with this process as the writer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_graph_run_writes_status_json() {
+        let dir = disabled_role_plan_set(&[("a", "a.txt", &[]), ("b", "b.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        let state_dir = RokoLayout::for_project(dir.path()).state_dir();
+        let read = crate::runner::status_file::read_runner_status(&state_dir);
+        assert!(read.is_live(), "{read:?}");
+        let status = read.status().expect("status.json after a Graph run");
+        let expected_phase = if exit_code == EXIT_SUCCESS {
+            "completed"
+        } else {
+            "failed"
+        };
+        assert_eq!(status.phase, expected_phase);
+        assert_eq!(status.last_event, "run_completed");
+        assert_eq!(status.pid, std::process::id());
+        assert!(!status.run_id.is_empty());
+        assert_eq!((status.total_plans, status.completed_plans), (2, 2));
+        assert_eq!((status.total_tasks, status.finished_tasks), (2, 2));
+        assert_eq!((status.active_agents, status.running_tasks), (0, 0));
     }
 
     /// A workspace with [`DISABLED_ROLE_CONFIG`] plus `extra_config`, and one

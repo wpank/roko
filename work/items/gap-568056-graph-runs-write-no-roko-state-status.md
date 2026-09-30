@@ -3,13 +3,15 @@ id = "gap-568056"
 kind = "gap"
 title = "Graph runs write no .roko/state/status.json, so roko status and evidence status sampling see no live run"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["roko-cli/graph-execution", "roko-cli/status"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "bbebe40d6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-evidence's report on gap-09e478)"
 anchors = ["crates/roko-cli/src/runner/status_file.rs::write_status_debounced", "crates/roko-cli/src/status.rs:234", "crates/roko-cli/src/graph_execution/plan_runner.rs"]
@@ -62,3 +64,18 @@ Steps for Option A:
 
 - `plan_runner.rs` is a hot file.
 - The parked gap-c3f8a3 (status.json lacks PID and staleness semantics) has design notes on the file's fields.
+- Implemented on `work/bug-4c4eea` at `bbebe40d6` (the writer landed at `617c809ec`); cargo verification deferred to the
+  batch check.
+- Option A. `runner/status_file.rs` has `GraphRunStatus` (a fold of the run's StateHub events) and `GraphStatusWriter`,
+  which `run_graph_plan_in_run` spawns before the body and finishes after `RunCompleted`. It writes the starting status at
+  once, then a changed status within a second, and an unchanged one every 5 s as a heartbeat. The terminal status stays
+  in the file.
+- Phases: `dispatch`, `gate`, `idle`, then `completed`, `failed` or `cancelled`. There is no `merge` phase, because Graph
+  runs publish no merge events. The file gains `plan_id`, `running_tasks`, `finished_tasks` and `total_tasks`.
+- Run id: `ROKO_EVIDENCE_RUN_ID` when set (the same id as the `--log-file` lines), else the caller's run id, else a new
+  `graph-<uuid>`. The terminal phase comes only from `finish`, because runs started by `roko serve` share one hub and a
+  `RunCompleted` there may be another run's.
+- After a CLI run exits, `roko status` shows `stale/offline (was: <phase>)`, as it did for Runner-v2. After a run in a
+  live `roko serve` it keeps showing the terminal phase as active, since the writer's PID is still alive.
+- `scripts/test_run_evidence_graph.py::test_bundles_hold_only_their_own_run` now expects the run's own status samples
+  (state `sampled`). It needs a built `roko`; `CollectorUnits` pass.

@@ -83,3 +83,4 @@ Steps:
 - Design choice: eligibility stays with bug-b4c565, which serves a reflex only to tasks that no verify step or
   workspace rung checks (`work/gap-3506f1b`). Those attempts settle unverified, so no rule is credited in
   production until a reflex serves a verified attempt (Option A).
+- 2026-09-30 (wk-gates, wk-settle): since bug-b4c565, T0 reflexes serve only tasks that nothing verifies, so this item's credit hook never fires in live runs. Whether reflexes should serve checked tasks, with verification run on their cached output and first attempts only, is dec-af63cc (recommended: keep them narrow until there's evidence; revisit with M1–M4).

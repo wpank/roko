@@ -1114,6 +1114,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 

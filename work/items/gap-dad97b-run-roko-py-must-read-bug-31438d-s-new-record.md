@@ -61,3 +61,4 @@ Once bug-31438d merges:
 ## Notes
 
 - 2026-09-30 (wk-telemetry2): two more things for the Roko arm. Attempt records still carry `inv: null` (bug-0ba3d9), so the runner can't yet tell which invocation of a resumed run an attempt belongs to. Helper calls still credit the cascade router (bug-b8af02), so `roko_fixed`'s "learning held off" doesn't cover router trials from helpers until that item lands.
+- 2026-09-30 (wk-bench-fix1): the main checkout's `target/debug/roko` is stale (built at 33e107da1, before model-truth), so the real-roko bench tests check the new record fields only when a newer binary is supplied. Rebuild it, or point the tests at a fresh build, before relying on them.

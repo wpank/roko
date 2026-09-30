@@ -3,13 +3,15 @@ id = "bug-997c6a"
 kind = "bug"
 title = "ls | xargs rm and xargs rm < list still pass the agent command guard"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude_cli_guard"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report on bug-ceab60, branch work/bug-ceab60 at f80d4eb50)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -52,3 +54,8 @@ The pipe-tracking rules in `claude_cli_guard.py` on the branch.
 ## Notes
 
 - Build on bug-ceab60's branch.
+- Premise held at 8a88c6267: `ls | xargs rm` and `xargs rm < list.txt` exited 0.
+- Decision: deny any delete (`rm`, `unlink`, `shred`) that `xargs` runs, whatever feeds it (a pipe, a redirect, `-a list`), rather than allow a short literal list. `xargs` running anything else (`xargs cat < list.txt`) stays allowed, and so does `git ls-files -z | xargs -0 git rm --cached`: a word after `git` is a subcommand, not a program, unless a value option precedes it (`sudo -u git rm -rf x` is still checked).
+- The guard test in `claude_cli_agent.rs` gains the four denied forms and the two allowed ones; the `[[verify]]` (python) passes, and the guard's scratch suites pass under python 3.12 and 3.9.
+- Not covered: `parallel rm` is not treated as bulk, and `sudo git -C dir rm -r x` is still a false positive.
+- Implemented on `work/gap-e9660f` at `802e91bd5`; cargo verification deferred to the batch check.

@@ -3,13 +3,15 @@ id = "bug-a9a251"
 kind = "bug"
 title = "roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/chat"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-cc-isolate's report on gap-b7a2d5, branch work/gap-b7a2d5 at 42859fc78)"
 anchors = ["crates/roko-cli/src/chat_session.rs"]
@@ -46,3 +48,6 @@ Secrets and guard (epic spec-ba7bea): the user's MCP servers can hold credential
 ## Notes
 
 - Build on gap-b7a2d5's branch.
+- Premise held at 8a88c6267: `resolve_mcp_config` fell back to `~/.claude/mcp-config.json`.
+- `resolve_mcp_config` now takes `agent.mcp_config`, then `.roko/mcp.json`, then the workspace's `.mcp.json` through `roko_agent::mcp::workspace_mcp_config`, as ClaudeCliAgent runs do; `home_dir()` is gone. `chat_mcp_config_ignores_the_users_claude_home` runs `chat_mcp_config_child` in a child process whose `HOME` holds a Claude MCP config. The `[[verify]]` (grep) passes.
+- Implemented on `work/gap-e9660f` at `74a3aabfc`; cargo verification deferred to the batch check.

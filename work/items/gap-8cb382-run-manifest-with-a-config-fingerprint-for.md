@@ -3,13 +3,14 @@ id = "gap-8cb382"
 kind = "gap"
 title = "Run manifest with a config fingerprint for every plan run (S01.P0-2)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/build", "roko-cli/graph_execution"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-2, §4.7 config hash, §5.1 RunManifest)"
 anchors = ["crates/roko-core/src/config/fingerprint.rs", "crates/roko-core/src/metric.rs::ConfigHash", "crates/roko-cli/build.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body"]
@@ -75,3 +76,5 @@ At `41c7ffbd6` there is no config fingerprint and no manifest. The rerun half of
 - Steps 1 and 2 are cold and can land now.
 - Step 3 adds two calls in the hot `run_graph_plan_body`. Land it after the portal branches merge, together with
   gap-96f7ed if convenient.
+- Implemented on `work/gap-8cb382` at `aa1d5eb7f`; cargo verification deferred to the batch check. On the branch, both verify tests pass.
+- The redaction rule departs from S01 §4.7's letter in two ways. Key matching is ASCII case-insensitive (`GITHUB_TOKEN` in an env map is a secret), and a number or boolean under a secret key is kept, so `max_tokens` stays in the hash. `crates/roko-core/src/config/config_fingerprint_golden.json` pins the rule; its canonical forms match the `rfc8785` Python package and its hashes the `blake3` one. S01 and S08's `driver/fingerprint.py` should follow it.

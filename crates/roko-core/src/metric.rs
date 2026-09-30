@@ -28,17 +28,18 @@ use serde::{Deserialize, Serialize};
 /// 16-char BLAKE3 prefix over a canonical-JSON-serialized config.
 ///
 /// Stable across machines (no timestamps, no process-specific state in
-/// the hash input). This is the **join key** across every `TaskMetric`
-/// record — all analysis compares configs by their hash.
+/// the hash input, and secrets redacted). This is the **join key** across
+/// every `TaskMetric` record — all analysis compares configs by their hash.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConfigHash(pub String);
 
 impl ConfigHash {
     /// Compute the hash of any serializable value.
     ///
-    /// The input is first serialized to **canonical JSON** (sorted keys,
-    /// no whitespace variability), then BLAKE3-hashed, then the first
-    /// 8 bytes are hex-encoded giving a 16-char string.
+    /// It is the first 16 hex digits of the value's config fingerprint
+    /// ([`crate::config::fingerprint`]: BLAKE3 over RFC 8785 canonical JSON
+    /// with secrets redacted), so a run manifest's `config.hash` and this
+    /// join key never disagree.
     ///
     /// # Errors
     ///
@@ -46,16 +47,8 @@ impl ConfigHash {
     /// practice this only happens for types with custom serializers
     /// that fail — plain config structs never fail.
     pub fn of<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
-        // Round-trip through serde_json::Value to get deterministic key
-        // ordering. serde_json::to_string alone preserves struct-field
-        // order, but fails for HashMap<String, _>. Going through Value
-        // and then re-serializing with sort_keys gives a canonical form.
-        let v = serde_json::to_value(value)?;
-        let canonical = canonical_json(&v);
-        let digest = blake3::hash(canonical.as_bytes());
-        let bytes = digest.as_bytes();
-        let hex = hex_prefix(&bytes[..8]);
-        Ok(Self(hex))
+        let fingerprint = crate::config::fingerprint::fingerprint_of(value)?;
+        Ok(Self(fingerprint.hex()[..16].to_string()))
     }
 
     /// Borrow the inner 16-char hex string.
@@ -75,65 +68,6 @@ impl From<String> for ConfigHash {
     fn from(s: String) -> Self {
         Self(s)
     }
-}
-
-/// Render bytes as a hex-encoded string.
-fn hex_prefix(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-/// Serialize a `serde_json::Value` with sorted object keys.
-///
-/// `serde_json` preserves insertion order for `Map<String, Value>`
-/// (since it uses a `BTreeMap` by default — wait, it uses `BTreeMap`
-/// ONLY with the `preserve_order` feature **off**). We guarantee sort
-/// order regardless by walking the value and rebuilding with a sorted
-/// `BTreeMap`.
-fn canonical_json(v: &serde_json::Value) -> String {
-    use serde_json::Value;
-    fn walk(v: &Value, out: &mut String) {
-        match v {
-            Value::Null => out.push_str("null"),
-            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Value::Number(n) => out.push_str(&n.to_string()),
-            Value::String(s) => {
-                // serde_json handles escaping — cheapest to call it.
-                out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()));
-            }
-            Value::Array(arr) => {
-                out.push('[');
-                for (i, item) in arr.iter().enumerate() {
-                    if i > 0 {
-                        out.push(',');
-                    }
-                    walk(item, out);
-                }
-                out.push(']');
-            }
-            Value::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort();
-                out.push('{');
-                for (i, k) in keys.iter().enumerate() {
-                    if i > 0 {
-                        out.push(',');
-                    }
-                    out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".into()));
-                    out.push(':');
-                    walk(&map[*k], out);
-                }
-                out.push('}');
-            }
-        }
-    }
-    let mut s = String::new();
-    walk(v, &mut s);
-    s
 }
 
 /// One record per gate execution. Serialized as a line of `JSONL`.
@@ -512,7 +446,7 @@ mod tests {
             "b": [3, 1, 2],
             "a": 1,
         });
-        let out = canonical_json(&v);
+        let out = crate::config::fingerprint::canonical_json(&v);
         // Keys sorted: a before b. Arrays preserve order.
         assert_eq!(out, r#"{"a":1,"b":[3,1,2]}"#);
     }
@@ -520,7 +454,7 @@ mod tests {
     #[test]
     fn canonical_json_escapes_strings() {
         let v = serde_json::json!({"s": "a\"b"});
-        let out = canonical_json(&v);
+        let out = crate::config::fingerprint::canonical_json(&v);
         assert_eq!(out, r#"{"s":"a\"b"}"#);
     }
 }

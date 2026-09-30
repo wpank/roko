@@ -3,13 +3,14 @@ id = "bug-ccc7c4"
 kind = "bug"
 title = "roko run now writes a second run directory under .roko/runs beside its own"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["cli"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:00, wk-attempt-ctx's report on gap-96f7ed)"
 anchors = ["crates/roko-cli/src/commands/do_cmd.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs"]
@@ -46,3 +47,8 @@ Two directories per `roko run`.
 
 - [ ] `roko run` writes one run directory.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/gap-8cb382` at `c501bb8ac`; cargo verification deferred to the batch check. On the branch, `roko_run_uses_one_run_directory` passes.
+- The run directory is created in `run.rs::run_prompt` (the library, called by `roko run` and `roko do`'s simple path), not in `commands/do_cmd.rs`. The Graph checkpoint now takes the caller's run id (`graph_checkpoint::prepare_graph_checkpoint_for_run`, `plan_runner::run_graph_plan_in_run`), so `attempt.rs` needed no change.

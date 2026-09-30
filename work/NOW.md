@@ -8,11 +8,11 @@ What to work on next: the top checked, open items of each goal, highest-priority
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P1** [gap-0e2c40](items/gap-0e2c40-integration-test-c2-no-provider-key-reaches.md) Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands · size S · verified 2026-09-30
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
+- **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_9 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_8 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -31,7 +31,7 @@ _0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 - **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
-_0 more open · 35 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 34 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 

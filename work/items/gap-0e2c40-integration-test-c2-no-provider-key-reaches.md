@@ -2,7 +2,7 @@
 id = "gap-0e2c40"
 kind = "gap"
 title = "Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/tests"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "d487ea1f2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G2, canary C2)"
 anchors = ["crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", 
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in batch 14 (04b3793a6: the C2 test) and batch 16b (the ignore removed, ff1077bf8). Batch 16b gate (5c3268953, same code as MAIN): check, fmt, clippy -p roko-cli -p roko-serve -D warnings clean; roko-serve lib 986 passed; cargo test -p roko-cli --test secrets_and_git_guard_canary: 2 passed, 0 ignored (agent_tool_shells_exclude_provider_keys now runs: no provider key reaches an agent tool shell, verify step, file or log, and the git guard denies destructive git); --test secret_canary: 11 passed."
 +++
 
 ## Problem

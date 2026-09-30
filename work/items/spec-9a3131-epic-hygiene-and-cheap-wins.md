@@ -110,7 +110,7 @@ This is the implementation plan.
 - [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
 - [ ] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
-- [ ] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
+- [x] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

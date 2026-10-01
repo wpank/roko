@@ -833,6 +833,7 @@ fn model_call_request(
         tools: Vec::new(),
         generation_settings: None,
         mcp_config: None,
+        thinking: None,
     }
 }
 

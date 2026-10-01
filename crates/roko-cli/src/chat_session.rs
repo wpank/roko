@@ -715,6 +715,7 @@ impl ChatAgentSession {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 

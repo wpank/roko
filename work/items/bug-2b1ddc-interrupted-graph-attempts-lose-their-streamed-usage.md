@@ -9,9 +9,9 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph_execution", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "e22421998"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::INTERRUPT_DRAIN_TIMEOUT", "crates/roko-cli/src/graph_execution/plan_runner.rs::force_exit", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetReservation", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
@@ -100,3 +100,4 @@ Checked statically at `33e107da1`:
 
 - `plan_runner.rs` and `graph_task_dispatch.rs` are hot files. Keep the change small and do not lengthen the forced-exit
   path: shutdown must stay bounded (the item `q-1faa0c` tests that).
+- Implemented on `work/bug-2b1ddc` at `80aa04263` (formatting in `e22421998`); cargo verification deferred to the batch check. Premise re-checked at `faa378453`: still true. The fix follows bug-aa2044 rather than the plan's SIGKILL-and-wait: at the drain deadline the runner sets the plan's stop flag (`CellContext.cancel_flag`); `run_watched` drops a stopped attempt's call within 250 ms and the attempt settles through `AttemptProgress` with its streamed usage, estimated, as `AttemptOutcome::Cancelled`. That also covers API providers, which a SIGKILL never reaches. Stopped attempts get `INTERRUPT_SETTLE_TIMEOUT` (2 s) to settle; agents that ignored SIGTERM are SIGKILLed once they have, or once that window ends; an interrupted run waits up to 1 s for its row writes (`background_writes::settled`). Worst case about 6 s, under `FORCED_EXIT_GRACE`. `TaskExecutorCell` no longer retries a cancellation. With both stall thresholds 0 there is no `AttemptProgress`, so a stopped attempt settles with unknown usage. The verify test runs the plan in a child test process, because the interrupt signals every agent in its process.

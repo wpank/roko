@@ -485,7 +485,7 @@ async fn gemini_native_generate_content_with_thinking() {
             "promptTokenCount": 20,
             "candidatesTokenCount": 7,
             "totalTokenCount": 27,
-            "thinkingTokenCount": 19
+            "thoughtsTokenCount": 19
         }
     });
     let server = spawn_scripted_server(vec![response(200, response_json)]);

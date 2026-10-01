@@ -319,6 +319,35 @@ pub struct ModelCallRequest {
     /// sources per call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_config: Option<PathBuf>,
+    /// Per-request extended thinking, which overrides the model profile's
+    /// default. `None` leaves thinking to the profile; providers that cannot
+    /// honour a setting log that they ignored it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+/// Extended-thinking activation mode.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingMode {
+    /// Extended thinking is enabled.
+    Enabled,
+    /// Extended thinking is disabled.
+    #[default]
+    Disabled,
+}
+
+/// Provider-neutral extended-thinking configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ThinkingConfig {
+    /// Activation mode (`type` on provider wire formats).
+    #[serde(rename = "type")]
+    pub kind: ThinkingMode,
+    /// Explicit token budget, if supplied by the caller.
+    #[serde(default)]
+    pub budget_tokens: Option<u32>,
 }
 
 /// Per-request generation settings that override service/model-profile

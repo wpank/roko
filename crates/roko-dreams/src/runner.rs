@@ -214,6 +214,7 @@ impl DreamAgentConfig {
             tool_correlation: None,
             max_turns: None,
             live_output: None,
+            thinking: None,
         }
     }
 }
@@ -1717,6 +1718,7 @@ impl Agent for DreamReviewAgent {
                     tools: Vec::new(),
                     generation_settings: None,
                     mcp_config: None,
+                    thinking: None,
                 };
 
                 match model_caller.call(request).await {

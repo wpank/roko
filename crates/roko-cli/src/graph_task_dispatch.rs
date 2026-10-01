@@ -1252,6 +1252,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &watched_key,
+            stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
         let supervised = self.supervise_attempt(&watched);
@@ -1313,9 +1314,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 if let Some(tui) = &self.tui_bridge {
                     tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
                 }
-                // A call the stall watchdog or the conductor cancelled is
-                // accounted like any failed call, with the usage it streamed
-                // (bug-aa2044).
+                // A call the stall watchdog, the conductor or a stopping plan
+                // run cancelled is accounted like any failed call, with the
+                // usage it streamed (bug-aa2044, bug-2b1ddc).
                 if let Some(interrupted) = progress
                     .as_ref()
                     .and_then(|progress| progress.interrupted_call())
@@ -1336,7 +1337,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         );
                     }
                     attempt.record_failover(failover);
-                    let settlement = Settlement::provider_failure(&error.to_string(), false);
+                    let settlement = Settlement::provider_call_error(&error);
                     let settled =
                         attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
                     self.emit_feedback(
@@ -1353,7 +1354,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 }
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement = Settlement::provider_call_error(&error);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
                 return Err(error);

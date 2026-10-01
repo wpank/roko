@@ -9,9 +9,9 @@ size = "S"
 goal = "core"
 subsystem = ["roko-agent/gemini"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "476e57f98"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F011"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F011"
 anchors = ["crates/roko-agent/src/gemini/types.rs::UsageMetadata", "crates/roko-agent/src/gemini/native.rs::gemini_observation", "crates/roko-agent/src/gemini/types.rs::GeminiMetadata"]
@@ -103,6 +103,7 @@ Gemini agent).
   `reasoning_tokens` but left `output_tokens` unchanged would have passed. The command above adds a behaviour
   test.
 - Small and local to `crates/roko-agent/src/gemini/`. Safe to run in parallel with other work.
+- Implemented on `work/bug-2b1ddc` at `476e57f98`; cargo verification deferred to the batch check. Premise re-checked at `faa378453`: still true. `UsageMetadata.thoughts_token_count` reads `thoughtsTokenCount` (and still accepts `thinkingTokenCount`); `gemini_observation` counts output as candidates plus thoughts, with the thoughts as `reasoning_tokens`; `GeminiMetadata.thinking_tokens` reads the same field, and the tool loop's streamed Gemini usage (`emit_accumulated_usage`) does the same. Tests: `gemini_observation_counts_thoughts_as_output`, `streamed_gemini_usage_counts_thoughts_as_output`. Not covered: the Gemini CLI path, which reports its own usage.
 
 ## Original notes
 

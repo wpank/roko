@@ -358,6 +358,19 @@ pub fn create_agent_for_model(
             "provider cannot enforce the turn cap: it is advisory, and only the attempt timeout bounds this run"
         );
     }
+    // A request's thinking setting overrides the profile only where the
+    // adapter applies it (bug-b9cb83); elsewhere the profile decides.
+    if let Some(thinking) = &options.thinking
+        && !adapter.honours_thinking_config(&profile)
+    {
+        tracing::debug!(
+            agent = %options.name,
+            model_key = model_key,
+            provider = %provider_config.kind,
+            ?thinking,
+            "provider ignores the request's thinking setting"
+        );
+    }
 
     if options
         .pre_discovered_local_tools
@@ -803,6 +816,13 @@ pub trait ProviderAdapter: Send + Sync {
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
         TurnCapEnforcement::Advisory
     }
+
+    /// Whether agents from this adapter for `model` apply
+    /// [`AgentOptions::thinking`]. Defaults to `false`, so that
+    /// [`create_agent_for_model`] reports a setting the adapter ignores.
+    fn honours_thinking_config(&self, _model: &ModelProfile) -> bool {
+        false
+    }
 }
 
 /// How a provider adapter bounds a run to [`AgentOptions::max_turns`].
@@ -961,6 +981,11 @@ pub struct AgentOptions {
     pub env_passthrough: Vec<String>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
+    /// The request's extended-thinking setting, which overrides the model
+    /// profile's default where the adapter honours one
+    /// ([`ProviderAdapter::honours_thinking_config`]). `None` leaves thinking
+    /// to the profile.
+    pub thinking: Option<roko_core::foundation::ThinkingConfig>,
     pub bare_mode: bool,
     /// Whether to skip Claude's permission system for this agent.
     ///
@@ -1070,6 +1095,7 @@ impl std::fmt::Debug for AgentOptions {
                     .map(|s| format!("{}...", &s[..s.len().min(40)])),
             )
             .field("input_messages", &self.input_messages.len())
+            .field("thinking", &self.thinking)
             .field("bare_mode", &self.bare_mode)
             .field(
                 "dangerously_skip_permissions",

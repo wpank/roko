@@ -456,6 +456,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             tool_correlation: None,
             max_turns: None,
             live_output: None,
+            thinking: None,
         };
         let model = claude_model();
 

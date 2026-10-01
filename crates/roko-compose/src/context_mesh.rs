@@ -12,7 +12,7 @@
 //! - Cross-agent deduplication prevents the same knowledge from appearing
 //!   in multiple agents' prompts simultaneously (reducing total token spend).
 //! - The mesh is thread-safe (behind `Arc<Mutex<_>>`) for concurrent access
-//!   from the `MultiAgentPool`.
+//!   from agents running in parallel.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

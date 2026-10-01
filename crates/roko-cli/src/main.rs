@@ -728,6 +728,7 @@ Examples:
   roko show                         Overview: work items, agents, costs, learning
   roko show costs                   Cost breakdown by model, task, and day
   roko show agents                  Agent status from executor and efficiency state
+  roko show agents --since all      Include agents with no activity in the last 7 days
   roko show knowledge               Durable knowledge entries
   roko show plans                   Plans in progress and recent plan state
   roko show learning                Routing, experiments, gates, and C-Factor
@@ -756,6 +757,10 @@ Examples:
         /// One of: costs, agents, knowledge, plans, learning, history, or a work id.
         #[arg(value_name = "SUBCOMMAND_OR_WORK_ID")]
         subject: Option<String>,
+        /// Count recent activity since WHEN: a span such as 24h or 7d, a YYYY-MM-DD date, an
+        /// RFC 3339 time, or `all` (default: 7d).
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
     },
     /// Diagnose self-hosted workspace bootstrap state.
     Doctor {
@@ -807,16 +812,17 @@ Examples:
         #[arg(long)]
         quick: bool,
     },
-    /// Diagnose why a plan failed. Outputs structured JSON.
+    /// Diagnose why a plan failed: a readable report, or structured JSON with `--json`.
     #[command(after_help = "\
 Examples:
   roko diagnose my-plan             Show failure report for a plan
-  roko diagnose my-plan --verbose   Also list the attempts of tasks that completed")]
+  roko diagnose my-plan --verbose   Also list the tasks that completed, with their attempts
+  roko diagnose my-plan --json      Print the full report as JSON")]
     Diagnose {
         /// Plan ID to diagnose.
         plan_id: String,
-        /// Also list attempts, verify failures and episodes of tasks that
-        /// completed (they are always listed for tasks that did not).
+        /// Also list the tasks that completed, with their attempts, verify
+        /// failures and episodes (always listed for tasks that did not).
         #[arg(long)]
         verbose: bool,
         /// Working directory (default: cwd / --repo).
@@ -1314,6 +1320,9 @@ enum KnowledgeCmd {
         /// Maximum number of results to return (1-1000, default: 10).
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=1000))]
         limit: u16,
+        /// Print each match in full instead of its first two lines.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show aggregate statistics for the durable knowledge store.
     Stats {
@@ -1886,18 +1895,20 @@ enum BacklogCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// List backlog items and their import status.
+    /// List backlog items with their status and import state.
     List {
+        /// Backlog directory (default: tmp/backlog); its archive/ is listed too.
+        path: Option<PathBuf>,
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Reconcile plan TOML status against durable runner state.
+    /// Reconcile plan TOML status against the Graph runs on record.
     ///
-    /// Scans plans/*/tasks.toml and compares declared task/meta status with
-    /// the executor snapshot and run-state in .roko/state/. Reports drift
-    /// such as tasks marked "done" in TOML but absent from runner completion
-    /// records, or runner-failed tasks whose TOML still says "ready".
+    /// Walks every tasks.toml in the plans directory, plan sets included, and
+    /// compares its task and meta statuses with the plan's Graph checkpoint in
+    /// .roko/state/graph/. Reports each mismatch with a stable code, such as
+    /// AUDIT_RUN_SUCCEEDED_TOML_READY, and exits 1 when any is an error.
     Audit {
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
@@ -2147,6 +2158,20 @@ enum PlanCmd {
         #[arg(long)]
         spec_quality: bool,
     },
+    /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
+    /// (its artifacts, task map and risks), which dispatch adds to each of its
+    /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
+    /// PRD. No model runs. Documents that exist are kept unless `--force`.
+    Prepare {
+        /// The plan directory, holding `tasks.toml`.
+        plan_dir: PathBuf,
+        /// Overwrite companion documents that exist.
+        #[arg(long)]
+        force: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Rebuild or verify the deterministic plans index.
     Index {
         /// Verify exact generated content without writing any files.
@@ -2216,8 +2241,8 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Override the plan cost ceiling for this run.
         ///
         /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
-        /// replacing whatever is configured in roko.toml.  The guardrail still
-        /// logs a warning when the ceiling is hit, but execution continues.
+        /// replacing whatever is configured in roko.toml. Once the plan has
+        /// spent it, no further task starts, as with a configured ceiling.
         /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
         #[arg(long, value_name = "AMOUNT")]
         budget_override: Option<f64>,
@@ -2494,7 +2519,10 @@ impl PlanCmd {
             | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
-            Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
+            Self::Create { .. }
+            | Self::Generate { .. }
+            | Self::Prepare { .. }
+            | Self::Shorthand(_) => true,
         }
     }
 
@@ -2586,6 +2614,24 @@ enum PrdDraftCmd {
     },
     /// List all drafts.
     List,
+}
+
+impl PrdCmd {
+    /// Whether dispatching this command can change PRDs or the plans generated from them.
+    ///
+    /// Read-only commands must not rebuild indexes: rebuilding rewrites generated index files,
+    /// including the tracked `plans/INDEX.md`, so `prd list` would dirty the caller's workspace.
+    fn should_rebuild_indexes(&self) -> bool {
+        match self {
+            Self::List
+            | Self::Status
+            | Self::Draft {
+                cmd: PrdDraftCmd::List,
+            } => false,
+            Self::Plan { dry_run, .. } => !dry_run,
+            Self::Idea { .. } | Self::Draft { .. } | Self::Consolidate => true,
+        }
+    }
 }
 
 /// Backend selection for grounded research operations.
@@ -2839,6 +2885,7 @@ enum NeuroCmd {
         topic: Vec<String>,
         workdir: Option<PathBuf>,
         limit: u16,
+        verbose: bool,
     },
     Stats {
         workdir: Option<PathBuf>,
@@ -3028,6 +3075,9 @@ enum ConfigCmd {
     },
     /// Print the effective merged config with per-field source tags.
     Show {
+        /// Print only this section of the fully-resolved config, as TOML: a
+        /// top-level table such as `agent` or a dotted path such as `providers.anthropic`.
+        section: Option<String>,
         /// Directory to resolve project config from (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -3427,6 +3477,22 @@ enum ConfigMcpCmd {
     },
 }
 
+/// The workspace a crash report goes to, recorded once the command line is
+/// parsed: the invoked subcommand's `--workdir`, else `--repo` or the current
+/// directory, as for the log file and the agent PID registry.
+static CRASH_REPORT_WORKDIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `.roko/` the panic hook writes `crash-report.json` into: the parsed
+/// workspace's, else (for a panic before parsing) `ROKO_WORKDIR`'s, else the
+/// current directory's.
+fn crash_report_dir(parsed_workdir: Option<&Path>) -> PathBuf {
+    parsed_workdir
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("ROKO_WORKDIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".roko")
+}
+
 fn main() {
     // ── Crash report panic hook ─────────────────────────────────────
     // Install a global panic hook that writes a structured crash report
@@ -3467,12 +3533,8 @@ fn main() {
                 env!("ROKO_RUSTC_VERSION"),
             );
 
-            // Try to find the `.roko/` directory: check cwd first, then
-            // ROKO_WORKDIR env, then fall back to `./`.
-            let roko_dir = std::env::var("ROKO_WORKDIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join(".roko");
+            // Write into the invoked command's workspace once it is known.
+            let roko_dir = crash_report_dir(CRASH_REPORT_WORKDIR.get().map(PathBuf::as_path));
 
             roko_core::write_crash_report(&roko_dir, &report);
 
@@ -3595,10 +3657,11 @@ fn main() {
 
     let ansi_logs = use_color;
 
-    // Determine the workdir for log file placement and the agent PID
-    // registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
+    // Determine the workdir for log file placement, crash reports and the agent
+    // PID registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
     let workdir = invoked_subcommand_workdir().unwrap_or_else(|| resolve_workdir(&cli));
     roko_agent::process::set_registry_root(&workdir);
+    let _ = CRASH_REPORT_WORKDIR.set(workdir.clone());
 
     // File layer: write to .roko/roko.log with day-based rotation.
     // In TUI mode, use serve-tui.log to keep it separate from the main log.
@@ -3759,15 +3822,27 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     // Authentication hint: match specific auth-related terms, not substrings
-    // like "authoritative" or "authorization policy".
-    if lower.contains("401")
+    // like "authoritative" or "authorization policy", and 401 only as an HTTP
+    // status, never inside a path, an id or a longer number.
+    if mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
         || lower.contains("auth denied")
     {
+        // ROKO_API_KEY authenticates to roko serve; each model provider has its own key.
+        if lower.contains("workspace server") || lower.contains("roko serve") {
+            return Some("check your roko serve API key: set ROKO_API_KEY or run `roko login`");
+        }
+        if lower.contains("provider") {
+            return Some(
+                "check the provider's API key: run `roko config check-secrets`, then \
+                 `roko config providers test --all`",
+            );
+        }
         return Some(
-            "check your API key: set ROKO_API_KEY or run `roko config set-secret ROKO_API_KEY <key>`",
+            "check your API key: `roko config check-secrets` checks model provider keys; \
+             ROKO_API_KEY or `roko login` authenticates to roko serve",
         );
     }
 
@@ -3776,6 +3851,30 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+/// Whether a lower-cased error message reports HTTP status 401: a standalone
+/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
+/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
+/// `gap-e4019c`, `14015 bytes`) is not a status.
+fn mentions_http_401(lower: &str) -> bool {
+    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    for (at, &word) in words.iter().enumerate() {
+        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
+        if word == "401" && near.iter().copied().any(is_http_status_word) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_http_status_word(word: &str) -> bool {
+    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]
@@ -3981,13 +4080,23 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             serve_url,
             workdir,
             subject,
+            since,
         } => {
             // #363: --live is a deprecated alias for --dashboard.
             let use_dashboard = dashboard || live;
             if live && !dashboard {
                 eprintln!("warning: --live is deprecated; use --dashboard instead");
             }
-            commands::show::cmd_show(cli, workdir, use_dashboard, follow, serve_url, subject).await
+            commands::show::cmd_show(
+                cli,
+                workdir,
+                use_dashboard,
+                follow,
+                serve_url,
+                subject,
+                since,
+            )
+            .await
         }
         Command::Doctor {
             subject,
@@ -4007,7 +4116,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose)
+            commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose, cli.json)
         }
         Command::LayerCheck => {
             eprintln!("warning: 'roko layer-check' is deprecated, use 'roko doctor'");
@@ -4023,8 +4132,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Prd { cmd } => {
             let wd = resolve_workdir(cli);
+            let command_can_mutate = cmd.should_rebuild_indexes();
             let result = commands::prd::cmd_prd(cli, cmd).await;
-            finish_with_index_rebuild(result, &wd, true)
+            finish_with_index_rebuild(result, &wd, command_can_mutate)
         }
         Command::Agent { cmd } => commands::agent::cmd_agent(cli, cmd).await,
         Command::Research { cmd } => {
@@ -4303,10 +4413,16 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     let resolved = dir.canonicalize().unwrap_or(dir);
 
     // Detect if we're running from inside a .roko/ directory and auto-correct
-    // to the project root to avoid nested .roko/.roko/ data dirs.
-    for ancestor in resolved.ancestors() {
-        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
-            let project_root = ancestor.parent().unwrap_or(ancestor).to_path_buf();
+    // to the project root to avoid nested .roko/.roko/ data dirs. An explicit
+    // --repo is used as given.
+    if let Some(project_root) = enclosing_project_of_data_dir(&resolved) {
+        if cli.repo.is_some() {
+            eprintln!(
+                "\x1b[33m\u{26a0} --repo {} is inside the .roko/ of {}; using it as given\x1b[0m",
+                resolved.display(),
+                project_root.display()
+            );
+        } else {
             eprintln!(
                 "\x1b[33m\u{26a0} Auto-correcting: running from inside .roko/, using project root: {}\x1b[0m",
                 project_root.display()
@@ -4316,6 +4432,25 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     }
 
     resolved
+}
+
+/// The project whose `.roko/` data directory contains `dir`, unless `dir` is
+/// in a workspace nested there: walking up from `dir`, a directory with a
+/// `roko.toml`, a `.git` entry or its own `.roko/` (a per-task worktree under
+/// `.roko/worktrees/`, a fixture workspace) ends the search first.
+fn enclosing_project_of_data_dir(dir: &Path) -> Option<PathBuf> {
+    for ancestor in dir.ancestors() {
+        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
+            return Some(ancestor.parent().unwrap_or(ancestor).to_path_buf());
+        }
+        if ancestor.join("roko.toml").is_file()
+            || ancestor.join(".git").exists()
+            || ancestor.join(".roko").is_dir()
+        {
+            return None;
+        }
+    }
+    None
 }
 
 /// Extract typed global CLI flags for resolved override construction.
@@ -5418,10 +5553,10 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
     }
 
-    // -- inject file-transport tests (#325, updated for #361) --
-    // With the file-based ControlCommand transport (#361), valid inject requests
-    // now succeed by writing a control.json file. The substrate (engrams.jsonl)
-    // must still NOT be written by the inject path itself.
+    // -- inject fails closed (#325, gap-f118b3) --
+    // No transport reaches a live executor yet, so a valid inject request exits
+    // non-zero and writes nothing: no control.json or inject.json that nothing
+    // reads, and no substrate (engrams.jsonl) entry.
 
     #[tokio::test]
     async fn inject_fail_closed_directive() {
@@ -5439,13 +5574,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject directive succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "no transport reaches a live executor, so a directive fails closed"
         );
-        // Control file should exist.
         assert!(
-            roko_dir.join("state/control.json").exists(),
-            "control file should be written"
+            !roko_dir.join("state").exists(),
+            "a request that delivered nothing writes no control or inject file"
         );
         // No signal log should be created.
         assert!(
@@ -5468,9 +5602,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject abort succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "an abort that reaches no executor fails closed"
         );
+        assert!(!tmp.path().join(".roko/state").exists());
     }
 
     #[tokio::test]
@@ -5487,9 +5622,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject context succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "context that reaches no executor fails closed"
         );
+        assert!(!tmp.path().join(".roko/state").exists());
     }
 
     #[tokio::test]
@@ -5532,9 +5668,33 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject JSON succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "inject --json reports inject_transport_unavailable and fails"
         );
+    }
+
+    /// gap-f118b3: success needs the addressed executor's acknowledgement,
+    /// and no transport carries one yet. Every kind exits non-zero and leaves
+    /// `.roko/state/` as it was.
+    #[tokio::test]
+    async fn inject_fails_without_executor_ack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join(".roko/state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let cli = Cli::try_parse_from(["roko", "inject", "run-1", "stop"]).unwrap();
+        for (kind, payload) in [("directive", "stop"), ("context", "ctx"), ("abort", "")] {
+            let code = commands::util::cmd_inject(
+                &cli,
+                "run-1".into(),
+                kind,
+                payload.into(),
+                Some(tmp.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(code, EXIT_FAILURE, "{kind} succeeded without an ack");
+        }
+        assert_eq!(std::fs::read_dir(&state_dir).unwrap().count(), 0);
     }
 
     #[test]
@@ -5604,6 +5764,55 @@ mod tests {
             };
             assert!(!cmd.should_rebuild_indexes());
         }
+    }
+
+    #[test]
+    fn read_only_prd_commands_do_not_rebuild_indexes() {
+        let commands = [
+            Cli::try_parse_from(["roko", "prd", "list"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "status"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "list"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "plan", "my-prd", "--dry-run"]).unwrap(),
+        ];
+        for cli in commands {
+            let Some(Command::Prd { cmd }) = cli.command else {
+                panic!("expected a prd command");
+            };
+            assert!(!cmd.should_rebuild_indexes(), "{cmd:?}");
+        }
+    }
+
+    #[test]
+    fn mutating_prd_commands_rebuild_indexes() {
+        let commands = [
+            Cli::try_parse_from(["roko", "prd", "idea", "wire", "the", "runner"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "new", "a", "title"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "edit", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "promote", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "plan", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "consolidate"]).unwrap(),
+        ];
+        for cli in commands {
+            let Some(Command::Prd { cmd }) = cli.command else {
+                panic!("expected a prd command");
+            };
+            assert!(cmd.should_rebuild_indexes(), "{cmd:?}");
+        }
+    }
+
+    #[test]
+    fn prd_list_leaves_the_index_files_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["roko", "prd", "list"]).unwrap();
+        let Some(Command::Prd { cmd }) = cli.command else {
+            panic!("expected a prd command");
+        };
+
+        let rebuild = cmd.should_rebuild_indexes();
+        let exit_code = finish_with_index_rebuild(Ok(EXIT_SUCCESS), tmp.path(), rebuild).unwrap();
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert!(!tmp.path().join(".roko").exists());
     }
 
     #[test]
@@ -5909,12 +6118,40 @@ mod tests {
     fn resolve_workdir_defaults_to_cwd() {
         let cli = Cli::try_parse_from(["roko"]).unwrap();
         let cwd = PathBuf::from(".").canonicalize().unwrap();
-        let expected = cwd
-            .ancestors()
-            .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some(".roko"))
-            .and_then(Path::parent)
-            .map_or_else(|| cwd.clone(), Path::to_path_buf);
+        let expected = enclosing_project_of_data_dir(&cwd).unwrap_or(cwd);
         assert_eq!(resolve_workdir(&cli), expected);
+    }
+
+    #[test]
+    fn resolve_workdir_keeps_a_workspace_nested_under_dot_roko() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let worktree = project.join(".roko").join("worktrees").join("x");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        // A git worktree has a `.git` file that points at the main repository.
+        std::fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/x\n").unwrap();
+
+        assert_eq!(enclosing_project_of_data_dir(&worktree), None);
+        assert_eq!(enclosing_project_of_data_dir(&worktree.join("src")), None);
+        let cli = Cli::try_parse_from(["roko", "--repo", worktree.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), worktree);
+    }
+
+    #[test]
+    fn resolve_workdir_still_redirects_from_the_data_dir() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let data_dir = project.join(".roko");
+        let state = data_dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        let expected = Some(project.clone());
+        assert_eq!(enclosing_project_of_data_dir(&state), expected);
+        assert_eq!(enclosing_project_of_data_dir(&data_dir), expected);
+        assert_eq!(enclosing_project_of_data_dir(&project), None);
+        // An explicit --repo is used as given, with a warning.
+        let cli = Cli::try_parse_from(["roko", "--repo", state.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), state);
     }
 
     #[test]
@@ -7703,6 +7940,18 @@ mod tests {
     }
 
     #[test]
+    fn crash_report_dir_uses_subcommand_workdir() {
+        let matches = Cli::command()
+            .try_get_matches_from(["roko", "plan", "run", "plans", "--workdir", "/ws/plan"])
+            .expect("valid invocation");
+        let workdir = subcommand_workdir(&matches);
+        assert_eq!(
+            crash_report_dir(workdir.as_deref()),
+            PathBuf::from("/ws/plan").join(".roko")
+        );
+    }
+
+    #[test]
     fn redacting_format_scrubs_api_keys() {
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::layer::SubscriberExt;
@@ -8478,6 +8727,54 @@ mod tests {
     #[test]
     fn error_hint_unrelated_returns_none() {
         assert!(error_hint("something completely unrelated went wrong").is_none());
+    }
+
+    #[test]
+    fn error_hint_ignores_401_outside_an_http_status() {
+        for msg in [
+            "/tmp/run-1401/checkpoint.json: No such file or directory",
+            "worktree for gap-e4019c already exists",
+            "wrote 14015 bytes to the snapshot",
+            "task 401 of plan p1 failed verification",
+        ] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_none() || !hint.unwrap().contains("API key"),
+                "a 401 outside an HTTP status must not blame the API key: {msg}"
+            );
+        }
+        for msg in [
+            "HTTP 401",
+            "request returned status 401",
+            "server returned HTTP 401.",
+        ] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_some_and(|h| h.contains("API key")),
+                "an HTTP 401 must get the API key hint: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_hint_points_provider_auth_at_provider_keys() {
+        let msg = "API key invalid for provider 'openai' (HTTP 401). Check $OPENAI_API_KEY";
+        let hint = error_hint(msg).expect("a provider 401 gets a hint");
+        assert!(hint.contains("roko config check-secrets"), "got: {hint}");
+        assert!(
+            !hint.contains("ROKO_API_KEY"),
+            "ROKO_API_KEY is the serve key, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn error_hint_points_serve_auth_at_roko_api_key() {
+        let msg = "the workspace server rejected the request (401): server returned HTTP 401";
+        let hint = error_hint(msg).expect("a serve 401 gets a hint");
+        assert!(
+            hint.contains("ROKO_API_KEY") && hint.contains("roko login"),
+            "got: {hint}"
+        );
     }
 
     // ─── Impact CLI parsing ─────────────────────────────────────────────

@@ -110,6 +110,12 @@ impl ProviderAdapter for ClaudeCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(provider_semaphores) = options.provider_semaphores.clone() {
+            agent = agent.with_provider_semaphores(model.provider.clone(), provider_semaphores);
+        }
+        if let Some(live_output) = options.live_output.clone() {
+            agent = agent.with_live_output(live_output);
+        }
 
         Ok(Box::new(agent))
     }
@@ -211,9 +217,9 @@ impl ProviderAdapter for CodexCliAdapter {
         // ── Operation policy broker (RG-2) ──────────────────────────────────
         // Derive a CodexOperationPolicy from the AgentContract so that Codex
         // built-in operations (command_execution, file_change) are screened
-        // against the configured deny/allow list.  The broker fires on the
-        // JSONL output stream, which is the only post-execution enforcement
-        // boundary available for a subprocess provider.
+        // against the configured deny/allow list.  The broker reads the JSONL
+        // output stream as Codex writes it and stops the process at the first
+        // denied operation; a subprocess provider offers no earlier boundary.
         let operation_policy = options
             .agent_contract
             .as_ref()
@@ -272,8 +278,8 @@ impl ProviderAdapter for CodexCliAdapter {
         ClaudeCliAdapter.classify_error(status, body)
     }
 
-    /// `codex exec` has no turn-count flag or setting, and roko reads its
-    /// JSONL only after the process exits, so nothing stops it at the cap:
+    /// `codex exec` has no turn-count flag or setting, and roko does not count
+    /// its turns while it runs, so nothing stops it at the cap:
     /// the cap is advisory, and only the attempt timeout bounds a long run.
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
         TurnCapEnforcement::Advisory

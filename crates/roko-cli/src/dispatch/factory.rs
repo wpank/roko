@@ -330,6 +330,15 @@ impl SharedAgentFactory {
         self
     }
 
+    /// Weigh what the durable knowledge store of the workspace at `workdir`
+    /// says about each model into the cascade router's pick (reg-ff6e1a).
+    #[must_use]
+    pub fn with_knowledge_routing(mut self, workdir: &Path) -> Self {
+        let store = roko_neuro::KnowledgeStore::for_workdir(workdir);
+        self.dispatcher = self.dispatcher.with_knowledge_store(store);
+        self
+    }
+
     /// Shared error pattern store for cross-agent pattern sharing.
     pub fn error_pattern_store(&self) -> &Arc<std::sync::RwLock<ErrorPatternStore>> {
         &self.error_pattern_store
@@ -430,6 +439,9 @@ impl SharedAgentFactory {
         // skipped rungs again.
         if let Some(ladder) = self.dispatcher.routing_ladder() {
             dispatcher = dispatcher.with_routing_ladder(ladder.clone());
+        }
+        if let Some(store) = self.dispatcher.knowledge_store() {
+            dispatcher = dispatcher.with_knowledge_store(store.clone());
         }
         self.dispatcher = dispatcher;
     }

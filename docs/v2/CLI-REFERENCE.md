@@ -601,7 +601,7 @@ roko plan run <plans-dir> [--engine graph|legacy] [--workdir <path>]
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Graph archives a mismatched fingerprint and starts a new run; legacy re-queues drifted work. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling; explicit overrides record and report overage but do not block later dispatches. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling; once the plan has spent it, no further task starts. |
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 
 </details>
@@ -744,7 +744,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `Ctrl+A` | Approve all pending commands |
 | `Ctrl+T` | Toggle agent topology panel |
 | `Ctrl+X` | Force advance (with confirmation) |
-| `Ctrl+D` | Reset selected plan state (with confirmation) |
+| `Ctrl+D` | Cancel selected plan (with confirmation) |
 | `Ctrl+E` | Toggle full-screen post-processing effects |
 | `v` | Cycle visual effects preset |
 | `Ctrl+G` | Reconcile git state (with confirmation) |
@@ -809,10 +809,13 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `s` | Soft retry plan |
 | `z` | Diagnose plan |
 | `S` | Repair plan (preserve) |
-| `R` | Repair plan (clean) |
+| `R` | Cancel plan (with confirmation) |
 | `c` | Reverify plan |
 | `F` | Force advance |
 | `V` | Reverify plan |
+
+During `roko plan run`, only pause (`p`) and cancel (`R`, `Ctrl+D`) act on the run. The other
+recovery keys are rejected with a reason until the Graph engine supports them.
 
 </details>
 
@@ -2171,8 +2174,9 @@ roko replay <hash> [--workdir <path>] [--forensic] [--as-of <step>] [--format tr
 
 ### `roko inject`
 
-Inject a signal into a running session. Use `i` in the TUI dashboard for the interactive
-version; use this CLI command when scripting.
+Inject a signal into a running session. No transport reaches a running session yet, so the
+command validates its arguments, writes nothing, and exits non-zero with
+`inject_transport_unavailable` (with `--json`, one object with `code`, `message` and `hint`).
 
 ```
 roko inject <session> <payload> [--kind directive|abort|context] [--workdir <path>]

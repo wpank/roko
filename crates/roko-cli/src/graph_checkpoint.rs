@@ -409,7 +409,12 @@ fn interrupted_attempts(
     let outcomes: BTreeMap<&str, AttemptOutcome> = records
         .verdicts
         .iter()
-        .map(|verdict| (verdict.record.identity.attempt_key.as_str(), verdict.record.outcome))
+        .map(|verdict| {
+            (
+                verdict.record.identity.attempt_key.as_str(),
+                verdict.record.outcome,
+            )
+        })
         .collect();
     let mut latest: BTreeMap<&str, &AttemptOpenRecord> = BTreeMap::new();
     for open in records.opens.iter().map(|open| &open.record) {
@@ -1728,6 +1733,32 @@ pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutc
     .ok()
 }
 
+/// Every canonical checkpoint under `.roko/state/graph/`: the plan id its
+/// manifest records, with the manifest's path. Unreadable manifests are left
+/// out. `roko backlog audit` finds checkpoints whose plan is gone with this.
+#[must_use]
+pub fn canonical_checkpoint_plans(workdir: &Path) -> Vec<(String, PathBuf)> {
+    #[derive(Deserialize)]
+    struct PlanIdOnly {
+        plan_id: String,
+    }
+
+    let Ok(entries) = std::fs::read_dir(workdir.join(".roko/state/graph")) else {
+        return Vec::new();
+    };
+    let mut plans: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path().join("checkpoint.json"))
+        .filter_map(|manifest| {
+            let bytes = std::fs::read(&manifest).ok()?;
+            let plan = serde_json::from_slice::<PlanIdOnly>(&bytes).ok()?;
+            Some((plan.plan_id, manifest))
+        })
+        .collect();
+    plans.sort();
+    plans
+}
+
 // ---------------------------------------------------------------------------
 // Inspection
 // ---------------------------------------------------------------------------
@@ -1830,6 +1861,22 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
                 .find_map(|prefix| name.strip_prefix(prefix.as_str())?.parse::<u128>().ok())
         })
         .max()
+}
+
+/// Mark the checkpoint whose manifest is `manifest` `interrupted` if it still
+/// reads `running`, as a plan run forced out before it could write its own
+/// terminal status does on its way out (bug-4641e3), so the checkpoint does
+/// not look alive afterwards. A checkpoint its run already finalized keeps
+/// its status. Returns whether it was marked.
+pub fn mark_running_checkpoint_interrupted(manifest: &Path) -> Result<bool> {
+    let mut recorded = read_manifest(manifest)?;
+    if recorded.status != GraphCheckpointStatus::Running {
+        return Ok(false);
+    }
+    recorded.status = GraphCheckpointStatus::Interrupted;
+    recorded.updated_at_ms = unix_ms();
+    write_manifest_atomic(manifest, &recorded)?;
+    Ok(true)
 }
 
 /// Start `plan`'s canonical checkpoint the way a default `plan run` does.
@@ -2953,6 +3000,34 @@ depends_on = ["T1"]
         assert_eq!(resumed.status(), GraphCheckpointStatus::Running);
     }
 
+    /// bug-4641e3: a forced exit marks a checkpoint that still reads
+    /// `running` as `interrupted`, and leaves one its run finalized alone.
+    #[test]
+    fn a_running_checkpoint_is_marked_interrupted_and_a_finished_one_kept() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+
+        assert!(mark_running_checkpoint_interrupted(&manifest).expect("mark"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark again"));
+
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish");
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark finished"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+    }
+
     // ─── v3 extension and receipt tests ──────────────────────────────────
 
     #[test]
@@ -3366,7 +3441,11 @@ depends_on = ["T1"]
             [expected("task-2", 2, false), expected("task-3", 1, true)]
         );
         let persisted = read_manifest(&resumed.paths().manifest).expect("manifest");
-        assert!(persisted.extensions.contains_key(INTERRUPTED_ATTEMPT_EXTENSION));
+        assert!(
+            persisted
+                .extensions
+                .contains_key(INTERRUPTED_ATTEMPT_EXTENSION)
+        );
 
         // Once every task's latest attempt has settled, the next resume drops
         // the record.

@@ -1,8 +1,9 @@
 //! `roko inject` subcommand — sends signals to a running session.
 //!
 //! Signal injection allows external tools (CI, IDEs, monitoring) to push
-//! directives into an active roko session. Injected signals are appended
-//! to the substrate and can influence the agent's next compose cycle.
+//! directives into an active roko session. No transport reaches a running
+//! session yet, so `roko inject` validates a request and then fails closed
+//! (gap-f118b3).
 
 use std::path::PathBuf;
 

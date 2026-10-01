@@ -13,7 +13,8 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use roko_core::MarketplaceJob;
+use roko_core::{FileJobStore, MarketplaceJob};
+use roko_fs::workspace_plans::workspace_plans_dir;
 
 use crate::events::ServerEvent;
 use crate::runtime::PlanGenerationResult;
@@ -146,13 +147,15 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
     let path = job_path(&state.workdir, job_id);
     let data = tokio::fs::read_to_string(&path).await?;
     let mut job: MarketplaceJob = serde_json::from_str(&data)?;
+    // `write_job` names the file after `job.id`; keep it the file read here.
+    job.id = job_id.to_string();
 
     // Transition: open -> in_progress
     let prev_status = effective_status(&job);
     job.status = "in_progress".to_string();
     job.assigned_to = "job-runner".to_string();
     job.updated_at = Utc::now().to_rfc3339();
-    write_job(&path, &job).await?;
+    write_job(&state.workdir, &job).await?;
     publish_transition(state, &job, &prev_status);
 
     // Emit execution started event.
@@ -235,7 +238,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "submitted_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             let prev = job.status.clone();
@@ -246,7 +249,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "evaluated_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             info!(job_id = %job_id, "job completed successfully");
@@ -261,7 +264,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
                 "failed_at": Utc::now().to_rfc3339(),
             }));
             job.updated_at = Utc::now().to_rfc3339();
-            write_job(&path, &job).await?;
+            write_job(&state.workdir, &job).await?;
             publish_transition(state, &job, &prev);
 
             error!(job_id = %job_id, error = %err, "job failed");
@@ -557,12 +560,11 @@ fn is_open(job: &MarketplaceJob) -> bool {
     s == "open" || s == "pending"
 }
 
-async fn write_job(path: &Path, job: &MarketplaceJob) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let json = serde_json::to_string_pretty(job)?;
-    tokio::fs::write(path, json).await?;
+/// Persist `job` to `.roko/jobs/<id>.json` through [`FileJobStore::save`]: an
+/// atomic write that folds the legacy `state` key into `status`, so the file
+/// never carries two status keys that disagree (bug-0a934f).
+async fn write_job(workdir: &Path, job: &MarketplaceJob) -> anyhow::Result<()> {
+    FileJobStore::new(jobs_dir(workdir)).save(job).await?;
     Ok(())
 }
 
@@ -616,7 +618,7 @@ async fn prepare_coding_plan(
                 plans_root: targets
                     .first()
                     .and_then(|target| target.parent().map(Path::to_path_buf))
-                    .unwrap_or_else(|| state.workdir.join(".roko").join("plans")),
+                    .unwrap_or_else(|| workspace_plans_dir(&state.workdir)),
                 artifacts: collect_plan_artifact_paths(&targets),
                 plan_targets: targets,
             });
@@ -658,7 +660,8 @@ async fn synthesize_coding_plan(
     prd_path: &Path,
 ) -> anyhow::Result<PlanGenerationResult> {
     let slug = coding_job_slug(job);
-    let plans_root = workdir.join(".roko").join("plans");
+    // Where every new plan goes, so plan listings and discovery find it.
+    let plans_root = workspace_plans_dir(workdir);
     let plan_dir = plans_root.join(&slug);
     tokio::fs::create_dir_all(&plan_dir).await?;
     let plan_md = plan_dir.join("plan.md");
@@ -1033,6 +1036,33 @@ async fn remove_lock(job_path: &Path) {
 mod tests {
     use super::*;
 
+    /// bug-e3df7d: the fallback plan goes where every other new plan goes:
+    /// `plans/` once the workspace has one, not `.roko/plans/`.
+    #[tokio::test]
+    async fn synthesized_coding_plan_lands_in_the_workspace_plans_dir() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let plans = workdir.path().join("plans");
+        std::fs::create_dir_all(&plans).expect("plans directory");
+        let job = MarketplaceJob {
+            id: "job-42".into(),
+            title: "Add a widget".into(),
+            description: "Write the widget module.".into(),
+            ..Default::default()
+        };
+        let prd_path = workdir.path().join("job-42.md");
+
+        let plan = synthesize_coding_plan(workdir.path(), &job, &prd_path)
+            .await
+            .expect("synthesize the fallback plan");
+
+        let plan_dir = plans.join(coding_job_slug(&job));
+        assert_eq!(plan.plans_root, plans);
+        assert_eq!(plan.plan_targets, [plan_dir.clone()]);
+        assert!(plan_dir.join("tasks.toml").is_file());
+        assert!(plan_dir.join("plan.md").is_file());
+        assert!(!workdir.path().join(".roko").join("plans").exists());
+    }
+
     #[test]
     fn effective_status_prefers_status_field() {
         let job = MarketplaceJob {
@@ -1078,5 +1108,28 @@ mod tests {
             ..Default::default()
         };
         assert!(!is_open(&running));
+    }
+
+    #[tokio::test]
+    async fn write_job_clears_legacy_state_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A job created through the API carries the legacy `state` key; the
+        // runner then moves it on through `status`.
+        let job = MarketplaceJob {
+            id: "job-legacy".into(),
+            status: "in_progress".into(),
+            state: "open".into(),
+            ..Default::default()
+        };
+
+        write_job(dir.path(), &job).await.expect("write job");
+
+        let raw = std::fs::read_to_string(job_path(dir.path(), "job-legacy")).expect("job file");
+        let written: serde_json::Value = serde_json::from_str(&raw).expect("job json");
+        assert_eq!(written["status"], "in_progress");
+        assert!(
+            written.get("state").is_none(),
+            "stale legacy state key: {raw}"
+        );
     }
 }

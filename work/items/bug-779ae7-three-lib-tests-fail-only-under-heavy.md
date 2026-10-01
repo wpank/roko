@@ -2,15 +2,16 @@
 id = "bug-779ae7"
 kind = "bug"
 title = "Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["tests"]
 created = 2026-09-29
-updated = 2026-09-30
-last_verified = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (21:10, coordinator batch gates 2, 5 and 7)"
 anchors = ["crates/roko-gate/src/generated.rs", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "for i in $(seq 1 20); do cargo test -p roko-gate --lib generated::tests::tautology_filter_ -- --test-threads=32 >/dev/null 2>&1 || exit 1; done"
+
+[closed]
+at = 2026-10-01
+commit = "db1cab1d0"
+by = "coordinator (session 7622b882)"
+evidence = "Merged in batch 19 (db1cab1d0, work/bug-779ae7 675b82910): one write per JSONL row, test-visible background writes, event-based timeouts, WAL unlock on drop, distinct probe crate names. Its verify loop ran in the batch-20b extras on cad1a56e1: the tautology_filter tests passed 20 of 20 at --test-threads=32 under load ~100-140. roko-cli lib ran clean in batch 19 (3254/3254) and batch 20b (3261/3261). --force only because work.py static_prefix treats the for-loop verify as static (bug-1440cd)."
 +++
 
 ## Problem

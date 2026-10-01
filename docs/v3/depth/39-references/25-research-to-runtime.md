@@ -1,5 +1,9 @@
 # 39-25 Research to Runtime -- Annotated Reference Map
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > Target-state pipeline for translating academic citations into tested runtime
 > heuristics, plus the foundational "starter kit" papers whose claims anchor
 > existing architectural primitives.
@@ -37,62 +41,50 @@ runtime primitives in the codebase.
 ### HDC and Knowledge Representation
 
 **[Kanerva, 2009]** *Hyperdimensional Computing.* Cognitive Computation, 1(2), 139--159.
-Claim: 10,000+ dimensional binary vectors provide sufficient capacity for practical knowledge systems. Runtime: 10,240-bit BSC vectors in `roko-primitives`. Calibration: dimensionality validated by orthogonality tests. (See [09](./09-hdc-vsa.md).)
 
 ### Active Inference and Tier Routing
 
 **[Friston, 2010]** *The Free-Energy Principle: A Unified Brain Theory?* Nature Reviews Neuroscience, 11(2), 127--138.
-Claim: perception, action, and learning minimize variational free energy. Runtime: EFE-based tier routing in CascadeRouter. Calibration: routing ratios (T0 80%, T1 15%, T2 5%) tuned from production outcomes. (See [16](./16-active-inference.md).)
 
 ### Collective Intelligence
 
 **[Woolley et al., 2010]** *Evidence for a Collective Intelligence Factor.* Science, 330(6004), 686--688.
-Claim: groups have measurable collective intelligence independent of individual IQ. Runtime: C-Factor metric in `roko-learn`. Calibration: threshold C-Factor > 1.0 for superorganism classification. (See [18](./18-collective-intelligence.md).)
 
 ### Reinforcement Learning Foundations
 
 **[Sutton & Barto, 2018]** *Reinforcement Learning: An Introduction.* 2nd ed. MIT Press.
-Claim: temporal-difference learning converges to optimal value estimates. Runtime: TD-based learning in CascadeRouter model routing. Calibration: learning rate and discount factor from production outcomes.
 
 ### Bandit Algorithms
 
 **[Auer et al., 2002]** *Finite-time Analysis of the Multiarmed Bandit Problem.* Machine Learning, 47(2--3), 235--256.
-Claim: UCB achieves logarithmic regret. Runtime: UCB-style exploration in CascadeRouter. Calibration: exploration bonus coefficient tuned from routing outcomes.
 
 ### Prediction Markets
 
 **[Hanson, 2003]** *Combinatorial Information Market Design.* Information Systems Frontiers, 5(1), 107--119.
-Claim: prediction markets aggregate distributed information efficiently. Runtime: informs collective knowledge pricing and confidence aggregation. Calibration: market microstructure parameters.
 
 ### Cooperation Theory
 
 **[Axelrod, 1984]** *The Evolution of Cooperation.* Basic Books.
-Claim: tit-for-tat dominates iterated prisoner's dilemma. Runtime: cooperative agent strategies in multi-agent coordination. Calibration: cooperation threshold from Agent Group outcomes.
 
 ### Groupthink Prevention
 
 **[Janis, 1972]** *Victims of Groupthink.* Houghton Mifflin.
-Claim: high-cohesion groups suppress dissent. Runtime: 15% contrarian retrieval mandate. Calibration: contrarian percentage from knowledge diversity metrics.
 
 ### Predictive Processing
 
 **[Clark, 2013]** *Whatever Next? Predictive Brains, Situated Agents.* Behavioral and Brain Sciences, 36(3), 181--204.
-Claim: brains are prediction machines minimizing prediction error. Runtime: prediction-error-driven T0 probes and tier escalation. Calibration: prediction error threshold from CalibrationTracker. (See [12](./12-signal-processing.md).)
 
 ### Demurrage Economics
 
 **[Gesell, 1916]** *The Natural Economic Order.* 1916.
-Claim: money that decays encourages circulation. Runtime: KORAI 1% annual demurrage, knowledge half-life decay. Calibration: demurrage rate from knowledge circulation metrics. (See [21](./21-mechanism-design.md).)
 
 ### Commons Governance
 
 **[Ostrom, 1990]** *Governing the Commons.* Cambridge University Press.
-Claim: commons can be governed without central authority using eight design principles. Runtime: Agent Group governance rules. Calibration: rule parameters from group performance. (See [21](./21-mechanism-design.md).)
 
 ### Sensemaking
 
 **[Weick, 1995]** *Sensemaking in Organizations.* SAGE Publications.
-Claim: organizations construct meaning retrospectively through ongoing narratives. Runtime: agent interpretation of ambiguous signals via episode narrative construction. Calibration: narrative quality from downstream task outcomes.
 
 ---
 

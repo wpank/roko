@@ -1,5 +1,9 @@
 # Process Reward Models and Verification
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -29,44 +33,36 @@ Process Reward Models (PRMs) verify each reasoning step rather than only the fin
 ## Generation-Verification Gap
 
 - Song, Y. et al. (2025). Mind the Gap: Examining the Self-Improvement Capabilities of Large Language Models. _ICLR_, 2025.
-  *Grounds: Verification > generation requirement — self-improvement works only when the system's verification ability exceeds its generation ability. If the verifier is weaker than the generator, feedback is noise. This is the foundational result for Roko's architecture: Gates are external tools (compiler, test runner, linter) that are definitionally stronger verifiers than the LLM. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 ---
 
 ## Self-Correction Limits
 
 - Huang, J. et al. (2024). Large Language Models Cannot Self-Correct Reasoning Yet. _ICLR_, 2024.
-  *Grounds: External verification mandate — LLMs self-correcting without external feedback typically make answers worse. Motivates external Gates. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - Pan, A. et al. (2024). Spontaneous Reward Hacking in Iterative Self-Refinement. _ICML_, 2024.
-  *Grounds: Reward hacking — same model as generator and judge leads to reward hacking. Validates generator-verifier separation. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 ---
 
 ## Agent Process Reward Models
 
 - Agrawal, A. et al. (2026). GEPA: Reflective Prompt Evolution. _ICLR (Oral)_, 2026. arXiv:2507.19457.
-  *Grounds: Reflective prompt optimization — uses process-level feedback to evolve prompts. Directly applicable to Roko's prompt optimization via CascadeRouter and experiment store.*
 
 ---
 
 ## RL for Retrieval
 
 - Jin, B. et al. (2025). Search-R1: Training LLMs to Reason and Leverage Search Engines with Reinforcement Learning. 2025.
-  *Grounds: Dynamic search — RL teaches agents dynamic search query generation with outcome-based rewards. Rather than fixed retrieval strategies, the agent learns to generate queries based on what it has found so far.*
 
-- Xiong, W. et al. (2025). RAG-Gym: Optimizing Reasoning and Search Agents with Process Supervision. 2025.
-  *Grounds: Process-level supervision — multi-step retrieval as hierarchical MDP. Process-level supervision (rewarding intermediate search steps) produces more stable learning than outcome-level supervision. DPO outperforms classical RL for retrieval optimization.*
+- Xiong, W. et al. (2025). Supervising the search process produces reliable and generalizable information-seeking agents. 2025.
 
 ---
 
 ## Chain-of-Thought Verification
 
 - Wei, J. et al. (2022). Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. _NeurIPS_, 2022.
-  *Grounds: CoT as verifiable steps — chain-of-thought makes reasoning steps explicit and individually verifiable. Cross-referenced in [07-context-engineering.md](./07-context-engineering.md).*
 
 - Wang, X. et al. (2023). Self-Consistency Improves Chain of Thought Reasoning in Language Models. _ICLR_, 2023.
-  *Grounds: Self-consistency — sampling multiple reasoning paths and selecting the most consistent answer. A form of process verification through consensus.*
 
 ---
 

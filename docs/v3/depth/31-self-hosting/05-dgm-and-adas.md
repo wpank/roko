@@ -1,7 +1,7 @@
 # 31-05 -- Darwin Godel Machine, ADAS, and AI4AI-Bench
 
 > **Parent:** [31-SELF-HOSTING.md](../../31-SELF-HOSTING.md) sections 2, 5.3, 5.4
-> **Primary sources:** Darwin Godel Machine (Lange et al. 2025,
+> **Primary sources:** Darwin Godel Machine (Zhang et al. 2025,
 > arXiv:2505.22954), ADAS (Hu et al. ICLR 2025), AI4AI-Bench (Chi et al.
 > 2026, arXiv:2608.20318)
 > **Cross-references:** [08-LEARNING](../../08-LEARNING.md) (feedback loops,
@@ -25,7 +25,7 @@ No production system has ever implemented a Godel Machine.
 
 ## 2. Darwin Godel Machine (DGM)
 
-The Darwin Godel Machine (Lange et al. 2025, arXiv:2505.22954) replaces
+The Darwin Godel Machine (Zhang et al. 2025, arXiv:2505.22954) replaces
 formal proofs with empirical evaluation, and single-point modification with
 population-based evolution.
 
@@ -278,7 +278,7 @@ code.
 
 ## References
 
-- Lange, R., Fu, Y., et al. "Darwin Godel Machine: Open-Ended Evolution of
+- Zhang, J., Hu, S., Lu, C., Lange, R. & Clune, J. "Darwin Godel Machine: Open-Ended Evolution of
   Self-Improving Agents." arXiv:2505.22954, May 2025.
 - Hu, S., Lu, C., Clune, J. "Automated Design of Agentic Systems."
   ICLR 2025.

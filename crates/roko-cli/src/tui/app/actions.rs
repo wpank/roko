@@ -689,8 +689,7 @@ impl App {
                         })
                         .ok()
                         .and_then(|mut f| {
-                            use std::io::Write;
-                            writeln!(f, "{}", entry)
+                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
                                 .inspect_err(|err| {
                                     tracing::warn!(
                                         error = %err,
@@ -814,8 +813,7 @@ impl App {
                         })
                         .ok()
                         .and_then(|mut f| {
-                            use std::io::Write;
-                            writeln!(f, "{}", entry)
+                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
                                 .inspect_err(|err| {
                                     tracing::warn!(
                                         error = %err,

@@ -124,8 +124,7 @@ Where:
 
 ## 6. Continuous Progress Scores
 
-> **Citation:** AgentPRM (arXiv:2511.08325, WWW 2026) -- per-step rewards
-> for agent tool-use provide 10x richer signal than final pass/fail.
+> **Citation:** AgentPRM (arXiv:2511.08325, WWW 2026) -- step-level process rewards for agent tasks, trained from TD estimation with GAE (§3.3).
 
 The core limitation of binary verdicts: they cannot distinguish "almost
 passed" (9/10 tests green, one off-by-one error) from "completely failed"
@@ -285,8 +284,7 @@ voting by 8%.
 
 ### AgentPRM (Xi et al. 2026)
 
-Extended process rewards to agent tool-use settings. Per-step rewards
-provide 10x richer signal. Key insight: not all tool calls contribute
+Extended process rewards to agent tool-use settings. Step rewards capture each action's promise and progress toward the goal (§3.2). Key insight: not all tool calls contribute
 equally to the outcome.
 
 ### Self-Refine (Madaan et al. 2023)

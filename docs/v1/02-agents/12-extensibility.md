@@ -542,10 +542,9 @@ or switching from LinUCB to Thompson Sampling when the arm set changes.
    LlmBackend addition process.
 2. Refactoring PRD §10-developer-guide — EventSource, FeedbackCollector,
    plugin system.
-3. Sakana AI et al. (2025). "Darwin Gödel Machine: Open-Ended Evolution of
+3. Zhang, J. et al. (2025). "Darwin Gödel Machine: Open-Ended Evolution of
    Self-Improving Agents." arXiv:2505.22954. — SWE-bench 20% → 50%.
-4. Wang, G. et al. (2023). "Voyager: An Open-Ended Embodied Agent with LLMs."
-   arXiv:2305.16291. — Lifelong skill learning.
+4. Wang, G. et al. (2023). "Voyager: An Open-Ended Embodied Agent with LLMs." arXiv:2305.16291.
 5. Liu, T. & van der Schaar, M. (2025). "Truly Self-Improving Agents Require
    Intrinsic Metacognitive Learning." ICML 2025. arXiv:2506.05109. —
    Extrinsic vs. intrinsic metacognition.

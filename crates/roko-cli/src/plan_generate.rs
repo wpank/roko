@@ -492,19 +492,6 @@ pub fn build_generator_system_prompt(workdir: &Path) -> String {
     prompt
 }
 
-/// Build the full prompt for plan generation from a source input.
-#[must_use]
-pub fn build_generation_prompt(workdir: &Path, source: &str, source_type: &str) -> String {
-    let mut prompt = build_generator_system_prompt(workdir);
-    let _ = writeln!(prompt, "\n---\n");
-    let _ = writeln!(prompt, "## Workspace: {}\n", workdir.display());
-    let _ = writeln!(
-        prompt,
-        "## Source type: {source_type}\n\n## Source content:\n\n{source}"
-    );
-    prompt
-}
-
 #[cfg(test)]
 mod template_tests {
     use super::*;
@@ -1017,19 +1004,6 @@ mod tests {
         assert_eq!(TaskTier::Focused.max_loc(), 50);
         assert_eq!(TaskTier::Integrative.max_loc(), 150);
         assert_eq!(TaskTier::Architectural.max_loc(), 300);
-    }
-
-    #[test]
-    fn build_prompt_includes_source() {
-        let prompt = build_generation_prompt(
-            std::path::Path::new("/test"),
-            "Add a logging system",
-            "prompt",
-        );
-        assert!(prompt.contains("Add a logging system"));
-        assert!(prompt.contains("## Source type: prompt"));
-        assert!(prompt.contains("## Source content:"));
-        assert!(prompt.contains("## Workspace: /test"));
     }
 
     #[test]

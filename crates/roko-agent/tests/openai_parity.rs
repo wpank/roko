@@ -11,7 +11,7 @@ async fn happy_path() {
 }
 
 #[tokio::test]
-#[ignore = "openai streaming usage mismatch — pre-existing fixture drift"]
+#[ignore = "stream events carry no response or session ids, so the streamed session metadata check fails; usage parity holds (bug-25d24e)"]
 async fn streaming() {
     run_streaming(ParityBackend::OpenAi).await.unwrap();
 }

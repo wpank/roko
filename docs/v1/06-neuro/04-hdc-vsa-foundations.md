@@ -289,9 +289,9 @@ Neuro uses HDC for **structural similarity** — detecting when two knowledge en
 - Kanerva, P. (2009). "Hyperdimensional Computing: An Introduction to Computing in Distributed Representation with High-Dimensional Random Vectors." *Cognitive Computation*, 1(2), 139–159.
 - Kleyko, D., Rachkovskij, D. A., Osipov, E., & Rahimi, A. (2022). "A Survey on Hyperdimensional Computing: Theory, Architecture, and Applications." *ACM Computing Surveys*, 54(6).
 - Thomas, A., Dasgupta, S., & Bhatt, T. (2021). "A Theoretical Perspective on Hyperdimensional Computing." *Journal of Artificial Intelligence Research*, 72, 215–249.
-- Plate, T. A. (2003). *Holographic Reduced Representations: Distributed Representation for Cognitive Structures*. CSLI Publications. (HRR capacity proofs)
+- Plate, T. A. (2003). *Holographic Reduced Representations: Distributed Representation for Cognitive Structures*. CSLI Publications.
 - Gayler, R. W. (1998). "Multiplicative-Additive-Permute representations and the binding problem." *Proceedings of the 20th Cognitive Science Conference*.
-- Frady, E. P., Kleyko, D., & Sommer, F. T. (2020). "A Theory of Sequence Indexing and Working Memory in Recurrent Neural Networks." *Neural Computation*, 32(12), 2275–2325. (Resonator networks)
+- Frady, E. P., Kleyko, D., & Sommer, F. T. (2020). "A Theory of Sequence Indexing and Working Memory in Recurrent Neural Networks." *Neural Computation*, 32(12), 2275–2325.
 
 ### Dimension and Capacity
 
@@ -1225,7 +1225,7 @@ pub struct HdcBackendConfig {
 
 ### Recent Advances: Learnable and Adaptive HDC
 
-**FLASH encoder** (Frontiers in AI, 2024): Learns the encoder matrix distribution via gradient descent rather than using fixed random matrices. Achieves 5.5× faster inference than RFF-based ridge regression with comparable accuracy. This is relevant for Neuro if domain-specific encoding quality needs improvement beyond what `from_seed()` provides.
+**Hyperdimensional computing with holographic and adaptive encoder** (Frontiers in AI, 2024): Learns the encoder matrix distribution via gradient descent rather than using fixed random matrices. Achieves 5.5× faster inference than RFF-based ridge regression with comparable accuracy. This is relevant for Neuro if domain-specific encoding quality needs improvement beyond what `from_seed()` provides.
 
 **Kernel mean embeddings** (Neural Computing and Applications, 2025): Generalizes HDC operations as kernel mean embeddings, enabling closed-form solutions for regression, classification, and Bayesian inference. Unifies HDC with kernel methods, providing a theoretical bridge between Neuro's HDC and traditional ML.
 
@@ -1240,9 +1240,9 @@ pub struct HdcBackendConfig {
 - Plate, T. A. (2003). *Holographic Reduced Representations*. CSLI Publications.
 - Kleyko, D., et al. (2022). "A Survey on Hyperdimensional Computing." *ACM Computing Surveys*, 54(6) and 55(9).
 - Thomas, A., Dasgupta, S., & Bhatt, T. (2021). "A Theoretical Perspective on Hyperdimensional Computing." *JAIR*, 72.
-- Kotsifakou, M. et al. (2024). "HPVM-HDC: A Heterogeneous Programming System for Accelerating HDC." arXiv:2410.15179.
+- Kotsifakou, M. et al. (2024). "HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing." arXiv:2410.15179.
 - Karunaratne, G. et al. (2020). "In-memory hyperdimensional computing." *Nature Electronics*, 3, 327-337.
-- FLASH (2024). "Hyperdimensional computing with holographic and adaptive encoder." *Frontiers in AI*. DOI:10.3389/frai.2024.1371988.
+- Hernández-Cano et al. (2024). "Hyperdimensional computing with holographic and adaptive encoder." *Frontiers in AI*. DOI:10.3389/frai.2024.1371988.
 - HDC Graph ML (2024). "Hyperdimensional Computing for Node Classification and Link Prediction." arXiv:2402.17073.
 - FSL-HDnn (2024). "A 40nm Few-shot On-Device Learning Accelerator." arXiv:2512.11826.
 - "Hyperdimensional computing hardware: progress, trends and prospects." *ICES*, 2025.

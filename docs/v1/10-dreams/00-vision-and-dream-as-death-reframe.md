@@ -24,7 +24,7 @@ The term "dream" is not metaphorical. The system implements biological sleep con
 
 - **Complementary Learning Systems (CLS)**: McClelland et al. (1995) demonstrated that biological brains maintain two learning systems — a fast episodic system (hippocampus) and a slow semantic system (neocortex). Dreams are the bridge: during sleep, episodic memories are replayed and gradually integrated into semantic knowledge. Roko's dream system implements this exact architecture, with the episode log as the fast system and NeuroStore as the slow system.
 
-- **Sleep-time compute**: Lin et al. (2025, arXiv:2504.11651) showed that dedicating computation to offline processing yields a 5× reduction in test-time compute requirements. The insight is that agents can do significant cognitive work during idle periods, making their waking performance dramatically more efficient.
+- **Sleep-time compute**: Lin et al. (2025, arXiv:2504.13171) showed that dedicating computation to offline processing yields a 5× reduction in test-time compute requirements. The insight is that agents can do significant cognitive work during idle periods, making their waking performance dramatically more efficient.
 
 - **DreamerV3**: Hafner et al. (2025, Nature) demonstrated that agents learning world models and planning within them can master diverse domains. Roko's dream system uses a similar architecture — the agent builds internal models during dreaming and plans within those models via counterfactual simulation.
 
@@ -160,7 +160,7 @@ The dream system draws from a rich body of research. These citations appear thro
 | Pearl (2009), Causality: Models, Reasoning, and Inference | REM counterfactuals: structural causal model three-level framework |
 | Hafner et al. (2025), Nature, "DreamerV3" | World model learning during dreaming |
 | Park et al. (2023), UIST, arXiv:2304.03442, "Generative Agents" | Periodic reflection and memory synthesis |
-| Lin et al. (2025), arXiv:2504.11651, "Sleep-time compute" | 5× reduction in test-time compute via offline processing |
+| Lin et al. (2025), arXiv:2504.13171, "Sleep-time compute" | 5× reduction in test-time compute via offline processing |
 | Revonsuo (2000), Behavioral and Brain Sciences, "Threat Simulation Theory" | Adversarial dreaming: rehearsing responses to anticipated threats |
 | Grassé (1959), Insectes Sociaux 6(1) | Stigmergic coordination — knowledge entries as pheromone deposits |
 | Kanerva (2009), Cognitive Computation 1(2) | HDC: 10,240-bit BSC vectors for sub-microsecond similarity search |
@@ -169,7 +169,7 @@ The dream system draws from a rich body of research. These citations appear thro
 | Byrne (2005), The Rational Imagination | Counterfactual reasoning: fault lines (controllable, recent, abnormal actions) |
 | Epstude & Roese (2008), Personality and Social Psychology Review | Functional theory of counterfactual thinking: upward counterfactuals drive self-improvement |
 | Sumers et al. (2023), arXiv:2309.02427, CoALA framework | Three cognitive speeds: Gamma/Theta/Delta |
-| WSCL (2024) | Wake-sleep continual learning: 38% reduction in catastrophic forgetting |
+| WSCL (Sorrenti et al. 2024) | Wake-sleep consolidated learning: wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Simonton (2010), "Creative thought as blind-variation and selective-retention" | BVSR theory: creativity requires variation + selection |
 | Gammaitoni et al. (1998), Reviews of Modern Physics | Stochastic resonance: controlled noise improves signal detection |
 

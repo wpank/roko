@@ -592,7 +592,32 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
         }
     };
 
-    let toml_snippet = provider_add_snippet(name, entry);
+    let config_path = workdir.join("roko.toml");
+    let existing = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?
+    } else if dry_run {
+        String::new()
+    } else {
+        tracing::error!("no roko.toml found; run `roko init` first");
+        return Ok(());
+    };
+
+    // TOML defines a table once, so the stanza leaves out every table the
+    // file already has: the provider, and each model under its key or slug
+    // (`roko init` writes `[models.claude-sonnet-4-6]`).
+    let config: toml::Table =
+        toml::from_str(&existing).with_context(|| format!("parse {}", config_path.display()))?;
+    let section = |key: &str| config.get(key).and_then(toml::Value::as_table);
+    if section("providers").is_some_and(|providers| providers.contains_key(name)) {
+        println!("Provider '{}' is already configured in roko.toml", name);
+        return Ok(());
+    }
+    let models_table = section("models");
+    let (models, kept): (Vec<_>, Vec<_>) = entry
+        .models
+        .iter()
+        .partition(|model| !models_table.is_some_and(|table| defines_model(table, model)));
+    let toml_snippet = provider_add_snippet(name, entry, &models);
 
     if dry_run {
         println!("# Add this to your roko.toml:\n");
@@ -600,23 +625,12 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
         return Ok(());
     }
 
-    // Append to roko.toml
-    let config_path = workdir.join("roko.toml");
-    if !config_path.exists() {
-        tracing::error!("no roko.toml found; run `roko init` first");
-        return Ok(());
-    }
-
-    let existing = std::fs::read_to_string(&config_path)?;
-    let provider_key = format!("[providers.{}]", name);
-    if existing.contains(&provider_key) {
-        println!("Provider '{}' is already configured in roko.toml", name);
-        return Ok(());
-    }
-
     let updated = format!("{}\n\n{}\n", existing.trim_end(), toml_snippet);
     std::fs::write(&config_path, updated)?;
     println!("Added provider '{}' to {}", name, config_path.display());
+    for model in kept {
+        println!("Kept the model '{}' roko.toml already defines", model.slug);
+    }
 
     if !entry.api_key_env.is_empty() {
         println!(
@@ -629,13 +643,14 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
 }
 
 /// The `roko.toml` stanza `roko config providers add <name>` appends for
-/// catalog `entry`: `[providers.<name>]`, then a `[models.*]` table per
-/// catalog model, in the keys `ProviderConfig` and `ModelProfile` read
+/// catalog `entry`: `[providers.<name>]`, then a `[models.*]` table for each
+/// of `models`, in the keys `ProviderConfig` and `ModelProfile` read
 /// (`api_key_env`, `slug`). A model's table is named after its slug, with
 /// `/` turned into `_`; its `slug` stays the one the API expects.
 fn provider_add_snippet(
     name: &str,
     entry: &roko_core::provider_catalog::ProviderCatalogEntry,
+    models: &[&roko_core::provider_catalog::CatalogModel],
 ) -> String {
     let mut lines = vec![
         format!("[providers.{name}]"),
@@ -645,7 +660,7 @@ fn provider_add_snippet(
     if !entry.api_key_env.is_empty() {
         lines.push(format!("api_key_env = {}", toml_string(entry.api_key_env)));
     }
-    for model in entry.models {
+    for model in models {
         let key = toml_string(&model_table_key(model.slug));
         // `{:?}` keeps a whole cost a float (`3.0`, not `3`).
         let (input, output) = (model.cost_input_per_m, model.cost_output_per_m);
@@ -660,6 +675,15 @@ fn provider_add_snippet(
         lines.push(format!("cost_output_per_m = {output:?}"));
     }
     lines.join("\n")
+}
+
+/// Whether `models`, the `[models.*]` tables of a `roko.toml`, already hold
+/// catalog `model`: under its table key, or as another table's slug.
+fn defines_model(models: &toml::Table, model: &roko_core::provider_catalog::CatalogModel) -> bool {
+    models.contains_key(&model_table_key(model.slug))
+        || models
+            .values()
+            .any(|table| table.get("slug").and_then(toml::Value::as_str) == Some(model.slug))
 }
 
 /// The `[models.*]` key `roko config providers add` gives a catalog model.
@@ -3869,7 +3893,8 @@ mod config_scope_tests {
         }
 
         for entry in roko_core::provider_catalog::catalog() {
-            let snippet = provider_add_snippet(entry.id, entry);
+            let models: Vec<_> = entry.models.iter().collect();
+            let snippet = provider_add_snippet(entry.id, entry, &models);
             let stanza: Stanza = toml::from_str(&snippet)
                 .unwrap_or_else(|error| panic!("{}: {error}\n{snippet}", entry.id));
             let provider = &stanza.providers[entry.id];
@@ -3883,5 +3908,31 @@ mod config_scope_tests {
                 assert_eq!(profile.provider, entry.id, "{}", entry.id);
             }
         }
+    }
+
+    /// bug-02e264: after `roko init`, whose config already defines
+    /// `[models.claude-sonnet-4-6]`, `providers add anthropic` adds only the
+    /// tables the file lacks, so the config still parses.
+    #[test]
+    fn providers_add_after_init_keeps_the_config_parseable() {
+        use roko_cli::init::{InitProvider, write_init_config};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("roko.toml");
+        write_init_config(dir.path(), false, InitProvider::ClaudeCli).expect("roko init");
+
+        cmd_provider_add(dir.path(), "anthropic", false).expect("providers add");
+
+        let text = std::fs::read_to_string(&config_path).expect("read roko.toml");
+        let config = RokoConfig::from_toml(&text).expect("the config still parses");
+        assert!(config.providers.contains_key("anthropic"));
+        // The model init wrote keeps its provider; the others are added.
+        assert_eq!(config.models["claude-sonnet-4-6"].provider, "claude_cli");
+        assert_eq!(config.models["claude-opus-4-6"].provider, "anthropic");
+
+        // Adding it again changes nothing.
+        cmd_provider_add(dir.path(), "anthropic", false).expect("providers add again");
+        let again = std::fs::read_to_string(&config_path).expect("read roko.toml again");
+        assert_eq!(again, text);
     }
 }

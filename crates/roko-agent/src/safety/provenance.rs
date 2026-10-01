@@ -8,8 +8,7 @@
 //! The [`CustodyLogger`] provides append-only JSONL persistence for custody
 //! records, following the same pattern as `EpisodeLogger`.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -277,16 +276,7 @@ impl CustodyLogger {
     /// Returns an error if the directory cannot be created or the file
     /// cannot be opened/written.
     pub fn log(&self, custody: &Custody) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(custody)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(file, "{line}")
+        roko_core::io::append_jsonl(&self.path, custody)
     }
 
     /// Read all custody records from the log file.

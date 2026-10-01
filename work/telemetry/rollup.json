@@ -1,0 +1,2190 @@
+{
+ "schema": "roko.work_rollup/1",
+ "date": "2026-10-01",
+ "head": "ad14d38d7",
+ "definitions_sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
+ "price_snapshot": "prices-2026-09-28",
+ "labels": [
+  "observational",
+  "API-equivalent (subscription)"
+ ],
+ "inputs": {
+  "live_events": 6,
+  "backfill_events": 705,
+  "invalid_events": 0,
+  "harvest_calls_rows": 0
+ },
+ "all": {
+  "merged_items": 14,
+  "attempts": {
+   "distribution": {
+    "1": 0,
+    "2": 0,
+    "3+": 0
+   },
+   "mean": null,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "first_try_merge": {
+   "num": 0,
+   "den": 0,
+   "share": null,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "claim_to_merge_hours": {
+   "n": 0,
+   "median": null,
+   "p90": null,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "conflict_rate": {
+   "num": 0,
+   "den": 0,
+   "share": null,
+   "abandoned_over_conflict": 0,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "post_merge_verify_failure": {
+   "num": 0,
+   "den": 0,
+   "share": null,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "escape": {
+   "num": 0,
+   "den": 0,
+   "share": null,
+   "pending": 14,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "interventions": {
+   "per_item": null,
+   "items_with_one": {
+    "num": 0,
+    "den": 0,
+    "share": null
+   },
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "unassisted_merge_share": {
+   "num": 0,
+   "den": 0,
+   "share": null,
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  },
+  "cost_per_merged_item_usd": {
+   "n": 0,
+   "median": null,
+   "p90": null,
+   "total": 0,
+   "unpriced_token_share": null,
+   "label": "API-equivalent (subscription)",
+   "coverage": {
+    "k": 0,
+    "n": 14,
+    "share": 0.0
+   }
+  }
+ },
+ "tables": {
+  "day": {
+   "2026-09-29": {
+    "merged_items": 7,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 7,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    }
+   },
+   "2026-09-30": {
+    "merged_items": 7,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 7,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 7,
+      "share": 0.0
+     }
+    }
+   }
+  },
+  "executor": {
+   "unknown": {
+    "merged_items": 14,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 14,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 14,
+      "share": 0.0
+     }
+    }
+   }
+  },
+  "kind_size": {
+   "bug \u00d7 ?": {
+    "merged_items": 1,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 1,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    }
+   },
+   "bug \u00d7 M": {
+    "merged_items": 2,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 2,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    }
+   },
+   "bug \u00d7 S": {
+    "merged_items": 4,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 4,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    }
+   },
+   "gap \u00d7 L": {
+    "merged_items": 1,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 1,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    }
+   },
+   "gap \u00d7 M": {
+    "merged_items": 2,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 2,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    }
+   },
+   "gap \u00d7 S": {
+    "merged_items": 4,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 4,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    }
+   }
+  },
+  "lane": {
+   "bench": {
+    "merged_items": 1,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 1,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 1,
+      "share": 0.0
+     }
+    }
+   },
+   "none": {
+    "merged_items": 2,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 2,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    }
+   },
+   "paper": {
+    "merged_items": 2,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 2,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 2,
+      "share": 0.0
+     }
+    }
+   },
+   "rust-cold": {
+    "merged_items": 4,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 4,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 4,
+      "share": 0.0
+     }
+    }
+   },
+   "rust-hot": {
+    "merged_items": 5,
+    "attempts": {
+     "distribution": {
+      "1": 0,
+      "2": 0,
+      "3+": 0
+     },
+     "mean": null,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "first_try_merge": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "claim_to_merge_hours": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "conflict_rate": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "abandoned_over_conflict": 0,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "post_merge_verify_failure": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "escape": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "pending": 5,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "interventions": {
+     "per_item": null,
+     "items_with_one": {
+      "num": 0,
+      "den": 0,
+      "share": null
+     },
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "unassisted_merge_share": {
+     "num": 0,
+     "den": 0,
+     "share": null,
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    },
+    "cost_per_merged_item_usd": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0,
+     "unpriced_token_share": null,
+     "label": "API-equivalent (subscription)",
+     "coverage": {
+      "k": 0,
+      "n": 5,
+      "share": 0.0
+     }
+    }
+   }
+  }
+ },
+ "overhead": {
+  "total_usd": 0,
+  "by_origin_usd": {},
+  "per_merged_item_usd": 0.0,
+  "calls_rows": 0,
+  "label": "API-equivalent (subscription)"
+ },
+ "merged": [
+  {
+   "item": "gap-8d2c79",
+   "merged_at": "2026-09-29T13:35:50Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": [
+    "b2c14cd4a",
+    "c04f220ec"
+   ]
+  },
+  {
+   "item": "gap-d1d92c",
+   "merged_at": "2026-09-29T13:40:47Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": [
+    "b2c14cd4a",
+    "c04f220ec"
+   ]
+  },
+  {
+   "item": "gap-96f7ed",
+   "merged_at": "2026-09-29T18:01:13Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "gap-60654d",
+   "merged_at": "2026-09-29T20:12:04Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-31438d",
+   "merged_at": "2026-09-29T21:29:25Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-35379d",
+   "merged_at": "2026-09-29T21:29:25Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "gap-8cb382",
+   "merged_at": "2026-09-29T23:48:34Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-62e3f4",
+   "merged_at": "2026-09-30T01:17:31Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-0ba3d9",
+   "merged_at": "2026-09-30T07:43:35Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-633b68",
+   "merged_at": "2026-09-30T07:43:49Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "gap-0f3980",
+   "merged_at": "2026-09-30T08:56:50Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-779ae7",
+   "merged_at": "2026-09-30T12:18:02Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "bug-ba8d42",
+   "merged_at": "2026-09-30T13:03:41Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  },
+  {
+   "item": "gap-751ac9",
+   "merged_at": "2026-09-30T14:40:30Z",
+   "executor": null,
+   "attempts": 0,
+   "cost_usd": null,
+   "tokens_by_join": {},
+   "interventions": [],
+   "unlabelled_commits": []
+  }
+ ],
+ "done_without_merge": [
+  "bug-012303",
+  "bug-019f02",
+  "bug-02e264",
+  "bug-0320da",
+  "bug-0522e8",
+  "bug-056b40",
+  "bug-05d1ac",
+  "bug-06e2d1",
+  "bug-07bc75",
+  "bug-08d912",
+  "bug-09690f",
+  "bug-09fac4",
+  "bug-0b668a",
+  "bug-0bc728",
+  "bug-0c7e11",
+  "bug-0d9ac4",
+  "bug-0eb8e2",
+  "bug-12153c",
+  "bug-12be66",
+  "bug-12d48c",
+  "bug-131421",
+  "bug-1440cd",
+  "bug-165b22",
+  "bug-16a6b6",
+  "bug-17f0e4",
+  "bug-1c93b4",
+  "bug-1f098f",
+  "bug-207f35",
+  "bug-2116ec",
+  "bug-21687a",
+  "bug-220385",
+  "bug-2379dc",
+  "bug-25d24e",
+  "bug-28becc",
+  "bug-28f2b9",
+  "bug-2930a8",
+  "bug-32d57f",
+  "bug-32eb77",
+  "bug-34c16c",
+  "bug-367f33",
+  "bug-39d54c",
+  "bug-3a037b",
+  "bug-3c1c4a",
+  "bug-3ea1f5",
+  "bug-415db3",
+  "bug-41bea4",
+  "bug-44320f",
+  "bug-453481",
+  "bug-45c355",
+  "bug-469537",
+  "bug-470de8",
+  "bug-477ede",
+  "bug-48494b",
+  "bug-4862cf",
+  "bug-4c4eea",
+  "bug-4cb029",
+  "bug-4e7d40",
+  "bug-4efb2a",
+  "bug-50caf2",
+  "bug-521f08",
+  "bug-524a3b",
+  "bug-5363c0",
+  "bug-55b151",
+  "bug-55fd84",
+  "bug-57ae52",
+  "bug-59b4af",
+  "bug-5a6636",
+  "bug-5b43a9",
+  "bug-5b897b",
+  "bug-5c25e1",
+  "bug-5c2d01",
+  "bug-5e71d0",
+  "bug-5e7de4",
+  "bug-5f0604",
+  "bug-605a8a",
+  "bug-62e7e6",
+  "bug-63327d",
+  "bug-647249",
+  "bug-64fb48",
+  "bug-652bb7",
+  "bug-65b021",
+  "bug-66f5a1",
+  "bug-690dc6",
+  "bug-6930e6",
+  "bug-69a002",
+  "bug-6dc672",
+  "bug-739dcc",
+  "bug-73ccf0",
+  "bug-77413c",
+  "bug-7830f5",
+  "bug-7a2630",
+  "bug-7a6da3",
+  "bug-7b37c4",
+  "bug-7d7200",
+  "bug-7de5df",
+  "bug-7eb27e",
+  "bug-7eef96",
+  "bug-7ef619",
+  "bug-809e22",
+  "bug-82d47b",
+  "bug-8465a2",
+  "bug-84de98",
+  "bug-8589fc",
+  "bug-87ebdb",
+  "bug-8835bc",
+  "bug-883803",
+  "bug-88aead",
+  "bug-88f99d",
+  "bug-8b0d0a",
+  "bug-8cf581",
+  "bug-8d7d18",
+  "bug-8da8ba",
+  "bug-8f8704",
+  "bug-9116ff",
+  "bug-91af0e",
+  "bug-928add",
+  "bug-92f655",
+  "bug-94151f",
+  "bug-955c41",
+  "bug-960ab1",
+  "bug-96aff4",
+  "bug-979636",
+  "bug-979a06",
+  "bug-993e7e",
+  "bug-997c6a",
+  "bug-9a6799",
+  "bug-9ab6b8",
+  "bug-9b69a3",
+  "bug-9bb0be",
+  "bug-9bffe2",
+  "bug-9c5973",
+  "bug-9c7e1a",
+  "bug-9c88ac",
+  "bug-a22228",
+  "bug-a3760a",
+  "bug-a445eb",
+  "bug-a49003",
+  "bug-a5dcaa",
+  "bug-a5f181",
+  "bug-a66941",
+  "bug-a6b433",
+  "bug-a727ff",
+  "bug-a9a251",
+  "bug-aa2044",
+  "bug-aaa924",
+  "bug-ab8118",
+  "bug-ad5487",
+  "bug-af1020",
+  "bug-af3cf4",
+  "bug-afcf63",
+  "bug-b0fd73",
+  "bug-b16d55",
+  "bug-b17805",
+  "bug-b2a9de",
+  "bug-b2dd44",
+  "bug-b32dc2",
+  "bug-b38546",
+  "bug-b4c565",
+  "bug-b69a47",
+  "bug-b70d40",
+  "bug-b72a37",
+  "bug-b8af02",
+  "bug-bca443",
+  "bug-bfd241",
+  "bug-c1950e",
+  "bug-c1b845",
+  "bug-c30764",
+  "bug-c34782",
+  "bug-c59522",
+  "bug-c65bfe",
+  "bug-c6ad88",
+  "bug-c6bef5",
+  "bug-c7174d",
+  "bug-c8153a",
+  "bug-cae1e1",
+  "bug-ccc7c4",
+  "bug-cd5000",
+  "bug-ceab60",
+  "bug-cef888",
+  "bug-d34a29",
+  "bug-d5fb74",
+  "bug-d6b0d9",
+  "bug-d7c5dd",
+  "bug-da5b41",
+  "bug-de5218",
+  "bug-dfb28f",
+  "bug-e1327f",
+  "bug-e2cfdf",
+  "bug-efd2b0",
+  "bug-f279ea",
+  "bug-f3969d",
+  "bug-f43cf8",
+  "bug-f47afb",
+  "bug-f4e133",
+  "bug-f62293",
+  "bug-f68404",
+  "bug-f7943a",
+  "bug-f7f3bb",
+  "bug-f7fa06",
+  "bug-f81e9b",
+  "bug-fbefe0",
+  "dec-2cd76a",
+  "dec-578863",
+  "dec-b75b96",
+  "dec-b78874",
+  "dec-e70592",
+  "find-0dc1d5",
+  "find-3174bd",
+  "find-570af2",
+  "find-95ef81",
+  "find-a1284b",
+  "find-cb370a",
+  "gap-00cc7f",
+  "gap-0191eb",
+  "gap-02a66e",
+  "gap-038eaa",
+  "gap-04b0ff",
+  "gap-04e8e2",
+  "gap-052646",
+  "gap-0580f7",
+  "gap-09e478",
+  "gap-0b9056",
+  "gap-0d64d5",
+  "gap-0d996a",
+  "gap-0e2c40",
+  "gap-0ef29d",
+  "gap-11845c",
+  "gap-15bb83",
+  "gap-184da5",
+  "gap-191ecd",
+  "gap-1920ba",
+  "gap-19e596",
+  "gap-1ac9e7",
+  "gap-1b5636",
+  "gap-1cd8d3",
+  "gap-1d1fa6",
+  "gap-1f2661",
+  "gap-204848",
+  "gap-2122bd",
+  "gap-212b75",
+  "gap-263de5",
+  "gap-272448",
+  "gap-274092",
+  "gap-2790c5",
+  "gap-28ebea",
+  "gap-29a64e",
+  "gap-29a84b",
+  "gap-2aad7d",
+  "gap-2abf34",
+  "gap-2ce86f",
+  "gap-3006e9",
+  "gap-308373",
+  "gap-33d54b",
+  "gap-3505fb",
+  "gap-3506f1",
+  "gap-353d57",
+  "gap-35a614",
+  "gap-370d3c",
+  "gap-3870d9",
+  "gap-3986d0",
+  "gap-3b5361",
+  "gap-3c430e",
+  "gap-4161ea",
+  "gap-419298",
+  "gap-420202",
+  "gap-424bf8",
+  "gap-42d749",
+  "gap-431b43",
+  "gap-437ccf",
+  "gap-439794",
+  "gap-44632a",
+  "gap-4468bd",
+  "gap-4471d1",
+  "gap-455aef",
+  "gap-460230",
+  "gap-4667a4",
+  "gap-46ab3f",
+  "gap-4723ff",
+  "gap-4d516a",
+  "gap-4d835d",
+  "gap-4e8795",
+  "gap-4ec886",
+  "gap-51deff",
+  "gap-528762",
+  "gap-568056",
+  "gap-56a1b4",
+  "gap-573584",
+  "gap-585bd2",
+  "gap-5a6e01",
+  "gap-5ad744",
+  "gap-5d95a5",
+  "gap-5f4852",
+  "gap-5fb9a7",
+  "gap-60233f",
+  "gap-603aa4",
+  "gap-63e0b6",
+  "gap-652d05",
+  "gap-65ed57",
+  "gap-6d172d",
+  "gap-6daad9",
+  "gap-6e1381",
+  "gap-6e9e14",
+  "gap-6ff814",
+  "gap-76bd0b",
+  "gap-785a4f",
+  "gap-7984a5",
+  "gap-7ee7c2",
+  "gap-7ee870",
+  "gap-7f5eb6",
+  "gap-806e37",
+  "gap-853b31",
+  "gap-856053",
+  "gap-88c547",
+  "gap-89f393",
+  "gap-8a4d00",
+  "gap-8bdf5e",
+  "gap-8be530",
+  "gap-8c0a20",
+  "gap-8c3752",
+  "gap-8cf47b",
+  "gap-8f6206",
+  "gap-92033c",
+  "gap-93fdf4",
+  "gap-9636f9",
+  "gap-96d348",
+  "gap-98516b",
+  "gap-987064",
+  "gap-987510",
+  "gap-9899b0",
+  "gap-9ca898",
+  "gap-9cb0b9",
+  "gap-9cbf35",
+  "gap-9e7079",
+  "gap-9eb1e1",
+  "gap-9f37e6",
+  "gap-a0f18a",
+  "gap-a3031b",
+  "gap-a3fc5b",
+  "gap-a6abd5",
+  "gap-a6e2c3",
+  "gap-a791b4",
+  "gap-a8a160",
+  "gap-a8d786",
+  "gap-aad48c",
+  "gap-abbd22",
+  "gap-ac4646",
+  "gap-ac4ce8",
+  "gap-ae2f55",
+  "gap-af00b1",
+  "gap-af0b57",
+  "gap-b23ebd",
+  "gap-b24517",
+  "gap-b3fa0a",
+  "gap-b409fa",
+  "gap-b4e597",
+  "gap-b605cf",
+  "gap-b62e95",
+  "gap-b64fba",
+  "gap-b72761",
+  "gap-b7a2d5",
+  "gap-b7ab99",
+  "gap-b954ad",
+  "gap-bb619d",
+  "gap-bc0640",
+  "gap-bd33b2",
+  "gap-be0ac2",
+  "gap-bfd447",
+  "gap-c19902",
+  "gap-c4d630",
+  "gap-c4f364",
+  "gap-c7c946",
+  "gap-c8e1f1",
+  "gap-cb86e4",
+  "gap-cb9274",
+  "gap-ccb87e",
+  "gap-cdd5f4",
+  "gap-cdf3fc",
+  "gap-d0643c",
+  "gap-d14a43",
+  "gap-d30038",
+  "gap-d40bc0",
+  "gap-d4466f",
+  "gap-da70fd",
+  "gap-daa246",
+  "gap-dad97b",
+  "gap-dbf2a6",
+  "gap-dc6775",
+  "gap-e003ec",
+  "gap-e08b4d",
+  "gap-e21595",
+  "gap-e2d092",
+  "gap-e5bbd6",
+  "gap-e8cb4d",
+  "gap-e90ebd",
+  "gap-e9660f",
+  "gap-eb82c9",
+  "gap-ec516e",
+  "gap-ed511d",
+  "gap-f253cf",
+  "gap-f3be74",
+  "gap-f46b85",
+  "gap-f98f6d",
+  "gap-fa61f8",
+  "gap-fc5d3d",
+  "gap-fcea53",
+  "gap-fdd27f",
+  "q-4299a9",
+  "reg-06ae9f",
+  "reg-3f5969",
+  "spec-1ecf91",
+  "spec-52eeb9",
+  "spec-5c8b9c",
+  "spec-758405",
+  "spec-a0403b",
+  "spec-bf62b3",
+  "spec-c3f994",
+  "spec-ddc287",
+  "spec-f830c4"
+ ],
+ "merged_without_claim": [
+  "gap-8d2c79",
+  "gap-d1d92c",
+  "gap-96f7ed",
+  "gap-60654d",
+  "bug-31438d",
+  "bug-35379d",
+  "gap-8cb382",
+  "bug-62e3f4",
+  "bug-0ba3d9",
+  "bug-633b68",
+  "gap-0f3980",
+  "bug-779ae7",
+  "bug-ba8d42",
+  "gap-751ac9"
+ ],
+ "backfill": {
+  "closed_by_executor": {
+   "unknown": 172,
+   "claude-session": 8,
+   "verification-only": 25,
+   "roko-plan": 10,
+   "human": 6,
+   "claude-agent": 242
+  },
+  "lane_starts": 242
+ },
+ "switch": "not fixed: the tracker item \"Roko executes work items\" is not filed yet"
+}

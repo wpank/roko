@@ -1,5 +1,11 @@
 # References — Master Citation Index
 
+> **Descriptions checked against the papers: 49 works only.** The docs/v3 audit
+> (`tools/docs_integrity/content_audit.json`) compared the descriptions of these works with each paper's full
+> text and found claims the papers do not support for 62% of the 45 most-described ones. The `*Grounds:*`
+> annotations of every other work in these reference files were removed because they have not been checked
+> against the papers; the citations remain. The checked works are listed in docs/v3/REFERENCES.md.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -43,7 +49,7 @@ All mortality-era citations are preserved with reframed annotations: "because th
 | 06 | [Self-Learning Systems](./06-self-learning-systems.md) | Reflexion, ExpeL, Voyager, SAMULE, multi-agent reflection | Lee 2026, Shinn 2023, Hu 2025, SAMULE 2025 | ~22 |
 | 07 | [Context Engineering](./07-context-engineering.md) | ACE, CSO, ACON, RAG, context position, compression | ACE 2026, Liu 2024, Lewis 2020, Wei 2022 | ~16 |
 | 08 | [Security and Provenance](./08-security-and-provenance.md) | CaMeL, OWASP, formal verification AI, safety guarantees | Debenedetti 2025, Cohen 1987, C2PA, Formal Methods 2025 | ~19 |
-| 09 | [HDC and VSA](./09-hdc-vsa.md) | BSC, learned hashing, FLASH adaptive encoder, HDC++ systems | Kanerva 1988/2009, Kleyko 2022, FLASH 2024, HPVM-HDC 2024 | ~20 |
+| 09 | [HDC and VSA](./09-hdc-vsa.md) | BSC, learned hashing, FLASH adaptive encoder, HDC++ systems | Kanerva 1988/2009, Kleyko 2022, FLASH 2024, Arbore et al. 2024 | ~20 |
 | 10 | [Market Microstructure](./10-market-microstructure.md) | AMM theory, vault mechanisms, risk/decision theory | Milionis 2023, Kelly 1956, Peters 2019, Taleb 2012 | ~12 |
 | 11 | [Streaming Algorithms](./11-streaming-algorithms.md) | Adaptive windowing, calibration, distributional RL | Bifet 2007, Farquhar 2024, Dabney 2018/2020 | ~10 |
 | 12 | [Signal Processing](./12-signal-processing.md) | TDA, persistent homology advances, information theory | Shannon 1948, Carlsson 2009, TDA Beyond PH 2025 | ~16 |

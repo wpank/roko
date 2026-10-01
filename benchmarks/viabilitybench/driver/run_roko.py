@@ -60,6 +60,9 @@ of the agent's reach.
 - the served model: the helper calls' rows name it, but the agent run's streamed calls leave it null. So an
   attempt's `model_reported` is null and its cost unknown (null) unless S01 verdicts or the metering proxy supply
   them. Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
+- its gate verdict: S01's outcome, which each episode carries in `extra.outcome`. `passed`, `already_satisfied`,
+  `unverified` and `forced_accept` are verdict tags, and any other outcome has none. An older Roko's episode says
+  only whether it succeeded, read as `passed`.
 
 An attempt's `roko_calls` is its turns plus its helper calls, None when either is unknown. Without the proxy it is
 also the attempt's `calls`; with the proxy, `calls` is the proxy's count and `roko_calls` stays beside it, so the
@@ -87,7 +90,10 @@ match, so the attempts fail as `no_proxy_traffic`.
 **Status.**
 - `completed`: the Graph checkpoint says the plan succeeded with a `passed` gate verdict. This is Roko's reported
   pass, so a census VS = 0 counts as a false green.
-- `failed`: the gates failed through every retry, or Roko stopped the plan itself.
+- `failed`: the gates failed through every retry, or Roko stopped the plan itself. Also a plan that succeeded with
+  an `already_satisfied` verdict (gap-9eb1e1): Roko changed nothing, and its checks passed on the tree as it was.
+  S05 §0.1 counts only a `passed` verdict as Roko's completion, so the census gives the run 0, and the report counts
+  it apart, never as a reported pass.
 - `timeout`: the wall-clock cap.
 - `infra_error`: a failed validation, a failed check above, or a run Roko did not finish.
 
@@ -144,6 +150,7 @@ EVIDENCE_MAX_BYTES = 50_000_000
 BUILD = re.compile(r"\bgit ([0-9a-f]{7,40})\b")
 ATTEMPT_ID = re.compile(r"/a(\d+)(?:/|$)")  # an older Roko's attempt ids, from 0
 VERDICT_SCHEMA = "roko.verdict/1"
+VERDICT_TAGS = ("passed", "already_satisfied", "unverified", "forced_accept")  # S01 outcomes that are verdict tags
 HELPER_ROLE = "helper"  # the role of a helper call's cost and efficiency rows (bug-62e3f4)
 
 
@@ -154,7 +161,7 @@ class RunnerError(RuntimeError):
 @dataclass
 class RokoAttempt(harness.Attempt):
     model_dispatched: str | None = None  # the model Roko's records say it dispatched
-    gate_verdict: str | None = None  # S01's tag: "passed", or None when the gate failed
+    gate_verdict: str | None = None  # S01's tag (VERDICT_TAGS), or None when the gate failed
     roko_usage: dict | None = None  # Roko's own token counts, for diagnosis only: never priced
     roko_build: str | None = None
     checks: list[str] = field(default_factory=list)  # failed check kinds
@@ -345,7 +352,7 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     for position, episode in enumerate(evidence.episodes, 1):
         extra = episode.get("extra") or {}
         number = ordinals[position - 1] if keyed else position
-        passed = episode.get("success") is True
+        verdict = _gate_verdict(episode)
         dispatched, before = episode.get("model") or None, attempts[-1].model_dispatched if attempts else None
         turns = None if extra.get("turns_unknown") is True or not _count(episode.get("turns")) else episode["turns"]
         # A keyed episode (bug-62e3f4's Roko) names its helper calls whenever it made some; an older one never does.
@@ -355,8 +362,8 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
             number=number, attempt_key=f"{chain_key}:{number}", model_requested=model,
             provider=str(episode.get("backend") or provider), reserved_usd=reserved_usd, turns=turns,
             calls=roko_calls or 0, calls_known=roko_calls is not None, usage_unknown=True,
-            ended_by="gate_passed" if passed else "gate_failed", model_dispatched=dispatched,
-            gate_verdict="passed" if passed else None, roko_usage=_roko_usage(episode), roko_build=roko_build,
+            ended_by="gate_passed" if verdict == "passed" else verdict or "gate_failed", model_dispatched=dispatched,
+            gate_verdict=verdict, roko_usage=_roko_usage(episode), roko_build=roko_build,
             task_id=str(episode.get("task_id") or planemit.TASK_ID),
             cost_class="execute" if position == 1 else "escalate" if dispatched and before and dispatched != before
             else "retry", helper_calls=helpers, roko_calls=roko_calls, **_episode_span(episode)))
@@ -567,6 +574,15 @@ def _episode_span(episode: dict) -> dict[str, str | None]:
             "finished_at": _iso(end) if end else None}
 
 
+def _gate_verdict(episode: dict) -> str | None:
+    """The attempt's verdict tag: S01's outcome from its episode, None for one that is not a tag (a failed gate);
+    an older Roko's episode, which has no outcome, by whether it succeeded."""
+    outcome = (episode.get("extra") or {}).get("outcome")
+    if isinstance(outcome, str):
+        return outcome if outcome in VERDICT_TAGS else None
+    return "passed" if episode.get("success") is True else None
+
+
 def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str]:
     """A substituted model outranks a timeout: that run is excluded, not counted as censoring."""
     invalid = [problem for problem in problems if not problem.startswith("model_unverified")]
@@ -579,8 +595,11 @@ def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str
     checkpoint = evidence.checkpoint or {}
     state = checkpoint.get("status")
     verdicts = ((checkpoint.get("extensions") or {}).get("roko.gate.verdict@1") or {}).get("value") or {}
-    if state == "succeeded" and (verdicts.get("verdicts") or {}).get(planemit.TASK_ID) == "passed":
+    verdict = (verdicts.get("verdicts") or {}).get(planemit.TASK_ID)
+    if state == "succeeded" and verdict == "passed":
         return "completed", "gate_passed"
+    if state == "succeeded" and verdict == "already_satisfied":  # not Roko's completion (module docstring, Status)
+        return "failed", "already_satisfied"
     if state == "failed":
         last = str(evidence.episodes[-1].get("failure_reason") or "") if evidence.episodes else ""
         return "failed", "gate_failed" if last.startswith("verify:") else f"roko: {last[:200] or 'plan failed'}"

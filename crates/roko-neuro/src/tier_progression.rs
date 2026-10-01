@@ -1876,7 +1876,7 @@ where
         .with_context(|| format!("open {}", path.display()))?;
     for value in values {
         let line = serde_json::to_string(value).context("serialize heuristic receipt")?;
-        writeln!(file, "{line}").context("write heuristic receipt")?;
+        roko_core::io::write_jsonl_line(&mut file, &line).context("write heuristic receipt")?;
     }
     file.flush().context("flush heuristic receipt")?;
     file.sync_all().context("sync heuristic receipt")?;
@@ -1900,7 +1900,8 @@ where
             .with_context(|| format!("open {}", tmp_path.display()))?;
         for value in values {
             let line = serde_json::to_string(value).context("serialize heuristic snapshot")?;
-            writeln!(file, "{line}").context("write heuristic snapshot")?;
+            roko_core::io::write_jsonl_line(&mut file, &line)
+                .context("write heuristic snapshot")?;
         }
         file.flush().context("flush heuristic snapshot")?;
         file.sync_all().context("sync heuristic snapshot")?;

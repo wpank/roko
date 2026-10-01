@@ -596,6 +596,7 @@ pub async fn run_code_implementer_cloud(
                 fail_fast: false,
                 only_plans: None,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+                force_disk_check: false,
             })
             .await?;
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;

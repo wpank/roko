@@ -103,7 +103,7 @@ This is the implementation plan.
 - [ ] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
 - [ ] dec-01be49: Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions
 - [ ] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
-- [ ] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
+- [x] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
 - [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
 - [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
 - [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
@@ -112,7 +112,7 @@ This is the implementation plan.
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
 - [x] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
 - [ ] bug-f1f814: graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load
-- [ ] bug-ddd5bd: error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick
+- [x] bug-ddd5bd: error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

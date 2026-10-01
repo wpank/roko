@@ -93,7 +93,9 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             prompt: PromptConfig::default(),
             repos: Vec::new(),
-            gates: vec![GateConfig::default_shell_true()],
+            // No legacy `[[gate]]` entries, as when a file leaves them out:
+            // these gates are only counted, never run.
+            gates: Vec::new(),
             executor: ExecutorConfig::default(),
             runner: RunnerConfig::default(),
             runtime: RuntimeControlConfig::default(),
@@ -1509,11 +1511,23 @@ impl ModelProfileLayer {
     }
 }
 
+/// Parse `text`, a `roko.toml`, into `T` with `${VAR}` references expanded.
+///
+/// An unknown key inside a `[providers.*]` or `[models.*]` entry is dropped
+/// with a warning, as the config loader drops it, rather than failing the
+/// parse (`strip_unknown_entry_fields`).
 fn parse_toml_with_env<T>(text: &str, context: &'static str) -> Result<T>
 where
     T: DeserializeOwned,
 {
     let mut value: toml::Value = toml::from_str(text).context(context)?;
+    for diagnostic in roko_core::config::loader::strip_unknown_entry_fields(&mut value) {
+        tracing::warn!(
+            config_key = %diagnostic.key,
+            "config warning: {}",
+            diagnostic.message
+        );
+    }
     interpolate_env_values(&mut value)?;
     value
         .try_into()
@@ -2986,6 +3000,58 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
             assert_eq!(flag.max_turn_usd, workspace.max_turn_usd, "{text:?}");
             assert_eq!(flag.max_task_usd, 0.0, "a missing cap means no cap");
         }
+    }
+
+    /// bug-9bb0be: `--config <path>` treats a typo inside a provider or model
+    /// entry as the workspace loader does: the key is dropped with a warning
+    /// and the rest of the entry loads.
+    #[test]
+    fn config_from_file_treats_a_provider_typo_like_the_loader() {
+        let text = r#"[agent]
+
+[providers.local]
+kind = "openai_compat"
+base_ulr = "http://localhost:11434/v1"
+api_key_env = "LOCAL_KEY"
+
+[models.local-model]
+provider = "local"
+slug = "llama3"
+contxt_window = 8192
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        std::fs::write(&path, text).expect("write config");
+        let options = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        // What `roko --config <file>` loads, and what the workspace loader
+        // makes of the same file.
+        let flag = Config::from_file(&path).expect("--config drops the typos");
+        let core = roko_core::config::loader::load_config_file(&path, &options)
+            .expect("the loader drops them");
+        let workspace = Config::from_roko_config(&core).expect("convert the loaded config");
+
+        for config in [&flag, &workspace] {
+            let provider = &config.providers["local"];
+            assert_eq!(provider.api_key_env.as_deref(), Some("LOCAL_KEY"));
+            assert_eq!(provider.base_url, None);
+            assert_eq!(config.models["local-model"].slug, "llama3");
+        }
+    }
+
+    /// L13: a config without `[[gate]]` entries has the default's legacy
+    /// gates, which are none. The default used to hold a `shell true`
+    /// placeholder that never ran but was counted by `roko do`.
+    #[test]
+    fn config_without_gate_entries_has_the_default_gates() {
+        let partial = Config::parse_toml("[agent]\n").expect("parse config");
+        assert_eq!(partial.gates.len(), Config::default().gates.len());
+        assert!(partial.gates.is_empty());
     }
 
     #[test]

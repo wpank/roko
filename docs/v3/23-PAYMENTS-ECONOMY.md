@@ -1231,7 +1231,7 @@ maintaining incentive compatibility.
 
 - Ostrom, E. (1990). *Governing the Commons: The Evolution of Institutions for Collective Action*. Cambridge University Press. Graduated sanctions model adapted for the discipline system.
 
-- Gesell, S. (1916). *Die Naturliche Wirtschaftsordnung* (*The Natural Economic Order*). Theoretical foundation for demurrage -- holding costs that decay balances to prevent hoarding. Applied to knowledge entry balances.
+- Gesell, S. (1916). *Die Naturliche Wirtschaftsordnung* (*The Natural Economic Order*).
 
 - Josang, A. (2002). "A Logic for Uncertain Probabilities." *International Journal of Uncertainty, Fuzziness and Knowledge-Based Systems*, 9(3), 279-311. Beta reputation systems underlying the EMA+Beta hybrid.
 

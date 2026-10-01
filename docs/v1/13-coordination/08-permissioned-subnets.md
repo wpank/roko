@@ -417,8 +417,7 @@ access control.
 
 - [Buchanan 1965] Economic Theory of Clubs, *Economica*
 - [Grossman & Stiglitz 1980] Informationally Efficient Markets, *AER*
-- [Ostrom, E. 1990] *Governing the Commons*, Cambridge University Press — Framework for
-  managing shared resources without privatization or state control
+- [Ostrom, E. 1990] *Governing the Commons*, Cambridge University Press
 
 ---
 

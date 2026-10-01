@@ -187,7 +187,7 @@ routing's analysis says the payoff depends on how good that estimate is.
 
 | Citation | Contribution |
 |---|---|
-| **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176) | Demonstrated that cascade routing can match GPT-4 quality at 2% cost. Established the empirical case for learned routing. |
+| **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176) | Demonstrated that cascade routing can match the best single LLM at 50-98% lower cost (§4, Table 3). Established the empirical case for learned routing. |
 | **Friston 2006** | Free Energy Principle. Provides the theoretical basis for EFE-based routing: high-certainty queries route to cheap models (low epistemic value), high-uncertainty queries route to strong models (high epistemic value). |
 | **Kanerva 2009** | Hyperdimensional computing. SimHash as used in the gateway's semantic cache and convergence detector is a derivative of Kanerva's binary HD vectors. |
 

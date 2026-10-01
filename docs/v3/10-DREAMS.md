@@ -998,9 +998,7 @@ requirements**. The key insight: agents can perform significant cognitive
 work during idle periods, making waking performance dramatically more
 efficient.
 
-WSCL (2024, "Wake-Sleep Continual Learning") showed a complementary result:
-interleaving wake and sleep phases produces a **38% reduction in
-catastrophic forgetting** versus continuous waking-only learning.
+WSCL (Sorrenti et al. 2024, "Wake-Sleep Consolidated Learning") reported a complementary result for image classification: wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract).
 
 ### Compute budget allocation
 
@@ -1307,12 +1305,7 @@ stable long-term representations. This goes beyond reorganizing stored
 records -- it modifies the model's internal representations to encode
 generalizable schemas.
 
-**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Shows that offline
-recurrence -- revisiting and reprocessing past experiences during idle
-periods -- produces measurably better downstream performance than
-continuous waking-only processing. The key finding: recurrence must be
-structured (not random replay) and must extract abstractions that transfer
-across tasks.
+**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Proposes a sleep phase for language models: the model runs N offline recurrent passes over its accumulated context, writes the result into fast weights in its state-space blocks and then clears its KV cache (§5). On synthetic tasks and a math-reasoning task where plain transformers and SSM-attention hybrids fail, longer sleep (larger N) improves accuracy, most on examples that need deeper reasoning (abstract, §6). It is an architecture-level mechanism; it does not compare structured with random replay or test transfer across tasks.
 
 ### Target data flow
 
@@ -1394,11 +1387,7 @@ framework that validates the multi-tier approach: recent experiences should
 be stored at high resolution and progressively compressed into
 lower-resolution but more general representations over time.
 
-**Phasor Agents** (arXiv:2601.04362) explore oscillatory sleep-staged
-learning: different sleep stages (mapped to different processing modes)
-contribute different types of consolidation. This validates the NREM/REM
-distinction -- NREM for faithful replay and pattern extraction, REM for
-creative recombination and schema testing.
+**Phasor Agents** (arXiv:2601.04362) explore oscillatory sleep-staged learning: deep-sleep-like phases commit tagged updates inside gated write windows, and REM-like phases replay, reconstruct and perturb recent experience for planning (abstract); the paper treats these as algorithmic modes, not physiology. Roko's NREM/REM split (faithful replay and pattern extraction versus creative recombination and schema testing) is a similar design, not one the paper tests.
 
 ---
 
@@ -1466,7 +1455,7 @@ cargo run -p roko-cli -- knowledge dream schedule
 | Auto-Dreamer (Ye et al. 2026), arXiv:2605.20616 | Learned consolidator using CLS theory for schema distillation |
 | Language Models Need Sleep (2026), arXiv:2606.03979 | Parametric distillation during offline phases |
 | Do LMs Need Sleep? (2026), arXiv:2605.26099 | Offline recurrence produces structured abstractions |
-| TiMem (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
+| Li et al. (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
 | Phasor Agents (2025), arXiv:2601.04362 | Oscillatory sleep-staged learning validates NREM/REM distinction |
 | Ambrose et al. (2016), Science | Reverse replay of hippocampal place cells during sleep |
 | Byrne (2005), The Rational Imagination | Fault lines: controllable/recent/abnormal actions prioritized for counterfactuals |
@@ -1484,7 +1473,7 @@ cargo run -p roko-cli -- knowledge dream schedule
 | Gammaitoni et al. (1998), Reviews of Modern Physics | Stochastic resonance: controlled noise improves signal detection |
 | Damasio (1994), Descartes' Error | Somatic marker hypothesis: emotional tagging guides decision-making |
 | Blaney (1986), Psychological Bulletin | Mood-congruent memory recall |
-| WSCL (2024) | Wake-Sleep Continual Learning: 38% reduction in catastrophic forgetting |
+| WSCL (Sorrenti et al. 2024) | Wake-Sleep Consolidated Learning: wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Helfrich et al. (2023), Nature Neuroscience | SO-spindle-ripple triple coupling gates memory replay windows |
 | Fauconnier & Turner (2002), The Way We Think | Conceptual blending for creative recombination |
 | Sumers et al. (2023), arXiv:2309.02427, CoALA | Cognitive architecture with three operating frequencies |

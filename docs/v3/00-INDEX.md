@@ -37,8 +37,7 @@ integration assume git. Empirical evidence supports the scaffold thesis:
   solve rates depending on the harness. The difference is the scaffolding.
 - **Meta-Harness** (Lee et al. 2026, arXiv:2603.28052): +7.7 points on text classification
   and +4.7 on IMO-level math from harness optimization alone, at 4x fewer tokens.
-- **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176): Cascade routing matches GPT-4 quality
-  at 2% cost. The routing harness is the product.
+- **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176): Cascade routing matches the best single LLM at 50-98% lower cost (98% on HEADLINES; §4, Table 3). The routing harness is the product.
 
 Three technical bottlenecks stand between today's agent demos and a functioning agent economy:
 
@@ -885,7 +884,7 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 
 | # | Document | What It Defines | Status |
 |---|---|---|---|
-| **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA 9-step pipeline. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
+| **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA-inspired decision cycle. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
 | **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | BUILT-UNWIRED |
 | **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
 
@@ -1108,7 +1107,7 @@ checkpoint used rustc 1.96.1.
 | Citation | Contribution |
 |---|---|
 | **Lee et al. 2026**, arXiv:2603.28052 | Meta-Harness: +7.7 points from harness optimization alone, 4x fewer tokens. |
-| **Chen et al. 2023**, arXiv:2305.05176 | FrugalGPT: cascade routing matches GPT-4 at 2% cost. |
+| **Chen et al. 2023**, arXiv:2305.05176 | FrugalGPT: cascade routing matches the best single LLM at 50-98% lower cost (§4, Table 3). |
 | **Jimenez et al. 2024** | SWE-bench: 30-65% solve rate variation from harness alone. |
 | **Li et al. 2022** | AlphaCode: competitive programming through compound system design. |
 | **Khattab et al. 2024** | DSPy: compiler-optimized prompt pipelines outperform manual prompting. |

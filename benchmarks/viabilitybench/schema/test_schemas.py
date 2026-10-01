@@ -114,6 +114,15 @@ def test_a_plan_slice_row_validates_without_a_placeholder_ladder():
         assert (validate.validate("run-record", record) == []) is valid, ladder
 
 
+def test_an_attempt_gate_verdict_is_one_of_s01s_tags():
+    # S01's verdict tags, already_satisfied included (gap-9eb1e1); null when the gate failed or the arm has no gate.
+    for verdict, valid in (("passed", True), ("already_satisfied", True), ("unverified", True),
+                           ("forced_accept", True), (None, True), ("satisfied", False), ("gate_failed", False)):
+        record = example("run-record")
+        record["execution"]["attempts"][0]["gate_verdict"] = verdict
+        assert (validate.validate("run-record", record) == []) is valid, verdict
+
+
 def test_price_snapshot_rows_have_every_column():
     snapshot = load_snapshot()
     assert validate.validate("price-snapshot", snapshot) == []

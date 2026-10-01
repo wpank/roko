@@ -319,9 +319,7 @@ breakers.
 
 ## 11. References
 
-- Nygard, M. (2007). *Release It! Design and Deploy Production-Ready Software*.
-  Pragmatic Bookshelf. -- Circuit breaker pattern, three-state model, cascading
-  failure prevention.
+- Nygard, M. (2007). *Release It! Design and Deploy Production-Ready Software*. Pragmatic Bookshelf.
 - Netflix Hystrix -- rolling window metrics, health calculation
 - Resilience4j -- sliding window, slow-call detection
 

@@ -1863,3 +1863,27 @@ async fn gate_thresholds_cadence_honoured_with_snapshot() {
         "file must exist after cadence fires"
     );
 }
+
+/// An episode whose cost nobody measured yields a summary whose cost is
+/// unknown (`null`), not free, and a measured one keeps its cost
+/// (bug-9a6799).
+#[test]
+fn efficiency_summaries_keep_an_unknown_cost_unknown() {
+    let measured = EfficiencySummaryRecord::from_episode(&sample_episode(true));
+    assert!(
+        measured
+            .cost_usd
+            .is_some_and(|cost| (cost - 0.42).abs() < 1e-12),
+        "{:?}",
+        measured.cost_usd
+    );
+
+    let mut unmeasured = sample_episode(true);
+    unmeasured.usage.cost_usd = 0.0;
+    unmeasured.mark_cost_unknown();
+    let summary = EfficiencySummaryRecord::from_episode(&unmeasured);
+    assert_eq!(summary.cost_usd, None);
+    assert_eq!(summary.cost_usd_without_cache, None);
+    let row = serde_json::to_value(&summary).expect("summary json");
+    assert!(row["cost_usd"].is_null(), "{row}");
+}

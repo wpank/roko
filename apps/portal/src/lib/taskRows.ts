@@ -29,7 +29,10 @@ export interface TaskRowModel {
   attempts: number;
   checks: CheckRun[];
   dependsOn: string[];
-  /** IDs of dependsOn entries whose row is not passed, accepted_with_failures, or skipped. */
+  /**
+   * IDs of dependsOn entries whose row is not passed, already_satisfied, accepted_with_failures,
+   * unverified, or skipped.
+   */
   waitingOn: string[];
   files: string[];
   description: string | null;
@@ -40,13 +43,15 @@ export interface TaskRowModel {
 
 /**
  * Statuses that are "done" for waitingOn and focusTaskId purposes:
- * passed, accepted_with_failures, skipped.
+ * passed, already_satisfied, accepted_with_failures, unverified, skipped.
  *
  * Note: 'cancelled' is NOT included — a cancelled dep still blocks.
  */
 const FINISHED_STATUSES: ReadonlySet<TaskStatus | 'pending'> = new Set([
   'passed',
+  'already_satisfied',
   'accepted_with_failures',
+  'unverified',
   'skipped',
 ] as const);
 

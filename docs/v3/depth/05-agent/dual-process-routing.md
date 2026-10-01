@@ -335,25 +335,13 @@ decision theory) then anomaly detection for robustness.
 
 ## Citations
 
-1. Kahneman, D. (2011). *Thinking, Fast and Slow.* Farrar, Straus and
-   Giroux. -- Dual-process theory grounding T0/T1/T2 routing; System 1
-   automaticity; System 2 intervention on anomaly detection.
-2. Li, L. et al. (2010). "A contextual-bandit approach to personalized
-   news article recommendation." WWW 2010. -- LinUCB algorithm.
-3. Friston, K. (2006). "A free energy principle for the brain." Journal
-   of Physiology - Paris. -- Free Energy Principle.
-4. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current
-   Directions in Psychological Science. -- Competing intuitions.
-5. Zhang, H. et al. (2025). "Router-R1: Teaching LLMs Multi-Round Routing and
-   Aggregation via Reinforcement Learning." arXiv:2506.09033. -- RL router.
-6. Ong, I. et al. (2025). "RouteLLM." arXiv:2406.18665. -- Binary
-   routing.
+1. Kahneman, D. (2011). *Thinking, Fast and Slow.* Farrar, Straus and Giroux.
+2. Li, L. et al. (2010). "A contextual-bandit approach to personalized news article recommendation." WWW 2010.
+3. Friston, K. (2006). "A free energy principle for the brain." Journal of Physiology - Paris.
+4. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current Directions in Psychological Science.
+5. Zhang, H. et al. (2025). "Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning." arXiv:2506.09033.
+6. Ong, I. et al. (2025). "RouteLLM." arXiv:2406.18665.
 7. Chen, L. et al. (2023). "FrugalGPT." -- Cascade routing.
-8. Qian, C. et al. (2025). "xRouter: Training Cost-Aware LLMs Orchestration System
-   via Reinforcement Learning." arXiv:2510.08439. -- Cost-aware.
-9. Song, W. et al. (2025). "IRT-Router: Effective and Interpretable Multi-LLM Routing
-   via Item Response Theory." arXiv:2506.01048. --
-   Psychometric routing.
-10. Ding, D. et al. (2025). "BEST-Route: Adaptive LLM Routing with Test-Time Optimal
-    Compute." arXiv:2506.22716. --
-    Test-time compute allocation.
+8. Qian, C. et al. (2025). "xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning." arXiv:2510.08439.
+9. Song, W. et al. (2025). "IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory." arXiv:2506.01048.
+10. Ding, D. et al. (2025). "BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute." arXiv:2506.22716.

@@ -152,7 +152,8 @@ pub mod hash;
 pub mod heartbeat;
 /// Cognitive immune system -- quarantine, anomaly detection, incident linking.
 pub mod immune;
-/// Atomic file I/O utilities for crash-safe state persistence.
+/// Atomic file I/O utilities for crash-safe state persistence, and JSONL
+/// appends that write each row in one write.
 pub mod io;
 /// Marketplace job types shared between serve, TUI, and CLI.
 pub mod job;

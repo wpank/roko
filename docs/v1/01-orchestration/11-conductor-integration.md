@@ -261,13 +261,6 @@ Yerkes-Dodson dynamics that were not present in the Mori system.
 - Yerkes, R. M. & Dodson, J. D. (1908). The relation of strength of stimulus to
   rapidity of habit-formation. *Journal of Comparative Neurology and
   Psychology*, 18(5), 459–482.
-- Nygard, M. T. (2007). *Release It! Design and Deploy Production-Ready
-  Software*. Pragmatic Bookshelf. (Circuit breaker pattern)
-- Beer, S. (1972). *Brain of the Firm: The Managerial Cybernetics of
-  Organization*. Allen Lane. (Viable System Model — the conductor is
-  System 3/3* in Beer's taxonomy, monitoring operations and intervening
-  when homeostasis is threatened)
-- Conant, R. C. & Ashby, W. R. (1970). Every good regulator of a system must
-  be a model of that system. *International Journal of Systems Science*, 1(2),
-  89–97. (The conductor maintains a model of the orchestration system —
-  signal patterns, cost trends, progress rates — to regulate it effectively)
+- Nygard, M. T. (2007). *Release It! Design and Deploy Production-Ready Software*. Pragmatic Bookshelf.
+- Beer, S. (1972). *Brain of the Firm: The Managerial Cybernetics of Organization*. Allen Lane.
+- Conant, R. C. & Ashby, W. R. (1970). Every good regulator of a system must be a model of that system. *International Journal of Systems Science*, 1(2), 89–97.

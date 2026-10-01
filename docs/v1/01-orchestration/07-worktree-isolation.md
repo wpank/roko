@@ -334,5 +334,4 @@ pub enum WorktreeError {
 - Grassé, P.-P. (1959). La reconstruction du nid et les coordinations
   interindividuelles chez Bellicositermes natalensis et Cubitermes sp.
   *Insectes Sociaux*, 6(1), 41–80.
-- Parunak, H. V. D. (2002). Digital pheromones for coordination of unmanned
-  vehicles. *AAMAS 2002*. (Digital stigmergy in multi-agent systems)
+- Parunak, H. V. D. (2002). Digital pheromones for coordination of unmanned vehicles. *AAMAS 2002*.

@@ -431,7 +431,7 @@ The first few tokens in a sequence act as "attention sinks" — they absorb disp
 
 ### 9.1 Found in the Middle: Attention Calibration
 
-He et al. [ACL Findings 2024, arXiv:2406.16008] demonstrated that positional bias can be calibrated without model retraining. The method: measure the bias empirically for each position, then subtract the learned bias from attention scores to make attention position-agnostic. Results: up to **15 percentage point improvement** on long-context retrieval tasks.
+Hsieh et al. [ACL Findings 2024, arXiv:2406.16008] demonstrated that positional bias can be calibrated without model retraining. The method: measure the bias empirically for each position, then subtract the learned bias from attention scores to make attention position-agnostic. Results: up to **15 percentage point improvement** on long-context retrieval tasks.
 
 Roko can implement this at the scaffold level: if the model provides attention scores (some APIs expose logprobs), use them to detect position bias and adjust section placement dynamically.
 
@@ -487,7 +487,7 @@ pub fn dynamic_placement(
 
 **"Lost in the Middle: An Emergent Property from Information Retrieval Demands"** [arXiv:2510.10276, October 2025]. Complementary mechanistic account: the primacy effect emerges from uniform long-term retrieval demand combined with causal masking. Training on retrieval tasks reinforces rather than corrects the bias.
 
-**"Found in the Middle"** [He et al., ACL Findings 2024, arXiv:2406.16008]. The response paper: positional attention bias can be calibrated without retraining, improving retrieval by up to 15 percentage points. Validates scaffold-level mitigation.
+**"Found in the Middle"** [Hsieh et al., ACL Findings 2024, arXiv:2406.16008]. The response paper: positional attention bias can be calibrated without retraining, improving retrieval by up to 15 percentage points. Validates scaffold-level mitigation.
 
 **"Mitigate Position Bias via Scaling a Single Hidden State"** [ACL Findings 2025]. Lightweight intervention: scaling one hidden state dimension meaningfully reduces position bias.
 
@@ -507,9 +507,9 @@ pub fn dynamic_placement(
 
 **Gist Tokens** [Mu et al., NeurIPS 2023]. Full prompts compressed to special tokens. Extreme U-shape mitigation: eliminate the middle entirely.
 
-**Sequential-NIAH** [arXiv:2504.04713, 2025]. Multi-needle evaluation showing Claude 3.5 at 87% accuracy for sequential needle extraction — 12.4% below reference, suggesting the U-shape still affects even state-of-the-art models on complex retrieval.
+**Sequential-NIAH: A Needle-In-A-Haystack Benchmark for Extracting Sequential Needles from Long Contexts** [arXiv:2504.04713, 2025]. Multi-needle evaluation showing Claude 3.5 at 87% accuracy for sequential needle extraction — 12.4% below reference, suggesting the U-shape still affects even state-of-the-art models on complex retrieval.
 
-**Serial Position Effects of LLMs** [arXiv:2406.15981, 2024]. Systematic empirical characterization of how primacy, recency, and middle loss vary across model size, context length, and task type.
+**Serial Position Effects of Large Language Models** [arXiv:2406.15981, 2024]. Systematic empirical characterization of how primacy, recency, and middle loss vary across model size, context length, and task type.
 
 ---
 

@@ -42,7 +42,7 @@ pub use group::{
     validate_no_descendant_context,
 };
 pub use identity::{ProcessIdentity, process_identity};
-pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, kill_tree};
+pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, kill_tree};
 pub use limits::{ResourceLimits, apply_resource_limits, confined_command};
 pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch};
 pub use registry::{

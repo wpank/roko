@@ -2,14 +2,16 @@
 id = "gap-92033c"
 kind = "gap"
 title = "The work skills add Work-Item, Executor and Conflicts trailers to merge commits"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = [".claude/skills"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "1ca518177"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (A3)"
 anchors = [".claude/skills/work-batch/SKILL.md", ".claude/skills/work-next/SKILL.md"]
@@ -19,6 +21,16 @@ links = { depends_on = ["gap-0b9056"], blocks = [], related = ["dec-b75b96"], su
 
 [[verify]]
 command = "grep -q 'Executor:' .claude/skills/work-batch/SKILL.md && grep -q 'Executor:' .claude/skills/work-next/SKILL.md && grep -q -- '--executor' .claude/skills/work-batch/SKILL.md && grep -q -- '--reason' .claude/skills/work-batch/SKILL.md && grep -q 'event merged' .claude/skills/work-next/SKILL.md"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:22:40Z"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Skills edited in the main checkout (.claude/ is local-only; the [[verify]] greps them there). work-batch: claim with --executor claude-agent --via work-batch (and --size for unsized items); release with --reason verify-fail|blocked|decision-needed|conflict|timeout|session-limit; merge with 'git merge --no-ff <branch> -F .git/work-merge-<id>.msg' carrying trailers Work-Item, Executor (the claim's) and Conflicts: 0, a conflicted merge aborted and released with --reason conflict; 'work.py event merged <id> --merge-sha HEAD --conflicts 0' inside the merge lock and 'event post-verify <id> --rc N' after re-running the verify; bookkeeping commits the session's work/telemetry/events/<session>.jsonl and, once tools/work_telemetry.py exists, the day's manifest; rule: one executor per commit, operator fixups are their own commit with Executor: claude-session and an 'event intervention'. work-next: the same with --executor claude-session --via work-next and Executor: claude-session trailers on its own branch commits. No Post-Merge-Verify trailer and no reorder of the README merge rule (not approved). Applied after the new work.py CLI reached the working branch (c127b3ddd); the worker prompt is unchanged."
 +++
 
 ## Problem
@@ -70,3 +82,9 @@ workers write no events).
 - Step 3 reorders the README's merge rule ("Parallel work"): ask Will first. Without approval, drop the
   `Post-Merge-Verify` trailer and keep only the event.
 - **Still open (not accepted on 2026-09-29):** reordering the README's merge rule so the check runs before the merge commit. Until Will approves it, drop the `Post-Merge-Verify` trailer and keep only the event.
+- 2026-10-01 (wk-gates): Closed at `ddf470e38` after the edits were applied in the main checkout (they need the
+  `work.py` CLI of gap-d0643c and gap-0b9056, merged as `c127b3ddd`). With the coordinator's approval, the work-batch
+  worker prompt (step 3) now also asks workers to end every commit message with `Work-Item: <id>` and
+  `Executor: claude-agent`. That is WORKER-BRIEF's convention, and DEFINITIONS.md needs it: a branch commit without an
+  `Executor:` trailer leaves the item's intervention trail incomplete, so it could not count toward the unassisted
+  merge share. Workers still write no events.

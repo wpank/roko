@@ -56,7 +56,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A single normalized error pattern with occurrence tracking.
@@ -321,6 +321,19 @@ impl ErrorPatternStore {
         plan_id: &str,
         suggestion: Option<&str>,
     ) {
+        self.append_at(digest, category, plan_id, suggestion, Utc::now());
+    }
+
+    /// [`ErrorPatternStore::append`] with the time of the occurrence given,
+    /// so `first_seen_at` and `last_seen_at` do not depend on the clock.
+    pub fn append_at(
+        &mut self,
+        digest: &str,
+        category: &str,
+        plan_id: &str,
+        suggestion: Option<&str>,
+        now: DateTime<Utc>,
+    ) {
         let observation = GateFailureObservation::new(
             digest,
             plan_id,
@@ -331,7 +344,7 @@ impl ErrorPatternStore {
             GateFailureSource::RetryClassifier,
         )
         .with_suggestion(suggestion.map(str::to_string));
-        let _ = self.observe_gate_failure(observation);
+        let _ = self.observe_gate_failure_at(observation, now);
     }
 
     /// Upsert a structured gate failure observation.
@@ -342,7 +355,17 @@ impl ErrorPatternStore {
         &mut self,
         observation: GateFailureObservation,
     ) -> FailurePatternUpdate {
-        let now = Utc::now().to_rfc3339();
+        self.observe_gate_failure_at(observation, Utc::now())
+    }
+
+    /// [`ErrorPatternStore::observe_gate_failure`] with the time of the
+    /// observation given instead of read from the clock.
+    pub fn observe_gate_failure_at(
+        &mut self,
+        observation: GateFailureObservation,
+        now: DateTime<Utc>,
+    ) -> FailurePatternUpdate {
+        let now = now.to_rfc3339();
         let key = observation.key.trim().to_string();
         if key.is_empty() {
             return FailurePatternUpdate {
@@ -901,19 +924,24 @@ mod tests {
 
     #[test]
     fn append_preserves_first_seen_timestamp() {
+        // Two explicit, distinct times: two appends that read the clock can
+        // land in the same tick under load.
+        let first = Utc::now();
+        let later = first + chrono::Duration::seconds(5);
         let mut store = ErrorPatternStore::empty();
-        store.append("same-digest", "misc", "p1", None);
-        let first_seen = store.patterns[0].first_seen_at.clone();
+        store.append_at("same-digest", "misc", "p1", None, first);
 
-        // Simulate a later occurrence.
-        store.append("same-digest", "misc", "p2", None);
+        // A later occurrence of the same pattern.
+        store.append_at("same-digest", "misc", "p2", None, later);
         assert_eq!(
-            store.patterns[0].first_seen_at, first_seen,
+            store.patterns[0].first_seen_at,
+            first.to_rfc3339(),
             "first_seen_at must not change on upsert"
         );
-        assert_ne!(
-            store.patterns[0].last_seen_at, first_seen,
-            "last_seen_at should be updated (unless test runs in < 1ms)"
+        assert_eq!(
+            store.patterns[0].last_seen_at,
+            later.to_rfc3339(),
+            "last_seen_at must move to the later occurrence"
         );
     }
 

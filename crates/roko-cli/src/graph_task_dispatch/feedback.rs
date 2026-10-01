@@ -81,6 +81,9 @@ pub struct GraphFeedbackContext {
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
+    /// Where the row's usage came from (the verdict's `cost.source`):
+    /// `estimated` for a call cancelled mid-stream (bug-aa2044).
+    cost_source: roko_learn::telemetry::CostSource,
     #[serde(flatten)]
     row: R,
 }
@@ -442,6 +445,7 @@ impl GraphTaskDispatcher {
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
+                    cost_source: settled.verdict.cost.source,
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,

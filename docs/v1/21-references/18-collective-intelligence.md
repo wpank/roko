@@ -1,5 +1,9 @@
 # Collective Intelligence
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -22,17 +26,14 @@ Roko's C-Factor metric — `Collective Performance / Sum(Individual Performances
 ## Collective Intelligence Factor
 
 - Woolley, A.W., Chabris, C.F., Pentland, A., Hashmi, N., & Malone, T.W. (2010). Evidence for a Collective Intelligence Factor in the Performance of Human Groups. _Science_, 330(6004), 686-688.
-  *Grounds: C-Factor — established that groups have a measurable collective intelligence factor (c) analogous to individual IQ (g). The c factor correlates more with social sensitivity, equality of turn-taking, and proportion of women than with average or maximum individual intelligence. Roko's C-Factor metric is directly inspired by this work. Four diagnostic signals: turn-taking equality, knowledge flow rate, cross-domain transfer, emergent coordination.*
 
 ---
 
 ## Network Effects and Scaling
 
 - Metcalfe, R. (1995). Metcalfe's Law. As described in various subsequent analyses.
-  *Grounds: Superlinear knowledge scaling — Metcalfe's Law: network value grows O(N²) with N nodes. N agents produce O(N) insights, but total network value grows O(N²) because each agent benefits from all others' contributions. Grounds the network flywheel hypothesis.*
 
 - Reed, D.P. (1999). That Sneaky Exponential — Beyond Metcalfe's Law to the Power of Community Building.
-  *Grounds: Group-forming networks — Reed's Law: group-forming networks grow as 2^N. More conservative than Metcalfe but still superlinear. Informs the value of permissioned subnets where agents form working groups.*
 
 ---
 
@@ -46,37 +47,30 @@ Roko's C-Factor metric — `Collective Performance / Sum(Individual Performances
 ## Swarm Intelligence
 
 - Holland, J.H. (1995). _Hidden Order: How Adaptation Builds Complexity_. Addison-Wesley.
-  *Grounds: Complex adaptive systems — adaptation builds complexity through simple rules. Grounds the emergence of collective intelligence from simple agent behaviors (emit pheromones, decay knowledge, confirm findings).*
 
 ---
 
 ## Knowledge Flow and Information Economics
 
 - Hayek, F.A. (1945). The Use of Knowledge in Society. _American Economic Review_, 35(4), 519-530.
-  *Grounds: Distributed knowledge — knowledge is distributed and cannot be centralized. The price system aggregates dispersed information. Roko's pheromone field and KORAI token serve analogous aggregation functions.*
 
 - Arrow, K.J. (1962). Economic Welfare and the Allocation of Resources for Invention. _NBER_.
-  *Grounds: Information as public good — information has public good properties (non-rivalrous, partially excludable). Grounds the knowledge sharing economics in Agent Mesh.*
 
 ---
 
 ## Representation Engineering
 
-- Turner, A. et al. (2024). Activation Addition: Steering Language Models Without Optimization. arXiv:2308.10248.
-  *Grounds: Steering vectors — activation addition steers model behavior without fine-tuning. Potential mechanism for collective knowledge injection into agent behavior.*
+- Turner, A. et al. (2024). Steering Language Models With Activation Engineering. arXiv:2308.10248.
 
 - Zou, A. et al. (2023). Representation Engineering: A Top-Down Approach to AI Transparency. arXiv:2310.01405.
-  *Grounds: Representation control — top-down approach to understanding and controlling LLM representations. Informs transparency mechanisms in Roko's observability layer.*
 
 ---
 
 ## Thousand Brains Theory
 
 - Hawkins, J., Ahmad, S., & Cui, Y. (2017). A Theory of How Columns in the Neocortex Enable Learning the Structure of the World. _Frontiers in Neural Circuits_.
-  *Grounds: Distributed consensus — each cortical column learns complete predictive models. Multiple columns vote on perception. Grounds the multi-agent voting mechanism where agents share estimates and reach consensus.*
 
 - Clay, V., Leadholm, P., & Hawkins, J. (2024). The Thousand Brains Project. arXiv, 2024.
-  *Grounds: Monty implementation — first practical implementation of Thousand Brains Theory with learning modules, cortical messaging protocol, and explicit voting mechanism.*
 
 ---
 
@@ -86,7 +80,6 @@ Roko's C-Factor metric — `Collective Performance / Sum(Individual Performances
   *Grounds: Dynamical emergence — information-theoretic framework measuring whether dynamical emergence is present in multi-agent LLM systems. Shows that combining personas with theory-of-mind instructions produces identity-linked differentiation and goal-directed complementarity — patterns mirroring Woolley et al.'s C-Factor diagnostics. Directly validates Roko's Collective architecture.*
 
 - Large Language Models Miss the Multi-Agent Mark (2025). arXiv:2505.21298.
-  *Grounds: LLM coordination limits — identifies systematic failures in multi-agent LLM coordination, including inability to maintain consistent strategies across extended interactions. Motivates Roko's explicit coordination mechanisms (Pheromone Field, Agent Mesh) rather than relying on LLM implicit coordination.*
 
 ---
 

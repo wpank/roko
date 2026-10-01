@@ -430,7 +430,7 @@ allocation_i = (bid_i / Σ bid_j) × total_budget
 
 **When to use:** When the system has no confidence in bid accuracy (early cold-start phase, or when all subsystems are poorly calibrated). Proportional fairness is the safe default.
 
-Research: Regularized Proportional Fairness (RPF) [Zhu et al., ICLR 2025, arXiv:2501.01111] adds neural-network-learned regularization to standard PF, increasing robustness to misreported bids.
+Research: Regularized Proportional Fairness (RPF) [Zeng et al., ICLR 2025, arXiv:2501.01111] adds neural-network-learned regularization to standard PF, increasing robustness to misreported bids.
 
 ### 10.2 Max-Min Fairness
 
@@ -489,7 +489,7 @@ This ensures safety constraints always appear (max-min floor) while maximizing t
 
 ---
 
-## 11. Mechanism Design for LLMs: The Token Auction
+## 11. Mechanism Design for Large Language Models: The Token Auction
 
 A landmark paper directly connecting mechanism design to LLM systems:
 
@@ -517,7 +517,7 @@ The connection to Roko's VCG attention auction: Duetting et al.'s token auction 
 
 **Duetting, Mirrokni, Paes Leme, Xu, Zuo (2024), "Mechanism Design for Large Language Models."** WWW 2024 Best Paper, arXiv:2310.10826. Token auction model for aggregating competing LLM agents. First clean extension of VCG to LLM systems.
 
-**Zhu et al. (2025), "Regularized Proportional Fairness Mechanism for Resource Allocation Without Money."** ICLR 2025, arXiv:2501.01111. RPF-Net adds neural regularization to proportional fairness for robustness against misreports.
+**Zeng et al. (2025), "Regularized Proportional Fairness Mechanism for Resource Allocation Without Money."** ICLR 2025, arXiv:2501.01111. RPF-Net adds neural regularization to proportional fairness for robustness against misreports.
 
 **MIT CEEPR (2023), "Learning in Repeated Multi-Unit Auctions."** Working Paper 2023-18. No-regret learning converges to welfare-maximizing equilibria in repeated auctions.
 

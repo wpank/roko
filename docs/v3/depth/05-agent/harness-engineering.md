@@ -1,8 +1,11 @@
 # 05-agent/harness-engineering -- Harness Engineering
 
-> The Meta-Harness thesis, six harness principles, HarnessX extensions,
-> Harness-Bench evaluation, Belief Divergence diagnostics, and how each
-> maps to Roko's implementation.
+> What the Meta-Harness paper contributes, the harness-design principles Roko
+> follows (its own synthesis), and what HarnessX, Harness-Bench, the Belief
+> Divergence paper and a mechanism-level review contribute, each as its paper
+> describes it, with Roko's own mapping marked as such.
+
+<!-- content-checked: §3–§6 against HarnessX, Harness-Bench, Belief Divergence and the mechanism-level review (full texts on arXiv), 2026-10-01 -->
 
 **Parent:** [05-AGENT](../../05-AGENT.md)
 
@@ -11,40 +14,48 @@ Model Harnesses." arXiv:2603.28052.
 
 ---
 
-## 1. The Meta-Harness Thesis
+## 1. What the Meta-Harness Paper Shows
 
-The central finding of harness engineering research is that the **harness** --
-the scaffolding around an LLM (prompts, tools, context management, retry logic)
--- contributes more to agent performance than the model itself. A better harness
-on a weaker model often outperforms a worse harness on a stronger model.
+The **harness** -- the code that decides what to store, retrieve and show to the
+model -- "often matters as much as the model itself" (Lee et al. 2026, §1).
+Harness engineering is still mostly manual, so the paper automates it (§3):
+Meta-Harness is an outer-loop search over harness code. A coding-agent proposer
+(Claude Code, in the paper) reads a filesystem holding every earlier candidate's
+source code, scores and execution traces, and proposes a new harness; the loop
+evaluates it, logs the result and repeats.
 
 The key paper:
 
 > Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
 > arXiv:2603.28052.
 
-### Benchmark evidence
+### Results (§4)
 
-| Benchmark | Harness improvement | Notes |
-|-----------|-------------------|-------|
-| Text classification | +7.7 accuracy points | Same model, better harness |
-| IMO math problems | +4.7 points | Structured tool access + validation |
-| Token efficiency | 4x fewer tokens | Context pruning + right-sized prompts |
-| SWE-bench mobile | 6x performance gap | ref [46]; harness vs. no harness |
+| Task | Discovered harness vs. baseline | Section |
+|------|---------------------------------|---------|
+| Online text classification | +7.7 points over Agentic Context Engineering (ACE), with 4x fewer context tokens | §4.1 |
+| Retrieval-augmented math, 200 IMO-level problems | +4.7 points on average across five held-out models | §4.2 |
+| Agentic coding, TerminalBench-2 | Ranks #1 among Claude Haiku 4.5 agents | §4.3 |
 
-### The 6x nuance
+### The 6x figure
 
-The "6x gap" number comes from reference [46] in the Meta-Harness paper, a
-SWE-bench mobile benchmark measuring bare model vs. full harness. It is a
-specific benchmark result, not a general claim. The +7.7 and +4.7 numbers from
-text classification and math are more representative of typical impact.
+The paper's introduction opens with a "6x performance gap" from changing the
+harness around a fixed model on one benchmark. It is a result the paper cites
+(SWE-bench Mobile), not one it measures.
 
-The practical takeaway: harness quality is consistently the largest lever for
-agent performance, but the exact magnitude varies by task type.
+The practical takeaway: the harness can matter as much as the model, and in the
+paper's three domains, searching over harness code with full access to earlier
+traces found better harnesses than hand-designed ones (§4, §5).
 
 ---
 
-## 2. Six Harness Principles and Roko's Implementation
+## 2. Roko's Harness-Design Principles
+
+These six principles are Roko's own synthesis of harness-engineering practice.
+The Meta-Harness paper does not state them: its Appendix D lists procedural tips
+for running its search instead, such as writing a good skill for the proposer,
+logging every run in a navigable form, and validating candidates cheaply before
+evaluating them.
 
 ### Principle 1: Design Tools for the Model, Not for Humans
 
@@ -125,80 +136,111 @@ decisions. Record what worked, what failed, and why.
 
 ---
 
-## 3. HarnessX (Lee et al., 2026)
+## 3. HarnessX (Chen et al., 2026)
 
-The extended framework (arXiv:2606.14249) builds on Meta-Harness with:
+HarnessX (arXiv:2606.14249) is a "foundry" for harnesses that can be composed,
+adapted and evolved. It is independent work; it does not cite Meta-Harness.
 
-- **Harness taxonomy:** Classifies harness components into structural (tools,
-  context) and behavioral (retry, escalation, feedback) categories
-- **Composition rules:** How harness components interact and compose. Some
-  combinations are synergistic (validation + feedback), others antagonistic
-  (aggressive pruning + long-horizon tasks)
-- **Transfer analysis:** Harness improvements that transfer across models vs.
-  those that are model-specific
+- **Composition (§3).** The harness is a typed, first-class object: processors
+  attached to lifecycle hooks, assembled through a substitution algebra. A
+  nine-dimensional taxonomy spans its behavior (§3.3): model selection, context
+  assembly, memory management, tool ecosystem, execution environment,
+  evaluation and reward, control and safety, observability, and a training
+  bridge.
+- **Adaptation (§4).** AEGIS, a four-stage meta-agent pipeline (Digester,
+  Planner, Evolver, Critic), proposes typed harness edits from execution traces
+  and admits each through a deterministic acceptance gate.
+- **Co-evolution (§5).** The harness and the model improve together; the model
+  trains through cross-harness GRPO.
+- **Results (§1, §6).** On GAIA, ALFWorld, WebShop, τ-Bench and SWE-bench
+  Verified with three task-agent families, harness evolution gains +14.5%
+  absolute on average over 15 model–benchmark configurations, and the weakest
+  agent gains most (+44.0% on ALFWorld for Qwen3.5-9B).
 
-Roko's architecture aligns with HarnessX's structural/behavioral separation:
-the crate layers (roko-core, roko-agent, roko-gate, roko-compose, roko-learn)
-map to harness components, and the runner event loop provides the behavioral
-orchestration.
-
----
-
-## 4. Harness-Bench (arXiv:2605.27922)
-
-Harness-Bench provides standardized evaluation of harness quality across agent
-systems. Key dimensions:
-
-| Dimension | What it measures | Roko coverage |
-|-----------|-----------------|---------------|
-| Tool fidelity | Do tools work correctly? | roko-std tests (35 tools) |
-| Context efficiency | Tokens per successful output | Efficiency events |
-| Safety compliance | Does the harness prevent harm? | SafetyLayer + E34 |
-| Recovery capability | Can the harness recover from errors? | Gate replan + fallback |
-| Feedback integration | Does performance improve over time? | CascadeRouter + thresholds |
-
-Harness-Bench evaluation can be triggered via `roko bench swe` which runs
-SWE-bench style evaluations and writes learning telemetry.
+Roko's own mapping onto the nine dimensions (not the paper's): model selection
+is the CascadeRouter and the model ladder; context assembly the
+SystemPromptBuilder; memory the pruning and the knowledge store; the tool
+ecosystem `ToolDef` and the ToolDispatcher; the execution environment worktrees
+and sandbox levels; evaluation the gates; control and safety the SafetyLayer;
+observability the episode and efficiency records. Roko has no training bridge.
 
 ---
 
-## 5. Belief Divergence (arXiv:2607.04528)
+## 4. Harness-Bench (Yao et al., 2026)
 
-Belief Divergence quantifies the gap between an agent's internal model and its
-expressed behavior. When an LLM "knows" the right answer but the harness causes
-it to produce the wrong output, this is a harness-model misalignment.
+Harness-Bench (arXiv:2605.27922) is a diagnostic benchmark that fixes the task,
+sandbox, budget, timeout and evaluator and varies only the harness around the
+model (§3.1). It has 106 sandboxed, offline tasks in eight workflow categories
+(§3.2). A run is scored on completion, a binary security and permission gate,
+and LLM-rubric process scores; the overall score multiplies them (§3.4). Across
+six configurable harnesses and eight model backends (5,194 trajectories), the
+best and worst harnesses differ by 23.8 points on the same tasks and models
+(§4).
 
-Sources of divergence:
+| Score (§3.4) | What it measures | Closest Roko mechanism (Roko's mapping) |
+|--------------|------------------|-----------------------------------------|
+| Completion | Task-specific output quality, by validator or rubric | Gate rungs and authored verify steps |
+| Security | A permission or security violation zeroes the run | SafetyLayer and the ToolDispatcher's permission check |
+| Robustness | Whether the agent handles tool or environment failures | Gate-failure replan and provider fallback |
+| Tool use | Whether tools are selected and applied appropriately | `ToolDef` schemas and the Translator |
+| Consistency | Whether actions, state and outputs stay consistent with the workspace and the user's constraints | No dedicated mechanism |
 
-| Source | Example | Roko mitigation |
-|--------|---------|-----------------|
-| Tool format mismatch | Model prefers OpenAI format, given Anthropic blocks | Translator per-model wire format |
-| Context overload | Too much context degrades reasoning | Prune + targeted 9-layer prompts |
-| Permission denial confusion | Model retries denied tools endlessly | Clear error messages with alternatives |
-| Instruction conflict | System prompt contradicts task prompt | Layer priority in SystemPromptBuilder |
-
-The diagnostic is useful for debugging cases where the model produces poor
-output despite being capable: the issue is likely in the harness, not the model.
-
----
-
-## 6. Mechanism-Level Review (arXiv:2607.23942)
-
-The most comprehensive survey of agent architectures catalogues the specific
-mechanisms that distinguish high-performing harnesses:
-
-| Mechanism | Description | Roko component |
-|-----------|-------------|----------------|
-| Structured observation | Parsing env feedback into structured forms | Translator layer |
-| Action grounding | Binding abstract intents to concrete tool calls | ToolDef schemas |
-| Memory management | Selecting what to remember and forget | Prune + knowledge tiers |
-| Plan repair | Recovering from failed sub-plans | Gate failure replan |
-| Self-monitoring | Detecting loops, stalls, regression | roko-conductor watchers |
-| Model selection | Choosing the right model per-task | CascadeRouter + LinUCB |
+Roko has not been run on Harness-Bench; `roko bench swe` runs SWE-bench-style
+evaluations, a different benchmark.
 
 ---
 
-## 7. Where Roko Implements Meta-Harness Well
+## 5. Belief Divergence (Yi & Song, 2026)
+
+The paper (arXiv:2607.04528) starts from the observation that a harness can
+change what an agent knows about a task without changing the task (§1): what it
+observes, which actions it may take, which failures are repaired before it sees
+them, and which states are verified. To measure this it holds the task,
+environment and model fixed, varies only the harness, and elicits a multi-step
+belief rollout from the model: predicted progress, constraints, risk state,
+recoverability, uncertainty, likely failure mode, success probability and next
+action (§1, §4). The divergence between rollouts splits into an arrival readout
+(immediate interface mismatch) and a growth readout (drift over the rollout
+horizon). The controlled study (HIBench-Code-v0, §5) compares a raw reference
+harness with five mediated ones:
+
+| Harness in the paper (§5) | What it changes | Closest Roko mechanism (Roko's mapping) |
+|---------------------------|-----------------|-----------------------------------------|
+| Structured parsing | How observations are presented | Translator and tool-result formatting |
+| Risk gating | Blocked actions return a policy-violation signal | SafetyLayer and ToolDispatcher denials |
+| Repair-heavy execution | Failures are repaired before the agent sees them | Auto-fix (`cargo fix`, clippy fix) before an agent retry |
+| Verification-selective execution | Which states are verified | Gate rungs chosen per task |
+| Cost-aware execution | Execution under a cost budget | Budget ceilings and context pruning |
+
+The diagnostic exposes harness effects that final success rates hide (§1). The
+paper's BIWM protocol (§8) is a no-training procedure that canonicalises
+beliefs, keeps blocked and repaired branches, records verification masks, runs
+risky branches in shadow and aligns beliefs across harness views.
+
+---
+
+## 6. Mechanism-Level Review (Fan & Lan, 2026)
+
+The review (arXiv:2607.23942) connects ten historical cognitive architectures
+(among them ACT-R, Soar, CLARION, LIDA, Hearsay-II and BDI), eight
+language-agent runtime families and forty-two modern systems. It reconstructs
+each mechanism through state, control, transition, persistence, failure,
+learning and resource governance, and codes how deeply each has migrated into
+modern agents (D0–D4) separately from the strength of the evidence (E1–E4)
+(§II–§III). Modern agents already cover much of adaptive memory, failure
+recovery, team selection, workflow search, skill induction, resource scheduling
+and uncertainty-conditioned action. The remaining gaps are couplings between
+mechanisms: five residual control bundles (§VI) pair activation with latency
+and action utility; a typed impasse with isolated substates and compiled
+resolutions; bounded content competition with broadcast and admission
+learning; a persistent intention with reconsideration and live method
+switching; and uncertainty with resource allocation, interruption and
+stopping. A sixth candidate is closed because GraSP already implements it.
+Which of these couplings Roko implements has not been assessed.
+
+---
+
+## 7. Where Roko Follows These Principles Well
 
 1. **Tool validation pipeline** -- The 7-step ToolDispatcher is exactly the
    "validate before executing" principle, with audit signals for observability.
@@ -229,7 +271,7 @@ mechanisms that distinguish high-performing harnesses:
 
 3. **No speculative execution** -- The PASTE pattern (Microsoft Research,
    arXiv:2603.18897) speculatively executes predicted tools in parallel with
-   LLM reasoning, reducing latency by 48.5%. Roko does not implement this.
+   LLM reasoning, cutting average task completion time by 48.5% (v1 abstract; 43.5% in the current version). Roko does not implement this.
 
 4. **No tool transition graph** -- AutoTool (arXiv:2511.14650) builds tool
    transition graphs from historical data. Roko's episode data could support
@@ -237,35 +279,41 @@ mechanisms that distinguish high-performing harnesses:
 
 ---
 
-## 9. SWE-bench Context
+## 9. Benchmarks in Context
 
-The Meta-Harness paper draws heavily on SWE-bench (Jimenez et al., 2024), where
-harness quality accounts for most performance variance between agent systems.
-The same model can score 25% or 85% on SWE-bench depending on the harness.
+The Meta-Harness paper evaluates online text classification, retrieval-augmented
+math and TerminalBench-2 (§4). SWE-bench appears in it only through the SWE-bench
+Mobile result behind the 6x figure in its introduction. SWE-bench itself
+(Jimenez et al., 2024) is the usual agentic-coding benchmark, and
+`roko bench swe` runs SWE-bench-style evaluations.
 
-Roko's architecture is designed with this finding: the crate layers provide
-harness infrastructure while the model is a pluggable component selected at
-runtime. Harness improvements benefit all models simultaneously.
+Roko treats the harness as the lever: the crate layers provide the harness, and
+the model is a pluggable component chosen at runtime, so a harness improvement
+applies to every model.
 
 ---
 
 ## 10. Citations
 
 1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
-   Harnesses." arXiv:2603.28052. -- Six principles, benchmark evidence.
-2. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
-   framework, composition rules, transfer analysis.
-3. arXiv:2605.27922. "Harness-Bench." -- Standardized harness evaluation.
-4. arXiv:2607.04528. "Belief Divergence in Language Agent Systems." --
-   Harness-model misalignment diagnostic.
-5. arXiv:2607.23942. "A Mechanism-Level Review of Language Agent Systems." --
-   Comprehensive survey of agent mechanisms.
-6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
-   Real-World GitHub Issues?" -- Benchmark showing harness variance.
+   Harnesses." arXiv:2603.28052. -- Automated harness search (§3) and its
+   results (§4).
+2. Chen, T. et al. (2026). "HarnessX: A Composable, Adaptive, and Evolvable
+   Agent Harness Foundry." arXiv:2606.14249. -- Typed harness composition
+   (§3), trace-driven evolution (§4), harness-model co-evolution (§5).
+3. Yao, Y. et al. (2026). "Harness-Bench: Measuring Harness Effects across
+   Models in Realistic Agent Workflows." arXiv:2605.27922. -- Harness effects
+   across models (§3–§4).
+4. Yi, H. & Song, X. (2026). "Measuring Harness-Induced Belief Divergence in
+   Multi-Step LLM Agents." arXiv:2607.04528. -- How a harness changes an agent's
+   beliefs (§1, §4).
+5. Fan, H. & Lan, Z. (2026). "From Cognitive Architectures to Language Agents: A
+   Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
+   arXiv:2607.23942. -- Survey of agent mechanisms.
+6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
 7. arXiv:2603.18897. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." --
-   48.5% latency reduction via speculative execution.
-8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for Large Language Model Agents."
-   AAAI 2026. -- Graph-based tool prediction.
+   48.5% shorter task completion time via speculative execution (v1; 43.5% in the current version).
+8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for Large Language Model Agents." AAAI 2026.
 9. `crates/roko-agent/src/dispatcher/mod.rs` -- 7-step pipeline.
 10. `crates/roko-compose/src/system_prompt_builder.rs` -- 9-layer prompts.
 11. `crates/roko-agent/src/tool_loop/prune.rs` -- Context pruning.

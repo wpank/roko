@@ -1,0 +1,2 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-01T08:38:20Z", "event": "claim", "item": "bug-109b5a", "executor": null, "via": null, "session": "wk-tiers", "branch": "work/gap-4ec59f", "concurrency": 54, "source": "live", "by": "wk-tiers", "size": "S", "claimed_at": "2026-10-01T08:38:20Z"}
+{"schema": "roko.work_event/1", "ts": "2026-10-01T08:38:21Z", "event": "claim", "item": "bug-53475e", "executor": null, "via": null, "session": "wk-tiers", "branch": "work/gap-4ec59f", "concurrency": 55, "source": "live", "by": "wk-tiers", "size": "M", "claimed_at": "2026-10-01T08:38:21Z"}

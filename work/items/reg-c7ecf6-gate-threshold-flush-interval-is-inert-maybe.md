@@ -8,16 +8,16 @@ severity = "p3"
 goal = "learning"
 subsystem = ["roko-cli/gate-thresholds", "roko-gate/adaptive-thresholds"]
 created = 2026-09-28
-updated = 2026-09-29
+updated = 2026-10-01
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "f99e45dba"
 source = "gaps-md#gate-threshold-flush-interval-configurable----resolved-2026-08-13"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
-anchors = ["crates/roko-cli/src/runner/persist.rs::maybe_flush_gate_thresholds", "crates/roko-core/src/config/learning.rs:124", "crates/roko-cli/src/graph_task_dispatch.rs:2216"]
+anchors = ["crates/roko-cli/src/runner/persist.rs::maybe_flush_gate_thresholds", "crates/roko-core/src/config/learning.rs:124", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = '''grep -rqE 'flush_gate_thresholds|gate_threshold_flush_interval' crates/roko-cli/src/graph_execution crates/roko-cli/src/graph_task_dispatch.rs'''
+command = "! grep -q 'gate_threshold_flush_interval' crates/roko-core/src/config/learning.rs || grep -rqE 'effective_gate_threshold_flush_interval\\(\\)|maybe_flush_gate_thresholds\\(' crates/roko-cli/src/graph_execution crates/roko-cli/src/graph_task_dispatch.rs"
 +++
 
 `learning.gate_threshold_flush_interval` is still part of the schema, config layering and `config set` (`crates/roko-core/src/config/learning.rs:124`, `crates/roko-cli/src/config.rs:1168`). GAPS.md marked it RESOLVED because Runner-v2 read it once per run. After the Runner-v2 deletion, `maybe_flush_gate_thresholds` (`crates/roko-cli/src/runner/persist.rs:537`) is called only at `:1425`, `:1441` and `:1463`. All three calls are inside `mod tests` (`:1264`), so the key has no effect. It is also unconfirmed whether adaptive gate thresholds are persisted at all on the Graph path.

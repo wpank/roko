@@ -9,9 +9,9 @@ goal = "visibility"
 size = "S"
 subsystem = ["roko-agent/live-output"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "review of gap-fa61f8's fix (15e754bda, merged in 5b7a1711b), which rewrote only path fields"
 anchors = ["crates/roko-agent/src/live_output.rs::tool_step_target", "crates/roko-agent/src/live_output.rs::workspace_relative", "crates/roko-agent/src/live_output.rs::tool_step_target_is_workspace_relative"]
@@ -68,3 +68,12 @@ that case was not observed.
 ## Notes
 
 This is a display change only. The rewritten target must never be used to run anything.
+
+- 2026-10-01 (wk-streams): implemented on work/gap-b35a57; cargo verification deferred to the batch check.
+  `tool_step_target` now passes a command's first line through `command_workspace_relative`, which rewrites each
+  occurrence of the root (as given and canonicalized) as a whole path: `<root>/rest` to `rest`, the bare root to `.`.
+  An occurrence counts only between separators (start, whitespace, a quote, `;&|()<>`, `=`, `:`) and `/` or a
+  separator, so `<root>-other/…` and `/mnt<root>/…` stay. An absolute `pattern` now goes through
+  `workspace_relative` like the path fields (Plan step 3). Tests: `command_targets_are_workspace_relative`,
+  `command_targets_are_workspace_relative_under_the_canonical_root`, and the updated
+  `tool_step_target_is_workspace_relative`.

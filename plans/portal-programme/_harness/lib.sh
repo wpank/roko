@@ -24,6 +24,7 @@ CAPTURE_PID=""
 SSE_FILE=""
 PASSES=0
 FAILURES=0
+SKIPS=0
 
 # check NAME CMD...: run CMD and record PASS/FAIL; never aborts the check.
 check() {
@@ -38,14 +39,23 @@ check() {
     fi
 }
 
+# skip NAME REASON: record a check this build cannot run, and why. A skip is
+# neither a pass nor a failure; the verdict line counts it.
+skip() {
+    echo "SKIP $1 ($2)"
+    SKIPS=$((SKIPS + 1))
+}
+
 # finish TITLE: print the verdict line and exit non-zero on any failure.
 finish() {
+    local skipped=""
+    if [ "$SKIPS" -gt 0 ]; then skipped=", $SKIPS skipped"; fi
     if [ "$FAILURES" -eq 0 ]; then
-        echo "$1: PASS ($PASSES checks)"
+        echo "$1: PASS ($PASSES checks$skipped)"
         exit 0
     fi
     KEEP_WS=1
-    echo "$1: FAIL ($FAILURES of $((PASSES + FAILURES)) checks failed; workspace kept at $WS)"
+    echo "$1: FAIL ($FAILURES of $((PASSES + FAILURES)) checks failed$skipped; workspace kept at $WS)"
     exit 1
 }
 

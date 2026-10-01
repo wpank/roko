@@ -244,8 +244,10 @@ context makes models 6x worse. Motivates the min_tokens guard.
 within capacity. Semantically close distractors are far more harmful than
 obviously irrelevant content. Motivates aggressive pruning.
 
-**CLEAR Framework** [2025]. Accuracy-only optimization produces systems 4.4-10.8x
-more expensive than cost-aware alternatives.
+**CLEAR** [Mehta 2025, "Beyond Accuracy: A Multi-Dimensional Framework for
+Evaluating Enterprise Agentic AI Systems", arXiv:2511.14136]. Accuracy-only
+optimization yields agents 4.4-10.8x more expensive than cost-aware alternatives
+with comparable performance.
 
 ---
 

@@ -895,32 +895,34 @@ The gateway's `CascadeRouter` draws on recent academic work in LLM model routing
 The field is converging on learned routers that combine quality prediction with
 cost-aware cascading:
 
-- **Router-R1** (Zhang et al. 2025): Reinforcement-learned routing via chain-of-thought
-  prompting that beats human-engineered routing rules on Arena-Hard. Demonstrates that
-  routing decisions benefit from explicit reasoning traces, not just feature vectors.
+- **Router-R1** (Zhang et al. 2025): An LLM router trained with reinforcement learning
+  that interleaves reasoning with calls to other models over several rounds and
+  aggregates their answers. It beats strong baselines on seven question-answering
+  benchmarks while managing cost.
 
-- **xRouter** (Qian et al. 2025): Extends routing to multi-turn conversations using
-  holistic trajectory evaluation rather than per-turn classification. Shows that naive
-  turn-by-turn routing misses cross-turn quality dependencies.
+- **xRouter** (Qian et al. 2025): A tool-calling router that answers directly or invokes
+  other models, trained with a cost-aware reinforcement-learning reward. It reaches
+  substantial cost reductions at comparable task completion rates.
 
-- **IRT-Router** (Song et al. 2025): Uses Item Response Theory to jointly estimate
-  model capability and query difficulty on a shared latent scale, outperforming
-  similarity-based routers by 4-12% on MMLU/BBH while using 10-20% cheaper models.
+- **IRT-Router** (Song et al. 2025): Uses Item Response Theory to model LLM ability
+  against query difficulty, outperforming most baselines across 20 LLMs and 12
+  datasets, especially in cold-start scenarios.
 
-- **BEST-Route** (Ding et al. 2025): Bayesian Estimation via Subspace Testing --
-  characterizes model strengths through probabilistic subspace profiles rather than
-  single quality scores, achieving better calibration on heterogeneous task distributions.
+- **BEST-Route** (Ding et al. 2025): Chooses a model and how many responses to sample
+  from it by query difficulty (best-of-n on cheaper models), cutting cost by up to 60%
+  with less than a 1% drop in performance.
 
-- **Unified Routing/Cascading Framework** (Dekoninck et al. 2025): Proves that
-  routing (choose one model) and cascading (try cheap model first, escalate on failure)
-  are special cases of a single decision framework, and that hybrid strategies
-  dominate both pure approaches on cost-quality Pareto frontiers.
+- **Cascade routing** (Dekoninck et al. 2025): Derives optimal routing and cascading
+  strategies and unifies them into cascade routing, which outperforms either alone;
+  good quality estimators are the critical factor.
 
 Roko's `CascadeRouter` implements a three-stage architecture (Static -> Confidence ->
-UCB1) that naturally accommodates insights from these frameworks: the UCB1 stage
-provides learned exploration-exploitation balance (cf. Router-R1), the routing context
-carries task category and complexity hints (cf. IRT-Router's difficulty estimation),
-and the fallback chain implements a form of cascading (cf. the unified framework).
+UCB1) that can take up insights from this work: the UCB1 stage learns from outcomes
+where Router-R1 and xRouter train a router with reinforcement learning, the routing
+context carries task category and complexity hints (cf. IRT-Router's difficulty
+estimation), and cascading happens in the fallback chain, on provider errors, and on
+the model ladder, where a plan task moves one rung up after two failed gate verdicts
+(cf. cascade routing).
 
 **Cross-reference:** [depth/20-gateway/06-routing-research.md](depth/20-gateway/06-routing-research.md)
 
@@ -974,11 +976,11 @@ asserts 9 nodes and 8 edges -- structural drift is caught by CI.
 
 | Citation | Reference |
 |---|---|
-| Zhang et al. 2025 | Haozhen Zhang, Tao Feng, Jiaxuan You, "Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning," arXiv:2506.09033, 2025. RL-trained chain-of-thought router outperforming human-engineered routing. |
-| Qian et al. 2025 | Cheng Qian, Zuxin Liu, Shirley Kokane, et al., "xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning," arXiv:2510.08439, 2025. Holistic trajectory evaluation for multi-turn routing. |
+| Zhang et al. 2025 | Haozhen Zhang, Tao Feng, Jiaxuan You, "Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning," arXiv:2506.09033, 2025. RL-trained LLM router that reasons, calls other models over several rounds and aggregates their answers. |
+| Qian et al. 2025 | Cheng Qian, Zuxin Liu, Shirley Kokane, et al., "xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning," arXiv:2510.08439, 2025. Tool-calling router trained with a cost-aware reinforcement-learning reward. |
 | Song et al. 2025 | Wei Song, Zhenya Huang, Cheng Cheng, et al., "IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory," arXiv:2506.01048, 2025. Joint model-capability and query-difficulty estimation. |
-| Ding et al. 2025 | Dujian Ding, Ankur Mallick, Shaokun Zhang, et al., "BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute," arXiv:2506.22716, 2025. Probabilistic subspace profiles for calibrated routing. |
-| Dekoninck et al. 2025 | Jasper Dekoninck, Maximilian Baader, Martin Vechev, "A Unified Approach to Routing and Cascading for LLMs," arXiv:2410.10347, 2025. Proves routing and cascading are special cases of a single decision framework. |
+| Ding et al. 2025 | Dujian Ding, Ankur Mallick, Shaokun Zhang, et al., "BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute," arXiv:2506.22716, 2025. Chooses a model and how many responses to sample from it, by query difficulty. |
+| Dekoninck et al. 2025 | Jasper Dekoninck, Maximilian Baader, Martin Vechev, "A Unified Approach to Routing and Cascading for LLMs," arXiv:2410.10347, 2025. Cascade routing: optimal routing and cascading strategies, unified. |
 | Chen et al. 2023 | Lingjiao Chen, Matei Zaharia, James Zou, "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance," arXiv:2305.05176, 2023. Cascade routing matching GPT-4 quality at 2% cost. |
 | Friston 2006 | Karl Friston, "A free energy principle for the brain," *Journal of Physiology - Paris*, 100(1-3), 70-87, 2006. EFE for model routing. |
 | Kanerva 2009 | Pentti Kanerva, "Hyperdimensional computing," *Cognitive Computation*, 2009. SimHash as HDC derivative for convergence detection. |

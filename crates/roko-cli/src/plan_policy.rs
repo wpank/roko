@@ -1226,6 +1226,7 @@ mod tests {
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
+                approval: None,
             },
             tasks: vec![task],
         }

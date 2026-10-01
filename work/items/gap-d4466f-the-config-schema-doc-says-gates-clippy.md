@@ -2,14 +2,16 @@
 id = "gap-d4466f"
 kind = "gap"
 title = "The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["docs/v3"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "d24875405"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-gates's report, checked on work/gap-3506f1b at 653818f62)"
 anchors = ["docs/v3/depth/21-config/01-schema-sections.md", "crates/roko-core/src/config/gates.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-3506f1"], supersedes = [
 
 [[verify]]
 command = "! grep -qE 'clippy_enabled. \\| bool \\| false' docs/v3/depth/21-config/01-schema-sections.md"
+
+[closed]
+at = 2026-09-30
+commit = "d24875405"
+evidence = "docs/v3/depth/21-config/01-schema-sections.md: clippy_enabled row now says true, matching GatesConfig::default() (default_true); other [gates] rows checked against the code; verify grep passes"
 +++
 
 ## Problem

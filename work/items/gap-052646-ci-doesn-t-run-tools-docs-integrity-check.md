@@ -2,14 +2,16 @@
 id = "gap-052646"
 kind = "gap"
 title = "CI doesn't run tools/docs_integrity/check_citation_errata.py"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["ci/workflows", "tools/docs_integrity"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "9f32cd07a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report)"
 anchors = [".github/workflows/docs-lint.yml", "tools/docs_integrity/check_citation_errata.py"]
@@ -18,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b23ebd"], supersedes = [
 
 [[verify]]
 command = "grep -q 'check_citation_errata' .github/workflows/docs-lint.yml"
+
+[closed]
+at = 2026-09-30
+commit = "9f32cd07a"
+evidence = ".github/workflows/docs-lint.yml: new step runs test_check_citation_errata and check_citation_errata.py; docs/v3/** added to the push and pull_request path filters; YAML parsed with PyYAML; all steps pass locally; verify grep passes"
 +++
 
 ## Problem

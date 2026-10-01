@@ -47,7 +47,8 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::oneshot;
 
 use super::plan_runner::{
-    GraphPlanRunParams, PlanRunInterrupt, run_graph_plan, run_graph_plan_observed,
+    GraphPlanRunParams, PlanRunInterrupt, PlanRunInterruptHandle, run_graph_plan,
+    run_graph_plan_observed,
 };
 use crate::exit_codes::EXIT_SUCCESS;
 use crate::runner::tui_bridge::STREAM_RECORD_PREFIX;
@@ -154,12 +155,18 @@ pub(crate) fn run_recorded(
             .state_hub
             .get_or_insert_with(crate::state_hub::shared_state_hub)
             .clone();
+        // The run's stop handle, so `run.completed` can name what stopped it.
+        let interrupt = params
+            .interrupt
+            .get_or_insert_with(PlanRunInterruptHandle::default)
+            .clone();
         // The log, `status.json` and the workspace event log name the run
         // alike.
         let run_id = graph_run_id(None);
         let log =
             RunEventLog::open_for_run(&path, &hub, params.resume_plan.is_some(), run_id.clone())
-                .with_context(|| format!("open --log-file {}", path.display()))?;
+                .with_context(|| format!("open --log-file {}", path.display()))?
+                .with_interrupt(interrupt);
         let result = run_graph_plan_observed(params, None, run_id).await;
         if let Err(error) = log.finish(&result).await {
             tracing::warn!(
@@ -175,6 +182,8 @@ pub(crate) fn run_recorded(
 /// A run's `--log-file` recorder: an [`EventTap`] that writes JSONL.
 pub struct RunEventLog {
     tap: EventTap<EventLogWriter>,
+    /// The run's stop handle; `run.completed` names the stop it recorded.
+    interrupt: Option<PlanRunInterruptHandle>,
 }
 
 impl RunEventLog {
@@ -210,14 +219,28 @@ impl RunEventLog {
         };
         Ok(Self {
             tap: EventTap::spawn(hub, writer, EventLogWriter::record),
+            interrupt: None,
         })
+    }
+
+    /// Let `run.completed` name what stopped the run (`SIGTERM`, `deadline`,
+    /// ...), as `interrupt` records it (gap-9efe8e): a FAST deadline exits
+    /// with SIGTERM's status.
+    #[must_use]
+    pub fn with_interrupt(mut self, interrupt: PlanRunInterruptHandle) -> Self {
+        self.interrupt = Some(interrupt);
+        self
     }
 
     /// Write the events published so far, then the `run.completed` line for
     /// the run's `result`.
     pub async fn finish(self, result: &anyhow::Result<i32>) -> anyhow::Result<()> {
+        let stopped_by = self
+            .interrupt
+            .as_ref()
+            .and_then(PlanRunInterruptHandle::requested);
         let mut writer = self.tap.finish().await?;
-        writer.write_end(result);
+        writer.write_end(result, stopped_by);
         match writer.write_error.take() {
             Some(error) => Err(error.into()),
             None => Ok(()),
@@ -415,6 +438,10 @@ struct RunEndLine<'a> {
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// What stopped a cancelled run (`SIGINT`, `SIGTERM`, `SIGHUP` or
+    /// `deadline`), when its stop request is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interrupted_by: Option<&'static str>,
     duration_ms: u64,
     /// `TaskCompleted` events by outcome (`passed`, `failed`, ...).
     task_outcomes: &'a BTreeMap<String, usize>,
@@ -506,7 +533,9 @@ impl EventLogWriter {
         write_line(&mut self.out, &mut self.write_error, &start);
     }
 
-    fn write_end(&mut self, result: &anyhow::Result<i32>) {
+    /// Write `run.completed` for the run's `result`; `stopped_by` is the stop
+    /// request its run recorded, if any.
+    fn write_end(&mut self, result: &anyhow::Result<i32>, stopped_by: Option<PlanRunInterrupt>) {
         self.write_start(None);
         let (outcome, exit_code, error) = match result {
             Ok(code) if *code == EXIT_SUCCESS => (RunOutcome::Succeeded, Some(*code), None),
@@ -520,6 +549,10 @@ impl EventLogWriter {
             Ok(code) => (RunOutcome::Failed, Some(*code), None),
             Err(error) => (RunOutcome::Failed, None, Some(format!("{error:#}"))),
         };
+        // A run its stop request cancelled names that stop (gap-9efe8e).
+        let interrupted_by = stopped_by
+            .filter(|_| outcome == RunOutcome::Cancelled)
+            .map(PlanRunInterrupt::label);
         let now = Utc::now();
         let end = RunEndLine {
             kind: "run.completed",
@@ -529,6 +562,7 @@ impl EventLogWriter {
             outcome,
             exit_code,
             error,
+            interrupted_by,
             duration_ms: u64::try_from((now - self.started_at).num_milliseconds()).unwrap_or(0),
             task_outcomes: &self.task_outcomes,
             total_agent_calls: self.agent_calls,
@@ -871,6 +905,37 @@ mod tests {
         let lines = read_lines(&path);
         assert_eq!(lines[1]["outcome"], "cancelled");
         assert_eq!(lines[1]["exit_code"], 129);
+    }
+
+    /// gap-9efe8e: `run.completed` names what stopped the run, so a FAST
+    /// deadline is told apart from SIGTERM, whose exit status it shares; a
+    /// run that was not stopped names nothing.
+    #[tokio::test]
+    async fn run_completed_names_the_stop_that_ended_the_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let interrupt = PlanRunInterruptHandle::default();
+        let path = dir.path().join("deadline.jsonl");
+        let log = RunEventLog::open(&path, &hub, false)
+            .expect("open log")
+            .with_interrupt(interrupt.clone());
+        assert!(interrupt.request(PlanRunInterrupt::Deadline));
+        log.finish(&Ok(PlanRunInterrupt::Deadline.exit_code()))
+            .await
+            .expect("finish log");
+        let lines = read_lines(&path);
+        assert_eq!(lines[1]["outcome"], "cancelled");
+        assert_eq!(lines[1]["exit_code"], 143);
+        assert_eq!(lines[1]["interrupted_by"], "deadline");
+
+        let path = dir.path().join("passed.jsonl");
+        let log = RunEventLog::open(&path, &hub, false)
+            .expect("open log")
+            .with_interrupt(PlanRunInterruptHandle::default());
+        log.finish(&Ok(EXIT_SUCCESS)).await.expect("finish log");
+        let lines = read_lines(&path);
+        assert_eq!(lines[1]["outcome"], "succeeded");
+        assert!(lines[1].get("interrupted_by").is_none(), "{}", lines[1]);
     }
 
     /// The `event` objects of the log's `dashboard.<kind>` lines.

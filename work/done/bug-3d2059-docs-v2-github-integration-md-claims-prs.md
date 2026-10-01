@@ -2,7 +2,7 @@
 id = "bug-3d2059"
 kind = "bug"
 title = "docs/v2/GITHUB-INTEGRATION.md claims PRs, comments, CI polling and merges that the Graph runner does not do"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["docs"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "d27cfae01"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-cd51b7"
 anchors = ["docs/v2/GITHUB-INTEGRATION.md"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["gap-cd51b7"], supersedes = [
 
 [[verify]]
 command = "! grep -n 'IMPLEMENTED' docs/v2/GITHUB-INTEGRATION.md"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T18:27:12Z"
+commit = "d27cfae01"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T18:14:48Z"
+forced = false
+evidence = "docs/v2/GITHUB-INTEGRATION.md now says PARTIAL and marks each runner step with its real status; the verify (! grep -n 'IMPLEMENTED' docs/v2/GITHUB-INTEGRATION.md) passes and check_markdown_links.py passes"
 +++
 
 ## Problem

@@ -1699,6 +1699,8 @@ pub struct ResumeOptions<'a> {
     /// `--force-resume`: archive an unusable checkpoint instead of stopping.
     pub force_resume: bool,
     /// `--max-tasks`: concurrency override; 0 keeps `[meta] max_parallel`.
+    /// It caps the run without changing its checkpoint identity
+    /// (gap-7147bb), so the preview converts the plan without it.
     pub max_tasks: usize,
     /// `--max-retries`: per-task retry override.
     pub max_retries: Option<u32>,
@@ -1881,13 +1883,10 @@ fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
             (task.id.clone(), info)
         })
         .collect();
-    // An omitted `max_parallel` converts as 1, as `run_one_plan` does; the
-    // run widens the graph only after its identity is taken.
-    let max_parallel = if options.max_tasks > 0 {
-        u32::try_from(options.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+    // The plan's own concurrency, and 1 when it omits `max_parallel`, as
+    // `run_one_plan` converts it: the run applies `--max-tasks` and widens
+    // the graph only after its identity is taken (gap-7147bb).
+    let max_parallel = plan.tasks.meta.max_parallel.unwrap_or(1);
     plan_to_graph(
         &plan.id,
         &plan.dir.display().to_string(),
@@ -2531,6 +2530,43 @@ depends_on = ["T1"]
         )
         .expect_err("an edited plan must not resume");
         assert!(error.to_string().contains("graph has changed"));
+    }
+
+    /// gap-7147bb: `--max-tasks` caps a run's concurrency without changing
+    /// its checkpoint identity, so a run started with one value resumes with
+    /// another, or with none.
+    #[test]
+    fn resume_accepts_a_different_max_tasks() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let with = |max_tasks| ResumeOptions {
+            max_tasks,
+            ..ResumeOptions::default()
+        };
+        record_first_task(dir.path(), &plan_graph(&plan, &with(2)));
+
+        for max_tasks in [0, 5] {
+            let preview =
+                preview_plan_resume(dir.path(), &plan, 1, &with(max_tasks)).expect("preview");
+            assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::New));
+            assert_eq!(
+                preview.action,
+                ResumeAction::Resume,
+                "--max-tasks {max_tasks}"
+            );
+            assert_eq!(preview.restored_tasks, ["T1"]);
+        }
+        let resumed = prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "p",
+            1,
+            &plan_graph(&plan, &with(5)),
+            false,
+            false,
+        )
+        .expect("resume with another --max-tasks");
+        assert_eq!(resumed.replayed_entries(), 1);
     }
 
     #[test]

@@ -1155,13 +1155,19 @@ Examples:
     #[command(after_help = "\
 Examples:
   roko resume                         Resume from default snapshot
-  roko resume run_4823                Resume a specific run by ID")]
+  roko resume run_4823                Resume a specific run by ID
+  roko resume --max-tasks 2           Resume, running at most 2 tasks per plan at once")]
     Resume {
         /// Run or plan ID to resume (optional — defaults to most recent snapshot).
         run_id: Option<String>,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Maximum concurrent tasks per plan (0 keeps the config/default
+        /// value). Any value resumes the run: it is not part of the
+        /// checkpoint's identity.
+        #[arg(long, default_value_t = 0)]
+        max_tasks: usize,
     },
     /// Walk the lineage DAG rooted at a signal hash and print it.
     ///
@@ -4220,9 +4226,11 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             println!("  run ID: {}", result.run_id);
             Ok(EXIT_SUCCESS)
         }
-        Command::Resume { run_id, workdir } => {
-            commands::plan::cmd_resume(cli, run_id, workdir).await
-        }
+        Command::Resume {
+            run_id,
+            workdir,
+            max_tasks,
+        } => commands::plan::cmd_resume(cli, run_id, workdir, max_tasks).await,
         Command::Replay {
             hash,
             workdir,

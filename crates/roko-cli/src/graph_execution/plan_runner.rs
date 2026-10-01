@@ -2499,13 +2499,10 @@ async fn run_one_plan(
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
-    // the converted concurrency. The width is applied once the identity is
-    // taken, below.
-    let max_parallel = if ctx.max_tasks > 0 {
-        u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+    // the converted concurrency. `--max-tasks` and the width are applied once
+    // the identity is taken, below, so a run resumes whatever `--max-tasks`
+    // it is given (gap-7147bb).
+    let max_parallel = plan.tasks.meta.max_parallel.unwrap_or(1);
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
 
@@ -2644,11 +2641,14 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
-    // A plan that omits `max_parallel` runs as wide as its DAG allows when
-    // every task that can write declares its files: the engine keeps tasks
-    // whose files overlap apart. Set after the identity is taken, like the
-    // failure strategy, so checkpoints of such plans keep resuming.
-    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+    // `--max-tasks` caps the run. Otherwise a plan that omits `max_parallel`
+    // runs as wide as its DAG allows when every task that can write declares
+    // its files: the engine keeps tasks whose files overlap apart. Both are
+    // set after the identity is taken, like the failure strategy, so
+    // checkpoints keep resuming.
+    if ctx.max_tasks > 0 {
+        graph.policy.max_concurrent_nodes = ctx.max_tasks;
+    } else if plan.tasks.meta.max_parallel.is_none() {
         let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
         if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
             tracing::info!(

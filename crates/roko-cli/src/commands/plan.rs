@@ -510,6 +510,24 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 anyhow::bail!("--config {}: no such file", config.display());
             }
 
+            // gap-d60281: stop on a flag the Graph engine does not implement
+            // rather than run without it.
+            let unsupported = graph_unsupported_flags(
+                cli.resume.as_deref(),
+                cli.effort.as_ref(),
+                skip_preflight,
+                screenshots,
+                screenshot_interval,
+                screenshot_dir.as_deref(),
+                batch_size,
+            );
+            if !unsupported.is_empty() {
+                anyhow::bail!(
+                    "plan run does not support these flags:\n  - {}",
+                    unsupported.join("\n  - ")
+                );
+            }
+
             // Resolve workdir FIRST (before using plans_dir)
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let layout = RokoLayout::for_project(&wd);
@@ -617,22 +635,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Graph Engine path (explicit opt-in) ──
             if matches!(engine, PlanEngine::Graph) {
-                // Warn about flags that are parsed at the top level but cannot
-                // be forwarded to the Graph Engine. Without these warnings the
-                // user would have no indication the flags were silently dropped.
-                warn_graph_unsupported_flags(
-                    cli.resume.as_deref(),
-                    cli.effort.as_ref(),
-                    log_file.as_deref(),
-                    skip_preflight,
-                    force,
-                    screenshots,
-                    screenshot_interval,
-                    screenshot_dir.as_deref(),
-                    batch_size,
-                    cli.quiet,
-                );
-
                 return cmd_plan_run_engine(
                     &resolved_plans_dir,
                     &wd,
@@ -2327,90 +2329,45 @@ fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Res
     Ok(())
 }
 
-/// Emit explicit warnings for CLI flags that are silently ignored by the
-/// Graph Engine. Called just before entering the graph execution path so
-/// operators are never surprised by dropped configuration.
-///
-/// Flags that ARE forwarded to the graph engine (and thus do NOT warn):
-///   `--model`, `--dangerously-skip-permissions`,
-///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
-///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`,
-///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`,
-///   `--max-parallel-plans`, `--fail-fast`, `--force`
-///
-/// Flags that ARE warned (silently dropped by the Graph Engine):
-///   `--resume` (global session resume), `--effort`, `--skip-preflight`,
-///   `--screenshots`, `--screenshot-interval` (non-default),
-///   `--screenshot-dir`, `--batch-size`
-#[allow(clippy::fn_params_excessive_bools)]
-fn warn_graph_unsupported_flags(
+/// The `plan run` flags the Graph engine, the only engine, does not
+/// implement (gap-d60281), each with what to use instead. `plan run` stops on
+/// any of them rather than run without it. `--force` (the disk-space
+/// pre-check) and `--log-file` are implemented.
+fn graph_unsupported_flags(
     resume_session: Option<&str>,
     effort: Option<&Effort>,
-    log_file: Option<&std::path::Path>,
     skip_preflight: bool,
-    force: bool,
     screenshots: bool,
     screenshot_interval: u64,
     screenshot_dir: Option<&std::path::Path>,
     batch_size: Option<usize>,
-    quiet: bool,
-) {
-    if quiet {
-        return;
-    }
-
-    if let Some(session) = resume_session {
-        tracing::warn!(
-            session,
-            "--resume is not supported with --engine graph and will be ignored"
+) -> Vec<&'static str> {
+    let mut unsupported = Vec::new();
+    if resume_session.is_some() {
+        unsupported.push(
+            "--resume <session> resumes an agent session; resume a plan run with \
+             --resume-plan (its Graph checkpoints) or `roko resume`",
         );
     }
     if effort.is_some() {
-        tracing::warn!(
-            "--effort is not supported with --engine graph and will be ignored; \
-             the graph engine uses the configured default_effort"
-        );
+        unsupported.push("--effort: tasks run at `[agent] default_effort` from roko.toml");
     }
-    // --log-file is now wired for Graph Engine (#115) -- no warning needed.
-    let _ = log_file;
     if skip_preflight {
-        tracing::warn!(
-            "--skip-preflight is not supported with --engine graph and will be ignored; \
-             the graph engine runs its own provider preflight"
-        );
+        unsupported.push("--skip-preflight: the Graph engine always runs its provider preflight");
     }
-    // --force skips the Graph engine's disk-space pre-check (reg-7cf6f9) --
-    // no warning needed.
-    let _ = force;
-    if screenshots {
-        tracing::warn!("--screenshots is not supported with --engine graph and will be ignored");
-        // Warn for companion flags only when --screenshots is set, since they
-        // are only meaningful alongside it.
-        let default_interval: u64 = 60;
-        if screenshot_interval != default_interval {
-            tracing::warn!(
-                screenshot_interval,
-                "--screenshot-interval is not supported with --engine graph and will be ignored"
-            );
-        }
-        if let Some(dir) = screenshot_dir {
-            tracing::warn!(
-                dir = %dir.display(),
-                "--screenshot-dir is not supported with --engine graph and will be ignored"
-            );
-        }
-    } else {
-        // Even without --screenshots, an explicit --screenshot-dir should warn.
-        if let Some(dir) = screenshot_dir {
-            tracing::warn!(
-                dir = %dir.display(),
-                "--screenshot-dir is not supported with --engine graph and will be ignored"
-            );
-        }
+    // 60 is `--screenshot-interval`'s default.
+    if screenshots || screenshot_interval != 60 || screenshot_dir.is_some() {
+        unsupported.push(
+            "--screenshots, --screenshot-interval and --screenshot-dir: plan runs take no \
+             screenshots; capture the TUI with `roko screenshot`",
+        );
     }
     if batch_size.is_some() {
-        tracing::warn!("--batch-size is not supported with --engine graph and will be ignored");
+        unsupported.push(
+            "--batch-size: plan runs do not pause after N plans; run the plans in smaller sets",
+        );
     }
+    unsupported
 }
 
 /// Execute plans via the Graph Engine path.
@@ -2661,51 +2618,46 @@ depends_on_plan = ["missing-foundation"]
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
     }
 
-    /// Smoke-test: `warn_graph_unsupported_flags` must not panic regardless
-    /// of the flag combination. The actual warning output goes to stderr and
-    /// is validated manually or via integration tests.
+    /// gap-d60281: `plan run` stops on a flag the Graph engine does not
+    /// implement and says what to use instead. `--force` and `--log-file`,
+    /// which it implements, take no part in the check.
     #[test]
-    fn warn_graph_unsupported_flags_does_not_panic() {
-        // All flags off (quiet = true suppresses output).
-        warn_graph_unsupported_flags(None, None, None, false, false, false, 60, None, None, true);
-        // All flags on (quiet = true still suppresses).
-        warn_graph_unsupported_flags(
-            Some("session-id"),
-            Some(&Effort::High),
-            Some(std::path::Path::new("/tmp/log.jsonl")),
-            true,
+    fn graph_plan_run_rejects_or_honours_legacy_flags() {
+        assert!(graph_unsupported_flags(None, None, false, false, 60, None, None).is_empty());
+
+        let resume = graph_unsupported_flags(Some("s1"), None, false, false, 60, None, None);
+        assert_eq!(resume.len(), 1, "{resume:?}");
+        assert!(resume[0].contains("--resume-plan"), "{resume:?}");
+
+        let high = Effort::High;
+        let effort = graph_unsupported_flags(None, Some(&high), false, false, 60, None, None);
+        assert!(effort[0].contains("default_effort"), "{effort:?}");
+
+        let preflight = graph_unsupported_flags(None, None, true, false, 60, None, None);
+        assert!(preflight[0].starts_with("--skip-preflight"), "{preflight:?}");
+
+        let dir = std::path::Path::new("shots");
+        for shots in [
+            graph_unsupported_flags(None, None, false, true, 60, None, None),
+            graph_unsupported_flags(None, None, false, false, 30, None, None),
+            graph_unsupported_flags(None, None, false, false, 60, Some(dir), None),
+        ] {
+            assert_eq!(shots.len(), 1, "{shots:?}");
+            assert!(shots[0].contains("roko screenshot"), "{shots:?}");
+        }
+
+        let batch = graph_unsupported_flags(None, None, false, false, 60, None, Some(5));
+        assert!(batch[0].starts_with("--batch-size"), "{batch:?}");
+
+        let all = graph_unsupported_flags(
+            Some("s1"),
+            Some(&high),
             true,
             true,
             30,
-            Some(std::path::Path::new("/tmp/shots")),
+            Some(dir),
             Some(5),
-            true,
         );
-        // All flags on, quiet = false (will write to stderr but must not panic).
-        warn_graph_unsupported_flags(
-            Some("session-id"),
-            Some(&Effort::High),
-            Some(std::path::Path::new("/tmp/log.jsonl")),
-            true,
-            true,
-            true,
-            30,
-            Some(std::path::Path::new("/tmp/shots")),
-            Some(5),
-            false,
-        );
-        // screenshots=false but explicit --screenshot-dir still warns.
-        warn_graph_unsupported_flags(
-            None,
-            None,
-            None,
-            false,
-            false,
-            false,
-            60,
-            Some(std::path::Path::new("/tmp/shots")),
-            None,
-            false,
-        );
+        assert_eq!(all.len(), 5, "{all:?}");
     }
 }

@@ -710,9 +710,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget]
               [--dangerously-skip-permissions]
-              [--log-file <path>] [--skip-preflight]
-              [--screenshots] [--screenshot-interval <secs>] [--screenshot-dir <path>]
-              [--batch-size <n>] [--worktree-per-task] [--rich-topology]
+              [--log-file <path>] [--worktree-per-task] [--rich-topology]
 ```
 
 | Arg/Flag | Default | Description |
@@ -733,11 +731,6 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
-| `--skip-preflight` | false | Skip preflight environment checks. |
-| `--screenshots` | false | Capture event-driven screenshots during execution. |
-| `--screenshot-interval <secs>` | 60 | Maximum seconds between periodic screenshot captures. |
-| `--screenshot-dir <path>` | auto | Directory for screenshot timeline. |
-| `--batch-size <n>` | -- | Pause for review after every N plan completions. |
 | `--worktree-per-task` | false | Run each task in an isolated git worktree. |
 | `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
 
@@ -751,6 +744,10 @@ roko plan run plans/ --resume-plan              # Resume from last checkpoint
 roko plan run plans/ --max-retries 3            # Override retry limit
 roko plan run plans/ --budget-override 50.0     # $50 cost ceiling
 ```
+
+The Graph engine does not implement `--skip-preflight`, `--screenshots`, `--screenshot-interval`, `--screenshot-dir`,
+`--batch-size`, or the global `--resume <session>` and `--effort`. They still parse, but `plan run` stops with an error
+that names what to use instead (`--resume-plan`, `[agent] default_effort`, `roko screenshot`).
 
 #### `roko plan generate`
 

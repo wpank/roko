@@ -118,11 +118,13 @@ fn check_chain_link(
     true
 }
 
-/// What is wrong with the hash chain of the custody log `records`, in order:
-/// empty when it verifies. `cmd_custody_verify` checks the same links.
-pub(crate) fn chain_violations(records: &[Custody]) -> Vec<String> {
+/// What is wrong with the hash chain of the custody records `records`, in
+/// order: empty when it verifies. `start` is the hash the first sealed record
+/// must link to, `None` for the start of a log. `cmd_custody_verify` checks
+/// the same links.
+pub(crate) fn chain_violations(records: &[Custody], start: Option<String>) -> Vec<String> {
     let mut violations = Vec::new();
-    let mut expected = None;
+    let mut expected = start;
     for (idx, record) in records.iter().enumerate() {
         check_chain_link(idx, record, &mut expected, &mut violations);
     }

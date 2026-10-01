@@ -182,6 +182,20 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
   - Test: `graph_provenance_sink_records_a_replayed_record_once` (roko-cli lib).
   Still open: the policy and contract fingerprints in the summary, and a live API-provider run showing
   `roko knowledge custody list` records, as the Done when asks.
+- 2026-10-02 (wk-tamper): fresh runs no longer depend on custody history (coordinator's review of step 6).
+  - A run whose checkpoint stores no provenance starts fresh (`GraphProvenanceSink::start`). Whatever the custody
+    log already holds (older builds, the old DefaultHasher path, concurrent processes), the run's records extend it
+    from its last record. A history that does not verify is warned about once, never refused.
+  - Only a resume verifies, from the run's own first record (`custody_root`, new in the summary) on: the custody
+    links and hashes, the run's heads, its witness vertices, and the taint index. A checkpoint that saved no records
+    tracks what the logs still hold of the run, which can only add taint.
+  - Test: `safety_provenance_starts_on_broken_history_and_checks_only_its_own_records` (a garbage, edited and forked
+    `custody.jsonl` still runs a fresh plan, and the run's resume still fails closed once its own records are
+    edited).
+  - `.roko/state/safety-provenance.key` is created 0600 (the sink test checks the mode). It is never logged, and
+    neither `Debug` impl prints it. `scripts/run_evidence.py` copies only its listed ledgers and
+    `.roko/state/graph/<plan>/`. The secret canaries scan files but copy none, and the cloud worker never commits
+    `.roko/`.
 
 ## Original notes
 

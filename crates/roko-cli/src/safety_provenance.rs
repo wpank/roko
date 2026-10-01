@@ -45,11 +45,15 @@ static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// `roko.safety-provenance@1`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SafetyProvenanceSummary {
-    /// Provenance records the sink wrote.
+    /// Provenance records the run wrote.
     pub records: u64,
-    /// Id of the last vertex in `.roko/witness.jsonl`.
+    /// Hash of the run's first record in `.roko/custody.jsonl`, from which a
+    /// resume verifies the run's records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custody_root: Option<String>,
+    /// Id of the run's last vertex in `.roko/witness.jsonl`.
     pub witness_head: Option<ContentHash>,
-    /// Hash of the last record in `.roko/custody.jsonl`.
+    /// Hash of the run's last record in `.roko/custody.jsonl`.
     pub custody_head: Option<String>,
     /// The taint index ([`TaintTracker::to_json`]).
     pub taint: serde_json::Value,
@@ -113,37 +117,51 @@ impl std::fmt::Debug for GraphProvenanceSink {
     }
 }
 
-/// How many records the sink wrote, where the logs' chains end, and the
-/// witness vertex of each record of the run so far, by [`record_identity`].
+/// The run's records so far: how many, where they sit in the logs, and the
+/// witness vertex of each by [`record_identity`].
 #[derive(Debug, Default)]
 struct Chain {
     records: u64,
+    /// The last vertex in the witness log: the next vertex's parent.
+    last_vertex: Option<ContentHash>,
+    /// The run's first custody record, which its resume verifies from.
+    custody_root: Option<String>,
+    /// The run's last witness vertex.
     witness_head: Option<ContentHash>,
+    /// The run's last custody record.
     custody_head: Option<String>,
     recorded: HashMap<ContentHash, ContentHash>,
 }
 
+impl Chain {
+    /// Note `provenance`, one of the run's records, written as witness
+    /// vertex `vertex` and custody record `record`.
+    fn note(&mut self, provenance: &ProvenanceRecord, vertex: ContentHash, record: &Custody) {
+        self.records += 1;
+        self.recorded.insert(record_identity(provenance), vertex);
+        self.witness_head = Some(vertex);
+        self.custody_head.clone_from(&record.hash);
+        if self.custody_root.is_none() {
+            self.custody_root.clone_from(&record.hash);
+        }
+    }
+}
+
 impl GraphProvenanceSink {
     /// Open the sink for the workspace at `workdir`: its digest key, and the
-    /// ends of its witness and custody chains, which new records extend.
+    /// last witness vertex, which the run's first vertex follows.
     ///
     /// # Errors
     ///
-    /// Returns an error when the key cannot be read or created, or a log
-    /// cannot be read.
+    /// Returns an error when the key cannot be read or created, or the
+    /// witness log cannot be read.
     pub fn open(workdir: &Path) -> Result<Self> {
         let layout = RokoLayout::for_project(workdir);
         let key = load_or_create_key(&layout.state_dir().join(KEY_FILE))?;
         let witness = WitnessLogger::new(layout.witness_log());
         let custody = CustodyLogger::new(layout.custody_log());
-        let custody_head = custody
-            .read_all()
-            .with_context(|| format!("read {}", custody.path().display()))?
-            .last()
-            .and_then(|record| record.hash.clone());
         let chain = Chain {
-            witness_head: last_witness_id(witness.path())?,
-            custody_head,
+            last_vertex: last_witness_id(witness.path())?,
             ..Chain::default()
         };
         Ok(Self {
@@ -155,59 +173,105 @@ impl GraphProvenanceSink {
         })
     }
 
-    /// Reopen the sink for run `run_id`, which a resume continues. `stored`
-    /// is what the run's checkpoint kept, if anything.
+    /// Open the sink for a run that starts fresh. The run's records extend
+    /// the custody log from its last record, whatever the log held before:
+    /// older builds and concurrent processes leave history that need not
+    /// verify, and a resume checks only the run's own records. A history that
+    /// does not verify is reported once, never refused.
     ///
-    /// The custody chain must verify, the stored heads must be in their logs,
-    /// and every provenance record must name an intact witness vertex. The
+    /// # Errors
+    ///
+    /// See [`Self::open`].
+    pub fn start(workdir: &Path) -> Result<Self> {
+        let sink = Self::open(workdir)?;
+        let history = sink
+            .custody
+            .read_all()
+            .map(|records| chain_violations(&records, None));
+        match history {
+            Ok(violations) => {
+                if let Some(violation) = violations.first() {
+                    tracing::warn!(
+                        custody = %sink.custody.path().display(),
+                        %violation,
+                        "safety provenance: the custody log's history does not verify; \
+                         this run's records are checked from its own first record on"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                custody = %sink.custody.path().display(),
+                %error,
+                "safety provenance: the custody log cannot be read"
+            ),
+        }
+        Ok(sink)
+    }
+
+    /// Reopen the sink for run `run_id`, which a resume continues from what
+    /// its checkpoint `stored`.
+    ///
+    /// The run's segment of the custody log, from the first record it wrote,
+    /// must verify. The stored heads must be in their logs, every provenance
+    /// record in the segment must name an intact witness vertex, and the
     /// stored taint index must cover what the run's records up to the stored
-    /// custody head prove; the run's records after that head, written after
+    /// custody head prove. The run's records after that head, written after
     /// the last checkpoint save, are tracked on top. Anything else is safety
     /// corruption, and the sink does not open rather than let the run go on
-    /// as if nothing were tainted.
+    /// as if nothing were tainted. History before the run's first record is
+    /// not checked.
     ///
     /// # Errors
     ///
     /// Returns an error when the key or the logs cannot be read, or when any
     /// of those checks fails.
-    pub fn resume(
-        workdir: &Path,
-        run_id: &str,
-        stored: Option<&SafetyProvenanceSummary>,
-    ) -> Result<Self> {
+    pub fn resume(workdir: &Path, run_id: &str, stored: &SafetyProvenanceSummary) -> Result<Self> {
         let sink = Self::open(workdir)?;
+        let taint = TaintTracker::from_json(stored.taint.clone())
+            .context("safety provenance: read the stored taint index")?;
         let custody = sink
             .custody
             .read_all()
             .with_context(|| format!("read {}", sink.custody.path().display()))?;
-        if let Some(violation) = chain_violations(&custody).first() {
-            bail!(
-                "safety provenance: the custody chain in {} is broken: {violation}",
-                sink.custody.path().display()
-            );
-        }
         let witness = sink
             .witness
             .read_all()
             .with_context(|| format!("read {}", sink.witness.path().display()))?;
-        let (committed, taint) = match stored {
-            Some(stored) => {
-                let taint = TaintTracker::from_json(stored.taint.clone())
-                    .context("safety provenance: read the stored taint index")?;
-                (committed_records(stored, &custody, &witness)?, taint)
+        let Some(root) = &stored.custody_root else {
+            if stored.records > 0 {
+                bail!(
+                    "safety provenance: the checkpoint counts {} records but names no first \
+                     custody record",
+                    stored.records
+                );
             }
-            None => (0, TaintTracker::new()),
+            // Nothing was saved before the run stopped: track what it wrote
+            // since, as far as the logs still show it.
+            return Ok(sink.recover(run_id, &custody, &witness, taint));
         };
+        let start = custody
+            .iter()
+            .position(|record| record.hash.as_ref() == Some(root))
+            .with_context(|| {
+                format!("safety provenance: the run's first custody record {root} is missing")
+            })?;
+        let segment = &custody[start..];
+        let first_link = segment.first().and_then(|record| record.prev_hash.clone());
+        if let Some(violation) = chain_violations(segment, first_link).first() {
+            bail!(
+                "safety provenance: the run's custody chain in {} is broken: {violation}",
+                sink.custody.path().display()
+            );
+        }
+        let committed = committed_records(stored, segment, &witness)?;
         // What the run's records up to the stored custody head prove.
         let proven = TaintTracker::new();
-        let mut records = 0;
-        let mut recorded = HashMap::new();
-        for (index, record) in custody.iter().enumerate() {
+        let mut chain = Chain::default();
+        for (index, record) in segment.iter().enumerate() {
             let Some((vertex, provenance)) = run_record(record, &witness, run_id)? else {
                 continue;
             };
-            records += 1;
-            recorded.insert(record_identity(&provenance), vertex);
+            chain.note(&provenance, vertex, record);
             track(if index < committed { &proven } else { &taint }, &provenance);
         }
         for (hash, level) in proven.levels() {
@@ -218,12 +282,39 @@ impl GraphProvenanceSink {
                 );
             }
         }
-        {
-            let mut chain = sink.chain.lock();
-            chain.records = records;
-            chain.recorded = recorded;
+        Ok(sink.with_chain(chain, taint))
+    }
+
+    /// The sink of a run whose checkpoint saved none of its records: the
+    /// run's records the logs still hold intact are tracked, and the first
+    /// becomes its root. Nothing is verified, since nothing was saved to
+    /// verify against, and tracking can only add taint.
+    fn recover(
+        self,
+        run_id: &str,
+        custody: &[Custody],
+        witness: &WitnessDag,
+        taint: TaintTracker,
+    ) -> Self {
+        let mut chain = Chain::default();
+        for record in custody {
+            if let Ok(Some((vertex, provenance))) = run_record(record, witness, run_id) {
+                chain.note(&provenance, vertex, record);
+                track(&taint, &provenance);
+            }
         }
-        Ok(Self { taint, ..sink })
+        self.with_chain(chain, taint)
+    }
+
+    /// This sink, carrying on from the run's records in `chain` and their
+    /// taint.
+    fn with_chain(self, mut chain: Chain, taint: TaintTracker) -> Self {
+        {
+            let mut current = self.chain.lock();
+            chain.last_vertex = current.last_vertex;
+            *current = chain;
+        }
+        Self { taint, ..self }
     }
 
     /// The taint lineage of the calls the sink recorded, a resumed run's
@@ -240,6 +331,7 @@ impl GraphProvenanceSink {
         let chain = self.chain.lock();
         SafetyProvenanceSummary {
             records: chain.records,
+            custody_root: chain.custody_root.clone(),
             witness_head: chain.witness_head,
             custody_head: chain.custody_head.clone(),
             taint: self.taint.to_json(),
@@ -280,7 +372,11 @@ impl GraphProvenanceSink {
         let custody_head = log_chained(&self.custody, custody)?;
         sync(self.custody.path())?;
         chain.records += 1;
+        chain.last_vertex = Some(vertex.id);
         chain.witness_head = Some(vertex.id);
+        if chain.custody_root.is_none() {
+            chain.custody_root = Some(custody_head.clone());
+        }
         chain.custody_head = Some(custody_head);
         Ok(vertex.id)
     }
@@ -302,7 +398,7 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
                 record_id: vertex.to_hex(),
             });
         }
-        let parents = chain.witness_head.into_iter().collect();
+        let parents = chain.last_vertex.into_iter().collect();
         let digest = Some(intent.call.args_digest);
         let vertex = self
             .append(
@@ -329,7 +425,7 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
         if chain.recorded.contains_key(&identity) {
             return Ok(());
         }
-        let mut parents: Vec<ContentHash> = chain.witness_head.into_iter().collect();
+        let mut parents: Vec<ContentHash> = chain.last_vertex.into_iter().collect();
         // An outcome follows its intent's vertex, whose id is the intent's
         // acknowledgement.
         if let Some(intent) = outcome.intent.as_deref().and_then(ContentHash::from_hex)
@@ -355,30 +451,30 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
     }
 }
 
-/// How many of the custody log's `custody` records the checkpoint's summary
-/// `stored` covers: those up to and including its custody head.
+/// How many records of the run's `segment` of the custody log the
+/// checkpoint's summary `stored` covers: those up to and including its
+/// custody head.
 ///
 /// # Errors
 ///
-/// Fails when a stored head is not in its log.
+/// Fails when a stored head is missing, or is not in its log.
 fn committed_records(
     stored: &SafetyProvenanceSummary,
-    custody: &[Custody],
+    segment: &[Custody],
     witness: &WitnessDag,
 ) -> Result<usize> {
-    if let Some(head) = &stored.witness_head
-        && witness.get(head).is_none()
-    {
-        bail!("safety provenance: the stored witness head {head} is not in the witness log");
-    }
-    let Some(head) = &stored.custody_head else {
-        return Ok(0);
+    let (Some(custody_head), Some(witness_head)) = (&stored.custody_head, &stored.witness_head)
+    else {
+        bail!("safety provenance: the checkpoint names a first custody record but no heads");
     };
-    let index = custody
+    if witness.get(witness_head).is_none() {
+        bail!("safety provenance: the stored witness head {witness_head} is missing");
+    }
+    let index = segment
         .iter()
-        .position(|record| record.hash.as_ref() == Some(head))
+        .position(|record| record.hash.as_ref() == Some(custody_head))
         .with_context(|| {
-            format!("safety provenance: the stored custody head {head} is not in the custody log")
+            format!("safety provenance: the stored custody head {custody_head} is missing")
         })?;
     Ok(index + 1)
 }
@@ -593,12 +689,34 @@ mod tests {
             assert!(!text.contains("secret-plan"), "{text}");
         }
 
-        // A reopened sink keeps the key and extends both chains.
-        let reopened = GraphProvenanceSink::open(dir.path()).expect("reopen the sink");
-        assert_eq!(reopened.digest_key(), key);
-        let reopened_summary = reopened.summary();
-        assert_eq!(reopened_summary.witness_head, Some(head));
-        assert_eq!(reopened_summary.custody_head, summary.custody_head);
+        // The key file is readable by its owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let key_file = layout.state_dir().join(KEY_FILE);
+            let mode = std::fs::metadata(&key_file)
+                .expect("key file")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        // A run that starts later keeps the key, and its first record follows
+        // the logs' last vertex and record.
+        let later = GraphProvenanceSink::start(dir.path()).expect("start another run");
+        assert_eq!(later.digest_key(), key);
+        let mut another = intent.clone();
+        another.call.run_id = "run-2".to_string();
+        let ack = later.record_intent(&another).expect("record the intent");
+        let dag = WitnessLogger::new(layout.witness_log())
+            .read_all()
+            .expect("witness log");
+        let id = ContentHash::from_hex(&ack.record_id).expect("vertex id");
+        assert_eq!(dag.get(&id).expect("the new vertex").parents, [head]);
+        crate::custody::cmd_custody_verify(dir.path()).expect("the custody chain verifies");
+        let later_summary = later.summary();
+        assert_eq!(later_summary.records, 1);
+        assert_eq!(later_summary.custody_root, later_summary.custody_head);
     }
 
     #[test]
@@ -626,7 +744,8 @@ mod tests {
 
         // A later process of the run acknowledges the same intent with its
         // first record, and writes nothing new.
-        let resumed = GraphProvenanceSink::resume(dir.path(), "run-1", None).expect("resume");
+        let stored = sink.summary();
+        let resumed = GraphProvenanceSink::resume(dir.path(), "run-1", &stored).expect("resume");
         assert_eq!(
             resumed.record_intent(&intent).expect("replayed intent"),
             first

@@ -1253,16 +1253,21 @@ impl PreparedGraphCheckpoint {
     }
 
     /// Open the run's safety provenance sink, attach it, and store its
-    /// summary (gap-ff95f5). A resumed run's sink comes back from what the
-    /// checkpoint stored, checked against the witness and custody logs, so
-    /// call this before any task runs; see [`GraphProvenanceSink::resume`].
+    /// summary (gap-ff95f5). A run whose checkpoint stored no provenance
+    /// starts fresh, whatever history the workspace's logs hold. A resumed
+    /// run's sink comes back from what the checkpoint stored, its own records
+    /// checked against the witness and custody logs, so call this before any
+    /// task runs; see [`GraphProvenanceSink::resume`].
     ///
     /// # Errors
     ///
-    /// Fails closed when the stored provenance or the logs do not check out.
+    /// Fails closed when the stored provenance or the run's records do not
+    /// check out.
     pub fn open_safety_provenance(&mut self, workdir: &Path) -> Result<Arc<GraphProvenanceSink>> {
-        let stored = self.stored_safety_provenance()?;
-        let sink = GraphProvenanceSink::resume(workdir, &self.manifest.run_id, stored.as_ref())?;
+        let sink = match self.stored_safety_provenance()? {
+            Some(stored) => GraphProvenanceSink::resume(workdir, &self.manifest.run_id, &stored)?,
+            None => GraphProvenanceSink::start(workdir)?,
+        };
         let sink = Arc::new(sink);
         self.attach_safety_provenance(Arc::clone(&sink));
         self.persist_manifest()?;
@@ -3911,6 +3916,44 @@ depends_on = ["T1"]
 
         let error = restore_error(dir.path(), &graph);
         assert!(error.contains("cannot read"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_starts_on_broken_history_and_checks_only_its_own_records() {
+        use roko_agent::safety::provenance::{Custody, CustodyLogger};
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        // Custody history no run can verify, as older builds and concurrent
+        // processes leave it: a garbage line, a record edited after it was
+        // sealed, and a record appended twice.
+        let log = RokoLayout::for_project(dir.path()).custody_log();
+        let logger = CustodyLogger::new(&log);
+        let old = |action: &str, when: i64| Custody::new(action, "older-build", when, Vec::new());
+        crate::custody::log_chained(&logger, old("old-a", 1)).expect("old record");
+        crate::custody::log_chained(&logger, old("old-b", 2)).expect("old record");
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let first = text.lines().next().expect("a first record").to_string();
+        let edited = text.replacen("old-b", "old-B", 1);
+        std::fs::write(&log, format!("not json at all\n{edited}{first}\n")).expect("break it");
+        assert!(crate::custody::cmd_custody_verify(dir.path()).is_err());
+
+        // A fresh run still records its calls, and its resume checks only them.
+        run_with_provenance(dir.path(), &graph);
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        assert_eq!(restored.summary().records, 2);
+        drop((resumed, restored));
+
+        // Tampering with the run's own records still fails its resume closed.
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let tampered = text.replacen("tool_outcome:fetch", "tool_outcome:fetch2", 1);
+        std::fs::write(&log, tampered).expect("tamper with the run's records");
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("custody chain"), "{error}");
     }
 
     #[test]

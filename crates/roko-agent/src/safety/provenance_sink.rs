@@ -187,12 +187,22 @@ pub fn track_outcome(tracker: &TaintTracker, outcome: &ProvenanceOutcome) {
 /// A [`SafetyProvenanceSink`] that keeps its records, and the taint they
 /// carry, in memory in the order they were written. It is deterministic, and
 /// it can refuse intents to show a call failing closed.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemoryProvenanceSink {
     key: [u8; 32],
     records: Mutex<Vec<ProvenanceRecord>>,
     taint: TaintTracker,
     refuse_intents: AtomicBool,
+}
+
+impl std::fmt::Debug for MemoryProvenanceSink {
+    // The digest key stays out of debug output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryProvenanceSink")
+            .field("records", &self.records.lock().len())
+            .field("refuse_intents", &self.refuse_intents)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryProvenanceSink {

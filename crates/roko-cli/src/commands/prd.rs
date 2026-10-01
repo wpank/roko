@@ -3,6 +3,62 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum PrdCmd {
+    /// Capture a quick idea.
+    Idea {
+        /// The idea text.
+        text: Vec<String>,
+    },
+    /// List all PRDs (published, drafts, ideas).
+    List,
+    /// Show coverage report across PRDs and plans.
+    Status,
+    /// Create, edit, or promote draft PRDs.
+    Draft {
+        #[command(subcommand)]
+        cmd: PrdDraftCmd,
+    },
+    /// Generate implementation plans from a PRD.
+    Plan {
+        /// PRD slug (filename without .md).
+        slug: String,
+        /// Preview generation without writing tasks.toml files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also regenerate every plan in plans/ whose tasks.toml lacks modern
+        /// fields: one planner call per plan.
+        #[arg(long)]
+        regenerate_old: bool,
+    },
+    /// Scan all PRDs for duplicates, gaps, and inconsistencies.
+    Consolidate,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PrdDraftCmd {
+    /// Create a new draft PRD (agent-assisted).
+    New {
+        /// Title for the new PRD.
+        title: Vec<String>,
+    },
+    /// Refine an existing draft.
+    Edit {
+        /// Draft slug (filename without .md).
+        slug: String,
+    },
+    /// Promote a draft to published.
+    Promote {
+        /// Draft slug (filename without .md).
+        slug: String,
+        /// Execute the generated plan immediately after promotion.
+        #[arg(long)]
+        auto_execute: bool,
+    },
+    /// List all drafts.
+    List,
+}
+
 /// Extract feature keywords from a PRD slug and description for context lookup.
 /// Splits on hyphens, underscores, and spaces. Filters short words (<3 chars).
 /// Returns up to 10 lowercase unique keywords.

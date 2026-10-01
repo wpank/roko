@@ -758,7 +758,7 @@ pub(crate) async fn run_plan_execution(
     cli: &Cli,
     workdir: &Path,
     plans_dir: &Path,
-    _no_cascade: bool,
+    no_cascade: bool,
     _provider: Option<String>,
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
@@ -820,6 +820,8 @@ pub(crate) async fn run_plan_execution(
         only_plans: None,
         live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         force_disk_check: false,
+        effort: cli.effort.map(|effort| effort.to_string()),
+        no_cascade,
     })
     .await
 }

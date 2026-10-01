@@ -3,7 +3,10 @@
 use std::{
     collections::HashSet,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 
@@ -287,11 +290,74 @@ pub(crate) fn acp_dream_due(workdir: &Path, config: &RokoConfig) -> Option<usize
         .then_some(episodes_since_dream)
 }
 
-/// Spawn a background dream consolidation when [`acp_dream_due`] reports one
-/// is due. This is fire-and-forget: failures are logged but never block the
-/// caller.
+/// The dream consolidations ACP sessions run in this process.
+static ACP_DREAM_SLOTS: DreamSlots = DreamSlots::new();
+
+/// Counts running dream consolidations against
+/// `learning.dreams.max_concurrent`.
+///
+/// A dream is due on every ACP turn until it writes its report, so without
+/// this count each turn would start another one while the first runs.
+#[derive(Debug, Default)]
+pub(crate) struct DreamSlots {
+    running: AtomicUsize,
+}
+
+impl DreamSlots {
+    pub(crate) const fn new() -> Self {
+        Self {
+            running: AtomicUsize::new(0),
+        }
+    }
+
+    /// Take a slot when fewer than `max_concurrent` dreams are running.
+    pub(crate) fn try_acquire(&self, max_concurrent: usize) -> Option<DreamSlot<'_>> {
+        self.running
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
+                (running < max_concurrent).then_some(running + 1)
+            })
+            .ok()
+            .map(|_| DreamSlot { slots: self })
+    }
+}
+
+/// A running dream's place in [`DreamSlots`], given back when dropped.
+#[derive(Debug)]
+pub(crate) struct DreamSlot<'a> {
+    slots: &'a DreamSlots,
+}
+
+impl Drop for DreamSlot<'_> {
+    fn drop(&mut self) {
+        self.slots.running.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Claim a dream for an ACP turn: [`acp_dream_due`] reports one is due and
+/// `slots` has room under `learning.dreams.max_concurrent`. Returns the
+/// episode count and the slot, which the dream holds until it ends.
+pub(crate) fn claim_acp_dream<'a>(
+    slots: &'a DreamSlots,
+    workdir: &Path,
+    config: &RokoConfig,
+) -> Option<(usize, DreamSlot<'a>)> {
+    let episodes_since_dream = acp_dream_due(workdir, config)?;
+    let max_concurrent = config.learning.dreams.effective_max_concurrent();
+    let Some(slot) = slots.try_acquire(max_concurrent) else {
+        debug!(
+            episodes_since_dream,
+            max_concurrent, "skipping dream consolidation: the running dreams fill max_concurrent"
+        );
+        return None;
+    };
+    Some((episodes_since_dream, slot))
+}
+
+/// Spawn a background dream consolidation when [`claim_acp_dream`] gets one.
+/// This is fire-and-forget: failures are logged but never block the caller.
 pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
-    let Some(episodes_since_dream) = acp_dream_due(workdir, config) else {
+    let Some((episodes_since_dream, slot)) = claim_acp_dream(&ACP_DREAM_SLOTS, workdir, config)
+    else {
         return;
     };
     let workdir = workdir.to_path_buf();
@@ -333,6 +399,8 @@ pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfi
         if let Err(err) = runner.consolidate_async().await {
             warn!(?err, "background dream consolidation failed");
         }
+        // The dream is over, failed or not: free its slot.
+        drop(slot);
     });
 }
 

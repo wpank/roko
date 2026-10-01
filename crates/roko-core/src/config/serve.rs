@@ -116,6 +116,11 @@ pub struct ServeConfig {
     /// Automatically orchestrate follow-up work when publish events arrive.
     #[serde(default = "default_true")]
     pub auto_orchestrate: bool,
+    /// Times `POST /api/plans/{id}/revise` asks the planning agent again,
+    /// with the validation diagnostics, after it proposes a revision that
+    /// fails validation. `0` makes one attempt only.
+    #[serde(default = "default_revision_max_retries")]
+    pub revision_max_retries: u32,
     /// Authentication settings for `/api/*`.
     #[serde(default)]
     pub auth: ServeAuthConfig,
@@ -163,6 +168,7 @@ impl Default for ServeConfig {
             terminal_max_sessions: default_terminal_max_sessions(),
             terminal_session_ttl_secs: default_terminal_session_ttl_secs(),
             auto_orchestrate: true,
+            revision_max_retries: default_revision_max_retries(),
             auth: ServeAuthConfig::default(),
             deploy: ServeDeployConfig::default(),
             auto_start: false,
@@ -184,6 +190,10 @@ fn default_terminal_max_sessions() -> usize {
 
 fn default_terminal_session_ttl_secs() -> u64 {
     8 * 60 * 60
+}
+
+fn default_revision_max_retries() -> u32 {
+    1
 }
 
 /// Enforcement behaviour for scope-based permission checks.
@@ -481,6 +491,16 @@ mod tests {
         assert_eq!(cfg.terminal_commands, vec!["htop".to_string()]);
         assert_eq!(cfg.terminal_max_sessions, 0);
         assert_eq!(cfg.terminal_session_ttl_secs, 0);
+    }
+
+    /// gap-b3e513: a rejected plan revision is retried once by default, and
+    /// `[serve] revision_max_retries` changes that.
+    #[test]
+    fn revision_retries_default_to_one_and_are_configurable() {
+        assert_eq!(ServeConfig::default().revision_max_retries, 1);
+        let cfg: ServeConfig =
+            toml::from_str("revision_max_retries = 3\n").expect("parse revision retries");
+        assert_eq!(cfg.revision_max_retries, 3);
     }
 
     #[test]

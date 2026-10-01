@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use roko_core::{PredictionRecord, ProtocolId, SharedGateEvaluator, Signal, error::Result};
+use tokio_util::sync::CancellationToken;
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
@@ -93,6 +94,13 @@ pub struct CellContext {
     /// When `Some` and the inner `AtomicBool` is `true`, the cell should
     /// pause new work and yield. Checked via [`CellContext::is_paused`].
     pub pause_flag: Option<Arc<AtomicBool>>,
+    /// The graph run's cancellation (bug-ceb581), which
+    /// [`GraphEngine::start`](crate::engine::GraphEngine::start) attaches and
+    /// [`FlowHandle::cancel`](crate::engine::FlowHandle::cancel) cancels.
+    /// Once it is cancelled the cell starts no further work. Unlike the
+    /// cancel flag it asks no work in flight to stop. Checked via
+    /// [`CellContext::is_cancelled`].
+    pub run_cancel: Option<CancellationToken>,
 }
 
 impl CellContext {
@@ -112,6 +120,7 @@ impl CellContext {
             resources: CellResources::default(),
             cancel_flag: None,
             pause_flag: None,
+            run_cancel: None,
         }
     }
 
@@ -214,15 +223,30 @@ impl CellContext {
         self
     }
 
-    /// Returns `true` if cancellation has been requested (#255).
+    /// Builder: attach the graph run's cancellation token (bug-ceb581).
     ///
-    /// Returns `false` when no cancel flag is set. Cells should check
+    /// Once it is cancelled, [`is_cancelled`](Self::is_cancelled) returns
+    /// `true` and the cell should start no further work.
+    #[must_use]
+    pub fn with_run_cancel(mut self, token: CancellationToken) -> Self {
+        self.run_cancel = Some(token);
+        self
+    }
+
+    /// Returns `true` if cancellation has been requested (#255): the cancel
+    /// flag is set, or the graph run was cancelled (bug-ceb581).
+    ///
+    /// Returns `false` when neither is attached. Cells should check
     /// this periodically during long-running operations and abort if true.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel_flag
             .as_ref()
             .is_some_and(|f| f.load(Ordering::Acquire))
+            || self
+                .run_cancel
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
     }
 
     /// Returns `true` if the executor is paused (#255).

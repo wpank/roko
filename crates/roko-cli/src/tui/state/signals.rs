@@ -338,8 +338,9 @@ impl TuiState {
 
     /// Push a typed `AgentOutputRecord` into `agent_output_history` for the
     /// given agent (P1-TUI-G4).  This is the canonical write path for
-    /// streaming events received via `DashboardEvent::AgentOutput` or the
-    /// per-agent sidecar WebSocket client; it ensures the structured renderer
+    /// streaming events received via the per-agent sidecar WebSocket client
+    /// (`DashboardEvent::AgentOutput` lines go through
+    /// [`Self::ingest_agent_output`]); it ensures the structured renderer
     /// always sees up-to-date typed records rather than falling back to legacy
     /// raw-text collect paths.
     pub fn push_agent_output_record(
@@ -367,6 +368,29 @@ impl TuiState {
                 tool_name,
             },
         );
+    }
+
+    /// Record one `DashboardEvent::AgentOutput` line for `agent_id`, as it
+    /// arrives live. The record is made the way a snapshot's output lines are
+    /// backfilled ([`super::AgentOutputHistory::ingest_line`]), so a stream
+    /// seen live and the same stream replayed give the same records; the
+    /// agent's Live Stream chunks get the line decoded.
+    pub fn ingest_agent_output(&mut self, agent_id: &str, content: &str) {
+        use crate::tui::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+        self.agent_output_history
+            .ingest_line(agent_id, content, "assistant");
+        let chunk = match parse_stream_line(content) {
+            StreamRecord::Text { content, .. } | StreamRecord::Plain { content } => content,
+            StreamRecord::Reasoning { content, .. } => format!("[thinking] {content}"),
+            StreamRecord::ToolStart {
+                tool_name, tool_id, ..
+            } => format!("[tool ⏵ {tool_name} {tool_id}]"),
+            StreamRecord::ToolResult {
+                tool_id, output, ..
+            } => format!("[tool ✓ {tool_id}]\n{output}"),
+        };
+        self.push_agent_chunk(agent_id, chunk);
     }
 
     /// Mark the agent's live stream as connected.

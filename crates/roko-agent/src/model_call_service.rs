@@ -3215,8 +3215,12 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
     async fn force_backend_records_when_router_present() {
         let model = "ux34-model";
         let recorder = Arc::new(TestCascadeRecorder::default());
-        let svc =
-            ModelCallService::new("default".into()).with_cascade_router(Arc::clone(&recorder));
+        // An unknown model key needs a command to run (gap-fd44df).
+        let mut config = RokoConfig::default();
+        config.agent.command = Some("cat".to_string());
+        let svc = ModelCallService::new("default".into())
+            .with_config(config)
+            .with_cascade_router(Arc::clone(&recorder));
 
         let response = svc
             .call(user_request(model, "learn this override"))
@@ -3229,7 +3233,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
 
     #[tokio::test]
     async fn force_backend_noop_when_no_router() {
-        let svc = ModelCallService::new("default".into());
+        // An unknown model key needs a command to run (gap-fd44df).
+        let mut config = RokoConfig::default();
+        config.agent.command = Some("cat".to_string());
+        let svc = ModelCallService::new("default".into()).with_config(config);
 
         let response = svc
             .call(user_request("ux34-model", "no router attached"))

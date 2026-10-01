@@ -68,8 +68,11 @@ pub struct ToolCallMeta {
     pub duration_ms: u64,
     /// Number of tokens in the tool result.
     pub result_tokens: u64,
-    /// Whether the tool call succeeded.
-    pub succeeded: bool,
+    /// Whether the tool call succeeded; `None` when nothing observed its
+    /// outcome, as on the Graph path, where the provider runs the tools
+    /// (bug-f9ae3e).
+    #[serde(default)]
+    pub succeeded: Option<bool>,
     /// Whether this call contributed useful progress toward the final solution.
     #[serde(default)]
     pub advanced_task: bool,
@@ -105,8 +108,11 @@ pub struct AgentEfficiencyEvent {
     pub task_id: String,
     /// Unique identifier for this dispatch attempt.
     ///
-    /// Shared between the dispatch cost event and any gate-failure event for
-    /// the same attempt, enabling cross-event joins.
+    /// On the Graph path it is the attempt's durable key,
+    /// `run:plan:task:attempt`, so it never repeats across runs: a resumed run
+    /// continues the run's attempt ordinals. The attempt's gate rows extend
+    /// the key (`<key>/gate-pass`, `<key>/gate-fail`), so rows of one attempt
+    /// join on the key as a prefix.
     #[serde(default)]
     pub attempt_id: String,
 
@@ -1637,7 +1643,7 @@ mod tests {
             tool_name: "Read".into(),
             duration_ms: 150,
             result_tokens: 800,
-            succeeded: true,
+            succeeded: Some(true),
             advanced_task: true,
             was_redundant: false,
             error_category: None,
@@ -1653,7 +1659,7 @@ mod tests {
             tool_name: "Bash".into(),
             duration_ms: 875,
             result_tokens: 120,
-            succeeded: false,
+            succeeded: Some(false),
             advanced_task: false,
             was_redundant: true,
             error_category: Some("timeout".into()),
@@ -1675,7 +1681,7 @@ mod tests {
 
         let restored: ToolCallMeta = serde_json::from_str(json).expect("deserialize");
         assert_eq!(restored.tool_name, "Read");
-        assert!(restored.succeeded);
+        assert_eq!(restored.succeeded, Some(true));
         assert!(!restored.advanced_task);
         assert!(!restored.was_redundant);
         assert_eq!(restored.error_category, None);

@@ -655,8 +655,8 @@ roko plan status plans/
 roko diagnose <plan-id>
 ```
 
-The `diagnose` command produces structured JSON output explaining what failed, at which
-gate, with what error message.
+The `diagnose` command prints a report explaining what failed, at which verify step, with
+what error message, and how to resume. Add `--json` for the structured JSON report.
 
 ### "I want to resume after a crash"
 

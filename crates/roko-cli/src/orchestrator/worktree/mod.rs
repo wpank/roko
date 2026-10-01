@@ -172,6 +172,19 @@ pub struct AcceptedWorktree {
     pub commit_oid: String,
 }
 
+/// What [`WorktreeManager::release_accepted`] did with a delivered plan's
+/// accepted attempts (gap-415c54).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ReleasedAttempts {
+    /// The checkouts removed.
+    pub removed_checkouts: Vec<PathBuf>,
+    /// The attempt branches kept: every one unless branch deletion was asked
+    /// for, and any whose checkout or branch had moved on.
+    pub kept_branches: Vec<String>,
+    /// The attempt branches deleted, when branch deletion was asked for.
+    pub deleted_branches: Vec<String>,
+}
+
 /// The run a plan's attempts belong to in this process (bug-056b40).
 #[derive(Debug, Clone)]
 struct PlanRun {
@@ -997,43 +1010,63 @@ impl WorktreeManager {
     }
 
     /// Remove the checkouts of the attempts this process accepted onto plan
-    /// `plan_id`'s branch, and delete their attempt branches, once the plan
-    /// is delivered (gap-415c54). Each attempt's commit is on the plan
-    /// branch, so nothing is lost. A checkout that changed after its
-    /// acceptance, or whose branch moved, is kept and logged. Returns the
-    /// ids of the checkouts removed.
+    /// `plan_id`'s branch, once the plan is delivered (gap-415c54). Their
+    /// commits are on the plan branch, so nothing is lost. A checkout that
+    /// changed after its acceptance is kept and logged. The attempt branches
+    /// stay for inspection and history unless `delete_branches` asks for
+    /// them to go, and then only a branch still at its accepted commit,
+    /// which the plan branch contains.
     ///
     /// # Errors
     ///
     /// Returns an error when the repository's mutation lock cannot be taken;
     /// the checkouts are then kept.
-    pub async fn release_accepted(&self, plan_id: &str) -> Result<Vec<String>, WorktreeError> {
+    pub async fn release_accepted(
+        &self,
+        plan_id: &str,
+        delete_branches: bool,
+    ) -> Result<ReleasedAttempts, WorktreeError> {
         let accepted = self
             .accepted_attempts
             .lock()
             .remove(plan_id)
             .unwrap_or_default();
         if accepted.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ReleasedAttempts::default());
         }
         let operation = Arc::clone(&self.operations).lock_owned().await;
         let manager = self.clone();
+        let plan_id = plan_id.to_string();
         await_owned_operation(operation, move |lifecycle| async move {
             let repository_lock = manager.acquire_repository_mutation_lock()?;
-            let mut removed = Vec::new();
+            let mut released = ReleasedAttempts::default();
             for attempt in &accepted {
-                match manager.release_accepted_locked(attempt, &lifecycle).await {
-                    Ok(()) => removed.push(attempt.handle.id.clone()),
-                    Err(error) => tracing::warn!(
-                        id = %attempt.handle.id,
-                        worktree = %attempt.handle.path.display(),
-                        %error,
-                        "kept a delivered attempt's checkout"
-                    ),
+                let branch = attempt.handle.branch.clone();
+                match manager
+                    .release_accepted_locked(&plan_id, attempt, delete_branches, &lifecycle)
+                    .await
+                {
+                    Ok(deleted) => {
+                        released.removed_checkouts.push(attempt.handle.path.clone());
+                        if deleted {
+                            released.deleted_branches.push(branch);
+                        } else {
+                            released.kept_branches.push(branch);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            id = %attempt.handle.id,
+                            worktree = %attempt.handle.path.display(),
+                            %error,
+                            "kept a delivered attempt's checkout"
+                        );
+                        released.kept_branches.push(branch);
+                    }
                 }
             }
             retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
-            Ok(removed)
+            Ok(released)
         })
         .await
     }

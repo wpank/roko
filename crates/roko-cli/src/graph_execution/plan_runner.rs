@@ -1331,6 +1331,7 @@ async fn run_graph_plan_body(
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
         worktrees: worktrees.as_ref(),
+        delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
         json,
         launch_tui,
@@ -1718,7 +1719,7 @@ async fn run_graph_plan_body(
                     "deliveries": batch
                         .receipts()
                         .iter()
-                        .map(|receipt| batch.record(receipt))
+                        .map(|receipt| batch.summary_record(receipt))
                         .collect::<Vec<_>>(),
                     "promotion": promotion,
                 })),
@@ -1767,6 +1768,20 @@ async fn run_graph_plan_body(
                         receipt.request.plan_id,
                         batch.branch()
                     );
+                    let kept = receipt
+                        .extensions
+                        .get(super::batch::ATTEMPT_CLEANUP_EXTENSION)
+                        .and_then(|cleanup| cleanup["kept_branches"].as_array())
+                        .map(|branches| {
+                            branches
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if !kept.is_empty() {
+                        println!("  attempt branches kept: {}", kept.join(", "));
+                    }
                 }
             }
             if let Some(promotion) = &promotion {
@@ -2059,6 +2074,9 @@ struct PlanRunContext<'a> {
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
+    /// `[runner] delete_attempt_branches`: a delivered plan's attempt
+    /// branches go with their checkouts (gap-415c54).
+    delete_attempt_branches: bool,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -2766,6 +2784,7 @@ async fn run_one_plan(
                 plan,
                 plan_checks,
                 ctx.worktrees,
+                ctx.delete_attempt_branches,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -2908,13 +2927,15 @@ async fn run_one_plan(
 /// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
 /// regression check on the merge, and record the delivery in the plan's
 /// checkpoint. The plan succeeds only when the delivery does. A delivered
-/// plan's accepted attempt checkouts and branches are then removed from
-/// `worktrees` (gap-415c54). `Err` only when the checkpoint cannot record it.
+/// plan's accepted attempt checkouts are then removed from `worktrees`, and
+/// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
+/// only when the checkpoint cannot record it.
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
+    delete_attempt_branches: bool,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -2957,16 +2978,31 @@ async fn deliver_plan_to_batch(
             "plan delivered into the run's batch branch"
         );
         // Its work is on the plan and batch branches now, so the attempt
-        // checkouts kept for review have done their job.
+        // checkouts kept for review have done their job. What went and what
+        // stayed is on the receipt, for the run summary.
         if receipt.release_policy == roko_graph::delivery::ReleasePolicy::Delete
             && let Some(worktrees) = worktrees
         {
-            match worktrees.release_accepted(&plan.id).await {
-                Ok(removed) => tracing::info!(
-                    plan_id = %plan.id,
-                    removed = removed.len(),
-                    "removed the delivered plan's attempt checkouts and branches"
-                ),
+            match worktrees
+                .release_accepted(&plan.id, delete_attempt_branches)
+                .await
+            {
+                Ok(released) => {
+                    tracing::info!(
+                        plan_id = %plan.id,
+                        removed = released.removed_checkouts.len(),
+                        kept_branches = released.kept_branches.len(),
+                        deleted_branches = released.deleted_branches.len(),
+                        "removed the delivered plan's attempt checkouts"
+                    );
+                    if let Ok(cleanup) = serde_json::to_value(&released) {
+                        let mut receipt = receipt;
+                        receipt
+                            .extensions
+                            .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
+                        batch.store().update(&receipt);
+                    }
+                }
                 Err(error) => tracing::warn!(
                     plan_id = %plan.id,
                     %error,
@@ -4830,8 +4866,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             git_stdout(repo, &["rev-parse", "roko/run/run-e2e^{commit}"]),
             beta_plan
         );
-        // gap-415c54: once a plan was delivered, its attempt checkouts and
-        // branches were removed.
+        // gap-415c54: once a plan was delivered, its attempt checkout was
+        // removed and its attempt branch kept, one per plan.
         let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
         assert_eq!(
             worktrees
@@ -4841,10 +4877,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             1,
             "{worktrees}"
         );
-        assert_eq!(
-            git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]),
-            ""
-        );
+        let attempt_branches = git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]);
+        assert_eq!(attempt_branches.lines().count(), 2, "{attempt_branches}");
         // The operator's checkout never moved.
         assert_eq!(git_stdout(repo, &["rev-parse", "HEAD"]), head);
         assert_eq!(

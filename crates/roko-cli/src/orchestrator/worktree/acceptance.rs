@@ -67,30 +67,20 @@ impl WorktreeManager {
         Ok(accepted)
     }
 
-    /// Body of [`WorktreeManager::release_accepted`] for one accepted
-    /// attempt, run while holding the manager's operation and the
-    /// repository's mutation lock: remove its checkout, then delete its
-    /// branch. Both must still be as the acceptance left them.
+    /// Body of [`WorktreeManager::release_accepted`] for one attempt that
+    /// plan `plan_id` accepted, run while holding the manager's operation and
+    /// the repository's mutation lock: remove its checkout, then, with
+    /// `delete_branch`, its branch. Returns whether the branch was deleted.
     pub(super) async fn release_accepted_locked(
         &self,
+        plan_id: &str,
         accepted: &AcceptedWorktree,
+        delete_branch: bool,
         lifecycle: &OperationLifecycle,
-    ) -> Result<(), WorktreeError> {
+    ) -> Result<bool, WorktreeError> {
         let handle = &accepted.handle;
-        let branch_ref = format!("refs/heads/{}", handle.branch);
-        let tip = self.git_ref_oid(&branch_ref, false).await?;
-        if tip.as_deref() != Some(accepted.attempt_commit.as_str()) {
-            return Err(WorktreeError::GitFailed {
-                stderr: format!(
-                    "`{}` is at {}, not at the accepted {}",
-                    handle.branch,
-                    tip.as_deref().unwrap_or("no commit"),
-                    accepted.attempt_commit
-                ),
-            });
-        }
-        // Besides the accepted commit, the checkout holds only roko's own
-        // config copies, which acceptance left out of it.
+        // Besides its committed work, the checkout holds only roko's own
+        // config copies, which acceptance left out of the commit.
         for dir in ISOLATION_DIRS {
             let copy = handle.path.join(dir);
             let tracked = self
@@ -103,6 +93,30 @@ impl WorktreeManager {
             }
         }
         self.remove_locked(&handle.id, lifecycle).await?;
+        if !delete_branch {
+            return Ok(false);
+        }
+        // The branch goes only while it is at its accepted commit and the
+        // plan branch contains that commit, and then by compare-and-swap.
+        let branch_ref = format!("refs/heads/{}", handle.branch);
+        let plan_ref = format!("refs/heads/{}", format_branch_name(plan_id));
+        let at_accepted = self.git_ref_oid(&branch_ref, false).await?.as_deref()
+            == Some(accepted.attempt_commit.as_str());
+        let contained = match self.git_ref_oid(&plan_ref, false).await? {
+            Some(plan_tip) => {
+                self.is_ancestor(&accepted.attempt_commit, &plan_tip)
+                    .await?
+            }
+            None => false,
+        };
+        if !(at_accepted && contained) {
+            tracing::warn!(
+                branch = %handle.branch,
+                accepted = %accepted.attempt_commit,
+                "kept an attempt branch that moved on or is not on its plan branch"
+            );
+            return Ok(false);
+        }
         ensure_git_success(
             self.mutation_at(
                 &self.config.repo_root,
@@ -110,7 +124,8 @@ impl WorktreeManager {
                 lifecycle,
             )
             .await?,
-        )
+        )?;
+        Ok(true)
     }
 
     /// Start plan `plan_id`'s attempts in this process under run `run_id`

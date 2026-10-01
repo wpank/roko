@@ -4,8 +4,9 @@
 //! whose agent edits a file in its task worktree. With no manual step, the
 //! verified edit is committed on the plan branch, delivered into the run's
 //! batch branch and promoted into the target, the run summary names where
-//! it landed, and the attempt's worktree and branch are removed. An edit
-//! that fails its verify step is kept in its worktree and merged nowhere.
+//! it landed, and the attempt's worktree is removed while its branch stays
+//! for inspection. An edit that fails its verify step is kept in its
+//! worktree and merged nowhere.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -162,8 +163,9 @@ fn branches(repo: &Path, prefix: &str) -> Vec<String> {
 /// gap-415c54: the agent's edit passes its verify step, is committed on the
 /// plan branch, delivered into the batch branch and promoted into `release`,
 /// and the summary and checkpoint name the commits. The attempt's worktree
-/// and branch are gone afterwards, and the operator's checkout never
-/// changed.
+/// is gone afterwards, its branch is kept (`[runner]
+/// delete_attempt_branches` is off by default), and the operator's checkout
+/// never changed.
 #[test]
 fn worktree_task_diff_is_gated_merged_and_cleaned() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -230,11 +232,23 @@ fn worktree_task_diff_is_gated_merged_and_cleaned() {
     assert_eq!(promotion["moved"], true, "{report:#}");
     assert_eq!(promotion["commit"], release.as_str(), "{report:#}");
 
-    // Cleaned: no attempt worktree or branch is left.
+    // Cleaned: no attempt worktree is left, and the attempt's branch, still
+    // at the commit the plan branch took, stays and is named in the summary.
     assert_eq!(worktrees(&repo).len(), 1, "{:?}", worktrees(&repo));
+    let attempt_branches = branches(&repo, "refs/heads/roko/attempt/");
+    assert_eq!(attempt_branches.len(), 1, "{attempt_branches:?}");
+    assert_eq!(git(&repo, &["rev-parse", &attempt_branches[0]]), plan_tip);
     assert_eq!(
-        branches(&repo, "refs/heads/roko/attempt/"),
-        Vec::<String>::new()
+        delivery["attempt_cleanup"]["kept_branches"],
+        serde_json::json!(attempt_branches),
+        "{report:#}"
+    );
+    assert_eq!(
+        delivery["attempt_cleanup"]["removed_checkouts"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "{report:#}"
     );
     let checkouts = fs::read_dir(repo.join(".roko/worktrees"))
         .map(|entries| {

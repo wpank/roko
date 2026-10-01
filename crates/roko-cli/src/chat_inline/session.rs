@@ -277,6 +277,7 @@ pub(crate) fn clone_chat_agent_session(session: &ChatAgentSession) -> ChatAgentS
         timeout: session.timeout,
         provider_base_url: session.provider_base_url.clone(),
         provider_api_key_env: session.provider_api_key_env.clone(),
+        env_passthrough: session.env_passthrough.clone(),
         dangerously_skip_permissions: session.dangerously_skip_permissions,
     }
 }

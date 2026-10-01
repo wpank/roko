@@ -9,9 +9,9 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/chat"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
 anchors = ["crates/roko-cli/src/chat_session.rs::ChatAgentSession::credential_scrub", "crates/roko-cli/src/config.rs::from_roko_config", "crates/roko-cli/src/config.rs::ExecAgentConfig"]
@@ -77,3 +77,9 @@ Checked at `33e107da1`: `chat_session.rs` does not mention `env_passthrough`. dc
 ## Notes
 
 - Keep the chat scrub `CredentialScrub::for_kind(ProviderKind::ClaudeCli)`; only add the keep list.
+- 2026-10-01 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  Premise still true at BASE `ebdc0f5d5`. `ExecAgentConfig` gained `env_passthrough` (serde default, skipped when
+  empty), filled from `core.agent.env_passthrough` in `Config::from_roko_config`; `ChatAgentSession` stores it (`new`,
+  `clone_for_test`, `chat_inline::session::clone_chat_agent_session` and the three test literals) and
+  `credential_scrub` keeps it. Test `chat_credential_scrub_keeps_agent_env_passthrough` covers the conversion and the
+  scrub with a local `DotenvNames`.

@@ -406,6 +406,9 @@ pub struct ChatAgentSession {
     pub provider_base_url: Option<String>,
     /// Env var name for the provider's API key (e.g. `ANTHROPIC_API_KEY`).
     pub provider_api_key_env: Option<String>,
+    /// `[agent] env_passthrough`: variables the chat's Claude CLI keeps
+    /// although roko loaded them from a `.env` file (`AWS_*`).
+    pub env_passthrough: Vec<String>,
     /// Run Claude with `--dangerously-skip-permissions`. Mirrors the
     /// workspace's `runner.dangerously_skip_permissions`, which is off by
     /// default, so skipping Claude's permission checks is an explicit opt-in.
@@ -468,16 +471,19 @@ impl ChatAgentSession {
             timeout,
             provider_base_url,
             provider_api_key_env,
+            env_passthrough: config.agent.env_passthrough.clone(),
             dangerously_skip_permissions: config.runner.dangerously_skip_permissions,
         })
     }
 
     /// Which inherited credentials the chat's Claude CLI loses: those of
-    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env` and
-    /// the variables the MCP config refers to.
+    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env`,
+    /// `[agent] env_passthrough` and the variables the MCP config refers to,
+    /// as for the provider CLIs of plan runs.
     fn credential_scrub(&self) -> CredentialScrub {
         CredentialScrub::for_kind(ProviderKind::ClaudeCli)
             .keep_all(self.provider_api_key_env.iter().cloned())
+            .keep_all(self.env_passthrough.iter().cloned())
             .keep_all(
                 self.mcp_config
                     .as_deref()
@@ -1215,6 +1221,7 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            env_passthrough: self.env_passthrough.clone(),
             dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
@@ -2137,6 +2144,7 @@ mod tests {
             timeout: Some(Duration::from_secs(30)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
     }
@@ -2158,8 +2166,31 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
+    }
+
+    /// bug-76dc76: `[agent] env_passthrough` keeps a `.env`-loaded variable
+    /// in the chat's Claude CLI, as in the provider CLIs of plan runs.
+    #[test]
+    fn chat_credential_scrub_keeps_agent_env_passthrough() {
+        let mut core = RokoConfig::default();
+        core.agent.env_passthrough = vec!["AWS_*".to_string()];
+        let config = Config::from_roko_config(&core).expect("convert config");
+        assert_eq!(config.agent.env_passthrough, ["AWS_*"]);
+
+        // The process-wide startup record is write-once, so build one here.
+        let mut dotenv = roko_core::child_env::DotenvNames::new();
+        dotenv.insert("AWS_PROFILE", true);
+        dotenv.insert("OPENAI_API_KEY", true);
+
+        let mut session = test_session();
+        assert!(session.credential_scrub().strips("AWS_PROFILE", &dotenv));
+        session.env_passthrough = config.agent.env_passthrough;
+        let scrub = session.credential_scrub();
+        assert!(!scrub.strips("AWS_PROFILE", &dotenv));
+        assert!(scrub.strips("OPENAI_API_KEY", &dotenv));
     }
 
     fn write_fake_claude_script(tmp: &tempfile::TempDir, body: &str) -> PathBuf {

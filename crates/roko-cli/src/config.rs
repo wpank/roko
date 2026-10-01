@@ -160,6 +160,7 @@ impl Config {
                 .timeout_ms
                 .unwrap_or(ExecAgentConfig::default_timeout()),
             env: core_agent.env.clone().unwrap_or_default(),
+            env_passthrough: core_agent.env_passthrough.clone(),
             fallback_model: core_agent.fallback_model.clone(),
             clean_output: ExecAgentConfig::default_clean(),
             mcp_config: None,
@@ -233,6 +234,10 @@ pub struct ExecAgentConfig {
     /// API keys, `OLLAMA_HOST`, etc.
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// `[agent] env_passthrough`: variables a provider CLI keeps although
+    /// roko loaded them from a `.env` file (an exact name or `PREFIX*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Whether to post-process the agent output — strip ANSI escapes and
     /// reasoning-model "thinking" traces. Default: `true` (so reasoning
     /// models like glm-4 / gemma-reasoning work out of the box).
@@ -464,6 +469,7 @@ impl Default for ExecAgentConfig {
             fallback_model: None,
             timeout_ms: Self::default_timeout(),
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             clean_output: Self::default_clean(),
             mcp_config: None,
             tier_models: std::collections::HashMap::new(),

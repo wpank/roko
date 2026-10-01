@@ -1,10 +1,11 @@
 //! Snapshot persistence and migration helpers for the cascade router.
 
 use roko_core::agent::AgentRole;
+use roko_core::task::TaskCategory;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use super::types::StageTransition;
+use super::types::{CategoryModelStats, StageTransition};
 
 /// Serializable form of LinUCB arm parameters.
 ///
@@ -79,6 +80,11 @@ pub(crate) struct CascadeSnapshot {
     /// restarts without requiring re-computation from scratch.
     #[serde(default)]
     pub(crate) pareto_frontier: Vec<String>,
+    /// Per-model, per-category trial and success counts behind Stage 2's
+    /// category pass-rate delta (bug-a6a3cd). Empty for snapshots written
+    /// before this field was added.
+    #[serde(default)]
+    pub(crate) category_stats: HashMap<String, HashMap<TaskCategory, CategoryModelStats>>,
 }
 
 impl CascadeSnapshot {
@@ -331,6 +337,31 @@ pub(crate) fn merge_learning(
                 .entry(slug.clone())
                 .or_default()
                 .absorb(learned);
+        }
+    }
+
+    // Per-category counters are additive too (bug-a6a3cd): what the router
+    // gained since `base` is added, and successes a hindsight relabel
+    // retracted from what `base` held leave `latest`.
+    for (slug, categories) in &current.category_stats {
+        let base_categories = base.category_stats.get(slug);
+        for (category, stats) in categories {
+            let base_stats = base_categories
+                .and_then(|by_category| by_category.get(category))
+                .cloned()
+                .unwrap_or_default();
+            let learned = stats.learned_since(&base_stats);
+            let retracted = base_stats.successes.saturating_sub(stats.successes);
+            if learned.trials > 0 || learned.successes > 0 || retracted > 0 {
+                let persisted = latest
+                    .category_stats
+                    .entry(slug.clone())
+                    .or_default()
+                    .entry(*category)
+                    .or_default();
+                persisted.absorb(&learned);
+                persisted.successes = persisted.successes.saturating_sub(retracted);
+            }
         }
     }
 

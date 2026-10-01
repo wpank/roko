@@ -38,3 +38,5 @@ What it does not do:
 - `resume_from` has no engine and so no sink. Replayed Activity nodes settle without a `NodeStarted`. Graph-level and wave events are still not published.
 
 gap-8921a3 lists the GraphExecutionEvent sink as dead code; it is live now.
+
+After the working branch at `aec267cac` was merged in (`5beb262c5`), a completed task node's outcome also covers gap-161be1's `TaskGateVerdict::PassedWithPreexistingFailures`, as `passed_with_preexisting_failures`.

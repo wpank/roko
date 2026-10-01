@@ -88,3 +88,5 @@ Plan step 1 took the new event: `DashboardEvent::TaskBlocked { plan_id, task_id,
 - Portal: `task_blocked` is folded into the run state. It shows as skipped, keeps `blockedBy` and `blockedReason`, counts as neither done nor failed, is not counted as a retry when it starts, and a resume runs it again. `fromSnapshot` carries the two fields.
 
 Still open from plan step 3: no portal view says "blocked by T1" yet. The data is in `TaskRun`, but the portal has no blocked status, and a blocked task's row reads as skipped. Also, the bug-230de6 `EventLogWriter` summary counts outcomes from `TaskCompleted` only, so it counts a blocked task as skipped; the `task_blocked` line is in the log.
+
+`6fc37262d` extends the plan-run test `a_failed_task_blocks_only_its_dependants`: after the run, the hub's snapshot lists T4 as blocked by T1, and the plan counts no skipped task for it. That covers the first Done-when on the real run path.

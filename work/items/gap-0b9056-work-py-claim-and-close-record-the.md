@@ -2,14 +2,16 @@
 id = "gap-0b9056"
 kind = "gap"
 title = "work.py claim and close record the executor, pick-up route, size and claim time; release records a reason"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "6e90df1e0"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (F1, A2)"
 anchors = ["tools/work.py::cmd_claim", "tools/work.py::cmd_release", "tools/work.py::close_item", "tools/work.py::cmd_sync", "tools/test_work.py"]
@@ -19,6 +21,14 @@ links = { depends_on = ["gap-d0643c"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_close_copies_claim_fields_into_closed' tools/test_work.py && grep -qw 'def test_release_records_its_reason' tools/test_work.py && python3 tools/test_work.py -k test_close_copies_claim_fields_into_closed -k test_release_records_its_reason"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:14:57Z"
+commit = "6e90df1e0"
+by = "wk-gates"
+forced = false
+evidence = "6e90df1e0: claim --executor/--via/--size (size defaults to the item's) stores them and claimed_at in the claim and the claim event; release --reason records the reason in the release event; close copies the claim's executor/via/size/claimed_at into [closed] (claim read from the main checkout, so a worktree close gets them) plus at_ts, forced, --model, --assist; sync closures get executor roko-plan (plan) or the claim's/unknown (commit) and a reconciled closed event; check validates the new optional fields (1498 items, 0 problems). tools/test_work.py: claim with the three flags then close in a second worktree fills the four claim fields and at_ts; release --reason blocked is recorded; sync executors; the [[verify]] command passes."
 +++
 
 ## Problem

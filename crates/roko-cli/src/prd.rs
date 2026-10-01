@@ -1070,6 +1070,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {

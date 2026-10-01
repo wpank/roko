@@ -9,9 +9,9 @@ size = "M"
 goal = "visibility"
 subsystem = ["roko-core/transcript_store"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/tui/app/channels.rs::drain_state_events", "crates/roko-runtime/src/state_hub.rs::StateHub::subscribe_events_from", "crates/roko-runtime/src/event_bus.rs::EventBus::replay_from", "crates/roko-core/src/transcript_store.rs::is_control_event", "crates/roko-core/src/transcript_store.rs::PriorityEventChannel"]
@@ -139,6 +139,18 @@ Related items:
 
 ## Notes
 
+- 2026-10-01 (wk-streams): implemented on work/gap-b35a57; cargo verification deferred to the batch check.
+  - The silent drop was in the replay: `drain_state_events` ran `subscription.replay.drain(..).take(256)`, and a
+    `Drain` removes everything when dropped, so a replay longer than one tick lost the rest uncounted. The new
+    `channels.rs::take_state_events` drains at most one tick and leaves the remainder for the next.
+  - Option (A) cannot recover lagged events: `EventBus::new` gives the replay ring the broadcast channel's capacity
+    (and tokio rounds the channel up to a power of two), so the ring never holds an event the channel already
+    dropped. The lag marker's count, now one per tick, is the exact number lost; plan, task and gate state come from
+    the snapshot. `PriorityEventChannel` stays, with a doc note that it is not on this path (Plan step 4).
+  - Test `control_events_survive_long_stream_backpressure` (`tui/app/tests.rs`) publishes 1,811 events of a
+    three-task run through `TuiBridge`: replayed from a 4,096-event ring all arrive over several ticks; live past an
+    8-event ring, delivered plus counted equals published, the App's marker gives that count, and every task shows
+    `Done`.
 - Serve's SSE and WebSocket streams also subscribe to the StateHub. Fix (A) changes only the TUI
   consumer. Do not change `EventBus` capacity defaults or the `StateHub::publish` ordering (the
   snapshot is updated before the broadcast) without checking `crates/roko-serve`.

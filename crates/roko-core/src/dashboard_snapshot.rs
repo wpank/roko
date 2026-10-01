@@ -635,6 +635,15 @@ pub struct TaskState {
     /// Why the task will not run, when it is blocked (gap-f59fe9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    /// When the task's latest run started (Unix ms), stamped as its
+    /// `TaskStarted` is applied. `None` until it starts, and for a task that
+    /// finished without one.
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    /// When the task's latest run ended (Unix ms), stamped as its first
+    /// `TaskCompleted` is applied. `None` before it ends.
+    #[serde(default)]
+    pub finished_at_ms: Option<u64>,
 }
 
 /// A single agent's live state.
@@ -1771,6 +1780,13 @@ impl DashboardSnapshot {
                     .tasks
                     .get(&key)
                     .is_none_or(|task| task.outcome.is_some());
+                // A repeated start of a running task keeps its clock.
+                let started_at_ms = self
+                    .tasks
+                    .get(&key)
+                    .filter(|task| task.outcome.is_none())
+                    .and_then(|task| task.started_at_ms)
+                    .unwrap_or(ts);
                 self.tasks.insert(
                     key,
                     TaskState {
@@ -1781,6 +1797,8 @@ impl DashboardSnapshot {
                         outcome: None,
                         blocked_by: None,
                         blocked_reason: None,
+                        started_at_ms: Some(started_at_ms),
+                        finished_at_ms: None,
                     },
                 );
                 if newly_active {
@@ -1807,6 +1825,10 @@ impl DashboardSnapshot {
                         // later run that settles it counts (gap-f59fe9).
                         let newly_terminal =
                             was_active || task.outcome.as_deref() == Some(TASK_OUTCOME_BLOCKED);
+                        // A repeated completion keeps the first end time.
+                        if newly_terminal {
+                            task.finished_at_ms = Some(ts);
+                        }
                         task.phase = "completed".into();
                         task.outcome = Some(outcome.clone());
                         task.blocked_by = None;
@@ -1824,6 +1846,8 @@ impl DashboardSnapshot {
                                 outcome: Some(outcome.clone()),
                                 blocked_by: None,
                                 blocked_reason: None,
+                                started_at_ms: None,
+                                finished_at_ms: Some(ts),
                             },
                         );
                         self.grow_plan_task_total(plan_id);
@@ -1866,6 +1890,8 @@ impl DashboardSnapshot {
                     outcome: None,
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 });
                 if task.title.is_empty() {
                     task.title.clone_from(title);
@@ -2995,6 +3021,8 @@ fn bootstrap_plan_state(
                 outcome: Some(String::from("success")),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3015,6 +3043,8 @@ fn bootstrap_plan_state(
                 outcome: Some(String::from("failed")),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3034,6 +3064,8 @@ fn bootstrap_plan_state(
                     outcome: None,
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
         }
@@ -3063,6 +3095,8 @@ fn bootstrap_plan_state(
                 }),
                 blocked_by: None,
                 blocked_reason: None,
+                started_at_ms: None,
+                finished_at_ms: None,
             },
         );
     }
@@ -3346,6 +3380,8 @@ fn apply_runner_lifecycle_projection(
                     outcome: outcome.map(str::to_string),
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3559,6 +3595,8 @@ fn apply_runner_terminal_task_maps(
                         outcome: Some(outcome.to_string()),
                         blocked_by: None,
                         blocked_reason: None,
+                        started_at_ms: None,
+                        finished_at_ms: None,
                     },
                 );
                 if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3596,6 +3634,8 @@ fn apply_runner_terminal_task_maps(
                     outcome: Some("skipped".to_string()),
                     blocked_by: None,
                     blocked_reason: None,
+                    started_at_ms: None,
+                    finished_at_ms: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -4748,6 +4788,51 @@ mod tests {
         assert_eq!((next.started_at_ms, next.finished_at_ms), (None, None));
         assert_eq!(next.cost_usd, 0.0);
         assert_eq!(next.tasks_accepted_with_failures, 0);
+    }
+
+    /// gap-8a1fb3: the snapshot stamps when each task started and ended, so a
+    /// client that reloads mid-run still has every task's times.
+    #[test]
+    fn task_state_carries_start_and_end_times() {
+        let mut snap = DashboardSnapshot::default();
+        let started = |task_id: &str| DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "implement".into(),
+        };
+        let completed = |task_id: &str| DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            outcome: "passed".into(),
+        };
+
+        snap.apply_with_ts(&started("t1"), 1_000);
+        // A repeated start of a running task keeps its clock.
+        snap.apply_with_ts(&started("t1"), 1_500);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(1_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, None);
+
+        snap.apply_with_ts(&completed("t1"), 3_000);
+        // A repeated completion keeps the first end time.
+        snap.apply_with_ts(&completed("t1"), 9_000);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(1_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, Some(3_000));
+
+        // A task that ends without a start has only an end time.
+        snap.apply_with_ts(&completed("t2"), 4_000);
+        assert_eq!(snap.tasks["p1/t2"].started_at_ms, None);
+        assert_eq!(snap.tasks["p1/t2"].finished_at_ms, Some(4_000));
+
+        // The snapshot a reloading client fetches carries them.
+        let wire = serde_json::to_value(&snap).expect("serialize snapshot");
+        assert_eq!(wire["tasks"]["p1/t1"]["started_at_ms"], 1_000);
+        assert_eq!(wire["tasks"]["p1/t1"]["finished_at_ms"], 3_000);
+
+        // A retry starts a new clock.
+        snap.apply_with_ts(&started("t1"), 5_000);
+        assert_eq!(snap.tasks["p1/t1"].started_at_ms, Some(5_000));
+        assert_eq!(snap.tasks["p1/t1"].finished_at_ms, None);
     }
 
     #[test]

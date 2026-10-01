@@ -17,7 +17,6 @@ pub(crate) async fn cmd_dashboard(
     // Skip the shared lock when a server owns the workspace (it is the only
     // writer and operates atomically); otherwise take the shared lock as usual.
     let _lock = roko_cli::serve_client::read_lock_unless_served(&workdir)?;
-    let server_owns = _lock.is_none();
 
     let initial_page = page.as_deref().map(|page| {
         parse_dashboard_page(page).ok_or_else(|| {
@@ -30,23 +29,10 @@ pub(crate) async fn cmd_dashboard(
     let initial_page = initial_page.transpose()?;
 
     if !text && !list_pages && std::io::stdout().is_terminal() {
-        // Resolve which hub to connect the TUI to:
-        //   1. Caller-provided hub (e.g. from `roko plan run` in the same process).
-        //   2. IPC mirror when a live `roko serve` owns the workspace and no
-        //      caller hub was supplied — this lets `roko dashboard` show the
-        //      server's live runs without being blocked by the exclusive lock.
-        //   3. No hub → static file-polling TUI.
-        let ipc_hub: Option<roko_cli::state_hub::SharedStateHub> =
-            if state_hub.is_none() && server_owns {
-                roko_cli::state_hub_ipc::try_connect_hub_ipc(&workdir).await
-            } else {
-                None
-            };
-
-        let effective_hub = state_hub.as_ref().or(ipc_hub.as_ref());
+        let hub = dashboard_hub(&workdir, state_hub).await;
 
         // Use the Mori-style interactive TUI with 60fps event loop.
-        let mut app = if let Some(hub) = effective_hub {
+        let mut app = if let Some(hub) = &hub {
             App::new_connected_with_page(&workdir, initial_page, hub)
         } else {
             App::new_with_page(&workdir, initial_page)
@@ -66,6 +52,20 @@ pub(crate) async fn cmd_dashboard(
     let output = render_dashboard_text(cli, Some(workdir), page, list_pages).await?;
     print!("{output}");
     Ok(EXIT_SUCCESS)
+}
+
+/// The hub the dashboard TUI follows: the caller's (e.g. from `roko plan run`
+/// in the same process), else a mirror of the hub that `roko serve`, or a
+/// `roko plan run` in another terminal, serves on `.roko/runtime/hub.sock`
+/// (gap-6533bf). `None` leaves the TUI polling files.
+async fn dashboard_hub(
+    workdir: &Path,
+    state_hub: Option<roko_cli::state_hub::SharedStateHub>,
+) -> Option<roko_cli::state_hub::SharedStateHub> {
+    match state_hub {
+        Some(hub) => Some(hub),
+        None => roko_cli::state_hub_ipc::try_connect_hub_ipc(workdir).await,
+    }
 }
 
 pub(crate) async fn cmd_dashboard_snapshot(
@@ -429,4 +429,39 @@ pub(crate) async fn dashboard_output(
     list_pages: bool,
 ) -> Result<String> {
     render_dashboard_text(cli, workdir, page, list_pages).await
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use roko_cli::state_hub_ipc::start_hub_ipc_server;
+
+    /// gap-6533bf: with no `roko serve` in the workspace, a dashboard follows
+    /// the hub that a `roko plan run` in another terminal serves, and polls
+    /// files while nothing serves one.
+    #[tokio::test]
+    async fn dashboard_follows_the_hub_a_standalone_run_serves() {
+        // Under /tmp, so the socket path stays short.
+        let workdir = tempfile::Builder::new()
+            .prefix("dashboard_hub_")
+            .tempdir_in("/tmp")
+            .expect("tempdir");
+        assert!(dashboard_hub(workdir.path(), None).await.is_none());
+
+        let hub = roko_cli::state_hub::shared_state_hub();
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 1,
+        });
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let server = start_hub_ipc_server(hub, workdir.path(), shutdown.clone()).expect("bind");
+
+        let mirror = dashboard_hub(workdir.path(), None)
+            .await
+            .expect("the dashboard follows the served hub");
+        assert!(mirror.current_snapshot().plans.contains_key("p1"));
+
+        shutdown.cancel();
+        server.await.expect("hub server task");
+    }
 }

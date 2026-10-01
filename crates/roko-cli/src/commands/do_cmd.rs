@@ -823,6 +823,7 @@ pub(crate) async fn run_plan_execution(
         force_disk_check: false,
         effort: cli.effort.map(|effort| effort.to_string()),
         no_cascade,
+        metrics: None,
     })
     .await
 }

@@ -1376,6 +1376,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.tasks.insert(
@@ -1388,6 +1390,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: Some("success".into()),
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(
@@ -1578,6 +1582,8 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(
@@ -2761,6 +2767,30 @@ fn live_and_replayed_tool_streams_are_identical() {
     ] {
         assert!(lines.contains(&expected.to_string()), "{lines:?}");
     }
+}
+
+/// gap-aabeff: a tool call from an agent's sidecar stream becomes a typed
+/// record and a Live Stream line naming the call, as a StateHub tool start
+/// does; the call's JSON, arguments included, never reaches the pane.
+#[test]
+fn sidecar_tool_call_line_names_the_call_without_its_json() {
+    use crate::tui::ws_client::StreamChunk;
+    use serde_json::json;
+
+    let mut state = TuiState::default();
+    let call = json!({ "id": "c1", "name": "Bash", "arguments": { "command": "ls" } });
+    state.ingest_stream_chunk("a", StreamChunk::ToolCall(call));
+    let sidecar_line = state.agent_streams["a"].chunks.back().cloned();
+    assert_eq!(sidecar_line.as_deref(), Some("[tool ⏵ Bash c1]"));
+    let record = &state.agent_output_history.records_for("a")[0];
+    assert_eq!(record.kind, OutputRecordKind::ToolCall);
+    assert_eq!(record.tool_id.as_deref(), Some("c1"));
+    assert_eq!(record.tool_name.as_deref(), Some("Bash"));
+
+    // A tool start published through the StateHub reads the same.
+    let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"payload\":{\"tool_id\":\"c1\",\"tool\":\"Bash\"}}";
+    state.ingest_agent_output("b", line);
+    assert_eq!(state.agent_streams["b"].chunks.back().cloned(), sidecar_line);
 }
 
 /// gap-f59fe9: a task blocked by a failed one, which never started, is

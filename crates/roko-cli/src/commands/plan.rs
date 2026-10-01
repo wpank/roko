@@ -2400,7 +2400,28 @@ async fn cmd_plan_run_engine(
         }
     };
 
-    run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
+    // A `roko dashboard` in another terminal follows this run live through
+    // the hub socket, as it follows a server's runs (gap-6533bf). Binding is
+    // best-effort: without the socket the dashboard polls files as before.
+    let state_hub = roko_cli::state_hub::shared_state_hub();
+    #[cfg(unix)]
+    let ipc_shutdown = tokio_util::sync::CancellationToken::new();
+    #[cfg(unix)]
+    let ipc_server = {
+        use roko_cli::state_hub_ipc::start_hub_ipc_server;
+        match start_hub_ipc_server(state_hub.clone(), workdir, ipc_shutdown.clone()) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "StateHub IPC server failed to bind; a dashboard beside this run polls files"
+                );
+                None
+            }
+        }
+    };
+
+    let exit_code = run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
         plans_dir: plans_dir.to_path_buf(),
         workdir: workdir.to_path_buf(),
         quiet: cli.quiet,
@@ -2419,7 +2440,7 @@ async fn cmd_plan_run_engine(
         rich_topology,
         promote,
         no_tui,
-        state_hub: None,
+        state_hub: Some(state_hub),
         interrupt: Some(interrupt),
         max_parallel_plans,
         fail_fast,
@@ -2428,8 +2449,19 @@ async fn cmd_plan_run_engine(
         force_disk_check: force,
         effort: None,
         no_cascade: false,
+        metrics: None,
     })
-    .await
+    .await;
+
+    // Stop serving, and wait until the socket and token files are gone.
+    #[cfg(unix)]
+    {
+        ipc_shutdown.cancel();
+        if let Some(server) = ipc_server {
+            let _ = server.await;
+        }
+    }
+    exit_code
 }
 
 #[cfg(test)]

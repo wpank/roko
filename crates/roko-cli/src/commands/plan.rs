@@ -2448,6 +2448,7 @@ async fn cmd_plan_run_engine(
         force_disk_check: force,
         effort: None,
         no_cascade: false,
+        metrics: None,
     })
     .await;
 

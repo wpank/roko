@@ -269,6 +269,9 @@ pub struct GraphTaskDispatcher {
     /// The plans of this run that are running now, by id, with the areas
     /// their tasks write ([`Self::plan_started`]).
     running_plans: parking_lot::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Registry that counts verify verdicts beside the tracing fields
+    /// ([`Self::with_metrics`]).
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 impl GraphTaskDispatcher {
@@ -320,6 +323,7 @@ impl GraphTaskDispatcher {
             approval_plans: parking_lot::Mutex::default(),
             first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
             running_plans: parking_lot::Mutex::default(),
+            metrics: None,
         }
     }
 
@@ -405,6 +409,19 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn with_live_agent_output(mut self, setting: LiveAgentOutput) -> Self {
         self.live_agent_output = Some(setting);
+        self
+    }
+
+    /// Count each verify step's verdict and duration in `registry` as well as
+    /// in the tracing fields (gap-d8c39a). Serve passes the registry that
+    /// `/metrics` renders; a run without one, such as `roko plan run`, keeps
+    /// the tracing fields only.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        registry: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    ) -> Self {
+        self.metrics = registry;
         self
     }
 

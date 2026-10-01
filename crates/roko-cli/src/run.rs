@@ -580,6 +580,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             force_disk_check: false,
             effort: run.overrides.effort.clone(),
             no_cascade: run.overrides.cascade_enabled == Some(false),
+            metrics: None,
         },
         Some(run_id.clone()),
     )

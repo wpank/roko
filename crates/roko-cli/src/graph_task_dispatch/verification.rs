@@ -302,7 +302,11 @@ impl GraphTaskDispatcher {
                 // for gate threshold EMA update after the full verify sequence.
                 step_outcomes.push((step.phase.clone(), verdict.passed));
                 // P2-22: the gate pipeline's verdict metrics.
-                gate_learning::record_gate_verdict_metrics(&step.phase, &verdict);
+                gate_learning::record_gate_verdict_metrics(
+                    self.metrics.as_deref(),
+                    &step.phase,
+                    &verdict,
+                );
 
                 // P2-TUI-4: Forward the gate verdict to the TUI so the
                 // dashboard can display pass/fail status and captured output.
@@ -555,7 +559,11 @@ impl GraphTaskDispatcher {
                             );
                             // P2-LRN-6 Loop 1: Record retry step outcome.
                             retry_step_outcomes.push((step.phase.clone(), retry_verdict.passed));
-                            gate_learning::record_gate_verdict_metrics(&step.phase, &retry_verdict);
+                            gate_learning::record_gate_verdict_metrics(
+                                self.metrics.as_deref(),
+                                &step.phase,
+                                &retry_verdict,
+                            );
 
                             // P2-TUI-4: Forward post-fix verdict to the TUI.
                             if let Some(tui) = &self.tui_bridge {

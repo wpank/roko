@@ -854,6 +854,11 @@ pub struct GraphPlanRunParams {
     /// gap-9980c6): the routing ladder, else the default model, routes each
     /// task. The run's outcomes still teach the router.
     pub no_cascade: bool,
+    /// Registry that counts this run's verify verdicts and durations
+    /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
+    /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
+    /// `None` keeps the tracing fields only.
+    pub metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -1037,6 +1042,7 @@ async fn run_graph_plan_body(
         force_disk_check,
         effort,
         no_cascade,
+        metrics,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -1283,7 +1289,8 @@ async fn run_graph_plan_body(
     .with_feedback(graph_feedback)
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)
-    .with_live_agent_output(live_agent_output);
+    .with_live_agent_output(live_agent_output)
+    .with_metrics(metrics);
 
     // ── Whole-plan checks (gap-60233f) ──
     // Each plan's `[meta] verify`, or the default for a Cargo workspace,
@@ -3699,6 +3706,7 @@ files = ["README.md"]
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect("run plan set");
@@ -3908,6 +3916,7 @@ max_retries = 0
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect("run plan set");
@@ -5509,6 +5518,7 @@ exec sleep 60
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
@@ -5548,6 +5558,43 @@ printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6",
         assert_eq!(exit_code, EXIT_SUCCESS);
         let args = std::fs::read_to_string(dir.path().join("provider-args")).expect("calls");
         assert!(args.contains("--effort low"), "{args}");
+    }
+
+    /// gap-d8c39a: a verify step a Graph run settles counts in the run's
+    /// metric registry, which serve's `/metrics` renders, and not only in
+    /// the tracing fields.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_verify_increments_gate_verdict_metrics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "metrics", "", &[("T1", &[], "true")]);
+        let registry = Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+        roko_core::obs::metrics::register_standard_metrics(&registry);
+
+        let exit_code = run_graph_plan(GraphPlanRunParams {
+            worktree_per_task: false,
+            metrics: Some(Arc::clone(&registry)),
+            ..worktree_run_params(dir.path())
+        })
+        .await
+        .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let text = registry.render_prometheus();
+        let passes = text
+            .lines()
+            .find(|line| {
+                line.starts_with("roko_gate_verdicts_total{") && line.contains("verdict=\"pass\"")
+            })
+            .unwrap_or_else(|| panic!("no passing verdict series in:\n{text}"));
+        let count: u64 = passes
+            .rsplit(' ')
+            .next()
+            .and_then(|value| value.parse().ok())
+            .expect("a count");
+        assert!(count >= 1, "{passes}");
+        assert!(text.contains("roko_gate_duration_seconds_count{"), "{text}");
     }
 
     /// A scripted provider: it writes `<name>.txt` for the "Write <name>.txt"
@@ -5653,6 +5700,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         }
     }
 

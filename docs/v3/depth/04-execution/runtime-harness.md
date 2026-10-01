@@ -57,8 +57,8 @@ pub struct ProcessSupervisor {
 ```
 
 When a plan completes or fails, the supervisor ensures all child processes
-are terminated. The `GuaranteedFinallyController` invokes supervisor
-shutdown as part of its cleanup guarantee.
+are terminated. On an interrupt, `run_one_plan` also sends SIGTERM to in-flight agent
+process trees and kills those that ignore it.
 
 ### ProcessHandle
 

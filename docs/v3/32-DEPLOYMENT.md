@@ -1,7 +1,7 @@
 # 32 -- Deployment
 
 > **Implementation status (2026-09):** PARTIAL -- Native builds work on all target
-> triples. `roko serve` (~376 canonical routes on :6677) is wired. `roko deploy
+> triples. `roko serve` (on :6677; route counts in `tools/http_route_inventory.snapshot.json`) is wired. `roko deploy
 > railway` exists. Docker images are designed but not built. Fly.io, systemd, and
 > edge deployment remain specified but unimplemented.
 
@@ -64,7 +64,7 @@ graph LR
 | Crate | Path | Role |
 |---|---|---|
 | `roko-cli` | `crates/roko-cli/` | CLI entry point, daemon mode, worker mode, deploy commands |
-| `roko-serve` | `crates/roko-serve/` | HTTP control plane (~376 canonical routes on :6677), deploy backends |
+| `roko-serve` | `crates/roko-serve/` | HTTP control plane on :6677 (route counts in `tools/http_route_inventory.snapshot.json`), deploy backends |
 | `roko-agent-server` | `crates/roko-agent-server/` | Per-agent HTTP sidecar (14 routes) |
 
 ---
@@ -1054,7 +1054,7 @@ Credentials:
 ## 13. Remote Orchestrator (roko-serve)
 
 `roko-serve` runs as a long-lived HTTP service, exposing the full Roko
-API over HTTP. ~376 canonical routes (~421 including aliases) on :6677.
+API over HTTP on :6677; `tools/http_route_inventory.snapshot.json` counts its routes.
 
 **Source:** `crates/roko-serve/src/`
 
@@ -1364,7 +1364,7 @@ Isolation without separate code paths per tenant.
 | Feature | Status | Notes |
 |---|---|---|
 | Native build (x86_64, aarch64) | **Working** | 6 target triples, CI cross-compile |
-| roko serve (~376 routes on :6677) | **Wired** | Full HTTP control plane |
+| roko serve (on :6677) | **Wired** | Full HTTP control plane |
 | roko deploy railway/fly/docker | **Wired** | CLI commands, deploy backends |
 | roko daemon start/stop/status/logs/install | **Wired** | launchd + systemd |
 | roko worker | **Wired** | Worker mode for deployed containers |

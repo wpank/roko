@@ -9,12 +9,8 @@
 //! by cell, reporting character-level differences and the regions where they
 //! cluster.
 //!
-//! # Feature gate
-//!
-//! The full module is gated behind `#[cfg(feature = "tui-png")]`. The
-//! text-based comparison functions are additionally available through the
-//! [`crate::tui::snapshot`] module's public API for use without the feature
-//! flag -- see [`compare_text`].
+//! `roko screenshot --compare` diffs captures with [`compare`], and
+//! `--format ansi` writes each tab through [`buffer_to_ansi`].
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -28,7 +24,7 @@ use ratatui::style::{Color, Modifier};
 // ---------------------------------------------------------------------------
 
 /// A rectangular region where differences were detected.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DiffRegion {
     /// Top-left column (0-indexed, character cells for text mode).
     pub x: usize,
@@ -151,14 +147,14 @@ pub fn compare_text(baseline: &str, candidate: &str) -> ScreenshotDiff {
     let mut diff_count: usize = 0;
     let total_cells = rows * cols;
 
-    for row in 0..rows {
+    for (row, diff_row) in diff_map.iter_mut().enumerate() {
         let b_row = baseline_grid.get(row);
         let c_row = candidate_grid.get(row);
-        for col in 0..cols {
+        for (col, differs) in diff_row.iter_mut().enumerate() {
             let b_ch = b_row.and_then(|r| r.get(col)).copied().unwrap_or(' ');
             let c_ch = c_row.and_then(|r| r.get(col)).copied().unwrap_or(' ');
             if b_ch != c_ch {
-                diff_map[row][col] = true;
+                *differs = true;
                 diff_count += 1;
             }
         }
@@ -226,8 +222,29 @@ fn compare_png(baseline: &Path, candidate: &Path) -> Result<ScreenshotDiff> {
 }
 
 // ---------------------------------------------------------------------------
-// Buffer ANSI serialization (P2.3)
+// Buffer text and ANSI serialization (P2.3)
 // ---------------------------------------------------------------------------
+
+/// The text of a ratatui `Buffer`: one line per row with trailing blanks
+/// trimmed, joined by `\n`. This is what a `.txt` capture holds.
+#[must_use]
+pub fn buffer_to_text(buf: &Buffer) -> String {
+    let width = usize::from(buf.area.width);
+    if width == 0 {
+        return String::new();
+    }
+    buf.content
+        .chunks(width)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Serialize a ratatui `Buffer` to an ANSI escape-sequence string that
 /// preserves foreground/background colors and text modifiers (bold, dim,

@@ -56,8 +56,13 @@ impl FailureIssues {
         {
             let task_id = result.node_id.as_str();
             let task_title = node_titles.get(task_id).map_or("", String::as_str);
-            let (title, body) =
-                failure_issue(plan_id, run_id, task_id, task_title, result.error.as_deref());
+            let (title, body) = failure_issue(
+                plan_id,
+                run_id,
+                task_id,
+                task_title,
+                result.error.as_deref(),
+            );
             match self
                 .ops
                 .create_task_issue(task_id, &title, &body, &labels)
@@ -236,7 +241,11 @@ mod tests {
         let issues = FailureIssues::new(ops.clone(), "roko/");
         let output = output(vec![
             node("T1", NodeStatus::Complete, None),
-            node("T2", NodeStatus::Failed, Some("verify step `cargo test` failed")),
+            node(
+                "T2",
+                NodeStatus::Failed,
+                Some("verify step `cargo test` failed"),
+            ),
             node("T3", NodeStatus::Failed, None),
         ]);
         let failed = BTreeSet::from(["T2".to_string(), "T3".to_string()]);
@@ -254,8 +263,16 @@ mod tests {
         assert_eq!(
             filed_tasks,
             [
-                ("T2", "Task T2 failed in plan plan-a", "roko/task-failure".to_string()),
-                ("T3", "Task T3 failed in plan plan-a", "roko/task-failure".to_string()),
+                (
+                    "T2",
+                    "Task T2 failed in plan plan-a",
+                    "roko/task-failure".to_string()
+                ),
+                (
+                    "T3",
+                    "Task T3 failed in plan plan-a",
+                    "roko/task-failure".to_string()
+                ),
             ]
         );
         let body = &calls[0].2;

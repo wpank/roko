@@ -1,7 +1,7 @@
 # 26 -- HTTP Control Plane
 
-> The `roko serve` HTTP control plane exposes ~376 canonical REST routes (~421
-> including aliases) plus SSE and WebSocket streams on port 6677. It is the
+> The `roko serve` HTTP control plane exposes REST routes (counts in
+> `tools/http_route_inventory.snapshot.json`) plus SSE and WebSocket streams on port 6677. It is the
 > programmatic surface through which dashboards, CI scripts, external agents,
 > and the interactive TUI observe and control every aspect of the system.
 

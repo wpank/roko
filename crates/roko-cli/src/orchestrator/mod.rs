@@ -1,7 +1,7 @@
 //! Orchestration types owned by the live CLI runner.
 //!
-//! Plan discovery, task DAG, worktree management, parallel execution,
-//! merge queue, replan strategies, and crash-recovery snapshots.
+//! Plan discovery, task DAG, worktree management, executor state, merge
+//! queue, replan strategies, and crash-recovery snapshots.
 
 pub mod dag;
 pub mod event_log;
@@ -10,7 +10,6 @@ pub mod merge_queue;
 pub mod plan_discovery;
 pub mod replan;
 pub mod runtime_snapshot;
-pub(crate) mod safety;
 pub mod worktree;
 
 pub use dag::{
@@ -21,14 +20,13 @@ pub use dag::{
 };
 pub use event_log::{EventEntry, EventKind, EventLog, EventLogSnapshot, IntegrityError};
 pub use executor::{
-    CURRENT_SCHEMA_VERSION, DeltaSnapshot, EffectivePriorityTracker, ExecutorAction,
-    ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, ParallelExecutor,
-    PersistedCircuitBreakerFailureRecord, PersistedCircuitBreakerState, PlanResourceInfo,
-    PlanResumeDirective, PlanState, PlanStateMachine, PriorityCeiling, RecoveredPlanResume,
-    RecoveredState, RecoveryEngine, RecoveryError, RecoveryResumePlan, RecoveryWarning,
-    ResourceBudget, ResourceId, ResourceUsage, SnapshotConfig, SnapshotIntegrityError,
-    SnapshotVerifier, SpeculativeExecution, TransitionError, WarningSeverity,
-    current_schema_version,
+    CURRENT_SCHEMA_VERSION, DeltaSnapshot, EffectivePriorityTracker, ExecutorAction, ExecutorEvent,
+    ExecutorSnapshot, GateResult, PersistedCircuitBreakerFailureRecord,
+    PersistedCircuitBreakerState, PlanResourceInfo, PlanResumeDirective, PlanState,
+    PlanStateMachine, PriorityCeiling, RecoveredPlanResume, RecoveredState, RecoveryEngine,
+    RecoveryError, RecoveryResumePlan, RecoveryWarning, ResourceId, SnapshotConfig,
+    SnapshotIntegrityError, SnapshotVerifier, SpeculativeExecution, TransitionError,
+    WarningSeverity, current_schema_version,
 };
 pub use merge_queue::{
     DEFAULT_MAX_MERGE_RETRIES, MergeConflict, MergeQueue, MergeQueueEntrySnapshot,

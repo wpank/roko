@@ -263,7 +263,33 @@ impl OpenClawAcpAgent {
 
         loop {
             tokio::select! {
+                // Biased: the timeout first, then notifications before the
+                // completion, so what the agent sent just before it finished is
+                // read before the turn ends.
+                biased;
+                () = &mut timeout => {
+                    tracing::error!("[openclaw-acp] timed out after {:?}", self.config.timeout);
+                    let _ = client.cancel(&session).await;
+                    client.return_notification_rx(notif_rx);
+                    client.return_turn_done_rx(turn_done_rx);
+                    let _ = client.close_session(&session).await;
+                    let msg = format!(
+                        "openclaw-acp timed out after {:?}",
+                        self.config.timeout
+                    );
+                    return (msg, Usage::zero(), false);
+                }
                 Some(notif) = notif_rx.recv() => {
+                    // Answer server requests, permission requests among them,
+                    // with the decision logged below so the agent is not left
+                    // waiting.
+                    if notif.server_request_id.is_some()
+                        && let Err(e) = client
+                            .answer_server_request(&notif, self.config.auto_approve_permissions)
+                            .await
+                    {
+                        tracing::warn!("[openclaw-acp] could not answer `{}`: {e}", notif.method);
+                    }
                     if let Some(event) = parse_notification(&notif) {
                         match event {
                             AcpEvent::Output { text } => {
@@ -325,18 +351,6 @@ impl OpenClawAcpAgent {
                         let _ = tx.send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() })).await;
                     }
                     break;
-                }
-                () = &mut timeout => {
-                    tracing::error!("[openclaw-acp] timed out after {:?}", self.config.timeout);
-                    let _ = client.cancel(&session).await;
-                    client.return_notification_rx(notif_rx);
-                    client.return_turn_done_rx(turn_done_rx);
-                    let _ = client.close_session(&session).await;
-                    let msg = format!(
-                        "openclaw-acp timed out after {:?}",
-                        self.config.timeout
-                    );
-                    return (msg, Usage::zero(), false);
                 }
             }
         }
@@ -581,6 +595,7 @@ fn parse_notification(notif: &AcpNotification) -> Option<AcpEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::acp_client::test_servers;
 
     #[test]
     fn default_config() {
@@ -1006,5 +1021,30 @@ mod tests {
         assert!(caps.multiplex_safe);
         assert!(matches!(caps.cancel, CancelMode::AcpCancel));
         assert_eq!(caps.overhead_p50_ms, 80);
+    }
+
+    /// bug-7ef405: a turn reads every notification the agent sent before its
+    /// completion. Select used to take the completion as soon as it was
+    /// queued, dropping the text still waiting ahead of it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn openclaw_turn_drains_notifications_before_completion() {
+        let config = OpenClawAcpConfig {
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(10),
+            ..OpenClawAcpConfig::default()
+        };
+        let client = test_servers::client(test_servers::BURST_THEN_DONE);
+        let agent = OpenClawAcpAgent::with_client(client, config);
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, test_servers::burst_text());
     }
 }

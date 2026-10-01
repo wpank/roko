@@ -46,9 +46,6 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                     return Err(anyhow!("--non-interactive requires --agent"));
                 }
                 inputs.token_budget.get_or_insert(8000);
-                inputs
-                    .role
-                    .get_or_insert_with(|| "You are a Roko agent.".into());
                 inputs.enable_gates.get_or_insert(false);
                 inputs.yes = true;
                 if inputs.agent_args.is_none() {
@@ -668,8 +665,6 @@ fn provider_add_snippet(
     }
     for model in models {
         let key = toml_string(&model_table_key(model.slug));
-        // `{:?}` keeps a whole cost a float (`3.0`, not `3`).
-        let (input, output) = (model.cost_input_per_m, model.cost_output_per_m);
         lines.push(String::new());
         lines.push(format!("[models.{key}]"));
         lines.push(format!("provider = {}", toml_string(name)));
@@ -677,8 +672,13 @@ fn provider_add_snippet(
         lines.push(format!("context_window = {}", model.context_window));
         lines.push(format!("max_output = {}", model.max_output));
         lines.push(format!("supports_tools = {}", model.supports_tools));
-        lines.push(format!("cost_input_per_m = {input:?}"));
-        lines.push(format!("cost_output_per_m = {output:?}"));
+        // A model the built-in price table prices gets no cost keys, so its
+        // rates stay the table's (bug-0c0747). `{:?}` keeps a whole cost a
+        // float (`3.0`, not `3`).
+        if let (Some(input), Some(output)) = (model.cost_input_per_m, model.cost_output_per_m) {
+            lines.push(format!("cost_input_per_m = {input:?}"));
+            lines.push(format!("cost_output_per_m = {output:?}"));
+        }
     }
     lines.join("\n")
 }

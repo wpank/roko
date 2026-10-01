@@ -201,8 +201,8 @@ All configuration paths used by deployment:
 ## 8. Implementation Status
 
 > **Implementation status:** Native builds work on all target triples.
-> roko-serve runs on port 6677 with ~376 canonical routes (~421 including
-> aliases). The per-agent sidecar exposes 14 routes on dynamic ports.
+> roko-serve runs on port 6677 (route counts in
+> `tools/http_route_inventory.snapshot.json`). The per-agent sidecar exposes 14 routes on dynamic ports.
 > ACP is wired with 180 tests. Docker images are designed but not built.
 > Daemon mode is scaffolded on macOS, designed on Linux. Cloud deployment
 > is scaffolded for Railway, designed for Fly.io. The release pipeline

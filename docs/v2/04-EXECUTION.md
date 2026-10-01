@@ -20,8 +20,7 @@
 > provider-side maximum-cost API exists.
 >
 > The converged Graph engine now also provides: `ProductionPlanTopology` for canonical per-task
-> subgraph construction (11 nodes per task); `GuaranteedFinallyController` for absolute
-> cleanup guarantees; 12-row `FeedbackSettler` for ordered completion sinks with exactly-once
+> subgraph construction (11 nodes per task); 12-row `FeedbackSettler` for ordered completion sinks with exactly-once
 > idempotency; `CellResources` injection for shared service handles; `RuntimeServices` facade
 > with 7 `RuntimeProfile` variants; and full gates/replan/approval/worktrees/merge/
 > persistence/cancellation lifecycle.

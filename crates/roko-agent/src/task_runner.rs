@@ -6,6 +6,9 @@
 
 use crate::{Agent, Usage, chat_types::FinishReason};
 use indexmap::IndexMap;
+use roko_core::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use roko_core::config::schema::ModelProfile;
 use roko_core::{Context, Signal};
 use std::collections::{HashMap, VecDeque};
@@ -430,7 +433,9 @@ impl CostTable {
     }
 
     /// Build a cost table from config model profiles, then merge hardcoded defaults
-    /// for known models (without overriding config-supplied pricing).
+    /// for known models (without overriding config-supplied pricing). A profile
+    /// with no cache prices gets the shared default multiples of its input
+    /// price (bug-0c0747).
     #[must_use]
     pub fn from_config_with_defaults(models: &IndexMap<String, ModelProfile>) -> Self {
         let mut table = Self::default();
@@ -445,8 +450,12 @@ impl CostTable {
                     ModelPricing {
                         input_per_m: input,
                         output_per_m: output,
-                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                        cache_read_per_m: profile
+                            .cost_cache_read_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
+                        cache_write_per_m: profile
+                            .cost_cache_write_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                     },
                 );
             }

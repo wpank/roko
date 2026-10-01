@@ -409,7 +409,7 @@ not pretend to solve problems it has not solved.
 | Lines of code | ~1M LOC |
 | Tests | 10,300+ |
 | LLM provider kinds | 12 (Anthropic, Claude CLI, Codex CLI, OpenAI-compat, Cursor ACP/CLI, Perplexity, Gemini API/CLI, Cerebras, Hermes, OpenClaw) |
-| HTTP routes | ~376 canonical (~421 incl. aliases) |
+| HTTP routes | counted in `tools/http_route_inventory.snapshot.json` |
 | Gate rungs | 7-rung pipeline with 19 gates |
 | Kernel traits | 12 |
 

@@ -61,7 +61,7 @@ graph TB
     subgraph T5["Tier 5: External Interfaces"]
         direction LR
         cli["<b>roko-cli</b><br/><sub>85+ commands, TUI,<br/>plan runner, F1-F10</sub>"]
-        serve["<b>roko-serve</b><br/><sub>~376 routes, SSE, WS<br/>port 6677</sub>"]
+        serve["<b>roko-serve</b><br/><sub>REST, SSE, WS<br/>port 6677</sub>"]
         acp["<b>roko-acp</b><br/><sub>Editor protocol<br/>180 tests</sub>"]
         agent_server["<b>roko-agent-server</b><br/><sub>Per-agent sidecar<br/>14 routes</sub>"]
     end
@@ -264,7 +264,7 @@ graph TB
 | **T2: Execution** | roko-graph, roko-execution, roko-runtime | Graph DAG engine, runtime services, process supervision | Wired |
 | **T3: Operations** | roko-agent, roko-compose, roko-gate, roko-conductor | LLM dispatch, prompt assembly, gate verification, monitoring | Wired |
 | **T4: Learning** | roko-learn, roko-neuro, roko-dreams, roko-daimon | Episodes, knowledge, offline consolidation, affect | Wired |
-| **T5: Interfaces** | roko-cli, roko-serve, roko-acp, roko-agent-server | CLI (85+ cmds), HTTP (~376 routes), editor protocol, sidecar | Wired |
+| **T5: Interfaces** | roko-cli, roko-serve, roko-acp, roko-agent-server | CLI (85+ cmds), HTTP (REST routes), editor protocol, sidecar | Wired |
 | **T6: Code Intel** | roko-index, roko-mcp-code, roko-lang-{rust,typescript,go} | Parsing, symbol graphs, language providers | Built |
 | **T7: Ecosystem** | roko-mcp-{github,stdio,slack,scripts}, roko-plugin, roko-gateway, roko-eval | MCP servers, plugin SDK, inference gateway | Mixed |
 | **T8: Chain** | roko-chain | Registry, marketplace, arena, DeFi state machines | Partial |

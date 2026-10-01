@@ -1,10 +1,11 @@
 //! Adapter that maps runner events to conductor [`Signal`]s.
 //!
 //! The conductor watchers consume typed [`Signal`] streams (ghost-turn
-//! signals, gate verdicts, cost metrics, plan phases). This module provides
-//! pure mapping functions that convert [`RunnerEvent`], [`AgentEvent`] and
-//! Graph [`GraphTaskEvent`] instances into the `Option<Signal>` that watchers
-//! expect, without performing any IO or mutating runner state.
+//! signals, gate verdicts, compile diagnostics, cost metrics, plan phases).
+//! This module provides pure mapping functions that convert [`RunnerEvent`],
+//! [`AgentEvent`] and Graph [`GraphTaskEvent`] instances, and settled gate
+//! runs ([`GateRun`]), into the `Option<Signal>` that watchers expect,
+//! without performing any IO or mutating runner state.
 //!
 //! Only events that at least one conductor watcher consumes are mapped;
 //! everything else returns `None` to avoid ring buffer churn.
@@ -13,7 +14,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use roko_core::{Body, Kind, Signal};
+use roko_core::{Body, Kind, Signal, TestCount};
 use roko_graph::cells::{GraphTaskEvent, TaskDispatchOutcomeKind};
 
 use super::types::{AgentEvent, RunnerEvent};
@@ -72,7 +73,8 @@ pub fn runner_event_to_signal(event: &RunnerEvent) -> Option<Signal> {
         ),
 
         // Gate verdicts -> GateVerdict signals (consumed by
-        // TestFailureBudgetWatcher and other gate-aware watchers).
+        // TestFailureBudgetWatcher and other gate-aware watchers). The
+        // runner counts its rung's gate verdicts as its tests.
         RunnerEvent::GateCompleted {
             attempt,
             kind,
@@ -92,30 +94,20 @@ pub fn runner_event_to_signal(event: &RunnerEvent) -> Option<Signal> {
                     (p, f + 1)
                 }
             });
+            let gate = format!("{kind:?}");
+            let failure_kind = failure_kind.map(|fk| format!("{fk:?}"));
 
-            let body = Body::from_json(&serde_json::json!({
-                "plan_id": attempt.plan_id,
-                "task": attempt.task_id,
-                "gate": format!("{kind:?}"),
-                "rung": rung,
-                "passed": passed,
-                "failure_kind": failure_kind.map(|fk| format!("{fk:?}")),
-                "duration_ms": duration_ms,
-                "test_count": {
-                    "passed": test_count.0,
-                    "failed": test_count.1,
-                },
-            }))
-            .ok()?;
-
-            Some(
-                Signal::builder(Kind::GateVerdict)
-                    .body(body)
-                    .tag(PLAN_ID_TAG, &attempt.plan_id)
-                    .tag(TASK_TAG, &attempt.task_id)
-                    .tag(SEVERITY_TAG, if *passed { "info" } else { "error" })
-                    .build(),
-            )
+            gate_verdict_signal(&GateRun {
+                plan_id: &attempt.plan_id,
+                task_id: &attempt.task_id,
+                gate: &gate,
+                rung: *rung,
+                passed: *passed,
+                failure_kind: failure_kind.as_deref(),
+                failure_class: None,
+                duration_ms: *duration_ms,
+                test_count: Some(TestCount::new(test_count.0, test_count.1, 0)),
+            })
         }
 
         // Task attempt completed -> Metric cost signal for CostOverrunWatcher.
@@ -270,9 +262,10 @@ pub const ATTEMPT_TAG: &str = "attempt";
 ///   `AgentCompleted` does on the Runner path;
 /// - `AttemptTerminal` becomes a plan phase naming the outcome.
 ///
-/// Gate verdicts are not Graph task events: the dispatcher feeds them from
-/// its gate settlement as [`feedback_event_to_signal`] maps `GateOutcome`.
-/// `ToolOutput`, `Progress` and `Usage` without a cost map to `None`.
+/// Gate verdicts are not Graph task events: the dispatcher reports each
+/// settled verify run through [`gate_verdict_signal`] and
+/// [`compile_diagnostic_signal`]. `ToolOutput`, `Progress` and `Usage`
+/// without a cost map to `None`.
 #[must_use]
 pub fn graph_task_event_to_signal(
     plan_id: &str,
@@ -362,6 +355,79 @@ const fn attempt_outcome_label(outcome: TaskDispatchOutcomeKind) -> &'static str
         TaskDispatchOutcomeKind::Cancelled => "cancelled",
         TaskDispatchOutcomeKind::TimedOut => "timed_out",
     }
+}
+
+// ─── Settled gate runs -> Signal ────────────────────────────────────────
+
+/// A settled gate run, as its `GateVerdict` signal reports it.
+#[derive(Debug, Clone, Copy)]
+pub struct GateRun<'a> {
+    pub plan_id: &'a str,
+    pub task_id: &'a str,
+    /// The gate that settled the run.
+    pub gate: &'a str,
+    pub rung: u32,
+    pub passed: bool,
+    /// How the run failed, such as `Transient` or `Timeout`.
+    pub failure_kind: Option<&'a str>,
+    /// What failed it, such as `type_error` (a `roko_gate::FailureClass`).
+    pub failure_class: Option<&'a str>,
+    pub duration_ms: u64,
+    /// The tests the run counted; `None` when it counted none.
+    pub test_count: Option<TestCount>,
+}
+
+/// Map a settled gate run to the `GateVerdict` signal the gate-aware
+/// watchers read: `test-failure-budget` compares `test_count.failed` across
+/// a plan's runs, and skips a run whose `test_count` is null.
+#[must_use]
+pub fn gate_verdict_signal(run: &GateRun<'_>) -> Option<Signal> {
+    let body = Body::from_json(&serde_json::json!({
+        "plan_id": run.plan_id,
+        "task": run.task_id,
+        "gate": run.gate,
+        "rung": run.rung,
+        "passed": run.passed,
+        "failure_kind": run.failure_kind,
+        "failure_class": run.failure_class,
+        "duration_ms": run.duration_ms,
+        "test_count": run.test_count.map(|count| serde_json::json!({
+            "passed": count.passed,
+            "failed": count.failed,
+        })),
+    }))
+    .ok()?;
+
+    Some(
+        Signal::builder(Kind::GateVerdict)
+            .body(body)
+            .tag(PLAN_ID_TAG, run.plan_id)
+            .tag(TASK_TAG, run.task_id)
+            .tag(SEVERITY_TAG, if run.passed { "info" } else { "error" })
+            .build(),
+    )
+}
+
+/// A compile failure at `plan_id/task_id`, named by `message`, in the form
+/// `compile-fail-repeat` reads: it fires when the same message names several
+/// compile failures in a row.
+#[must_use]
+pub fn compile_diagnostic_signal(plan_id: &str, task_id: &str, message: &str) -> Option<Signal> {
+    let body = Body::from_json(&serde_json::json!({
+        "plan_id": plan_id,
+        "task": task_id,
+        "message": message,
+    }))
+    .ok()?;
+
+    Some(
+        Signal::builder(Kind::CompileDiagnostic)
+            .body(body)
+            .tag(PLAN_ID_TAG, plan_id)
+            .tag(TASK_TAG, task_id)
+            .tag(SEVERITY_TAG, "error")
+            .build(),
+    )
 }
 
 // ─── Bounded conductor ring ─────────────────────────────────────────────

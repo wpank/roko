@@ -130,6 +130,9 @@ impl GraphTaskDispatcher {
             // we can feed outcomes into GateThresholds::observe after all steps
             // complete (including any post-auto-fix re-run).
             let mut step_outcomes: Vec<(String, bool)> = Vec::new();
+            // The verdicts of the steps that ran, with their phases: the run
+            // the conductor's gate watchers read (gap-1a7f9c).
+            let mut ran_steps: Vec<(String, roko_core::Verdict)> = Vec::new();
             // P1-08: the CodingOracle's test pass-rate forecast for this
             // attempt, taken before its steps feed the oracle below.
             let test_pass_forecast = self
@@ -195,7 +198,8 @@ impl GraphTaskDispatcher {
                     ],
                 )
                 .with_timeout_ms(step.timeout_ms)
-                .with_name(step_label);
+                .with_name(step_label)
+                .with_phase(&step.phase);
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
@@ -367,11 +371,13 @@ impl GraphTaskDispatcher {
                         "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                     ));
                 }
+                ran_steps.push((step.phase.clone(), verdict));
             }
 
             // A probe of an unchanged tree settles here: nothing auto-fixes
             // the tree for it, and what it found teaches no learner.
             if unchanged_tree {
+                self.publish_verify_run(spec, task, &effective_workdir, &ran_steps);
                 if failures.is_empty() {
                     self.gate_retry_context.clear(&spec.plan_id, &task.id);
                     self.retrieval_ctx.lock().remove(&retry_key);
@@ -429,6 +435,7 @@ impl GraphTaskDispatcher {
                         // the original step_outcomes with post-fix results.
                         let mut retry_failures: Vec<String> = Vec::new();
                         let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
+                        let mut retry_ran_steps: Vec<(String, roko_core::Verdict)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
                         let _verifying = self.in_flight.begin_verify(&verify_key);
@@ -452,7 +459,8 @@ impl GraphTaskDispatcher {
                                 ],
                             )
                             .with_timeout_ms(step.timeout_ms)
-                            .with_name(step_label);
+                            .with_name(step_label)
+                            .with_phase(&step.phase);
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let _reading = self
@@ -506,6 +514,7 @@ impl GraphTaskDispatcher {
                                     "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                                 ));
                             }
+                            retry_ran_steps.push((step.phase.clone(), retry_verdict));
                         }
                         // Replace the original failure list and step outcomes with
                         // the post-fix results. The retry outcomes are the ground
@@ -513,6 +522,7 @@ impl GraphTaskDispatcher {
                         failures = retry_failures;
                         timed_out = retry_timed_out;
                         step_outcomes = retry_step_outcomes;
+                        ran_steps = retry_ran_steps;
                         skipped_steps = retry_skipped;
                         blocked_by_sibling = None;
                     }
@@ -535,6 +545,8 @@ impl GraphTaskDispatcher {
                     }
                 }
             }
+
+            self.publish_verify_run(spec, task, &effective_workdir, &ran_steps);
 
             if let Some(progress_tx) = progress_tx {
                 let message = if failures.is_empty() {
@@ -923,8 +935,17 @@ impl GraphTaskDispatcher {
                 // adaptive threshold learning (#218).
                 if let Some(gf_path) = &self.feedback.gate_failures_path {
                     let raw_for_classification = failures.join("\n---\n");
-                    let classification =
-                        roko_gate::classify_gate_failure("graph-verify", &raw_for_classification);
+                    // The failed step's phase says whether it ran tests
+                    // (bug-386c9b).
+                    let failed_phase = step_outcomes
+                        .iter()
+                        .find(|(_, passed)| !passed)
+                        .map(|(phase, _)| phase.as_str());
+                    let classification = roko_gate::classify_step_failure(
+                        "graph-verify",
+                        failed_phase,
+                        &raw_for_classification,
+                    );
                     // The failed step's verdict, not the failure text, says
                     // whether it ran out of time.
                     let classification = if timed_out {
@@ -1411,22 +1432,28 @@ fn gate_how_ended(reason: &str) -> String {
     }
 }
 
-/// Gate rung of the first failed step in `(phase, passed)` verify outcomes:
-/// its canonical rung (0 compile, 1 clippy, 2 test), else the custom shell
-/// gate's rung, since every Graph verify step is a shell command.
+/// Gate rung of the first failed step in `(phase, passed)` verify outcomes
+/// ([`verify_step_rung`]); the custom shell gate's rung when none failed.
 fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
-    step_outcomes
+    let phase = step_outcomes
         .iter()
         .find(|(_, passed)| !passed)
-        .and_then(|(phase, _)| rung_for_gate_name(phase))
-        .map_or_else(
-            || {
-                roko_gate::GateRegistry::new()
-                    .rung_for_name("custom")
-                    .map_or(0, u32::from)
-            },
-            |rung| rung.as_index(),
-        )
+        .map_or("", |(phase, _)| phase.as_str());
+    verify_step_rung(phase)
+}
+
+/// Gate rung of a verify step of `phase`: its canonical rung (0 compile,
+/// 1 clippy, 2 test), else the custom shell gate's rung, since every Graph
+/// verify step is a shell command.
+pub(super) fn verify_step_rung(phase: &str) -> u32 {
+    rung_for_gate_name(phase).map_or_else(
+        || {
+            roko_gate::GateRegistry::new()
+                .rung_for_name("custom")
+                .map_or(0, u32::from)
+        },
+        |rung| rung.as_index(),
+    )
 }
 
 /// Retry-facing summary of a failed verify run, including skipped steps.

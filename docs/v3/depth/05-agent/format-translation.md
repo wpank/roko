@@ -349,8 +349,7 @@ model's comfortable range.
 
 1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
    Harnesses." arXiv:2603.28052. -- Automated harness search (§3).
-2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
-   Language Models." ICLR 2023. arXiv:2210.03629. -- ReAct pattern.
+2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
 3. `crates/roko-agent/src/translate/mod.rs` -- Translator trait, wire
    format enums, BackendResponse, FinishReason normalization.
 4. `crates/roko-agent/src/translate/capability.rs` -- ModelCapabilities,

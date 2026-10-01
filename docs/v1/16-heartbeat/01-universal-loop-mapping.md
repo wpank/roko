@@ -177,7 +177,7 @@ CoALA provides the intellectual justification. The Synapse loop provides the eng
 ## Academic Foundations
 
 - **Sumers, Yao, Narasimhan & Griffiths 2023** — "Cognitive Architectures for Language Agents" (arXiv:2309.02427). The CoALA framework.
-- **Lee et al. 2026** — "Meta-Harness: Optimizing Agent Scaffolds" (arXiv:2603.28052). Evidence that scaffold optimization matters more than model selection.
+- **Lee et al. 2026** — "Meta-Harness: End-to-End Optimization of Model Harnesses" (arXiv:2603.28052). Automated harness search (§3); its results show that the harness alone moves accuracy (§4).
 - **Conant & Ashby 1970** — "Every Good Regulator of a System Must Be a Model of That System" (International Journal of Systems Science 1(2)). The Good Regulator Theorem — justifies explicit self-modeling and cross-cut regulation.
 - **Friston 2010** — "The Free-Energy Principle" (Nature Reviews Neuroscience 11(2)). Prediction error as the organizing signal for cognitive architecture.
 

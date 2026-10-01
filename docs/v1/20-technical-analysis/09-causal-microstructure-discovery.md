@@ -1087,12 +1087,12 @@ The hybrid pipeline addresses the thresholding sensitivity problem (limitation 1
 
 ### Citations for continuous optimization methods
 
-- Zheng, X., Aragam, B., Ravikumar, P., & Xing, E. P. (2018). "DAGs with NO TEARS: Continuous Optimization for Structure Learning." *NeurIPS 2018*. -- Original continuous acyclicity constraint via trace exponential.
-- Yu, Y., Chen, J., Gao, T., & Yu, M. (2019). "DAG-GNN: DAG Structure Learning with Graph Neural Networks." *ICML 2019*. -- Neural causal discovery with VAE + GNN architecture.
-- Bello, K., Aragam, B., & Ravikumar, P. (2022). "DAGMA: Learning DAGs via M-matrices and a Log-Determinant Acyclicity Characterization." *NeurIPS 2022*. -- Log-determinant acyclicity, eliminates augmented Lagrangian.
-- Nazaret, A., Hoffman, M., et al. (2024). "Stable Differentiable Causal Discovery." *ICML 2024*, PMLR 235:37413-37445. -- Two-stage SDCD with spectral acyclicity constraint.
-- Ng, I., Ghassami, A., & Zhang, K. (2024). "Structure Learning with Continuous Optimization: A Sober Look." *CLR 2024*. -- Critical empirical analysis of continuous DAG learning methods.
-- Zhou, J., Wang, M., et al. (2025). "Differentiable Constraint-Based Causal Discovery." *NeurIPS 2025*. -- Hybrid differentiable + constraint-based approach.
+- Zheng, X., Aragam, B., Ravikumar, P., & Xing, E. P. (2018). "DAGs with NO TEARS: Continuous Optimization for Structure Learning." *NeurIPS 2018*.
+- Yu, Y., Chen, J., Gao, T., & Yu, M. (2019). "DAG-GNN: DAG Structure Learning with Graph Neural Networks." *ICML 2019*.
+- Bello, K., Aragam, B., & Ravikumar, P. (2022). "DAGMA: Learning DAGs via M-matrices and a Log-Determinant Acyclicity Characterization." *NeurIPS 2022*.
+- Nazaret, A., Hoffman, M., et al. (2024). "Stable Differentiable Causal Discovery." *ICML 2024*, PMLR 235:37413-37445.
+- Ng, I., Ghassami, A., & Zhang, K. (2024). "Structure Learning with Continuous Optimization: A Sober Look." *CLR 2024*.
+- Zhou, J., Wang, M., et al. (2025). "Differentiable Constraint-Based Causal Discovery." *NeurIPS 2025*.
 
 ---
 

@@ -1210,9 +1210,7 @@ cargo run -p roko-cli -- doctor
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
    arXiv:2309.02427. -- CoALA: theoretical basis for separating
    perception/reasoning from action execution.
-2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
-   Language Models." ICLR 2023. arXiv:2210.03629. -- ReAct pattern
-   implemented by the ToolLoop.
+2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
 3. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
    Harnesses." arXiv:2603.28052. -- The harness can matter as much as the
    model (§1); automated harness search (§3).
@@ -1227,16 +1225,10 @@ cargo run -p roko-cli -- doctor
 7. Fan, H. & Lan, Z. (2026). "From Cognitive Architectures to Language Agents: A
    Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
    arXiv:2607.23942. -- Survey of agent mechanisms.
-8. Kahneman, D. (2011). *Thinking, Fast and Slow.* -- Dual-process theory
-   grounding T0/T1/T2 routing.
-9. Friston, K. (2006). "A free energy principle for the brain." Journal of
-   Physiology - Paris. -- Free Energy Principle grounding EFE routing and
-   active inference connection.
-10. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.* --
-    Developmental maturation model informing BehavioralPhase progression.
-11. Li, L. et al. (2010). "A contextual-bandit approach to personalized
-    news article recommendation." WWW 2010. -- LinUCB algorithm used by
-    CascadeRouter.
+8. Kahneman, D. (2011). *Thinking, Fast and Slow.*
+9. Friston, K. (2006). "A free energy principle for the brain." Journal of Physiology - Paris.
+10. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.*
+11. Li, L. et al. (2010). "A contextual-bandit approach to personalized news article recommendation." WWW 2010.
 12. `crates/roko-agent/src/agent.rs` -- Agent trait and AgentResult source.
 13. `crates/roko-agent/src/provider/mod.rs` -- Provider factory and adapter
     dispatch.

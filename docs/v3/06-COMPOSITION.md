@@ -538,8 +538,7 @@ Performance
       Beginning      Middle positions        End
 ```
 
-This is an **architectural property**, not a learned one. "Lost in the Middle
-at Birth" (arXiv:2603.10123, 2025) proved that the U-shaped bias is an algebraic
+This is an **architectural property**, not a learned one. "Lost in the Middle at Birth" (arXiv:2603.10123, 2026) proved that the U-shaped bias is an algebraic
 property of causal decoder architectures, present at initialization before any
 training. Causal masking guarantees primacy; residual connections guarantee
 recency. Positional encodings (RoPE, ALiBi) modulate the shape but cannot

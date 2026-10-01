@@ -214,8 +214,7 @@ simultaneously.
 ## Citations
 
 1. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 accuracy, +4.7 math, 4× tokens.
-2. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
-   Real-World GitHub Issues?" — Benchmark context for harness variance.
+2. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
 3. SWE-bench Mobile, cited in the Meta-Harness introduction as the source of
    the "6× gap".
 4. `crates/roko-agent/src/dispatcher/mod.rs` — 7-step pipeline.

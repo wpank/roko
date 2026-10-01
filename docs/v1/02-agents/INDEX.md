@@ -96,19 +96,13 @@
    separation.
 2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 text classification, +4.7 IMO math,
    4× fewer tokens; the 6× gap is a cited SWE-bench Mobile result.
-3. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
-   Real-World GitHub Issues?" — Benchmark context for harness variance.
-4. Kahneman, D. (2011). "Thinking, Fast and Slow." — Dual-process theory
-   for model tier routing.
-5. Li, L. et al. (2010). "A contextual-bandit approach to personalized news
-   article recommendation." WWW 2010. — LinUCB algorithm.
+3. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+4. Kahneman, D. (2011). "Thinking, Fast and Slow."
+5. Li, L. et al. (2010). "A contextual-bandit approach to personalized news article recommendation." WWW 2010.
 6. Chen, L. et al. (2023). "FrugalGPT: How to Use Large Language Models
    While Reducing Cost and Improving Performance." — Cascade routing.
-7. Friston, K. (2010). "The free-energy principle: a unified brain theory?"
-   Nature Reviews Neuroscience. — Active inference for model routing.
-8. Woolley, A. W. et al. (2010). "Evidence for a Collective Intelligence
-   Factor in the Performance of Human Groups." Science 330. — C-Factor for
-   multi-agent coordination.
+7. Friston, K. (2010). "The free-energy principle: a unified brain theory?" Nature Reviews Neuroscience.
+8. Woolley, A. W. et al. (2010). "Evidence for a Collective Intelligence Factor in the Performance of Human Groups." Science 330.
 9. RouteLLM (2024). — Binary classifier for model routing.
 10. MixLLM (2024). — Mixed model serving.
 11. AutoMix (2024). — Automatic model mixing.
@@ -118,38 +112,26 @@
 15. Roko Orchestrator (legacy reference orchestrator; formerly Mori) —
     `apps/mori/src/agent/connection.rs`,
     108K LOC reference implementation.
-16. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR
-    Formalism for Artificial Intelligence." IJCAI. — Actor model foundation.
-17. Wang, J. et al. (2024). "Mixture-of-Agents Enhances Large Language Model
-    Capabilities." arXiv:2406.04692, ICLR 2025. — MoA layered composition,
-    65.1% AlpacaEval 2.0 with open-source only.
-18. Anthropic Transformer Circuits (2025). "Emergent Introspective Awareness
-    in Large Language Models." — ~20% introspection accuracy, narrow circuits.
-19. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff." — +7.78pp from metacognitive monitoring.
-20. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
-    Language Models." ICLR 2023. arXiv:2210.03629. — ReAct pattern.
+16. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR Formalism for Artificial Intelligence." IJCAI.
+17. Wang, J. et al. (2024). "Mixture-of-Agents Enhances Large Language Model Capabilities." arXiv:2406.04692, ICLR 2025.
+18. Anthropic Transformer Circuits (2025). "Emergent Introspective Awareness in Large Language Models."
+19. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff."
+20. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
 21. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal
     Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366. — 91% HumanEval.
-22. Zhou, A. et al. (2024). "LATS: Language Agent Tree Search." ICML 2024.
-    arXiv:2310.04406. — 92.7% HumanEval, MCTS + LLM value functions.
+22. Zhou, A. et al. (2024). "LATS: Language Agent Tree Search." ICML 2024. arXiv:2310.04406.
 23. Zhang et al. (2025). "Darwin Gödel Machine." arXiv:2505.22954. — SWE-bench
     20% → 50% via evolutionary self-improvement.
-24. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291. — Lifelong skill
-    learning, 3.3× more unique items, transferable skill library.
-25. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current
-    Directions in Psych. Science. — Competing intuitions, Dual-Process 2.0.
+24. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291.
+25. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current Directions in Psych. Science.
 26. Zhang et al. (2025). "Router-R1." NeurIPS 2025. arXiv:2506.09033.
-    — Multi-round RL-trained router.
-27. Dekoninck, J. et al. (2025). "Unified Routing and Cascading." ICLR 2025.
-    arXiv:2410.10347. — Cascade routing outperforms routing or cascading alone.
-28. Patil, S. et al. (2025). "BFCL v4." ICML 2025. — Tool use benchmark.
-29. arXiv:2604.06185 (2025). "WildToolBench." ICLR 2026. — <15% session
-    accuracy, real-world tool use gap.
-30. arXiv:2601.04748 (2025). "When Single-Agent with Skills Replace
-    Multi-Agent Systems." — 53.7% token reduction, phase transition ~50 skills.
+27. Dekoninck, J. et al. (2025). "Unified Routing and Cascading." ICLR 2025. arXiv:2410.10347.
+28. Patil, S. et al. (2025). "BFCL v4." ICML 2025.
+29. arXiv:2604.06185 (2025). "WildToolBench." ICLR 2026.
+30. arXiv:2601.04748 (2025). "When Single-Agent with Skills Replace Multi-Agent Systems."
 31. Liu, T. & van der Schaar, M. (2025). "Truly Self-Improving Agents."
     ICML 2025. arXiv:2506.05109. — Intrinsic metacognition position paper.
-32. arXiv:2410.15048 (2024). "MorphAgent." — Dynamic role switching.
+32. arXiv:2410.15048 (2024). "MorphAgent."
 33. Tenuo (2025). tenuo.dev. — Cryptographic capability warrants for agents.
 
 ---

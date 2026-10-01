@@ -1442,10 +1442,7 @@ disk_pressure.rs            time_overrun.rs        worktree_count.rs
 
 ### Primary citations
 
-- **Wiener, N.** (1948). *Cybernetics: or Control and Communication in the
-  Animal and the Machine*. MIT Press. -- Foundational formalization of feedback
-  control systems. The Conductor's negative feedback loop structure derives
-  directly from Wiener's framework.
+- **Wiener, N.** (1948). *Cybernetics: or Control and Communication in the Animal and the Machine*. MIT Press.
 
 - **Ashby, W.R.** (1956). *An Introduction to Cybernetics*. Chapman & Hall. --
   Law of Requisite Variety: "Only variety can absorb variety." The Conductor's
@@ -1453,85 +1450,47 @@ disk_pressure.rs            time_overrun.rs        worktree_count.rs
   severity levels, 8 cognitive signals) must match or exceed the variety of the
   agent ensemble's failure modes.
 
-- **Maxwell, J.C.** (1868). "On Governors." *Proceedings of the Royal Society
-  of London*, 16, 270-283. -- The first mathematical analysis of feedback
-  control (centrifugal governor). Maxwell's stability analysis of governors
-  prefigures the Conductor's stability properties: bounded responses, cooldown
-  periods, circuit breaker monotonicity.
+- **Maxwell, J.C.** (1868). "On Governors." *Proceedings of the Royal Society of London*, 16, 270-283.
 
-- **Beer, S.** (1972). *Brain of the Firm*. Allen Lane. -- Viable System Model.
-  The Conductor maps to System 3 (internal oversight) and System 3* (audit).
-  Algedonic signals bypass the management hierarchy for emergencies.
+- **Beer, S.** (1972). *Brain of the Firm*. Allen Lane.
 
-- **Conant, R.C. & Ashby, W.R.** (1970). "Every good regulator of a system must
-  be a model of that system." *International Journal of Systems Science*, 1(2),
-  89-97. -- The Good Regulator Theorem. The Conductor's watcher thresholds,
-  stuck heuristics, error categories, and health checks constitute its
-  self-model.
+- **Conant, R.C. & Ashby, W.R.** (1970). "Every good regulator of a system must be a model of that system." *International Journal of Systems Science*, 1(2), 89-97.
 
-- **Boyd, J.** (1987). "A Discourse on Winning and Losing." Briefing
-  compilation, Air University Library. -- OODA loop (Observe-Orient-Decide-Act).
-  Each conductor evaluation cycle is one OODA iteration. Nested OODA loops
-  provide multi-timescale control.
+- **Boyd, J.** (1987). "A Discourse on Winning and Losing." Briefing compilation, Air University Library.
 
-- **Yerkes, R.M. & Dodson, J.D.** (1908). "The relation of strength of stimulus
-  to rapidity of habit-formation." *Journal of Comparative Neurology and
-  Psychology*, 18, 459-482. -- The inverted-U relationship between arousal and
-  performance. Every Conductor threshold is a position on this curve.
+- **Yerkes, R.M. & Dodson, J.D.** (1908). "The relation of strength of stimulus to rapidity of habit-formation." *Journal of Comparative Neurology and Psychology*, 18, 459-482.
 
-- **Nygard, M.T.** (2007). *Release It! Design and Deploy Production-Ready
-  Software*. Pragmatic Bookshelf. -- Circuit breaker pattern for cascading
-  failure prevention. The per-plan circuit breaker with MAX_PLAN_FAILURES=2
-  directly implements this pattern.
+- **Nygard, M.T.** (2007). *Release It! Design and Deploy Production-Ready Software*. Pragmatic Bookshelf.
 
 ### Supporting citations
 
 - **arXiv:2605.03310** (2026). "Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems." -- Cites production failure rates of 41-87% for multi-agent systems, mostly from coordination defects (§1, after Cemri et al. 2025).
 
-- **Francis, B.A. & Wonham, W.M.** (1976). "The Internal Model Principle of
-  Control Theory." *Automatica*, 12(5), 457-465. -- The controller must contain
-  a copy of the dynamics generating the signals it must track.
+- **Francis, B.A. & Wonham, W.M.** (1976). "The Internal Model Principle of Control Theory." *Automatica*, 12(5), 457-465.
 
-- **Friston, K.** (2010). "The free-energy principle: a unified brain theory?"
-  *Nature Reviews Neuroscience*, 11(2), 127-138. -- Precision-weighted
-  prediction errors for self-model updates.
+- **Friston, K.** (2010). "The free-energy principle: a unified brain theory?" *Nature Reviews Neuroscience*, 11(2), 127-138.
 
 - **Liu, F.T., Ting, K.M. & Zhou, Z.-H.** (2008). "Isolation Forest." *ICDM*.
-  -- Streaming anomaly detection via random binary trees.
 
-- **Page, E.S.** (1954). "Continuous Inspection Schemes." *Biometrika*. --
-  CUSUM change-point detection for sustained anomaly shifts.
+- **Page, E.S.** (1954). "Continuous Inspection Schemes." *Biometrika*.
 
-- **Sweller, J.** (1988). "Cognitive load during problem solving." *Cognitive
-  Science*, 12(2), 257-285. -- Intrinsic/extraneous/germane load theory mapped
-  to LLM context windows.
+- **Sweller, J.** (1988). "Cognitive load during problem solving." *Cognitive Science*, 12(2), 257-285.
 
-- **Csikszentmihalyi, M.** (1990). *Flow: The Psychology of Optimal Experience*.
-  Harper & Row. -- Flow state detection and preservation policy.
+- **Csikszentmihalyi, M.** (1990). *Flow: The Psychology of Optimal Experience*. Harper & Row.
 
-- **Grasse, P.P.** (1959). "La reconstruction du nid." *Insectes Sociaux*,
-  6(1), 41-80. -- Stigmergic coordination through environmental traces.
+- **Grasse, P.P.** (1959). "La reconstruction du nid." *Insectes Sociaux*, 6(1), 41-80.
 
-- **Mesarovic, M., Macko, D. & Takahara, Y.** (1970). *Theory of Hierarchical,
-  Multilevel Systems*. Academic Press. -- Parameter cascade in nested control
-  loops.
+- **Mesarovic, M., Macko, D. & Takahara, Y.** (1970). *Theory of Hierarchical, Multilevel Systems*. Academic Press.
 
-- **Patterson, D. et al.** (2002). "Recovery-Oriented Computing." -- Micro-reboots,
-  cheap restarts, survivor functions for self-healing.
+- **Patterson, D. et al.** (2002). "Recovery-Oriented Computing."
 
 - **Klein, G.** (1998). *Sources of Power: How People Make Decisions*. MIT Press.
-  -- Recognition-Primed Decision model, parallel to Boyd's IG&C.
 
-- **Argyris, C. & Schon, D.A.** (1978). *Organizational Learning*. -- Single-,
-  double-, and triple-loop learning for self-healing conductor.
+- **Argyris, C. & Schon, D.A.** (1978). *Organizational Learning*.
 
-- **Kalman, R.E.** (1960). "A New Approach to Linear Filtering and Prediction
-  Problems." *Journal of Basic Engineering*, 82(1), 35-45. -- Scalar Kalman
-  filter for online parameter estimation in the self-model.
+- **Kalman, R.E.** (1960). "A New Approach to Linear Filtering and Prediction Problems." *Journal of Basic Engineering*, 82(1), 35-45.
 
-- **Thompson, W.R.** (1933). "On the likelihood that one unknown probability
-  exceeds another." *Biometrika*, 25(3-4), 285-294. -- Thompson sampling for
-  pressure optimization and bandit-based intervention selection.
+- **Thompson, W.R.** (1933). "On the likelihood that one unknown probability exceeds another." *Biometrika*, 25(3-4), 285-294.
 
 ---
 

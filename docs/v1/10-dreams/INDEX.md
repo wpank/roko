@@ -77,7 +77,7 @@ The dream subsystem draws on extensive academic research:
 | Thaler, *Marketing Science*, 1985; *J. Behavioral Decision Making*, 1999 | Mental accounting theory |
 | Hafner et al., *Nature*, 2025 (DreamerV3) | World model learning and dream-based planning |
 | Tancik et al., CVPR 2020 (StegaStamp) | Steganographic encoding in images |
-| WSCL 2024 | 38% reduction in catastrophic forgetting |
+| WSCL 2024 | Wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Schaul et al., *ICLR*, 2016 (PER) | Prioritized experience replay with TD-error priority and IS correction |
 | Andrychowicz et al., *NeurIPS*, 2017 (HER) | Hindsight experience replay — relabeling failed episodes with achieved goals |
 | Shin et al., *NeurIPS*, 2017 | Continual Learning with Deep Generative Replay — Scholar architecture |

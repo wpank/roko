@@ -2229,7 +2229,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         .await;
         assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
         crate::background_writes::settled(gate_failures.parent().unwrap_or(temp.path())).await;
-        assert!(!gate_failures.exists(), "a stopped step records no gate failure");
+        assert!(
+            !gate_failures.exists(),
+            "a stopped step records no gate failure"
+        );
     }
 
     fn rung(name: &str, command: &str, required: bool) -> roko_core::config::GateRungConfig {

@@ -985,8 +985,13 @@ pub(crate) async fn cmd_status(
 
     // Adaptive threshold summary.
     let thresholds_path = learn_dir.join("gate-thresholds.json");
-    let thresholds =
+    let mut thresholds =
         roko_gate::adaptive_threshold::AdaptiveThresholds::load_or_new(&thresholds_path);
+    // `retries=` and `skip=` follow `[gates]`, as the budgets of plan runs do.
+    let gates = roko_core::config::loader::load_config_unified(&workdir)
+        .map(|config| config.gates)
+        .unwrap_or_default();
+    thresholds.apply_gates_config(&gates);
     let rung_count: usize = thresholds.all_rungs().count();
     if rung_count > 0 {
         println!();

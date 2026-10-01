@@ -973,7 +973,13 @@ impl TuiState {
                 match serde_json::from_str::<roko_gate::adaptive_threshold::AdaptiveThresholds>(
                     &self.gate_thresholds_json,
                 ) {
-                    Ok(thresholds) => {
+                    Ok(mut thresholds) => {
+                        // Retry suggestions follow `[gates]`, as plan runs do.
+                        if !self.workdir.as_os_str().is_empty() {
+                            let gates =
+                                super::super::dashboard::workspace_gates_config(&self.workdir);
+                            thresholds.apply_gates_config(&gates);
+                        }
                         self.gate_results_page.threshold_rows =
                             super::super::dashboard::gate_threshold_rows(&thresholds);
                     }

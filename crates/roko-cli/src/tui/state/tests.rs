@@ -1376,6 +1376,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.tasks.insert(
@@ -1388,6 +1390,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: Some("success".into()),
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(
@@ -1578,6 +1582,8 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(

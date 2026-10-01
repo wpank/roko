@@ -545,28 +545,6 @@ pub fn save_gate_thresholds(paths: &PersistPaths, thresholds: &GateThresholds) -
     thresholds.save(&paths.gate_thresholds_json)
 }
 
-/// Flush gate thresholds to disk when the observation counter reaches the
-/// configured interval.
-///
-/// Increments `obs_since_flush` unconditionally. When the count reaches
-/// `flush_interval`, the thresholds are saved atomically and the counter
-/// is reset to zero.  Flush errors are logged at warn level and do not
-/// propagate — a missed flush is non-fatal; the thresholds are still held
-/// in memory and will be flushed on the next interval or at run completion.
-pub fn maybe_flush_gate_thresholds(
-    thresholds: &GateThresholds,
-    obs_since_flush: &mut u64,
-    paths: &PersistPaths,
-    flush_interval: u64,
-) {
-    if *obs_since_flush >= flush_interval {
-        if let Err(e) = save_gate_thresholds(paths, thresholds) {
-            tracing::warn!(error = %e, "failed to flush gate thresholds to disk");
-        }
-        *obs_since_flush = 0;
-    }
-}
-
 /// Atomically write `content` to `path` via a `.tmp` sibling.
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     roko_fs::atomic_write_bytes(path, content)
@@ -1454,79 +1432,6 @@ mod tests {
         gt.observe(3, false);
         gt.observe(3, true);
         assert_eq!(gt.total_observations(), 5);
-    }
-
-    /// E07-T10: Prove incremental gate-threshold flush writes to disk
-    /// periodically (every N observations) and that data survives a
-    /// re-read.
-    #[test]
-    fn incremental_gate_threshold_flush() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
-        let config = roko_core::config::RokoConfig::from_toml(
-            "[learning]\ngate_threshold_flush_interval = 3\n",
-        )
-        .expect("parse custom learning cadence");
-        let flush_interval = config.learning.effective_gate_threshold_flush_interval();
-        assert_eq!(flush_interval, 3);
-
-        let mut thresholds = GateThresholds::default();
-        let mut obs_since_flush: u64 = 0;
-
-        // Accumulate observations below the flush interval -- no file yet.
-        for i in 0..(flush_interval - 1) {
-            thresholds.observe(1, i % 2 == 0);
-            obs_since_flush += 1;
-            super::maybe_flush_gate_thresholds(
-                &thresholds,
-                &mut obs_since_flush,
-                &paths,
-                flush_interval,
-            );
-        }
-        assert!(
-            !paths.gate_thresholds_json.exists(),
-            "file must not exist before flush interval reached"
-        );
-        assert_eq!(obs_since_flush, flush_interval - 1);
-
-        // One more observation crosses the interval -- file must appear.
-        thresholds.observe(1, true);
-        obs_since_flush += 1;
-        super::maybe_flush_gate_thresholds(
-            &thresholds,
-            &mut obs_since_flush,
-            &paths,
-            flush_interval,
-        );
-        assert!(
-            paths.gate_thresholds_json.exists(),
-            "file must exist after flush interval reached"
-        );
-        assert_eq!(obs_since_flush, 0, "counter must reset after flush");
-
-        // Verify the persisted content round-trips.
-        let loaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
-        assert_eq!(loaded, thresholds);
-
-        // Another full interval of observations produces a second flush
-        // with updated data.
-        for _ in 0..flush_interval {
-            thresholds.observe(2, false);
-            obs_since_flush += 1;
-        }
-        super::maybe_flush_gate_thresholds(
-            &thresholds,
-            &mut obs_since_flush,
-            &paths,
-            flush_interval,
-        );
-        let reloaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
-        assert_eq!(reloaded, thresholds, "second flush must write updated data");
-        assert!(
-            reloaded.rungs.contains_key(&2),
-            "rung 2 must be present after second flush"
-        );
     }
 
     #[test]

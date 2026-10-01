@@ -3753,15 +3753,27 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     // Authentication hint: match specific auth-related terms, not substrings
-    // like "authoritative" or "authorization policy".
-    if lower.contains("401")
+    // like "authoritative" or "authorization policy", and 401 only as an HTTP
+    // status, never inside a path, an id or a longer number.
+    if mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
         || lower.contains("auth denied")
     {
+        // ROKO_API_KEY authenticates to roko serve; each model provider has its own key.
+        if lower.contains("workspace server") || lower.contains("roko serve") {
+            return Some("check your roko serve API key: set ROKO_API_KEY or run `roko login`");
+        }
+        if lower.contains("provider") {
+            return Some(
+                "check the provider's API key: run `roko config check-secrets`, then \
+                 `roko config providers test --all`",
+            );
+        }
         return Some(
-            "check your API key: set ROKO_API_KEY or run `roko config set-secret ROKO_API_KEY <key>`",
+            "check your API key: `roko config check-secrets` checks model provider keys; \
+             ROKO_API_KEY or `roko login` authenticates to roko serve",
         );
     }
 
@@ -3770,6 +3782,30 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+/// Whether a lower-cased error message reports HTTP status 401: a standalone
+/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
+/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
+/// `gap-e4019c`, `14015 bytes`) is not a status.
+fn mentions_http_401(lower: &str) -> bool {
+    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    for (at, &word) in words.iter().enumerate() {
+        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
+        if word == "401" && near.iter().copied().any(is_http_status_word) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_http_status_word(word: &str) -> bool {
+    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]
@@ -8470,6 +8506,44 @@ mod tests {
     #[test]
     fn error_hint_unrelated_returns_none() {
         assert!(error_hint("something completely unrelated went wrong").is_none());
+    }
+
+    #[test]
+    fn error_hint_ignores_401_outside_an_http_status() {
+        for msg in [
+            "/tmp/run-1401/checkpoint.json: No such file or directory",
+            "worktree for gap-e4019c already exists",
+            "wrote 14015 bytes to the snapshot",
+            "task 401 of plan p1 failed verification",
+        ] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_none() || !hint.unwrap().contains("API key"),
+                "a 401 outside an HTTP status must not blame the API key: {msg}"
+            );
+        }
+        for msg in ["HTTP 401", "request returned status 401", "server returned HTTP 401."] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_some_and(|h| h.contains("API key")),
+                "an HTTP 401 must get the API key hint: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_hint_points_provider_auth_at_provider_keys() {
+        let msg = "API key invalid for provider 'openai' (HTTP 401). Check $OPENAI_API_KEY";
+        let hint = error_hint(msg).expect("a provider 401 gets a hint");
+        assert!(hint.contains("roko config check-secrets"), "got: {hint}");
+        assert!(!hint.contains("ROKO_API_KEY"), "ROKO_API_KEY is the serve key, got: {hint}");
+    }
+
+    #[test]
+    fn error_hint_points_serve_auth_at_roko_api_key() {
+        let msg = "the workspace server rejected the request (401): server returned HTTP 401";
+        let hint = error_hint(msg).expect("a serve 401 gets a hint");
+        assert!(hint.contains("ROKO_API_KEY") && hint.contains("roko login"), "got: {hint}");
     }
 
     // ─── Impact CLI parsing ─────────────────────────────────────────────

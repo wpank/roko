@@ -9,9 +9,9 @@ goal = "visibility"
 size = "S"
 subsystem = ["roko-cli/graph-execution", "roko-core/dashboard", "apps/portal"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ead2a9ae5"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-cli/src/runner/graph_tui_bridge.rs::poll_status_changes", "crates/roko-graph/src/engine.rs:1208", "crates/roko-core/src/dashboard_snapshot.rs::apply_with_ts", "apps/portal/src/lib/runState.ts:723", "crates/roko-cli/src/graph_execution/plan_runner.rs::PLAN_WATCH_INTERVAL"]
@@ -77,3 +77,12 @@ that never start (Pending→Skipped).
 
 Coordinate with gap-f59fe9 and bug-7e1b6b, which change the same bridge and snapshot code. bug-7e1b6b counts
 `skipped` as passed today.
+
+- Implemented on `work/bug-4e5a59` at `ead2a9ae5`; cargo verification deferred to the batch check.
+- Plan step 3 was chosen (coordinator, 2026-10-01). Consumers take a completion they never saw start: the
+  snapshot since bug-7e1b6b (wk-gates), and the portal's run state since bug-4e5a59. `poll_status_changes` is
+  unchanged, so consumers of the raw event stream still see a replayed task's `task_completed` with no `task_started`.
+- `replayed_task_counts_as_done` stands in for the Done-when's resumed mock run. It replays T1 (absent, then
+  `Complete`) and runs T2 (`Running`, then `Complete`) through `poll_status_changes`. It then applies the published
+  events to a `DashboardSnapshot`, and checks that both tasks are listed and 2 counted done, while only T2 started.
+- Step 2 still holds: blocked tasks (`Skipped`/`ConditionSkipped`) send no completion, so gap-f59fe9 is unaffected.

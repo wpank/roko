@@ -3,13 +3,15 @@ id = "bug-54c729"
 kind = "bug"
 title = "roko-serve's runs route reports every task status other than passed as failed"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-serve/routes/runs"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "b63ee888c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-gates's report, checked on work/bug-7e1b6b at 63b77c9f5)"
 anchors = ["crates/roko-serve/src/routes/runs.rs"]
@@ -42,3 +44,18 @@ Honest verdicts (epic spec-e9d7ec): the API turns "not checked" and "nothing to 
 
 - [ ] The runs route reports each task's real outcome.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-4e5a59` at `b63ee888c`; cargo verification deferred to the batch check.
+- A `task_completed` that names its outcome reports the outcome's class from `classify_task_outcome` (bug-7e1b6b).
+  A runtime `task_skipped` is now terminal and reports `skipped` (it was `observed`). Records without an outcome
+  string are read as before. A runner `task.attempt.completed` passes only with `passed`: its `exhausted` and
+  `timed_out` outcomes stay `failed`, where the dashboard classifier would make them `unverified`.
+- Premise re-checked at 5c90262ec: no producer writes a task record with one of the new outcomes into the indexes
+  this route reads, so the misreport was latent. Serve's StateHub logs dashboard events to `.roko/events.jsonl`
+  without a `run_id`, so `events-by-run/` never holds them. The runtime index holds ingested `RuntimeEvent`s, whose
+  `task_completed` carries only `passed`. The runner index holds the deleted Runner-v2's records.
+- Not fixed here: on the runtime path a Graph task's outcome is lost. `GraphRuntimeEventAdapter` maps every
+  `NodeCompleted` to `TaskCompleted { passed: true }`, so an unverified or already-satisfied task would read as
+  passed. Only tests construct the adapter today.

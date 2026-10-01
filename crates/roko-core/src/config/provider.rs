@@ -671,6 +671,16 @@ pub struct ModelProfile {
     /// Required for newer OpenAI models (o1, o3, gpt-4o, gpt-5.x, etc.).
     #[serde(default, skip_serializing_if = "is_false")]
     pub use_max_completion_tokens: bool,
+    /// Sampling temperature sent with each request to this model by the
+    /// providers that take one (the OpenAI-compatible ones). `None` leaves
+    /// the provider's default (gap-13bbbd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Sampling seed sent with each request to this model by the providers
+    /// that take one (the OpenAI-compatible ones). `None` sends none
+    /// (gap-13bbbd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl ModelProfile {

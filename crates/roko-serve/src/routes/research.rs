@@ -15,7 +15,8 @@ use validator::{Validate, ValidationError};
 use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::state::{AppState, OperationHandle, OperationStatus};
+use crate::operations::{run_outcome, spawn_operation};
+use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -197,7 +198,7 @@ impl ResearchMode {
 
 /// Spawn a generic background research operation.
 async fn spawn_research_op(
-    state: &AppState,
+    state: &Arc<AppState>,
     mode: ResearchMode,
     target: String,
     prompt: String,
@@ -206,27 +207,19 @@ async fn spawn_research_op(
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    let kind = mode.operation_kind().to_string();
-    let target_for_kind = target.clone();
-    let target_for_log = target_for_kind.clone();
+    let kind = mode.operation_kind();
+    let target_for_log = target.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
-        let kind = kind.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
-                kind: kind.clone(),
+                op_id,
+                kind: kind.to_string(),
             });
 
             match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => {
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind,
-                        success: result.success,
-                    });
-                }
+                Ok(result) => run_outcome(&result, mode.label()),
                 Err(err) => {
                     tracing::warn!(
                         mode = %mode.label(),
@@ -234,27 +227,17 @@ async fn spawn_research_op(
                         error = %err,
                         "research operation failed"
                     );
+                    let message = format!("{} failed for {target_for_log}: {err}", mode.label());
                     bus.publish(ServerEvent::Error {
-                        message: format!("{} failed for {target_for_log}: {err}", mode.label()),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind,
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("{kind}:{target_for_kind}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("{kind}:{target}");
+    spawn_operation(state, op_id.clone(), op_kind, kind, work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,

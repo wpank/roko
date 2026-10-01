@@ -4,7 +4,7 @@
 //! from the binary-side `cmd_plan_run_engine` so that `serve_runtime` and
 //! other library callers can invoke it without depending on the binary crate.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -136,24 +136,40 @@ pub enum PlanRunInterrupt {
     Interrupt,
     /// SIGTERM.
     Terminate,
+    /// SIGHUP: the run's terminal hung up (bug-4641e3).
+    Hangup,
+    /// The FAST run deadline (`ROKO_FAST_PLAN_DEADLINE_SECS`) elapsed
+    /// (gap-9efe8e). It exits as SIGTERM does, which `./dev.sh fast` expects.
+    Deadline,
 }
 
 impl PlanRunInterrupt {
+    /// Every stop cause, e.g. to tell a stopped run's exit status apart.
+    pub const ALL: [Self; 4] = [
+        Self::Interrupt,
+        Self::Terminate,
+        Self::Hangup,
+        Self::Deadline,
+    ];
+
     /// Conventional shell status for the signal: 128 + signal number.
     #[must_use]
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
-            Self::Terminate => 143,
+            Self::Terminate | Self::Deadline => 143,
+            Self::Hangup => 129,
         }
     }
 
-    /// Signal name for logs and summaries.
+    /// Signal name, or `deadline`, for logs and summaries.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Interrupt => "SIGINT",
             Self::Terminate => "SIGTERM",
+            Self::Hangup => "SIGHUP",
+            Self::Deadline => "deadline",
         }
     }
 
@@ -161,6 +177,8 @@ impl PlanRunInterrupt {
         match self {
             Self::Interrupt => 1,
             Self::Terminate => 2,
+            Self::Hangup => 3,
+            Self::Deadline => 4,
         }
     }
 
@@ -168,6 +186,8 @@ impl PlanRunInterrupt {
         match code {
             1 => Some(Self::Interrupt),
             2 => Some(Self::Terminate),
+            3 => Some(Self::Hangup),
+            4 => Some(Self::Deadline),
             _ => None,
         }
     }
@@ -202,6 +222,10 @@ const INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Grace period between the first signal and a forced exit.
 const FORCED_EXIT_GRACE: Duration = Duration::from_secs(10);
 
+/// How long a forced exit waits to mark the running plans' checkpoints
+/// `interrupted` before it exits without them.
+const FORCED_EXIT_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// After [`INTERRUPT_DRAIN_TIMEOUT`], how long the attempts a stopping plan
 /// asked to stop may take to settle with the usage they streamed before the
 /// checkpoint is finalized without them (bug-2b1ddc).
@@ -214,6 +238,15 @@ const INTERRUPT_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 /// Set while a CLI plan run handles SIGINT/SIGTERM itself.
 static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
 
+/// Set while a CLI plan run handles SIGHUP itself, which it does unless
+/// SIGHUP was ignored when the run started, as under `nohup`.
+static CLI_OWNS_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+/// Checkpoint manifests of the plans this process is running, which a forced
+/// exit marks `interrupted` (bug-4641e3).
+static RUNNING_PLAN_CHECKPOINTS: std::sync::Mutex<BTreeSet<PathBuf>> =
+    std::sync::Mutex::new(BTreeSet::new());
+
 /// Original stderr while it is redirected to the runner log for the TUI.
 static REDIRECTED_STDERR_ORIGINAL: AtomicI32 = AtomicI32::new(-1);
 
@@ -224,7 +257,14 @@ pub fn plan_run_owns_termination_signals() -> bool {
     CLI_OWNS_TERMINATION_SIGNALS.load(Ordering::SeqCst)
 }
 
-/// Owns SIGINT/SIGTERM for one CLI plan run; dropping it hands them back.
+/// Whether a CLI plan run currently owns SIGHUP, so its TUI must leave the
+/// signal to the run.
+fn plan_run_owns_hangup_signal() -> bool {
+    CLI_OWNS_HANGUP_SIGNAL.load(Ordering::SeqCst)
+}
+
+/// Owns SIGINT/SIGTERM/SIGHUP for one CLI plan run; dropping it hands them
+/// back.
 #[derive(Debug)]
 pub struct PlanRunSignalGuard {
     listener: tokio::task::JoinHandle<()>,
@@ -234,16 +274,19 @@ impl Drop for PlanRunSignalGuard {
     fn drop(&mut self) {
         self.listener.abort();
         CLI_OWNS_TERMINATION_SIGNALS.store(false, Ordering::SeqCst);
+        CLI_OWNS_HANGUP_SIGNAL.store(false, Ordering::SeqCst);
     }
 }
 
-/// Route SIGINT/SIGTERM to `interrupt` until the returned guard drops.
+/// Route SIGINT/SIGTERM, and SIGHUP unless it is ignored (as under `nohup`),
+/// to `interrupt` until the returned guard drops.
 ///
 /// The first signal asks the run to stop: the running graph is cancelled,
 /// its checkpoint is finalized as `interrupted`, the TUI restores the
 /// terminal, and the run returns [`PlanRunInterrupt::exit_code`]. A second
 /// signal, or [`FORCED_EXIT_GRACE`] after the first, forces the process out
-/// with the same non-zero status, so shutdown can never hang.
+/// with the same non-zero status, so shutdown can never hang; the forced
+/// exit marks the running plans' checkpoints `interrupted` first.
 ///
 /// Only the CLI installs this; library callers such as `roko serve` keep
 /// their own signal handling.
@@ -255,12 +298,21 @@ pub fn install_plan_run_signal_handlers(
 
     let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+    // A hung-up terminal stops the run like SIGTERM (bug-4641e3), unless the
+    // run was started to survive one.
+    let mut sighup = if hangup_ignored() {
+        None
+    } else {
+        Some(signal(SignalKind::hangup()).context("install SIGHUP handler")?)
+    };
     CLI_OWNS_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+    CLI_OWNS_HANGUP_SIGNAL.store(sighup.is_some(), Ordering::SeqCst);
     let listener = tokio::spawn(async move {
         loop {
             let received = tokio::select! {
                 Some(()) = sigint.recv() => PlanRunInterrupt::Interrupt,
                 Some(()) = sigterm.recv() => PlanRunInterrupt::Terminate,
+                Some(()) = next_signal(sighup.as_mut()) => PlanRunInterrupt::Hangup,
                 else => return,
             };
             if interrupt.request(received) {
@@ -279,6 +331,26 @@ pub fn install_plan_run_signal_handlers(
         }
     });
     Ok(PlanRunSignalGuard { listener })
+}
+
+/// Whether SIGHUP is ignored, as `nohup` leaves it for the command it starts.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn hangup_ignored() -> bool {
+    // SAFETY: with a null new action, sigaction(2) only reads the current
+    // disposition into `current`, a zero-initialized plain C struct.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGHUP, std::ptr::null(), &raw mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+/// The next delivery of a signal the run may not have claimed; `None` at once
+/// when it did not, which disables its `select!` arm.
+#[cfg(unix)]
+async fn next_signal(signal: Option<&mut tokio::signal::unix::Signal>) -> Option<()> {
+    signal?.recv().await
 }
 
 /// No process signals to route on this platform.
@@ -307,7 +379,8 @@ fn spawn_forced_exit_deadline(interrupt: PlanRunInterrupt) {
 }
 
 /// Last resort: restore the terminal, kill every process this run spawned,
-/// and exit with the signal's status.
+/// mark the running plans' checkpoints `interrupted` (bug-4641e3), and exit
+/// with the signal's status.
 #[cfg(unix)]
 fn force_exit(interrupt: PlanRunInterrupt, reason: &str) -> ! {
     crate::tui::app::restore_terminal_for_forced_exit();
@@ -316,30 +389,102 @@ fn force_exit(interrupt: PlanRunInterrupt, reason: &str) -> ! {
         roko_agent::process::collect_descendants(std::process::id()),
         libc::SIGKILL,
     );
+    let running: Vec<PathBuf> = running_plan_checkpoints().iter().cloned().collect();
+    let interrupted = mark_checkpoints_interrupted(running, FORCED_EXIT_CHECKPOINT_TIMEOUT);
     tracing::error!(
         signal = interrupt.label(),
         reason,
         killed,
-        "forced plan run exit; the interrupted plan's checkpoint may still read `running`"
+        checkpoints_interrupted = interrupted,
+        "forced plan run exit; the running plans' checkpoints were marked `interrupted`"
     );
     eprintln!(
-        "roko: forced exit after {} ({reason}); killed {killed} child process(es); \
-         resume with `roko plan run <plans-dir> --resume-plan`",
+        "roko: forced exit after {} ({reason}); killed {killed} child process(es), marked \
+         {interrupted} checkpoint(s) interrupted; resume with `roko plan run <plans-dir> \
+         --resume-plan`",
         interrupt.label()
     );
     std::process::exit(interrupt.exit_code());
 }
 
-/// Agent processes that are still descendants of this process, plus all
-/// of their descendants. Checking descendancy avoids signalling a PID that
-/// was recycled after its agent exited.
+/// The checkpoint manifests in [`RUNNING_PLAN_CHECKPOINTS`].
+fn running_plan_checkpoints() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {
+    RUNNING_PLAN_CHECKPOINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Lists a running plan's checkpoint for a forced exit until it drops, after
+/// the plan has written its own terminal status.
+struct RunningPlanCheckpoint(PathBuf);
+
+impl RunningPlanCheckpoint {
+    fn register(manifest: &Path) -> Self {
+        running_plan_checkpoints().insert(manifest.to_path_buf());
+        Self(manifest.to_path_buf())
+    }
+}
+
+impl Drop for RunningPlanCheckpoint {
+    fn drop(&mut self) {
+        running_plan_checkpoints().remove(&self.0);
+    }
+}
+
+/// Mark each checkpoint in `manifests` that still reads `running` as
+/// `interrupted`, on a thread of its own so a stuck disk cannot hold a forced
+/// exit past `timeout`. Returns how many were marked in time.
+fn mark_checkpoints_interrupted(manifests: Vec<PathBuf>, timeout: Duration) -> usize {
+    if manifests.is_empty() {
+        return 0;
+    }
+    let (marked_tx, marked_rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("roko-plan-run-exit-checkpoints".to_string())
+        .spawn(move || {
+            for manifest in manifests {
+                match crate::graph_checkpoint::mark_running_checkpoint_interrupted(&manifest) {
+                    Ok(marked) => {
+                        let _ = marked_tx.send(marked);
+                    }
+                    Err(error) => tracing::warn!(
+                        manifest = %manifest.display(),
+                        error = %format!("{error:#}"),
+                        "could not mark a running plan's checkpoint interrupted"
+                    ),
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "could not mark the running plans' checkpoints interrupted");
+        return 0;
+    }
+    let deadline = Instant::now() + timeout;
+    std::iter::from_fn(|| {
+        marked_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    })
+    .filter(|marked| *marked)
+    .count()
+}
+
+/// This run's agent processes that are still descendants of this process,
+/// plus all of their descendants. Checking descendancy avoids signalling a PID
+/// that was recycled after its agent exited.
+///
+/// The run's agents are those registered in this thread's spawn scope: `roko
+/// serve` runs each plan on a thread it scopes, so stopping one run leaves the
+/// plan generation, revision and chat agents the server runs beside it alone
+/// (find-65ff6b). A CLI run has no scope and owns every unscoped agent.
 #[cfg(unix)]
 fn live_agent_process_trees() -> Vec<u32> {
     let ours = roko_agent::process::collect_descendants(std::process::id())
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    let scope = roko_agent::process::current_spawn_scope();
     let mut targets = Vec::new();
-    for pid in roko_agent::process::registered_pids() {
+    for pid in roko_agent::process::registered_pids_in_scope(scope) {
         if ours.contains(&pid) {
             targets.extend(roko_agent::process::collect_descendants(pid));
             targets.push(pid);
@@ -702,6 +847,14 @@ pub struct GraphPlanRunParams {
     /// Start the run even when the workdir has less free disk than
     /// `[resources] min_free_disk_mb` (`plan run --force`, reg-7cf6f9).
     pub force_disk_check: bool,
+    /// Reasoning effort of this run's dispatches in place of `[agent]
+    /// default_effort` (`roko run --effort`, gap-9980c6); `None` keeps the
+    /// config's.
+    pub effort: Option<String>,
+    /// Pick models without the cascade router (`roko do --no-cascade`,
+    /// gap-9980c6): the routing ladder, else the default model, routes each
+    /// task. The run's outcomes still teach the router.
+    pub no_cascade: bool,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -869,7 +1022,9 @@ async fn run_graph_plan_body(
         no_budget,
         cli_model_override,
         dangerously_skip_permissions,
-        log_file,
+        // A `--log-file` run reaches this body through
+        // `event_log::run_recorded`, which records it and clears the field.
+        log_file: _,
         worktree_per_task,
         rich_topology,
         promote,
@@ -881,6 +1036,8 @@ async fn run_graph_plan_body(
         only_plans,
         live_agent_output,
         force_disk_check,
+        effort,
+        no_cascade,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -889,7 +1046,6 @@ async fn run_graph_plan_body(
     let plans_dir: &Path = &plans_dir;
     let workdir: &Path = &workdir;
     let resume_plan: Option<PathBuf> = resume_plan;
-    let log_file: Option<PathBuf> = log_file;
     // Each task's plan gate judges the worktree its attempt ran in, never the
     // shared working tree (bug-50caf2), so the rich topology needs them.
     if rich_topology && !worktree_per_task {
@@ -936,6 +1092,10 @@ async fn run_graph_plan_body(
     let mut roko_config = roko_core::config::loader::load_config_validated(workdir)
         .map_err(|error| anyhow!("load Graph runtime config: {error}"))?
         .into_config();
+    // `--effort` sets this run's reasoning effort (gap-9980c6).
+    if let Some(effort) = effort {
+        roko_config.agent.default_effort = effort;
+    }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
@@ -982,10 +1142,17 @@ async fn run_graph_plan_body(
     // run's manifest records.
     let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
+    // `--no-cascade`: the router picks no model; the run's feedback still
+    // trains it.
+    let routing_cascade = if no_cascade {
+        None
+    } else {
+        graph_run_config.cascade_router.clone()
+    };
     let shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
         roko_config.agent.mcp_config.as_ref(),
-        graph_run_config.cascade_router.clone(),
+        routing_cascade,
         Some(prompt_cache),
     )
     .await
@@ -996,7 +1163,8 @@ async fn run_graph_plan_body(
                 .join("provider-health.json"),
         ),
     ))
-    .with_error_patterns_from_disk(workdir);
+    .with_error_patterns_from_disk(workdir)
+    .with_knowledge_routing(workdir);
     let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
@@ -1266,6 +1434,19 @@ async fn run_graph_plan_body(
         ExecutionCommandSender::channel("graph-engine");
     let tui_ack_receiver = CommandAckReceiver::new(tui_ack_rx);
 
+    // `roko plan pause/resume/cancel/retry` in another terminal write
+    // `.roko/state/control.json`; the plan-set driver routes what they write
+    // through this channel, like a TUI command (bug-8208a6). A command left
+    // from before this run is dropped.
+    let control_file_sender = tui_cmd_sender.clone();
+    let control_state_dir = RokoLayout::for_project(workdir).state_dir();
+    if let Some(stale) = crate::runner::types::ControlCommand::poll(&control_state_dir) {
+        tracing::warn!(
+            command = ?stale.command,
+            "dropping a plan control command written before this run"
+        );
+    }
+
     // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
     // Wired into each CellContext so the task executor cell can check it
     // between agent turns (cells check this flag between turns; a paused
@@ -1288,10 +1469,11 @@ async fn run_graph_plan_body(
         redirect_stderr_to(&stderr_log_path);
 
         let (tui_shutdown_tx, tui_shutdown_rx) = std::sync::mpsc::channel();
-        // When the CLI routes SIGINT/SIGTERM to this run, keep the TUI's
-        // terminal-reset handler off them so they stop the run gracefully
-        // instead of killing the process.
+        // When the CLI routes SIGINT/SIGTERM (and SIGHUP) to this run, keep
+        // the TUI's terminal-reset handler off them so they stop the run
+        // gracefully instead of killing the process.
         let host_owns_signals = plan_run_owns_termination_signals();
+        let host_owns_hangup = plan_run_owns_hangup_signal();
         let state_hub_for_tui = state_hub.clone();
         let workdir_for_tui = workdir.to_path_buf();
         let handle = std::thread::Builder::new()
@@ -1309,6 +1491,11 @@ async fn run_graph_plan_body(
                 .with_shutdown_receiver(tui_shutdown_rx);
                 let app = if host_owns_signals {
                     app.with_host_termination_signals()
+                } else {
+                    app
+                };
+                let app = if host_owns_hangup {
+                    app.with_host_hangup_signal()
                 } else {
                     app
                 };
@@ -1330,22 +1517,6 @@ async fn run_graph_plan_body(
             handle: Some(handle),
         });
     }
-
-    // ── Canonical --log-file recorder for Graph Engine (#115) ──
-    let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> =
-        match log_file.as_deref() {
-            Some(path) => {
-                let resolved = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    workdir.join(path)
-                };
-                let logger = crate::runner::structured_log::GraphEventLogger::open(&resolved)
-                    .map_err(|e| anyhow!("open --log-file {}: {e}", resolved.display()))?;
-                Some(Arc::new(logger))
-            }
-            None => None,
-        };
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
@@ -1417,7 +1588,6 @@ async fn run_graph_plan_body(
         plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
-        graph_event_logger: graph_event_logger.as_ref(),
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
         run_manifests: &run_manifests,
@@ -1449,6 +1619,7 @@ async fn run_graph_plan_body(
             stopped_by = Some(reason);
             scheduler.stop();
         }
+        forward_control_file(&control_state_dir, &control_file_sender);
         for plan_id in route_execution_commands(
             &mut exec_cmd_rx,
             &tui_ack_tx,
@@ -1492,6 +1663,10 @@ async fn run_graph_plan_body(
                 })?;
             let control = PlanControl::default();
             controls.insert(plan_id, control.clone());
+            // Agents of the run's other plans hear what this one writes (gap-c09fc7).
+            let footprint = super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref());
+            let writes = footprint.writes.iter().map(ToString::to_string).collect();
+            graph_task_dispatcher.plan_started(&plan.id, writes);
             running.push(run_admitted_plan(&run_context, plan, control));
         }
 
@@ -1523,6 +1698,7 @@ async fn run_graph_plan_body(
                 }
                 plan_outcomes.insert(plan_id.clone(), outcome.succeeded());
                 scheduler.finish(&plan_id, outcome);
+                graph_task_dispatcher.plan_finished(&plan_id);
                 if running.is_empty() {
                     // Clear any residual pause once no plan is running.
                     shared_pause_flag.store(false, Ordering::Release);
@@ -2167,7 +2343,6 @@ struct PlanRunContext<'a> {
     plan_failure_policy: roko_core::config::PlanFailurePolicy,
     graph_tui_bridge: &'a crate::runner::graph_tui_bridge::GraphTuiBridge,
     graph_telemetry: &'a Arc<dyn roko_core::TelemetryEventSink>,
-    graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
     shared_pause_flag: &'a Arc<AtomicBool>,
     interrupt: &'a PlanRunInterruptHandle,
     /// Each checkpoint run's `manifest.json` (S01 §5.1).
@@ -2414,6 +2589,20 @@ fn reject_command(
     (CommandAckStatus::Rejected, Some(reason.to_string()))
 }
 
+/// Forward the command `roko plan pause/resume/cancel/retry` wrote to
+/// `<state_dir>/control.json`, if any, into the run's command channel, where
+/// [`route_execution_commands`] routes it like a TUI command (bug-8208a6).
+/// The file is consumed.
+fn forward_control_file(state_dir: &Path, commands: &ExecutionCommandSender) {
+    let Some(control) = crate::runner::types::ControlCommand::poll(state_dir) else {
+        return;
+    };
+    let command = crate::execution_control::control_command_to_execution(&control, "graph-engine");
+    if let Err(error) = commands.try_send(command) {
+        tracing::warn!(%error, "could not route a plan control command to the run");
+    }
+}
+
 /// [`run_one_plan`], tagged with the plan's ID for the plan-set driver.
 async fn run_admitted_plan(
     ctx: &PlanRunContext<'_>,
@@ -2454,11 +2643,6 @@ async fn repair_worktree_state(worktrees: &crate::orchestrator::worktree::Worktr
     }
 }
 
-/// Run one admitted plan to a terminal checkpoint.
-///
-/// A plan that cannot be converted or validated still gets a terminal
-/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
-/// failures, which stop the whole run.
 /// With `--worktree-per-task` each task writes its own checkout, so no two
 /// tasks share a tree: drop the exclusive paths that keep tasks writing the
 /// same files apart, and let them run together (gap-19e596). The paths are
@@ -2472,13 +2656,17 @@ fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task
     }
 }
 
+/// Run one admitted plan to a terminal checkpoint.
+///
+/// A plan that cannot be converted or validated still gets a terminal
+/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
+/// failures, which stop the whole run.
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
     control: &PlanControl,
 ) -> anyhow::Result<PlanRunResult> {
     use roko_graph::cells::TaskExecutorCell;
-    use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
 
     let graph_tui_bridge = ctx.graph_tui_bridge;
@@ -2490,45 +2678,22 @@ async fn run_one_plan(
         );
     }
 
-    // Convert Runner v2 tasks into PlanTaskInfo for the converter. Each
-    // task's retry budget is `--max-retries`, else what it authors, else set
-    // by the adaptive gate thresholds.
+    // Convert Runner v2 tasks into PlanTaskInfo for the converter, with the
+    // mapping the resume preview uses (gap-be7368). Each task's retry budget
+    // is `--max-retries`, else what it authors, else set by the adaptive gate
+    // thresholds.
     let retry_budgets = ctx.graph_task_dispatcher.task_retry_budgets(&plan.dir);
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
-        .tasks
-        .iter()
-        .map(|t| {
-            let info = PlanTaskInfo {
-                title: t.title.clone(),
-                description: t.description.clone(),
-                role: t.role.clone(),
-                tier: t.tier.clone(),
-                model_hint: t.model_hint.clone(),
-                files: t.files.clone(),
-                depends_on: t.depends_on.clone(),
-                depends_on_plan: t.depends_on_plan.clone(),
-                timeout_secs: t.timeout_secs,
-                max_retries: ctx
-                    .max_retries
-                    .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t)),
-                domain: t.domain.as_ref().map(|d| format!("{d:?}")),
-                sequence: t.sequence,
-                full_config_json: serde_json::to_value(t).unwrap_or_default(),
-            };
-            (t.id.clone(), info)
-        })
-        .collect();
+    let tasks = crate::graph_checkpoint::plan_task_infos(plan, |t| {
+        ctx.max_retries
+            .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t))
+    });
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
-    // the converted concurrency. The width is applied once the identity is
-    // taken, below.
-    let max_parallel = if ctx.max_tasks > 0 {
-        u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+    // the converted concurrency. `--max-tasks` and the width are applied once
+    // the identity is taken, below, so a run resumes whatever `--max-tasks`
+    // it is given (gap-7147bb).
+    let max_parallel = crate::graph_checkpoint::converted_max_parallel(plan);
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
 
@@ -2590,7 +2755,7 @@ async fn run_one_plan(
         }
     } else {
         // ── Simple single-Activity-per-task converter (default) ─────────
-        match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
+        match crate::graph_checkpoint::convert_plan(plan, &tasks) {
             Ok(g) => {
                 let mut reg = roko_graph::default_registry();
                 let plan_dispatcher = Arc::clone(ctx.task_dispatcher);
@@ -2600,6 +2765,7 @@ async fn run_one_plan(
                 (g, reg)
             }
             Err(e) => {
+                let e = e.root_cause();
                 graph_tui_bridge.error(&format!(
                     "failed to convert plan '{}' to graph: {e}",
                     plan.id
@@ -2621,6 +2787,9 @@ async fn run_one_plan(
         ctx.force_resume,
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
+    // Until the plan writes its terminal status, a forced exit marks its
+    // checkpoint `interrupted` (bug-4641e3).
+    let _running = RunningPlanCheckpoint::register(&checkpoint.paths().manifest);
     let run_id = checkpoint.run_id().to_string();
     // A new run's manifest, or one more invocation of a resumed run; the
     // run's attempt records carry the invocation's ordinal.
@@ -2667,11 +2836,14 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
-    // A plan that omits `max_parallel` runs as wide as its DAG allows when
-    // every task that can write declares its files: the engine keeps tasks
-    // whose files overlap apart. Set after the identity is taken, like the
-    // failure strategy, so checkpoints of such plans keep resuming.
-    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+    // `--max-tasks` caps the run. Otherwise a plan that omits `max_parallel`
+    // runs as wide as its DAG allows when every task that can write declares
+    // its files: the engine keeps tasks whose files overlap apart. Both are
+    // set after the identity is taken, like the failure strategy, so
+    // checkpoints keep resuming.
+    if ctx.max_tasks > 0 {
+        graph.policy.max_concurrent_nodes = ctx.max_tasks;
+    } else if plan.tasks.meta.max_parallel.is_none() {
         let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
         if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
             tracing::info!(
@@ -2708,11 +2880,6 @@ async fn run_one_plan(
         // PassthroughCell stubs; without this the engine rejects the graph
         // at validate_for_start time.
         .with_allow_test_stubs(ctx.rich_topology);
-    // Wire canonical --log-file recorder (#115): attach the event sink
-    // so every GraphExecutionEvent is written to JSONL.
-    if let Some(sink) = ctx.graph_event_logger {
-        engine = engine.with_event_sink(Arc::clone(sink));
-    }
     if let Some(replayer) = checkpoint.take_replayer() {
         engine = engine.with_replayer(replayer);
     }
@@ -2819,6 +2986,8 @@ async fn run_one_plan(
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
+            // An agent that exits on this SIGTERM settles as cancelled.
+            ctx.graph_task_dispatcher.begin_stop();
             let signalled = terminate_in_flight_agents();
             tracing::warn!(
                 plan_id = %plan.id,
@@ -3404,6 +3573,31 @@ mod tests {
         }
     }
 
+    /// bug-8208a6: a command `roko plan cancel` writes to control.json reaches
+    /// the run's command channel, as a TUI command would, and is consumed.
+    #[test]
+    fn a_control_file_command_reaches_the_run() {
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        crate::runner::types::ControlCommand {
+            command: crate::runner::types::ControlAction::Cancel,
+            plan_id: Some("p1".to_string()),
+            task_id: None,
+        }
+        .write(state_dir.path())
+        .expect("write control.json");
+        let (sender, mut commands, _acks, _ack_rx) =
+            ExecutionCommandSender::channel("graph-engine");
+
+        forward_control_file(state_dir.path(), &sender);
+
+        let command = commands.try_recv().expect("the command is routed");
+        assert_eq!(command.kind, ExecutionCommandKind::Cancel);
+        assert_eq!(command.plan_id.as_deref(), Some("p1"));
+        assert!(!state_dir.path().join("control.json").exists());
+        forward_control_file(state_dir.path(), &sender);
+        assert!(commands.try_recv().is_err(), "nothing more to route");
+    }
+
     #[test]
     fn plan_set_entries_follow_execution_order_with_task_totals() {
         let plans = vec![
@@ -3504,6 +3698,8 @@ files = ["README.md"]
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect("run plan set");
@@ -3711,6 +3907,8 @@ max_retries = 0
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect("run plan set");
@@ -4471,10 +4669,200 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// Where [`interrupt_stops_running_gate_command`] tells
+    /// [`interrupted_gate_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_GATE_DIR: &str = "ROKO_INTERRUPTED_GATE_CHILD_DIR";
+
+    /// A verify command that runs until it is signalled, marking when it
+    /// starts and when it gets SIGTERM.
+    #[cfg(unix)]
+    const SIGNALLED_GATE: &str =
+        "trap 'echo > got-term; exit 143' TERM; echo > gate-started; sleep 60 & wait $!";
+
+    /// gap-b367bf: an interrupt stops a task's running verify command the way
+    /// it stops the run's agents, with SIGTERM, which the command here traps
+    /// into a marker file. The interrupt signals every registered process of
+    /// its process, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_stops_running_gate_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "gated", "", &[("T1", &[], SIGNALLED_GATE)]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_gate_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_GATE_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(
+            dir.path().join("got-term").exists(),
+            "the interrupt never sent the verify command SIGTERM"
+        );
+    }
+
+    /// The interrupted run of [`interrupt_stops_running_gate_command`]: it
+    /// interrupts the plan in that test's workspace once the task's verify
+    /// command runs. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_gate_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_GATE_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("gate-started");
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the verify command started");
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
         assert_eq!(PlanRunInterrupt::Terminate.exit_code(), 143);
+        assert_eq!(PlanRunInterrupt::Hangup.exit_code(), 129);
+        // A FAST deadline exits as SIGTERM does, under its own label.
+        assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
+        assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
+        for interrupt in PlanRunInterrupt::ALL {
+            assert_eq!(
+                PlanRunInterrupt::from_code(interrupt.code()),
+                Some(interrupt)
+            );
+        }
+    }
+
+    /// bug-4641e3: a forced exit marks the checkpoints of the plans still
+    /// running `interrupted` and leaves finalized ones alone; a plan's
+    /// checkpoint is listed for it only while the plan runs.
+    #[test]
+    fn a_forced_exit_marks_running_checkpoints_interrupted() {
+        use crate::graph_checkpoint::{canonical_checkpoint_status, start_plan_checkpoint};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let running = start_plan_checkpoint(dir.path(), &test_plan("running", "Running", 1))
+            .expect("running checkpoint");
+        let mut finished = start_plan_checkpoint(dir.path(), &test_plan("finished", "Done", 1))
+            .expect("finished checkpoint");
+        finished
+            .finish_with_status(GraphCheckpointStatus::Succeeded)
+            .expect("finish");
+        let manifest = running.paths().manifest.clone();
+        {
+            let _running = RunningPlanCheckpoint::register(&manifest);
+            assert!(running_plan_checkpoints().contains(&manifest));
+        }
+        assert!(!running_plan_checkpoints().contains(&manifest));
+
+        let manifests = vec![manifest, finished.paths().manifest.clone()];
+        assert_eq!(
+            mark_checkpoints_interrupted(manifests, Duration::from_secs(5)),
+            1
+        );
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "running"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "finished"),
+            Some(GraphCheckpointStatus::Succeeded)
+        );
+        assert_eq!(mark_checkpoints_interrupted(Vec::new(), Duration::ZERO), 0);
+    }
+
+    /// Set by [`a_hangup_stops_the_plan_run`] for its child test process.
+    #[cfg(unix)]
+    const HANGUP_CHILD: &str = "ROKO_PLAN_RUN_HANGUP_CHILD";
+
+    /// bug-4641e3: SIGHUP reaches the plan run's stop handle, as SIGTERM
+    /// does, so a hung-up terminal stops the run and its checkpoint is
+    /// finalized; under `nohup` the run leaves SIGHUP ignored. The signals go
+    /// to a child test process, away from the other tests.
+    #[cfg(unix)]
+    #[test]
+    fn a_hangup_stops_the_plan_run() {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::hangup_plan_run_child",
+                "--nocapture",
+            ])
+            .env(HANGUP_CHILD, "1")
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+    }
+
+    /// The child of [`a_hangup_stops_the_plan_run`]: with the run's signal
+    /// handlers installed, a SIGHUP is recorded as a hangup stop request.
+    /// Outside that test it does nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hangup_plan_run_child() {
+        if std::env::var_os(HANGUP_CHILD).is_none() {
+            return;
+        }
+        // SAFETY: signal(2) only sets this child test process's disposition.
+        #[allow(unsafe_code)]
+        unsafe {
+            let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
+        assert!(hangup_ignored(), "as under nohup");
+        // SAFETY: as above.
+        #[allow(unsafe_code)]
+        unsafe {
+            let _ = libc::signal(libc::SIGHUP, libc::SIG_DFL);
+        }
+        assert!(!hangup_ignored());
+
+        let interrupt = PlanRunInterruptHandle::default();
+        let _signals = install_plan_run_signal_handlers(interrupt.clone()).expect("handlers");
+        assert!(plan_run_owns_hangup_signal());
+        // SAFETY: raise(3) signals this child test process, which handles it.
+        #[allow(unsafe_code)]
+        unsafe {
+            let _ = libc::raise(libc::SIGHUP);
+        }
+        for _ in 0..200 {
+            if interrupt.requested().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::Hangup));
     }
 
     #[test]
@@ -5121,11 +5509,47 @@ exec sleep 60
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
 
         assert!(error.to_string().contains("--worktree-per-task"), "{error}");
+    }
+
+    /// gap-9980c6: a run's `effort` replaces `[agent] default_effort`
+    /// (`medium` here) on its dispatches, as `roko run --effort low` asks.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_effort_reaches_the_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        // That workspace's provider, logging the arguments of each call.
+        std::fs::write(
+            dir.path().join("fake-provider.sh"),
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' "$*" >> "$(dirname "$0")/provider-args"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        write_verify_plan(dir.path(), "effort", "", &[("T1", &[], "true")]);
+
+        let exit_code = run_graph_plan(GraphPlanRunParams {
+            worktree_per_task: false,
+            effort: Some("low".to_string()),
+            ..worktree_run_params(dir.path())
+        })
+        .await
+        .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let args = std::fs::read_to_string(dir.path().join("provider-args")).expect("calls");
+        assert!(args.contains("--effort low"), "{args}");
     }
 
     /// A scripted provider: it writes `<name>.txt` for the "Write <name>.txt"
@@ -5229,6 +5653,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         }
     }
 

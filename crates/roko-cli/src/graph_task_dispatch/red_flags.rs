@@ -468,7 +468,7 @@ impl GraphTaskDispatcher {
         // The task's own verify steps, then the workspace rungs that run
         // after them unless its plan opts out
         // (`verification::attempt_verify_steps`).
-        let rungs = self.plan_rungs(spec);
+        let rungs = self.task_rungs(spec, task);
         AttemptDiffPolicy {
             task_files: task.files.clone(),
             verify_scripts: task

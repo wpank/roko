@@ -109,27 +109,6 @@ fn config_with_default_domain_parses() {
 }
 
 // -----------------------------------------------------------------------
-// Test 2: roko.toml with domain_gates parses correctly
-// -----------------------------------------------------------------------
-
-#[test]
-#[ignore = "config schema changed: [prompt].role removed in engine-convergence; fixtures need update"]
-fn config_with_domain_gates_parses() {
-    let tmp = TempDir::new().unwrap();
-    let workdir = tmp.path();
-
-    roko(workdir, &["init", &workdir.display().to_string()]).success();
-    write_domain_config(
-        workdir,
-        Some("research"),
-        "[gates.domain_gates]\nresearch = [\"shell:true\"]\ndocs = [\"shell:markdownlint .\"]\n",
-    );
-
-    // Config should parse without errors.
-    roko(workdir, &["config", "show"]).success();
-}
-
-// -----------------------------------------------------------------------
 // Test 3: tasks.toml with domain field validates successfully
 // -----------------------------------------------------------------------
 

@@ -654,10 +654,18 @@ pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
 /// boundary.
 pub const ATTEMPT_TIMEOUT_MARKER: &str = "timed out after";
 
-/// Whether `text` reports an agent run killed at its wall-clock timeout.
+/// Whether `text` reports an agent run killed at its wall-clock timeout, in
+/// the adapters' own form: `"timed out after <N> ms"`. A provider's own
+/// request timeout ("request timed out after 90s") is the provider's failure,
+/// not the attempt's.
 #[must_use]
 pub fn detect_attempt_timeout(text: &str) -> bool {
-    text.contains(ATTEMPT_TIMEOUT_MARKER)
+    text.match_indices(ATTEMPT_TIMEOUT_MARKER)
+        .any(|(at, marker)| {
+            let rest = text[at + marker.len()..].trim_start();
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            digits > 0 && rest[digits..].trim_start().starts_with("ms")
+        })
 }
 
 #[cfg(test)]
@@ -1223,5 +1231,18 @@ mod turn_cap_tests {
         assert_eq!(detect_turn_cap(&text), None);
         assert!(detect_provider_exhaustion(&text).is_none(), "{text}");
         assert!(!detect_attempt_timeout("exit 1: claude failed"));
+    }
+
+    /// Only the adapters' own `"timed out after <N> ms"` is an attempt
+    /// timeout: a provider's request timeout is the provider's failure.
+    #[test]
+    fn a_provider_request_timeout_is_not_an_attempt_timeout() {
+        assert!(detect_attempt_timeout("timed out after 600000ms"));
+        assert!(!detect_attempt_timeout("request timed out after 90s"));
+        assert!(!detect_attempt_timeout(
+            "MCP server response timed out after 30s"
+        ));
+        assert!(!detect_attempt_timeout("openclaw-acp timed out after 1.5s"));
+        assert!(!detect_attempt_timeout("the call timed out after a while"));
     }
 }

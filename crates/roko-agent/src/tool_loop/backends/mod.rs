@@ -117,24 +117,21 @@ pub fn create_openai_compat_backend(
         }
         ProviderKind::CerebrasApi => {
             // Cerebras exposes an OpenAI-compatible chat completions surface.
-            // Small models need: temperature 0 for determinism, no parallel
-            // tool calls, and content normalization (empty string → null).
+            // Small models need: temperature 0 for determinism (the default
+            // `build_extra_body_params` gives them), no parallel tool calls,
+            // and content normalization (empty string → null).
             let api_key = resolve_api_key(provider)?;
             let base_url = provider
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.cerebras.ai/v1".to_string());
-            let mut extra = build_extra_body_params(provider, model);
-            extra
-                .entry("temperature")
-                .or_insert(serde_json::Value::from(0));
             let mut backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
                 .with_base_url(base_url)
                 .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
                 .with_max_tokens(max_tokens_for_model(model))
                 .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
-                .with_extra_body_params(extra)
+                .with_extra_body_params(build_extra_body_params(provider, model))
                 .with_skip_session_fields(true)
                 .with_disable_parallel_tool_calls(true)
                 .with_normalize_tool_call_content(true)
@@ -205,17 +202,13 @@ pub fn create_openai_compat_backend_with_limiter(
             // temperature 0, no parallel tool calls, and content normalization.
             let api_key = resolve_api_key(provider)?;
             let base_url = base_url_for_tool_loop(provider);
-            let mut extra = build_extra_body_params(provider, model);
-            extra
-                .entry("temperature")
-                .or_insert(serde_json::Value::from(0));
             let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
                 .with_base_url(base_url)
                 .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
                 .with_max_tokens(max_tokens_for_model(model))
                 .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
-                .with_extra_body_params(extra)
+                .with_extra_body_params(build_extra_body_params(provider, model))
                 .with_skip_session_fields(true)
                 .with_disable_parallel_tool_calls(true)
                 .with_normalize_tool_call_content(true)
@@ -574,6 +567,8 @@ mod tests {
             cost_per_request: None,
             use_max_completion_tokens: false,
             tier: None,
+            temperature: None,
+            seed: None,
         };
         let backend = create_tool_loop_backend(
             &provider,

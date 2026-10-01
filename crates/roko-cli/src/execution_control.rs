@@ -316,7 +316,11 @@ where
     tokio::spawn(async move {
         while let Some(command) = commands.recv().await {
             let (status, message) = handle(command.clone()).await;
-            if ack_tx.send(ack_for(&command, status, message)).await.is_err() {
+            if ack_tx
+                .send(ack_for(&command, status, message))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

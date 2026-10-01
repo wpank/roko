@@ -2373,6 +2373,9 @@ pub(crate) fn build_capture_episode(
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
     episode.duration_secs = wall_time_ms as f64 / 1000.0;
     episode.usage.wall_ms = wall_time_ms;
+    // A capture carries no tokens or cost, so its cost is a 0 placeholder and
+    // no $0 cost record is derived from it (bug-ac5432).
+    episode.mark_cost_unknown();
     episode.success = success;
     episode.turns = 1;
     if !success {
@@ -2472,15 +2475,11 @@ pub(crate) async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = roko_cli::learning_helpers::distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(std::sync::Arc::clone(&distillation_caller)),
-        );
-    });
+    roko_cli::learning_helpers::install_capture_distillation(
+        &mut runtime,
+        workdir,
+        roko_cli::learning_helpers::distillation_model_caller(workdir),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = Some(provider);

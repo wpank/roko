@@ -461,6 +461,29 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Prepare {
+            plan_dir,
+            force,
+            workdir,
+        } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let plan_dir = if plan_dir.is_absolute() {
+                plan_dir
+            } else {
+                workdir.join(plan_dir)
+            };
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            let prepared = roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?;
+            if !cli.quiet {
+                for path in &prepared.written {
+                    println!("wrote {}", path.display());
+                }
+                for path in &prepared.kept {
+                    println!("kept {} (it exists; --force overwrites it)", path.display());
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
         PlanCmd::Run {
             plans_dir,
             engine,
@@ -508,6 +531,24 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 && !config.is_file()
             {
                 anyhow::bail!("--config {}: no such file", config.display());
+            }
+
+            // gap-d60281: stop on a flag the Graph engine does not implement
+            // rather than run without it.
+            let unsupported = graph_unsupported_flags(
+                cli.resume.as_deref(),
+                cli.effort.as_ref(),
+                skip_preflight,
+                screenshots,
+                screenshot_interval,
+                screenshot_dir.as_deref(),
+                batch_size,
+            );
+            if !unsupported.is_empty() {
+                anyhow::bail!(
+                    "plan run does not support these flags:\n  - {}",
+                    unsupported.join("\n  - ")
+                );
             }
 
             // Resolve workdir FIRST (before using plans_dir)
@@ -617,22 +658,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Graph Engine path (explicit opt-in) ──
             if matches!(engine, PlanEngine::Graph) {
-                // Warn about flags that are parsed at the top level but cannot
-                // be forwarded to the Graph Engine. Without these warnings the
-                // user would have no indication the flags were silently dropped.
-                warn_graph_unsupported_flags(
-                    cli.resume.as_deref(),
-                    cli.effort.as_ref(),
-                    log_file.as_deref(),
-                    skip_preflight,
-                    force,
-                    screenshots,
-                    screenshot_interval,
-                    screenshot_dir.as_deref(),
-                    batch_size,
-                    cli.quiet,
-                );
-
                 return cmd_plan_run_engine(
                     &resolved_plans_dir,
                     &wd,
@@ -683,11 +708,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             from_backlog,
         } => {
             use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
+            use roko_cli::agent_exec::{
+                AgentExecEpisode, AgentExecOpts, run_agent_logged_with_spend,
+            };
+            use roko_cli::plan_authoring::AuthoringSpend;
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
-            // code and writes to .roko/plans/ (per-slug, non-overlapping).
+            // code and writes one plan to the workspace plans directory
+            // (per-slug, non-overlapping).
             // No workspace lock needed (#226) — allows generating plans while
             // other plans are running.
             let gw = load_gateway_env(&workdir);
@@ -735,8 +764,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
                     let task_prompt = build_backlog_task_prompt(&spec, &slug);
                     let task_id = format!("plan:generate:backlog:{id}");
+                    // The call's spend is recorded against the plan, as every
+                    // other generate path records it (bug-ac5432).
+                    let spend = AuthoringSpend::generation(&workdir, &slug, None);
 
-                    let exit_code = run_agent_logged(
+                    let exit_code = run_agent_logged_with_spend(
                         AgentExecOpts {
                             prompt: &task_prompt,
                             workdir: &workdir,
@@ -752,6 +784,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             task_kind: "plan-generate",
                             task_id: &task_id,
                         },
+                        &spend,
                     )
                     .await;
 
@@ -853,8 +886,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     "plan generate --from-notes",
                 )?;
 
-                // `roko plan generate` keeps its plans in `.roko/plans/`.
-                let plans_root = workdir.join(".roko").join("plans");
                 for cluster in &clusters {
                     let combined: String = cluster
                         .notes
@@ -866,7 +897,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     tracing::info!(%slug, "generating plan for cluster");
 
                     let request = roko_cli::prd::PlanRequest {
-                        plans_root: Some(&plans_root),
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
                         ..roko_cli::prd::PlanRequest::new(
@@ -941,11 +971,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 }
             };
 
-            // The one plan generator (gap-2623b2) validates and writes the
-            // plan; `roko plan generate` keeps its plans in `.roko/plans/`.
-            let plans_root = workdir.join(".roko").join("plans");
+            // The one plan generator (gap-2623b2) validates the plan and
+            // writes it to the workspace plans directory, where every other
+            // command looks for plans (bug-e3df7d).
             let request = roko_cli::prd::PlanRequest {
-                plans_root: Some(&plans_root),
                 context: Some(context_block.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
@@ -1266,6 +1295,25 @@ fn record_held_review(
     Ok(attempt_key)
 }
 
+/// `roko plan status`'s label for a plan: its Graph checkpoint's status when
+/// it has one (`succeeded` reads `complete`, and an interrupted or cancelled
+/// run shows as such, gap-20ab07), else what its task counts say.
+fn plan_status_label(
+    checkpoint: Option<roko_cli::graph_checkpoint::GraphCheckpointStatus>,
+    done_tasks: usize,
+    total_tasks: usize,
+) -> &'static str {
+    use roko_cli::graph_checkpoint::GraphCheckpointStatus;
+
+    match checkpoint {
+        Some(GraphCheckpointStatus::Succeeded) => "complete",
+        Some(status) => status.as_str(),
+        None if total_tasks > 0 && done_tasks == total_tasks => "complete",
+        None if done_tasks == 0 => "not started",
+        None => "in progress",
+    }
+}
+
 async fn cmd_plan_dir_status(
     cli: &Cli,
     workdir: &std::path::Path,
@@ -1339,63 +1387,20 @@ async fn cmd_plan_dir_status(
         total_tasks
     };
 
-    // Overlay Graph engine checkpoint status.  The graph engine writes terminal
-    // state to `.roko/state/graph/<safe-plan-id>/checkpoint.json` rather than
-    // updating tasks.toml or the legacy executor snapshot.  Read it here so
-    // that `plan status` reflects the same data as `plan list`.
-    let safe_plan_id: String = plan_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let graph_checkpoint_path = workdir
-        .join(".roko/state/graph")
-        .join(&safe_plan_id)
-        .join("checkpoint.json");
-    let graph_status: Option<String> = std::fs::read(&graph_checkpoint_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|v| {
-            v.get("status")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        });
-
-    let checkpoint_succeeded = graph_status.as_deref() == Some("succeeded");
+    // Overlay the Graph engine checkpoint status. The graph engine writes
+    // terminal state to `.roko/state/graph/<safe-plan-id>/checkpoint.json`
+    // rather than updating tasks.toml or the legacy executor snapshot. Read it
+    // here so that `plan status` reflects the same data as `plan list`.
+    let graph_status = roko_cli::graph_checkpoint::canonical_checkpoint_status(workdir, plan_id);
+    let checkpoint_succeeded =
+        graph_status == Some(roko_cli::graph_checkpoint::GraphCheckpointStatus::Succeeded);
     if checkpoint_succeeded && done_tasks == 0 && effective_total > 0 {
         // The graph engine completed all tasks; tasks.toml wasn't updated.
         done_tasks = effective_total;
     }
 
     // Derive the human-readable status string.
-    let status_str = if let Some(gs) = &graph_status {
-        match gs.as_str() {
-            "succeeded" => "complete",
-            "unverified" => "unverified",
-            "failed" => "failed",
-            "running" => "running",
-            _ => {
-                if effective_total > 0 && done_tasks == effective_total {
-                    "complete"
-                } else if done_tasks == 0 {
-                    "not started"
-                } else {
-                    "in progress"
-                }
-            }
-        }
-    } else if effective_total > 0 && done_tasks == effective_total {
-        "complete"
-    } else if done_tasks == 0 {
-        "not started"
-    } else {
-        "in progress"
-    };
+    let status_str = plan_status_label(graph_status, done_tasks, effective_total);
 
     // Why the plan's whole-plan check failed, when it did (gap-60233f).
     let plan_check_failure =
@@ -1604,11 +1609,13 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
 }
 
 /// Handle `roko resume [run-id]` by locating the snapshot and delegating
-/// to `cmd_plan` with a synthesized `PlanCmd::Run`.
+/// to `cmd_plan` with a synthesized `PlanCmd::Run`. `max_tasks` is the run's
+/// `--max-tasks`, which never stops a checkpoint from resuming.
 pub(crate) async fn cmd_resume(
     cli: &Cli,
     run_id: Option<String>,
     workdir: Option<std::path::PathBuf>,
+    max_tasks: usize,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let snapshot = if let Some(ref id) = run_id {
@@ -1675,7 +1682,7 @@ pub(crate) async fn cmd_resume(
         approval: false,
         no_tui: false,
         max_retries: None,
-        max_tasks: 0,
+        max_tasks,
         dry_run: false,
         fresh: false,
         force_resume: false,
@@ -1921,37 +1928,6 @@ struct ValidateJson<'a> {
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
-/// The `tasks.toml` files `plan validate` lints: `dir` itself when it is one, otherwise every one
-/// under it outside `archive/` and `archived/` directories, sorted. This is the walk of
-/// `plan_validate::collect_tasks_files`, which is private.
-fn validated_tasks_files(dir: &Path) -> Vec<PathBuf> {
-    if dir.is_file() {
-        return vec![dir.to_path_buf()];
-    }
-    let mut files = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(current) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let archived = path
-                    .file_name()
-                    .is_some_and(|name| name == "archive" || name == "archived");
-                if !archived {
-                    pending.push(path);
-                }
-            } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
@@ -1989,7 +1965,9 @@ pub(crate) fn cmd_plan_validate(
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
     let spec_report = spec_quality
-        .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
+        .then(|| plan_validate::collect_tasks_files(dir))
+        .transpose()?
+        .map(|files| roko_gate::spec_quality::lint_files(&files, workdir));
 
     // The workspace rungs every plan task runs after its own verify steps.
     let rungs = config
@@ -2325,90 +2303,45 @@ fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Res
     Ok(())
 }
 
-/// Emit explicit warnings for CLI flags that are silently ignored by the
-/// Graph Engine. Called just before entering the graph execution path so
-/// operators are never surprised by dropped configuration.
-///
-/// Flags that ARE forwarded to the graph engine (and thus do NOT warn):
-///   `--model`, `--dangerously-skip-permissions`,
-///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
-///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`,
-///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`,
-///   `--max-parallel-plans`, `--fail-fast`, `--force`
-///
-/// Flags that ARE warned (silently dropped by the Graph Engine):
-///   `--resume` (global session resume), `--effort`, `--skip-preflight`,
-///   `--screenshots`, `--screenshot-interval` (non-default),
-///   `--screenshot-dir`, `--batch-size`
-#[allow(clippy::fn_params_excessive_bools)]
-fn warn_graph_unsupported_flags(
+/// The `plan run` flags the Graph engine, the only engine, does not
+/// implement (gap-d60281), each with what to use instead. `plan run` stops on
+/// any of them rather than run without it. `--force` (the disk-space
+/// pre-check) and `--log-file` are implemented.
+fn graph_unsupported_flags(
     resume_session: Option<&str>,
     effort: Option<&Effort>,
-    log_file: Option<&std::path::Path>,
     skip_preflight: bool,
-    force: bool,
     screenshots: bool,
     screenshot_interval: u64,
     screenshot_dir: Option<&std::path::Path>,
     batch_size: Option<usize>,
-    quiet: bool,
-) {
-    if quiet {
-        return;
-    }
-
-    if let Some(session) = resume_session {
-        tracing::warn!(
-            session,
-            "--resume is not supported with --engine graph and will be ignored"
+) -> Vec<&'static str> {
+    let mut unsupported = Vec::new();
+    if resume_session.is_some() {
+        unsupported.push(
+            "--resume <session> resumes an agent session; resume a plan run with \
+             --resume-plan (its Graph checkpoints) or `roko resume`",
         );
     }
     if effort.is_some() {
-        tracing::warn!(
-            "--effort is not supported with --engine graph and will be ignored; \
-             the graph engine uses the configured default_effort"
-        );
+        unsupported.push("--effort: tasks run at `[agent] default_effort` from roko.toml");
     }
-    // --log-file is now wired for Graph Engine (#115) -- no warning needed.
-    let _ = log_file;
     if skip_preflight {
-        tracing::warn!(
-            "--skip-preflight is not supported with --engine graph and will be ignored; \
-             the graph engine runs its own provider preflight"
-        );
+        unsupported.push("--skip-preflight: the Graph engine always runs its provider preflight");
     }
-    // --force skips the Graph engine's disk-space pre-check (reg-7cf6f9) --
-    // no warning needed.
-    let _ = force;
-    if screenshots {
-        tracing::warn!("--screenshots is not supported with --engine graph and will be ignored");
-        // Warn for companion flags only when --screenshots is set, since they
-        // are only meaningful alongside it.
-        let default_interval: u64 = 60;
-        if screenshot_interval != default_interval {
-            tracing::warn!(
-                screenshot_interval,
-                "--screenshot-interval is not supported with --engine graph and will be ignored"
-            );
-        }
-        if let Some(dir) = screenshot_dir {
-            tracing::warn!(
-                dir = %dir.display(),
-                "--screenshot-dir is not supported with --engine graph and will be ignored"
-            );
-        }
-    } else {
-        // Even without --screenshots, an explicit --screenshot-dir should warn.
-        if let Some(dir) = screenshot_dir {
-            tracing::warn!(
-                dir = %dir.display(),
-                "--screenshot-dir is not supported with --engine graph and will be ignored"
-            );
-        }
+    // 60 is `--screenshot-interval`'s default.
+    if screenshots || screenshot_interval != 60 || screenshot_dir.is_some() {
+        unsupported.push(
+            "--screenshots, --screenshot-interval and --screenshot-dir: plan runs take no \
+             screenshots; capture the TUI with `roko screenshot`",
+        );
     }
     if batch_size.is_some() {
-        tracing::warn!("--batch-size is not supported with --engine graph and will be ignored");
+        unsupported.push(
+            "--batch-size: plan runs do not pause after N plans; run the plans in smaller sets",
+        );
     }
+    unsupported
 }
 
 /// Execute plans via the Graph Engine path.
@@ -2492,6 +2425,8 @@ async fn cmd_plan_run_engine(
         only_plans: None,
         live_agent_output,
         force_disk_check: force,
+        effort: None,
+        no_cascade: false,
     })
     .await
 }
@@ -2505,6 +2440,32 @@ mod tests {
     fn read_executor_state_returns_none_without_snapshot() {
         let dir = tempdir().expect("tempdir");
         assert!(read_executor_state(dir.path()).is_none());
+    }
+
+    /// gap-20ab07: `plan status` shows an interrupted or cancelled Graph run
+    /// as such, not through the task statuses in tasks.toml.
+    #[test]
+    fn plan_status_reports_interrupted_and_cancelled_checkpoints() {
+        let dir = tempdir().expect("tempdir");
+        let checkpoint_dir = dir.path().join(".roko/state/graph/demo-plan");
+        std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir");
+        for (recorded, label) in [
+            ("interrupted", "interrupted"),
+            ("cancelled", "cancelled"),
+            ("succeeded", "complete"),
+            ("failed", "failed"),
+        ] {
+            let checkpoint = format!(r#"{{"status":"{recorded}"}}"#);
+            std::fs::write(checkpoint_dir.join("checkpoint.json"), checkpoint).expect("checkpoint");
+            let status =
+                roko_cli::graph_checkpoint::canonical_checkpoint_status(dir.path(), "demo-plan");
+            // tasks.toml says one of two tasks is done.
+            assert_eq!(plan_status_label(status, 1, 2), label, "{recorded}");
+        }
+
+        assert_eq!(plan_status_label(None, 0, 2), "not started");
+        assert_eq!(plan_status_label(None, 1, 2), "in progress");
+        assert_eq!(plan_status_label(None, 2, 2), "complete");
     }
 
     #[test]
@@ -2564,51 +2525,42 @@ depends_on_plan = ["missing-foundation"]
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
     }
 
-    /// Smoke-test: `warn_graph_unsupported_flags` must not panic regardless
-    /// of the flag combination. The actual warning output goes to stderr and
-    /// is validated manually or via integration tests.
+    /// gap-d60281: `plan run` stops on a flag the Graph engine does not
+    /// implement and says what to use instead. `--force` and `--log-file`,
+    /// which it implements, take no part in the check.
     #[test]
-    fn warn_graph_unsupported_flags_does_not_panic() {
-        // All flags off (quiet = true suppresses output).
-        warn_graph_unsupported_flags(None, None, None, false, false, false, 60, None, None, true);
-        // All flags on (quiet = true still suppresses).
-        warn_graph_unsupported_flags(
-            Some("session-id"),
-            Some(&Effort::High),
-            Some(std::path::Path::new("/tmp/log.jsonl")),
-            true,
-            true,
-            true,
-            30,
-            Some(std::path::Path::new("/tmp/shots")),
-            Some(5),
-            true,
+    fn graph_plan_run_rejects_or_honours_legacy_flags() {
+        assert!(graph_unsupported_flags(None, None, false, false, 60, None, None).is_empty());
+
+        let resume = graph_unsupported_flags(Some("s1"), None, false, false, 60, None, None);
+        assert_eq!(resume.len(), 1, "{resume:?}");
+        assert!(resume[0].contains("--resume-plan"), "{resume:?}");
+
+        let high = Effort::High;
+        let effort = graph_unsupported_flags(None, Some(&high), false, false, 60, None, None);
+        assert!(effort[0].contains("default_effort"), "{effort:?}");
+
+        let preflight = graph_unsupported_flags(None, None, true, false, 60, None, None);
+        assert!(
+            preflight[0].starts_with("--skip-preflight"),
+            "{preflight:?}"
         );
-        // All flags on, quiet = false (will write to stderr but must not panic).
-        warn_graph_unsupported_flags(
-            Some("session-id"),
-            Some(&Effort::High),
-            Some(std::path::Path::new("/tmp/log.jsonl")),
-            true,
-            true,
-            true,
-            30,
-            Some(std::path::Path::new("/tmp/shots")),
-            Some(5),
-            false,
-        );
-        // screenshots=false but explicit --screenshot-dir still warns.
-        warn_graph_unsupported_flags(
-            None,
-            None,
-            None,
-            false,
-            false,
-            false,
-            60,
-            Some(std::path::Path::new("/tmp/shots")),
-            None,
-            false,
-        );
+
+        let dir = std::path::Path::new("shots");
+        for shots in [
+            graph_unsupported_flags(None, None, false, true, 60, None, None),
+            graph_unsupported_flags(None, None, false, false, 30, None, None),
+            graph_unsupported_flags(None, None, false, false, 60, Some(dir), None),
+        ] {
+            assert_eq!(shots.len(), 1, "{shots:?}");
+            assert!(shots[0].contains("roko screenshot"), "{shots:?}");
+        }
+
+        let batch = graph_unsupported_flags(None, None, false, false, 60, None, Some(5));
+        assert!(batch[0].starts_with("--batch-size"), "{batch:?}");
+
+        let all =
+            graph_unsupported_flags(Some("s1"), Some(&high), true, true, 30, Some(dir), Some(5));
+        assert_eq!(all.len(), 5, "{all:?}");
     }
 }

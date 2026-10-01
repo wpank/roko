@@ -480,7 +480,7 @@ aliases (both are mounted).
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan |
-| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted) |
+| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan) |
 | GET | `/api/plans/{id}/status` | Execution status |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |

@@ -18,7 +18,7 @@ parent = "spec-567e52"
 links = { depends_on = [], blocks = [], related = ["gap-c33709", "gap-327242"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -x target/debug/roko && cd benchmarks/viabilitybench && ROKO_BIN=$PWD/../../target/debug/roko .venv/bin/python -m pytest -q -p no:cacheprovider driver/test_run_roko.py -k real_roko -rs"
+command = "test -x target/debug/roko && cd benchmarks/viabilitybench && VB_TEST_ROKO_BIN=$PWD/../../target/debug/roko .venv/bin/python -m pytest -q -p no:cacheprovider driver/test_run_roko.py -k 'real_roko or refuses_a_binary' -rs"
 +++
 
 ## Problem
@@ -47,3 +47,18 @@ The pilots (gap-c33709, gap-327242) run the Roko arm. As it stands, every Roko-a
 
 - [ ] The three `real_roko` tests pass against a current binary.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-tamper (2026-10-01):** The config can say "no ladder": the emitted `roko.toml` sets `[routing.ladder] enabled
+  = false` (planemit-2), so the pin (`model_hint` and `--model`) is the only routing input and PLAN_041, which
+  fires only when `ladder.resolve` finds a ladder, does not apply. `--strict` is unchanged, and no rule is exempted.
+  The driver's model checks still pass on every record: the real-roko run test asserts the pinned model was
+  dispatched, served and named, with no failed check.
+- `vb run` calls a runner's optional `preflight` before the first task (harness.py). The Roko arm's validates a
+  stand-in plan (`run_roko.PREFLIGHT_SPEC`) with the arm's binary and refuses the run when `plan validate --strict
+  --dag` rejects it, instead of ending every task `infra_error`
+  (`test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan`).
+- The `real_roko` skip reason now says the arm was not run against real Roko, and the documented test commands pass
+  `-rs`. The `[[verify]]` now sets `VB_TEST_ROKO_BIN`, the variable the tests read (it said `ROKO_BIN`), and also
+  runs the refusal test.

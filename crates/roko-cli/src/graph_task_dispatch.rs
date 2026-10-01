@@ -2754,20 +2754,8 @@ sleep 30
         drop(dispatcher);
 
         let attempts = runs.join("stopping-run").join("attempts.jsonl");
-        crate::background_writes::settled(&runs).await;
-        let mut verdict = None;
-        for _ in 0..300 {
-            verdict = std::fs::read_to_string(&attempts)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .find(|row| row["schema_version"] == "roko.verdict/1");
-            if verdict.is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        let verdict = verdict.expect("the attempt settled");
-        assert_eq!(verdict["outcome"], "cancelled", "{verdict}");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
     }
 }

@@ -9,16 +9,16 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-25
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "9f2da6a2b"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::admit_task_budget", "crates/roko-cli/src/graph_task_dispatch/budget.rs::task_budget_ceiling_usd", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling", "crates/roko-learn/src/costs_log.rs::CostsLog::cost_today", "crates/roko-core/src/config/budget.rs::BudgetConfig"]
 links = { depends_on = [], blocks = [], related = ["gap-d31457", "q-778b4f", "q-e23804"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn graph_daily_budget_blocks_dispatch' crates/roko-cli/src/ && cargo test -p roko-cli graph_daily_budget_blocks_dispatch && ! grep -A1 -E '\"budget\\.max_(daily|agent_lifetime)_usd\"' crates/roko-cli/src/graph_task_dispatch.rs | grep -q NOT_ENFORCED"
+command = "grep -rqw 'fn graph_daily_budget_blocks_dispatch' crates/roko-cli/src/ && cargo test -p roko-cli graph_daily_budget_blocks_dispatch && ! grep -A1 -E '\"budget\\.max_(daily|agent_lifetime)_usd\"' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs | grep -q NOT_ENFORCED"
 +++
 
 ## Problem
@@ -150,3 +150,30 @@ How to verify: grep budget config reads under graph_execution/.
 Verified 2026-09-28: narrowed - per-task caps are now enforced on the Graph path in the working tree (uncommitted; graph_task_dispatch.rs:1074-1306, budget.max_task_usd x tier multiplier + budget.max_task_retry_usd), but budget.max_daily_usd and budget.max_agent_lifetime_usd are still flagged NOT_ENFORCED by the Graph config audit (graph_task_dispatch.rs:790-799).
 
 Re-verified 2026-09-29 at d9e79e9d8: the per-task caps (budget.max_task_usd x tier multiplier and budget.max_task_retry_usd, task_budget_ceiling_usd) are committed in 725f21e05. budget.max_daily_usd and budget.max_agent_lifetime_usd are still reported NOT_ENFORCED by graph_engine_inert_settings and have no reader on the Graph path.
+- 2026-10-01, wk-scheduler: implemented on `work/bug-ae28ac` at `fb667090d`. Cargo verification is deferred to the
+  batch check: no clone could be taken (disk under 30 GB), so only fmt and the verify's greps ran.
+  - Daily cap: plan (a). `CostsLog::spend_on` (roko-learn) reads today's spend from `.roko/learn/costs.jsonl`. It
+    runs once at run start (`GraphTaskDispatcher::prime_daily_budget`, called from `run_graph_plan`), and again on
+    the first dispatch after midnight UTC.
+  - Today's spend is that read plus what this process has recorded since. `GraphTaskSpendLedger` now keeps a process
+    total and a count of unpriced calls; every `record` site passes the call's `Usage`.
+  - Once the day reaches the ceiling, `plan_dispatch_stop` stops the run from starting further tasks. `dispatch` and
+    `dispatch_streaming` also refuse with `BudgetExceeded { dimension: "daily spend in micro-USD
+    (budget.max_daily_usd)" }` before any provider call.
+  - Overrides match the plan ceiling: `--budget-override` warns and continues, `--no-budget` skips the check, and
+    `0.0` is unlimited.
+  - Calls still in flight count only once they settle, not as reservations. A plan reservation can be the whole
+    remaining plan budget, so counting it would refuse calls that fit. The day can therefore overshoot by the calls
+    running when it reaches the ceiling.
+  - Fails closed: a call that used tokens at $0 (never priced) makes the day's spend unknown, and that counts as over
+    the ceiling (`RokoError::Config`). The same goes for one recorded at a negative or NaN cost, from the log or from
+    this process. A negative, NaN or infinite ceiling refuses every dispatch. An unreadable log counts as $0 and logs
+    a warning, per the Notes.
+  - The lifetime cap is not enforced. Its inert-settings reason now says that each plan-run attempt is a fresh
+    provider session bounded by `budget.max_task_usd` and `budget.max_task_retry_usd`. `BudgetConfig`'s docs no longer
+    promise an `AgentBudgetExhausted` event. Neither key is reported as not enforced by the Graph engine any more.
+  - The `[[verify]]` grep now reads `graph_task_dispatch/inert_settings.rs`, where `graph_engine_inert_settings` moved.
+  - Tests in `graph_task_dispatch/budget.rs`: `graph_daily_budget_blocks_dispatch` (prior spend at the ceiling, so
+    no task starts and dispatch is refused before the provider runs), the run's own spend, the overrides and a zero
+    ceiling, unknown spend, a malformed ceiling, and a new UTC day re-reading the log. roko-learn adds
+    `spend_on_counts_one_day_and_tells_unpriced_calls_apart`.

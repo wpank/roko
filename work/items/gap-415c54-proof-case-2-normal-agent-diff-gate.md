@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "a962bcab9"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
@@ -19,6 +19,9 @@ links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4"], 
 
 [[verify]]
 command = "grep -rqw 'fn worktree_task_diff_is_gated_merged_and_cleaned' crates/roko-cli/ && cargo test -p roko-cli worktree_task_diff_is_gated_merged_and_cleaned"
+
+[[verify]]
+command = "grep -rqw 'fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing' crates/roko-cli/tests && cargo test -p roko-cli --test worktree_task_diff worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing"
 +++
 
 ## Problem
@@ -155,3 +158,42 @@ Imported without verification from:
 How to verify: Source: Dogfood audit, proof case 2. Check the described code path for: Agent makes a real worktree diff and exits normally; gate, commit/merge, summary, and cleanup all terminate without manual intervention.
 
 Verified 2026-09-28: The diff + gate + summary half ran live in the 2026-09-25 portal run (in place, no worktree). Commit/merge is not wired on the Graph path: with --worktree-per-task a successful attempt's lease is released with WorkspaceReleasePolicy::Delete (graph_task_dispatch.rs 'Worktree isolation: release on success': 'can be merged separately via the delivery pipeline. For now the worktree is cleaned up'), and graph_execution/delivery.rs::CliCompletionDeliveryService is constructed only in its own tests.
+- 2026-10-01 (wk-childenv): Premise re-checked at `a962bcab9`. Commit and merge had landed. Each passed attempt
+  is committed and folded into `roko/plan/<plan>` (gap-3b5361); a plan whose tasks all passed is delivered into
+  `roko/batch/<run>` with its `[meta] verify` as the regression check (spec-f830c4); `--promote <branch>` moves
+  the batch into a branch nobody has checked out, or parks it. The C3/C4 canaries
+  (`tests/plan_branch_integration.rs`) cover the commits, the meta-verify failure and the untouched operator
+  checkout. Missing were cleanup and the summary: both topologies keep a passed attempt's worktree
+  (`RetainForReview`) and nothing removed it or its `roko/attempt/*` branch later (the delivery receipt's
+  `release_policy` was never read), and the run summary did not mention the batch, the delivered commit or the
+  promotion. Implemented on `work/gap-415c54`; cargo verification and the run of the new tests are deferred to the
+  batch check.
+  - Cleanup: `WorktreeManager` records every attempt it accepts per plan. Once a plan's delivery ends with
+    `release_policy` `Delete`, `deliver_plan_to_batch` calls `WorktreeManager::release_accepted`, which, under the
+    operation and repository mutation locks, removes each accepted checkout that is clean apart from roko's
+    `.cursor` copy; a dirty one is kept and logged. The `roko/attempt/*` branches are kept by default for
+    inspection and history (the checkouts are the disk cost); this is the coordinator's call of 2026-10-01,
+    following Will's standing request, so the Done-when's "branch removed" holds only with the setting on. `[runner] delete_attempt_branches = true` (default
+    false) deletes them too, each only while it is at its accepted commit and the plan branch contains that
+    commit, by compare-and-swap. A failed or undelivered plan keeps everything. Not covered: checkouts accepted by
+    an earlier process of a resumed run (the record is in memory). The setting is in `[runner]` (roko-core), which
+    the Graph path already loads: `[executor]` is roko-cli's own config, which the Graph path does not read yet
+    (gap-4ec59f wires it).
+  - Summary: the `--json` summary has `batch` (branch, each delivery's record with its merge commit and
+    `attempt_cleanup`: the checkouts removed and the branches kept or deleted, and the promotion), and the text
+    summary names each delivered plan's merge commit, how many attempt branches it kept (and which) and the
+    promotion.
+  - Tests: `tests/worktree_task_diff.rs` runs the real binary in a scratch repository, as C3 does.
+    `worktree_task_diff_is_gated_merged_and_cleaned` checks the commit on the plan branch and in the checkpoint,
+    the delivery into the batch and the promotion into `release` (and the summary's commits), no attempt worktree
+    afterwards while its branch is kept at the accepted commit and named in the summary, no cleanup warning in
+    `.roko/roko.log.*`, and the untouched operator checkout.
+    `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` checks that a failed edit stays in
+    its kept worktree on its attempt branch, and that no plan branch exists and neither the batch nor `release`
+    moved. `release_accepted_removes_checkouts_and_keeps_branches_unless_asked` (worktree unit test) covers both
+    branch modes and an unaccepted attempt. `a_worktree_run_delivers_each_plan_into_its_batch_branch`
+    (in-process) now also checks that the checkouts are gone and the branches kept, and
+    `a_delivered_plan_deletes_its_attempt_branches_when_asked` (in-process) runs with the setting on and checks
+    that the branch is gone while the plan and batch branches hold the work.
+  - The live-run evidence the Done-when asks for is these binary tests' run in the batch check; gap-3aa9cb can
+    fold them onto its shared scripted provider.

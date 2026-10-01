@@ -2522,14 +2522,40 @@ fn redact_env_pair(item: &mut toml::Value) -> bool {
 
 // ─── Path discovery ─────────────────────────────────────────────────────
 
+/// The config file named on the command line (`roko --config <file>`).
+/// Every discovery-based load in the process reads it, ahead of
+/// `ROKO_CONFIG` (bug-4ed3c2). Unlike an exported `ROKO_CONFIG`, it does not
+/// reach child processes such as agents and verify commands.
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Make every discovery-based config load in this process read `path`, the
+/// file `roko --config <file>` names (bug-4ed3c2). Call it once, before the
+/// first load.
+///
+/// # Errors
+///
+/// Returns `path` back when it is not a file, or when a path is already set.
+pub fn set_config_path_override(path: PathBuf) -> Result<(), PathBuf> {
+    if !path.is_file() {
+        return Err(path);
+    }
+    CONFIG_PATH_OVERRIDE.set(path)
+}
+
 /// Find the config file to load. Checks, in order:
 ///
-/// 1. `ROKO_CONFIG` env var (explicit path override)
-/// 2. Ancestor walk from `workdir` (find nearest `roko.toml`)
+/// 1. The `roko --config <file>` path ([`set_config_path_override`])
+/// 2. `ROKO_CONFIG` env var (explicit path override)
+/// 3. Ancestor walk from `workdir` (find nearest `roko.toml`)
 ///
 /// Returns `None` if no config file is found (defaults will be used).
 fn find_config_path(workdir: &Path) -> Option<PathBuf> {
-    // 1. ROKO_CONFIG env var takes precedence.
+    // 1. The command line's `--config` file.
+    if let Some(path) = CONFIG_PATH_OVERRIDE.get() {
+        return Some(path.clone());
+    }
+
+    // 2. ROKO_CONFIG env var.
     if let Ok(env_path) = std::env::var("ROKO_CONFIG") {
         let p = PathBuf::from(&env_path);
         if p.is_file() {
@@ -2541,7 +2567,7 @@ fn find_config_path(workdir: &Path) -> Option<PathBuf> {
         );
     }
 
-    // 2. Ancestor walk from workdir (also checks workdir itself).
+    // 3. Ancestor walk from workdir (also checks workdir itself).
     discover_project_config(workdir)
 }
 

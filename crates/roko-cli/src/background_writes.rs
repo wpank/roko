@@ -3,10 +3,12 @@
 //! Graph dispatch appends its learning and cost rows off the reactor, in
 //! spawned tasks, so an attempt never waits on the disk. [`spawn`] counts each
 //! such write from the moment it is spawned until it ends, however it ends.
-//! In test builds, `settled` waits until no write to a file under a directory
-//! is still pending, so a test reads its rows once those writes have finished
-//! instead of polling the files against a deadline that a loaded machine can
-//! miss (bug-779ae7). Production code never waits, so it behaves as before.
+//! [`settled`] waits until no write to a file under a directory is still
+//! pending, so a test reads its rows once those writes have finished instead
+//! of polling the files against a deadline that a loaded machine can miss
+//! (bug-779ae7). In production only an interrupted plan run waits, for a
+//! bounded time, so its rows reach the disk before the process exits
+//! (bug-2b1ddc).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -38,7 +40,6 @@ where
 
 /// Wait until no write that [`spawn`] started for a file under `dir` is
 /// pending. Writes spawned after this returns are not waited for.
-#[cfg(test)]
 pub(crate) async fn settled(dir: &Path) {
     loop {
         let ended = ENDED.notified();

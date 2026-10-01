@@ -14,7 +14,7 @@ use crate::perplexity::types::SearchOptions;
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, PERPLEXITY_SEARCH_OPTIONS_ARG_PREFIX, ProviderAdapter,
-    ProviderError, TurnCapEnforcement, build_tool_dispatcher_with_audit,
+    ProviderError, TurnCapEnforcement, build_provider_tool_dispatcher,
     tool_loop_max_iterations_for_options,
 };
 use crate::tool_loop::ToolLoop;
@@ -169,9 +169,9 @@ fn perplexity_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher =
-        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
+    let dispatcher =
+        build_provider_tool_dispatcher(registry, resolver, options, model, translator.format());
     let timeout_ms = options.effective_timeout_ms(None);
     let backend = Arc::new(PerplexityToolLoopBackend::new(
         api_key,
@@ -203,6 +203,17 @@ fn perplexity_tool_loop_agent(
     // runner-level task cancellation rather than running to completion.
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    // find-f489db: the loop's tool calls leave traces, metrics and audit
+    // lines that join back to the run.
+    if let Some(sink) = &options.trace_sink {
+        agent = agent.with_trace_sink(Arc::clone(sink));
+    }
+    if let Some(sink) = &options.metrics_sink {
+        agent = agent.with_metrics_sink(Arc::clone(sink));
+    }
+    if let Some(correlation) = &options.tool_correlation {
+        agent = agent.with_correlation(correlation.clone());
     }
     if let Some(max_turns) = options.max_turns {
         agent = agent.with_turn_cap(max_turns);

@@ -510,6 +510,8 @@ impl AuthoringSpend {
             duration_ms: call.duration_ms,
             success: succeeded,
             session_id: String::new(),
+            // An `AgentCapture` does not say where its usage came from.
+            cost_source: roko_learn::telemetry::CostSource::Unknown,
         };
         self.append("costs.jsonl", &cost_record).await;
 

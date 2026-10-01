@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-cli/orchestrator"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "32938ad4b"
 source = "tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 discovered_from = "audit:tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 anchors = ["crates/roko-cli/src/orchestrator/executor/mod.rs::ExecutorConfig::default_use_worktrees", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-cli/src/graph_execution/plan_runner.rs:1155", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::with_workspace_provider", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/commands/plan.rs::cmd_resume", "crates/roko-cli/src/main.rs:2138", "crates/roko-cli/src/serve_runtime.rs:888", "crates/roko-cli/src/serve_client.rs:560", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::prune"]
@@ -188,6 +188,33 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
   `serve_runtime.rs`, `serve_client.rs`, `graph_task_dispatch.rs`). Do not run it alongside other items that
   edit those files (for example `gap-0001a1`, parallel plan queue). This is git-safety code: test on a scratch
   repo, never on the user's checkout.
+- 2026-10-01 (wk-tiers): Step 1 implemented on `work/gap-4ec59f` at `8e23f0a79`; cargo verification deferred to the
+  batch check. Steps 2-6 are not done, and the item stays open.
+  - Step 1 (repair before the first dispatch):
+    - With `--worktree-per-task`, `plan_runner.rs::repair_worktree_state` runs before the first dispatch. It
+      calls `clear_stuck_mutation_lock()`, `clear_stale_locks()` (logging each lock it removes) and `prune()`.
+      A failure is logged, and the run goes on.
+    - Shared mode skips this repair. There, the per-dispatch `clear_stale_index_lock` (bug-109b5a) covers the
+      checkout with a 10-min threshold. The startup repair would remove the user's lock at 60 s and create the
+      mutation lock file in their `.git`.
+  - Step 5: the default is not flipped and the config is not honoured. Re-checking the premise at `32938ad4b`
+    found blockers that the plan does not cover:
+    - The bench's Roko arm (`benchmarks/viabilitybench/driver/run_roko.py`) runs `roko plan run` and scores the
+      tree in the task workdir. With isolation, results land on the run's batch branch `roko/run/<id>`
+      (spec-f830c4) unless `--promote <branch>` is given, so the arm would score an untouched tree.
+    - e2e/CI tests and scratch runs use non-git temp dirs. Batch integration and worktrees need a git repo with a
+      HEAD commit, so those runs would fail at startup.
+    - `roko run`, `roko do`, PRD, cloud-worker, serve and resume runs all hard-code `worktree_per_task: false`.
+      Resolving the default for them (step 2) would send a one-shot run's result to a batch branch as well.
+    - `[executor] use_worktrees` is never loaded on the Graph path. The core loader drops tables it doesn't know,
+      and `Config::from_roko_config` sets `ExecutorConfig::default()`. Honouring the key needs the field in
+      `RokoConfig` first. Users who ran `roko setup` have `use_worktrees = true` and would switch to isolation
+      at once.
+  - Next:
+    1. Decide where the results of a default isolated run go (promote into the user's branch and tree by
+       default?).
+    2. Fall back to shared mode in non-git workdirs.
+    3. Then do steps 2 and 5 together.
 
 ## Original notes
 

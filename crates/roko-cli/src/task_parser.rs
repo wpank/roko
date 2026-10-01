@@ -72,6 +72,11 @@ pub struct TaskMeta {
     /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalMode>,
+    /// Whether the plan's implementer tasks may have no verify step. Such a
+    /// task runs and ends unverified, and its plan does not succeed. `roko
+    /// run` sets it in a workspace that no gate can check (bug-1410e8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unverified: bool,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1085,7 +1090,11 @@ impl TasksFile {
             if role == "implementer" {
                 for &field in IMPLEMENTER_REQUIRED {
                     let missing = match field {
-                        "verify" => task.verify.is_empty() && !task.has_accept_tests(),
+                        "verify" => {
+                            task.verify.is_empty()
+                                && !task.has_accept_tests()
+                                && !self.meta.allow_unverified
+                        }
                         "files" => task.files.is_empty(),
                         _ => false,
                     };
@@ -1154,7 +1163,9 @@ impl TasksFile {
             .collect()
     }
 
-    /// Validate that the raw `tasks.toml` still carries the modern task fields.
+    /// Validate that the raw `tasks.toml` still carries the modern task
+    /// fields: `tier`, `context.read_files`, `verify` and `depends_on`. A
+    /// `model_hint` is not one: role and tier route a task.
     pub fn validate_modern_fields(path: &Path) -> Result<Vec<ModernFieldIssue>> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1449,7 +1460,7 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
         let Some(table) = task_table else {
             issues.push(ModernFieldIssue {
                 task_id,
-                missing_fields: vec!["tier", "model_hint", "read_files", "verify", "depends_on"],
+                missing_fields: vec!["tier", "read_files", "verify", "depends_on"],
             });
             continue;
         };
@@ -1462,14 +1473,6 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
             .is_none_or(|tier| tier.trim().is_empty());
         if tier_missing {
             missing_fields.push("tier");
-        }
-
-        let model_hint_missing = table
-            .get("model_hint")
-            .and_then(toml::Value::as_str)
-            .is_none_or(|hint| hint.trim().is_empty());
-        if model_hint_missing {
-            missing_fields.push("model_hint");
         }
 
         let read_files_missing = table
@@ -2616,6 +2619,7 @@ depends_on = []
                 workspace_rungs: None,
                 verify: Vec::new(),
                 approval: None,
+                allow_unverified: false,
             },
             tasks: Vec::new(),
         };
@@ -2833,10 +2837,11 @@ depends_on = []
         assert_eq!(issues.len(), 1);
         assert_eq!(
             issues[0].missing_fields,
-            vec!["tier", "model_hint", "read_files", "verify"]
+            vec!["tier", "read_files", "verify"]
         );
     }
 
+    /// A modern task names no model: role and tier route it (bug-a5cd6b).
     #[test]
     fn validate_modern_fields_accepts_full_metadata() {
         let content = r#"
@@ -2852,7 +2857,6 @@ id = "T1"
 title = "Modern task"
 status = "ready"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 depends_on = []
 verify = [{ phase = "compile", command = "cargo check" }]
 

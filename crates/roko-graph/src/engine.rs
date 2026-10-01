@@ -3157,11 +3157,14 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 fn completed_outcome(cell_type: &str, outputs: &[roko_core::Signal]) -> Option<String> {
     use roko_core::dashboard_snapshot::{
         TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
-        TASK_OUTCOME_UNVERIFIED,
+        TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
     };
 
     let outcome = match TaskGateVerdict::from_signals(outputs) {
         Some(TaskGateVerdict::Passed) => TASK_OUTCOME_PASSED,
+        Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
+            TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES
+        }
         Some(TaskGateVerdict::AlreadySatisfied) => TASK_OUTCOME_ALREADY_SATISFIED,
         Some(TaskGateVerdict::ForcedAccept) => TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
         Some(TaskGateVerdict::Unverified) => TASK_OUTCOME_UNVERIFIED,
@@ -6404,6 +6407,11 @@ to = "grandchild"
         assert_eq!(
             completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
             Some("passed")
+        );
+        TaskGateVerdict::PassedWithPreexistingFailures.stamp(&mut signals);
+        assert_eq!(
+            completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
+            Some("passed_with_preexisting_failures")
         );
         TaskGateVerdict::ForcedAccept.stamp(&mut signals);
         assert_eq!(

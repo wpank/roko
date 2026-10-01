@@ -608,6 +608,18 @@ impl TuiBridge {
         });
     }
 
+    /// A task failed a gate rung below the highest one it had already
+    /// passed: the gate ratchet's regression notice (P1-11).
+    pub fn gate_regression(&self, plan_id: &str, task_id: &str, rung: u32, highest_passed: u8) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "gate_regression".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!("failed rung {rung} after passing rung {highest_passed}"),
+        });
+    }
+
     /// Extension hook fired.
     pub fn extension_hook(&self, plan_id: &str, task_id: &str, hook: &str, success: bool) {
         self.sender.publish(DashboardEvent::EventLogEntry {

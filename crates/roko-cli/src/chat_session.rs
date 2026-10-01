@@ -37,7 +37,7 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -81,12 +81,10 @@ impl ChatFeedbackRuntime {
             .join("learn")
             .join("cascade-router.json");
         let cascade_model_slugs = capture_runtime_model_slugs(config, model_slug);
-        let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-            Arc::new(CascadeRouter::load_or_new(
-                &cascade_path,
-                cascade_model_slugs,
-            ))
-        });
+        // The snapshot first takes what a crashed writer journaled and never
+        // saved (bug-8a78e1).
+        let cascade_router = (!cascade_model_slugs.is_empty())
+            .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
         // Observations are journaled in the learning WAL until `flush` saves
         // them (find-0dc1d5).
         let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
@@ -717,6 +715,7 @@ impl ChatAgentSession {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 
@@ -2054,6 +2053,28 @@ mod tests {
             source: crate::model_selection::SelectionSource::ProjectDefault,
             reason: "test selection".to_string(),
         }
+    }
+
+    /// bug-8a78e1: chat routes with what a crashed writer journaled and
+    /// never saved, replayed into the snapshot before chat loads it.
+    #[test]
+    fn chat_routes_with_what_a_crashed_writer_journaled() {
+        let workdir = tempdir().unwrap();
+        let learn_dir = workdir.path().join(".roko").join("learn");
+        let model = "chat-journal-model";
+        {
+            let router = CascadeRouter::new(vec![model.to_string()]);
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, model, "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let feedback = ChatFeedbackRuntime::new(workdir.path(), &RokoConfig::default(), model);
+        let router = feedback.cascade_router.as_ref().expect("chat's router");
+        assert_eq!(
+            router.confidence_snapshot().get(model).copied(),
+            Some((1, 1))
+        );
     }
 
     /// bug-a9a251: a chat session takes the workspace's MCP config or roko's

@@ -9,9 +9,9 @@ size = "S"
 goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "32938ad4b"
 source = "tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::acquire", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks_unlocked", "crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::is_stale_lock"]
@@ -124,6 +124,22 @@ working directory (following `gitdir:` indirection) is removed, and a fresh one 
   one file.
 - Small and self-contained. Conflicts only with concurrent edits to the acquire block in `graph_task_dispatch.rs`
   or to `orchestrator/worktree/cleanup.rs` (`bug-53475e` also touches cleanup code: coordinate).
+- 2026-10-01 (wk-tiers): Implemented on `work/gap-4ec59f` at `8e23f0a79`; cargo verification deferred to the batch check.
+  - New `orchestrator::worktree::clear_stale_index_lock(workdir, stale_after)` in `cleanup.rs`:
+    - It finds the git dir that serves `workdir` or its nearest ancestor: a `.git` dir, or a `.git` file's
+      `gitdir:` (relative to the checkout).
+    - It removes `index.lock` once the lock is older than `stale_after`, and never when it is younger than 60 s.
+    - It logs a warning with the path and age.
+  - `GraphTaskDispatcher::dispatch` calls it right after `effective_workdir`, on every attempt, reused worktrees
+    included. The threshold is 60 s in a roko worktree and 10 min in the user's shared checkout (option (b)
+    above).
+  - `clear_stale_locks_unlocked` resolves the repository root's git dir the same way, and finds the other
+    worktrees' locks under the common dir (`commondir`).
+  - Test `stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection` covers:
+    - `gitdir:` indirection, from the checkout and from a subdirectory;
+    - a fresh lock, which is kept;
+    - the 10-min threshold;
+    - a plain `.git` dir.
 
 ## Original notes
 

@@ -1145,6 +1145,11 @@ pub const TASK_OUTCOME_ACCEPTED_WITH_FAILURES: &str = "accepted_with_failures";
 /// `TaskCompleted` outcome for a task that passed its verify steps.
 pub const TASK_OUTCOME_PASSED: &str = "passed";
 
+/// `TaskCompleted` outcome for a task that passed its verify steps apart from
+/// tests that failed on the plan run's start commit too (gap-161be1). It
+/// counts as passed; the outcome keeps those failures in view.
+pub const TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES: &str = "passed_with_preexisting_failures";
+
 /// `TaskCompleted` outcome for a task that completed without any verify step
 /// judging it. Counted apart from passed tasks.
 pub const TASK_OUTCOME_UNVERIFIED: &str = "unverified";
@@ -1181,12 +1186,13 @@ pub enum TaskOutcomeClass {
 
 /// Classify a `TaskCompleted` outcome string.
 ///
-/// Only an outcome that names a pass (`passed`, or a legacy `success` or
-/// `succeeded`) counts as passed. A skipped task is not a pass, a blocked
-/// task is neither done nor failed, a failure is failed, and any other
-/// outcome, `unverified` included, is unverified. Accepted-with-failures,
-/// already-satisfied and blocked are matched exactly first: the one contains
-/// "fail".
+/// Only an outcome that names a pass (`passed`,
+/// `passed_with_preexisting_failures`, or a legacy `success` or `succeeded`)
+/// counts as passed. A skipped task is not a pass, a blocked task is neither
+/// done nor failed, a failure is failed, and any other outcome, `unverified`
+/// included, is unverified. Accepted-with-failures, already-satisfied,
+/// blocked and the passes are matched exactly before failures: two of them
+/// contain "fail".
 #[must_use]
 pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     let lower = outcome.to_ascii_lowercase();
@@ -1198,7 +1204,11 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         TaskOutcomeClass::Blocked
     } else if lower.contains("skipped") || lower == "unknown" {
         TaskOutcomeClass::Skipped
-    } else if lower == TASK_OUTCOME_PASSED || lower == "succeeded" || lower.starts_with("success") {
+    } else if lower == TASK_OUTCOME_PASSED
+        || lower == TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES
+        || lower == "succeeded"
+        || lower.starts_with("success")
+    {
         TaskOutcomeClass::Passed
     } else if ["fail", "error", "cancel", "halt"]
         .iter()
@@ -5048,6 +5058,7 @@ mod tests {
         };
         for (outcome, class) in [
             (TASK_OUTCOME_PASSED, Passed),
+            (TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, Passed),
             ("success", Passed),
             ("succeeded", Passed),
             (TASK_OUTCOME_UNVERIFIED, Unverified),

@@ -86,6 +86,11 @@ pub(in crate::orchestrator) struct OperationLifecycle {
     cancel_requested: AtomicBool,
     cleanup_unproved: AtomicBool,
     complete: AtomicBool,
+    /// Git processes whose exit cleanup could not prove (bug-53475e).
+    unproved_pids: parking_lot::Mutex<Vec<u32>>,
+    /// The repository lock an operation whose cleanup was unproved keeps,
+    /// which its worker hands to the manager's retained ownership.
+    retained_lock: parking_lot::Mutex<Option<RepositoryMutationLock>>,
 }
 
 impl OperationLifecycle {
@@ -99,6 +104,25 @@ impl OperationLifecycle {
 
     pub(super) fn mark_cleanup_unproved(&self) {
         self.cleanup_unproved.store(true, Ordering::Release);
+    }
+
+    /// Mark cleanup unproved because git process `pid` may still run; a
+    /// later operation proceeds once that process is gone (bug-53475e).
+    pub(super) fn mark_cleanup_unproved_for(&self, pid: Option<u32>) {
+        if let Some(pid) = pid {
+            self.unproved_pids.lock().push(pid);
+        }
+        self.mark_cleanup_unproved();
+    }
+
+    /// The git processes whose exit cleanup could not prove.
+    pub(super) fn take_unproved_pids(&self) -> Vec<u32> {
+        std::mem::take(&mut *self.unproved_pids.lock())
+    }
+
+    /// The repository lock the operation kept after an unproved cleanup.
+    pub(super) fn take_retained_lock(&self) -> Option<RepositoryMutationLock> {
+        self.retained_lock.lock().take()
     }
 
     pub(super) fn cleanup_was_unproved(&self) -> bool {
@@ -232,7 +256,17 @@ impl RepositoryMutationLock {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl std::fmt::Debug for RepositoryMutationLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RepositoryMutationLock")
+            .field("canonical_common_dir", &self.canonical_common_dir)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[derive(Debug)]
 pub(super) struct RepositoryMutationLock;
 
 pub(super) fn retain_lock_if_cleanup_unproved(
@@ -241,10 +275,118 @@ pub(super) fn retain_lock_if_cleanup_unproved(
 ) {
     if lifecycle.cleanup_was_unproved() {
         // A kernel-released flock is the only cross-process ownership proof.
-        // If cleanup cannot be proved, deliberately retain it with the local
-        // operation reservation so another process cannot overlap mutation.
-        std::mem::forget(repository_lock);
+        // If cleanup cannot be proved, retain it with the local operation
+        // reservation so another process cannot overlap mutation, until the
+        // manager proves the git processes gone (bug-53475e).
+        *lifecycle.retained_lock.lock() = Some(repository_lock);
     }
+}
+
+/// How long a worktree mutation waits for another process's repository
+/// mutation lock before it fails, instead of blocking forever (bug-53475e).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const REPOSITORY_LOCK_WAIT: Duration = Duration::from_secs(60);
+
+#[cfg(all(not(test), any(target_os = "macos", target_os = "linux")))]
+fn repository_lock_wait() -> Duration {
+    REPOSITORY_LOCK_WAIT
+}
+
+/// Tests shorten the wait for a subprocess through the environment.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+fn repository_lock_wait() -> Duration {
+    std::env::var("ROKO_TEST_REPOSITORY_LOCK_WAIT_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map_or(REPOSITORY_LOCK_WAIT, Duration::from_millis)
+}
+
+/// Take the exclusive `flock` on the repository mutation lock in
+/// `common_dir`, retrying while another process holds it for at most
+/// [`REPOSITORY_LOCK_WAIT`], then record this process as its holder.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn lock_repository_within_deadline(
+    lock_fd: &std::os::fd::OwnedFd,
+    common_dir: &Path,
+) -> Result<(), WorktreeError> {
+    let wait = repository_lock_wait();
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match rustix::fs::flock(
+            lock_fd,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        ) {
+            Ok(()) => {
+                record_lock_holder(lock_fd);
+                return Ok(());
+            }
+            Err(rustix::io::Errno::INTR) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                let holder = recorded_lock_holder(lock_fd);
+                let named = match holder {
+                    Some((pid, held_for)) => {
+                        format!("pid {pid} (holding it for {}s)", held_for.as_secs())
+                    }
+                    None => "another process".to_string(),
+                };
+                return Err(WorktreeError::OwnershipRetained {
+                    pids: holder.map(|(pid, _)| pid).into_iter().collect(),
+                    reason: format!(
+                        "{named} has held the repository mutation lock {} for over {}s; check \
+                         for a stuck roko or git process",
+                        common_dir.join(REPOSITORY_MUTATION_LOCK).display(),
+                        wait.as_secs()
+                    ),
+                });
+            }
+            Err(error) => return Err(WorktreeError::IoError(std::io::Error::from(error))),
+        }
+    }
+}
+
+/// Write this process's id and the time into the repository mutation lock
+/// it now holds, so a process that times out waiting for the lock can name
+/// its holder (bug-53475e). Best effort: the `flock` alone is the lock.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn record_lock_holder(lock_fd: &std::os::fd::OwnedFd) {
+    use std::os::unix::fs::FileExt;
+
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let holder = format!("{} {since}\n", std::process::id());
+    let recorded = lock_fd
+        .try_clone()
+        .map(std::fs::File::from)
+        .and_then(|file| {
+            file.set_len(0)?;
+            file.write_all_at(holder.as_bytes(), 0)
+        });
+    if let Err(error) = recorded {
+        tracing::debug!(%error, "could not record the repository mutation lock's holder");
+    }
+}
+
+/// The holder [`record_lock_holder`] wrote, and how long it has held the
+/// lock.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn recorded_lock_holder(lock_fd: &std::os::fd::OwnedFd) -> Option<(u32, Duration)> {
+    use std::os::unix::fs::FileExt;
+
+    let file = std::fs::File::from(lock_fd.try_clone().ok()?);
+    let mut bytes = [0_u8; 64];
+    let read = file.read_at(&mut bytes, 0).ok()?;
+    let text = std::str::from_utf8(&bytes[..read]).ok()?;
+    let mut fields = text.split_whitespace();
+    let pid = fields.next()?.parse().ok()?;
+    let since = std::time::UNIX_EPOCH + Duration::from_secs(fields.next()?.parse().ok()?);
+    let held_for = std::time::SystemTime::now()
+        .duration_since(since)
+        .unwrap_or_default();
+    Some((pid, held_for))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1205,8 +1347,7 @@ impl WorktreeManager {
         let lock_inode =
             inode_identity(&rustix::fs::fstat(&lock_fd).map_err(std::io::Error::from)?);
         rustix::fs::fsync(&common_dir_fd).map_err(std::io::Error::from)?;
-        rustix::fs::flock(&lock_fd, rustix::fs::FlockOperation::LockExclusive)
-            .map_err(std::io::Error::from)?;
+        lock_repository_within_deadline(&lock_fd, &canonical_common_dir)?;
         let repository_lock = RepositoryMutationLock {
             repo_root_fd,
             git_entry_fd,

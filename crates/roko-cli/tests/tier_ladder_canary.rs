@@ -10,12 +10,14 @@
 //! - a pinned model never moves;
 //! - every attempt's verdict records its rung, model and reason (`ladder`).
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use assert_cmd::cargo::cargo_bin;
+use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use serde_json::Value;
 
 /// Wire slugs of the ladder's rungs, cheapest first.
@@ -23,37 +25,28 @@ const CHEAP: &str = "claude-haiku-4-5";
 const MID: &str = "claude-sonnet-4-6";
 const TOP: &str = "claude-opus-4-1";
 
-/// The `claude_cli` provider behind every rung. It logs the task (the first
-/// word of the prompt's title line) and model of each call, leaves a
-/// `ran-<task>-<model>` marker for T2's verify step, and reports serving the
-/// model it was asked for.
-const PROVIDER: &str = r#"#!/bin/sh
-set -eu
-dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-prompt=$(cat)
-model=unknown
-previous=
-for arg in "$@"; do
-  if [ "$previous" = "--model" ]; then
-    model=$arg
-  fi
-  previous=$arg
-done
-task=$(printf '%s\n' "$prompt" | sed -n 2p | cut -d ' ' -f 1)
-printf '%s %s\n' "$task" "$model" >> "$dir/provider-calls"
-: > "$dir/ran-$task-$model"
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '{"type":"result","session_id":"ladder","model":"%s","total_cost_usd":0.0,"usage":{"input_tokens":3,"output_tokens":2},"is_error":false}\n' "$model"
-"#;
+/// The script of the `claude_cli` provider behind every rung: each call
+/// leaves a `ran-<task>-<model>` marker for T2's verify step and reports
+/// serving the model it was asked for.
+fn ladder_script() -> Script {
+    Script::new().otherwise(
+        Turn::reply()
+            .usage(3, 2, 0.0)
+            .write("ran-@TASK@-@MODEL@", ""),
+    )
+}
 
-/// The provider of `routing.fast_task_model`, which takes the helper calls
-/// after a failed verify step, so [`PROVIDER`] logs attempts only.
-const HELPER: &str = r#"#!/bin/sh
-set -eu
-cat >/dev/null
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"helper"}}'
-printf '%s\n' '{"type":"result","session_id":"helper","model":"claude-helper","total_cost_usd":0.0,"usage":{"input_tokens":3,"output_tokens":2},"is_error":false}'
-"#;
+/// The script of the provider of `routing.fast_task_model`, which takes the
+/// helper calls after a failed verify step, so the ladder's provider sees
+/// attempts only.
+fn helper_script() -> Script {
+    Script::new().otherwise(
+        Turn::reply()
+            .text("helper")
+            .model("claude-helper")
+            .usage(3, 2, 0.0),
+    )
+}
 
 /// Five tasks, run one at a time:
 ///
@@ -127,18 +120,11 @@ verify = [{ phase = "structural", command = "true" }]
 timeout_secs = 60
 "#;
 
-fn write_executable(path: &Path, body: &str) {
-    fs::write(path, body).expect("write provider script");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make provider executable");
-}
-
 /// A workspace whose three ladder rungs (cheap, mid, top) all run on
-/// [`PROVIDER`], with the D11 start rungs, and the plan of [`TASKS`].
-fn write_workspace(workdir: &Path) {
-    let provider = workdir.join("ladder-provider.sh");
-    write_executable(&provider, PROVIDER);
-    let helper = workdir.join("helper-provider.sh");
-    write_executable(&helper, HELPER);
+/// `provider`, with the D11 start rungs, `helper` serving the helper calls,
+/// and the plan of [`TASKS`].
+fn write_workspace(workdir: &Path, provider: &ScriptedProvider, helper: &ScriptedProvider) {
+    let (provider, helper) = (provider.command(), helper.command());
     fs::write(
         workdir.join("roko.toml"),
         format!(
@@ -257,12 +243,13 @@ fn run_plan(workdir: &Path) -> (bool, String) {
     (output.status.success(), log)
 }
 
-/// The models [`PROVIDER`] served, by task.
-fn provider_calls(workdir: &Path) -> BTreeMap<String, Vec<String>> {
-    let log = fs::read_to_string(workdir.join("provider-calls")).unwrap_or_default();
-    by_task(log.lines().map(|line| {
-        let (task, model) = line.split_once(' ').unwrap_or((line, ""));
-        (task.to_string(), model.to_string())
+/// The models `provider` served, by task.
+fn provider_calls(provider: &ScriptedProvider) -> BTreeMap<String, Vec<String>> {
+    by_task(provider.calls().into_iter().map(|call| {
+        (
+            call.task.unwrap_or_else(|| "-".to_string()),
+            call.model.unwrap_or_else(|| "unknown".to_string()),
+        )
     }))
 }
 
@@ -289,8 +276,11 @@ fn json_file(path: &Path) -> Value {
 #[test]
 fn tier_ladder_canary() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let workdir = temp.path();
-    write_workspace(workdir);
+    let workdir = &temp.path().join("work");
+    fs::create_dir_all(workdir).expect("create the workdir");
+    let provider = ScriptedProvider::install(&temp.path().join("ladder"), &ladder_script());
+    let helper = ScriptedProvider::install(&temp.path().join("helper"), &helper_script());
+    write_workspace(workdir, &provider, &helper);
     let (succeeded, log) = run_plan(workdir);
     assert!(!succeeded, "T3 fails, so the plan does: {log}");
 
@@ -310,7 +300,7 @@ fn tier_ladder_canary() {
         ]
         .map(|(task, model)| (task.to_string(), model.to_string())),
     );
-    assert_eq!(provider_calls(workdir), expected_calls, "{log}");
+    assert_eq!(provider_calls(&provider), expected_calls, "{log}");
 
     // T3 alone failed.
     let roko = workdir.join(".roko");

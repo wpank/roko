@@ -2549,6 +2549,10 @@ enum PrdCmd {
         /// Preview generation without writing tasks.toml files.
         #[arg(long)]
         dry_run: bool,
+        /// Also regenerate every plan in plans/ whose tasks.toml lacks modern
+        /// fields: one planner call per plan.
+        #[arg(long)]
+        regenerate_old: bool,
     },
     /// Scan all PRDs for duplicates, gaps, and inconsistencies.
     Consolidate,
@@ -3486,6 +3490,14 @@ fn main() {
 
     let mut cli = try_parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
     apply_env_overrides(&mut cli);
+    // `--config <file>` is the config of every load in this process, as
+    // `ROKO_CONFIG` would be, without reaching child processes (bug-4ed3c2).
+    // A file that does not exist is left to the command: `setup` creates it,
+    // and `plan run` refuses it.
+    if let Some(path) = &cli.config {
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+        let _ = roko_core::config::loader::set_config_path_override(path);
+    }
 
     // ── ACP early exit ───────────────────────────────────────────────
     // ACP mode uses stdio for JSON-RPC, so we MUST NOT install any

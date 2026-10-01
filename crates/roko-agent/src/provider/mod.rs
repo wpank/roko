@@ -40,7 +40,7 @@
 //! the call sites and centralize it in this module.
 
 use crate::SafetyLayer;
-use crate::dispatcher::{HandlerResolver, ToolDispatcher};
+use crate::dispatcher::{HandlerResolver, ToolCallIdentity, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
 use crate::immune_boundary::{safe_provider_agent_identity, wrap_provider_agent};
 use crate::live_output::LiveOutput;
@@ -58,7 +58,9 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
-use roko_core::tool::{ToolDef, ToolRegistry};
+use roko_core::tool::{
+    CorrelationEnvelope, MetricsSink, ToolDef, ToolFormat, ToolRegistry, TraceSink,
+};
 use roko_core::{ModelInputMessage, Temperament};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -356,6 +358,19 @@ pub fn create_agent_for_model(
             "provider cannot enforce the turn cap: it is advisory, and only the attempt timeout bounds this run"
         );
     }
+    // A request's thinking setting overrides the profile only where the
+    // adapter applies it (bug-b9cb83); elsewhere the profile decides.
+    if let Some(thinking) = &options.thinking
+        && !adapter.honours_thinking_config(&profile)
+    {
+        tracing::debug!(
+            agent = %options.name,
+            model_key = model_key,
+            provider = %provider_config.kind,
+            ?thinking,
+            "provider ignores the request's thinking setting"
+        );
+    }
 
     if options
         .pre_discovered_local_tools
@@ -491,6 +506,65 @@ pub fn build_tool_dispatcher_with_audit(
     resolver: Arc<dyn HandlerResolver>,
     file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
 ) -> Arc<ToolDispatcher> {
+    Arc::new(scoped_tool_dispatcher(registry, resolver, file_audit))
+}
+
+/// Build a provider tool loop's dispatcher: [`build_tool_dispatcher_with_audit`]
+/// with `options`' tool audit, keyed for per-call traces and metrics on
+/// `model`'s slug, the role of `options`' contract and `format`, the tool
+/// format of the loop's translator (find-f489db). Without a contract, or with
+/// a role roko does not know, the role stays the default implementer.
+#[must_use]
+pub fn build_provider_tool_dispatcher(
+    registry: Arc<dyn ToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    options: &AgentOptions,
+    model: &ModelProfile,
+    format: ToolFormat,
+) -> Arc<ToolDispatcher> {
+    let mut identity = ToolCallIdentity {
+        model: model.slug.clone(),
+        format,
+        ..ToolCallIdentity::default()
+    };
+    if let Some(role) = options.agent_contract.as_ref().and_then(|contract| {
+        serde_json::from_value::<roko_core::AgentRole>(Value::String(contract.role.clone())).ok()
+    }) {
+        identity.role = role;
+    }
+    Arc::new(
+        scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
+            .with_call_identity(identity),
+    )
+}
+
+/// Attach `options`' per-call trace and metrics sinks and its tool
+/// correlation to a tool-loop agent, so each of its tool calls leaves a
+/// trace, a metrics record and audit lines that join back to the run
+/// (find-f489db).
+#[must_use]
+pub(crate) fn with_tool_observability(
+    mut agent: crate::tool_loop::ToolLoopAgent,
+    options: &AgentOptions,
+) -> crate::tool_loop::ToolLoopAgent {
+    if let Some(sink) = &options.trace_sink {
+        agent = agent.with_trace_sink(Arc::clone(sink));
+    }
+    if let Some(sink) = &options.metrics_sink {
+        agent = agent.with_metrics_sink(Arc::clone(sink));
+    }
+    if let Some(correlation) = &options.tool_correlation {
+        agent = agent.with_correlation(correlation.clone());
+    }
+    agent
+}
+
+/// A dispatcher under the active safety layer, with `file_audit` attached.
+fn scoped_tool_dispatcher(
+    registry: Arc<dyn ToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+) -> ToolDispatcher {
     let layer = current_safety_layer().unwrap_or_else(|| {
         // No scoped safety layer was set by the caller. This typically means the
         // dispatcher is being built outside a `with_safety_layer` context, which
@@ -507,7 +581,7 @@ pub fn build_tool_dispatcher_with_audit(
     if let Some(audit) = file_audit {
         dispatcher = dispatcher.with_file_audit(audit);
     }
-    Arc::new(dispatcher)
+    dispatcher
 }
 
 /// Return the safety layer currently scoped to provider-backed construction, if any.
@@ -742,6 +816,13 @@ pub trait ProviderAdapter: Send + Sync {
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
         TurnCapEnforcement::Advisory
     }
+
+    /// Whether agents from this adapter for `model` apply
+    /// [`AgentOptions::thinking`]. Defaults to `false`, so that
+    /// [`create_agent_for_model`] reports a setting the adapter ignores.
+    fn honours_thinking_config(&self, _model: &ModelProfile) -> bool {
+        false
+    }
 }
 
 /// How a provider adapter bounds a run to [`AgentOptions::max_turns`].
@@ -900,6 +981,11 @@ pub struct AgentOptions {
     pub env_passthrough: Vec<String>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
+    /// The request's extended-thinking setting, which overrides the model
+    /// profile's default where the adapter honours one
+    /// ([`ProviderAdapter::honours_thinking_config`]). `None` leaves thinking
+    /// to the profile.
+    pub thinking: Option<roko_core::foundation::ThinkingConfig>,
     pub bare_mode: bool,
     /// Whether to skip Claude's permission system for this agent.
     ///
@@ -973,6 +1059,17 @@ pub struct AgentOptions {
     /// When set, the tool dispatcher records scrubbed admit/result lines
     /// to `.roko/tool_audit.jsonl` for every executed tool call.
     pub tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Per-call trace sink for the tool loop's tool calls (find-f489db).
+    ///
+    /// When set, provider adapters that construct a tool-loop agent hand it
+    /// to every tool call's context, and each call leaves a closed trace.
+    pub trace_sink: Option<Arc<dyn TraceSink>>,
+    /// Per-call metrics sink for the tool loop's tool calls (find-f489db).
+    pub metrics_sink: Option<Arc<dyn MetricsSink>>,
+    /// The run, task, attempt and agent the tool loop's tool calls belong
+    /// to, carried into their audit, trace and metrics records
+    /// (find-f489db).
+    pub tool_correlation: Option<CorrelationEnvelope>,
     /// Live output channel for forwarding provider events before screening.
     ///
     /// When set and the provider supports streaming, the immune boundary taps
@@ -998,6 +1095,7 @@ impl std::fmt::Debug for AgentOptions {
                     .map(|s| format!("{}...", &s[..s.len().min(40)])),
             )
             .field("input_messages", &self.input_messages.len())
+            .field("thinking", &self.thinking)
             .field("bare_mode", &self.bare_mode)
             .field(
                 "dangerously_skip_permissions",
@@ -1006,6 +1104,9 @@ impl std::fmt::Debug for AgentOptions {
             .field("name", &self.name)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit.is_some())
+            .field("trace_sink", &self.trace_sink.is_some())
+            .field("metrics_sink", &self.metrics_sink.is_some())
+            .field("tool_correlation", &self.tool_correlation)
             .finish_non_exhaustive()
     }
 }

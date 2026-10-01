@@ -393,6 +393,25 @@ impl Settlement {
         }
     }
 
+    /// A provider call that ended in `error` before returning a result. A
+    /// stop the plan run asked for is a cancellation, which teaches nothing
+    /// (bug-2b1ddc); anything else is [`Self::provider_failure`].
+    pub(super) fn provider_call_error(error: &RokoError) -> Self {
+        match error {
+            RokoError::Cancelled(reason) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: false,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
+            _ => Self::provider_failure(&error.to_string(), false),
+        }
+    }
+
     /// The harness failed the attempt outside its provider call and verify
     /// steps: prompt assembly, or recording its spend in the cost ledger.
     pub(super) fn harness_failure(error: &RokoError) -> Self {
@@ -536,6 +555,9 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
 const fn gate_verdict_tag(verdict: TaskGateVerdict) -> GateVerdictTag {
     match verdict {
         TaskGateVerdict::Passed => GateVerdictTag::Passed,
+        TaskGateVerdict::PassedWithPreexistingFailures => {
+            GateVerdictTag::PassedWithPreexistingFailures
+        }
         TaskGateVerdict::AlreadySatisfied => GateVerdictTag::AlreadySatisfied,
         TaskGateVerdict::Unverified => GateVerdictTag::Unverified,
         TaskGateVerdict::ForcedAccept => GateVerdictTag::ForcedAccept,

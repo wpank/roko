@@ -707,8 +707,8 @@ mod tests {
         let snapshot = temp.path().join("learn").join("cascade-router.json");
         let models = || vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
         let live = Arc::new(CascadeRouter::new(models()));
-        let sink = RoutingObservationSink::new(live.clone())
-            .with_journal(Arc::new(ModelCallJournal::for_snapshot(&snapshot)));
+        let journal = Arc::new(ModelCallJournal::for_snapshot(&snapshot));
+        let sink = RoutingObservationSink::new(live.clone()).with_journal(Arc::clone(&journal));
         let passed = completed(
             settled_as(AttemptOutcome::Passed, false),
             ModelChoiceSource::Router,
@@ -730,8 +730,13 @@ mod tests {
         let applied = sonnet(live.as_ref());
         assert_eq!(applied.observations, 2);
 
-        // The run dies before it saves the router.
+        // The run dies before it saves the router. Its journal goes with it,
+        // and dropping the journal releases its segment: no handle is left
+        // that would make recovery take the segment for a live writer's.
         drop(sink);
+        let journal =
+            Arc::try_unwrap(journal).expect("the sink held the journal's only other handle");
+        drop(journal);
         drop(live);
         assert!(!snapshot.exists(), "nothing saved the router");
 

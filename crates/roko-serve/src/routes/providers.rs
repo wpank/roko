@@ -638,6 +638,7 @@ fn provider_test_request(model_key: &str, provider_id: &str) -> ModelCallRequest
         tools: Vec::new(),
         generation_settings: None,
         mcp_config: None,
+        thinking: None,
     }
 }
 

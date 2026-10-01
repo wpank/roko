@@ -9,16 +9,16 @@ goal = "core"
 size = "S"
 subsystem = ["roko-learn/costs_db", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ea5fbe4b2"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-learn/src/costs_db.rs::CostRecord", "crates/roko-learn/src/costs_db.rs::create_cost_record", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-core/src/usage.rs::UsageSource", "crates/roko-cli/src/commands/diagnose.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-690dc6", "q-1faa0c", "bug-2b1ddc", "bug-dc4d63", "spec-b7303f", "gap-528762"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "sed -n '/^pub struct CostRecord {/,/^}/p' crates/roko-learn/src/costs_db.rs | grep -qE 'usage_source|estimated' && grep -rqw 'fn a_timed_out_attempt_cost_record_is_marked_estimated' crates/roko-cli/src && cargo test -p roko-cli --lib a_timed_out_attempt_cost_record_is_marked_estimated"
+command = "sed -n '/^pub struct CostRecord {/,/^}/p' crates/roko-learn/src/costs_db.rs | grep -qE 'pub (cost|usage)_source:' && grep -rqw 'fn a_timed_out_attempt_cost_record_is_marked_estimated' crates/roko-cli/src && cargo test -p roko-cli --lib a_timed_out_attempt_cost_record_is_marked_estimated"
 +++
 
 ## Problem
@@ -76,7 +76,7 @@ Graph write site through `dispatch.result.usage_obs`.
 ## Done when
 
 - A timed-out attempt's `costs.jsonl` row says it is estimated.
-- A normal attempt's row says `ProviderReported`.
+- A normal attempt's row says its usage was reported (`cli_usage` for a CLI agent, `provider_usage` for an API).
 - Old rows still parse.
 - The `[[verify]]` command passes.
 
@@ -87,3 +87,21 @@ Graph write site through `dispatch.result.usage_obs`.
 - Overlap: epic `spec-b7303f` lists "cost records have no source", and its `VerdictRecord` (`gap-528762`)
   carries a `cost_source`. No child of that epic adds the field to `costs.jsonl`'s `CostRecord`. If the settled
   attempt record replaces `costs.jsonl` as the cost truth, close this item as superseded.
+
+- **wk-tamper (2026-10-01):** Implemented on `work/gap-288e38`; cargo verification deferred to the batch check (static
+  review and `cargo +nightly fmt --all` only). Re-checked at ea5fbe4b2: since bug-aa2044 the Graph attempt's
+  `costs.jsonl` row already carried a flattened `cost_source` (`SettledCostRow`), but `CostRecord`, which every reader
+  parses, had no field for it, and helper-call rows had none at all.
+- The field is `cost_source: roko_learn::telemetry::CostSource` (S01 §4.4's `cost.source`, which flat records spell
+  `cost_source`: `provider_usage`, `cli_usage`, `estimated`, `mock`, `unknown`), `#[serde(default)]`, so old rows read
+  `unknown` and Graph rows written since bug-aa2044 read back their recorded source. `UsageSource` was not used: a
+  second, PascalCase field beside `cost_source` would duplicate it. `SettledCostRow` no longer adds its own
+  `cost_source`, since the record now carries it (the JSON key is unchanged).
+- Set from the verdict's `cost.source` at the Graph write site, and from each helper call's `usage_obs` (with the CLI
+  backend flag) for helper and refused-failover rows. `unknown` where the source is not known: plan authoring
+  (`AgentCapture` has no usage source), `create_cost_record` and episode-derived rows. (The settlement-sink
+  receipt's constructor went with `graph_execution/feedback.rs`, which bug-8a78e1 deleted.)
+- Shown apart: `CostsLog::estimated_cost`, `roko status` (`estimated_cost_usd` in JSON, an "Estimated:" line in the
+  cost summary), and `roko diagnose` attempts (`cost_source`). The bench's Roko runner prices an attempt `estimated`
+  when S01's verdict meters it with `cost.source` estimated, unless the proxy metered it.
+- The `[[verify]]` now greps for the field itself (`pub cost_source:`), not just the word "estimated".

@@ -649,6 +649,7 @@ mod tests {
                     workspace_rungs: None,
                     verify: Vec::new(),
                     approval: None,
+                    allow_unverified: false,
                 },
                 tasks,
             },

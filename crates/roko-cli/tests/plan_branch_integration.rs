@@ -11,34 +11,17 @@
 //!   together fail the plan on its `[meta] verify`, and `roko plan status`
 //!   names the failed step.
 
+mod common;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
+use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use serde_json::Value;
-
-/// The provider's reply once it has made its edit.
-const PROVIDER_REPLY: &str = r#"printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '%s\n' '{"type":"result","session_id":"canary","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
-"#;
-
-/// Reads the task's title, the line after `# Task Request`, into `$title`.
-const READ_TITLE: &str = r#"#!/bin/sh
-set -eu
-prompt="$(cat) $*"
-title=$(printf '%s\n' "$prompt" | awk '/# Task Request$/ { getline; print; exit }')
-"#;
-
-fn write_executable(path: &Path, body: &str) {
-    fs::write(path, body).expect("write the provider");
-    let mut permissions = fs::metadata(path).expect("provider metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("make the provider executable");
-}
 
 /// Run git in `dir` and return its trimmed stdout.
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -136,26 +119,24 @@ fn c3_each_passed_task_commits_once_on_the_plan_branch() {
     let (repo, state) = (temp.path().join("repo"), temp.path().join("state"));
     fs::create_dir_all(&repo).expect("repo dir");
     fs::create_dir_all(&state).expect("state dir");
-    // Writes `<name>.txt` for the task titled `Write <name>.txt`. While the
-    // `hang` file exists, the second task's provider waits after its edit.
-    let provider = temp.path().join("provider.sh");
-    write_executable(
-        &provider,
-        &format!(
-            "{READ_TITLE}name=$(printf '%s' \"$title\" | sed -n 's/^Write \\([a-z]*\\)\\.txt$/\\1/p')
-printf '%s\\n' \"$name\" > \"$name.txt\"
-if [ \"$name\" = two ] && [ -e '{state}/hang' ]; then
-  touch '{state}/two-started'
-  i=0
-  while [ -e '{state}/hang' ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
-fi
-{PROVIDER_REPLY}",
-            state = state.display()
-        ),
-    );
+    // Each task writes `<name>.txt`. While the `hang` file exists, the second
+    // task's provider waits after its edit.
+    let names = ["one", "two", "three"];
+    let script = names
+        .iter()
+        .enumerate()
+        .fold(Script::new(), |script, (index, name)| {
+            let turn = Turn::reply().write(&format!("{name}.txt"), &format!("{name}\n"));
+            let turn = if *name == "two" {
+                turn.hold_while(&state.join("hang"), &state.join("two-started"), 60)
+            } else {
+                turn
+            };
+            script.task(&format!("T{}", index + 1), [turn])
+        });
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
     let mut tasks =
         String::from("[meta]\nplan = \"c3\"\nmax_parallel = 1\nskip_enrichment = true\n");
-    let names = ["one", "two", "three"];
     for (index, name) in names.iter().enumerate() {
         let depends_on = index
             .checked_sub(1)
@@ -250,21 +231,24 @@ fn c4_meta_verify_catches_tasks_that_break_together() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
-    let provider = temp.path().join("provider.sh");
-    write_executable(
-        &provider,
-        &format!(
-            r#"{READ_TITLE}case "$title" in
-"Give a::double a factor")
-  printf 'pub fn double(x: u32, factor: u32) -> u32 {{\n    x * factor\n}}\n\n#[cfg(test)]\nmod tests {{\n    #[test]\n    fn doubles() {{\n        assert_eq!(super::double(2, 2), 4);\n    }}\n}}\n' > a/src/lib.rs
-  ;;
-"Add b::quad")
-  printf 'pub fn quad(x: u32) -> u32 {{\n    a::double(a::double(x))\n}}\n' > b/src/lib.rs
-  ;;
-esac
-{PROVIDER_REPLY}"#
-        ),
-    );
+    let script = Script::new()
+        .task(
+            "A",
+            [Turn::reply().write(
+                "a/src/lib.rs",
+                "pub fn double(x: u32, factor: u32) -> u32 {\n    x * factor\n}\n\n\
+                 #[cfg(test)]\nmod tests {\n    #[test]\n    fn doubles() {\n        \
+                 assert_eq!(super::double(2, 2), 4);\n    }\n}\n",
+            )],
+        )
+        .task(
+            "B",
+            [Turn::reply().write(
+                "b/src/lib.rs",
+                "pub fn quad(x: u32) -> u32 {\n    a::double(a::double(x))\n}\n",
+            )],
+        );
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
     let tasks = r#"[meta]
 plan = "c4"
 max_parallel = 2

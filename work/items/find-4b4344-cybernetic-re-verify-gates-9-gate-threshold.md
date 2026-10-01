@@ -9,13 +9,13 @@ size = "M"
 goal = "learning"
 subsystem = ["roko-gate"]
 created = 2026-09-06
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ea5fbe4b2"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
-anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-gate/src/adaptive_threshold.rs::ThresholdProfile", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphFeedbackContext", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-learn/src/oracles/coding.rs::CodingOracle::predict_test_pass_rate"]
-links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-34a4b5"], supersedes = [], duplicate_of = "" }
+anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::update_graph_gate_thresholds", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets", "crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-gate/src/adaptive_threshold.rs::ThresholdProfile", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphFeedbackContext", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-learn/src/oracles/coding.rs::CodingOracle::predict_test_pass_rate"]
+links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-34a4b5", "gap-d8c39a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "for s in observe_residual apply_profile should_skip_rung_for_temperament GateRatchet roko_gate_verdicts_total suggested_max_retries; do grep -rq \"$s\" crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_execution crates/roko-cli/src/runner/persist.rs || exit 1; done && grep -rqw 'fn graph_verify_feeds_gate_thresholds' crates/roko-cli/src/ && cargo test -p roko-cli graph_verify_feeds_gate_thresholds"
@@ -165,6 +165,53 @@ With (A), first move the threshold block at :2203-2260 into a testable function,
   `graph_task_dispatch.rs`.
 - `graph_task_dispatch.rs` is large and heavily edited. Keep the diff local to the verify and
   feedback block, and to plan completion in `plan_runner.rs`.
+
+### Status of each closure (2026-10-01, on work/find-4b4344)
+
+The threshold block in `graph_task_dispatch/verification.rs` moved to
+`graph_task_dispatch/gate_learning.rs`. `update_graph_gate_thresholds` is the testable function, and
+`GraphTaskDispatcher::settle_gate_learning` does its file I/O, logging and dashboard notices. Verify runs keep the
+load-then-save pattern on `gate-thresholds.json`, which still has one writer. A process-wide lock now serializes
+that load-update-save and the ratchet's, so parallel tasks of a run no longer drop each other's updates.
+
+- **P1-08, residual: wired** (ce3bdcbb8, before this branch). `GateThresholds::observe_verify_steps` feeds
+  `observe_residual` with the CodingOracle forecast taken before the steps run.
+- **P1-10, profile priors: wired.** `apply_profile` runs before each observation, with the task's profile:
+  `research` for `domain = "research"` or a researcher, strategist or pre-planner role; `security` for a
+  security-reviewer or security role; `coding` otherwise. These are Runner-v2's role mappings, plus the domain.
+  `observe` replaces a rung's prior with its first observation, so the priors show only on rungs that have no
+  observations yet. They change neither retry budgets nor skip advice, since both need at least five observations.
+- **P1-11, ratchet: wired.** `.roko/learn/gate-ratchet.json`, beside the thresholds, records the highest rung passed
+  per `plan_id/task_id`. The key is per task, not per plan, because Graph retries tasks and a plan's tasks have
+  different verify steps. A failed rung below the highest one already recorded logs a warning and adds a
+  `gate_regression` entry to the dashboard event log (`TuiBridge::gate_regression`). Regressions are judged
+  against the ratchet as it stood before the attempt, then the attempt's passes are recorded. The ratchet only warns,
+  and it persists across runs of the same plan.
+- **P1-12, skip advisory: wired, advisory only.** `should_skip_rung_for_temperament` is read before the attempt's
+  observations, with the role's configured temperament (`agent.temperament_for_role`, the one dispatch uses), not
+  daimon affect, which is on hold (dec-e70592). The log names the rungs it would skip and how many of them failed.
+  Every step still runs. Actually skipping an authored verify step needs the owner's decision (fail-closed).
+- **P1-35, Symbol-rung oracles: dropped (not applicable).** Graph verify runs the tasks' own commands, not the
+  rung pipeline, so `build_rung_execution_inputs` has nothing to feed.
+- **P1-36, inner-gate thresholds: covered.** Each verify step is observed under its own rung.
+- **P1-39, Evolved provenance: dropped (not applicable under option A).** `GateThresholds` has no convergence
+  detection. Moving Graph to `AdaptiveThresholds` (option B) would bring it; nobody has asked for that, so no item
+  was filed.
+- **P2-22, gate metrics: tracing wired, `/metrics` blocked.** Each verify step, including the post-auto-fix
+  re-run, emits the same `monotonic_counter.roko_gate_verdicts_total` and `histogram.roko_gate_duration_seconds`
+  tracing fields as `run_gate_once`. No layer turns those fields into registry samples, and serve's
+  `run_plan_on_local_runtime` drops its `MetricRegistry`, so `/metrics` stays at zero. Filed as gap-d8c39a.
+- **P3-15, retry recommendation: wired, at plan load.** Live retry budgets (ce3bdcbb8) already follow the
+  thresholds for tasks that do not author `max_retries`. For an authored budget, `TaskRetryBudgets::max_retries`
+  now logs what the thresholds would set when it differs and its rung has at least five observations. This runs
+  when the plan is loaded, where budgets are decided, rather than at plan completion, which would have needed a
+  hook in the hot `plan_runner.rs`. The suggestion is the live budgets' own (`AdaptiveThresholds` within
+  `[gates] adaptive_*_retries`). `GateThresholds::suggested_max_retries`, a dead copy with fixed bounds, was
+  removed.
+- The `#[allow(dead_code)]` markers on `apply_profile` and `should_skip_rung_for_temperament` are gone.
+
+Checked statically only (grep part of the verify, `cargo +nightly fmt`). `cargo test -p roko-cli
+graph_verify_feeds_gate_thresholds` has not run on this branch.
 
 ## Original notes
 

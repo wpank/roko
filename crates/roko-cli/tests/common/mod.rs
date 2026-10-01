@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod scripted_provider;
+
+use scripted_provider::{Script, ScriptedProvider};
+
 pub const MOCK_FIXTURE: &str = "mock-self-host-fixture";
 pub const SAMPLE_PLAN_ID: &str = "test-wire-xyz";
 
@@ -333,6 +337,41 @@ impl ScriptedPlanWorkspace {
     /// `roko init` is not used: its template depends on this machine's PATH
     /// and keys.
     pub fn new(plan: &str, tasks_toml: &str, agent_script: &str, extra_config: &str) -> Self {
+        Self::create(plan, tasks_toml, extra_config, |root| {
+            let agent = root.join("fixtures").join("fake-claude.sh");
+            write_executable(&agent, agent_script);
+            agent
+        })
+    }
+
+    /// [`Self::new`] with the shared [`ScriptedProvider`] playing `script` as
+    /// the agent. It lives in `root/provider`, outside the repository and the
+    /// fixtures, so its turns, which may print a canary, are not scanned with
+    /// them.
+    pub fn with_provider(
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
+        let mut provider = None;
+        let workspace = Self::create(plan, tasks_toml, extra_config, |root| {
+            let installed = ScriptedProvider::install(&root.join("provider"), script);
+            let command = installed.command();
+            provider = Some(installed);
+            command
+        });
+        (workspace, provider.expect("the provider is installed"))
+    }
+
+    /// The workspace, with `install_agent(root)` putting the agent in place
+    /// and returning its command.
+    fn create(
+        plan: &str,
+        tasks_toml: &str,
+        extra_config: &str,
+        install_agent: impl FnOnce(&Path) -> PathBuf,
+    ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         // Canonical, so paths roko prints and paths the test builds agree.
         let root = temp.path().canonicalize().expect("canonical tempdir");
@@ -342,8 +381,7 @@ impl ScriptedPlanWorkspace {
         for dir in [&repo, &home, &fixtures] {
             fs::create_dir_all(dir).expect("create workspace directory");
         }
-        let agent = fixtures.join("fake-claude.sh");
-        write_executable(&agent, agent_script);
+        let agent = install_agent(&root);
 
         seed_minimal_rust_project(&repo);
         fs::write(repo.join(".gitignore"), ".roko/\ntarget/\n").expect("write .gitignore");

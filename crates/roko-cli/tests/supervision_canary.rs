@@ -8,25 +8,29 @@
 //! - a run refuses to start while the workdir has less free disk than
 //!   `[resources] min_free_disk_mb` (reg-7cf6f9), before any dispatch.
 
+mod common;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin;
+use common::scripted_provider::{Output, Script, ScriptedProvider, Turn};
 use serde_json::Value;
 
-/// A `claude_cli` provider that reports one message and then goes silent:
-/// it logs its pid, prints an assistant message, and becomes `sleep 300`
-/// (same pid), longer than its task's `timeout_secs`.
-const SILENT_PROVIDER: &str = r#"#!/bin/sh
-set -eu
-dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cat >/dev/null
-printf '%s\n' "$$" >> "$dir/provider-pids"
-printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"reading the task"}]}}'
-exec sleep 300
-"#;
+/// The script of a `claude_cli` provider that reports one message and then
+/// goes silent: it prints an assistant message and becomes `sleep 300` (same
+/// pid), longer than its task's `timeout_secs`. The provider logs each
+/// call's pid.
+fn silent_script() -> Script {
+    Script::new().otherwise(
+        Turn::reply()
+            .output(Output::Message {
+                text: "reading the task".to_string(),
+            })
+            .then_silent_for(300.0),
+    )
+}
 
 /// One task on the silent provider. Without the watchdog its two attempts
 /// would each run until the 120 s `timeout_secs`.
@@ -53,13 +57,16 @@ max_retries = 1
 /// far below the 2 × 120 s their timeout allows.
 const SILENT_RUN_LIMIT: Duration = Duration::from_mins(1);
 
-/// A workspace whose one model runs on [`SILENT_PROVIDER`], with `extra`
-/// appended to its `roko.toml`, and the plan `tasks` under `plans/<plan>`.
-fn write_workspace(workdir: &Path, extra: &str, plan: &str, tasks: &str) {
-    let provider = workdir.join("silent-provider.sh");
-    fs::write(&provider, SILENT_PROVIDER).expect("write provider script");
-    fs::set_permissions(&provider, fs::Permissions::from_mode(0o755))
-        .expect("make provider executable");
+/// A workspace whose one model runs on `provider`, with `extra` appended to
+/// its `roko.toml`, and the plan `tasks` under `plans/<plan>`.
+fn write_workspace(
+    workdir: &Path,
+    provider: &ScriptedProvider,
+    extra: &str,
+    plan: &str,
+    tasks: &str,
+) {
+    let provider = provider.command();
     fs::write(
         workdir.join("roko.toml"),
         format!(
@@ -116,11 +123,12 @@ fn run_plan(workdir: &Path, plan: &str, args: &[&str]) -> (bool, Duration, Strin
 }
 
 /// The pids the provider logged, one per call.
-fn provider_pids(workdir: &Path) -> Vec<String> {
-    fs::read_to_string(workdir.join("provider-pids"))
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
+fn provider_pids(provider: &ScriptedProvider) -> Vec<String> {
+    provider
+        .calls()
+        .into_iter()
+        .filter_map(|call| call.pid)
+        .map(|pid| pid.to_string())
         .collect()
 }
 
@@ -145,9 +153,12 @@ fn jsonl(path: &Path) -> Vec<Value> {
 #[test]
 fn supervision_canary() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let workdir = temp.path();
+    let workdir = &temp.path().join("work");
+    fs::create_dir_all(workdir).expect("create the workdir");
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &silent_script());
     write_workspace(
         workdir,
+        &provider,
         "\n[conductor]\ntask_stall_secs = 2\n",
         "silent",
         SILENT_TASKS,
@@ -163,7 +174,7 @@ fn supervision_canary() {
     );
 
     // Both attempts ran, and each provider process is gone.
-    let pids = provider_pids(workdir);
+    let pids = provider_pids(&provider);
     assert_eq!(
         pids.len(),
         2,
@@ -227,10 +238,13 @@ fn supervision_canary() {
 #[test]
 fn supervision_canary_refuses_a_low_disk_run() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let workdir = temp.path();
+    let workdir = &temp.path().join("work");
+    fs::create_dir_all(workdir).expect("create the workdir");
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &silent_script());
     // No disk has a billion MB free.
     write_workspace(
         workdir,
+        &provider,
         "\n[resources]\nmin_free_disk_mb = 1000000000\n",
         "silent",
         SILENT_TASKS,
@@ -247,7 +261,7 @@ fn supervision_canary_refuses_a_low_disk_run() {
         "the message names the threshold: {log}"
     );
     assert!(
-        provider_pids(workdir).is_empty(),
+        provider_pids(&provider).is_empty(),
         "nothing was dispatched: {log}"
     );
 }

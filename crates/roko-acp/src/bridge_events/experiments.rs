@@ -9,8 +9,7 @@ use roko_agent::rate_limit::{ProviderRateLimitSnapshot, ProviderRateLimiter};
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_learn::{
-    cascade_router::CascadeRouter,
-    model_call_feedback::ModelCallJournal,
+    model_call_feedback::{ModelCallJournal, load_recovered_router},
     model_router::RoutingContext,
     prompt_experiment::{
         AssignmentSettlement, ExperimentStatus, ExperimentStore, PromptAttemptKey,
@@ -482,7 +481,9 @@ pub(crate) fn cascade_select_model(request: AcpCascadeRequest<'_>) -> Option<Acp
     let has_healthy_provider = candidate_providers
         .iter()
         .any(|provider| provider_health.is_healthy(provider));
-    let router = CascadeRouter::load_or_new(&router_path, model_slugs);
+    // The snapshot first takes what a crashed writer journaled and never
+    // saved (bug-8a78e1).
+    let router = load_recovered_router(&router_path, model_slugs);
     let ctx = acp_routing_context(mode, prompt, effort, workdir);
     let cascade_model =
         router.route_with_health_scored(&ctx, provider_health, &model_providers, None, None);
@@ -585,7 +586,7 @@ pub(crate) fn record_cascade_observation(
             .lock()
             .unwrap_or_else(|error| error.into_inner());
 
-        let router = CascadeRouter::load_or_new(&router_path, model_slugs);
+        let router = load_recovered_router(&router_path, model_slugs);
 
         if router.model_index_for_slug(&model_slug).is_none() {
             debug!(

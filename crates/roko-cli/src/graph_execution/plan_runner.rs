@@ -202,6 +202,15 @@ const INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Grace period between the first signal and a forced exit.
 const FORCED_EXIT_GRACE: Duration = Duration::from_secs(10);
 
+/// After [`INTERRUPT_DRAIN_TIMEOUT`], how long the attempts a stopping plan
+/// asked to stop may take to settle with the usage they streamed before the
+/// checkpoint is finalized without them (bug-2b1ddc).
+const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long an interrupted plan waits for its attempts' cost and learning
+/// rows to reach the disk before it returns, and the process exits.
+const INTERRUPT_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Set while a CLI plan run handles SIGINT/SIGTERM itself.
 static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
 
@@ -808,6 +817,36 @@ fn graph_run_outcome(
     }
 }
 
+/// Attach the run's tool observability to `factory` (find-f489db). Every tool
+/// call roko's own tool loops make then leaves a scrubbed admit and result
+/// pair in `.roko/tool_audit.jsonl`, a closed trace under `.roko/traces/` and
+/// a record in `.roko/metrics/tool_metrics.jsonl`, all under `workdir`. The
+/// audit scrubs with the process's secret scrubber, which holds the
+/// configured secrets, or the built-in patterns when none is installed. The
+/// audit is observability, not a gate: when its log cannot be opened, the run
+/// goes on without it.
+pub(crate) async fn attach_tool_observability(
+    factory: crate::dispatch::SharedAgentFactory,
+    workdir: &Path,
+) -> crate::dispatch::SharedAgentFactory {
+    let sinks = roko_fs::FsObservabilitySinks::for_workdir(workdir);
+    let factory = factory.with_observability_sinks(sinks);
+    match roko_fs::tool_audit::ToolAuditLog::open(workdir).await {
+        Ok(log) => {
+            let scrubber = roko_core::obs::secret_scrubber()
+                .unwrap_or_else(|| roko_fs::observability::RunScrubber::build(&[]));
+            factory.with_tool_audit(Arc::new(roko_fs::tool_audit::ScrubAuditAdapter::new(
+                Arc::new(log),
+                scrubber,
+            )))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "tool audit log unavailable; tool calls are not audited");
+            factory
+        }
+    }
+}
+
 async fn run_graph_plan_body(
     params: GraphPlanRunParams,
     run_id: Option<String>,
@@ -941,7 +980,7 @@ async fn run_graph_plan_body(
     // run's manifest records.
     let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
-    let mut shared_factory = crate::dispatch::SharedAgentFactory::new(
+    let shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
         roko_config.agent.mcp_config.as_ref(),
         graph_run_config.cascade_router.clone(),
@@ -956,6 +995,7 @@ async fn run_graph_plan_body(
         ),
     ))
     .with_error_patterns_from_disk(workdir);
+    let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
         &roko_config.agent.extensions,
@@ -1143,6 +1183,7 @@ async fn run_graph_plan_body(
             idle_ttl: std::time::Duration::from_hours(1),
         });
         worktrees = Some(worktree_manager.clone());
+        repair_worktree_state(&worktree_manager).await;
         // Each attempt reserves its worktree's disk headroom before it
         // starts, and attempts serialise under disk pressure (reg-7cf6f9).
         let counted = worktree_manager.clone();
@@ -1182,6 +1223,9 @@ async fn run_graph_plan_body(
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    // `budget.max_daily_usd`: today's spend before this run, read once, so a
+    // run whose day is already spent starts no task (bug-ae28ac).
+    graph_task_dispatcher.prime_daily_budget().await;
     for plan_id in &held_plans {
         graph_task_dispatcher.hold_for_approval(plan_id);
     }
@@ -1362,6 +1406,7 @@ async fn run_graph_plan_body(
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
         worktrees: worktrees.as_ref(),
+        delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
         json,
         launch_tui,
@@ -1524,26 +1569,32 @@ async fn run_graph_plan_body(
     }
 
     // spec-f830c4: with --promote, a run whose plans were all delivered
-    // promotes its batch into the target branch and tags it.
+    // promotes its batch into the target branch and tags it. The run summary
+    // reports it (gap-415c54).
+    let mut promotion = None;
     if let (Some(batch), Some(target)) = (batch.as_ref(), promote.as_deref()) {
         if all_succeeded {
             match batch.promote(target).await {
-                Ok(promotion) if promotion.moved => tracing::info!(
-                    batch = batch.branch(),
-                    target,
-                    commit = %promotion.commit,
-                    tag = %promotion.tag,
-                    "run promoted"
-                ),
-                Ok(promotion) => {
+                Ok(promoted) if promoted.moved => {
+                    tracing::info!(
+                        batch = batch.branch(),
+                        target,
+                        commit = %promoted.commit,
+                        tag = %promoted.tag,
+                        "run promoted"
+                    );
+                    promotion = Some(promoted);
+                }
+                Ok(promoted) => {
                     tracing::warn!(
                         batch = batch.branch(),
                         target,
-                        tag = %promotion.tag,
-                        summary = %promotion.summary,
+                        tag = %promoted.tag,
+                        summary = %promoted.summary,
                         "run not promoted: its target is checked out"
                     );
-                    graph_tui_bridge.log_event("graph.run_promotion_parked", &promotion.summary);
+                    graph_tui_bridge.log_event("graph.run_promotion_parked", &promoted.summary);
+                    promotion = Some(promoted);
                 }
                 Err(error) => {
                     all_succeeded = false;
@@ -1736,6 +1787,15 @@ async fn run_graph_plan_body(
                 "max_parallel_plans": max_parallel_plans,
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
+                "batch": batch.as_ref().map(|batch| serde_json::json!({
+                    "branch": batch.branch(),
+                    "deliveries": batch
+                        .receipts()
+                        .iter()
+                        .map(|receipt| batch.summary_record(receipt))
+                        .collect::<Vec<_>>(),
+                    "promotion": promotion,
+                })),
             }))
             .unwrap_or_default()
         );
@@ -1769,6 +1829,41 @@ async fn run_graph_plan_body(
             .collect::<Vec<_>>();
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
+        // Where each delivered plan's work landed (gap-415c54).
+        if let Some(batch) = batch.as_ref() {
+            for receipt in batch.receipts() {
+                if receipt.state.is_success()
+                    && let Some(merge) = &receipt.merge_commit
+                {
+                    println!(
+                        "Plan {} delivered into {} at {merge}",
+                        receipt.request.plan_id,
+                        batch.branch()
+                    );
+                    let kept = receipt
+                        .extensions
+                        .get(super::batch::ATTEMPT_CLEANUP_EXTENSION)
+                        .and_then(|cleanup| cleanup["kept_branches"].as_array())
+                        .map(|branches| {
+                            branches
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if !kept.is_empty() {
+                        println!(
+                            "  {} attempt branch(es) kept: {}",
+                            kept.len(),
+                            kept.join(", ")
+                        );
+                    }
+                }
+            }
+            if let Some(promotion) = &promotion {
+                println!("{}", promotion.summary);
+            }
         }
     }
 
@@ -2056,6 +2151,9 @@ struct PlanRunContext<'a> {
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
+    /// `[runner] delete_attempt_branches`: a delivered plan's attempt
+    /// branches go with their checkouts (gap-415c54).
+    delete_attempt_branches: bool,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -2119,11 +2217,13 @@ fn plan_cell_resources_with(
 fn plan_cell_context(
     run_id: &str,
     pause_flag: &Arc<AtomicBool>,
+    stop_flag: &Arc<AtomicBool>,
     resources: &roko_graph::cell::CellResources,
 ) -> roko_graph::cell::CellContext {
     roko_graph::cell::CellContext::new()
         .with_run_id(run_id.to_string())
         .with_pause_flag(Arc::clone(pause_flag))
+        .with_cancel_flag(Arc::clone(stop_flag))
         .with_resources(resources.clone())
 }
 
@@ -2298,6 +2398,37 @@ async fn run_admitted_plan(
     control: PlanControl,
 ) -> (String, anyhow::Result<PlanRunResult>) {
     (plan.id.clone(), run_one_plan(ctx, plan, &control).await)
+}
+
+/// Repair what a crashed run left behind before the first dispatch
+/// (gap-4ec59f): an unowned repository mutation lock file, stale
+/// `index.lock` files and `git worktree` metadata whose checkout is gone.
+/// A repair that fails is logged, and the run goes on without it.
+async fn repair_worktree_state(worktrees: &crate::orchestrator::worktree::WorktreeManager) {
+    let manager = worktrees.clone();
+    let cleared = tokio::task::spawn_blocking(move || {
+        if let Err(error) = manager.clear_stuck_mutation_lock() {
+            tracing::warn!(%error, "could not check for a stuck worktree mutation lock");
+        }
+        manager.clear_stale_locks()
+    })
+    .await;
+    match cleared {
+        Ok(Ok(cleared)) => {
+            for lock in cleared {
+                tracing::warn!(
+                    path = %lock.display(),
+                    "removed a stale git index.lock left by a crashed run"
+                );
+            }
+        }
+        Ok(Err(error)) => tracing::warn!(%error, "could not clear stale git index.lock files"),
+        Err(error) => tracing::warn!(%error, "the stale git lock repair did not finish"),
+    }
+    match worktrees.prune().await {
+        Ok(_) => tracing::debug!("pruned git worktree metadata whose checkout is gone"),
+        Err(error) => tracing::warn!(%error, "could not prune stale git worktree metadata"),
+    }
 }
 
 /// Run one admitted plan to a terminal checkpoint.
@@ -2564,7 +2695,14 @@ async fn run_one_plan(
     }
     // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
     // check it between turns and yield when the TUI sends Pause.
-    let cell_ctx = plan_cell_context(&run_id, ctx.shared_pause_flag, ctx.cell_resources);
+    // Set when a stopping plan's attempts must stop (bug-2b1ddc).
+    let stop_attempts = Arc::new(AtomicBool::new(false));
+    let cell_ctx = plan_cell_context(
+        &run_id,
+        ctx.shared_pause_flag,
+        &stop_attempts,
+        ctx.cell_resources,
+    );
 
     // Validate before running.
     let issues = engine.validate();
@@ -2634,20 +2772,27 @@ async fn run_one_plan(
         if !flow_handle.is_running() {
             break;
         }
-        // Interrupt: cancel the graph, ask in-flight agents to stop so
-        // their nodes settle, then give up on the graph after
-        // INTERRUPT_DRAIN_TIMEOUT so the checkpoint is still finalized.
+        // Interrupt: cancel the graph and ask in-flight agents to stop so
+        // their nodes settle. After INTERRUPT_DRAIN_TIMEOUT, stop the
+        // attempts still running; after a further INTERRUPT_SETTLE_TIMEOUT,
+        // give up on the graph so the checkpoint is still finalized.
         if let Some(deadline) = drain_deadline {
             if Instant::now() >= deadline {
-                // Agents that ignored SIGTERM must not outlive the run.
-                let killed = kill_in_flight_agents();
+                if stop_attempts.swap(true, Ordering::AcqRel) {
+                    tracing::warn!(
+                        plan_id = %plan.id,
+                        "stopped attempts did not settle in time; finalizing checkpoint without them"
+                    );
+                    flow_abandoned = true;
+                    break;
+                }
+                // A stopped attempt drops its provider call and settles with
+                // the usage it streamed (bug-2b1ddc).
                 tracing::warn!(
                     plan_id = %plan.id,
-                    killed,
-                    "cancelled graph did not settle in time; finalizing checkpoint without it"
+                    "cancelled graph did not settle in time; stopping its attempts"
                 );
-                flow_abandoned = true;
-                break;
+                drain_deadline = Some(Instant::now() + INTERRUPT_SETTLE_TIMEOUT);
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
@@ -2695,6 +2840,15 @@ async fn run_one_plan(
         );
         previous_statuses = current_statuses;
     }
+    // Agents that ignored SIGTERM must not outlive the run. They are killed
+    // once their attempts were asked to stop, so an attempt settles as
+    // stopped rather than as a provider failure.
+    if stop_attempts.load(Ordering::Acquire) {
+        let killed = kill_in_flight_agents();
+        if killed > 0 {
+            tracing::warn!(plan_id = %plan.id, killed, "killed agents that ignored SIGTERM");
+        }
+    }
 
     // Collect the final result from the background task.
     let flow_result = if flow_abandoned {
@@ -2702,6 +2856,15 @@ async fn run_one_plan(
     } else {
         flow_handle.await_completion().await
     };
+    // The process exits soon after an interrupted run returns: let its
+    // attempts' cost and learning rows reach the disk first.
+    if interrupted_by.is_some() {
+        let _ = tokio::time::timeout(
+            INTERRUPT_WRITES_TIMEOUT,
+            crate::background_writes::settled(ctx.workdir),
+        )
+        .await;
+    }
 
     let Some(output) = flow_result else {
         // Flow was cancelled before producing a result (e.g. validation
@@ -2761,8 +2924,16 @@ async fn run_one_plan(
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
-            deliver_plan_to_batch(batch, plan, plan_checks, &mut checkpoint, graph_tui_bridge)
-                .await?
+            deliver_plan_to_batch(
+                batch,
+                plan,
+                plan_checks,
+                ctx.worktrees,
+                ctx.delete_attempt_branches,
+                &mut checkpoint,
+                graph_tui_bridge,
+            )
+            .await?
         }
         None if outcome.succeeded() && !plan_checks.is_empty() => {
             check_plan_in_place(
@@ -2912,12 +3083,16 @@ async fn run_one_plan(
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
 /// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
 /// regression check on the merge, and record the delivery in the plan's
-/// checkpoint. The plan succeeds only when the delivery does. `Err` only when
-/// the checkpoint cannot record it.
+/// checkpoint. The plan succeeds only when the delivery does. A delivered
+/// plan's accepted attempt checkouts are then removed from `worktrees`, and
+/// with `delete_attempt_branches` their branches too (gap-415c54). `Err`
+/// only when the checkpoint cannot record it.
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
+    delete_attempt_branches: bool,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -2959,6 +3134,39 @@ async fn deliver_plan_to_batch(
             merge_commit = receipt.merge_commit.as_deref().unwrap_or_default(),
             "plan delivered into the run's batch branch"
         );
+        // Its work is on the plan and batch branches now, so the attempt
+        // checkouts kept for review have done their job. What went and what
+        // stayed is on the receipt, for the run summary.
+        if receipt.release_policy == roko_graph::delivery::ReleasePolicy::Delete
+            && let Some(worktrees) = worktrees
+        {
+            match worktrees
+                .release_accepted(&plan.id, delete_attempt_branches)
+                .await
+            {
+                Ok(released) => {
+                    tracing::info!(
+                        plan_id = %plan.id,
+                        removed = released.removed_checkouts.len(),
+                        kept_branches = released.kept_branches.len(),
+                        deleted_branches = released.deleted_branches.len(),
+                        "removed the delivered plan's attempt checkouts"
+                    );
+                    if let Ok(cleanup) = serde_json::to_value(&released) {
+                        let mut receipt = receipt;
+                        receipt
+                            .extensions
+                            .insert(super::batch::ATTEMPT_CLEANUP_EXTENSION.to_string(), cleanup);
+                        batch.store().update(&receipt);
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    plan_id = %plan.id,
+                    %error,
+                    "kept the delivered plan's attempt checkouts"
+                ),
+            }
+        }
         return Ok(PlanOutcome::Succeeded);
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
@@ -3057,7 +3265,10 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 /// and gate verdict (epic spec-e9d7ec).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TaskVerdictCounts {
-    /// Completed with a `passed` gate verdict: every verify step passed.
+    /// Completed with a `passed` gate verdict: every verify step passed. A
+    /// `passed_with_preexisting_failures` verdict counts here too: its steps
+    /// failed only on tests that failed before the run (gap-161be1), which
+    /// its attempt record keeps.
     passed: usize,
     /// Completed with an `already_satisfied` gate verdict: the attempt
     /// changed nothing, and every verify step passed on the tree as it was
@@ -3086,7 +3297,10 @@ impl TaskVerdictCounts {
         {
             let verdict = output.gate_verdicts.get(&result.node_id).copied();
             match (result.status, verdict) {
-                (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (
+                    NodeStatus::Complete,
+                    Some(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures),
+                ) => counts.passed += 1,
                 (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
                     counts.already_satisfied += 1;
                 }
@@ -4103,6 +4317,112 @@ max_retries = 0
         assert!(!hub.current_snapshot().plan_set_complete());
     }
 
+    /// Where [`an_interrupted_attempt_settles_the_usage_it_streamed`] tells
+    /// [`interrupted_plan_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_RUN_DIR: &str = "ROKO_INTERRUPTED_RUN_CHILD_DIR";
+
+    /// An attempt whose agent outlives the interrupt's drain is stopped and
+    /// settles with the usage it streamed (bug-2b1ddc): once the interrupted
+    /// run returns, the plan's cost ledger and `costs.jsonl` hold the
+    /// estimate, which was lost when the runner gave up on the graph. The
+    /// interrupt signals every agent its process runs, so the run happens in
+    /// a child test process, away from other tests' agents.
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_attempt_settles_the_usage_it_streamed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        // Streams one priced message, then ignores SIGTERM until killed.
+        std::fs::write(
+            dir.path().join("fake-provider.sh"),
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}}}'
+trap '' TERM
+printf 'call\n' >> "$(dirname "$0")/provider-calls"
+exec sleep 60
+"#,
+        )
+        .expect("provider script");
+        write_verify_plan(dir.path(), "interrupted", "", &[("T1", &[], "true")]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_plan_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_RUN_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        let ledger: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".roko/state/graph/interrupted/costs.json"))
+                .expect("the plan's cost ledger"),
+        )
+        .expect("ledger json");
+        let spent = ledger["spent_micro_usd"].as_u64().expect("spent") as f64 / 1e6;
+        assert!((spent - expected).abs() < 1e-5, "{ledger}");
+        let costs = std::fs::read_to_string(dir.path().join(".roko/learn/costs.jsonl"))
+            .expect("costs.jsonl");
+        let row: serde_json::Value = costs
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|row: &serde_json::Value| row["task_id"] == "T1")
+            .expect("T1's cost row");
+        assert_eq!(row["cost_source"], "estimated", "{row}");
+        assert_eq!(row["outcome"], "cancelled", "{row}");
+        assert_eq!(row["learning_label"], serde_json::Value::Null, "{row}");
+        assert_eq!(row["input_tokens"], 1_000);
+        assert_eq!(row["output_tokens"], 200);
+        let cost_usd = row["cost_usd"].as_f64().expect("cost");
+        assert!((cost_usd - expected).abs() < 1e-5, "{row}");
+    }
+
+    /// The interrupted run of
+    /// [`an_interrupted_attempt_settles_the_usage_it_streamed`]: it runs the
+    /// plan in that test's workspace once the provider is running, then
+    /// returns, as the CLI would before the process exits. Without the
+    /// workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_plan_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_RUN_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let calls = workdir.join("provider-calls");
+        for _ in 0..400 {
+            if calls.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(calls.exists(), "the provider started");
+        // Let the streamed usage reach the attempt's live output.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
@@ -4563,7 +4883,12 @@ max_retries = 0
         let pause = Arc::new(AtomicBool::new(false));
 
         let output = engine
-            .execute(&plan_cell_context("rich-run", &pause, &resources))
+            .execute(&plan_cell_context(
+                "rich-run",
+                &pause,
+                &Arc::new(AtomicBool::new(false)),
+                &resources,
+            ))
             .await
             .expect("the plan runs");
 
@@ -4818,6 +5143,19 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             git_stdout(repo, &["rev-parse", "roko/run/run-e2e^{commit}"]),
             beta_plan
         );
+        // gap-415c54: once a plan was delivered, its attempt checkout was
+        // removed and its attempt branch kept, one per plan.
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        let attempt_branches = git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]);
+        assert_eq!(attempt_branches.lines().count(), 2, "{attempt_branches}");
         // The operator's checkout never moved.
         assert_eq!(git_stdout(repo, &["rev-parse", "HEAD"]), head);
         assert_eq!(
@@ -4826,6 +5164,45 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-415c54: with `[runner] delete_attempt_branches = true`, a
+    /// delivered plan's attempt branch goes with its checkout, and the plan
+    /// and batch branches still hold its work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivered_plan_deletes_its_attempt_branches_when_asked() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let mut config = std::fs::read_to_string(repo.join("roko.toml")).expect("config");
+        config.push_str("\n[runner]\ndelete_attempt_branches = true\n");
+        std::fs::write(repo.join("roko.toml"), config).expect("config");
+        git_in(repo, &["commit", "-am", "delete attempt branches"]);
+
+        let exit_code = run_graph_plan_in_run(worktree_run_params(repo), Some("run-delete".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]),
+            ""
+        );
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        let batch = "roko/batch/run-delete";
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(files.contains("alpha.txt"), "{files}");
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]),
+            git_stdout(repo, &["rev-parse", batch])
+        );
     }
 
     /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`

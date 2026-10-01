@@ -296,6 +296,9 @@ impl AttemptIdentity {
 pub enum GateVerdictTag {
     /// Every authored verify step passed.
     Passed,
+    /// Every authored verify step passed, or failed only on tests that also
+    /// failed on the plan run's start commit (gap-161be1).
+    PassedWithPreexistingFailures,
     /// Every authored verify step passed on a tree the attempt left
     /// unchanged: the task's work was already there.
     AlreadySatisfied,
@@ -312,6 +315,7 @@ impl GateVerdictTag {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::PassedWithPreexistingFailures => "passed_with_preexisting_failures",
             Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
@@ -323,6 +327,7 @@ impl GateVerdictTag {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "passed_with_preexisting_failures" => Some(Self::PassedWithPreexistingFailures),
             "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
@@ -398,7 +403,9 @@ impl AttemptOutcome {
 impl From<GateVerdictTag> for AttemptOutcome {
     fn from(verdict: GateVerdictTag) -> Self {
         match verdict {
-            GateVerdictTag::Passed => Self::Passed,
+            // The agent's work passed: what failed, failed before it ran too.
+            // The record's `gate_verdict` keeps the difference.
+            GateVerdictTag::Passed | GateVerdictTag::PassedWithPreexistingFailures => Self::Passed,
             GateVerdictTag::AlreadySatisfied => Self::AlreadySatisfied,
             GateVerdictTag::Unverified => Self::Unverified,
             GateVerdictTag::ForcedAccept => Self::ForcedAccept,
@@ -1381,6 +1388,7 @@ mod tests {
     fn gate_verdict_wire_values_match_the_graph_tag() {
         for verdict in [
             GateVerdictTag::Passed,
+            GateVerdictTag::PassedWithPreexistingFailures,
             GateVerdictTag::AlreadySatisfied,
             GateVerdictTag::Unverified,
             GateVerdictTag::ForcedAccept,
@@ -1497,6 +1505,7 @@ mod tests {
             duration_ms: 9_461,
             success: false,
             session_id: String::new(),
+            cost_source: CostSource::CliUsage,
         };
         let keyed = AttemptKeyed {
             attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),

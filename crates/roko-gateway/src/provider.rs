@@ -131,6 +131,7 @@ impl ModelCallerBackend {
             run_id: Some(request.metadata.session_id.clone()),
             budget_remaining: Some(request.metadata.budget_remaining as f64 / 1_000_000.0),
             tools: request.tools.clone().unwrap_or_default(),
+            thinking: request.thinking.clone(),
             ..ModelCallRequest::default()
         }
     }

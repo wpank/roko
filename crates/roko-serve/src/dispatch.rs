@@ -36,13 +36,14 @@ use roko_core::{Body, Context as RokoContext, Kind, ObservableEvent, Provenance,
 use roko_core::{ContentHash, Verdict};
 use roko_daimon::{AffectEngine as _, AffectEvent};
 use roko_learn::anomaly::{Anomaly, AnomalyDetector};
-use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{
     Episode, EpisodeGateVerdict, EpisodeLogger, Usage as EpisodeUsage,
 };
 use roko_learn::events::{AgentEvent, EventBus as LearningEventBus};
-use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
+use roko_learn::model_call_feedback::{
+    ModelCallFeedback, ModelCallFeedbackRecorder, load_recovered_router,
+};
 use roko_learn::prompt_experiment::ExperimentStore;
 use roko_neuro::spawn_episode_distillation;
 use roko_std::tool::StaticToolRegistry;
@@ -2045,8 +2046,12 @@ fn build_agent(
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            trace_sink: None,
+            metrics_sink: None,
+            tool_correlation: None,
             max_turns: None,
             live_output: None,
+            thinking: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -2850,7 +2855,9 @@ fn record_cascade_router_observation_at(
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
 
-    let cascade_router = CascadeRouter::load_or_new(path, model_slugs);
+    // The snapshot first takes what a crashed writer journaled and never
+    // saved, so this save does not leave it behind (bug-8a78e1).
+    let cascade_router = load_recovered_router(path, model_slugs);
     if cascade_router.record_confidence_outcome(model_slug, success) {
         cascade_router
             .save(path)
@@ -2902,6 +2909,7 @@ mod tests {
         DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_TTFT_TIMEOUT_MS,
     };
     use roko_core::{Body, Kind, Provenance};
+    use roko_learn::cascade_router::CascadeRouter;
     use uuid::Uuid;
 
     use crate::deploy::create_backend;
@@ -3471,7 +3479,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         );
         let cascade_path = state.layout.cascade_router_path();
         let cascade_slugs = config.model_slugs_for_cascade();
-        *state.cascade_router.write().await = Some(Arc::new(CascadeRouter::load_or_new(
+        *state.cascade_router.write().await = Some(Arc::new(load_recovered_router(
             &cascade_path,
             cascade_slugs,
         )));
@@ -3692,7 +3700,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
                 .with_config(config.clone()),
         );
         let state = Arc::new(state);
-        *state.cascade_router.write().await = Some(Arc::new(CascadeRouter::load_or_new(
+        *state.cascade_router.write().await = Some(Arc::new(load_recovered_router(
             &state.layout.cascade_router_path(),
             config.model_slugs_for_cascade(),
         )));
@@ -3816,5 +3824,28 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
 
         let downgraded = downgrade_model_slug("claude-opus-4-6", &config);
         assert_eq!(downgraded.as_deref(), Some("claude-haiku-4-5"));
+    }
+
+    /// bug-8a78e1: serve records a router observation on the snapshot once
+    /// it holds what a crashed writer journaled and never saved.
+    #[test]
+    fn a_serve_observation_lands_on_a_crashed_writers_journal() {
+        use roko_learn::model_call_feedback::ModelCallJournal;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("learn").join("cascade-router.json");
+        let models = || vec!["model-a".to_string()];
+        {
+            let router = CascadeRouter::new(models());
+            let journal = ModelCallJournal::for_snapshot(&path);
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let recorded = record_cascade_router_observation_at(&path, models(), "model-a", false)
+            .expect("record the observation");
+        assert!(recorded);
+        let saved = load_recovered_router(&path, models());
+        assert_eq!(saved.confidence_snapshot()["model-a"], (2, 1));
     }
 }

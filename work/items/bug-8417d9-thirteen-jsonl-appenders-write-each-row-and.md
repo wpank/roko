@@ -3,13 +3,14 @@ id = "bug-8417d9"
 kind = "bug"
 title = "Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-learn", "roko-neuro", "roko-agent", "roko-core", "roko-acp", "roko-dreams"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-specq's report, checked on work/bug-779ae7 at 101afcda1)"
 anchors = ["crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/run_metrics.rs", "crates/roko-core/src/forensic.rs", "crates/roko-neuro/src/admission.rs"]
@@ -60,3 +61,21 @@ Each appender above.
 
 - [ ] Every JSONL appender writes each line with one write.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-8417d9` at `2587848e4`; cargo verification deferred to the batch check. Targeted
+  tests ran in wk-specq's own target clone.
+- 2026-10-01 (wk-specq): `roko_core::io` gains `write_jsonl_line`, `append_jsonl_line` and `append_jsonl`.
+  Each writes the row and its newline with one `write_all`, and every appender listed above uses one of them.
+  - Two appenders the list missed: the TUI's inject and confirm signals (`tui/app/actions.rs`), which go to
+    `.roko/signals.jsonl`. They use the helper too.
+  - The review log (`commands/plan.rs`) and its test helper (`attempt_workspace.rs`) write the row with one
+    `write_all`, so each hunk is one line beside wk-tiers' edits there.
+  - Left as they are: roko-runtime's `state_hub` and `metrics`, and roko-fs's `classified_writer`, write through a
+    `BufWriter`, which flushes whole rows unless one exceeds its 8 KiB buffer. roko-fs's `append_jsonl_line_sync`
+    writes a missing newline separately, but under its own advisory lock.
+  - Tests: `a_jsonl_row_and_its_newline_are_one_write` (a recording writer sees one write per row) and
+    `concurrent_jsonl_appends_never_interleave` (16 threads append 50 rows each; every line parses). The tests
+    of every touched module pass. On bug-779ae7's branch, a 64-writer check lost rows in 20 of 20 rounds with
+    split writes and in 0 of 20 with one write per row.

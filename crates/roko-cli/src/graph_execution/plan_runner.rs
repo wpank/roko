@@ -4768,12 +4768,12 @@ exec sleep 60
                 let signal = roko_core::Signal::builder(roko_core::Kind::Task)
                     .body(roko_core::Body::from_json(&payload).expect("gate payload"))
                     .build();
-                let cancel = async {
+                let gate_ctx = roko_core::Context::now();
+                let stop = async {
                     let _ = cancelled.await;
                     terminate_in_flight_agents()
                 };
-                let (_, signalled) =
-                    tokio::join!(gate.verify(&signal, &roko_core::Context::now()), cancel);
+                let (_, signalled) = tokio::join!(gate.verify(&signal, &gate_ctx), stop);
                 signalled
             })
         });

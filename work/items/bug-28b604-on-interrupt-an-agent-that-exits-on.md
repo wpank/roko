@@ -3,13 +3,14 @@ id = "bug-28b604"
 kind = "bug"
 title = "On interrupt, an agent that exits on SIGTERM within the drain settles as ProviderError and TaskExecutorCell retries it while the run is stopping"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-graph"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report on bug-2b1ddc)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-graph/src/cells/task_executor.rs"]
@@ -36,3 +37,11 @@ Treat an exit caused by the run's own SIGTERM (or any exit after the stop began)
 
 - [ ] A SIGTERM exit during the drain settles as Cancelled and is not retried
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  `GraphTaskDispatcher::begin_stop`, which the plan runner calls when an interrupt begins, marks the run as
+  stopping. From then on a provider call that fails, or that returns an unsuccessful result (an agent that exits on
+  the run's SIGTERM), settles as `AttemptOutcome::Cancelled` and fails with `RokoError::Cancelled`, which
+  `TaskExecutorCell` doesn't retry. Test: `a_sigterm_exit_during_the_drain_settles_as_cancelled`.

@@ -230,15 +230,18 @@ impl InFlightTasks {
     ///
     /// Without such siblings, or with a zero limit, the failure stands and
     /// nothing waits. Otherwise the failure is deferred until the siblings
-    /// finish their current attempt (bounded by the limit), `rerun` runs the
-    /// step once, and its verdict is the step's result. A re-run that still
-    /// fails with every located error in siblings' files also returns their
-    /// task ids, the `blocked_by_sibling` of the failure.
+    /// finish their current attempt, `rerun` runs the step again, and its
+    /// verdict is the step's result. A re-run that fails while siblings edit
+    /// again, a sibling's next attempt say, waits for them and runs once
+    /// more, as long as the limit, which bounds the whole settle, lasts
+    /// (gap-4f3063). A re-run that still fails with every located error in
+    /// the files of siblings it waited for also returns their task ids, the
+    /// `blocked_by_sibling` of the failure.
     pub(crate) async fn settle_failed_step<Fut>(
         &self,
         step: &FailedStep<'_>,
         failed: Verdict,
-        rerun: impl FnOnce() -> Fut,
+        mut rerun: impl FnMut() -> Fut,
     ) -> (Verdict, Option<String>)
     where
         Fut: Future<Output = Verdict>,
@@ -247,58 +250,73 @@ impl InFlightTasks {
             return (failed, None);
         }
         let key = format!("{}/{}", step.plan_id, step.task_id);
-        let writers = self.begin_settle(&key, step.workdir);
+        let mut writers = self.begin_settle(&key, step.workdir);
         if writers.is_empty() {
             return (failed, None);
         }
-        let siblings = writers
-            .iter()
-            .map(|writer| sibling_label(step.plan_id, &writer.key))
-            .collect::<Vec<_>>()
-            .join(", ");
-        tracing::warn!(
-            plan_id = step.plan_id,
-            task_id = step.task_id,
-            step = step.label,
-            siblings = %siblings,
-            blocked_by_sibling = blame(step, &failed, &writers)
-                .as_ref()
-                .map_or("none", |blame| blame.siblings.as_str()),
-            settle_secs = step.settle_limit.as_secs(),
-            "verify step failed while sibling tasks edit the working tree; \
-             deferring the failure until they settle"
-        );
-        let settled = self.wait_settled(&writers, step.settle_limit).await;
-        self.end_settle(&key);
-        if !settled {
+        let started = tokio::time::Instant::now();
+        let mut waited_for: Vec<SiblingWriter> = Vec::new();
+        let mut verdict = failed;
+        loop {
+            let siblings = writers
+                .iter()
+                .map(|writer| sibling_label(step.plan_id, &writer.key))
+                .collect::<Vec<_>>()
+                .join(", ");
             tracing::warn!(
                 plan_id = step.plan_id,
                 task_id = step.task_id,
                 step = step.label,
                 siblings = %siblings,
-                "sibling tasks did not settle within [gates] sibling_settle_secs; \
-                 re-running the verify step anyway"
+                blocked_by_sibling = blame(step, &verdict, &writers)
+                    .as_ref()
+                    .map_or("none", |blame| blame.siblings.as_str()),
+                settle_secs = step.settle_limit.as_secs(),
+                "verify step failed while sibling tasks edit the working tree; \
+                 deferring the failure until they settle"
             );
-        }
+            let remaining = step.settle_limit.saturating_sub(started.elapsed());
+            let settled = self.wait_settled(&writers, remaining).await;
+            self.end_settle(&key);
+            if !settled {
+                tracing::warn!(
+                    plan_id = step.plan_id,
+                    task_id = step.task_id,
+                    step = step.label,
+                    siblings = %siblings,
+                    "sibling tasks did not settle within [gates] sibling_settle_secs; \
+                     re-running the verify step anyway"
+                );
+            }
+            waited_for.append(&mut writers);
 
-        let mut verdict = rerun().await;
-        if verdict.passed {
-            tracing::info!(
-                plan_id = step.plan_id,
-                task_id = step.task_id,
-                step = step.label,
-                siblings = %siblings,
-                "verify step passed once sibling tasks settled; the deferred failure \
-                 came from their in-progress edits"
-            );
-            return (verdict, None);
+            verdict = rerun().await;
+            if verdict.passed {
+                tracing::info!(
+                    plan_id = step.plan_id,
+                    task_id = step.task_id,
+                    step = step.label,
+                    siblings = %siblings,
+                    "verify step passed once sibling tasks settled; the deferred failure \
+                     came from their in-progress edits"
+                );
+                return (verdict, None);
+            }
+            // Siblings that edit again since: wait for them too, while the
+            // limit lasts.
+            if !settled || started.elapsed() >= step.settle_limit {
+                break;
+            }
+            writers = self.begin_settle(&key, step.workdir);
+            if writers.is_empty() {
+                break;
+            }
         }
-        let blame = blame(step, &verdict, &writers);
+        let blame = blame(step, &verdict, &waited_for);
         tracing::warn!(
             plan_id = step.plan_id,
             task_id = step.task_id,
             step = step.label,
-            siblings = %siblings,
             blocked_by_sibling = blame.as_ref().map_or("none", |blame| blame.siblings.as_str()),
             "verify step still fails after sibling tasks settled"
         );
@@ -798,6 +816,52 @@ mod tests {
         assert!(verdict.passed);
         assert_eq!(blocked_by, None);
         assert_eq!(reruns.load(Ordering::SeqCst), 1);
+    }
+
+    /// gap-4f3063: a re-run that fails while a sibling edits again, its next
+    /// attempt say, waits for that sibling too and runs once more.
+    #[tokio::test]
+    async fn a_sibling_that_edits_again_after_the_rerun_is_waited_for() {
+        let tasks = InFlightTasks::default();
+        let own = files(&["web/src/components/Header.tsx"]);
+        let _own = tasks.register("plan/T08", Path::new(WORKDIR), &own);
+        let sibling_files = files(&["web/src/components/stage/PlanView.tsx"]);
+        let first = tasks.register("plan/T12", Path::new(WORKDIR), &sibling_files);
+        let second = parking_lot::Mutex::new(None);
+        let reruns = AtomicUsize::new(0);
+        let step = failed_step("T08", &own, Duration::from_secs(30));
+
+        let settle = tasks.settle_failed_step(&step, failing(PLAN_VIEW_ERROR), || async {
+            if reruns.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Verdict::pass("verify[0:typecheck]");
+            }
+            // The sibling's next attempt starts editing, and the step fails
+            // again.
+            let next = tasks.register("plan/T12", Path::new(WORKDIR), &sibling_files);
+            *second.lock() = Some(next);
+            failing(PLAN_VIEW_ERROR)
+        });
+        let finish_siblings = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(first);
+            for _ in 0..500 {
+                if second.lock().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(second.lock().take());
+        };
+        let ((verdict, blocked_by), ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(settle, finish_siblings)
+        })
+        .await
+        .expect("settles once the sibling's next attempt finishes");
+
+        assert!(verdict.passed);
+        assert_eq!(blocked_by, None);
+        assert_eq!(reruns.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

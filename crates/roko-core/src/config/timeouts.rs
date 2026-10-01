@@ -34,7 +34,11 @@ pub struct TimeoutConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_no_progress_secs: Option<u64>,
 
-    /// Agent dispatch wall-clock timeout (seconds).
+    /// Agent dispatch wall-clock timeout (seconds; default 1800). A task
+    /// that builds and verifies needs more than the former 600 (find-43768e).
+    /// A task's `timeout_secs` overrides it, a retry after a timeout gets
+    /// half as much again, and the stall watchdog (`[conductor]
+    /// task_stall_secs`) ends a silent attempt sooner.
     #[serde(default = "default_agent_dispatch_secs")]
     pub agent_dispatch_secs: u64,
 
@@ -137,7 +141,7 @@ pub const DEFAULT_ACP_REQUEST_MS: u64 = DEFAULT_AGENT_TIMEOUT_MS;
 // ── Default helpers (const fn for serde) ─────────────────────────────────
 
 const fn default_agent_dispatch_secs() -> u64 {
-    600
+    1800
 }
 const fn default_gate_compile_secs() -> u64 {
     600
@@ -343,7 +347,7 @@ mod tests {
     #[test]
     fn defaults_are_sensible() {
         let cfg = TimeoutConfig::default();
-        assert_eq!(cfg.agent_dispatch_secs, 600);
+        assert_eq!(cfg.agent_dispatch_secs, 1800);
         assert_eq!(cfg.gate_compile_secs, 600);
         assert_eq!(cfg.gate_test_secs, 900);
         assert_eq!(cfg.gate_clippy_secs, 300);

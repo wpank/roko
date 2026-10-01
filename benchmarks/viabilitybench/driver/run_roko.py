@@ -1,7 +1,9 @@
 """The Roko arm's runner, harness `roko` (S08 §4.9 `roko_fixed`, T11): one task through `roko plan run` on one
 pinned model, which is checked on every attempt.
 
-For each (task, seed), `run_task`:
+Before the first task, `preflight` emits the plan of a stand-in task into a scratch workspace and runs the
+`plan validate --strict --dag` of step 2 on it, so `vb run` refuses a binary that rejects the plans this arm emits
+(bug-a05c53) instead of ending every task `infra_error`. For each (task, seed), `run_task`:
 
 1. emits a one-task plan and the workspace roko.toml into the task's workdir, which is Roko's workspace
    (`planemit`);
@@ -105,6 +107,7 @@ time, and `records.py` sums them into the record:
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
+    preflight(arm, model, endpoint, limits, snapshot) -> None       # raises RunnerError
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None)
         -> (list[RokoAttempt], list[str])
@@ -120,16 +123,19 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import agent_env
 import archive
 import caps
 import harness
 import layout
 import ledger
 import planemit
+import provider
 import records
 from common import repo
 
@@ -139,6 +145,12 @@ PROMPT_SHA256 = planemit.TEMPLATE_SHA256
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
 OFFLINE_KEY = "vb-offline-placeholder"
 VALIDATE_TIMEOUT_S = 120.0
+# The stand-in task `preflight` emits a plan for: a family task's shape (one source file, visible tests run by
+# unittest), with nothing of any task in it.
+PREFLIGHT_SPEC = ("# Preflight\n\nA stand-in task: before any task runs, the driver checks that Roko accepts the "
+                  "plan this arm emits.\n")
+PREFLIGHT_TREE = {"src/stand_in.py": "", "tests/visible/test_stand_in.py": "import unittest\n"}
+PREFLIGHT_VISIBLE = "python3 -m unittest discover -s tests/visible"
 OUTPUT_CHARS = 20_000  # of each of Roko's stdout and stderr kept in the transcript, head and tail
 EVIDENCE_MAX_BYTES = 50_000_000
 BUILD = re.compile(r"\bgit ([0-9a-f]{7,40})\b")
@@ -220,24 +232,15 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     reserved: list[str] = []
     try:
         binary = binary_path(ctx.arm)
-        api_key_env = ctx.endpoint.api_key_env or ctx.arm.get("providers", {}).get(
-            ctx.endpoint.provider, {}).get("api_key_env")
-        if not api_key_env:
-            raise RunnerError(f"the arm names no api_key_env for {ctx.endpoint.provider}")
-        emitted = planemit.emit(planemit.PlanSpec(
-            key=ctx.key, spec_text=ctx.spec_text, files=ctx.files_in_scope, visible=ctx.visible_verify,
-            model=ctx.model, provider=ctx.endpoint.provider, base_url=ctx.endpoint.base_url, api_key_env=api_key_env,
-            price_row=ctx.price_row, usd_cap=task_bound, provider_kind=settings.get("provider_kind", "openai_compat"),
-            context_window=int(settings.get("context_window", 128_000)), max_output=ctx.caps.max_output_tokens,
-            max_retries=max_retries, max_turns=ctx.caps.turns_per_attempt, tier=settings.get("tier", "focused"),
-            skip_enrichment=bool(settings.get("skip_enrichment", True)),
-            verify_timeout_s=int(ctx.caps.command_timeout_s),
-            verify_wrapper=_wrapper_command(ctx)), ctx.workdir)
+        spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, key=ctx.key,
+                          spec_text=ctx.spec_text, files=ctx.files_in_scope, visible=ctx.visible_verify,
+                          verify_wrapper=_wrapper_command(ctx))
+        emitted = planemit.emit(spec, ctx.workdir)
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
-        env = _roko_env(ctx, api_key_env, emitted.config_path)
+        env = _roko_env(ctx, spec.api_key_env, emitted.config_path)
         build = _build(binary, env, settings.get("build") or None, transcript)
-        head = [str(binary), "--repo", str(ctx.workdir), "--model", ctx.model, "--no-serve", "--color", "never"]
+        head = _head(binary, ctx.workdir, ctx.model)
         checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
                         env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)))
         transcript.append(checked.event("validate"))
@@ -289,6 +292,59 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
                                started_at=started, finished_at=harness.utc_now(),
                                s01_run_dir=f"s01/{ctx.key}" if saved else None)
+
+
+def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, snapshot: ledger.Snapshot) -> None:
+    """Refuse a binary that rejects the plans this arm emits, before any task runs (bug-a05c53): every task's
+    `plan validate --strict --dag` would fail, and every run would end `infra_error`. Emits the plan of a stand-in
+    task (`PREFLIGHT_SPEC`) into a scratch workspace and validates it as `run_task` does. No model is called.
+    Raises RunnerError."""
+    binary = binary_path(arm)
+    price_row = snapshot.row(model)
+    bound = caps.worst_task_usd(limits, price_row)
+    with tempfile.TemporaryDirectory(prefix="vb-roko-preflight-") as scratch:
+        workspace = Path(scratch) / "workspace"
+        for relpath, text in PREFLIGHT_TREE.items():
+            (workspace / relpath).parent.mkdir(parents=True, exist_ok=True)
+            (workspace / relpath).write_text(text, encoding="utf-8")
+        spec = _plan_spec(arm, model, endpoint, limits, price_row, limits.usd_per_task if bound is None else bound,
+                          key="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
+                          visible=(PREFLIGHT_VISIBLE,))
+        try:
+            emitted = planemit.emit(spec, workspace)
+        except planemit.PlanEmitError as err:
+            raise RunnerError(f"the arm cannot emit a plan: {err}") from None
+        env = {**agent_env.build(home=Path(scratch) / "home"), "ROKO_CONFIG": str(emitted.config_path),
+               spec.api_key_env: OFFLINE_KEY}
+        checked = _roko([*_head(binary, workspace, model), "plan", "validate", "--strict", "--dag",
+                         str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S)
+    if checked.returncode != 0:
+        said = (checked.stdout + checked.stderr).strip()[-500:]
+        raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
+                          f"{'timed out' if checked.timed_out else f'exited {checked.returncode}'}: {said}")
+
+
+def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, price_row: dict | None,
+               usd_cap: float, *, key: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
+               verify_wrapper: str | None = None) -> planemit.PlanSpec:
+    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task."""
+    settings = arm.get("roko", {})
+    api_key_env = endpoint.api_key_env or arm.get("providers", {}).get(endpoint.provider, {}).get("api_key_env")
+    if not api_key_env:
+        raise RunnerError(f"the arm names no api_key_env for {endpoint.provider}")
+    return planemit.PlanSpec(
+        key=key, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
+        base_url=endpoint.base_url, api_key_env=api_key_env, price_row=price_row, usd_cap=usd_cap,
+        provider_kind=settings.get("provider_kind", "openai_compat"),
+        context_window=int(settings.get("context_window", 128_000)), max_output=limits.max_output_tokens,
+        max_retries=int(settings.get("max_retries", 2)), max_turns=limits.turns_per_attempt,
+        tier=settings.get("tier", "focused"), skip_enrichment=bool(settings.get("skip_enrichment", True)),
+        verify_timeout_s=int(limits.command_timeout_s), verify_wrapper=verify_wrapper)
+
+
+def _head(binary: Path, workspace: Path, model: str) -> list[str]:
+    """Roko's command line up to its subcommand, pinned to `model`."""
+    return [str(binary), "--repo", str(workspace), "--model", model, "--no-serve", "--color", "never"]
 
 
 def binary_path(arm: dict) -> Path:

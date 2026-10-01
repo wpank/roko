@@ -10,7 +10,9 @@
   and the gate rung alike. The slug is opaque (`vb-<sha256(key)[:10]>`) and the title is the spec's first heading,
   so Roko's prompt holds nothing the direct arm's task message does not.
 - `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
-  nothing can fail over (bug-35379d); explicit `[[gates.rungs]]` holding only the visible check, so no path that
+  nothing can fail over (bug-35379d); the routing ladder off (`[routing.ladder] enabled = false`), so the pin is
+  the only routing input and `plan validate` has no ladder for the task's `model_hint` to bypass (PLAN_041,
+  bug-a05c53); explicit `[[gates.rungs]]` holding only the visible check, so no path that
   reads rungs falls back to `cargo check` (bug-1410e8); the per-attempt turn cap in `[pipeline.<tier>]`; a budget at
   the arm's dollar cap, priced at the snapshot's rates rather than roko.toml's defaults (S08 D9), whose per-dispatch
   reservation (`max_turn_usd`, a tenth of it, with one agent) satisfies Roko's config invariants and still leaves
@@ -48,7 +50,7 @@ from pathlib import Path, PurePosixPath
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
-TEMPLATE_VERSION = "planemit-1"
+TEMPLATE_VERSION = "planemit-2"
 TASK_ID = "T01"
 SCAFFOLDING = ("roko.toml", "plans", ".roko")  # what Roko's run adds to the workspace; the runner removes it
 ROLE = "implementer"
@@ -86,8 +88,9 @@ fail_msg = "the task's visible check failed"
 """
 
 CONFIG_TEMPLATE = """\
-# Emitted by the ViabilityBench driver ({version}) for one benchmark run: one provider, one pinned model and no
-# fallbacks, explicit gate rungs that run only the visible check, and Roko's learning loops held off.
+# Emitted by the ViabilityBench driver ({version}) for one benchmark run: one provider, one pinned model, no
+# fallbacks and no routing ladder, explicit gate rungs that run only the visible check, and Roko's learning loops
+# held off.
 config_version = 2
 schema_version = 2
 
@@ -108,6 +111,9 @@ tool_format = "openai_json"
 {rates}
 [routing]
 fallback_models = []
+
+[routing.ladder]
+enabled = false
 
 [gates]
 cargo_fix_enabled = false
@@ -251,8 +257,9 @@ def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: 
     if commands != [visible, visible] or "depends_on_plan" in task or "context" in task:
         raise PlanEmitError("the emitted files hold a command other than the visible check, or extra context")
     if list(config["providers"]) != [spec.provider] or list(config["models"]) != [spec.model] or \
-            config["routing"]["fallback_models"]:
-        raise PlanEmitError("roko.toml must hold exactly the pinned provider and model, with no fallbacks")
+            config["routing"]["fallback_models"] or config["routing"]["ladder"] != {"enabled": False}:
+        raise PlanEmitError("roko.toml must hold exactly the pinned provider and model, with no fallbacks and the "
+                            "routing ladder off")
 
 
 def _files(paths: tuple[str, ...]) -> list[str]:

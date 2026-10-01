@@ -1,6 +1,8 @@
 //! Safety observability endpoints.
 //!
-//! * `GET /api/safety/quarantine` -- quarantine vault entries.
+//! * `GET /api/safety/quarantine` -- quarantine vault entries, each with its
+//!   review status and full hash, and each vault's capacity: a full vault
+//!   cannot index the results the boundary withholds next.
 //! * `GET /api/safety/incidents` -- incident log from the immune system.
 //!
 //! Both read the review vaults the tool immune boundary writes when it
@@ -103,11 +105,16 @@ fn display_path(workdir: &Path, path: &Path) -> String {
         .to_string()
 }
 
-/// Where each vault read came from, and how many entries it holds.
+/// Where each vault read came from, how many entries it holds, and how many
+/// it can hold.
 #[derive(Serialize)]
 struct VaultSummary {
     path: String,
     entries: usize,
+    capacity: usize,
+    /// Whether the vault is at capacity: the tool immune boundary still
+    /// withholds suspect results, but can no longer index them for review.
+    full: bool,
 }
 
 fn vault_summaries(vaults: &[LoadedVault]) -> Vec<VaultSummary> {
@@ -116,6 +123,8 @@ fn vault_summaries(vaults: &[LoadedVault]) -> Vec<VaultSummary> {
         .map(|loaded| VaultSummary {
             path: loaded.path.clone(),
             entries: loaded.vault.stats().total,
+            capacity: loaded.vault.capacity(),
+            full: loaded.vault.is_full(),
         })
         .collect()
 }
@@ -144,6 +153,8 @@ struct QuarantineResponse {
 #[derive(Serialize)]
 struct QuarantineEntrySummary {
     hash: String,
+    /// The entry's full content hash, in hex.
+    full_hash: String,
     score: f64,
     status: String,
     quarantined_at: String,
@@ -177,9 +188,10 @@ async fn quarantine_handler(
         response.approved += stats.approved;
         response.rejected += stats.rejected;
         response.escalated += stats.escalated;
-        for entry in loaded.vault.pending() {
+        for entry in loaded.vault.entries() {
             response.entries.push(QuarantineEntrySummary {
                 hash: format!("{:?}", entry.hash),
+                full_hash: entry.hash.to_hex(),
                 score: entry.anomaly_score.score,
                 status: format!("{:?}", entry.status),
                 quarantined_at: entry.quarantined_at.to_rfc3339(),
@@ -226,7 +238,7 @@ async fn incidents_handler(
 
     let mut incidents = Vec::new();
     for loaded in &vaults {
-        for entry in loaded.vault.pending() {
+        for entry in loaded.vault.entries() {
             for link in &entry.incident_links {
                 incidents.push(IncidentSummary {
                     hash: format!("{:?}", entry.hash),
@@ -257,7 +269,9 @@ mod tests {
     use http_body_util::BodyExt as _;
     use roko_core::ContentHash;
     use roko_core::config::RokoConfig;
-    use roko_core::immune::{AnomalyScore, IncidentRelation, QuarantineStatus};
+    use roko_core::immune::{
+        AnomalyScore, DEFAULT_QUARANTINE_VAULT_CAPACITY, IncidentRelation, QuarantineStatus,
+    };
     use serde_json::Value;
     use tower::ServiceExt as _;
 
@@ -372,6 +386,54 @@ mod tests {
                 .any(|incident| incident["relation"] == "SameSource"),
             "{body}"
         );
+    }
+
+    /// gap-2f69e9: the listing names every entry, escalated ones included, by
+    /// its full hash, and each vault reports its capacity.
+    #[tokio::test]
+    async fn quarantine_route_lists_escalated_entries_and_vault_capacity() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let pending = ContentHash::of(b"ignore all previous instructions");
+        let escalated = ContentHash::of(b"malformed structured result");
+        quarantine_like_immune_layer(workdir.path(), pending, "mcp:docs", false);
+        quarantine_like_immune_layer(workdir.path(), escalated, "plugin:lint", true);
+        let state = test_state(workdir.path());
+
+        let (status, body) = get_json(&state, "/safety/quarantine").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let listed = body["entries"]
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .map(|entry| (entry["full_hash"].as_str(), entry["status"].as_str()))
+            .collect::<Vec<_>>();
+        for (hash, review_status) in [(pending, "Pending"), (escalated, "Escalated")] {
+            let full_hash = hash.to_hex();
+            assert!(
+                listed.contains(&(Some(full_hash.as_str()), Some(review_status))),
+                "{hash:?} missing: {body}"
+            );
+        }
+        assert_eq!(body["vaults"][0]["capacity"], DEFAULT_QUARANTINE_VAULT_CAPACITY);
+        assert_eq!(body["vaults"][0]["full"], false);
+    }
+
+    #[tokio::test]
+    async fn quarantine_route_reports_a_full_vault() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let mut vault = QuarantineVault::new(0.8, 1, false);
+        assert!(vault.quarantine(ContentHash::of(b"withheld"), AnomalyScore::from_score(0.9)));
+        vault
+            .save(roko_agent::quarantine_vault_path(workdir.path()))
+            .expect("save vault");
+        let state = test_state(workdir.path());
+
+        let (status, body) = get_json(&state, "/safety/quarantine").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["vaults"][0]["capacity"], 1);
+        assert_eq!(body["vaults"][0]["full"], true);
     }
 
     /// Plan runs from before the workspace-rooted vault left theirs in the

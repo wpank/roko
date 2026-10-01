@@ -95,3 +95,12 @@ Checked at `41c7ffbd6`: no canary exists yet. `tests/common/mod.rs` has one fixe
   - CI changes for everyone: `.github/workflows/ci.yml` gains a `golden-path` job. On every pull request and push
     to main it builds and runs the six canary targets, with a 10-minute step for the canaries in a 45-minute job.
     Until C1 and C7 land, the guard test also fails the `test` job's `cargo test --workspace`.
+- 2026-10-01 (wk-specq): C1 and C7 landed at `ba470bec8`, merged in at `60102c497`, and moved onto the shared
+  provider in `a0cd40526`. All eight canaries are now on it, and the golden-path job runs all seven targets.
+  - C1 (`honest_verdicts_canary`) plays one default turn that appends to `NOTES.md`.
+  - C7 (`supervision_canary`) needed two things the provider lacked, so it now has them: `Output::Message` (one
+    assistant message and no result) and `Turn::then_silent_for` (after its output, the provider becomes
+    `sleep N` with the same pid). Each call also logs the provider's pid.
+  - Checked statically only, because free disk was 20-23 GB: nightly fmt is clean, the verify's grep passes, and a
+    script that reads ci.yml the way the guard test does finds every row met.
+  - The coordinator's batch gate builds the branch and runs the eight canaries and `golden_path_suite`.

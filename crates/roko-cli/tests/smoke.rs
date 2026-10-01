@@ -322,6 +322,9 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         live_output: None,
         cancel_token: None,
         tool_audit: None,
+        trace_sink: None,
+        metrics_sink: None,
+        tool_correlation: None,
         max_turns: None,
     };
 

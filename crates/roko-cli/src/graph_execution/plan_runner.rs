@@ -794,6 +794,36 @@ fn graph_run_outcome(
     }
 }
 
+/// Attach the run's tool observability to `factory` (find-f489db). Every tool
+/// call roko's own tool loops make then leaves a scrubbed admit and result
+/// pair in `.roko/tool_audit.jsonl`, a closed trace under `.roko/traces/` and
+/// a record in `.roko/metrics/tool_metrics.jsonl`, all under `workdir`. The
+/// audit scrubs with the process's secret scrubber, which holds the
+/// configured secrets, or the built-in patterns when none is installed. The
+/// audit is observability, not a gate: when its log cannot be opened, the run
+/// goes on without it.
+pub(crate) async fn attach_tool_observability(
+    factory: crate::dispatch::SharedAgentFactory,
+    workdir: &Path,
+) -> crate::dispatch::SharedAgentFactory {
+    let sinks = roko_fs::FsObservabilitySinks::for_workdir(workdir);
+    let factory = factory.with_observability_sinks(sinks);
+    match roko_fs::tool_audit::ToolAuditLog::open(workdir).await {
+        Ok(log) => {
+            let scrubber = roko_core::obs::secret_scrubber()
+                .unwrap_or_else(|| roko_fs::observability::RunScrubber::build(&[]));
+            factory.with_tool_audit(Arc::new(roko_fs::tool_audit::ScrubAuditAdapter::new(
+                Arc::new(log),
+                scrubber,
+            )))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "tool audit log unavailable; tool calls are not audited");
+            factory
+        }
+    }
+}
+
 async fn run_graph_plan_body(
     params: GraphPlanRunParams,
     run_id: Option<String>,
@@ -927,7 +957,7 @@ async fn run_graph_plan_body(
     // run's manifest records.
     let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
-    let mut shared_factory = crate::dispatch::SharedAgentFactory::new(
+    let shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
         roko_config.agent.mcp_config.as_ref(),
         graph_run_config.cascade_router.clone(),
@@ -942,6 +972,7 @@ async fn run_graph_plan_body(
         ),
     ))
     .with_error_patterns_from_disk(workdir);
+    let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
         &roko_config.agent.extensions,

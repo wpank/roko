@@ -562,8 +562,10 @@ fn saturating_u64_to_u32(value: u64) -> u32 {
 /// `cached_content_token_count` is already optional in the wire shape and
 /// becomes the cache reads. `prompt_token_count` includes the cached
 /// content, while the canonical classes are disjoint, so input is only its
-/// uncached part and each cached token is priced once (bug-afcf63).
-fn gemini_observation(
+/// uncached part and each cached token is priced once (bug-afcf63). The
+/// tool loop's non-streamed Gemini turns count their usage with it too
+/// (bug-3aa61f).
+pub(crate) fn gemini_observation(
     usage_metadata: Option<&super::types::UsageMetadata>,
     wall_ms: u64,
     model: Option<String>,

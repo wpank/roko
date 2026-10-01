@@ -8,7 +8,8 @@ use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 
 use crate::gemini::native::{
-    build_generate_content_request, build_generation_config, system_instruction_from_segments,
+    build_generate_content_request, build_generation_config, gemini_observation,
+    system_instruction_from_segments,
 };
 use crate::gemini::types::{
     Content, GeminiTool, GenerateContentRequest, GenerateContentResponse, GenerationConfig,
@@ -294,7 +295,7 @@ impl LlmBackend for GeminiNativeBackend {
             }
         };
 
-        let json: Value = match serde_json::from_str(&raw) {
+        let mut json: Value = match serde_json::from_str(&raw) {
             Ok(json) => json,
             Err(err) => {
                 let mapped = LlmError::Backend(format!("parse response: {err}"));
@@ -303,10 +304,20 @@ impl LlmBackend for GeminiNativeBackend {
             }
         };
 
-        if let Err(err) = serde_json::from_value::<GenerateContentResponse>(json.clone()) {
-            let mapped = LlmError::Backend(format!("validate response: {err}"));
-            self.record_failure(&mapped);
-            return Err(mapped);
+        let parsed = match serde_json::from_value::<GenerateContentResponse>(json.clone()) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                let mapped = LlmError::Backend(format!("validate response: {err}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
+        // The tool loop reads a turn's usage from an OpenAI-shaped `usage`
+        // block, which Gemini does not send: add one from its `usageMetadata`,
+        // counted as a streamed turn counts it (bug-3aa61f).
+        if let Some(usage_metadata) = parsed.usage_metadata.as_ref() {
+            let usage: Usage = gemini_observation(Some(usage_metadata), 0, None).into();
+            json["usage"] = crate::translate::openai::usage_to_wire(&usage);
         }
 
         let response = BackendResponse::Json(json);
@@ -920,5 +931,62 @@ mod tests {
             err.to_string().contains("blocked by safety layer"),
             "unexpected error: {err}"
         );
+    }
+
+    /// A non-streamed turn's `usageMetadata` reaches the tool loop, counted
+    /// as a streamed turn's is: cached tokens once, thinking as output
+    /// (bug-3aa61f). A response without it reports no usage.
+    #[tokio::test]
+    async fn a_non_streamed_gemini_turn_records_its_usage() {
+        let send = |response: Value| async move {
+            let backend = GeminiNativeBackend::new(
+                "test-key".to_string(),
+                "https://generativelanguage.googleapis.com".to_string(),
+                tool_model(),
+                &AgentOptions::default(),
+                SafetyLayer::with_defaults(),
+            )
+            .with_poster(Box::new(MockPoster::new(
+                response.to_string(),
+                Arc::new(Mutex::new(Vec::new())),
+            )));
+            backend
+                .send_turn(
+                    &[json!({ "role": "user", "content": "hello" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                )
+                .await
+                .expect("send turn")
+        };
+        let candidates = json!([{
+            "content": { "role": "model", "parts": [{ "text": "done" }] },
+            "finishReason": "STOP"
+        }]);
+
+        let reported = send(json!({
+            "candidates": candidates.clone(),
+            "usageMetadata": {
+                "promptTokenCount": 1_000,
+                "candidatesTokenCount": 50,
+                "cachedContentTokenCount": 600,
+                "thoughtsTokenCount": 300,
+                "totalTokenCount": 1_350
+            }
+        }))
+        .await
+        .extract_usage();
+        assert_eq!(
+            (
+                reported.input_tokens,
+                reported.cache_read_tokens,
+                reported.output_tokens,
+                reported.reasoning_tokens
+            ),
+            (400, 600, 350, 300)
+        );
+
+        let unreported = send(json!({ "candidates": candidates })).await;
+        assert_eq!(unreported.extract_usage(), Usage::default());
     }
 }

@@ -1493,26 +1493,32 @@ async fn run_graph_plan_body(
     }
 
     // spec-f830c4: with --promote, a run whose plans were all delivered
-    // promotes its batch into the target branch and tags it.
+    // promotes its batch into the target branch and tags it. The run summary
+    // reports it (gap-415c54).
+    let mut promotion = None;
     if let (Some(batch), Some(target)) = (batch.as_ref(), promote.as_deref()) {
         if all_succeeded {
             match batch.promote(target).await {
-                Ok(promotion) if promotion.moved => tracing::info!(
-                    batch = batch.branch(),
-                    target,
-                    commit = %promotion.commit,
-                    tag = %promotion.tag,
-                    "run promoted"
-                ),
-                Ok(promotion) => {
+                Ok(promoted) if promoted.moved => {
+                    tracing::info!(
+                        batch = batch.branch(),
+                        target,
+                        commit = %promoted.commit,
+                        tag = %promoted.tag,
+                        "run promoted"
+                    );
+                    promotion = Some(promoted);
+                }
+                Ok(promoted) => {
                     tracing::warn!(
                         batch = batch.branch(),
                         target,
-                        tag = %promotion.tag,
-                        summary = %promotion.summary,
+                        tag = %promoted.tag,
+                        summary = %promoted.summary,
                         "run not promoted: its target is checked out"
                     );
-                    graph_tui_bridge.log_event("graph.run_promotion_parked", &promotion.summary);
+                    graph_tui_bridge.log_event("graph.run_promotion_parked", &promoted.summary);
+                    promotion = Some(promoted);
                 }
                 Err(error) => {
                     all_succeeded = false;
@@ -1707,6 +1713,15 @@ async fn run_graph_plan_body(
                 "max_parallel_plans": max_parallel_plans,
                 "plan_outcomes": plan_outcome_labels,
                 "interrupted_by": stopped_by.map(PlanRunInterrupt::label),
+                "batch": batch.as_ref().map(|batch| serde_json::json!({
+                    "branch": batch.branch(),
+                    "deliveries": batch
+                        .receipts()
+                        .iter()
+                        .map(|receipt| batch.record(receipt))
+                        .collect::<Vec<_>>(),
+                    "promotion": promotion,
+                })),
             }))
             .unwrap_or_default()
         );
@@ -1740,6 +1755,23 @@ async fn run_graph_plan_body(
             .collect::<Vec<_>>();
         if !failed_plans.is_empty() {
             println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
+        // Where each delivered plan's work landed (gap-415c54).
+        if let Some(batch) = batch.as_ref() {
+            for receipt in batch.receipts() {
+                if receipt.state.is_success()
+                    && let Some(merge) = &receipt.merge_commit
+                {
+                    println!(
+                        "Plan {} delivered into {} at {merge}",
+                        receipt.request.plan_id,
+                        batch.branch()
+                    );
+                }
+            }
+            if let Some(promotion) = &promotion {
+                println!("{}", promotion.summary);
+            }
         }
     }
 
@@ -2729,8 +2761,15 @@ async fn run_one_plan(
     let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
-            deliver_plan_to_batch(batch, plan, plan_checks, &mut checkpoint, graph_tui_bridge)
-                .await?
+            deliver_plan_to_batch(
+                batch,
+                plan,
+                plan_checks,
+                ctx.worktrees,
+                &mut checkpoint,
+                graph_tui_bridge,
+            )
+            .await?
         }
         None if outcome.succeeded() && !plan_checks.is_empty() => {
             check_plan_in_place(
@@ -2868,12 +2907,14 @@ async fn run_one_plan(
 /// Deliver `plan`, whose tasks all passed, into the run's batch branch
 /// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
 /// regression check on the merge, and record the delivery in the plan's
-/// checkpoint. The plan succeeds only when the delivery does. `Err` only when
-/// the checkpoint cannot record it.
+/// checkpoint. The plan succeeds only when the delivery does. A delivered
+/// plan's accepted attempt checkouts and branches are then removed from
+/// `worktrees` (gap-415c54). `Err` only when the checkpoint cannot record it.
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -2915,6 +2956,24 @@ async fn deliver_plan_to_batch(
             merge_commit = receipt.merge_commit.as_deref().unwrap_or_default(),
             "plan delivered into the run's batch branch"
         );
+        // Its work is on the plan and batch branches now, so the attempt
+        // checkouts kept for review have done their job.
+        if receipt.release_policy == roko_graph::delivery::ReleasePolicy::Delete
+            && let Some(worktrees) = worktrees
+        {
+            match worktrees.release_accepted(&plan.id).await {
+                Ok(removed) => tracing::info!(
+                    plan_id = %plan.id,
+                    removed = removed.len(),
+                    "removed the delivered plan's attempt checkouts and branches"
+                ),
+                Err(error) => tracing::warn!(
+                    plan_id = %plan.id,
+                    %error,
+                    "kept the delivered plan's attempt checkouts"
+                ),
+            }
+        }
         return Ok(PlanOutcome::Succeeded);
     }
     let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
@@ -4770,6 +4829,21 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         assert_eq!(
             git_stdout(repo, &["rev-parse", "roko/run/run-e2e^{commit}"]),
             beta_plan
+        );
+        // gap-415c54: once a plan was delivered, its attempt checkouts and
+        // branches were removed.
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]),
+            ""
         );
         // The operator's checkout never moved.
         assert_eq!(git_stdout(repo, &["rev-parse", "HEAD"]), head);

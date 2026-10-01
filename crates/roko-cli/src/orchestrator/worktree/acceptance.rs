@@ -58,7 +58,59 @@ impl WorktreeManager {
         self.accepted
             .lock()
             .insert(plan_id.to_string(), accepted.clone());
+        {
+            let mut attempts = self.accepted_attempts.lock();
+            let plan = attempts.entry(plan_id.to_string()).or_default();
+            plan.retain(|earlier| earlier.handle.id != accepted.handle.id);
+            plan.push(accepted.clone());
+        }
         Ok(accepted)
+    }
+
+    /// Body of [`WorktreeManager::release_accepted`] for one accepted
+    /// attempt, run while holding the manager's operation and the
+    /// repository's mutation lock: remove its checkout, then delete its
+    /// branch. Both must still be as the acceptance left them.
+    pub(super) async fn release_accepted_locked(
+        &self,
+        accepted: &AcceptedWorktree,
+        lifecycle: &OperationLifecycle,
+    ) -> Result<(), WorktreeError> {
+        let handle = &accepted.handle;
+        let branch_ref = format!("refs/heads/{}", handle.branch);
+        let tip = self.git_ref_oid(&branch_ref, false).await?;
+        if tip.as_deref() != Some(accepted.attempt_commit.as_str()) {
+            return Err(WorktreeError::GitFailed {
+                stderr: format!(
+                    "`{}` is at {}, not at the accepted {}",
+                    handle.branch,
+                    tip.as_deref().unwrap_or("no commit"),
+                    accepted.attempt_commit
+                ),
+            });
+        }
+        // Besides the accepted commit, the checkout holds only roko's own
+        // config copies, which acceptance left out of it.
+        for dir in ISOLATION_DIRS {
+            let copy = handle.path.join(dir);
+            let tracked = self
+                .git_probe_output_at(&handle.path, &["cat-file", "-e", &format!("HEAD:{dir}")])
+                .await?
+                .status
+                .success();
+            if !tracked && copy.is_dir() {
+                std::fs::remove_dir_all(&copy)?;
+            }
+        }
+        self.remove_locked(&handle.id, lifecycle).await?;
+        ensure_git_success(
+            self.mutation_at(
+                &self.config.repo_root,
+                &["update-ref", "-d", &branch_ref, &accepted.attempt_commit],
+                lifecycle,
+            )
+            .await?,
+        )
     }
 
     /// Start plan `plan_id`'s attempts in this process under run `run_id`

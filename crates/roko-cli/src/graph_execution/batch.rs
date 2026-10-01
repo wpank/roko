@@ -130,6 +130,20 @@ impl BatchIntegration {
         &self.store
     }
 
+    /// The receipt of each delivery into the batch in this process, by plan
+    /// id, for the run summary (gap-415c54).
+    #[must_use]
+    pub fn receipts(&self) -> Vec<CompletionDeliveryReceiptV1> {
+        let mut receipts: Vec<_> = self
+            .store
+            .delivery_ids()
+            .iter()
+            .filter_map(|id| self.store.get(id))
+            .collect();
+        receipts.sort_by(|left, right| left.request.plan_id.cmp(&right.request.plan_id));
+        receipts
+    }
+
     /// The request that delivers plan `plan_id`'s branch at `verified`, the
     /// commit its accepted attempts left, into the batch.
     #[must_use]

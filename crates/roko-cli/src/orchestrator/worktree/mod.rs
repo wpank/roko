@@ -458,6 +458,9 @@ pub struct WorktreeManager {
     pub(super) config: Arc<WorktreeConfig>,
     pub(super) active: Arc<Mutex<HashMap<String, WorktreeHandle>>>,
     pub(super) accepted: Arc<Mutex<HashMap<String, AcceptedWorktree>>>,
+    /// Every attempt this process accepted onto each plan's branch, until
+    /// [`WorktreeManager::release_accepted`] removes them (gap-415c54).
+    pub(super) accepted_attempts: Arc<Mutex<HashMap<String, Vec<AcceptedWorktree>>>>,
     /// The run each plan's attempts belong to in this process, set by
     /// [`WorktreeManager::begin_plan_run`] (bug-056b40).
     plan_runs: Arc<Mutex<HashMap<String, PlanRun>>>,
@@ -488,6 +491,7 @@ impl WorktreeManager {
             config: Arc::new(config),
             active: Arc::new(Mutex::new(HashMap::new())),
             accepted: Arc::new(Mutex::new(HashMap::new())),
+            accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
@@ -532,6 +536,7 @@ impl WorktreeManager {
             config: Arc::new(config),
             active: Arc::new(Mutex::new(active)),
             accepted: Arc::new(Mutex::new(HashMap::new())),
+            accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
@@ -989,6 +994,48 @@ impl WorktreeManager {
     /// Last accepted attempt for a plan, used by plan verification and merge.
     pub fn accepted_for_plan(&self, plan_id: &str) -> Option<AcceptedWorktree> {
         self.accepted.lock().get(plan_id).cloned()
+    }
+
+    /// Remove the checkouts of the attempts this process accepted onto plan
+    /// `plan_id`'s branch, and delete their attempt branches, once the plan
+    /// is delivered (gap-415c54). Each attempt's commit is on the plan
+    /// branch, so nothing is lost. A checkout that changed after its
+    /// acceptance, or whose branch moved, is kept and logged. Returns the
+    /// ids of the checkouts removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the repository's mutation lock cannot be taken;
+    /// the checkouts are then kept.
+    pub async fn release_accepted(&self, plan_id: &str) -> Result<Vec<String>, WorktreeError> {
+        let accepted = self
+            .accepted_attempts
+            .lock()
+            .remove(plan_id)
+            .unwrap_or_default();
+        if accepted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let mut removed = Vec::new();
+            for attempt in &accepted {
+                match manager.release_accepted_locked(attempt, &lifecycle).await {
+                    Ok(()) => removed.push(attempt.handle.id.clone()),
+                    Err(error) => tracing::warn!(
+                        id = %attempt.handle.id,
+                        worktree = %attempt.handle.path.display(),
+                        %error,
+                        "kept a delivered attempt's checkout"
+                    ),
+                }
+            }
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            Ok(removed)
+        })
+        .await
     }
 
     /// Get a tracked worktree handle by id.

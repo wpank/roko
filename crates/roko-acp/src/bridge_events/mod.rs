@@ -188,7 +188,8 @@ where
                         });
                     }
                     CognitiveEvent::PermissionRequest { payload, reply } => {
-                        let decision = request_permission_for_event(
+                        // Delivers the decision on `reply` itself.
+                        request_permission_for_event(
                             transport,
                             session,
                             workdir,
@@ -197,12 +198,6 @@ where
                             cancel_token,
                         )
                         .await;
-                        if !reply.reply(decision) {
-                            warn!(
-                                session_id,
-                                "permission requester disappeared before receiving the decision"
-                            );
-                        }
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
                         assistant_text.push_str(text);
@@ -344,7 +339,13 @@ where
         let sid = session.session_id.clone();
         tokio::task::spawn_blocking(move || assign_acp_experiment(&path, &mode, &sid))
             .await
-            .unwrap_or(None)
+            .unwrap_or_else(|error| {
+                warn!(
+                    error = %error,
+                    "ACP experiment assignment task failed; continuing without one"
+                );
+                None
+            })
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,

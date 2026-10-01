@@ -117,7 +117,8 @@ pub enum CognitiveEvent {
     /// A spawned tool loop is requesting permission from the parent session.
     ///
     /// The reply channel carries a [`PermissionDecision`]; the parent loop
-    /// should call [`PermissionReplyChannel::reply`] exactly once.  If the
+    /// sends exactly one, either with [`PermissionReplyChannel::reply`] or on
+    /// the sender from [`PermissionReplyChannel::take_sender`].  If the
     /// channel is dropped without a reply, the tool loop should treat it as
     /// `PermissionDecision::Reject` (fail-closed).
     PermissionRequest {
@@ -163,15 +164,20 @@ impl PermissionReplyChannel {
     /// Returns `true` if the decision was delivered, `false` if the
     /// channel was already consumed or the receiver was dropped.
     pub fn reply(&self, decision: PermissionDecision) -> bool {
-        let sender = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        match sender {
+        match self.take_sender() {
             Some(tx) => tx.send(decision).is_ok(),
             None => false,
         }
+    }
+
+    /// Takes the sender out of the channel, consuming it. A waiter holds the
+    /// sender to await `closed()`, which resolves when the requesting tool stops
+    /// waiting, without keeping the lock. `None` if the channel was consumed.
+    pub fn take_sender(&self) -> Option<tokio::sync::oneshot::Sender<PermissionDecision>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     /// Returns `true` if the reply channel has already been consumed.
@@ -180,18 +186,6 @@ impl PermissionReplyChannel {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_none()
-    }
-
-    /// Returns `true` when the requesting tool is no longer waiting for a
-    /// decision, for example because its dispatcher timeout elapsed.
-    #[must_use]
-    pub fn receiver_is_closed(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .map(tokio::sync::oneshot::Sender::is_closed)
-            .unwrap_or(true)
     }
 }
 

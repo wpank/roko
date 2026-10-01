@@ -1308,6 +1308,9 @@ enum KnowledgeCmd {
         /// Maximum number of results to return (1-1000, default: 10).
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=1000))]
         limit: u16,
+        /// Print each match in full instead of its first two lines.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show aggregate statistics for the durable knowledge store.
     Stats {
@@ -2584,6 +2587,24 @@ enum PrdDraftCmd {
     List,
 }
 
+impl PrdCmd {
+    /// Whether dispatching this command can change PRDs or the plans generated from them.
+    ///
+    /// Read-only commands must not rebuild indexes: rebuilding rewrites generated index files,
+    /// including the tracked `plans/INDEX.md`, so `prd list` would dirty the caller's workspace.
+    fn should_rebuild_indexes(&self) -> bool {
+        match self {
+            Self::List
+            | Self::Status
+            | Self::Draft {
+                cmd: PrdDraftCmd::List,
+            } => false,
+            Self::Plan { dry_run, .. } => !dry_run,
+            Self::Idea { .. } | Self::Draft { .. } | Self::Consolidate => true,
+        }
+    }
+}
+
 /// Backend selection for grounded research operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum ResearchBackend {
@@ -2835,6 +2856,7 @@ enum NeuroCmd {
         topic: Vec<String>,
         workdir: Option<PathBuf>,
         limit: u16,
+        verbose: bool,
     },
     Stats {
         workdir: Option<PathBuf>,
@@ -4068,8 +4090,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Prd { cmd } => {
             let wd = resolve_workdir(cli);
+            let command_can_mutate = cmd.should_rebuild_indexes();
             let result = commands::prd::cmd_prd(cli, cmd).await;
-            finish_with_index_rebuild(result, &wd, true)
+            finish_with_index_rebuild(result, &wd, command_can_mutate)
         }
         Command::Agent { cmd } => commands::agent::cmd_agent(cli, cmd).await,
         Command::Research { cmd } => {
@@ -5672,6 +5695,55 @@ mod tests {
             };
             assert!(!cmd.should_rebuild_indexes());
         }
+    }
+
+    #[test]
+    fn read_only_prd_commands_do_not_rebuild_indexes() {
+        let commands = [
+            Cli::try_parse_from(["roko", "prd", "list"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "status"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "list"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "plan", "my-prd", "--dry-run"]).unwrap(),
+        ];
+        for cli in commands {
+            let Some(Command::Prd { cmd }) = cli.command else {
+                panic!("expected a prd command");
+            };
+            assert!(!cmd.should_rebuild_indexes(), "{cmd:?}");
+        }
+    }
+
+    #[test]
+    fn mutating_prd_commands_rebuild_indexes() {
+        let commands = [
+            Cli::try_parse_from(["roko", "prd", "idea", "wire", "the", "runner"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "new", "a", "title"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "edit", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "draft", "promote", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "plan", "my-prd"]).unwrap(),
+            Cli::try_parse_from(["roko", "prd", "consolidate"]).unwrap(),
+        ];
+        for cli in commands {
+            let Some(Command::Prd { cmd }) = cli.command else {
+                panic!("expected a prd command");
+            };
+            assert!(cmd.should_rebuild_indexes(), "{cmd:?}");
+        }
+    }
+
+    #[test]
+    fn prd_list_leaves_the_index_files_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["roko", "prd", "list"]).unwrap();
+        let Some(Command::Prd { cmd }) = cli.command else {
+            panic!("expected a prd command");
+        };
+
+        let rebuild = cmd.should_rebuild_indexes();
+        let exit_code = finish_with_index_rebuild(Ok(EXIT_SUCCESS), tmp.path(), rebuild).unwrap();
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert!(!tmp.path().join(".roko").exists());
     }
 
     #[test]

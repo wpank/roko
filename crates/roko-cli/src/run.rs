@@ -135,7 +135,9 @@ fn write_shared_transcript(
     Ok(token)
 }
 
-fn truncate(text: &str, max_chars: usize) -> &str {
+/// The first `max_chars` characters of `text`. It cuts at a char boundary,
+/// so text with multi-byte characters cannot make it panic.
+pub(crate) fn truncate(text: &str, max_chars: usize) -> &str {
     text.char_indices()
         .nth(max_chars)
         .map_or(text, |(idx, _)| &text[..idx])

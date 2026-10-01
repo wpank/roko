@@ -30,13 +30,15 @@ jobs:
     # themselves get ten minutes.
     timeout-minutes: 45
     env:
-      # One `--test` per canary target, as tests/golden_path_suite.rs lists
-      # them: C2, C3 and C4, C5, C6 and C8. C1 and C7 join once they land.
+      # One `--test` per canary target, C1 to C8 in order, as
+      # tests/golden_path_suite.rs lists them; C3 and C4 share one.
       CANARIES: >-
+        --test honest_verdicts_canary
         --test secrets_and_git_guard_canary
         --test plan_branch_integration
         --test attempt_diff_canary
         --test scheduler_canary
+        --test supervision_canary
         --test tier_ladder_canary
     steps:
       - uses: actions/checkout@v4

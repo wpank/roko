@@ -16,7 +16,8 @@
 //!    a call naming no single task, or a task without turns of its own, plays
 //!    the script's default turn. A turn applies its edits (relative to the
 //!    agent's working directory unless absolute), holds, stays silent, prints
-//!    its output and exits with its status.
+//!    its output, and then either stays silent as the same process or exits
+//!    with its status.
 //!
 //! `@TASK@` and `@MODEL@` in an edit's path and in the output stand for the
 //! call's task and the `--model` it asked for (`claude-sonnet-4-6` when it
@@ -81,6 +82,7 @@ printf '%s\n' "$ids" > "$call/ids"
 printf '%s\n' "$task" > "$call/task"
 printf '%s\n' "$attempt" > "$call/attempt"
 printf '%s\n' "$model" > "$call/model"
+printf '%s\n' "$$" > "$call/pid"
 
 turn=$dir/turns/default
 if [ -n "$task" ] && [ -f "$dir/turns/task-$task/count" ]; then
@@ -126,6 +128,9 @@ silent=$(cat "$turn/silent_secs")
 [ "$silent" = 0 ] || sleep "$silent"
 [ -z "$task" ] || printf 'end %s\n' "$task" >> "$dir/events"
 fill "$turn/stdout"
+# Silent after its output as the same process, as a stalled agent is.
+after=$(cat "$turn/then_silent_secs")
+[ "$after" = 0 ] || exec sleep "$after"
 exit "$(cat "$turn/exit_code")"
 "#;
 
@@ -143,6 +148,9 @@ pub enum Output {
         output_tokens: u64,
         cost_usd: f64,
     },
+    /// One assistant message with `text` and no result: an agent still at
+    /// work.
+    Message { text: String },
     /// Lines that are not JSON.
     Malformed,
     /// A reply whose text is `bytes` long.
@@ -175,6 +183,7 @@ pub struct Turn {
     hold: Option<Hold>,
     silent_secs: f64,
     output: Output,
+    then_silent_secs: f64,
     exit_code: i32,
 }
 
@@ -193,6 +202,7 @@ impl Turn {
                 output_tokens: 5,
                 cost_usd: 0.001,
             },
+            then_silent_secs: 0.0,
             exit_code: 0,
         }
     }
@@ -270,6 +280,13 @@ impl Turn {
         self
     }
 
+    /// After the output, print nothing more for `secs` seconds, as the same
+    /// process (`exec sleep`), and then exit 0: an agent that stalls.
+    pub fn then_silent_for(mut self, secs: f64) -> Self {
+        self.then_silent_secs = secs;
+        self
+    }
+
     /// Exit with `code`.
     pub fn exit_code(mut self, code: i32) -> Self {
         self.exit_code = code;
@@ -317,6 +334,17 @@ impl Turn {
                 *output_tokens,
                 *cost_usd,
             ),
+            Output::Message { text } => {
+                let message = serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "id": "msg_1",
+                        "model": "@MODEL@",
+                        "content": [{ "type": "text", "text": text }],
+                    },
+                });
+                format!("{message}\n")
+            }
             Output::Malformed => "{\"type\":\"assistant\",\"message\":\nnot json\n".to_string(),
             Output::Overlong { bytes } => reply(&"x".repeat(*bytes), None, 10, 5, 0.001),
             Output::Nothing => String::new(),
@@ -344,6 +372,10 @@ impl Turn {
         }
         write_file(&dir.join("silent_secs"), &self.silent_secs.to_string());
         write_file(&dir.join("stdout"), &self.stdout());
+        write_file(
+            &dir.join("then_silent_secs"),
+            &self.then_silent_secs.to_string(),
+        );
         write_file(&dir.join("exit_code"), &self.exit_code.to_string());
     }
 }
@@ -404,6 +436,8 @@ pub struct Call {
     /// Its environment, as `env` prints it.
     pub env: String,
     pub cwd: PathBuf,
+    /// The provider's process id for the call.
+    pub pid: Option<u32>,
 }
 
 /// A [`Script`] installed as a fake Claude CLI. See the module documentation.
@@ -481,6 +515,7 @@ impl ScriptedProvider {
                         .collect(),
                     env: read("env"),
                     cwd: PathBuf::from(read("cwd").trim()),
+                    pid: line("pid").and_then(|pid| pid.parse().ok()),
                 }
             })
             .collect()

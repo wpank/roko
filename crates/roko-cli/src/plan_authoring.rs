@@ -481,8 +481,12 @@ pub async fn revise_plan_source(
             "{feedback}\n\nThe previous revision was rejected with the following diagnostics:\n{diag_text}\n\
              Please fix these issues in the revised plan."
         );
-        let retry_prompt =
-            build_revision_prompt(plan_id, &current_toml, &retry_feedback, last_failure.as_deref());
+        let retry_prompt = build_revision_prompt(
+            plan_id,
+            &current_toml,
+            &retry_feedback,
+            last_failure.as_deref(),
+        );
         let output = run_agent(retry_prompt).await?;
         outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
     }

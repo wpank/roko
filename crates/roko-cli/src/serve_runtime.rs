@@ -1701,7 +1701,10 @@ mod tests {
             .await
             .unwrap()
             .expect("the directory plan is listed");
-        assert_eq!((summary.task_count, summary.tasks_done, summary.tasks_failed), (9, 4, 1));
+        assert_eq!(
+            (summary.task_count, summary.tasks_done, summary.tasks_failed),
+            (9, 4, 1)
+        );
     }
 
     /// gap-655d19: a server run is validated as `roko plan run` validates it.

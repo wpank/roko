@@ -125,8 +125,8 @@ fn list_backlog_specs(backlog_dir: &Path) -> Result<Vec<BacklogSpec>> {
             continue;
         }
         for (id, slug, path) in backlog_files_in(&dir)? {
-            let content =
-                std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
             specs.push(BacklogSpec {
                 id,
                 slug,
@@ -663,9 +663,8 @@ fn build_audit_report(workdir: &Path) -> Result<AuditReport> {
         }
     }
 
-    findings.sort_by(|a, b| {
-        (a.code, &a.plan_id, &a.task_id).cmp(&(b.code, &b.plan_id, &b.task_id))
-    });
+    findings
+        .sort_by(|a, b| (a.code, &a.plan_id, &a.task_id).cmp(&(b.code, &b.plan_id, &b.task_id)));
     Ok(AuditReport {
         plans_on_disk,
         plans_with_graph_runs,

@@ -2984,10 +2984,7 @@ auto_dream = true
         assert!(auth.starts_with("[serve.auth]\n"), "{auth}");
         assert!(!auth.contains("roko-secret-api-key"), "{auth}");
 
-        assert_eq!(
-            render("dreams.auto_dream"),
-            "[dreams]\nauto_dream = true\n"
-        );
+        assert_eq!(render("dreams.auto_dream"), "[dreams]\nauto_dream = true\n");
     }
 
     #[test]

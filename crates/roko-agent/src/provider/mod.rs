@@ -2356,7 +2356,10 @@ mod tests {
         let Err(AgentCreationError::MissingConfig(message)) = result else {
             panic!("an unknown model with no command must not get an agent");
         };
-        assert!(message.contains("unknown model `mystery-model`"), "{message}");
+        assert!(
+            message.contains("unknown model `mystery-model`"),
+            "{message}"
+        );
     }
 
     #[test]

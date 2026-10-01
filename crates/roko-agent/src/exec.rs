@@ -1382,7 +1382,10 @@ mod tests {
             "\n",
         );
         let violation = check_codex_output_against_policy(output, &policy).unwrap_err();
-        assert_eq!(violation, "file_change denied by policy: src/a.rs, src/b.rs");
+        assert_eq!(
+            violation,
+            "file_change denied by policy: src/a.rs, src/b.rs"
+        );
 
         let allow_all = CodexOperationPolicy::allow_all();
         assert!(check_codex_output_against_policy(output, &allow_all).is_ok());
@@ -1407,7 +1410,10 @@ mod tests {
         output.extend_from_slice(&line.as_bytes()[20..]);
         output.push(b'\n');
         broker.check(&output);
-        assert_eq!(denied_rx.try_recv().unwrap(), "file_change denied by policy");
+        assert_eq!(
+            denied_rx.try_recv().unwrap(),
+            "file_change denied by policy"
+        );
         assert_eq!(broker.checked, output.len());
         assert!(broker.denied.is_none());
     }

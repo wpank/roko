@@ -651,11 +651,7 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str, cap: usize) -> String {
 fn load_plan_brief(workdir: &Path, plan_id: &str) -> String {
     let file = crate::plan_brief::BRIEF_FILE;
     let candidates = [
-        workdir
-            .join(".roko")
-            .join("plans")
-            .join(plan_id)
-            .join(file),
+        workdir.join(".roko").join("plans").join(plan_id).join(file),
         workdir.join("plans").join(plan_id).join(file),
     ];
     candidates

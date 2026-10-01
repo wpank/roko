@@ -483,7 +483,10 @@ async fn execute_passes_run_id_to_runtime() {
     let plan_id = "my-dir-plan";
     for (uri, body) in [
         (format!("/api/plans/{plan_id}/execute"), String::new()),
-        ("/api/plans/execute".to_string(), format!(r#"{{"plans":["{plan_id}"]}}"#)),
+        (
+            "/api/plans/execute".to_string(),
+            format!(r#"{{"plans":["{plan_id}"]}}"#),
+        ),
     ] {
         let runtime = Arc::new(StubRuntime::new([plan_id]));
         let (_dir, state) = make_state_with(plan_id, Arc::clone(&runtime)).await;
@@ -524,8 +527,14 @@ async fn execute_refuses_a_plan_that_fails_validation() {
     let runtime = Arc::new(StubRuntime::new([INVALID_PLAN_ID]));
     let (_dir, state) = make_state_with(INVALID_PLAN_ID, Arc::clone(&runtime)).await;
     for (uri, body) in [
-        (format!("/api/plans/{INVALID_PLAN_ID}/execute"), String::new()),
-        ("/api/plans/execute".to_string(), format!(r#"{{"plans":["{INVALID_PLAN_ID}"]}}"#)),
+        (
+            format!("/api/plans/{INVALID_PLAN_ID}/execute"),
+            String::new(),
+        ),
+        (
+            "/api/plans/execute".to_string(),
+            format!(r#"{{"plans":["{INVALID_PLAN_ID}"]}}"#),
+        ),
     ] {
         let response = build_app(Arc::clone(&state))
             .oneshot(
@@ -541,7 +550,13 @@ async fn execute_refuses_a_plan_that_fails_validation() {
         let payload = body_json(response).await;
         let details = &payload["details"];
         assert_eq!(details["valid"], false, "{uri}: {payload}");
-        assert_eq!(details["diagnostics"][0]["rule_id"], "PLAN_005", "{uri}: {payload}");
+        assert_eq!(
+            details["diagnostics"][0]["rule_id"], "PLAN_005",
+            "{uri}: {payload}"
+        );
     }
-    assert!(runtime.run_ids.lock().expect("lock run ids").is_empty(), "a run started");
+    assert!(
+        runtime.run_ids.lock().expect("lock run ids").is_empty(),
+        "a run started"
+    );
 }

@@ -1127,6 +1127,9 @@ mod tests {
         let raw = std::fs::read_to_string(job_path(dir.path(), "job-legacy")).expect("job file");
         let written: serde_json::Value = serde_json::from_str(&raw).expect("job json");
         assert_eq!(written["status"], "in_progress");
-        assert!(written.get("state").is_none(), "stale legacy state key: {raw}");
+        assert!(
+            written.get("state").is_none(),
+            "stale legacy state key: {raw}"
+        );
     }
 }

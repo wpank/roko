@@ -428,6 +428,11 @@ max_turn_usd = 10.0
 [gates]
 clippy_enabled = false
 skip_tests = true
+
+# The proof reads proof.txt from the workdir, so the tasks run in the shared
+# working tree rather than per-task worktrees (gap-4ec59f).
+[runner]
+worktree_per_task = false
 EOF
 
   cat > "$workdir/plans/proof/tasks.toml" <<EOF

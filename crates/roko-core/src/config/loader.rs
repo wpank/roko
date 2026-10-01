@@ -1527,7 +1527,7 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
         "executor",
         "the [executor] section was removed because no plan run read it; \
          conductor.max_parallel_plans sets how many plans run at once, and \
-         `roko plan run --worktree-per-task` runs each task in its own worktree",
+         runner.worktree_per_task (on by default) runs each task in its own git worktree",
     ),
     (
         "tools.prefer_mcp",

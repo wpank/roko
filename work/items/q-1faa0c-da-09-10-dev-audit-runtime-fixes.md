@@ -9,12 +9,12 @@ size = "L"
 goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "825d45f97"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
-anchors = ["crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent::failure", "crates/roko-agent/src/exec.rs:643", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointStatus", "crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline"]
+anchors = ["crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent::failure", "crates/roko-agent/src/exec.rs:643", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointStatus", "crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/background_writes.rs", "crates/roko-cli/tests/graph_timeout_matrix.rs"]
 links = { depends_on = ["bug-690dc6"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -117,6 +117,23 @@ Related: `bug-690dc6` (timeout usage at $0), `gap-4a6dcb` (FAST per-attempt clam
 - `bug-690dc6` touches `roko-agent` provider code shared by every dispatch path (chat, serve, ACP).
 - The test file is new, so it is safe to write in parallel; the fixes touch `graph_task_dispatch.rs`
   and `plan_runner.rs`, which many items edit.
+- 2026-10-01 (wk-honestbench): implemented on work/bug-730243; cargo verification deferred to the batch check.
+  Step 1's premise holds: bug-690dc6 is done (`e0673e3e0`), so a timed-out Claude CLI attempt settles the usage it
+  streamed; Codex and Gemini timeouts are bug-dc4d63's. `crates/roko-cli/tests/graph_timeout_matrix.rs` runs
+  `roko plan run` on the canaries' shared harness (`common::ScriptedPlanWorkspace` with a fake Claude CLI) rather
+  than a copy of `graph_plan_callers.rs`, one test per behaviour: #1 `timeout_keeps_usage`; #2
+  `terminal_projections_agree` (exit code, `run.completed`, checkpoint status and `roko plan status` after a pass,
+  a failed verify step, a timeout and SIGTERM; no agent the run registered is left alive); #3
+  `interrupt_settles_when_agent_ignores_sigterm`; #4 `timeout_retry_continues_from_partial_work`; #5
+  `fast_deadline_stops_the_run` (the run deadline; per-attempt clamps stay gap-4a6dcb's); and
+  `resume_after_timeout_is_idempotent`.
+  Salvage (#4) is dropped for option (a), the one recommended above, which `e0673e3e0` already built
+  (`timeout_resume_note`, `raised_attempt_timeout_ms`): a timed-out agent has not said it is done, so its diff is
+  not verified, and the next attempt is told to continue from it.
+  Writing the matrix turned up a gap, fixed here: `run_one_plan` waited for its background cost and learning row
+  writes only after an interrupt, so the last attempt's `costs.jsonl` row could be lost when the process exited.
+  It now waits after every run (`ROW_WRITES_TIMEOUT`, 1 s). Left for the gate: run the matrix, then answer the
+  question (step 4). The per-plan ledger (`costs.json`) has no case of its own here; `graph_budget_resume.rs` covers it.
 
 ## Original notes
 

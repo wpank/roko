@@ -239,6 +239,7 @@ pub(crate) async fn run_anthropic_tool_loop(
             session_id,
             mcp_servers,
             PluginTier::Sandboxed,
+            role,
             event_sender.clone(),
         )
         .await;
@@ -682,6 +683,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             Arc::clone(&rate_limiter),
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
+            role,
             tool_safety.clone(),
             cancel_token.clone(),
             event_sender.clone(),
@@ -810,6 +812,8 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
     rate_limiter: Arc<ProviderRateLimiter>,
     tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
+    // The session's contract role, for MCP tools whose own name it forbids.
+    role: &str,
     // Safety layer carrying the session role's contract (`acp_tool_safety`).
     safety: SafetyLayer,
     cancel_token: CancelToken,
@@ -850,6 +854,7 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
         session_id,
         mcp_servers,
         PluginTier::Sandboxed,
+        role,
         event_sender.clone(),
     )
     .await;

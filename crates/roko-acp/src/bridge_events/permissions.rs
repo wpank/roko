@@ -174,11 +174,13 @@ where
                         }
                     }
                     Ok(Some(JsonRpcMessage::Request(request))) => {
-                        warn!(
+                        // The server answers it after the prompt, in arrival order.
+                        debug!(
                             session_id = %session.session_id,
                             method = %request.method,
-                            "ignoring inbound request while waiting for permission"
+                            "deferring inbound request until the prompt finishes"
                         );
+                        session.deferred_requests.push(request);
                     }
                     Ok(None) => {
                         warn!(

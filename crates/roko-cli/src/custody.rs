@@ -45,11 +45,12 @@ fn compute_hash(prev_hash: &str, record: &Custody) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Append a custody record to the log with hash-chain fields populated.
+/// Append a custody record to the log with hash-chain fields populated, and
+/// return the record's hash: the chain's new head.
 ///
 /// Reads the last record's `hash` (if any) to derive `prev_hash`, computes
 /// the new record's `hash`, then delegates to [`CustodyLogger::log`].
-pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<()> {
+pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<String> {
     let existing = logger.read_all()?;
     let prev = existing
         .last()
@@ -60,11 +61,10 @@ pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Resu
     } else {
         Some(prev.to_string())
     };
-    record.hash = Some(compute_hash(
-        record.prev_hash.as_deref().unwrap_or(""),
-        &record,
-    ));
-    logger.log(&record)
+    let hash = compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
+    record.hash = Some(hash.clone());
+    logger.log(&record)?;
+    Ok(hash)
 }
 
 // ─── CLI commands ──────────────────────────────────────────────────

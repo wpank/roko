@@ -255,6 +255,8 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     assert config["models"][PIN]["slug"] == PIN and config["routing"]["fallback_models"] == []
     # bug-a05c53: no routing ladder, so the pin is the only routing input and PLAN_041 has nothing to flag.
     assert config["routing"]["ladder"] == {"enabled": False}
+    # gap-4ec59f: the task runs in the shared working tree, so its edits land in the workdir the driver checks.
+    assert config["runner"] == {"worktree_per_task": False}
     assert config["gates"]["max_review_cycles"] == 0 and config["pipeline"]["focused"]["max_turns"] == 12
     assert config["models"][PIN]["cost_input_per_m"] == ledger.load_snapshot().row(PIN)["input"]
     budget = config["budget"]  # Roko's invariants: 0 < max_turn_usd <= max_plan_usd, and room for every retry

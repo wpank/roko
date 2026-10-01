@@ -16,7 +16,9 @@
 //! the success earned at completion is retracted here, once per new
 //! correction: every playbook it used, and the router's category and
 //! confidence counts (`CascadeRouter::retract_success`; the `LinUCB` bandit
-//! keeps its update).
+//! keeps its update). The router retraction is journaled in the run's
+//! learning WAL, as the routing outcome was, so it survives a crash before
+//! the run saves its router (bug-583e50).
 //!
 //! Nothing else relabels. On the Graph path every episode is a fresh attempt
 //! that edits files, so a later failure of the same task, or of one that
@@ -32,6 +34,7 @@ use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::hindsight::{
     AdjustmentKind, EpisodeAdjustment, HindsightRelabeler, append_new_adjustments,
 };
+use roko_learn::model_call_feedback::ModelCallJournal;
 use roko_learn::playbook::PlaybookStore;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -46,10 +49,6 @@ pub(crate) const PLAYBOOK_IDS_KEY: &str = "playbook_ids";
 /// Episode `extra` key holding the task category the routing sink credited
 /// the attempt under.
 pub(crate) const ROUTING_CATEGORY_KEY: &str = "routing_category";
-
-/// Episode `extra` key set when an operator override, not the router, took
-/// the attempt's routing credit.
-pub(crate) const MODEL_OVERRIDE_KEY: &str = "model_override";
 
 /// Tasks a verify failure reason blames, as `"{plan_id}/{task_id}"` keys.
 ///
@@ -90,6 +89,8 @@ pub struct HindsightSink {
     playbook_dir: PathBuf,
     /// The router the run's routing sink credits, when the run has one.
     router: Option<Arc<CascadeRouter>>,
+    /// The journal the run saves `router` through, when it has one.
+    journal: Option<Arc<ModelCallJournal>>,
     /// Serializes appends so concurrent failures record a correction once.
     serial: Arc<tokio::sync::Mutex<()>>,
 }
@@ -105,6 +106,7 @@ impl HindsightSink {
             adjustments_path,
             playbook_dir,
             router: None,
+            journal: None,
             serial: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -114,6 +116,14 @@ impl HindsightSink {
     #[must_use]
     pub fn with_router(mut self, router: Option<Arc<CascadeRouter>>) -> Self {
         self.router = router;
+        self
+    }
+
+    /// Journal each router retraction in `journal`, the journal the run
+    /// saves its router through, before applying it (bug-583e50).
+    #[must_use]
+    pub fn with_journal(mut self, journal: Option<Arc<ModelCallJournal>>) -> Self {
+        self.journal = journal;
         self
     }
 
@@ -141,9 +151,32 @@ impl HindsightSink {
                     );
                 }
             }
-            if let Some(router) = &self.router {
-                retract_router_credit(router, episode);
+            if let Some(router) = &self.router
+                && let Some((model, category)) = routing_credit(episode)
+            {
+                self.retract_router_credit(router, model, category).await;
             }
+        }
+    }
+
+    /// Retract a success the routing sink credited `model` with in
+    /// `category` from `router`, journaled first when the run has a journal.
+    async fn retract_router_credit(
+        &self,
+        router: &Arc<CascadeRouter>,
+        model: String,
+        category: TaskCategory,
+    ) {
+        let router = Arc::clone(router);
+        let journal = self.journal.clone();
+        // The WAL write syncs to disk, so it runs off the reactor.
+        let retracted = tokio::task::spawn_blocking(move || match journal {
+            Some(journal) => journal.retract_success(&router, &model, category),
+            None => router.retract_success(&model, category),
+        })
+        .await;
+        if let Err(error) = retracted {
+            tracing::warn!(%error, "hindsight router retraction failed (best-effort)");
         }
     }
 }
@@ -173,13 +206,13 @@ fn episode_playbook_ids(episode: &Episode) -> Vec<String> {
         .collect()
 }
 
-/// Undo, in `router`, the success the routing sink credited `episode`'s
-/// attempt with. An attempt that failed over ran a model the router did
-/// not pick, so it earned no credit; an episode with no recorded category
-/// counted under the routing sink's fallback category.
-fn retract_router_credit(router: &CascadeRouter, episode: &Episode) {
+/// The routing credit the routing sink gave `episode`'s attempt: its model,
+/// and the category it counted under. An attempt that failed over ran a
+/// model the router did not pick, so it earned none; an episode with no
+/// recorded category counted under the routing sink's fallback category.
+fn routing_credit(episode: &Episode) -> Option<(String, TaskCategory)> {
     if episode.extra.contains_key("failover_chain") {
-        return;
+        return None;
     }
     let category = episode
         .extra
@@ -188,8 +221,7 @@ fn retract_router_credit(router: &CascadeRouter, episode: &Episode) {
         .unwrap_or_else(|| {
             super::routing::build_fallback_routing_context(&episode.model, None).task_category
         });
-    let overridden = episode.extra.contains_key(MODEL_OVERRIDE_KEY);
-    router.retract_success(&episode.model, category, !overridden);
+    Some((episode.model.clone(), category))
 }
 
 #[async_trait]

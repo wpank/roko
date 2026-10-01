@@ -2161,10 +2161,15 @@ enum PlanCmd {
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
     /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
-    /// PRD. No model runs. Documents that exist are kept unless `--force`.
+    /// PRD. No model runs unless `--full`. Documents that exist are kept
+    /// unless `--force`.
     Prepare {
         /// The plan directory, holding `tasks.toml`.
         plan_dir: PathBuf,
+        /// Also have the planner model write `decomposition.md` (numbered
+        /// steps with checkpoints) and `rubric.md` (review criteria).
+        #[arg(long)]
+        full: bool,
         /// Overwrite companion documents that exist.
         #[arg(long)]
         force: bool,
@@ -2302,17 +2307,23 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long, value_name = "N")]
         batch_size: Option<usize>,
         /// Run each task in an isolated git worktree so agents cannot
-        /// interfere with each other or the user's working tree.
+        /// interfere with each other or the user's working tree. This is the
+        /// default (`[runner] worktree_per_task = true`); the flag overrides
+        /// a config that turns it off.
         ///
-        /// When enabled, each task dispatch creates a fresh worktree,
-        /// runs the agent and verify steps inside it, and cleans it up
-        /// on completion. Failed worktrees are retained for post-mortem.
-        /// Overrides `[runner] worktree_per_task`. Only applies to the Graph
-        /// engine.
+        /// Each task dispatch creates a fresh worktree, runs the agent and
+        /// verify steps inside it, and cleans it up on completion. Failed
+        /// worktrees are retained for post-mortem. Finished plans are
+        /// delivered into the run's batch branch, `roko/batch/<run-id>`; your
+        /// checkout is never changed, and the run ends with the command that
+        /// takes the work into it. Without this flag, a workdir that is not
+        /// the top level of a git checkout with a commit runs its tasks in
+        /// the shared working tree. Only applies to the Graph engine.
         #[arg(long)]
         worktree_per_task: bool,
         /// Run every task in the shared working tree, whatever
-        /// `[runner] worktree_per_task` says.
+        /// `[runner] worktree_per_task` says: tasks edit your checkout
+        /// directly.
         #[arg(long, conflicts_with = "worktree_per_task")]
         no_worktree_per_task: bool,
         /// Use the rich 11-node-per-task production topology instead of the
@@ -2325,7 +2336,8 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         ///
         /// Each task's [Gate] runs the compile, lint and test rungs in the
         /// worktree its attempt ran in, and accepts the attempt onto the plan
-        /// branch when they pass, so this needs `--worktree-per-task`.
+        /// branch when they pass, so this needs per-task worktrees (the
+        /// default; see `--worktree-per-task`).
         ///
         /// Note: enricher cells are currently passthrough stubs. The richer
         /// topology does not yet add runtime value over the simple converter,
@@ -2338,8 +2350,7 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
         /// such as your own checkout's, is not moved: the promotion is parked
         /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.
-        /// Needs per-task worktrees (`--worktree-per-task` or
-        /// `[runner] worktree_per_task = true`).
+        /// Needs per-task worktrees, the default (see `--worktree-per-task`).
         #[arg(long, value_name = "BRANCH", conflicts_with = "no_worktree_per_task")]
         promote: Option<String>,
         /// Run up to N plans of a plan set at the same time.
@@ -2348,7 +2359,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// prerequisites have succeeded. Plans that write or build
         /// overlapping parts of the working tree never run at the same time.
         /// Defaults to `[conductor] max_parallel_plans` (1: one plan at a
-        /// time).
+        /// time). Per-task worktrees run one plan at a time for now: with
+        /// them from config, the plans run in turn with a warning, and with
+        /// `--worktree-per-task` a run of several plans is refused.
         #[arg(
             long,
             value_name = "N",

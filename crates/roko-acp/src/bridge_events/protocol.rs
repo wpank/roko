@@ -129,6 +129,17 @@ pub enum CognitiveEvent {
     },
 }
 
+impl CognitiveEvent {
+    /// Whether this event ends the turn. The editor waits for one, so these are
+    /// never dropped.
+    pub(crate) const fn ends_turn(&self) -> bool {
+        matches!(
+            self,
+            Self::Complete { .. } | Self::Failure { .. } | Self::MaxTokens
+        )
+    }
+}
+
 /// Parameters describing what a tool loop wants permission to do.
 #[derive(Debug, Clone)]
 pub struct PermissionRequestPayload {

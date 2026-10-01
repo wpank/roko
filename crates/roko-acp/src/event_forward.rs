@@ -5,7 +5,7 @@ use roko_runtime::HttpEventSink;
 
 use crate::{
     bridge_events::CognitiveEvent,
-    types::{ContentBlock, ResourceRef, StopReason, ToolCallStatus, UsageInfo},
+    types::{ContentBlock, StopReason, ToolCallStatus, UsageInfo},
 };
 
 /// Thin ACP adapter over the shared runtime HTTP event sink.
@@ -166,9 +166,8 @@ fn summarize_content(content: &[ContentBlock]) -> String {
 fn summarize_content_block(block: &ContentBlock) -> String {
     match block {
         ContentBlock::Text { text } => text.clone(),
-        ContentBlock::Resource {
-            resource: ResourceRef::File { uri },
-        } => format!("file: {uri}"),
+        ContentBlock::Resource { resource } => format!("file: {}", resource.uri()),
+        ContentBlock::ResourceLink { uri, .. } => format!("link: {uri}"),
         ContentBlock::Diff {
             path,
             diff,

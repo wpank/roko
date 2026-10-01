@@ -3,12 +3,13 @@
 > Depth file for [04-EXECUTION.md](../../04-EXECUTION.md) section 10.
 > Preserves and updates content from v1 `01-orchestration/07-worktree-isolation.md`.
 >
-> **Status (2026-09-29, at `7c556bc0a`): PARTIAL.** This page describes the design. On
-> Graph runs every task edits the operator's working tree by default.
-> `plan run --worktree-per-task` is opt-in, and a successful attempt's worktree edits
-> are never merged back. The per-plan path (`ensure_for_plan`, `create_for_plan`) and
-> `reclaim_idle` have no production caller. See [04-EXECUTION.md](../../04-EXECUTION.md)
-> section 10.
+> **Status (2026-09-29, at `7c556bc0a`; updated 2026-10-01): PARTIAL.** This page
+> describes the design. Since gap-4ec59f, Graph runs give each task attempt its own
+> worktree by default (`--no-worktree-per-task` opts out). A passed attempt is committed
+> onto its plan's branch, and each finished plan is delivered into the run's batch
+> branch, never the operator's checkout. The per-plan path (`ensure_for_plan`,
+> `create_for_plan`) and `reclaim_idle` have no production caller. See
+> [04-EXECUTION.md](../../04-EXECUTION.md) section 10.
 
 ---
 

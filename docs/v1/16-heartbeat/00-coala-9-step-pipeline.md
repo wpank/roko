@@ -298,7 +298,7 @@ Without gating (every tick at T2): daily cost would be $100-500+ depending on ti
 - **Clark 2013** — "Whatever Next? Predictive Brains, Situated Agents, and the Future of Cognitive Science" (Behavioral and Brain Sciences 36(3)). Predictive processing framework.
 - **Boyd 1986** — "Patterns of Conflict" (unpublished briefing). OODA Loop.
 - **Chen et al. 2023** — "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance" (arXiv:2305.05176). Cascade architecture cost reduction.
-- **Cognitive Workspace 2025** — arXiv:2508.13171. Active memory management validation.
+- **An 2025** — arXiv:2508.13171. Active memory management validation.
 - **Bower 1981** — "Mood and Memory" (American Psychologist 36(2)). Mood-congruent memory retrieval.
 
 ---

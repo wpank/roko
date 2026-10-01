@@ -1053,7 +1053,7 @@ impl SafetyMonitor {
 When Roko modifies its own prompt templates (via EvoSkills), gate thresholds (via adaptive
 thresholds), or model routing (via CascadeRouter feedback), it can silently lose capabilities
 that were previously working. This is analogous to catastrophic forgetting in continual
-learning (Luo et al. arXiv:2308.08747; Wang et al. arXiv:2601.18699, 2025).
+learning (Luo et al. arXiv:2308.08747; Wang et al., 2025).
 
 Three mechanisms cause capability regression in Roko:
 
@@ -1515,8 +1515,8 @@ Focus: mutation testing, full adversarial suite, behavioral fingerprinting.
 - Gao, Geng, Hua et al. (2025). "A Survey of Self-Evolving Agents: On Path to Artificial Super Intelligence." GitHub: EvoAgentX/Awesome-Self-Evolving-Agents.
 
 ### Property-based and oracle-free testing
-- Cho, Ruberto, Terragni (2025). "Metamorphic Testing of Large Language Models for NLP." arXiv:2511.02108. ICSME 2025. 191 metamorphic relations across 24 NLP tasks.
-- Cho, Terragni (2025). "LLMORPH: Automated Metamorphic Testing of LLMs." arXiv:2603.23611. ASE 2025 Demo.
+- Cho, Ruberto, Terragni (2025). "Metamorphic Testing of Large Language Models for Natural Language Processing." arXiv:2511.02108. ICSME 2025. 191 metamorphic relations across 24 NLP tasks.
+- Cho, Terragni (2025). "LLMORPH: Automated Metamorphic Testing of Large Language Models." arXiv:2603.23611. ASE 2025 Demo.
 - ACM TOSEM (2025). "Test Oracle Automation in the Era of LLMs." DOI:10.1145/3715107.
 - arXiv:2601.05542 (2025). "Understanding LLM-Driven Test Oracle Generation."
 
@@ -1527,14 +1527,14 @@ Focus: mutation testing, full adversarial suite, behavioral fingerprinting.
 - CMU SEI (2025). "What Can Generative AI Red-Teaming Learn from Cyber Red-Teaming?"
 
 ### Regression and catastrophic forgetting
-- Luo et al. (2024). "Revisiting Catastrophic Forgetting in LLM Tuning." ACL EMNLP Findings. aclanthology.org/2024.findings-emnlp.249.
-- Wang et al. (2025). "Mechanistic Analysis of Catastrophic Forgetting in LLMs During Continual Fine-tuning." arXiv:2601.18699.
+- Li et al. (2024). "Revisiting Catastrophic Forgetting in LLM Tuning." ACL EMNLP Findings. aclanthology.org/2024.findings-emnlp.249.
+- Wang et al. (2025). "Mechanistic Analysis of Catastrophic Forgetting in LLMs During Continual Fine-tuning."
 - ACM CSUR (2025). "Continual Learning of Large Language Models: A Comprehensive Survey."
 
 ### Agent benchmarking
-- Tau-bench (2024). "A Benchmark for Tool-Agent-User Interaction." arXiv:2406.12045. Introduces pass^k metric.
+- Yao et al. (2024). "tau-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains." arXiv:2406.12045. Introduces pass^k metric.
 - TheAgentCompany (2024). "Benchmarking LLM Agents on Consequential Real World Tasks." arXiv:2412.14161.
-- MCP-Bench (2025). "Benchmarking Tool-Using LLM Agents." arXiv:2508.20453.
+- Wang et al. (2025). "Benchmarking Tool-Using LLM Agents." arXiv:2508.20453.
 - AgentBench (2024). "Evaluating LLMs as Agents." arXiv:2308.03688.
 - Mohammadi et al. (2025). "Evaluation and Benchmarking of LLM Agents: A Survey." ACM SIGKDD 2025. arXiv:2507.21504.
 

@@ -64,7 +64,7 @@ Roko's universal cognitive loop is not an ad-hoc design but an implementation of
 
 ## Cognitive Workspace
 
-- Cognitive Workspace (2025). Active Memory Management for LLMs. arXiv:2508.13171.
+- An (2025). Active Memory Management for LLMs. arXiv:2508.13171.
   *Grounds: Active memory — active memory management treating the context window as a cognitive workspace with explicit read/write/evict operations. Informs the Composer's context management.*
 
 ---
@@ -91,7 +91,7 @@ Roko's universal cognitive loop is not an ad-hoc design but an implementation of
 - Wu, S. et al. (2025). Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models. _SAGE Journals_, 2025.
   *Grounds: Cognitive LLM integration — integrates classical cognitive architectures (ACT-R, SOAR) with modern LLMs for manufacturing decision-making. Validates Roko's approach of layering cognitive architecture principles onto LLM-based agents rather than treating the LLM as a standalone reasoner.*
 
-- Agentic AI: Architectures, Taxonomies, and Evaluation of LLM Agents (2025). arXiv:2601.12560.
+- Agentic Artificial Intelligence (AI): Architectures, Taxonomies, and Evaluation of Large Language Model Agents of LLM Agents (2025). arXiv:2601.12560.
   *Grounds: Agent evaluation taxonomy — systematic evaluation framework for agentic AI systems. Data shows clear paradigm shift: symbolic/hybrid cognitive architectures dominated 2018-2021, while neural orchestration frameworks dominate post-2022. Validates Roko's neural-first design with structured cognitive overlays.*
 
 ---

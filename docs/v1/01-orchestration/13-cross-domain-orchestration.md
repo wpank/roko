@@ -819,7 +819,7 @@ pub enum PlanRecoveryDecision {
   model routing, underpins the CascadeRouter)
 - Garcia-Molina, H. & Salem, K. (1987). Sagas. *ACM SIGMOD 1987*. (Saga
   pattern for long-lived transactions with compensation.)
-- Gerevini, A. et al. (2004). Planning through stochastic local search and
+- Gerevini, A. et al. (2003). Planning through stochastic local search and
   temporal action graphs in LPG. *JAIR*, 20, 239–290. (LPG-adapt plan repair.)
 - Sacerdoti, E. D. (1974). Planning in a hierarchy of abstraction spaces.
   *Artificial Intelligence*, 5(2), 115–135. (ABSTRIPS — abstraction

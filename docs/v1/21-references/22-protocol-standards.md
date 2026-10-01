@@ -24,7 +24,7 @@ Roko agents can operate on-chain via the Korai chain — a dedicated EVM for age
 - Bryan, K. (2024). ERC-8004: Agent Identity. EIPs.
   *Grounds: Korai Passport — agent identity standard. ERC-721 soulbound with capabilityList bitmask, domainStakes, reputationTracks, teeAttestation, systemPromptHash (ventriloquist defense), tier classification, and slashHistory.*
 
-- Bryan, K. (2024). ERC-8001: Agent Coordination Framework. EIPs. Status: Final.
+- Bryan, K. (2025). ERC-8001: Agent Coordination Framework. EIPs. Status: Final.
   *Grounds: Agent coordination — framework for on-chain agent coordination. Provides the protocol-level primitives for multi-agent interaction.*
 
 - Parikh, R. & Ross, J.M. (2025). ERC-8033: Agent Council Oracles. EIPs. Status: Draft.
@@ -53,7 +53,7 @@ Roko agents can operate on-chain via the Korai chain — a dedicated EVM for age
 
 ## Micropayments
 
-- Cloudflare/Linux Foundation (2025). x402: HTTP 402 Payment Required Protocol for Machine-to-Machine Micropayments.
+- Coinbase & Cloudflare (2025). x402: HTTP 402 Payment Required Protocol for Machine-to-Machine Micropayments.
   *Grounds: x402 innovation — self-funding agents via per-API-call billing at < $0.001 per transaction. Sub-second USDC settlement on Base. Enables the self-funding economic cycle: agent earns from knowledge → spends on compute → produces value → earns more.*
 
 ---

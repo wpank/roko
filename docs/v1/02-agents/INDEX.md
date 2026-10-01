@@ -94,8 +94,7 @@
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
    arXiv:2309.02427. — CoALA 9-step loop, theoretical basis for Agent trait
    separation.
-2. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. — +7.7 text classification, +4.7 IMO math,
+2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 text classification, +4.7 IMO math,
    4× fewer tokens, 6× gap (ref [46], SWE-bench mobile).
 3. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" — Benchmark context for harness variance.
@@ -126,24 +125,23 @@
     65.1% AlpacaEval 2.0 with open-source only.
 18. Anthropic Transformer Circuits (2025). "Emergent Introspective Awareness
     in Large Language Models." — ~20% introspection accuracy, narrow circuits.
-19. arXiv:2509.19783 (2025). "Agentic Metacognition: Self-Aware Agent for
-    Failure Prediction." — +7.78pp from metacognitive monitoring.
+19. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff." — +7.78pp from metacognitive monitoring.
 20. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
     Language Models." ICLR 2023. arXiv:2210.03629. — ReAct pattern.
 21. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal
     Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366. — 91% HumanEval.
 22. Zhou, A. et al. (2024). "LATS: Language Agent Tree Search." ICML 2024.
     arXiv:2310.04406. — 92.7% HumanEval, MCTS + LLM value functions.
-23. Sakana AI (2025). "Darwin Gödel Machine." arXiv:2505.22954. — SWE-bench
+23. Zhang et al. (2025). "Darwin Gödel Machine." arXiv:2505.22954. — SWE-bench
     20% → 50% via evolutionary self-improvement.
 24. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291. — Lifelong skill
     learning, 3.3× more unique items, transferable skill library.
 25. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current
     Directions in Psych. Science. — Competing intuitions, Dual-Process 2.0.
-26. Chen, Z. et al. (2025). "Router-R1." NeurIPS 2025. arXiv:2506.09033.
+26. Zhang et al. (2025). "Router-R1." NeurIPS 2025. arXiv:2506.09033.
     — Multi-round RL-trained router.
 27. Dekoninck, J. et al. (2025). "Unified Routing and Cascading." ICLR 2025.
-    arXiv:2410.10347. — +14% on SWE-Bench.
+    arXiv:2410.10347. — Cascade routing outperforms routing or cascading alone.
 28. Patil, S. et al. (2025). "BFCL v4." ICML 2025. — Tool use benchmark.
 29. arXiv:2604.06185 (2025). "WildToolBench." ICLR 2026. — <15% session
     accuracy, real-world tool use gap.

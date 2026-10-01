@@ -75,7 +75,7 @@ This is the implementation plan.
 - [x] bug-b38546: pre_verify:no_changes says the attempt left the tree unchanged when the task's declared files are gitignored
 - [x] gap-9eb1e1: A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes
 - [x] bug-5f0604: The portal-programme live-check harness gitignores the artifacts its implementer tasks write, so live checks fail as pre_verify:no_changes
-- [ ] bug-21687a: Three portal-programme live checks fail: the plan scaffold no longer writes model_hint, and serve looks for /demo at a compile-time path
+- [x] bug-21687a: Three portal-programme live checks fail: the plan scaffold no longer writes model_hint, and serve looks for /demo at a compile-time path
 - [ ] The epic's `[[verify]]` command (test C5) passes on the merged branch.
 
 ## Notes

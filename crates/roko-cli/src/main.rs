@@ -3421,6 +3421,22 @@ enum ConfigMcpCmd {
     },
 }
 
+/// The workspace a crash report goes to, recorded once the command line is
+/// parsed: the invoked subcommand's `--workdir`, else `--repo` or the current
+/// directory, as for the log file and the agent PID registry.
+static CRASH_REPORT_WORKDIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `.roko/` the panic hook writes `crash-report.json` into: the parsed
+/// workspace's, else (for a panic before parsing) `ROKO_WORKDIR`'s, else the
+/// current directory's.
+fn crash_report_dir(parsed_workdir: Option<&Path>) -> PathBuf {
+    parsed_workdir
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("ROKO_WORKDIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".roko")
+}
+
 fn main() {
     // ── Crash report panic hook ─────────────────────────────────────
     // Install a global panic hook that writes a structured crash report
@@ -3461,12 +3477,8 @@ fn main() {
                 env!("ROKO_RUSTC_VERSION"),
             );
 
-            // Try to find the `.roko/` directory: check cwd first, then
-            // ROKO_WORKDIR env, then fall back to `./`.
-            let roko_dir = std::env::var("ROKO_WORKDIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join(".roko");
+            // Write into the invoked command's workspace once it is known.
+            let roko_dir = crash_report_dir(CRASH_REPORT_WORKDIR.get().map(PathBuf::as_path));
 
             roko_core::write_crash_report(&roko_dir, &report);
 
@@ -3589,10 +3601,11 @@ fn main() {
 
     let ansi_logs = use_color;
 
-    // Determine the workdir for log file placement and the agent PID
-    // registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
+    // Determine the workdir for log file placement, crash reports and the agent
+    // PID registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
     let workdir = invoked_subcommand_workdir().unwrap_or_else(|| resolve_workdir(&cli));
     roko_agent::process::set_registry_root(&workdir);
+    let _ = CRASH_REPORT_WORKDIR.set(workdir.clone());
 
     // File layer: write to .roko/roko.log with day-based rotation.
     // In TUI mode, use serve-tui.log to keep it separate from the main log.
@@ -7781,6 +7794,18 @@ mod tests {
         );
         assert_eq!(workdir(&["roko", "--repo", "/ws/repo", "status"]), None);
         assert_eq!(workdir(&["roko", "init"]), None);
+    }
+
+    #[test]
+    fn crash_report_dir_uses_subcommand_workdir() {
+        let matches = Cli::command()
+            .try_get_matches_from(["roko", "plan", "run", "plans", "--workdir", "/ws/plan"])
+            .expect("valid invocation");
+        let workdir = subcommand_workdir(&matches);
+        assert_eq!(
+            crash_report_dir(workdir.as_deref()),
+            PathBuf::from("/ws/plan").join(".roko")
+        );
     }
 
     #[test]

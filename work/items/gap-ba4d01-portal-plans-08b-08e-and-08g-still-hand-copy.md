@@ -3,13 +3,15 @@ id = "gap-ba4d01"
 kind = "gap"
 title = "Portal plans 08b–08e and 08g still hand-copy their acceptance tests instead of pinning them with [task.accept]"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "M"
 subsystem = ["plans/portal-programme", "roko-cli/plan_validate"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "f7bf1a103"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-accept's report on gap-d14a43, branch work/gap-d14a43 at 37b6d7c95)"
 anchors = ["plans/portal-programme/", "crates/roko-cli/src/plan_validate.rs", ".github/workflows/plan-validate.yml"]
@@ -61,3 +63,15 @@ Specs a cheap model can execute (epic spec-e57870): a hand copy is the unpinned 
 
 - These plans are finished. Their replays and field evidence refer to them, so keep each task's behaviour, and change only how its tests are pinned.
 - Merge gap-d14a43 first.
+- Implemented on `work/gap-ba4d01` at `f7bf1a103`; cargo verification deferred to the batch check.
+- `roko plan validate --strict --dag` (batch binary 1ce6526f8) now reports no PLAN_038 for any of the six plans
+  (there were 30, 8, 20, 10 and 2 warnings for 08b, 08c, 08d, 08e and 08g). The other diagnostics are unchanged. 08b
+  T01's PLAN_TIER_SIZE warning lost its "5 verify steps" clause. The PLAN_CONTEXT_RANGE errors in 08d and 08f predate
+  this item: their read_files ranges run past files that shrank since.
+- PLAN_038 only sees `cp accept/…` and `cp …/accept/…`. It misses copies through a variable (`A=…/accept`,
+  `cp $A/…`, the `for p in …` loops of the final tasks, all of 08e T01 and 08g T02). Those were migrated as well. The
+  new test checks PLAN_038 only, so a variable copy added later would pass it.
+- 08b's `accept/dom.tsx` is a helper, not a test, and an entry needs a runner and a count. T01 pins it first with the
+  node suite its own steps require (formatters.test.ts, 22), because the harness test is not in the tree until the next
+  entry. T16 pins it with the harness test (8).
+- Item plan step 4 (making `.github/workflows/plan-validate.yml` run `--strict`) is left to a separate decision.

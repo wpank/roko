@@ -176,7 +176,7 @@ The Graph engine is the **sole execution engine** since PR #260 (made default) a
 cycle.
 
 **Rust location**: `crates/roko-graph/` -- DAG cells, topology, cost state,
-`ProductionPlanTopology`, `GuaranteedFinallyController`
+`ProductionPlanTopology`
 
 **Primary doc**: [03-GRAPH.md](03-GRAPH.md)
 

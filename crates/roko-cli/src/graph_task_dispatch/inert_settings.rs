@@ -30,6 +30,9 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                           plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
+    const NO_EVAL_SOURCE: &str = "the built-in eval template needs an assertion body that plan \
+                                  tasks do not author, so nothing is written (bug-017c2d), and \
+                                  nothing in plan run executes generated tests";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
@@ -78,6 +81,11 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             gates.max_rung != default_gates.max_rung,
             "gates.max_rung",
             LEGACY_GATES,
+        ),
+        (
+            gates.write_eval_artifacts != default_gates.write_eval_artifacts,
+            "gates.write_eval_artifacts",
+            NO_EVAL_SOURCE,
         ),
         (
             gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
@@ -210,6 +218,24 @@ pub(super) fn warn_inert_graph_settings_once(config: &RokoConfig) {
 mod tests {
     use super::*;
 
+    /// bug-05a434: with no property-body source on the Graph path,
+    /// `gates.write_eval_artifacts` writes nothing, and `plan run` says so.
+    #[test]
+    fn write_eval_artifacts_is_reported_inert_on_graph() {
+        let mut config = RokoConfig::default();
+        config.gates.write_eval_artifacts = true;
+        let inert = graph_engine_inert_settings(&config);
+        let setting = inert
+            .iter()
+            .find(|setting| setting.key == "gates.write_eval_artifacts")
+            .expect("write_eval_artifacts is reported");
+        assert!(
+            setting.reason.contains("assertion body"),
+            "{}",
+            setting.reason
+        );
+    }
+
     #[test]
     fn inert_settings_list_only_changed_keys_the_graph_engine_ignores() {
         assert!(graph_engine_inert_settings(&RokoConfig::default()).is_empty());
@@ -221,7 +247,6 @@ mod tests {
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
         config.budget.max_daily_usd = 20.0;
-        config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
         // Every plan task runs the workspace's required rungs.
         config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
@@ -238,15 +263,16 @@ mod tests {
         assert_eq!(keys, ["gates.max_rung", "runner.warm_pool_size"]);
 
         // Focused mode and its impact settings scope authored Cargo tests
-        // (gap-1426e4); structural mode is still legacy-only.
+        // (gap-1426e4), so they add no inert key; structural mode is still
+        // legacy-only.
         let mut focused = config.clone();
         focused.gates.mode = roko_core::config::GateMode::Focused;
         focused.gates.impact_timeout_ms += 1;
-        let keys = graph_engine_inert_settings(&focused)
+        let focused_keys = graph_engine_inert_settings(&focused)
             .iter()
             .map(|setting| setting.key)
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["gates.domain_gates", "runner.warm_pool_size"]);
+        assert_eq!(focused_keys, keys);
         focused.gates.mode = roko_core::config::GateMode::Structural;
         assert!(
             graph_engine_inert_settings(&focused)

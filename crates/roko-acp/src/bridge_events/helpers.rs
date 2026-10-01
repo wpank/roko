@@ -45,7 +45,7 @@ pub(crate) fn map_event_to_update(event: CognitiveEvent) -> Option<SessionUpdate
             locations: None,
         }),
         CognitiveEvent::PlanUpdate { entries } => Some(SessionUpdate::Plan { entries }),
-        CognitiveEvent::McpStatus { statuses } => Some(SessionUpdate::McpStatusUpdate { statuses }),
+        CognitiveEvent::McpStatus { statuses } => Some(roko_meta_update("mcpStatus", &statuses)),
         CognitiveEvent::Complete { .. }
         | CognitiveEvent::Failure { .. }
         | CognitiveEvent::MaxTokens
@@ -55,6 +55,21 @@ pub(crate) fn map_event_to_update(event: CognitiveEvent) -> Option<SessionUpdate
             );
             None
         }
+    }
+}
+
+/// Wraps roko-only session data, such as MCP startup status or the cost budget, as a
+/// spec `session_info_update` that carries it under `_meta.roko.<key>`. Spec clients
+/// drop session updates whose `sessionUpdate` they do not know.
+pub(crate) fn roko_meta_update(key: &str, value: &impl serde::Serialize) -> SessionUpdate {
+    let mut roko = serde_json::Map::new();
+    roko.insert(
+        key.to_owned(),
+        serde_json::to_value(value).unwrap_or_default(),
+    );
+    SessionUpdate::SessionInfoUpdate {
+        title: None,
+        _meta: Some(serde_json::json!({ "roko": roko })),
     }
 }
 

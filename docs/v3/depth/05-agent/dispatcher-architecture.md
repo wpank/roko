@@ -28,7 +28,7 @@ at any stage short-circuits and the error is returned to the caller.
 
 ```
 1. VALIDATE   -- identity + args against JSON schema from registry
-2. AUTHORIZE  -- profile/task filters and role capabilities
+2. AUTHORIZE  -- task tool filters and role capabilities
 3. SAFETY     -- hooks, policy, durable immune controls
 4. EXECUTE    -- handler under timeout/cancellation, panic-catching
 5. BOUND      -- recursively scrub, recover, re-bound results
@@ -48,7 +48,7 @@ Validates the tool call's identity and arguments:
 
 ### Step 2: AUTHORIZE
 
-Applies profile and task filters:
+Applies the task's tool filters and the role's capabilities:
 
 - Role capabilities from `AgentContract` determine which tools the
   current role may invoke.
@@ -246,7 +246,6 @@ pub struct ToolDispatcher {
     hook_chain: Option<SafetyHookChain>,
     production_safety_chain:
         Option<ProductionSafetyChain>,
-    tool_selector: Option<ToolSelector>,
     safety_denial_callback: Option<SafetyDenialCallback>,
     file_audit: Option<Arc<ScrubAuditAdapter>>,
 }
@@ -266,7 +265,6 @@ pub struct EffectiveCatalogSnapshot {
     pub tool_count: usize,
     pub execution_owner: String,
     pub policy_owner: String,
-    pub selector_active: bool,
     pub hook_chain_active: bool,
     pub production_hooks_active: bool,
 }
@@ -290,7 +288,6 @@ and replay can reconstruct what applied.
 | `production_safety_chain` | Mandatory production safety hooks (stages 5-7, 9) |
 | `result_cache` | Explicit cache primitives (dispatcher does NOT cache internally) |
 | `timeout` | Timeout enforcement via `with_timeout` |
-| `tool_selector` | Tool selection logic for context-aware tool filtering |
 | `truncate` | Result truncation and bounding; `bounded_json_bytes`, `bounded_serialized_bytes` |
 | `validate` | Input validation against ToolDef JSON schemas |
 

@@ -18,9 +18,11 @@
 //! current rung, so a resumed run routes where the last one stopped. It also
 //! keeps each task's spend and a turn-cap retry its next attempt is owed
 //! (gap-34b2ed), so a resumed run neither restarts the task's spend from zero
-//! nor reruns a turn cap that already ran out. And it keeps the verify steps
-//! each task passed on its earlier attempts (gap-6dba88), so a step that
-//! passed before and fails now reads as a regression in a resumed run too.
+//! nor reruns a turn cap that already ran out, and the timeout of an attempt
+//! that ran out of time (gap-6f77a3), so a resumed run escalates from it
+//! rather than from the base timeout. And it keeps the verify steps each task
+//! passed on its earlier attempts (gap-6dba88), so a step that passed before
+//! and fails now reads as a regression in a resumed run too.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -70,6 +72,9 @@ struct RetryFeedbackFile {
     /// Tasks whose last attempt stopped at its turn cap.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     turn_caps: BTreeMap<String, TurnCapRetry>,
+    /// Tasks whose last attempt ran out of time, with its timeout in ms.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    timeouts: BTreeMap<String, u64>,
     /// Identities of the verify steps each task passed on an earlier attempt
     /// ([`super::step_ratchet::step_identity`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -84,6 +89,7 @@ struct KeptState {
     ladder: BTreeMap<String, LadderStanding>,
     spend: BTreeMap<String, u64>,
     turn_caps: BTreeMap<String, TurnCapRetry>,
+    timeouts: BTreeMap<String, u64>,
     passed_steps: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -108,6 +114,8 @@ struct BookState {
     spend: HashMap<TaskKey, u64>,
     /// Turn-cap retries owed to next attempts.
     turn_caps: HashMap<TaskKey, TurnCapRetry>,
+    /// Timeouts, in ms, of last attempts that ran out of time.
+    timeouts: HashMap<TaskKey, u64>,
     /// Verify steps passed on earlier attempts, by step identity.
     passed_steps: HashMap<TaskKey, BTreeSet<String>>,
     /// Per plan: the file its feedback is kept in, and the checkpoint run.
@@ -134,6 +142,7 @@ impl RetryFeedbackBook {
         state.ladder.retain(|(plan, _), _| plan != plan_id);
         state.spend.retain(|(plan, _), _| plan != plan_id);
         state.turn_caps.retain(|(plan, _), _| plan != plan_id);
+        state.timeouts.retain(|(plan, _), _| plan != plan_id);
         state.passed_steps.retain(|(plan, _), _| plan != plan_id);
         for (task_id, standing) in kept.ladder {
             state
@@ -149,6 +158,11 @@ impl RetryFeedbackBook {
             state
                 .turn_caps
                 .insert((plan_id.to_string(), task_id), retry);
+        }
+        for (task_id, timeout_ms) in kept.timeouts {
+            state
+                .timeouts
+                .insert((plan_id.to_string(), task_id), timeout_ms);
         }
         for (task_id, steps) in kept.passed_steps {
             state
@@ -277,7 +291,7 @@ impl RetryFeedbackBook {
     }
 
     /// Drop `task_id`'s feedback once it passes, with its spend, any
-    /// turn-cap retry and the steps it passed.
+    /// turn-cap or timeout retry, and the steps it passed.
     pub(crate) fn clear(&self, plan_id: &str, task_id: &str) {
         let key = (plan_id.to_string(), task_id.to_string());
         let mut state = self.state.lock();
@@ -285,8 +299,9 @@ impl RetryFeedbackBook {
         let pending = state.pending.remove(&key).is_some();
         let spend = state.spend.remove(&key).is_some();
         let turn_cap = state.turn_caps.remove(&key).is_some();
+        let timeout = state.timeouts.remove(&key).is_some();
         let steps = state.passed_steps.remove(&key).is_some();
-        if pending || spend || turn_cap || steps {
+        if pending || spend || turn_cap || timeout || steps {
             persist(&state, plan_id);
         }
     }
@@ -344,10 +359,41 @@ impl RetryFeedbackBook {
             persist(&state, plan_id);
         }
     }
+
+    /// The timeouts, in ms, of the last attempts of `plan_id`'s tasks that
+    /// ran out of time, which an earlier process of the run kept, by task id.
+    pub(crate) fn kept_timeouts(&self, plan_id: &str) -> Vec<(String, u64)> {
+        let state = self.state.lock();
+        state
+            .timeouts
+            .iter()
+            .filter(|((plan, _), _)| plan == plan_id)
+            .map(|((_, task_id), timeout_ms)| (task_id.clone(), *timeout_ms))
+            .collect()
+    }
+
+    /// Keep, or with `None` drop, the timeout in ms of `task_id`'s last
+    /// attempt, which ran out of time, on disk when the plan has a checkpoint
+    /// (gap-6f77a3).
+    pub(crate) fn set_timeout(&self, plan_id: &str, task_id: &str, timeout_ms: Option<u64>) {
+        let key = (plan_id.to_string(), task_id.to_string());
+        let mut state = self.state.lock();
+        if !state.files.contains_key(plan_id) {
+            return;
+        }
+        let changed = match timeout_ms {
+            Some(timeout_ms) => state.timeouts.insert(key, timeout_ms) != Some(timeout_ms),
+            None => state.timeouts.remove(&key).is_some(),
+        };
+        if changed {
+            persist(&state, plan_id);
+        }
+    }
 }
 
 /// Rewrite `plan_id`'s file from `state`, removing it once it would keep
-/// nothing: no feedback, ladder standing, spend, turn cap or step history.
+/// nothing: no feedback, ladder standing, spend, turn cap, timeout or step
+/// history.
 /// Returns the file on success. Gate output and diagnoses can quote a
 /// secret, so the process's secrets are redacted from the file; a resumed
 /// attempt sees the redaction.
@@ -377,6 +423,12 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
         .filter(|((plan, _), _)| plan == plan_id)
         .map(|((_, task_id), retry)| (task_id.clone(), *retry))
         .collect();
+    let timeouts: BTreeMap<String, u64> = state
+        .timeouts
+        .iter()
+        .filter(|((plan, _), _)| plan == plan_id)
+        .map(|((_, task_id), timeout_ms)| (task_id.clone(), *timeout_ms))
+        .collect();
     let passed_steps: BTreeMap<String, BTreeSet<String>> = state
         .passed_steps
         .iter()
@@ -387,6 +439,7 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
         && ladder.is_empty()
         && spend.is_empty()
         && turn_caps.is_empty()
+        && timeouts.is_empty()
         && passed_steps.is_empty()
     {
         match std::fs::remove_file(path) {
@@ -402,6 +455,7 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
             ladder,
             spend,
             turn_caps,
+            timeouts,
             passed_steps,
         };
         serde_json::to_string_pretty(&file)
@@ -469,6 +523,7 @@ fn read_feedback_file(path: &Path, plan_id: &str, run_id: &str) -> KeptState {
         ladder: file.ladder,
         spend: file.spend,
         turn_caps: file.turn_caps,
+        timeouts: file.timeouts,
         passed_steps: file.passed_steps,
     }
 }

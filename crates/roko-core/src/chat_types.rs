@@ -5,6 +5,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use crate::tool::{ToolCall, ToolDef};
 use crate::{Body, Kind, Signal};
 
@@ -192,6 +195,8 @@ impl Usage {
     /// This is a no-op when `cost_usd` is already non-zero.  When
     /// `input_per_m` **and** `output_per_m` are both `None`, the cost stays
     /// at zero so the display layer can distinguish "unknown" from "free".
+    /// A missing cache price takes the shared default multiple of the input
+    /// price, as every other cost path does (bug-0c0747).
     pub fn fill_cost_from_pricing(
         &mut self,
         input_per_m: Option<f64>,
@@ -205,8 +210,8 @@ impl Usage {
         let (Some(inp), Some(out)) = (input_per_m, output_per_m) else {
             return; // no pricing data — leave at 0.0 so display shows "—"
         };
-        let cache_r = cache_read_per_m.unwrap_or(inp * 0.1);
-        let cache_w = cache_write_per_m.unwrap_or(inp * 1.25);
+        let cache_r = cache_read_per_m.unwrap_or(inp * DEFAULT_CACHE_READ_MULTIPLIER);
+        let cache_w = cache_write_per_m.unwrap_or(inp * DEFAULT_CACHE_WRITE_MULTIPLIER);
 
         let cost = (self.input_tokens as f64 * inp / 1_000_000.0)
             + (self.output_tokens as f64 * out / 1_000_000.0)

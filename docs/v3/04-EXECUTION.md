@@ -483,20 +483,22 @@ With retry loops:
 
 Terminal states: `Complete`, `Failed`, `Skipped`.
 
-### GuaranteedFinallyController
+### Cleanup on exit
 
-**Source:** `crates/roko-graph/src/finally.rs`
+A `GuaranteedFinallyController` was drafted in `crates/roko-graph/src/finally.rs`, but
+roko-graph never compiled it (its `lib.rs` declared no `mod finally`), and it was deleted
+on 2026-10-01 (gap-ff6e83).
 
-The `GuaranteedFinallyController` wraps graph execution with an absolute
-guarantee that cleanup runs regardless of outcome (success, failure, panic,
-cancellation):
+`run_one_plan` (`crates/roko-cli/src/graph_execution/plan_runner.rs`) does a plan run's
+cleanup:
 
-1. Emits exactly one `TerminalReceipt` (success, failure, or cancelled).
-2. Releases all workspace leases.
-3. Stops all tracked agent processes.
-4. Flushes the final snapshot to disk.
+- On an interrupt it cancels the graph and sends SIGTERM to in-flight agents. Attempts
+  still running after a drain timeout are stopped, and agents that ignored SIGTERM are
+  killed.
+- It then writes the checkpoint's terminal status and the tasks the run did not complete,
+  and closes the run manifest.
 
-This controller runs outside the DAG -- it is not a graph node.
+A forced exit or SIGHUP ends the run without that terminal write (bug-4641e3).
 
 ---
 
@@ -539,8 +541,8 @@ a `CellResources` bundle. This provides cells access to:
 
 `ProcessSupervisor` (from `roko-runtime`) tracks spawned agent processes.
 When a plan completes or fails, the supervisor ensures all child processes
-are terminated. The `GuaranteedFinallyController` invokes supervisor
-shutdown as part of its cleanup guarantee.
+are terminated. On an interrupt, `run_one_plan` also sends SIGTERM to in-flight agent
+process trees and kills those that ignore it.
 
 ### Budget enforcement
 
@@ -1025,5 +1027,4 @@ cargo run -p roko-cli -- resume [run-id]
 | 11 | `depth/04-11-episodes-telemetry.md` | Episode log, efficiency events, HDC fingerprints, learning feedback |
 | 12 | `depth/04-12-budget-enforcement.md` | `BudgetTracker`, microdollar accounting, reservation lifecycle, cost sidecar |
 | 13 | `depth/04-13-error-resilience.md` | Four error kinds, supremum composition, retry policy monoid, failure strategies |
-| 14 | `depth/04-14-finally-controller.md` | `GuaranteedFinallyController`, terminal receipts, cleanup guarantees |
 | 15 | `depth/04-15-convergence-history.md` | Engine timeline: Runner-v2, #260 Graph default, #276 WorkflowEngine retired |

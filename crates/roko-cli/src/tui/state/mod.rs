@@ -551,6 +551,9 @@ pub struct AgentOutputHistory {
     /// transcript. They are removed (while preserving tool steps) when
     /// [`settle_screened_transcript`] is called.
     live_unscreened_seqs: HashMap<String, HashSet<u64>>,
+    /// Per agent whose output arrives only through task-output rings: the
+    /// ring last taken in, and the sequence number that followed it.
+    ring_tails: HashMap<String, (Vec<String>, u64)>,
 }
 
 impl AgentOutputHistory {
@@ -745,6 +748,32 @@ impl AgentOutputHistory {
         self.records.remove(agent_id);
         self.oldest_seq.remove(agent_id);
         self.next_seq.remove(agent_id);
+        self.ring_tails.remove(agent_id);
+    }
+
+    /// Take in the lines a task-output ring adds for an agent whose output
+    /// arrives only through such rings (#367).
+    ///
+    /// A ring slides: each one holds the task's latest lines, so the new
+    /// lines are those after its overlap with the ring taken in last. An
+    /// agent whose history holds records from another path (`AgentOutput`
+    /// events) is left to it, because the ring repeats what it delivers.
+    pub fn ingest_ring(&mut self, agent_id: &str, ring: &[String], role: &str) {
+        let next = self.next_sequence(agent_id);
+        let new_from = match self.ring_tails.get(agent_id) {
+            Some((tail, tail_next)) if *tail_next == next => ring_overlap(tail, ring),
+            // Another path pushed records since the last ring: it owns them.
+            Some(_) => {
+                self.ring_tails.remove(agent_id);
+                return;
+            }
+            None if self.len(agent_id) > 0 => return,
+            None => 0,
+        };
+        self.ingest_lines(agent_id, &ring[new_from..], role);
+        let next = self.next_sequence(agent_id);
+        self.ring_tails
+            .insert(agent_id.to_string(), (ring.to_vec(), next));
     }
 
     /// Convert raw output lines into records and populate the history for
@@ -836,6 +865,15 @@ impl AgentOutputHistory {
             );
         }
     }
+}
+
+/// How many leading lines of `ring` repeat the end of `previous`: the longest
+/// such overlap, so a ring that slid by `n` lines leaves its last `n` new.
+fn ring_overlap(previous: &[String], ring: &[String]) -> usize {
+    (0..=previous.len().min(ring.len()))
+        .rev()
+        .find(|&overlap| previous[previous.len() - overlap..] == ring[..overlap])
+        .unwrap_or(0)
 }
 
 /// Classify a raw output line into an `OutputRecordKind` with optional
@@ -1901,13 +1939,18 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
-    /// Latest gate output retained per task by the live snapshot: a leading
-    /// `$ command` line (when published) plus the output tail.
+    /// Latest gate output retained per task and verify step by the live
+    /// snapshot: a leading `$ command` line (when published) plus the output
+    /// tail.
     pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
     /// Plan set of each plan id seen in the live snapshot, from disk
-    /// discovery (`None` for top-level or undiscovered plans). The snapshot
-    /// itself carries no plan set.
+    /// discovery (`None` for top-level or undiscovered plans). Read through
+    /// [`TuiState::plan_group`], which prefers the announced plan set's group.
     pub plan_groups: HashMap<String, Option<String>>,
+    /// Plans announced by the live snapshot's plan set, in execution order,
+    /// with each plan's group, wave, prerequisites and conflicts. Empty when
+    /// no plan set was announced.
+    pub plan_set: Vec<roko_core::dashboard_snapshot::PlanSetEntry>,
 
     // -- gate output --
     /// Streaming gate output lines from rung executions (bounded).
@@ -1922,7 +1965,8 @@ pub struct TuiState {
     pub affect: Option<roko_core::AffectSnapshot>,
 
     // -- agents (Vec-based roster for widgets) --
-    /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
+    /// Ordered agent roster, read by the Agents, Dashboard and Atelier views
+    /// and the header_bar, status_bar, cost_by_model and token_sparkline widgets.
     pub agents: Vec<AgentRow>,
     /// Latest fetched agent-topology payload.
     pub agent_topology: roko_core::AgentTopology,
@@ -2383,6 +2427,7 @@ impl Default for TuiState {
             gate_recent_failures: Vec::new(),
             task_gate_outputs: Vec::new(),
             plan_groups: HashMap::new(),
+            plan_set: Vec::new(),
 
             gate_output_lines: VecDeque::new(),
             current_gate_rung: None,
@@ -3172,6 +3217,67 @@ impl TuiState {
         let mut state = Self::default();
         state.update_from_snapshot(data);
         state
+    }
+
+    /// The plan set (directory under `plans/`) containing `plan_id`: the
+    /// group its announced plan-set entry names, else the group disk
+    /// discovery gave it. `None` for a top-level plan.
+    #[must_use]
+    pub fn plan_group(&self, plan_id: &str) -> Option<&str> {
+        self.plan_set
+            .iter()
+            .find(|entry| entry.plan_id == plan_id)
+            .and_then(|entry| entry.group.as_deref())
+            .or_else(|| self.plan_groups.get(plan_id).and_then(Option::as_deref))
+            .or_else(|| {
+                self.plan_summaries
+                    .iter()
+                    .find(|summary| summary.id == plan_id)
+                    .and_then(|summary| summary.group.as_deref())
+            })
+    }
+
+    /// Why an announced plan has not started, as the plan-set scheduler
+    /// holds it back: prerequisites that have not succeeded yet, else a plan
+    /// it conflicts with that is running, or that comes earlier in the set
+    /// and has not started. `None` for a plan that started, finished, or is
+    /// waiting only for a free slot.
+    #[must_use]
+    pub fn plan_wait_reason(&self, plan_id: &str) -> Option<String> {
+        let phase = |id: &str| match self.plans.iter().find(|plan| plan.id == id) {
+            Some(plan) if plan.active => PlanPhase::Active,
+            Some(plan) => plan.status,
+            None => PlanPhase::Pending,
+        };
+        if phase(plan_id) != PlanPhase::Pending {
+            return None;
+        }
+        let position = self
+            .plan_set
+            .iter()
+            .position(|entry| entry.plan_id == plan_id)?;
+        let entry = &self.plan_set[position];
+        let unfinished: Vec<&str> = entry
+            .depends_on
+            .iter()
+            .map(String::as_str)
+            .filter(|prerequisite| !phase(prerequisite).is_done())
+            .collect();
+        if !unfinished.is_empty() {
+            return Some(format!("waiting on {}", unfinished.join(", ")));
+        }
+        self.plan_set
+            .iter()
+            .enumerate()
+            .find(|(index, other)| {
+                entry.conflicts_with.contains(&other.plan_id)
+                    && match phase(&other.plan_id) {
+                        PlanPhase::Active => true,
+                        PlanPhase::Pending => *index < position,
+                        PlanPhase::Done | PlanPhase::Failed => false,
+                    }
+            })
+            .map(|(_, other)| format!("conflicts with {}", other.plan_id))
     }
 
     // -- config items cache (P3.2) ------------------------------------------

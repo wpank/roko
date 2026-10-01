@@ -414,7 +414,16 @@ pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
     out
 }
 
-fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
+/// The `tasks.toml` files under `dir`, sorted: `dir` itself when it is one,
+/// otherwise every one below it outside `archive/` and `archived/`
+/// directories. `plan validate` and its `--spec-quality` lint both read this
+/// set (gap-4b3bd5).
+///
+/// # Errors
+///
+/// Returns an error when `dir` does not exist, is a file other than
+/// `tasks.toml`, or cannot be read.
+pub fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
     if dir.is_file() {
         if dir.file_name().is_some_and(|name| name == "tasks.toml") {
             return Ok(vec![dir.to_path_buf()]);

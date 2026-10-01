@@ -3,13 +3,14 @@ id = "gap-4b3bd5"
 kind = "gap"
 title = "commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/commands/plan", "roko-cli/plan_validate"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-specq's report on gap-46ab3f, branch work/gap-46ab3f)"
 anchors = ["crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/commands/plan.rs"]
@@ -48,3 +49,9 @@ The duplicate exists only on the branch. This item depends on gap-46ab3f.
 
 - [ ] One function finds `tasks.toml` files for both commands.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+- 2026-10-01 (wk-specq): implemented on work/gap-404fdb; cargo verification deferred to the batch check.
+  `plan_validate::collect_tasks_files` is now `pub` and documented. It must be `pub`, not `pub(crate)`:
+  `commands/plan.rs` belongs to the `roko` binary crate. `cmd_plan_validate`'s `--spec-quality` lint calls it,
+  and `validated_tasks_files`, the second walk, is gone.

@@ -1926,37 +1926,6 @@ struct ValidateJson<'a> {
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
-/// The `tasks.toml` files `plan validate` lints: `dir` itself when it is one, otherwise every one
-/// under it outside `archive/` and `archived/` directories, sorted. This is the walk of
-/// `plan_validate::collect_tasks_files`, which is private.
-fn validated_tasks_files(dir: &Path) -> Vec<PathBuf> {
-    if dir.is_file() {
-        return vec![dir.to_path_buf()];
-    }
-    let mut files = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(current) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let archived = path
-                    .file_name()
-                    .is_some_and(|name| name == "archive" || name == "archived");
-                if !archived {
-                    pending.push(path);
-                }
-            } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
@@ -1994,7 +1963,9 @@ pub(crate) fn cmd_plan_validate(
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
     let spec_report = spec_quality
-        .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
+        .then(|| plan_validate::collect_tasks_files(dir))
+        .transpose()?
+        .map(|files| roko_gate::spec_quality::lint_files(&files, workdir));
 
     // The workspace rungs every plan task runs after its own verify steps.
     let rungs = config

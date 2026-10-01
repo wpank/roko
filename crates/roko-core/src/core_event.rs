@@ -269,11 +269,14 @@ pub fn core_event_to_dashboard_events(event: &CoreEvent) -> Vec<DashboardEvent> 
             plan_id,
             task_id,
             passed,
+            outcome,
             ..
         } => vec![DashboardEvent::TaskCompleted {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
-            outcome: if *passed { "passed" } else { "failed" }.into(),
+            outcome: outcome
+                .clone()
+                .unwrap_or_else(|| if *passed { "passed" } else { "failed" }.into()),
         }],
         RuntimeEvent::TaskFailed {
             plan_id,
@@ -485,6 +488,7 @@ pub mod factory {
             task_id: task_id.into(),
             passed,
             duration_ms,
+            outcome: None,
         }
     }
 
@@ -626,12 +630,14 @@ mod tests {
                 task_id,
                 passed,
                 duration_ms,
+                outcome,
             } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(plan_id, "plan-1");
                 assert_eq!(task_id, "task-1");
                 assert!(passed);
                 assert_eq!(duration_ms, 1234);
+                assert_eq!(outcome, None);
             }
             _ => panic!("expected TaskCompleted"),
         }

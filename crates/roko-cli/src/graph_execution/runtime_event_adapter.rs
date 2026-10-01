@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::Utc;
 use uuid::Uuid;
 
+use roko_core::dashboard_snapshot::{TaskOutcomeClass, classify_task_outcome};
 use roko_core::runtime_event::{
     RuntimeEvent, RuntimeEventDelivery, RuntimeEventEnvelope, RuntimeEventMode,
 };
@@ -257,12 +258,18 @@ impl GraphRuntimeEventAdapter {
                 common,
                 node: _,
                 elapsed_ms,
+                outcome,
             } => RuntimeEvent::TaskCompleted {
                 run_id: common.run_id.clone(),
                 plan_id: plan_id_str.to_string(),
                 task_id: task_id_str.to_string(),
-                passed: true,
+                // bug-71a5e6: a completion that names its outcome passes only
+                // as a verified pass, and keeps the outcome for consumers.
+                passed: outcome.as_deref().is_none_or(|outcome| {
+                    classify_task_outcome(outcome) == TaskOutcomeClass::Passed
+                }),
                 duration_ms: *elapsed_ms,
+                outcome: outcome.clone(),
             },
             GraphExecutionEvent::NodeFailed {
                 common: _,
@@ -978,6 +985,56 @@ mod tests {
             assert_eq!(reason, "upstream failed");
         } else {
             panic!("expected TaskSkipped");
+        }
+    }
+
+    /// bug-71a5e6: a completion keeps the outcome its task settled with, so an
+    /// unverified, already-satisfied or skipped task never reads as passed on
+    /// the runtime path, and the dashboard gets the same outcome back.
+    #[test]
+    fn runtime_adapter_keeps_the_task_outcome() {
+        let adapter = make_adapter();
+        for (outcome, passed, class) in [
+            (Some("passed"), true, TaskOutcomeClass::Passed),
+            (Some("unverified"), false, TaskOutcomeClass::Unverified),
+            (
+                Some("already_satisfied"),
+                false,
+                TaskOutcomeClass::AlreadySatisfied,
+            ),
+            (Some("skipped"), false, TaskOutcomeClass::Skipped),
+            (
+                Some("accepted_with_failures"),
+                false,
+                TaskOutcomeClass::AcceptedWithFailures,
+            ),
+            // A completion that does not say how it settled reads as before.
+            (None, true, TaskOutcomeClass::Passed),
+        ] {
+            let envelope = adapter.convert(&GraphExecutionEvent::NodeCompleted {
+                common: make_common(30),
+                node: make_node("T01"),
+                elapsed_ms: 10,
+                outcome: outcome.map(str::to_string),
+            });
+            let RuntimeEvent::TaskCompleted {
+                passed: reported,
+                outcome: kept,
+                ..
+            } = &envelope.payload
+            else {
+                panic!("expected TaskCompleted, got {:?}", envelope.payload);
+            };
+            assert_eq!(*reported, passed, "{outcome:?}");
+            assert_eq!(kept.as_deref(), outcome);
+
+            let dashboard = roko_core::core_event_to_dashboard_events(&envelope.payload);
+            let [roko_core::DashboardEvent::TaskCompleted { outcome: shown, .. }] =
+                dashboard.as_slice()
+            else {
+                panic!("expected one TaskCompleted, got {dashboard:?}");
+            };
+            assert_eq!(classify_task_outcome(shown), class, "{outcome:?}");
         }
     }
 

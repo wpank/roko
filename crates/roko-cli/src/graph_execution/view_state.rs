@@ -540,6 +540,7 @@ mod tests {
             common: make_common(2),
             node: make_node("T01"),
             elapsed_ms: 1500,
+            outcome: None,
         });
         let snap = state.snapshot();
         let t01 = snap.nodes.iter().find(|n| n.node_id == "T01").unwrap();
@@ -599,6 +600,7 @@ mod tests {
             common: make_common(1),
             node: make_node("T01"),
             elapsed_ms: 100,
+            outcome: None,
         });
         projector.update(&GraphExecutionEvent::NodeFailed {
             common: make_common(2),

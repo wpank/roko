@@ -520,13 +520,13 @@ async fn run_standard_path(
             String::new()
         }
     };
-    let Some(plans_dir) =
+    let Some(generated) =
         generate_prompt_plan(cli, workdir, prompt, &model_key, &context_block, &out).await
     else {
         return Ok(EXIT_AGENT_FAILURE);
     };
 
-    let plans = match roko_cli::runner::plan_loader::load_plans(&plans_dir) {
+    let plans = match roko_cli::runner::plan_loader::load_plans(&generated) {
         Ok(plans) if plans.is_empty() => {
             out.error("Plan generation produced no executable plans");
             return Ok(EXIT_AGENT_FAILURE);
@@ -544,8 +544,8 @@ async fn run_standard_path(
         &format!("Executing plan ({total_tasks} tasks)..."),
     );
 
-    // Execute the plans through the Graph engine.
-    run_plan_execution(cli, workdir, &plans_dir, no_cascade, provider).await
+    // Execute the plan through the Graph engine.
+    run_plan_execution(cli, workdir, &generated, no_cascade, provider).await
 }
 
 // ─── Complex path: PRD -> draft -> plan -> execute ──────────────────
@@ -730,7 +730,9 @@ async fn run_complex_path(
         }
     };
 
-    let plans = match roko_cli::runner::plan_loader::load_plans(&plans_root) {
+    // The plan generated for this PRD, not every plan in the plans directory.
+    let plan_dir = plans_root.join(&slug);
+    let plans = match roko_cli::runner::plan_loader::load_plans(&plan_dir) {
         Ok(plans) if plans.is_empty() => {
             out.error("Plan generation from PRD produced no executable plans");
             return Ok(EXIT_AGENT_FAILURE);
@@ -749,7 +751,7 @@ async fn run_complex_path(
     );
 
     // ── Step 4: Execute the plan ─────────────────────────────────────
-    run_plan_execution(cli, workdir, &plans_root, no_cascade, provider).await
+    run_plan_execution(cli, workdir, &plan_dir, no_cascade, provider).await
 }
 
 // ─── Shared: execute a plan directory through the Graph engine ──────
@@ -843,18 +845,18 @@ async fn run_standard_path_inner(
         "roko do (fallback plan)",
     )?;
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
-    let Some(plans_dir) = generate_prompt_plan(cli, workdir, prompt, &model_key, "", &out).await
+    let Some(generated) = generate_prompt_plan(cli, workdir, prompt, &model_key, "", &out).await
     else {
         return Ok(EXIT_AGENT_FAILURE);
     };
 
-    run_plan_execution(cli, workdir, &plans_dir, no_cascade, provider).await
+    run_plan_execution(cli, workdir, &generated, no_cascade, provider).await
 }
 
 /// Plan `prompt` with the one plan generator (gap-2623b2), which validates
 /// the plan and writes it to the workspace plans directory; `context` follows
-/// the prompt. Returns that directory, or `None` after reporting a failure on
-/// `out`.
+/// the prompt. Returns the new plan's directory, so `roko do` runs that plan
+/// and no other plan beside it, or `None` after reporting a failure on `out`.
 async fn generate_prompt_plan(
     cli: &Cli,
     workdir: &Path,
@@ -879,7 +881,7 @@ async fn generate_prompt_plan(
         )
     };
     match roko_cli::prd::generate_plan(request).await {
-        Ok((plans_dir, _)) => Some(plans_dir),
+        Ok((plans_root, _)) => Some(plans_root.join(&slug)),
         Err(err) => {
             out.error(&format!("Plan generation failed: {err:#}"));
             None

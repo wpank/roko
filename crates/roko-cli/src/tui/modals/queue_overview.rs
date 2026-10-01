@@ -107,6 +107,7 @@ pub fn render_queue_overview(
     for task in &milestone.tasks {
         let status_style = match TaskStatus::from(task.status.as_str()) {
             TaskStatus::Done => theme.success(),
+            TaskStatus::AlreadySatisfied => theme.satisfied(),
             TaskStatus::Active => theme.info(),
             TaskStatus::Failed => theme.danger(),
             TaskStatus::AcceptedWithFailures => theme.warning(),

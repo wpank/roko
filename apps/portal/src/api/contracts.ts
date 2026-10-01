@@ -23,6 +23,12 @@ export const TASK_OUTCOME_ACCEPTED_WITH_FAILURES = 'accepted_with_failures' as c
 /** Outcome string emitted when a task completed without a verify step judging it. */
 export const TASK_OUTCOME_UNVERIFIED = 'unverified' as const;
 
+/**
+ * Outcome string emitted when a task's work was already there: its attempt changed nothing,
+ * and its verify steps passed on the tree as it was.
+ */
+export const TASK_OUTCOME_ALREADY_SATISFIED = 'already_satisfied' as const;
+
 // ---------------------------------------------------------------------------
 // Dashboard events
 // ---------------------------------------------------------------------------
@@ -116,13 +122,18 @@ export interface WirePlanDisplayState {
   plan_id: string;
   phase: string;
   tasks_total: number;
-  /** Tasks that finished without failing: passed, accepted with failures, unverified or skipped. */
+  /**
+   * Tasks that finished without failing: passed, already satisfied, accepted with failures,
+   * unverified or skipped.
+   */
   tasks_done: number;
   tasks_failed: number;
   /** Tasks accepted although their verification failed. */
   tasks_accepted_with_failures?: number;
   /** Tasks that passed their verify steps. */
   tasks_passed?: number;
+  /** Tasks whose work was already there; their verify steps passed on the unchanged tree. */
+  tasks_already_satisfied?: number;
   /** Tasks that completed without a verify step judging them. */
   tasks_unverified?: number;
   /** Tasks that never ran. */

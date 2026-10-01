@@ -10,7 +10,11 @@
  */
 
 import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
-import { TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_UNVERIFIED } from '@/api/contracts';
+import {
+  TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+  TASK_OUTCOME_ALREADY_SATISFIED,
+  TASK_OUTCOME_UNVERIFIED,
+} from '@/api/contracts';
 import { decodeFrame } from '@/lib/streamRecord';
 import type { Frame, TranscriptEntry, AttemptDivider, ToolStep, UnscreenedEntry } from '@/lib/streamRecord';
 
@@ -27,6 +31,7 @@ export type TaskStatus =
   | 'passed'
   | 'failed'
   | 'accepted_with_failures'
+  | 'already_satisfied'
   | 'unverified'
   | 'skipped'
   | 'cancelled';
@@ -123,6 +128,7 @@ const TERMINAL: Set<TaskStatus> = new Set([
   'passed',
   'failed',
   'accepted_with_failures',
+  'already_satisfied',
   'unverified',
   'skipped',
   'cancelled',
@@ -157,12 +163,13 @@ export function parseCheckName(name: string): { index: number | null; phase: str
  * Classify a task outcome string into a TaskStatus.
  * Mirrors `classify_task_outcome` in the Rust source: only an outcome that
  * names a pass is 'passed', and any outcome it does not recognise is
- * 'unverified'. The accepted_with_failures check runs first because the string
- * contains "fail".
+ * 'unverified'. The accepted_with_failures and already_satisfied checks run
+ * first: the one contains "fail".
  */
 function classifyOutcome(outcome: string): TaskStatus {
   const lo = outcome.toLowerCase();
   if (lo === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
+  if (lo === TASK_OUTCOME_ALREADY_SATISFIED) return 'already_satisfied';
   if (lo.includes('skipped') || lo === 'unknown') return 'skipped';
   if (lo === 'passed' || lo === 'succeeded' || lo.startsWith('success')) return 'passed';
   if (['fail', 'error', 'cancel', 'halt'].some((word) => lo.includes(word))) return 'failed';
@@ -269,8 +276,9 @@ function upsertCheck(
  * are removed and all counters reset to zero.
  *
  * After 'failed' or 'cancelled': resume — task records whose status is
- * 'passed', 'unverified', 'skipped', or 'accepted_with_failures' are kept and
- * counted; every other task record (and its transcript) is removed.
+ * 'passed', 'already_satisfied', 'unverified', 'skipped', or
+ * 'accepted_with_failures' are kept and counted; every other task record (and
+ * its transcript) is removed.
  *
  * The plan's generation is incremented in both cases.
  */
@@ -316,6 +324,7 @@ function beginNewRun(
     // Resume: keep tasks that finished well, remove the rest
     const GOOD: Set<TaskStatus> = new Set([
       'passed',
+      'already_satisfied',
       'unverified',
       'skipped',
       'accepted_with_failures',
@@ -712,7 +721,7 @@ export function applyEvent(
           } else if (existing!.status === 'failed') {
             tasksFailed = Math.max(0, tasksFailed - 1);
           } else {
-            // passed or skipped
+            // passed, already satisfied or skipped
             tasksDone = Math.max(0, tasksDone - 1);
           }
         }
@@ -769,7 +778,7 @@ export function applyEvent(
         } else if (status === 'failed') {
           tasksFailed += 1;
         } else {
-          // passed or skipped both count as done
+          // passed, already satisfied and skipped all count as done
           tasksDone += 1;
         }
         newPlans = {

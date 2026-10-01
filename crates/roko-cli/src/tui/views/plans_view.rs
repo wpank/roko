@@ -1457,6 +1457,7 @@ fn render_plan_tasks(
                 ),
                 match task.status {
                     TaskStatus::Done => theme.badge_complete(),
+                    TaskStatus::AlreadySatisfied => theme.satisfied(),
                     TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => Style::default()
                         .fg(theme.warning)
                         .add_modifier(Modifier::BOLD),
@@ -1777,6 +1778,7 @@ fn build_timing_lines(
 fn task_status_icon(task: &TaskEntry, theme: &Theme) -> (&'static str, Color) {
     match task.status {
         TaskStatus::Done => ("\u{2713}", theme.success),
+        TaskStatus::AlreadySatisfied => ("\u{2261}", theme.satisfied),
         TaskStatus::AcceptedWithFailures => ("\u{26a0}", theme.warning),
         TaskStatus::Unverified => ("?", theme.warning),
         TaskStatus::Active => ("\u{25b6}", theme.warning),

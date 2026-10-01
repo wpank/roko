@@ -491,9 +491,9 @@ pub struct PlanDisplayState {
     pub phase: String,
     /// Total tasks registered for this plan.
     pub tasks_total: usize,
-    /// Tasks that finished without failing: passed, accepted with failures,
-    /// unverified or skipped. Plan progress counts them; `tasks_passed` counts
-    /// only the verified passes.
+    /// Tasks that finished without failing: passed, already satisfied,
+    /// accepted with failures, unverified or skipped. Plan progress counts
+    /// them; `tasks_passed` counts only the verified passes.
     pub tasks_done: usize,
     /// Tasks that failed.
     pub tasks_failed: usize,
@@ -504,6 +504,11 @@ pub struct PlanDisplayState {
     /// Tasks that passed their verify steps. Also counted in `tasks_done`.
     #[serde(default)]
     pub tasks_passed: usize,
+    /// Tasks whose work was already there: their attempt changed nothing and
+    /// their verify steps passed on the tree as it was. Also counted in
+    /// `tasks_done`, but not as passed.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Tasks that completed without any verify step judging them. Also
     /// counted in `tasks_done`.
     #[serde(default)]
@@ -1124,6 +1129,11 @@ pub const TASK_OUTCOME_PASSED: &str = "passed";
 /// judging it. Counted apart from passed tasks.
 pub const TASK_OUTCOME_UNVERIFIED: &str = "unverified";
 
+/// `TaskCompleted` outcome for a task whose work was already there: its
+/// attempt changed nothing, and its verify steps passed on the tree as it was
+/// (gap-9eb1e1). Counted apart from passed tasks.
+pub const TASK_OUTCOME_ALREADY_SATISFIED: &str = "already_satisfied";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
@@ -1133,6 +1143,9 @@ pub enum TaskOutcomeClass {
     Failed,
     /// The task completed although its verification failed.
     AcceptedWithFailures,
+    /// The task's work was already there: its attempt changed nothing, and
+    /// its verify steps passed on the tree as it was.
+    AlreadySatisfied,
     /// The task completed, but no verify step judged it.
     Unverified,
     /// The task never ran: it was skipped or its condition was not met.
@@ -1144,12 +1157,15 @@ pub enum TaskOutcomeClass {
 /// Only an outcome that names a pass (`passed`, or a legacy `success` or
 /// `succeeded`) counts as passed. A skipped task is not a pass, a failure
 /// is failed, and any other outcome, `unverified` included, is unverified.
-/// Accepted-with-failures is matched exactly first: it contains "fail".
+/// Accepted-with-failures and already-satisfied are matched exactly first:
+/// the one contains "fail".
 #[must_use]
 pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     let lower = outcome.to_ascii_lowercase();
     if lower == TASK_OUTCOME_ACCEPTED_WITH_FAILURES {
         TaskOutcomeClass::AcceptedWithFailures
+    } else if lower == TASK_OUTCOME_ALREADY_SATISFIED {
+        TaskOutcomeClass::AlreadySatisfied
     } else if lower.contains("skipped") || lower == "unknown" {
         TaskOutcomeClass::Skipped
     } else if lower == TASK_OUTCOME_PASSED || lower == "succeeded" || lower.starts_with("success") {
@@ -1379,6 +1395,11 @@ pub struct SnapshotStats {
     /// apart from `tasks_completed`; plan progress still treats them as done.
     #[serde(default)]
     pub tasks_accepted_with_failures: usize,
+    /// Number of tasks whose work was already there: their attempt changed
+    /// nothing and their verify steps passed on the tree as it was. Counted
+    /// apart from `tasks_completed`.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Number of tasks that completed without any verify step judging them.
     /// Counted apart from `tasks_completed`.
     #[serde(default)]
@@ -1552,6 +1573,7 @@ impl DashboardSnapshot {
                     plan.tasks_failed = 0;
                     plan.tasks_accepted_with_failures = 0;
                     plan.tasks_passed = 0;
+                    plan.tasks_already_satisfied = 0;
                     plan.tasks_unverified = 0;
                     plan.tasks_skipped = 0;
                     plan.started_at_ms = None;
@@ -1713,6 +1735,13 @@ impl DashboardSnapshot {
                             if let Some(plan) = self.plans.get_mut(plan_id) {
                                 plan.tasks_done += 1;
                                 plan.tasks_passed += 1;
+                            }
+                        }
+                        TaskOutcomeClass::AlreadySatisfied => {
+                            self.stats.tasks_already_satisfied += 1;
+                            if let Some(plan) = self.plans.get_mut(plan_id) {
+                                plan.tasks_done += 1;
+                                plan.tasks_already_satisfied += 1;
                             }
                         }
                         TaskOutcomeClass::Unverified => {
@@ -3090,6 +3119,7 @@ fn apply_runner_lifecycle_projection(
     snapshot.stats.tasks_active = 0;
     snapshot.stats.tasks_completed = 0;
     snapshot.stats.tasks_failed = 0;
+    snapshot.stats.tasks_already_satisfied = 0;
     snapshot.stats.tasks_unverified = 0;
     snapshot.stats.tasks_skipped = 0;
     snapshot.stats.agents_active = 0;
@@ -3099,6 +3129,7 @@ fn apply_runner_lifecycle_projection(
         plan.tasks_failed = 0;
         plan.tasks_accepted_with_failures = 0;
         plan.tasks_passed = 0;
+        plan.tasks_already_satisfied = 0;
         plan.tasks_unverified = 0;
         plan.tasks_skipped = 0;
     }
@@ -4809,12 +4840,15 @@ mod tests {
 
     #[test]
     fn classify_task_outcome_counts_only_verified_passes() {
-        use TaskOutcomeClass::{AcceptedWithFailures, Failed, Passed, Skipped, Unverified};
+        use TaskOutcomeClass::{
+            AcceptedWithFailures, AlreadySatisfied, Failed, Passed, Skipped, Unverified,
+        };
         for (outcome, class) in [
             (TASK_OUTCOME_PASSED, Passed),
             ("success", Passed),
             ("succeeded", Passed),
             (TASK_OUTCOME_UNVERIFIED, Unverified),
+            (TASK_OUTCOME_ALREADY_SATISFIED, AlreadySatisfied),
             ("completed", Unverified),
             ("skipped", Skipped),
             ("condition-skipped", Skipped),
@@ -4826,6 +4860,42 @@ mod tests {
         ] {
             assert_eq!(classify_task_outcome(outcome), class, "{outcome}");
         }
+    }
+
+    /// gap-9eb1e1: a task whose work was already there counts as done, apart
+    /// from the passes.
+    #[test]
+    fn already_satisfied_tasks_count_as_done_but_not_as_passed() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 2,
+        });
+        for (task_id, outcome) in [
+            ("t1", TASK_OUTCOME_PASSED),
+            ("t2", TASK_OUTCOME_ALREADY_SATISFIED),
+        ] {
+            snap.apply(&DashboardEvent::TaskCompleted {
+                plan_id: "p1".into(),
+                task_id: task_id.into(),
+                outcome: outcome.into(),
+            });
+        }
+
+        let stats = &snap.stats;
+        assert_eq!(
+            (stats.tasks_completed, stats.tasks_already_satisfied),
+            (1, 1)
+        );
+        let plan = &snap.plans["p1"];
+        assert_eq!(
+            (
+                plan.tasks_passed,
+                plan.tasks_already_satisfied,
+                plan.tasks_done
+            ),
+            (1, 1, 2)
+        );
     }
 
     #[test]

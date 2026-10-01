@@ -393,6 +393,12 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                     .fg(Theme::WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
+            TaskRowStatus::AlreadySatisfied => (
+                "\u{2261}",
+                Style::default()
+                    .fg(Theme::TEAL)
+                    .add_modifier(Modifier::BOLD),
+            ),
             TaskRowStatus::Unverified => (
                 "?",
                 Style::default()

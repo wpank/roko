@@ -239,6 +239,7 @@ fn render_plan(
         for task in &plan.tasks {
             let icon = match task.status {
                 TaskStatus::Done => "\u{2713}",
+                TaskStatus::AlreadySatisfied => "\u{2261}",
                 TaskStatus::AcceptedWithFailures => "\u{26a0}",
                 TaskStatus::Unverified => "?",
                 TaskStatus::Failed | TaskStatus::Blocked => "\u{2717}",
@@ -248,6 +249,7 @@ fn render_plan(
             };
             let status_style = match task.status {
                 TaskStatus::Done => theme.success(),
+                TaskStatus::AlreadySatisfied => theme.satisfied(),
                 TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => theme.warning(),
                 TaskStatus::Failed | TaskStatus::Blocked => theme.danger(),
                 TaskStatus::Active => theme.warning(),

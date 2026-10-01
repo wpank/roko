@@ -302,6 +302,9 @@ fn task_status_label(status: TaskRowStatus) -> &'static str {
         TaskRowStatus::AcceptedWithFailures => {
             roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES
         }
+        TaskRowStatus::AlreadySatisfied => {
+            roko_core::dashboard_snapshot::TASK_OUTCOME_ALREADY_SATISFIED
+        }
         TaskRowStatus::Unverified => roko_core::dashboard_snapshot::TASK_OUTCOME_UNVERIFIED,
         TaskRowStatus::Skipped => "skipped",
         TaskRowStatus::Blocked => "blocked",

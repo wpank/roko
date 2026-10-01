@@ -1,0 +1,834 @@
+{
+ "schema": "roko.citation_content_audit/1",
+ "item": "gap-6e0a95",
+ "date": "2026-10-01",
+ "complete": true,
+ "scope": "every work cited in docs/whitepaper/0*.md and 10-related-work.md: 50 keys, all of references.bib",
+ "method": "Each citing sentence was compared with the cited work's full text: arXiv HTML for the 39 arXiv works, the vendor documentation page for the 8 product citations, the 1960 edition of Ashby on archive.org and the authors' PDF of Brun et al. Filieri et al. could only be checked against its abstract. Claims about Roko and the status matrix were not changed.",
+ "summary": {
+  "works": 50,
+  "supported": 45,
+  "corrected": 5,
+  "removed": 0,
+  "error_rate": 0.1,
+  "major": 0,
+  "note": "All five corrections are minor. Three works shared one sentence that credited them with held-out tests and rollback, the guard Roko's own design (§5) uses. One citation pointed at the wrong Claude Code page. One product page was paraphrased beyond its text."
+ },
+ "works": [
+  {
+   "key": "aider2024architect",
+   "title": "Separating code reasoning and editing",
+   "id": "https://aider.chat/2024/09/26/architect.html",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Products pair a frontier model with a cheaper one: Claude Code's `opusplan` alias plans with Opus and executes with Sonnet [@anthropic2026modelconfig], Devin Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@cognition2026models], and aider's architect mode has one model describe a solution and another edit the files [@aider2024architect]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'An Architect model is asked to describe how to solve the coding problem. An Editor model is given the Architect's solution and asked to produce specific code editing instructions'."
+  },
+  {
+   "key": "anthropic2026advisor",
+   "title": "Escalate hard decisions with the advisor tool",
+   "id": "https://code.claude.com/docs/en/advisor",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Several pair a stronger model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and its advisor tool lets the main model escalate hard decisions to an advisor model; Devin's Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@anthropic2026modelconfig; @anthropic2026advisor; @cognition2026models]."
+    }
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "evidence": "The page documents the advisor tool (a main model escalating hard decisions to an advisor model) and names opusplan only in passing; the opusplan sentence cited it alone. Now the opusplan claim cites the model-configuration page and the sentence describes the advisor tool.",
+   "original": "Claude Code's `opusplan` plans on Opus and executes on Sonnet, and Devin's Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@anthropic2026advisor; @cognition2026models]."
+  },
+  {
+   "key": "anthropic2026agents",
+   "title": "Run agents in parallel",
+   "id": "https://code.claude.com/docs/en/agents",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Model choice is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's router is \"managed by Cursor\", and Factory's sends routine steps to lower-cost models and reserves stronger ones for work that needs deeper reasoning [@anthropic2026agents; @cursor2026router; @factory2026router]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'In every approach the workers are Claude sessions.'"
+  },
+  {
+   "key": "anthropic2026modelconfig",
+   "title": "Model configuration (Claude Code documentation)",
+   "id": "https://code.claude.com/docs/en/model-config",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Several pair a stronger model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and its advisor tool lets the main model escalate hard decisions to an advisor model; Devin's Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@anthropic2026modelconfig; @anthropic2026advisor; @cognition2026models]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "Products pair a frontier model with a cheaper one: Claude Code's `opusplan` alias plans with Opus and executes with Sonnet [@anthropic2026modelconfig], Devin Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@cognition2026models], and aider's architect mode has one model describe a solution and another edit the files [@aider2024architect]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'opusplan: Special mode that uses opus during plan mode, then switches to sonnet for execution'. Now also cited in §6 for opusplan."
+  },
+  {
+   "key": "arjmandi2026harness",
+   "title": "Harness or Model? Isolating the Harness Effect in Agentic Coding with a Contamination-Controlled Private Suite",
+   "id": "arXiv:2609.11987",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "At a fixed model, a controlled study found no average difference between vendor and neutral harnesses [@arjmandi2026harness]; §8 plans to measure Roko's harness effect rather than assume it (spec-567e52)."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Paired same-model contrasts: no average advantage for either harness (-1.25 pp Opus 4.8, +1.25 pp GPT-5.5) (abstract, §5)."
+  },
+  {
+   "key": "ashby1960design",
+   "title": "Design for a Brain",
+   "id": "doi:10.1007/978-94-015-1320-3",
+   "read": "book full text (archive.org, 1960 edition)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "Ashby called the quantities that must stay within limits essential variables [@ashby1960design]; Roko's design names four: the verified pass rate, cost per verified task, the false-green rate and latency."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "**Cybernetics for agents.** Ashby's essential variables [@ashby1960design] and control theory for self-adaptive software [@filieri2015software] supply a regulator's vocabulary and tests."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'Its end is the maintenance of the values of some essential variables within physiological limits' (ch. 3, 'Essential variables')."
+  },
+  {
+   "key": "bhardwaj2026bounded",
+   "title": "Bounded Loops: Pre-Run Spend Bounds, Proved Termination, and Verified Completion for Agent Harnesses",
+   "id": "arXiv:2609.27871",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "The closest partial matches are a production triage agent that estimates its auto-passed items' miss rate from audit samples [@gao2026pinsieve], a harness that measures its gates' false-accept rate on planted mutants [@bhardwaj2026bounded], routing learned across vendors from benchmark outcomes [@li2026rsirouter], and offline audits of whether stored experience changes decisions [@xu2026replaylens]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Gates measured against planted mutants: no false accepts over 209 destroying mutants (alpha <= 1.8%) (abstract, §10, §12)."
+  },
+  {
+   "key": "bhola2026scrouting",
+   "title": "Scrouting: Cost-Aware Routing of Coding Agents by Scouting the Repository First",
+   "id": "arXiv:2608.04804",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "For agentic coding the evidence is mixed: on 266 SWE-bench Pro tasks, a router matched the best single model at about a fifth of its cost per solve, but a no-router ablation tied it [@bhola2026scrouting]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "266 SWE-bench Pro tasks: SuperScout matches the best single model (159 vs 158 solves) at about a fifth of the cost per solve; a no-router ablation ties it (abstract, §7.1)."
+  },
+  {
+   "key": "brun2011proactive",
+   "title": "Proactive detection of collaboration conflicts",
+   "id": "doi:10.1145/2025113.2025139",
+   "read": "author PDF (full text)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "Merge, then verify, through a queue.** In 5,355 merges by human developers on three open-source projects, 16% conflicted textually and 7% more merged cleanly but broke the build or tests [@brun2011proactive]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "5,355 merges in Git, Perl5 and Voldemort: 76% clean, 16% textual conflicts, 1% build failures, 6% test failures (§3, Figure 4)."
+  },
+  {
+   "key": "chen2024frugalgpt",
+   "title": "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance",
+   "id": "arXiv:2305.05176",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "A frontier model that split long-document questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost [@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable work and hurt sequential work [@kim2025towards]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "**Routing and cascades.** Cascades and learned routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm], when the quality estimate is accurate [@dekoninck2024unified]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "LLM cascade over query answering matches the best single LLM at 50-98% lower cost (§4, Table 3)."
+  },
+  {
+   "key": "chen2026when",
+   "title": "When Does Combining Language Models Help? A Co-Failure Ceiling on Routing, Voting, and Mixture-of-Agents Across 67 Frontier Models",
+   "id": "arXiv:2606.27288",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Every such policy is capped by how often all candidate models fail together [@chen2026when]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "A co-failure ceiling on routing, voting and mixture-of-agents across 67 frontier models: combining cannot beat the rate at which all candidates fail together (title, abstract, §5)."
+  },
+  {
+   "key": "cognition2026models",
+   "title": "Models",
+   "id": "https://docs.devin.ai/cli/models",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Several pair a stronger model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and its advisor tool lets the main model escalate hard decisions to an advisor model; Devin's Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@anthropic2026modelconfig; @anthropic2026advisor; @cognition2026models]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "Products pair a frontier model with a cheaper one: Claude Code's `opusplan` alias plans with Opus and executes with Sonnet [@anthropic2026modelconfig], Devin Fusion pairs \"a frontier lead model with a cost-efficient sidekick\" [@cognition2026models], and aider's architect mode has one model describe a solution and another edit the files [@aider2024architect]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Quoted verbatim: Fusion 'delivers frontier intelligence for cheaper by pairing a frontier lead model with a cost-efficient sidekick'."
+  },
+  {
+   "key": "cursor2026router",
+   "title": "Cursor Router",
+   "id": "https://cursor.com/docs/cursor-router",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Model choice is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's router is \"managed by Cursor\", and Factory's sends routine steps to lower-cost models and reserves stronger ones for work that needs deeper reasoning [@anthropic2026agents; @cursor2026router; @factory2026router]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'Cursor Router is data-driven and managed by Cursor. You can't hand-pick which model handles a request'."
+  },
+  {
+   "key": "dekoninck2024unified",
+   "title": "A Unified Approach to Routing and Cascading for LLMs",
+   "id": "arXiv:2410.10347",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Routing and cascades.** Cascades and learned routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm], when the quality estimate is accurate [@dekoninck2024unified]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Cascade routing unifies routing and cascading; its gains depend on accurate quality estimates ('Importance of Quality Estimation', §1, §5)."
+  },
+  {
+   "key": "edwards2026askorassume",
+   "title": "Ask or Assume? Uncertainty-Aware Clarification-Seeking in Coding Agents",
+   "id": "arXiv:2603.26233",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "Put ambiguity back into authoring.** On underspecified SWE-bench Verified issues, models struggled to tell them from well-specified ones [@vijayvargiya2025ambigswe]; a scaffold that checks for underspecification and asks before executing resolved 69.4%, close to the fully specified level [@edwards2026askorassume]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "The multi-agent scaffold that separates underspecification detection from execution reaches a 69.40% resolve rate, closing the gap with agents given fully specified issues (abstract, §4)."
+  },
+  {
+   "key": "factory2026router",
+   "title": "Factory Router",
+   "id": "https://docs.factory.ai/model-independence/factory-router",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "06-measured-trust.md",
+     "text": "Model choice is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's router is \"managed by Cursor\", and Factory's sends routine steps to lower-cost models and reserves stronger ones for work that needs deeper reasoning [@anthropic2026agents; @cursor2026router; @factory2026router]."
+    }
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "evidence": "The page says Droid 'sends routine steps to faster, lower-cost models and reserves stronger models for work that needs deeper reasoning'; it says nothing about escalating when a model struggles. Sentence reworded to the page's wording.",
+   "original": "... and Factory's sends routine steps to cheaper models and escalates when one struggles [@anthropic2026agents; @cursor2026router; @factory2026router]."
+  },
+  {
+   "key": "filieri2015software",
+   "title": "Software Engineering Meets Control Theory",
+   "id": "doi:10.1109/seams.2015.12",
+   "read": "abstract only (Semantic Scholar); full-text copies at HAL, Lund, Imperial and CiteSeerX refused automated download",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Cybernetics for agents.** Ashby's essential variables [@ashby1960design] and control theory for self-adaptive software [@filieri2015software] supply a regulator's vocabulary and tests."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'a control design process for software systems which enables automatic analysis and synthesis of a controller that is guaranteed to have the desired properties and behavior' (abstract). The claim is only about the paper's scope."
+  },
+  {
+   "key": "fourney2024magentic",
+   "title": "Magentic-One: A Generalist Multi-Agent System for Solving Complex Tasks",
+   "id": "arXiv:2411.04468",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent; @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "A lead Orchestrator plans, tracks progress and directs specialized agents (abstract)."
+  },
+  {
+   "key": "gao2026pinsieve",
+   "title": "PinSieve: Production Selective VLM Serving and a Governed Memory Flywheel for Enterprise Content-Quality Triage",
+   "id": "arXiv:2608.24040",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "The closest partial matches are a production triage agent that estimates its auto-passed items' miss rate from audit samples [@gao2026pinsieve], a harness that measures its gates' false-accept rate on planted mutants [@bhardwaj2026bounded], routing learned across vendors from benchmark outcomes [@li2026rsirouter], and offline audits of whether stored experience changes decisions [@xu2026replaylens]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Escalated items are reviewed; auto-passed items are labeled mainly through audit sampling, which estimates the miss rate (abstract, §3)."
+  },
+  {
+   "key": "hong2024metagpt",
+   "title": "MetaGPT: Meta Programming for A Multi-Agent Collaborative Framework",
+   "id": "arXiv:2308.00352",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent; @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Standardized Operating Procedures encoded into role-specialized agents (abstract)."
+  },
+  {
+   "key": "kang2026harness",
+   "title": "Harness Continual Learning: Continual Adaptation Beyond Model Parameters",
+   "id": "arXiv:2608.19013",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Self-improving harnesses converge on one guard: an edit persists only if it improves its target without regressing beyond a margin on protected or previously passing tasks [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+    }
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "evidence": "A Continual Evaluator commits a candidate harness only after checking current improvement, historical retention on an anchor set and validity (abstract, §3). It does not describe held-out tests or rollback, which the joint sentence attributed to all three papers.",
+   "original": "Self-improving harnesses converge on one guard: test each edit on held-out and anchor tasks, and commit only what passes, with rollback [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+  },
+  {
+   "key": "kim2025towards",
+   "title": "Towards a Science of Scaling Agent Systems",
+   "id": "arXiv:2512.08296",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "A frontier model that split long-document questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost [@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable work and hurt sequential work [@kim2025towards]."
+    },
+    {
+     "file": "02-design-principles.md",
+     "text": "Split on independent outputs, not on sequential steps.** Across six agentic benchmarks, multi-agent teams changed performance against a single agent by +80.8% on decomposable financial reasoning and −70.0% on sequential planning [@kim2025towards]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "260 configurations across six agentic benchmarks; relative change versus single agent from +80.8% (decomposable financial reasoning) to -70.0% (sequential planning) (abstract)."
+  },
+  {
+   "key": "kiro2026specs",
+   "title": "Specs (Kiro documentation)",
+   "id": "https://kiro.dev/docs/specs/",
+   "read": "product documentation page, fetched 2026-10-01",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Kiro runs a spec's independent tasks concurrently, in dependency waves [@kiro2026specs]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'Kiro builds a dependency graph of the tasks ... and groups independent tasks into waves ... These run concurrently.'"
+  },
+  {
+   "key": "konstantinou2024do",
+   "title": "Do LLMs generate test oracles that capture the actual or the expected program behaviour?",
+   "id": "arXiv:2410.21136",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "The planner writes the gating checks; the implementer never does.** In 24 Java projects, LLM-written unit-test oracles tended to encode what the code does, not what it should do [@konstantinou2024do]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "Model-written test oracles tend to encode actual rather than expected behaviour [@konstantinou2024do]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "24 open-source Java repositories; LLMs are more likely to generate oracles that capture actual rather than expected behaviour (abstract, §V-B)."
+  },
+  {
+   "key": "kwa2025measuring",
+   "title": "Measuring AI Ability to Complete Long Software Tasks",
+   "id": "arXiv:2503.14499",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "Models fail more as tasks get longer, and small ones far sooner [@kwa2025measuring; @sinha2025illusion]; §2 gives the settings."
+    },
+    {
+     "file": "02-design-principles.md",
+     "text": "Size tasks for the executor, not for cohesion.** On software and research tasks timed against human experts, the task length models complete with 80% success is 4–6× shorter than at 50% [@kwa2025measuring]; on a synthetic long task, per-step errors compound [@sinha2025illusion]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Tasks from RE-Bench, HCAST and SWAA timed against human experts; 80% time horizons are 4-6x shorter than 50% horizons (§3.2.1); horizons grow with model capability."
+  },
+  {
+   "key": "lee2026meta",
+   "title": "Meta-Harness: End-to-End Optimization of Model Harnesses",
+   "id": "arXiv:2603.28052",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Harness engineering.** Recent work optimizes the harness around a frozen model [@lee2026meta]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Harness search around a fixed model by a coding-agent proposer (§3)."
+  },
+  {
+   "key": "li2026rsirouter",
+   "title": "RSI-Router: Evolving Subtask-Level LLM Routing and Skills for Cost-Efficient Agents",
+   "id": "arXiv:2609.34712",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "The closest partial matches are a production triage agent that estimates its auto-passed items' miss rate from audit samples [@gao2026pinsieve], a harness that measures its gates' false-accept rate on planted mutants [@bhardwaj2026bounded], routing learned across vendors from benchmark outcomes [@li2026rsirouter], and offline audits of whether stored experience changes decisions [@xu2026replaylens]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Subtask-level assignments between models from two vendors (DeepSeek, Qwen) learned by recursive self-improvement over trajectories (abstract, §3)."
+  },
+  {
+   "key": "lin2026agentic",
+   "title": "Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses",
+   "id": "arXiv:2604.25850",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "The guard matters: agents predict their own edits' regressions poorly [@lin2026agentic], and harness gains compounded only with regression control in the loop [@wang2026compound] (§5.4)."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'Regression blindness': regression precision 11.8% and recall 11.1%, only about 2x the random baselines (§4.4.2)."
+  },
+  {
+   "key": "lin2026evopath",
+   "title": "Beyond Endpoint Performance: Process-Level Evaluation of Self-Evolving Agents",
+   "id": "arXiv:2609.24663",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "05-cybernetic-mechanisms.md",
+     "text": "In a re-evaluation on multi-step agent tasks, memory-based self-improvement amplified evaluation noise and depended on task order [@ye2026fragility], and on a trading benchmark, gains on similar unseen tasks often weakened under distribution shift [@lin2026evopath]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "EvoPathBench on public trading data: gains on similar unseen tasks often weaken under distribution shift (abstract)."
+  },
+  {
+   "key": "narayan2025minions",
+   "title": "Minions: Cost-efficient Collaboration Between On-device and Cloud Language Models",
+   "id": "arXiv:2502.15964",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "A frontier model that split long-document questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost [@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable work and hurt sequential work [@kim2025towards]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "MinionS decomposes tasks into subtasks over document chunks run by a local model: 5.7x lower cost while recovering 97.9% of the remote model's performance (abstract)."
+  },
+  {
+   "key": "ong2025routellm",
+   "title": "RouteLLM: Learning to Route LLMs with Preference Data",
+   "id": "arXiv:2406.18665",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "A frontier model that split long-document questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost [@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable work and hurt sequential work [@kim2025towards]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "**Routing and cascades.** Cascades and learned routers cut cost at matched quality on single-turn queries [@chen2024frugalgpt; @ong2025routellm], when the quality estimate is accurate [@dekoninck2024unified]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Routers between a strong and a weak model cut cost by over 2x without substantially compromising quality on per-query benchmarks (MMLU, GSM8K, MT Bench) (abstract)."
+  },
+  {
+   "key": "paul2026context",
+   "title": "Context Assembly as the Controlled Variable: A Control-Theoretic View of Harness Policies for Frozen LLM Agents",
+   "id": "arXiv:2607.25408",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "*Agent Cybernetics*, a position paper without implementation or experiments, is the closest framing to ours [@wang2026agent]; Paul treats context assembly as the controlled variable of a harness policy [@paul2026context]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Title and abstract: context assembly as the controlled variable of an outer harness policy around a frozen model."
+  },
+  {
+   "key": "prasad2024adapt",
+   "title": "ADaPT: As-Needed Decomposition and Planning with Language Models",
+   "id": "arXiv:2311.05772",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "In three text environments, decomposing a subtask only when the executor failed raised success rates by up to 33% [@prasad2024adapt]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "As-needed decomposition: success up to 28.3% higher in ALFWorld, 27% in WebShop and 33% in TextCraft (abstract)."
+  },
+  {
+   "key": "rajput2026cheap",
+   "title": "Cheap Verifiers, Large Blind Spots: Measuring the Reliability Cost of Cost-Saving Cascades",
+   "id": "arXiv:2609.01345",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "In a cascade answering math questions, the verifier passed 12% to 55% of a cheap student's wrong answers, more as the student grew; a frontier verifier cut that to about 5% but escalated 46% of hard queries, giving the saving back [@rajput2026cheap]."
+    },
+    {
+     "file": "02-design-principles.md",
+     "text": "Its regulators act on them within a run (retry, escalation, split) and across runs (routing, task sizing), and its audits check the regulators (§5), because metrics read through a loop's own verifier can hide its decline [@rajput2026cheap]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "Cheap verifiers have blind spots: on hard MATH queries a cascade's dashboard read a flat 3% error while delivered error reached 32% [@rajput2026cheap]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Blind-spot rate beta grows with student size, 0.12 to 0.55; a frontier verifier drives beta to ~0.05 but escalates on 46% of hard-MATH queries; the dashboard reads a flat ~3% error while true delivered error swings up to 32% (abstract, §5, §6)."
+  },
+  {
+   "key": "sinha2025illusion",
+   "title": "The Illusion of Diminishing Returns: Measuring Long Horizon Execution in LLMs",
+   "id": "arXiv:2509.09677",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "01-introduction.md",
+     "text": "Models fail more as tasks get longer, and small ones far sooner [@kwa2025measuring; @sinha2025illusion]; §2 gives the settings."
+    },
+    {
+     "file": "02-design-principles.md",
+     "text": "Size tasks for the executor, not for cohesion.** On software and research tasks timed against human experts, the task length models complete with 80% success is 4–6× shorter than at 50% [@kwa2025measuring]; on a synthetic long task, per-step errors compound [@sinha2025illusion]."
+    },
+    {
+     "file": "02-design-principles.md",
+     "text": "Retry twice cheaply, then escalate, then split.** On the same synthetic task, models erred more once their own mistakes were in context [@sinha2025illusion]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Step-accuracy gains compound over a long horizon (§2.1); the self-conditioning effect: models err more once their own errors are in context (§3.2); larger models execute longer (§3.1)."
+  },
+  {
+   "key": "tayebati2026self",
+   "title": "Self-Healing Harness for Runtime Oversight of Agent Self-Modification",
+   "id": "arXiv:2609.24130",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Self-improving harnesses converge on one guard: an edit persists only if it improves its target without regressing beyond a margin on protected or previously passing tasks [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+    }
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "evidence": "Rules persist only after measured improvement on the triggering failure without regression beyond a margin on protected cases; a corpus-level guard re-tests the active rule set (abstract). The paper states it measures online adaptation, not held-out transfer, and describes no rollback.",
+   "original": "Self-improving harnesses converge on one guard: test each edit on held-out and anchor tasks, and commit only what passes, with rollback [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+  },
+  {
+   "key": "vijayvargiya2025ambigswe",
+   "title": "Ambig-SWE: Interactive Agents to Overcome Underspecificity in Software Engineering",
+   "id": "arXiv:2502.13069",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "Put ambiguity back into authoring.** On underspecified SWE-bench Verified issues, models struggled to tell them from well-specified ones [@vijayvargiya2025ambigswe]; a scaffold that checks for underspecification and asks before executing resolved 69.4%, close to the fully specified level [@edwards2026askorassume]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'models struggle to distinguish between well-specified and underspecified instructions' (abstract)."
+  },
+  {
+   "key": "wang2025openhands",
+   "title": "OpenHands: An Open Platform for AI Software Developers as Generalist Agents",
+   "id": "arXiv:2407.16741",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent; @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "An open platform for agents that write code, use a command line and browse (abstract)."
+  },
+  {
+   "key": "wang2026agent",
+   "title": "The Agent Use of Agent Beings: Agent Cybernetics Is the Missing Science of Foundation Agents",
+   "id": "arXiv:2605.10754",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "The closest framing we found as of 2026-09-29 is a position paper, *Agent Cybernetics* [@wang2026agent] (§10); we claim no priority for it."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "*Agent Cybernetics*, a position paper without implementation or experiments, is the closest framing to ours [@wang2026agent]; Paul treats context assembly as the controlled variable of a harness policy [@paul2026context]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'Our Position. We argue that cybernetics provides the principled scaffold of foundation agents'; principles and suggested research, no implementation or experiments (§1-§4)."
+  },
+  {
+   "key": "wang2026compound",
+   "title": "Do Agent Optimizers Compound? A Continual-Learning Evaluation on Terminal-Bench 2.0",
+   "id": "arXiv:2607.14004",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "05-cybernetic-mechanisms.md",
+     "text": "In a two-phase test on hard Terminal-Bench 2.0 tasks, two of three harness optimizers fell below baseline or stalled once new tasks arrived, and the one that kept improving, the authors' own, built regression control into its loop [@wang2026compound]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "The guard matters: agents predict their own edits' regressions poorly [@lin2026agentic], and harness gains compounded only with regression control in the loop [@wang2026compound] (§5.4)."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "On hard Terminal-Bench 2.0 tasks: GEPA fell below baseline on new tasks, Meta Harness stopped improving, and RELAI-VCL (the authors') kept compounding; gains compounded only with regression control in the loop (abstract)."
+  },
+  {
+   "key": "wang2026rethinking",
+   "title": "Rethinking the Evaluation of Harness Evolution for Agents",
+   "id": "arXiv:2607.12227",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "05-cybernetic-mechanisms.md",
+     "text": "On Terminal-Bench 2.1, harness evolution did not consistently beat simple test-time scaling at matched budgets [@wang2026rethinking]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "On Terminal-Bench 2.1, automatic harness evolution does not consistently outperform simple test-time scaling under matched budgets (abstract)."
+  },
+  {
+   "key": "xia2025agentless",
+   "title": "Agentless: Demystifying LLM-based Software Engineering Agents",
+   "id": "arXiv:2407.01489",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent; @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Fixed localization, repair and patch-validation phases, low cost, competitive results (abstract)."
+  },
+  {
+   "key": "xia2026rrsi",
+   "title": "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses",
+   "id": "arXiv:2609.24972",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Self-improving harnesses converge on one guard: an edit persists only if it improves its target without regressing beyond a margin on protected or previously passing tasks [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+    }
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "evidence": "Regularized proposal and selection: leakage screening, a noise-adjusted acceptance floor against the best evolve-set score, complexity-aware acceptance and pruning (§3.3); held-out benchmarks are used for evaluation, not as the commit test, and there is no rollback.",
+   "original": "Self-improving harnesses converge on one guard: test each edit on held-out and anchor tasks, and commit only what passes, with rollback [@kang2026harness; @tayebati2026self; @xia2026rrsi]."
+  },
+  {
+   "key": "xu2026replaylens",
+   "title": "ReplayLens: Auditing Agents' Use of Outcomes",
+   "id": "arXiv:2609.34177",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "The closest partial matches are a production triage agent that estimates its auto-passed items' miss rate from audit samples [@gao2026pinsieve], a harness that measures its gates' false-accept rate on planted mutants [@bhardwaj2026bounded], routing learned across vendors from benchmark outcomes [@li2026rsirouter], and offline audits of whether stored experience changes decisions [@xu2026replaylens]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "A black-box audit that changes one relationship in stored history and measures the resulting decision (abstract)."
+  },
+  {
+   "key": "yang2024sweagent",
+   "title": "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering",
+   "id": "arXiv:2405.15793",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent; @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Agent-computer interfaces for LM agents solving software tasks (abstract)."
+  },
+  {
+   "key": "ye2026fragility",
+   "title": "On the Fragility of Self-Improving Agents: Variance, Task Order, and Underspecification",
+   "id": "arXiv:2608.18066",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "05-cybernetic-mechanisms.md",
+     "text": "In a re-evaluation on multi-step agent tasks, memory-based self-improvement amplified evaluation noise and depended on task order [@ye2026fragility], and on a trading benchmark, gains on similar unseen tasks often weakened under distribution shift [@lin2026evopath]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Self-improving loops amplify run-to-run variance (71% of cases) and depend on task order (abstract)."
+  },
+  {
+   "key": "yu2025utboost",
+   "title": "UTBoost: Rigorous Evaluation of Coding Agents on SWE-Bench",
+   "id": "arXiv:2506.09289",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Verification, gaming and audits.** Augmented tests exposed 345 wrongly passing patches on SWE-bench leaderboards [@yu2025utboost], agents edit or special-case the tests that grade them [@zhong2025impossiblebench], and on long-horizon coding tasks the gap between visible and held-out tests is larger for smaller models [@zhao2026specbench]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "'uncovered 345 erroneous patches incorrectly labeled as passed in the original SWE Bench', affecting leaderboard rankings (abstract)."
+  },
+  {
+   "key": "zavattari2026one",
+   "title": "One Human, $N$ Agents: Audit-Budget Allocation for LLM Agent Fleets under Miscalibrated, Correlated Confidence",
+   "id": "arXiv:2607.28317",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "Ranking audits by self-reported confidence does worse than random past a miscalibration threshold [@zavattari2026one], so Roko's deep audits are designed to sample passed work by lottery (spec-6ac537)."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Locates the miscalibration threshold past which confidence-ranked auditing is worse than random (abstract)."
+  },
+  {
+   "key": "zhao2026specbench",
+   "title": "SpecBench: Measuring Reward Hacking in Long-Horizon Coding Agents",
+   "id": "arXiv:2605.21384",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "02-design-principles.md",
+     "text": "Assume visible checks will be gamed, most of all by cheap models.** On 30 systems-programming tasks, smaller models showed larger gaps between visible and held-out test pass rates, and the gap grew 28 percentage points per tenfold growth in code size [@zhao2026specbench]."
+    },
+    {
+     "file": "10-related-work.md",
+     "text": "**Verification, gaming and audits.** Augmented tests exposed 345 wrongly passing patches on SWE-bench leaderboards [@yu2025utboost], agents edit or special-case the tests that grade them [@zhong2025impossiblebench], and on long-horizon coding tasks the gap between visible and held-out tests is larger for smaller models [@zhao2026specbench]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "30 systems-level programming tasks; smaller models show larger gaps on holdout suites; the gap grows 28 percentage points per tenfold increase in code size (abstract)."
+  },
+  {
+   "key": "zhong2025impossiblebench",
+   "title": "ImpossibleBench: Measuring LLMs' Propensity of Exploiting Test Cases",
+   "id": "arXiv:2510.20270",
+   "read": "arXiv HTML full text (latest version)",
+   "sentences": [
+    {
+     "file": "10-related-work.md",
+     "text": "**Verification, gaming and audits.** Augmented tests exposed 345 wrongly passing patches on SWE-bench leaderboards [@yu2025utboost], agents edit or special-case the tests that grade them [@zhong2025impossiblebench], and on long-horizon coding tasks the gap between visible and held-out tests is larger for smaller models [@zhao2026specbench]."
+    }
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "evidence": "Impossible task variants measure agents' propensity to exploit tests, e.g. deleting or modifying failing tests and special-casing (abstract, §4)."
+  }
+ ]
+}

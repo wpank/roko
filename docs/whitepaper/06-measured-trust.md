@@ -25,10 +25,12 @@ the agent never saw.
 ## 6.3 The field
 
 As documented on 2026-09-29, we found no product that documents any of the three measures. Several pair a stronger
-model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and Devin's Fusion pairs
-"a frontier lead model with a cost-efficient sidekick" [@anthropic2026advisor; @cognition2026models]. Model choice
+model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and its
+advisor tool lets the main model escalate hard decisions to an advisor model; Devin's Fusion pairs "a frontier lead
+model with a cost-efficient sidekick" [@anthropic2026modelconfig; @anthropic2026advisor; @cognition2026models]. Model choice
 is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's
-router is "managed by Cursor", and Factory's sends routine steps to cheaper models and escalates when one struggles
+router is "managed by Cursor", and Factory's sends routine steps to lower-cost models and reserves stronger ones for work that needs deeper
+reasoning
 [@anthropic2026agents; @cursor2026router; @factory2026router]. None of these pages says that routing learns from
 the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism.
 

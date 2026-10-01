@@ -46,7 +46,6 @@ Record CLI tool calls from the live-output tap, which already sees ToolCallEnd a
   - Tests: `cli_attempt_records_its_tool_calls` (fake Claude CLI, end to end),
     `efficiency_tool_calls_record_outcome_from_the_live_output`, `live_tool_calls_pair_steps_with_results`,
     `live_tool_calls_finish_waits_for_the_tap`, `event_kinds_tool_result_marked_error`.
-  - Limits: only an attempt with a live-output tap records CLI calls. A tap opens for the stall watch (on by default),
-    the conductor or the TUI; recording alone opens none, since a tap makes the provider stream. Outcomes need a
-    trusted tap (stall watch or conductor). The provider boundary drops live events while the tap's channel is full,
-    so a burst can cost a call or its outcome.
+  - Limits: recording alone opens no tap, since a tap makes the provider stream; since bug-3a3b0f every Graph
+    attempt tracks its progress, so its tap is open and trusted. The provider boundary drops live events while the
+    tap's channel is full, so a burst can cost a call or its outcome.

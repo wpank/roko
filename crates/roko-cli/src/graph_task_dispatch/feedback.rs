@@ -1030,13 +1030,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             efficiency_path: Some(efficiency_path.clone()),
             ..GraphFeedbackContext::default()
         };
-        // The stall watch opens the live-output tap that sees the calls.
-        let watched = |config: &mut RokoConfig| {
-            no_auto_fix(config);
-            config.conductor.silence_timeout_secs = 180;
-        };
+        // The attempt tracks its progress (bug-3a3b0f), so its live-output
+        // tap is open and sees the calls.
         let (dispatcher, task) =
-            make_test_dispatcher(&temp, TOOL_CALLING_PROVIDER, watched, feedback).await;
+            make_test_dispatcher(&temp, TOOL_CALLING_PROVIDER, no_auto_fix, feedback).await;
         dispatcher
             .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
             .await

@@ -2942,8 +2942,8 @@ sleep 30
                 ..ModelProfile::default()
             },
         );
-        // The mock answers without SSE: keep the stall watchdog, which would
-        // stream over live output, off.
+        // Keep the stall watchdog off. The attempt still streams, since its
+        // progress is tracked (bug-3a3b0f), and the mock answers in SSE.
         config.conductor.silence_timeout_secs = 0;
         config.conductor.task_stall_secs = 0;
         let config = Arc::new(config);

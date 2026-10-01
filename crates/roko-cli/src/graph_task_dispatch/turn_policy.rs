@@ -152,6 +152,28 @@ impl GraphTaskDispatcher {
         retry
     }
 
+    /// Owe `plan_id/task_id`'s next attempt more time than `timeout_ms`, the
+    /// timeout its last attempt ran out of, kept with the run's retry state
+    /// so a resumed run escalates from it as well (gap-6f77a3).
+    pub(super) fn keep_timeout_retry(&self, plan_id: &str, task_id: &str, timeout_ms: u64) {
+        let key = format!("{plan_id}/{task_id}");
+        self.timeout_retries.lock().insert(key, timeout_ms);
+        self.gate_retry_context
+            .set_timeout(plan_id, task_id, Some(timeout_ms));
+    }
+
+    /// The timeout, in ms, that `plan_id/task_id`'s last attempt ran out of,
+    /// which its next attempt takes to escalate from.
+    pub(super) fn take_timeout_retry(&self, plan_id: &str, task_id: &str) -> Option<u64> {
+        let key = format!("{plan_id}/{task_id}");
+        let timeout_ms = self.timeout_retries.lock().remove(&key);
+        if timeout_ms.is_some() {
+            let kept = &self.gate_retry_context;
+            kept.set_timeout(plan_id, task_id, None);
+        }
+        timeout_ms
+    }
+
     /// The workspace's learned tier limits (gap-5a6e01), read on the first
     /// dispatch from the settled attempts under the feedback `runs_dir` and
     /// the tiers in its `costs_path`. None without a runs directory.
@@ -664,6 +686,45 @@ mod tests {
             base_attempt_timeout_ms(&config, &make_spec(&task)),
             2_700_000
         );
+    }
+
+    /// gap-6f77a3: the timeout an attempt ran out of is kept with the run's
+    /// retry state. A resumed process of the run escalates the task's next
+    /// attempt from it, and that attempt takes it; a fresh run starts from
+    /// the base timeout.
+    #[tokio::test]
+    async fn timeout_retries_survive_resume() {
+        use crate::graph_task_dispatch::tests::make_bare_dispatcher;
+
+        let temp = tempdir().expect("tempdir");
+        let kept = temp
+            .path()
+            .join(".roko/state/graph/plan/retry-feedback.json");
+
+        let first = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        first.attach_retry_feedback("plan", kept.clone(), "run-1");
+        first.keep_timeout_retry("plan", "T1", 600_000);
+        first.keep_timeout_retry("plan", "T2", 900_000);
+        drop(first);
+
+        // A fresh run of the plan ignores what an earlier run kept.
+        let fresh = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        fresh.attach_retry_feedback("plan", kept.clone(), "run-2");
+        assert_eq!(fresh.take_timeout_retry("plan", "T1"), None);
+        drop(fresh);
+
+        let resumed = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        resumed.attach_retry_feedback("plan", kept.clone(), "run-1");
+        assert_eq!(resumed.take_timeout_retry("plan", "T1"), Some(600_000));
+        assert_eq!(resumed.take_timeout_retry("plan", "T1"), None);
+        drop(resumed);
+
+        // The take is kept as well: T1 is owed nothing on the next resume,
+        // and T2 still is.
+        let again = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        again.attach_retry_feedback("plan", kept, "run-1");
+        assert_eq!(again.take_timeout_retry("plan", "T1"), None);
+        assert_eq!(again.take_timeout_retry("plan", "T2"), Some(900_000));
     }
 
     /// A fake Claude CLI that stops at its turn cap on the first call and

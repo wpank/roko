@@ -457,7 +457,7 @@ impl GraphTaskDispatcher {
             );
         }
         // The tasks' spend and turn-cap retries the earlier process kept
-        // (gap-34b2ed).
+        // (gap-34b2ed), and its timeout retries (gap-6f77a3).
         for (task_id, micro_usd) in self.gate_retry_context.kept_task_spend(plan_id) {
             let key = format!("{plan_id}/{task_id}");
             self.task_spend.restore(&key, micro_usd);
@@ -465,6 +465,10 @@ impl GraphTaskDispatcher {
         for (task_id, retry) in self.gate_retry_context.kept_turn_caps(plan_id) {
             let key = format!("{plan_id}/{task_id}");
             self.turn_cap_retries.lock().insert(key, retry);
+        }
+        for (task_id, timeout_ms) in self.gate_retry_context.kept_timeouts(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.timeout_retries.lock().insert(key, timeout_ms);
         }
     }
 
@@ -1220,7 +1224,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
         // rerun the budget that already ran out.
-        let timeout_resume = self.timeout_retries.lock().remove(&task_spend_key);
+        let timeout_resume = self.take_timeout_retry(&spec.plan_id, &task.id);
         let timeout_ms = timeout_resume.map_or(base_timeout_ms, |previous_ms| {
             let raised = raised_attempt_timeout_ms(previous_ms, base_timeout_ms);
             tracing::info!(
@@ -1576,9 +1580,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 });
             }
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
-                self.timeout_retries
-                    .lock()
-                    .insert(task_spend_key.clone(), timeout_ms);
+                self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
             }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,

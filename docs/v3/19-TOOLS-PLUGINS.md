@@ -73,9 +73,7 @@ gates, and adapts via policies.
 
 ### 1.2 Tool Audit Methodology
 
-Tool surface reduction follows the SkillReducer methodology (Chen et al. 2026,
-arXiv:2603.29919), which demonstrates that systematic tool pruning -- removing redundant or
-low-impact tools from the catalog -- improves both task completion rates and token efficiency.
+Tool surface reduction follows the SkillReducer methodology (Gao et al. 2026, arXiv:2603.29919), which compresses agent skills rather than pruning tools: routing descriptions 48% shorter and skill bodies 39% shorter through progressive disclosure, with functional quality kept or improved for 86% of 600 skills (§IV, §V). Pruning whole tools is Roko's extension of that idea.
 Roko applies this principle through profile-based filtering and role-based access control:
 each agent role sees only the tools relevant to its task, rather than the full catalog.
 The `validate_tool_catalog()` function performs a static audit that detects unhandled tools,
@@ -1028,8 +1026,7 @@ roadmap items. Current tool execution is per-call through the dispatcher.
   [spec](https://modelcontextprotocol.io/specification/2025-11-25)
 - **MCP Specification 2025-03-26** -- Introduced Streamable HTTP, tool annotations.
   [changelog](https://modelcontextprotocol.io/specification/2025-03-26)
-- **SkillReducer** (Chen et al. 2026) -- Systematic tool pruning improves task completion
-  and token efficiency. [arXiv:2603.29919](https://arxiv.org/abs/2603.29919)
+- **SkillReducer** (Gao et al. 2026) -- Compresses agent skills (48% shorter descriptions, 39% shorter bodies) while keeping or improving functional quality for 86% of 600 skills (§V). [arXiv:2603.29919](https://arxiv.org/abs/2603.29919)
 - **ReAct** (Yao et al. 2023) -- Interleaved reasoning and tool actions.
   [arXiv:2210.03629](https://arxiv.org/abs/2210.03629)
 - **OpenAPI 3.1.0** (OAI 2021) -- JSON Schema 2020-12 alignment.

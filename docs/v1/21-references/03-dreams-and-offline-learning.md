@@ -48,7 +48,7 @@ The brain dedicates 25-33% of its runtime to a state that prevents environmental
 ## Sleep-Time Compute
 
 - Lin, B. et al. (2025). Sleep-time Compute: Beyond Inference Scaling at Test-Time. arXiv:2504.13171.
-  *Grounds: Delta-frequency scheduling — dual-agent architecture: Sleeper Agent precomputes during downtime, Serve Agent handles live interactions. ~5× test-time compute reduction, up to 18% accuracy gain. For Roko, dream cycles are sleep-time compute — agents that process experiences during low-activity periods execute fewer expensive T2 inference calls during active work.*
+  *Grounds: Delta-frequency scheduling — the model thinks about a context offline, before queries arrive (§3). ~5× test-time compute reduction, up to 18% accuracy gain. For Roko, dream cycles are sleep-time compute — agents that process experiences during low-activity periods execute fewer expensive T2 inference calls during active work.*
 
 ---
 

@@ -1386,9 +1386,9 @@ Theory of Action Perspective*. Addison-Wesley.
 Multi-agent systems fail primarily from coordination failures, not individual
 agent capability gaps:
 
-> "41-87% of failures in multi-agent systems stem from coordination breakdowns,
-> not individual agent capability."
-> -- arXiv:2605.03310 (2025), "Coordination as Architectural Layer"
+> "Multi-agent LLM systems fail in production at rates between 41% and 87%, with the majority of these failures
+> attributable to coordination defects rather than to base-model capability."
+> -- Nechepurenko & Shuvalov, arXiv:2605.03310 (2026), abstract; its §1 credits the figure to Cemri et al. (2025)
 
 The Conductor addresses this directly. Its twelve watchers detect coordination
 failures (review loops, spec drift, merge conflicts) alongside individual
@@ -1486,8 +1486,7 @@ disk_pressure.rs            time_overrun.rs        worktree_count.rs
 
 ### Supporting citations
 
-- **arXiv:2605.03310** (2025). "Coordination as Architectural Layer." -- 41-87%
-  of multi-agent failures stem from coordination breakdowns.
+- **arXiv:2605.03310** (2026). "Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems." -- Cites production failure rates of 41-87% for multi-agent systems, mostly from coordination defects (§1, after Cemri et al. 2025).
 
 - **Francis, B.A. & Wonham, W.M.** (1976). "The Internal Model Principle of
   Control Theory." *Automatica*, 12(5), 457-465. -- The controller must contain

@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-The CoALA 9-step pipeline (OBSERVE, RETRIEVE, ANALYZE, GATE, SIMULATE, VALIDATE,
+Roko's older 9-step pipeline, a CoALA-inspired elaboration (OBSERVE, RETRIEVE, ANALYZE, GATE, SIMULATE, VALIDATE,
 EXECUTE, VERIFY, REFLECT) is the legacy framing that guided Roko's initial cognitive
 architecture. Roko's canonical universal loop is now the seven-step SENSE / ASSESS /
 COMPOSE / ACT / VERIFY / PERSIST + BROADCAST / REACT loop.

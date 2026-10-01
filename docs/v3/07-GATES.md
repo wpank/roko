@@ -890,9 +890,7 @@ rewards genuine progress (fixing errors), without hand-coded rules.
 > describes the approved upgrade to produce continuous progress signals
 > alongside those binary verdicts.
 
-> **Citation**: AgentPRM (arXiv:2511.08325, WWW 2026) -- per-step rewards
-> for agent tool-use settings provide 10x richer signal than final pass/fail,
-> enabling 8x compute efficiency for verification.
+> **Citation**: AgentPRM (arXiv:2511.08325, WWW 2026) -- step-level process rewards for agent tasks, trained from TD estimation with GAE (§3.3); over 8x more compute-efficient than baseline reward models in Best-of-N search (§1, §4.2).
 
 The core limitation of binary verdicts: they cannot distinguish "almost
 passed" (9/10 tests green, one off-by-one error) from "completely failed"

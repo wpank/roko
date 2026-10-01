@@ -286,7 +286,7 @@ impure, side-effecting real world. This separation is deliberate: it keeps
 the six Synapse traits testable and deterministic while allowing agents to
 do whatever is needed to complete their task.
 
-Reference: The universal loop is derived from the CoALA 9-step cognitive
+Reference: The universal loop is derived from the CoALA-inspired 9-step cognitive
 cycle (Sumers et al., 2023, arXiv:2309.02427), adapted for Roko's
 trait-based composition model. See refactoring PRD §01-synapse-architecture
 for the full mapping.

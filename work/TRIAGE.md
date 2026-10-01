@@ -4,9 +4,10 @@
 
 91 open items imported without verification, highest severity first within each subsystem.
 
-### roko-cli/graph_execution (2)
+### roko-cli/graph_execution (3)
 - **P0** [spec-e9d7ec](items/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) Epic: honest verdicts end to end [spec] · size L
 - **P1** [spec-a0e40a](items/spec-a0e40a-epic-integration-and-a-whole-plan-check.md) Epic: integration and a whole-plan check [spec] · size L
+- **P3** [bug-71a5e6](items/bug-71a5e6-graphruntimeeventadapter-maps-every-nodecompleted-to-taskcom.md) GraphRuntimeEventAdapter maps every NodeCompleted to TaskCompleted { passed: true }, so unverified and already_satisfied tasks would read as passed on the runtime path [bug] · size S
 
 ### roko-learn/telemetry (1)
 - **P0** [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) Epic: one settled record per attempt [spec] · size L
@@ -26,6 +27,10 @@
 - **P2** [gap-154f93](items/gap-154f93-run-the-live-fd-claude-probe-and-replace-the.md) Run the live fd_claude probe and replace the invented modelUsage fixture with its saved output · size S
 - **P2** [gap-29ac83](items/gap-29ac83-the-benchmark-has-no-sandbox-on-linux-so.md) The benchmark has no sandbox on Linux, so records there say sandbox: none · size M
 
+### roko-agent/safety (2)
+- **P1** [bug-6af02b](items/bug-6af02b-claude-code-s-grep-tool-runs-rg.md) Claude Code's Grep tool runs rg --hidden, so a Grep at a workspace root reads .roko/.env unless .gitignore covers it; the guard's Grep rule doesn't apply the tree check [bug] · size S
+- **P2** [gap-8f8544](items/gap-8f8544-sandbox-levels-are-enforced-only-in-process.md) Sandbox levels are enforced only in-process: no OS sandbox confines agent processes · size L · **on hold:** Decided 2026-09-29 (spec-ba7bea): no OS sandbox in v1; revisit before any hosted demo
+
 ### roko-cli/tests (5)
 - **P1** [gap-f30b8e](items/gap-f30b8e-end-to-end-acceptance-test-a-fixture.md) End-to-end acceptance test: a fixture plan runs through the ladder on real cheap models and merges green · size M
 - **P1** [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) Epic: golden-path acceptance tests [spec] · size L
@@ -33,12 +38,10 @@
 - **P1** [gap-9eebcb](items/gap-9eebcb-integration-test-c7-the-watchdog-kills-a.md) Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start · size S
 - **P1** [gap-3aa9cb](items/gap-3aa9cb-one-ci-suite-for-the-golden-path.md) One CI suite for the golden-path integration tests C1–C8, with a shared scripted fake provider · size M
 
-### tools/work (12)
+### tools/work (10)
 - **P1** [spec-f2463d](items/spec-f2463d-epic-a-record-of-how-the-backlog.md) Epic: a record of how the backlog gets done [spec] · size L
 - **P1** [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) Epic: tracker tooling for parallel work [spec] · size L
-- **P1** [gap-0b9056](items/gap-0b9056-work-py-claim-and-close-record-the.md) work.py claim and close record the executor, pick-up route, size and claim time; release records a reason · size S
 - **P1** [gap-823dce](items/gap-823dce-work-py-claim-re-checks-the-footprint.md) work.py claim re-checks the footprint under a lock, can be renewed, and expires by size · size S
-- **P1** [gap-d0643c](items/gap-d0643c-work-py-event-log-one-append-only.md) work.py event log: one append-only events file per session under work/telemetry/events/ · size M
 - **P1** [gap-c9e61b](items/gap-c9e61b-work-py-list-show-and-status-plus.md) work.py list, show and status, plus a generated EPICS.md with progress per epic and lane · size M
 - **P1** [gap-d1f787](items/gap-d1f787-work-py-next-treats-files-changed-in.md) work.py next treats files changed in any other worktree as busy · size S
 - **P1** [gap-130a3e](items/gap-130a3e-work-py-validate-the-lane-parent-and.md) work.py: validate the lane, parent and milestone fields, and add next --lane and --mix · size M
@@ -113,9 +116,6 @@
 ### roko-acp (1)
 - **P2** [bug-31bca6](items/bug-31bca6-nothing-reads-learning-dreams-max-concurrent-so.md) Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs [bug] · size S
 
-### roko-agent/safety (1)
-- **P2** [gap-8f8544](items/gap-8f8544-sandbox-levels-are-enforced-only-in-process.md) Sandbox levels are enforced only in-process: no OS sandbox confines agent processes · size L · **on hold:** Decided 2026-09-29 (spec-ba7bea): no OS sandbox in v1; revisit before any hosted demo
-
 ### roko-cli/deployment (1)
 - **P2** [dec-648cce](items/dec-648cce-should-roko-deploy-railway-forward-roko-serve.md) Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys? [decision] · size S
 
@@ -132,14 +132,14 @@
 ### roko-std/sandbox (1)
 - **P2** [bug-bb3262](items/bug-bb3262-the-rust-guard-port-fails-open-at-deep.md) The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases [bug] · size S
 
+### docs/v3 (1)
+- **P2** [gap-1f72ac](items/gap-1f72ac-the-121-unread-cited-works-in-docs.md) The ~121 unread cited works in docs/v3 likely carry unsupported claims at the audited 62% rate: banner the references, cut unchecked annotations to bare citations · size M
+
 ### roko-learn (1)
 - **P2** [bug-8417d9](items/bug-8417d9-thirteen-jsonl-appenders-write-each-row-and.md) Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows [bug] · size M
 
 ### roko-cli/chat (1)
 - **P2** [bug-8a78e1](items/bug-8a78e1-chat-dispatch-v2-and-serve-load-the-cascade.md) chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens [bug] · size S
-
-### docs/v3 (1)
-- **P2** [gap-11845c](items/gap-11845c-docs-v3-s-descriptions-of-what-cited.md) docs/v3's descriptions of what cited papers say are unchecked; two harness-engineering sections checked so far were mostly invented · size M
 
 ### roko-serve/routes/runs (1)
 - **P2** [bug-54c729](items/bug-54c729-roko-serve-s-runs-route-reports-every-task.md) roko-serve's runs route reports every task status other than passed as failed [bug] · size S
@@ -178,6 +178,9 @@
 ### demo/demo-resources (1)
 - **P3** [bug-2dbb70](items/bug-2dbb70-the-dataset-example-in-coding-agent.md) The dataset example in coding-agent-benchmarks/README.md has no test_files, so it fails the bench's grading-tests check [bug] · size S
 
+### apps/portal (1)
+- **P3** [bug-1cc498](items/bug-1cc498-the-portal-shows-a-task-with-no.md) The portal shows a task with no run record as passed when tasks.toml marks it done [bug] · size S
+
 ### apps/portal/run-state (1)
 - **P3** [bug-4e5a59](items/bug-4e5a59-the-portal-s-run-state-reducer-ignores-a-task.md) The portal's run-state reducer ignores a task completion it never saw start [bug] · size S
 
@@ -201,7 +204,4 @@
 
 ### roko-learn/efficiency (1)
 - **P3** [bug-e35fdb](items/bug-e35fdb-roko-learn-role-costs-averages-unknown-costs.md) roko learn role-costs averages unknown costs as $0 through compute_role_profiles [bug] · size S
-
-### tools/work.py (1)
-- **P3** [bug-1440cd](items/bug-1440cd-tools-work-py-s-static-prefix-treats-a-verify.md) tools/work.py's static_prefix treats a verify part as static unless it starts with a heavy command, so a cargo loop counts as static [bug] · size S
 

@@ -266,6 +266,9 @@ pub struct GraphTaskDispatcher {
     /// before the stall watchdog counts its silence
     /// ([`watchdog::FIRST_OUTPUT_GRACE`]; tests shorten it).
     first_output_grace: std::time::Duration,
+    /// The plans of this run that are running now, by id, with the areas
+    /// their tasks write ([`Self::plan_started`]).
+    running_plans: parking_lot::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 impl GraphTaskDispatcher {
@@ -316,6 +319,7 @@ impl GraphTaskDispatcher {
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
             first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
+            running_plans: parking_lot::Mutex::default(),
         }
     }
 
@@ -450,6 +454,28 @@ impl GraphTaskDispatcher {
     /// Whether `plan_id`'s verified tasks wait for approval.
     fn holds_for_approval(&self, plan_id: &str) -> bool {
         self.approval_plans.lock().contains(plan_id)
+    }
+
+    /// Note that `plan_id`, whose tasks write `areas`, now runs in this
+    /// dispatcher's working tree. Agents of the run's other plans are told
+    /// of it, so they keep their builds to their own crates (gap-c09fc7).
+    pub fn plan_started(&self, plan_id: &str, areas: Vec<String>) {
+        self.running_plans.lock().insert(plan_id.to_string(), areas);
+    }
+
+    /// Note that `plan_id` no longer runs.
+    pub fn plan_finished(&self, plan_id: &str) {
+        self.running_plans.lock().remove(plan_id);
+    }
+
+    /// The running plans other than `plan_id`, with the areas they write.
+    fn concurrent_plans(&self, plan_id: &str) -> Vec<(String, Vec<String>)> {
+        self.running_plans
+            .lock()
+            .iter()
+            .filter(|(id, _)| id.as_str() != plan_id)
+            .map(|(id, areas)| (id.clone(), areas.clone()))
+            .collect()
     }
 
     /// Keep `plan_id`'s pending retry feedback in `path`, beside its Graph
@@ -1150,6 +1176,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
+            concurrent_plans: self.concurrent_plans(&spec.plan_id),
         };
         let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
@@ -2374,6 +2401,23 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         assert!(
             !temp.path().join("provider-args").exists(),
             "the provider ran"
+        );
+    }
+
+    /// gap-c09fc7: a plan's agents hear of the run's other running plans, not
+    /// of their own plan or of one that finished.
+    #[tokio::test]
+    async fn concurrent_plans_name_the_other_running_plans() {
+        let temp = tempdir().expect("tempdir");
+        let dispatcher = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        dispatcher.plan_started("api", vec!["crates/roko-serve".to_string()]);
+        dispatcher.plan_started("web", vec!["web/src".to_string()]);
+        dispatcher.plan_started("docs", Vec::new());
+        dispatcher.plan_finished("docs");
+
+        assert_eq!(
+            dispatcher.concurrent_plans("api"),
+            [("web".to_string(), vec!["web/src".to_string()])]
         );
     }
 

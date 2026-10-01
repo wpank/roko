@@ -2157,6 +2157,20 @@ enum PlanCmd {
         #[arg(long)]
         spec_quality: bool,
     },
+    /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
+    /// (its artifacts, task map and risks), which dispatch adds to each of its
+    /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
+    /// PRD. No model runs. Documents that exist are kept unless `--force`.
+    Prepare {
+        /// The plan directory, holding `tasks.toml`.
+        plan_dir: PathBuf,
+        /// Overwrite companion documents that exist.
+        #[arg(long)]
+        force: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Rebuild or verify the deterministic plans index.
     Index {
         /// Verify exact generated content without writing any files.

@@ -617,19 +617,7 @@ fn validate_and_fix_plan_toml(
                     // Validate role.
                     if let Some(role_val) = task.get("role").cloned() {
                         if let Some(r) = role_val.as_str() {
-                            const VALID_ROLES: &[&str] = &[
-                                "implementer",
-                                "architect",
-                                "researcher",
-                                "strategist",
-                                "scribe",
-                                "quick-reviewer",
-                                "auditor",
-                                "conductor",
-                                "critic",
-                                "refactorer",
-                                "auto-fixer",
-                            ];
+                            const VALID_ROLES: &[&str] = crate::task_parser::PLAN_TASK_ROLES;
                             if !VALID_ROLES.contains(&r) {
                                 repairs.push(format!(
                                     "{task_id_label}: role '{r}' corrected to 'implementer'"

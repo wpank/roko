@@ -135,9 +135,11 @@ impl ProductionGateService {
         Self
     }
 
-    /// Build a gate signal from the request.
+    /// Build a gate signal from the request, with its `[gates]
+    /// env_passthrough`.
     fn build_signal(request: &ProductionGateRequest) -> Signal {
-        let payload = GatePayload::in_dir(&request.workspace);
+        let payload = GatePayload::in_dir(&request.workspace)
+            .with_env_passthrough(request.gates_config.env_passthrough.iter().cloned());
         Signal::builder(Kind::Task)
             .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
             .build()
@@ -406,7 +408,8 @@ impl ProductionGateService {
                 .with_name(&gate_name)
                 .with_timeout_ms(step.timeout_ms);
 
-            let payload = GatePayload::in_dir(&request.workspace);
+            let payload = GatePayload::in_dir(&request.workspace)
+                .with_env_passthrough(request.gates_config.env_passthrough.iter().cloned());
             let signal = Signal::builder(Kind::Task)
                 .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
                 .build();

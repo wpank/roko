@@ -2023,9 +2023,9 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         assert_eq!(unused[0].severity, Severity::Warning);
         assert_eq!(unused[0].task_id.as_deref(), Some("T1"));
         assert!(
-            unused[0].message.contains(
-                "sets quality_profile, tags, which plan run parses but does not act on yet"
-            ),
+            unused[0]
+                .message
+                .contains("sets tags, which plan run parses but does not act on yet"),
             "{report:?}"
         );
         assert_eq!(report.totals.errors, 0, "{report:?}");

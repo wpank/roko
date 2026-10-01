@@ -230,6 +230,13 @@ pub enum TaskStatus {
     /// Completed although its verification failed (a forced accept). Its own
     /// state: neither passed nor failed.
     AcceptedWithFailures,
+    /// Its work was already there: the attempt changed nothing, and its
+    /// verify steps passed on the tree as it was. Verified, but not a pass.
+    AlreadySatisfied,
+    /// Completed, but no verify step judged it. Its own state: not passed.
+    Unverified,
+    /// Never ran: a task it depends on failed, or its condition was not met.
+    Skipped,
     Blocked,
 }
 
@@ -239,12 +246,20 @@ impl TaskStatus {
         matches!(self, Self::Active)
     }
 
-    /// Whether the task finished and was accepted: passed, or accepted with
-    /// failures (plan progress counts both, as the engine does). Use
-    /// [`Self::is_accepted_with_failures`] to tell them apart.
+    /// Whether the task finished without failing: passed, already satisfied,
+    /// accepted with failures, unverified or skipped (plan progress counts
+    /// them all, as the dashboard snapshot does). Only [`Self::Done`] is a
+    /// pass.
     #[must_use]
     pub const fn is_done(self) -> bool {
-        matches!(self, Self::Done | Self::AcceptedWithFailures)
+        matches!(
+            self,
+            Self::Done
+                | Self::AlreadySatisfied
+                | Self::AcceptedWithFailures
+                | Self::Unverified
+                | Self::Skipped
+        )
     }
 
     #[must_use]
@@ -265,6 +280,9 @@ impl TaskStatus {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::AcceptedWithFailures => "accepted with failures",
+            Self::AlreadySatisfied => "already satisfied",
+            Self::Unverified => "unverified",
+            Self::Skipped => "skipped",
             Self::Blocked => "blocked",
         }
     }
@@ -273,7 +291,12 @@ impl TaskStatus {
 impl From<&str> for TaskStatus {
     fn from(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "done" | "completed" | "complete" | "passed" | "skipped" => Self::Done,
+            "done" | "completed" | "complete" | "passed" => Self::Done,
+            roko_core::dashboard_snapshot::TASK_OUTCOME_ALREADY_SATISFIED | "already satisfied" => {
+                Self::AlreadySatisfied
+            }
+            roko_core::dashboard_snapshot::TASK_OUTCOME_UNVERIFIED => Self::Unverified,
+            "skipped" | "condition-skipped" => Self::Skipped,
             "running"
             | "active"
             | "executing"

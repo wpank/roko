@@ -66,7 +66,16 @@ const px = (name: string) => {
 
 const SURFACES = ['--void', '--bg-raised', '--bg-secondary', '--bg-highlight'];
 const ROLES = [...vars.keys()].filter((k) => k.startsWith('--role-'));
-const STATES = ['--state-done', '--state-active', '--state-accepted', '--state-failed', '--state-queued', '--state-pending', '--state-skipped'];
+const STATES = [
+  '--state-done',
+  '--state-active',
+  '--state-accepted',
+  '--state-satisfied',
+  '--state-failed',
+  '--state-queued',
+  '--state-pending',
+  '--state-skipped',
+];
 const TEXT = ['--text-strong', '--text-muted', '--text-faint', '--text-ghost', '--focus-title', '--accent-error', '--accent-cyan', '--warning', ...STATES, ...ROLES];
 
 function failures(tokens: string[], min: number) {

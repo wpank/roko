@@ -112,7 +112,7 @@ This is the implementation plan.
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
 - [x] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
 - [ ] bug-f1f814: graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load
-- [ ] bug-ddd5bd: error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick
+- [x] bug-ddd5bd: error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

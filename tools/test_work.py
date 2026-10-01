@@ -5,6 +5,7 @@ event log.
 Run: python3 tools/test_work.py
 """
 
+import datetime as dt
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -119,11 +121,11 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(errs, [])
         return items
 
-    def run_work(self, *args):
+    def run_work(self, *args, check=True):
         """Run tools/work.py in the repo as a separate process, the way the skills do."""
         env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
         return subprocess.run([sys.executable, str(Path(work.__file__)), *args], cwd=self.root,
-                              env={**env, "WORK_REPO": str(self.root)}, check=True, capture_output=True, text=True)
+                              env={**env, "WORK_REPO": str(self.root)}, check=check, capture_output=True, text=True)
 
     def events(self, session):
         f = self.root / "work" / "telemetry" / "events" / f"{session}.jsonl"
@@ -227,6 +229,194 @@ class TestWorktreeBusy(RepoTest):
         (self.root / "src" / "c.rs").write_text("fn dirty() {}\n")
         work.set_repo(self.add_worktree("work/worker"))
         self.assertEqual(work.worktree_changes(), {"src/c.rs": f"{self.root.name} (main)"})
+
+
+LANES = """milestones = ["MS0", "MS1"]
+
+[pools]
+p = 2
+
+[lane.x]
+paths = ["src/**"]
+max = 2
+
+[lane.y]
+paths = ["src/**"]
+max = 1
+pool = "p"
+
+[lane.z]
+paths = ["src/**"]
+max = 3
+pool = "p"
+"""
+
+
+class TestLanes(RepoTest):
+    def lane_items(self, specs):
+        """One item per (id, lane, milestone), each on its own file."""
+        for iid, lane, ms in specs:
+            (self.root / "src" / f"{iid}.rs").write_text("fn x() {}\n")
+            extra = f'lane = "{lane}"' + (f'\nmilestone = "{ms}"' if ms else "")
+            self.write(iid, item(iid, iid, anchors=[f"src/{iid}.rs"], extra=extra))
+        (self.root / "work" / "lanes.toml").write_text(LANES)
+        self.commit("lane items")
+
+    def test_check_rejects_unknown_lane_and_parent(self):
+        self.write("spec-eeeeee", item("bug-eeeeee", "Epic: E").replace("bug-eeeeee", "spec-eeeeee").replace(
+            'kind = "bug"', 'kind = "spec"'))
+        self.lane_items([("gap-111111", "x", "MS0")])
+        self.write("gap-222222", item("gap-222222", "unknown lane", extra='lane = "nowhere"\nparent = "spec-eeeeee"'))
+        self.write("gap-333333", item("gap-333333", "parent is a bug", extra='lane = "x"\nparent = "bug-aaaaaa"'))
+        self.write("gap-444444", item("gap-444444", "no such parent", extra='parent = "spec-999999"'))
+        self.write("gap-555555", item("gap-555555", "unknown milestone", extra='lane = "y"\nmilestone = "MS9"'))
+        errs = work.validate(self.items())
+        self.assertEqual(sorted(e.removeprefix("work/items/") for e in errs), sorted([
+            "gap-222222-x.md: lane 'nowhere' is not in work/lanes.toml",
+            "gap-333333-x.md: parent 'bug-aaaaaa' is not a spec item",
+            "gap-444444-x.md: parent 'spec-999999' is not a spec item",
+            "gap-555555-x.md: milestone 'MS9' is not one of work/lanes.toml's milestones",
+        ]))
+        # Without lanes.toml, lanes and milestones are not checked; parents still are.
+        (self.root / "work" / "lanes.toml").unlink()
+        self.assertEqual(len(work.validate(self.items())), 2)
+
+    def test_next_mix_respects_lane_caps(self):
+        self.lane_items([("gap-a00001", "x", None), ("gap-a00002", "x", None), ("gap-a00003", "x", None),
+                         ("gap-b00001", "y", None), ("gap-b00002", "y", None),
+                         ("gap-c00001", "z", None), ("gap-c00002", "z", None), ("gap-c00003", "z", None)])
+        # A live claim fills lane y, and also takes one of pool p's two places.
+        claims = {"gap-b00001": {"id": "gap-b00001", "by": "t", "stale": False}}
+        picked, skipped = work.pick_next(self.items(), claims=claims, worktrees={}, mix={"x": 3, "y": 1, "z": 3})
+        lanes = Counter(work.item_lane(i) for i in picked)
+        self.assertEqual(lanes, Counter({"x": 2, "z": 1}))
+        self.assertEqual(skipped["lane x is at its cap of 2"], 1)
+        self.assertEqual(skipped["lane y is at its cap of 1"], 1)
+        self.assertEqual(skipped["pool p is at its cap of 2"], 2)
+        # --lane picks one lane only, within its cap.
+        picked, _ = work.pick_next(self.items(), n=5, claims={}, worktrees={}, lane="z")
+        self.assertEqual([i["id"] for i in picked], ["gap-c00001", "gap-c00002"])  # pool p caps z at 2
+
+    def test_next_sorts_by_milestone_within_a_goal(self):
+        self.lane_items([("gap-d00001", "x", "MS1"), ("gap-d00002", "x", "MS0")])
+        picked, _ = work.pick_next([i for i in self.items() if i["id"].startswith("gap-d")], n=2, claims={}, worktrees={})
+        self.assertEqual([i["id"] for i in picked], ["gap-d00002", "gap-d00001"])
+        # The CLI takes the same mix and says so in --json.
+        out = json.loads(self.run_work("next", "--mix", "x=1", "--ignore-worktrees", "--json").stdout)
+        self.assertEqual([(r["id"], r["lane"]) for r in out], [("gap-d00002", "x")])
+
+
+class TestEpicsAndViews(RepoTest):
+    """An epic with three children, one of them closed, in lanes x and y."""
+
+    def setUp(self):
+        super().setUp()
+        epic = item("bug-eeeeee", "Epic: E").replace("bug-eeeeee", "spec-eeeeee").replace('kind = "bug"', 'kind = "spec"')
+        self.write("spec-eeeeee", epic.replace("depends_on = []", 'depends_on = ["gap-333333"]'))
+        self.write("gap-111111", item("gap-111111", "One", status="done", anchors=["src/one.rs"], extra=(
+            'lane = "x"\nparent = "spec-eeeeee"\n\n[closed]\nat = 2026-09-02\nevidence = "done"')))
+        self.write("gap-222222", item("gap-222222", "Two", anchors=["src/two.rs"], extra='lane = "x"\nparent = "spec-eeeeee"'))
+        self.write("gap-333333", item("gap-333333", "Three", anchors=["src/three.rs"], extra='lane = "y"'))  # via depends_on
+        self.write("gap-444444", item("gap-444444", "Four", anchors=["src/four.rs"]).replace(
+            "depends_on = []", 'depends_on = ["gap-222222"]'))
+        self.commit("an epic")
+
+    def test_epics_view_counts_children(self):
+        work.render_root("work", self.items())
+        text = (self.root / "work" / "EPICS.md").read_text()
+        self.assertIn("## [spec-eeeeee](items/spec-eeeeee-x.md) E", text)
+        self.assertIn("- **1/3 closed** · goal `core` · severity p2", text)
+        self.assertIn("- open by lane: x 1, y 1", text)
+        self.assertIn("- next: [gap-333333](items/gap-333333-x.md) Three", text)  # p2 items by title: Three < Two
+        self.assertIn("| x | 1 | 2 | 1 (1) |", text)
+        self.assertIn("| y | 0 | 1 | 1 (1) |", text)
+
+    def test_show_lists_children_and_dependents(self):
+        self.run_work("claim", "gap-222222", "--by", "t", "--branch", "work/two", "--session", "s1")
+        epic = json.loads(self.run_work("show", "spec-eeeeee", "--json").stdout)
+        self.assertEqual(sorted(c["id"] for c in epic["children"]), ["gap-111111", "gap-222222", "gap-333333"])
+        two = json.loads(self.run_work("show", "gap-222222", "--json").stdout)
+        self.assertEqual([d["id"] for d in two["dependents"]], ["gap-444444"])
+        self.assertEqual((two["claim"]["by"], two["claim"]["branch"]), ("t", "work/two"))
+        text = self.run_work("show", "gap-222222").stdout
+        self.assertIn("claim: t · work/two", text)
+        self.assertIn("gap-444444  open  Four", text)
+        # list filters by lane, parent and status.
+        self.assertEqual([r["id"] for r in json.loads(self.run_work("list", "--lane", "x", "--json").stdout)], ["gap-222222"])
+        rows = json.loads(self.run_work("list", "--parent", "spec-eeeeee", "--status", "all", "--json").stdout)
+        self.assertEqual(sorted(r["id"] for r in rows), ["gap-111111", "gap-222222"])
+        status = json.loads(self.run_work("status", "--json").stdout)
+        self.assertEqual(status["epic"]["spec-eeeeee"], {"title": "Epic: E", "open": 2, "claimed": 1, "done": 1})
+        self.assertEqual(status["lane"]["x"], {"open": 1, "claimed": 1, "done": 1})
+
+
+class TestClaims(RepoTest):
+    def claim_file(self, iid, **fields):
+        d = work.claims_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{iid}.json").write_text(json.dumps({"id": iid, "by": "t", **fields}))
+
+    def test_claim_refuses_an_overlapping_footprint(self):
+        self.run_work("claim", "bug-aaaaaa", "--by", "t1", "--branch", "work/a")
+        # bug-bbbbbb is anchored on the same file, so another worker may not claim it...
+        refused = self.run_work("claim", "bug-bbbbbb", "--by", "t2", "--branch", "work/b", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("its files overlap bug-aaaaaa, claimed by t1", refused.stderr)
+        self.assertNotIn("bug-bbbbbb", work.load_claims())
+        # ...but the worker holding bug-aaaaaa may take it on the same branch,
+        self.run_work("claim", "bug-bbbbbb", "--by", "t1", "--branch", "work/a")
+        self.run_work("release", "bug-bbbbbb")
+        # and --force overrides, saying what it overrode.
+        forced = self.run_work("claim", "bug-bbbbbb", "--by", "t2", "--branch", "work/b", "--force")
+        self.assertIn("--force overrides: its files overlap bug-aaaaaa", forced.stderr)
+        self.assertEqual(work.load_claims()["bug-bbbbbb"]["by"], "t2")
+
+    def test_claim_refuses_an_item_whose_dependency_is_open(self):
+        self.write("gap-dddddd", item("gap-dddddd", "D", anchors=["src/d.rs"]).replace(
+            "depends_on = []", 'depends_on = ["gap-cccccc"]'))
+        self.commit("D waits on C")
+        refused = self.run_work("claim", "gap-dddddd", "bug-aaaaaa", "--by", "t", check=False)
+        self.assertIn("it depends on gap-cccccc, which is still open", refused.stderr)
+        # The other item of the same command is claimed all the same, and the command fails.
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(sorted(work.load_claims()), ["bug-aaaaaa"])
+        self.run_work("release", "bug-aaaaaa")
+        # One worker may take both on one branch and do them in turn.
+        self.run_work("claim", "gap-cccccc", "gap-dddddd", "--by", "t", "--branch", "work/cd")
+        self.assertEqual(sorted(work.load_claims()), ["gap-cccccc", "gap-dddddd"])
+
+    def test_claim_renew_extends_the_ttl_by_size(self):
+        now = dt.datetime.now().astimezone()
+        ago = lambda h: (now - dt.timedelta(hours=h)).isoformat(timespec="seconds")  # noqa: E731
+        self.claim_file("gap-cccccc", at=ago(30), size="M", branch="work/c")
+        self.claim_file("bug-aaaaaa", at=ago(9), size="S")
+        self.claim_file("bug-bbbbbb", at=ago(7), size="S")
+        claims = work.load_claims()
+        self.assertEqual({k: (c["ttl_h"], c["stale"]) for k, c in claims.items()},
+                         {"gap-cccccc": (24, True), "bug-aaaaaa": (8, True), "bug-bbbbbb": (8, False)})
+        # Only the claimant renews; the renewed M claim, made 30 h ago, is live again.
+        other = self.run_work("claim", "gap-cccccc", "--renew", "--by", "someone-else", check=False)
+        self.assertIn("only the claimant renews a claim", other.stderr)
+        self.run_work("claim", "gap-cccccc", "--renew", "--by", "t", "--session", "s1")
+        c = work.load_claims()["gap-cccccc"]
+        self.assertEqual((c["stale"], c["at"]), (False, ago(30)))
+        self.assertRegex(c["renewed_at"], work.TS_RE)
+        (renewal,) = self.events("s1")
+        self.assertEqual((renewal["event"], renewal["renew"], renewal["branch"]), ("claim", True, "work/c"))
+
+    def test_next_and_claims_delete_nothing(self):
+        self.write("gap-cccccc", item("gap-cccccc", "C", status="done",
+                                      extra='\n[closed]\nat = 2026-09-02\nevidence = "done"'))
+        self.write("gap-eeeeee", item("gap-eeeeee", "E", anchors=["src/c.rs"]))
+        self.commit("close C; E touches the same file")
+        self.claim_file("gap-cccccc", at=dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+        self.run_work("next", "--n", "3")
+        self.run_work("claims")
+        self.assertIn("gap-cccccc", work.load_claims())
+        # Meanwhile a claim on a closed item holds no file back.
+        self.assertIn("gap-eeeeee", [i["id"] for i in work.pick_next(self.items(), n=3, worktrees={})[0]])
+        self.assertIn("pruned gap-cccccc (closed)", self.run_work("claims", "--prune").stdout)
+        self.assertNotIn("gap-cccccc", work.load_claims())
 
 
 class TestEvents(RepoTest):

@@ -13,8 +13,7 @@
 //! forensic replay or cross-agent verification.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use roko_core::ContentHash;
@@ -258,16 +257,7 @@ impl WitnessLogger {
     /// Returns an error if the directory cannot be created or the file
     /// cannot be opened/written.
     pub fn log(&self, vertex: &WitnessVertex) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(vertex)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(file, "{line}")
+        roko_core::io::append_jsonl(&self.path, vertex)
     }
 
     /// Read all vertices from the log file into a DAG.

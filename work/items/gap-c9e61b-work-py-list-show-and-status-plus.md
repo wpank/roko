@@ -2,14 +2,16 @@
 id = "gap-c9e61b"
 kind = "gap"
 title = "work.py list, show and status, plus a generated EPICS.md with progress per epic and lane"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "a8ecec27d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (§1, R3, R4)"
 anchors = ["tools/work.py::render_root", "tools/work.py::main", "tools/test_work.py", "work/EPICS.md"]
@@ -19,6 +21,19 @@ links = { depends_on = ["gap-130a3e"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_epics_view_counts_children' tools/test_work.py && grep -qw 'def test_show_lists_children_and_dependents' tools/test_work.py && python3 tools/test_work.py -k test_epics_view_counts_children -k test_show_lists_children_and_dependents"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:53:24Z"
+commit = "a8ecec27d"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-01T08:36:21Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Premise re-checked at bdeaff586: no list, show or status command and no EPICS.md; epics are 'Epic: …' spec items with depends_on on their children, and 343 items set parent. a8ecec27d: read-only list (filters goal/lane/kind/status/parent), show (front matter, anchors, children = parent-of plus an epic's depends_on, dependents, live claim, verify commands, [closed]) and status (open/claimed/done by goal, lane, epic), each with --json; render writes work/EPICS.md per epic (closed/total children, open by lane, the child next takes first with claims ignored and dependencies judged on all items) plus a per-lane table; README layout and views list updated. On real data: 18 epics, e.g. spec-ae5f94 20/24 closed. tools/test_work.py: a three-child epic with one closed child shows 1/3 and lane counts x 1, y 1 and its next child; show lists children, dependents and the claim; list --lane and --parent filter; status counts by epic and lane; the [[verify]] command passes."
 +++
 
 ## Problem

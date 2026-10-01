@@ -2,14 +2,16 @@
 id = "gap-2623b2"
 kind = "gap"
 title = "One plan generator instead of three prompts, without the 8,000-character PRD and 5-file caps"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/prd", "roko-cli/plan_generate"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (duplicate generators; planner input budget)"
 anchors = ["crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_outcome", "crates/roko-cli/src/plan_generate.rs::build_generation_prompt", "crates/roko-cli/src/commands/plan.rs::cmd_plan", "crates/roko-cli/src/commands/do_cmd.rs::run_standard_path_inner"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-853b31"], blocks = [], related = ["find-84bfa8", "b
 
 [[verify]]
 command = "grep -rqw 'fn generator_prompt_keeps_a_long_prd_whole' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_keeps_a_long_prd_whole && ! grep -rq 'build_generation_prompt' crates/roko-cli/src/commands/"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:18Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91; taskdef's own clone: prd/plan_generate/plan_generator/plan_authoring/plan_validate 163/163 and the item verify. Merged ce7156389 (work/gap-2623b2 e73442d1e)."
 +++
 
 ## Problem
@@ -76,3 +85,17 @@ caller of `build_generation_prompt`, and bug-a5cd6b reports that `roko prd plan`
 
 - Waits for gap-853b31 (the planner model). Keep `roko plan generate`'s output location (`.roko/plans/`).
 - S07.10 (the TSS checklist) will later edit the same prompt in `prd.rs`.
+- Implemented on `work/gap-2623b2`; cargo verification deferred to the batch check (its verify passes there).
+- `prd::generate_plan(PlanRequest)` is the one pipeline: the strict path's validation, repair, policy, retries and
+  model escalation for a `PlanSource`: a PRD, text, or a plan regenerated in place. It now serves `roko prd plan`,
+  serve and `roko do`'s complex band (their wrappers stay), `roko plan generate` (prompt, file and `--from-notes`; the
+  output stays `.roko/plans/`), `roko do`'s standard band and its fallback, `roko plan regenerate`, and the old-format
+  refresh. `build_generation_prompt` is deleted.
+- Budgets: a quarter of the planner's `[models.*] context_window` for the source (about 4 chars a token) and one file
+  per 2,000 tokens of another quarter, never below the old 8,000 chars and 5 files.
+- Behaviour changes: each `plan generate` or `roko do` call makes one plan (slug from the file stem or the prompt); the
+  planner is read-only and roko writes the validated plan; `plan regenerate` writes only a validated plan, so it has
+  nothing to restore, and no longer runs `validate_modern_fields` afterwards (that check wants a `model_hint`, which
+  generated plans never carry); planning env comes from `[agent] env`, not the legacy gateway lines.
+- Not done: `DefaultPlanGenerator` is untouched (find-84bfa8; gap-9ca898 edits it in batch 20), and
+  `plan generate --from-backlog` still builds its own prompt (`build_backlog_generation_prompt`).

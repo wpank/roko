@@ -239,17 +239,21 @@ fn render_plan(
         for task in &plan.tasks {
             let icon = match task.status {
                 TaskStatus::Done => "\u{2713}",
+                TaskStatus::AlreadySatisfied => "\u{2261}",
                 TaskStatus::AcceptedWithFailures => "\u{26a0}",
+                TaskStatus::Unverified => "?",
                 TaskStatus::Failed | TaskStatus::Blocked => "\u{2717}",
                 TaskStatus::Active => "\u{25B6}",
                 TaskStatus::Pending => "\u{25CB}",
+                TaskStatus::Skipped => "\u{2298}",
             };
             let status_style = match task.status {
                 TaskStatus::Done => theme.success(),
-                TaskStatus::AcceptedWithFailures => theme.warning(),
+                TaskStatus::AlreadySatisfied => theme.satisfied(),
+                TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => theme.warning(),
                 TaskStatus::Failed | TaskStatus::Blocked => theme.danger(),
                 TaskStatus::Active => theme.warning(),
-                TaskStatus::Pending => theme.muted(),
+                TaskStatus::Pending | TaskStatus::Skipped => theme.muted(),
             };
 
             let agent_display = task.agent_id.as_deref().unwrap_or("-");

@@ -93,7 +93,9 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             prompt: PromptConfig::default(),
             repos: Vec::new(),
-            gates: vec![GateConfig::default_shell_true()],
+            // No legacy `[[gate]]` entries, as when a file leaves them out:
+            // these gates are only counted, never run.
+            gates: Vec::new(),
             executor: ExecutorConfig::default(),
             runner: RunnerConfig::default(),
             runtime: RuntimeControlConfig::default(),
@@ -3040,6 +3042,16 @@ contxt_window = 8192
             assert_eq!(provider.base_url, None);
             assert_eq!(config.models["local-model"].slug, "llama3");
         }
+    }
+
+    /// L13: a config without `[[gate]]` entries has the default's legacy
+    /// gates, which are none. The default used to hold a `shell true`
+    /// placeholder that never ran but was counted by `roko do`.
+    #[test]
+    fn config_without_gate_entries_has_the_default_gates() {
+        let partial = Config::parse_toml("[agent]\n").expect("parse config");
+        assert_eq!(partial.gates.len(), Config::default().gates.len());
+        assert!(partial.gates.is_empty());
     }
 
     #[test]

@@ -925,10 +925,12 @@ fn hard_fails(
         detail.insert("HF2", vacuous);
     }
 
-    // HF3: every step passes on the base, though the task expects one to turn green.
+    // HF3: every step passes on the base, though the task expects one to turn green. A pinned
+    // acceptance test is written to fail on the base, so a task with one expects red.
     let all_pass_on_base =
         !task.verify.is_empty() && task.verify.iter().all(|step| step.expect == "pass_on_base");
-    if red_on_base == RedOnBase::Pass && implementer && !all_pass_on_base {
+    let expects_red = implementer && (task.accept_tests > 0 || !all_pass_on_base);
+    if red_on_base == RedOnBase::Pass && expects_red {
         hard.push("HF3");
     }
 
@@ -1536,6 +1538,31 @@ mod tests {
         let malformed = record(&report, "T4");
         assert_eq!(malformed.features.n_accept, 0);
         assert_eq!(malformed.hard_fail, ["HF1"]);
+    }
+
+    /// gap-f7ebd4: as in speclint, a task that pins an acceptance test expects red whatever its
+    /// own steps declare, so HF3 flags it when the base passes. Its own `pass_on_base` step
+    /// alone expects green.
+    #[test]
+    fn hf3_counts_a_pinned_acceptance_test_as_expecting_red() {
+        let dir = fixture_dirs()
+            .into_iter()
+            .find(|dir| dir.ends_with("accept-tests"))
+            .expect("the accept fixture");
+        let passing: BTreeMap<(String, String), RedOnBase> = ["T1", "T5", "T6"]
+            .into_iter()
+            .map(|task| {
+                (
+                    ("tasks.toml".to_string(), task.to_string()),
+                    RedOnBase::Pass,
+                )
+            })
+            .collect();
+        let report = lint_files_with(&[dir.join("tasks.toml")], &dir, &passing);
+        let hf3 = |task_id| record(&report, task_id).hard_fail.contains(&"HF3");
+        assert!(hf3("T1"), "a pinned test and no step of its own");
+        assert!(hf3("T5"), "a pinned test beside a pass_on_base step");
+        assert!(!hf3("T6"), "a pass_on_base step alone");
     }
 
     #[test]

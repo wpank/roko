@@ -2,11 +2,12 @@
 
 The fake roko (`FAKE_ROKO`) stands in for the binary. It answers `--version`, passes `plan validate`, and on
 `plan run` writes the records a Graph run leaves in `.roko/` (episodes, cost rows and the checkpoint) for the models
-a test scripts. The two `real_roko` tests drive the prebuilt binary instead, when there is one
+a test scripts. The three `real_roko` tests drive the prebuilt binary instead, when there is one
 (`target/debug/roko`, or `$VB_TEST_ROKO_BIN`). They run it against a loopback fake provider, so no call is paid.
+Without a binary they skip, and only `-rs` prints why: a green run without them never met real Roko.
 
 Run from the repository root with the benchmark venv:
-    benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q
+    benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q -rs
 """
 
 from __future__ import annotations
@@ -41,7 +42,8 @@ ARM = layout.ARMS_DIR / "roko_fixed.toml"
 PIN = "gpt-oss-120b"
 SOLUTION = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 REAL_ROKO = Path(os.environ.get("VB_TEST_ROKO_BIN") or layout.REPO_ROOT / "target" / "debug" / "roko")
-real_roko = pytest.mark.skipif(not os.access(REAL_ROKO, os.X_OK), reason=f"no roko binary at {REAL_ROKO}")
+real_roko = pytest.mark.skipif(not os.access(REAL_ROKO, os.X_OK), reason=(
+    f"no roko binary at {REAL_ROKO}, so the Roko arm was not run against real Roko: build it or set VB_TEST_ROKO_BIN"))
 
 FAKE_ROKO = r'''#!__PYTHON__
 """A stand-in for the roko binary: it records its argv and environment and writes a Graph run's records."""
@@ -57,8 +59,8 @@ if args == ["--version"]:
     sys.exit(0)
 repo = Path(args[args.index("--repo") + 1])
 if "validate" in args:
-    print("0 diagnostics in 1 plan")
-    sys.exit(0)
+    print(behaviour.get("rejects") or "0 diagnostics in 1 plan")
+    sys.exit(1 if behaviour.get("rejects") else 0)
 slug = Path(args[args.index("run") + 1]).name
 roko = repo / ".roko"
 (roko / "learn").mkdir(parents=True, exist_ok=True)
@@ -251,6 +253,8 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     assert [(rung["command"], rung["required"]) for rung in config["gates"]["rungs"]] == [(visible[0], True)]
     assert list(config["providers"]) == ["cerebras"] and list(config["models"]) == [PIN]
     assert config["models"][PIN]["slug"] == PIN and config["routing"]["fallback_models"] == []
+    # bug-a05c53: no routing ladder, so the pin is the only routing input and PLAN_041 has nothing to flag.
+    assert config["routing"]["ladder"] == {"enabled": False}
     assert config["gates"]["max_review_cycles"] == 0 and config["pipeline"]["focused"]["max_turns"] == 12
     assert config["models"][PIN]["cost_input_per_m"] == ledger.load_snapshot().row(PIN)["input"]
     budget = config["budget"]  # Roko's invariants: 0 < max_turn_usd <= max_plan_usd, and room for every retry
@@ -277,6 +281,18 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     [task_table] = tomllib.loads(tricky.tasks_text)["task"]
     assert task_table["description"].strip() == nasty.strip()
     assert [step["command"] for step in task_table["verify"]] == ["( true ) && ( echo ok )"]
+
+
+def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):
+    # bug-a05c53: when the binary's `plan validate --strict` rejects the plan this arm emits, every task would end
+    # infra_error, so `vb run` refuses to start: no task runs, and no run directory is made.
+    rejects = "warn  PLAN_041 task 'T01' sets model_hint = 'gpt-oss-120b', which pins a model; use `rung`"
+    binary, log = fake_roko(tmp_path, [PIN], rejects=rejects)
+    assert run_vb(places, arm_with(tmp_path, binary)) == 2
+    printed = capsys.readouterr().err
+    assert "rejects the plan this arm emits" in printed and "PLAN_041" in printed
+    assert not (places["results"] / "TEST-ROKO").exists()
+    assert ["validate" in call["argv"] for call in read_jsonl(log)] == [True]  # the preflight's, and nothing else
 
 
 def test_model_mismatch_marks_attempt_infra_error(places, tmp_path):
@@ -342,6 +358,9 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     assert record["provenance"]["s01_run_dir"] == "s01/F1-l1-0001.s1"  # the record points at Roko's own records
 
     calls = read_jsonl(log)
+    preflight = calls.pop(0)["argv"]  # bug-a05c53: `vb run` validates a stand-in plan before the first task
+    assert preflight[preflight.index("plan"):][:4] == ["plan", "validate", "--strict", "--dag"]
+    assert preflight[preflight.index("--model") + 1] == PIN and str(places["work"]) not in " ".join(preflight)
     assert [call["argv"][-1] for call in calls[:1]] == ["--version"]
     validate_argv, run_argv = calls[1]["argv"], calls[2]["argv"]
     assert validate_argv[validate_argv.index("plan"):][:4] == ["plan", "validate", "--strict", "--dag"]

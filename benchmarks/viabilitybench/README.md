@@ -215,8 +215,13 @@ Every benchmark check runs with the project venv's Python, from the repository r
 ```bash
 python3 -m venv benchmarks/viabilitybench/.venv          # Python 3.11 or newer
 benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes -r benchmarks/viabilitybench/requirements.lock
-benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench -q
+benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench -q -rs
 ```
+
+`-rs` prints each skipped test with its reason. The three `real_roko` tests in `driver/test_run_roko.py` run the Roko
+arm against a built binary (`target/debug/roko`, or `$VB_TEST_ROKO_BIN`) and skip without one, so a green run that
+skipped them never met real Roko. `vb run` itself refuses to start the Roko arm when its binary rejects the plan the
+arm emits (`run_roko.preflight`).
 
 The venv is ignored by `benchmarks/viabilitybench/.gitignore`. `requirements.lock` pins pytest and its
 dependencies with hashes. To change them, edit `requirements.in` and regenerate the lock from this directory:

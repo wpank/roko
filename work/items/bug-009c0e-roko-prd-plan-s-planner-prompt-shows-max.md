@@ -3,13 +3,15 @@ id = "bug-009c0e"
 kind = "bug"
 title = "roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/prd"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "5e39cb9d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-repin's report)"
 anchors = ["crates/roko-cli/src/prd.rs"]
@@ -18,7 +20,7 @@ parent = "spec-e57870"
 links = { depends_on = [], blocks = [], related = ["gap-272448", "gap-a8d786"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! sed -n '/^async fn generate_plan_from_prd_with_outcome(/,/^}/p' crates/roko-cli/src/prd.rs | grep -q 'max_parallel = 1'"
+command = "! sed -n '/^async fn generate_plan_from_prd_with_outcome(/,/^}/p;/^pub async fn generate_plan(/,/^}/p' crates/roko-cli/src/prd.rs | grep -q 'max_parallel = 1'"
 +++
 
 ## Problem
@@ -42,3 +44,13 @@ The prompt string in `generate_plan_from_prd_with_outcome`.
 
 - [ ] `roko prd plan` no longer asks for `max_parallel = 1`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/gap-2623b2` at `5e39cb9d5`, with gap-2623b2; cargo verification deferred to the batch check.
+- gap-2623b2 moved the planner prompts out of `generate_plan_from_prd_with_outcome`, now a thin wrapper, into
+  `generate_plan`, the one plan generator. The retry prompt's "MINIMUM REQUIRED STRUCTURE" example now shows the
+  comment the shared system prompt uses (`# max_parallel is omitted: tasks that do not depend on each other run
+  together`). The verify now reads `generate_plan` too, where the prompt lives; it read only the wrapper and would
+  pass vacuously.
+- The 132 existing plans are unchanged. Plan step 2 (a `plan validate` warning) is not done.

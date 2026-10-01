@@ -471,9 +471,6 @@ async fn run_standard_path(
     provider: Option<String>,
     context: &[PathBuf],
 ) -> Result<i32> {
-    use roko_cli::agent_config::{command_from_config, load_gateway_env};
-    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
-
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
     out.step(
         "Complexity",
@@ -483,7 +480,6 @@ async fn run_standard_path(
 
     prepare_runtime_hooks(workdir, cli.quiet);
 
-    let gw = load_gateway_env(workdir);
     let model_key = roko_cli::model_selection::resolve_planner_model(
         workdir,
         cli.model.clone(),
@@ -509,8 +505,7 @@ async fn run_standard_path(
         crate::commands::util::preflight_provider_for_model(&do_config, &model_key)?;
     }
 
-    // Generate plan from the prompt using the plan generate agent.
-    let system = roko_cli::plan_generate::build_generation_prompt(workdir, prompt, "prompt");
+    // Generate the plan from the prompt.
     let context_block = if context.is_empty() {
         String::new()
     } else {
@@ -520,60 +515,16 @@ async fn run_standard_path(
             workdir,
         );
         if !loaded.is_empty() {
-            format!("\n\n<context>\n{loaded}</context>\n")
+            format!("<context>\n{loaded}</context>")
         } else {
             String::new()
         }
     };
-    let plans_rel = roko_cli::workspace_paths::workspace_relative_plans_dir(workdir);
-    let task_prompt = format!(
-        "Read the source below and generate implementation plan directories under {plans}/. \
-         Search the codebase first to understand what exists. \
-         Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
-         mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n{prompt}{context_block}",
-        plans = plans_rel.display()
-    );
-
-    let effort = cli.effort.map(|e| e.to_string());
-    let effort_ref = effort.as_deref();
-    let resume_session = cli.resume.as_deref();
-    let _agent_command = command_from_config(workdir).unwrap_or_else(|| "claude".to_string());
-
-    let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-        prompt: &task_prompt,
-        workdir,
-        model: Some(model_key.as_str()),
-        effort: effort_ref.or(Some("high")),
-        system_prompt: Some(&system),
-        resume_session,
-        env_vars: &gw.vars,
-        role: Some("strategist"),
-        allowed_tools: None,
-    })
-    .await?;
-
-    if exit_code != 0 {
-        let crash_class = roko_cli::agent_exec::classify_agent_crash(&output);
-        out.error(&format!(
-            "Plan generation failed (exit {exit_code}): {}",
-            crash_class.recovery_hint()
-        ));
-        if !output.is_empty() && !cli.quiet {
-            eprint!("{output}");
-        }
+    let Some(plans_dir) =
+        generate_prompt_plan(cli, workdir, prompt, &model_key, &context_block, &out).await
+    else {
         return Ok(EXIT_AGENT_FAILURE);
-    }
-
-    // Find the generated plans directory.
-    let plans_dir = roko_cli::plan::plans_dir(workdir);
-    if !plans_dir.is_dir() {
-        out.error(&format!(
-            "No plans directory found after generation at {}",
-            plans_dir.display()
-        ));
-        return Ok(EXIT_AGENT_FAILURE);
-    }
+    };
 
     let plans = match roko_cli::runner::plan_loader::load_plans(&plans_dir) {
         Ok(plans) if plans.is_empty() => {
@@ -862,6 +813,7 @@ pub(crate) async fn run_plan_execution(
         fail_fast: false,
         only_plans: None,
         live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        force_disk_check: false,
     })
     .await
 }
@@ -874,65 +826,54 @@ async fn run_standard_path_inner(
     no_cascade: bool,
     provider: Option<String>,
 ) -> Result<i32> {
-    use roko_cli::agent_config::load_gateway_env;
-    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
-
-    let gw = load_gateway_env(workdir);
     let model_key = roko_cli::model_selection::resolve_planner_model(
         workdir,
         cli.model.clone(),
         "roko do (fallback plan)",
     )?;
-
-    let system = roko_cli::plan_generate::build_generation_prompt(workdir, prompt, "prompt");
-    let plans_rel = roko_cli::workspace_paths::workspace_relative_plans_dir(workdir);
-    let task_prompt = format!(
-        "Read the source below and generate implementation plan directories under {plans}/. \
-         Search the codebase first to understand what exists. \
-         Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
-         mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n{prompt}",
-        plans = plans_rel.display()
-    );
-
-    let effort = cli.effort.map(|e| e.to_string());
-    let effort_ref = effort.as_deref();
-    let resume_session = cli.resume.as_deref();
-
-    let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-        prompt: &task_prompt,
-        workdir,
-        model: Some(model_key.as_str()),
-        effort: effort_ref.or(Some("high")),
-        system_prompt: Some(&system),
-        resume_session,
-        env_vars: &gw.vars,
-        role: Some("strategist"),
-        allowed_tools: None,
-    })
-    .await?;
-
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
-
-    if exit_code != 0 {
-        let crash_class = roko_cli::agent_exec::classify_agent_crash(&output);
-        out.error(&format!(
-            "Fallback plan generation failed (exit {exit_code}): {}",
-            crash_class.recovery_hint()
-        ));
-        if !output.is_empty() && !cli.quiet {
-            eprint!("{output}");
-        }
+    let Some(plans_dir) = generate_prompt_plan(cli, workdir, prompt, &model_key, "", &out).await
+    else {
         return Ok(EXIT_AGENT_FAILURE);
-    }
-
-    let plans_dir = roko_cli::plan::plans_dir(workdir);
-    if !plans_dir.is_dir() {
-        out.error("No plans directory found after generation");
-        return Ok(EXIT_AGENT_FAILURE);
-    }
+    };
 
     run_plan_execution(cli, workdir, &plans_dir, no_cascade, provider).await
+}
+
+/// Plan `prompt` with the one plan generator (gap-2623b2), which validates
+/// the plan and writes it to the workspace plans directory; `context` follows
+/// the prompt. Returns that directory, or `None` after reporting a failure on
+/// `out`.
+async fn generate_prompt_plan(
+    cli: &Cli,
+    workdir: &Path,
+    prompt: &str,
+    model_key: &str,
+    context: &str,
+    out: &roko_cli::cli_output::CliOutput,
+) -> Option<PathBuf> {
+    let effort = cli.effort.map(|e| e.to_string());
+    let slug = roko_cli::prd::slugify(prompt);
+    let request = roko_cli::prd::PlanRequest {
+        context: Some(context),
+        model: Some(model_key),
+        effort: Some(effort.as_deref().unwrap_or("high")),
+        ..roko_cli::prd::PlanRequest::new(
+            roko_cli::prd::PlanSource::Text {
+                text: prompt,
+                kind: "prompt",
+            },
+            &slug,
+            workdir,
+        )
+    };
+    match roko_cli::prd::generate_plan(request).await {
+        Ok((plans_dir, _)) => Some(plans_dir),
+        Err(err) => {
+            out.error(&format!("Plan generation failed: {err:#}"));
+            None
+        }
+    }
 }
 
 // ─── Continue / resume helpers ──────────────────────────────────────

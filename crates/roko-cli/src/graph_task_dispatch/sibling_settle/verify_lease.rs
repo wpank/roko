@@ -245,6 +245,23 @@ impl InFlightTasks {
         }
         self.bump();
     }
+
+    /// Wait until an attempt of `key` (`"{plan_id}/{task_id}"`) has a verify
+    /// step running or waiting to run.
+    #[cfg(test)]
+    pub(crate) async fn reading_began(&self, key: &str) {
+        let mut changed = self.changed.subscribe();
+        while !self
+            .attempts
+            .lock()
+            .values()
+            .any(|attempt| attempt.key == key && attempt.reading.is_some())
+        {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

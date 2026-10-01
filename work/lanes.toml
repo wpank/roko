@@ -1,0 +1,55 @@
+# Lanes: what can run side by side (tmp/cybernetic-harness/workstreams/PLAN.md, section 2). Hand-edited.
+#
+# tools/work.py reads this file. `check` rejects an item whose `lane` is not a key below or whose `milestone` is not
+# listed; `check --lint` lists items whose anchors fall outside their lane's `paths`; `next --lane` and `next --mix`
+# pick by lane, never past a lane's `max` or its pool's cap, counting live claims. Items without a lane are in the
+# uncapped lane `none`.
+#
+# Proposed by gap-130a3e from PLAN.md section 2, taking the upper end of each range there. The caps are Will's call
+# (W7, "Will decides"): change them here.
+
+# The checklist's milestones, in order. `next` sorts by goal, then milestone, then rank and severity.
+milestones = ["MS0", "MS1", "MS2", "MS3", "MS4", "MS5", "MS6", "ME"]
+
+[pools]
+rust = 4  # Rust builders on the cargo lock, across rust-cold and rust-hot
+
+[lane.paper]
+paths = ["docs/whitepaper/**", "tmp/cybernetic-harness/paper/**", "tmp/cybernetic-harness/companion-audit/**",
+         "tmp/cybernetic-harness/tldr/**", "tmp/cybernetic-harness/specs/**", "tools/status_matrix.py"]
+max = 3  # one agent per section file
+
+[lane.bench]
+paths = ["benchmarks/viabilitybench/**", "config/prices/**", "tmp/cybernetic-harness/specs/**"]
+max = 2
+
+[lane.tracker]
+paths = ["tools/work*.py", "tools/test_work*.py", "tools/field_*", "tmp/cybernetic-harness/tools/**",
+         "work/telemetry/**", "work/lanes.toml", "work/README.md", "work/EPICS.md", ".claude/skills/**",
+         ".claude/settings.json"]
+max = 1  # tools/work.py is one file
+
+[lane.rust-cold]
+paths = ["crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/**", "demo/demo-resources/**"]
+max = 2
+pool = "rust"
+
+[lane.rust-hot]
+# The hot files (graph_task_dispatch.rs, graph_execution/, dispatch/, main.rs, the serve routes) take one agent per
+# file or module; footprints already keep two items off one file.
+paths = ["crates/**", "Cargo.toml", "Cargo.lock"]
+max = 4
+pool = "rust"
+
+[lane.frontend]
+paths = ["apps/portal/**", "demo/demo-app/**"]
+max = 1
+
+[lane.docs]
+paths = ["docs/**", "README.md", "CLAUDE.md", "tools/docs_integrity/**", "tools/paperlint.py", "tools/test_paperlint.py"]
+max = 1
+
+[lane.tests]
+# Not in PLAN.md section 2; bug-5f0604 (done) uses it for the portal-programme live-check harness.
+paths = ["plans/**/_harness/**"]
+max = 1

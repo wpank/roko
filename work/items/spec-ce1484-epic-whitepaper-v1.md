@@ -112,7 +112,7 @@ This is the implementation plan, in order.
 - [x] gap-4471d1: Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2
 - [ ] gap-08d9b2: Whitepaper: final matrix re-pin right before the whitepaper-v1 tag
 - [x] bug-1f098f: Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips
-- [ ] gap-6e0a95: Whitepaper: no claim it makes about a cited work has been checked against that work's full text
+- [x] gap-6e0a95: Whitepaper: no claim it makes about a cited work has been checked against that work's full text
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,
       and a review verdict of "accept".
 

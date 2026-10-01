@@ -36,8 +36,8 @@ estimated_total_minutes = 170
 # run pins each one outside the working tree, and a generated gate that runs
 # before the task's own copies the pinned test into the tree and requires its
 # exact passing count. Each failed on the tree its task starts from and passed
-# on a reference implementation (tsc and clippy clean). 08b-08e still copy
-# theirs by hand.
+# on a reference implementation (tsc and clippy clean). 08b-08e and 08g pin
+# theirs the same way (gap-ba4d01).
 # semantics.accept.test.ts replaces 08e's file of the same name. The main tree's
 # apps/portal/node_modules predates 08b's jsdom, so every portal gate installs
 # when node_modules/jsdom is missing. One production build, in T06.

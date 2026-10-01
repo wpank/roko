@@ -688,6 +688,9 @@ pub struct GraphPlanRunParams {
     /// results and should only be used on loopback-bound servers or in
     /// standalone CLI runs where there is no remote attack surface.
     pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
+    /// Start the run even when the workdir has less free disk than
+    /// `[resources] min_free_disk_mb` (`plan run --force`, reg-7cf6f9).
+    pub force_disk_check: bool,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -822,6 +825,7 @@ async fn run_graph_plan_body(
         fail_fast,
         only_plans,
         live_agent_output,
+        force_disk_check,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -879,6 +883,8 @@ async fn run_graph_plan_body(
         .into_config();
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
+    // A run refuses to start on a nearly full disk (reg-7cf6f9).
+    super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
 
     // Merge CLI flag with config (same logic as runner-v2).
     let dangerously_skip_permissions =
@@ -1123,13 +1129,24 @@ async fn run_graph_plan_body(
             idle_ttl: std::time::Duration::from_hours(1),
         });
         worktrees = Some(worktree_manager.clone());
+        // Each attempt reserves its worktree's disk headroom before it
+        // starts, and attempts serialise under disk pressure (reg-7cf6f9).
+        let counted = worktree_manager.clone();
+        let mut disk_admission =
+            super::disk_admission::DiskAdmission::new(workdir, &roko_config.resources)
+                .with_worktree_count(move || counted.active_count());
+        if let Some(ring) = graph_run_config.conductor_ring.clone() {
+            disk_admission = disk_admission.with_ring(ring);
+        }
         let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
         if !quiet && !json {
             tracing::info!("per-task worktree isolation enabled (--worktree-per-task)");
         }
-        dispatcher_builder = dispatcher_builder.with_workspace_provider(provider.clone());
+        dispatcher_builder = dispatcher_builder
+            .with_workspace_provider(provider.clone())
+            .with_disk_admission(disk_admission);
         workspace_provider = Some(provider);
     }
     // The same provider settles the worktrees the rich topology's executors
@@ -1627,8 +1644,8 @@ async fn run_graph_plan_body(
     // Collect task counts and cost from the just-completed plan loop and
     // append a structured RunMetricsRecord to `.roko/learn/run-metrics.jsonl`.
     // Each task counts under its own verdict (bug-7eb27e), not its plan's.
-    // The write is fire-and-forget on a background task so it never blocks
-    // the TUI exit path.
+    // The write is one appended line, made before the run returns: a write
+    // spawned onto the runtime could be dropped when the process exits.
     {
         let duration_ms = run_start.elapsed().as_millis() as u64;
         let per_plan: Vec<roko_learn::run_metrics::PlanMetrics> = plan_outcomes
@@ -1686,11 +1703,9 @@ async fn run_graph_plan_body(
             plans: per_plan,
         };
         let metrics_path = graph_learn_dir.join("run-metrics.jsonl");
-        tokio::spawn(async move {
-            if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
-                tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
-            }
-        });
+        if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
+            tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.
@@ -2698,7 +2713,9 @@ async fn run_one_plan(
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
         // Emit incremental TaskStarted/TaskCompleted events for any node whose
         // status changed since the last tick. Filter to real tasks only (the
-        // rich topology adds helper nodes absent from `node_titles`).
+        // rich topology adds helper nodes absent from `node_titles`). A
+        // completed task is reported with the gate verdict of its recorded
+        // output (bug-7e1b6b).
         let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
             .status()
             .node_statuses
@@ -2710,6 +2727,7 @@ async fn run_one_plan(
             &previous_statuses,
             &current_statuses,
             &node_titles,
+            || checkpoint.recorded_gate_verdicts(),
         );
         previous_statuses = current_statuses;
     }
@@ -2818,6 +2836,7 @@ async fn run_one_plan(
         &previous_statuses,
         &final_statuses,
         &node_titles,
+        || output.gate_verdicts.clone(),
     );
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
@@ -3248,7 +3267,7 @@ mod tests {
     }
 
     /// Workspace config whose only role in use is disabled, so the task
-    /// completes without dispatching a provider.
+    /// fails without dispatching a provider (bug-a843d4).
     const DISABLED_ROLE_CONFIG: &str = r#"
 [agent]
 default_model = "claude-sonnet-4-6"
@@ -3270,19 +3289,19 @@ enabled = false
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("roko.toml"), DISABLED_ROLE_CONFIG).expect("config");
         std::fs::write(dir.path().join("README.md"), "# hub test\n").expect("readme");
-        let plan_dir = dir.path().join("plans").join("01-skipped");
+        let plan_dir = dir.path().join("plans").join("01-disabled");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(
             plan_dir.join("tasks.toml"),
             r#"[meta]
-plan = "01-skipped"
+plan = "01-disabled"
 max_parallel = 1
 skip_enrichment = true
 
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"
@@ -3317,6 +3336,7 @@ files = ["README.md"]
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect("run plan set");
@@ -3327,16 +3347,15 @@ files = ["README.md"]
             .as_ref()
             .expect("PlanSetLoaded reached the hub");
         assert_eq!(plan_set.plans.len(), 1);
-        assert_eq!(plan_set.plans[0].plan_id, "01-skipped");
+        assert_eq!(plan_set.plans[0].plan_id, "01-disabled");
         // PlanStarted/PlanCompleted landed in the same hub.
         assert!(snapshot.plan_set_complete());
-        // gap-29a84b: the disabled-role task ran no verify step, so the plan
-        // is unverified, not succeeded.
-        assert_ne!(snapshot.plans["01-skipped"].phase, "completed");
+        // bug-a843d4: the disabled-role task failed, so the plan failed.
+        assert_eq!(snapshot.plans["01-disabled"].phase, "failed");
         assert_eq!(exit_code, EXIT_FAILURE);
         assert_eq!(
-            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
-            Some(GraphCheckpointStatus::Unverified)
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
+            Some(GraphCheckpointStatus::Failed)
         );
     }
 
@@ -3398,7 +3417,7 @@ skip_enrichment = true
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"
@@ -3524,6 +3543,7 @@ max_retries = 0
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect("run plan set");
@@ -4706,6 +4726,7 @@ max_retries = 0
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
@@ -4813,6 +4834,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         }
     }
 

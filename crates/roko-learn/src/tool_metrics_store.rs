@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 
 /// Key identifying a tool usage observation.
@@ -97,17 +96,7 @@ impl ToolMetricsStore {
     ///
     /// Returns an error if the record cannot be serialized or appended.
     pub fn append(&self, record: &ToolMetricsRecord) -> Result<(), std::io::Error> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(file, "{line}")?;
-        Ok(())
+        roko_core::io::append_jsonl(&self.path, record)
     }
 
     /// Read all records and aggregate by tool name.

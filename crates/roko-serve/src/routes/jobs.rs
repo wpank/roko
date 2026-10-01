@@ -1242,8 +1242,9 @@ async fn cancel_job_endpoint(
     // Require an exact id; the execution service would also resolve prefixes.
     load_job(&state.workdir, &id).await?;
 
-    let svc = roko_core::JobExecutionService::new(jobs_dir(&state.workdir));
-    let receipt = svc
+    // The shared service, so a running job's executor receives the cancel.
+    let receipt = state
+        .job_execution
         .cancel(&id, roko_core::JobExecutionMode::Serve)
         .await
         .map_err(|error| cancel_error(&id, &error))?;

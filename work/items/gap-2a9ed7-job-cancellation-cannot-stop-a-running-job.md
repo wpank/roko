@@ -8,16 +8,16 @@ severity = "p2"
 goal = "features"
 subsystem = ["roko-serve/jobs"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e6-jobs-tests"
 anchors = ["crates/roko-serve/src/routes/jobs.rs::cancel_job_endpoint", "crates/roko-serve/src/job_runner.rs::execute_job", "crates/roko-core/src/job.rs::JobExecutionService"]
 links = { depends_on = [], blocks = [], related = ["bug-12be66"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'JobExecutionService::new(' crates/roko-serve/src/routes/jobs.rs && cargo test -p roko-serve cancel_running_auto_execute_job_stays_cancelled"
+command = "! grep -q 'JobExecutionService::new(' crates/roko-serve/src/routes/jobs.rs && grep -qw 'fn cancel_running_auto_execute_job_stays_cancelled' crates/roko-serve/tests/job_runner_integration.rs && cargo test -p roko-serve --test job_runner_integration cancel_running_auto_execute_job_stays_cancelled"
 +++
 
 `cancel_job_endpoint` (routes/jobs.rs:1245) constructs a new `roko_core::JobExecutionService` for every request, so its map of cancel signals is always empty: the receipt reports `acknowledged: false` and nothing reaches the executor. `job_runner::execute_job` does not use the service at all. It watches only the server-wide cancel token, and it writes `submitted`/`completed`/`failed` from its in-memory copy of the job without re-reading the file, so a job cancelled while it runs can be overwritten by the runner's terminal write.
@@ -25,3 +25,20 @@ command = "! grep -q 'JobExecutionService::new(' crates/roko-serve/src/routes/jo
 Fix: keep one `JobExecutionService` in `AppState`, shared by the route and the runner; have the runner observe per-job cancellation and never overwrite a terminal `cancelled` state. Add a job_runner integration test that cancels a running auto-execute job and asserts it stays cancelled.
 
 Re-checked 2026-09-29: unchanged. The existing verify only checks that the per-request construction is gone; it would pass even if the runner still overwrote a cancelled job, so closure should also require the job_runner integration test this item asks for.
+
+## Notes
+
+- 2026-10-01 (wk-serve2): implemented on work/bug-1cb461; cargo verification deferred to the batch check.
+  - `AppState.job_execution` holds one `JobExecutionService` (built in `AppState::new` for `.roko/jobs`);
+    `cancel_job_endpoint` uses it instead of a per-request service.
+  - `JobExecutionService::register_executor` / `unregister_executor` (`crates/roko-core/src/job.rs`) let an executor
+    that drives the job itself (serve's runner holds its own lock file, so it cannot use `start`) receive
+    `cancel`'s signal; `cancel` then reports `acknowledged: true`.
+  - `job_runner::execute_job` registers after its `in_progress` write, runs the dispatch (now `dispatch_job`) in a
+    `tokio::select!` against the cancel signal, and re-reads the file before any terminal write: a job found
+    `cancelled` keeps that status, and the run returns an error without writing.
+  - Tests: `job_execution_cancel_signals_registered_executor` (roko-core) and the integration test
+    `cancel_running_auto_execute_job_stays_cancelled` (cancels a job whose runtime is blocked, then releases it).
+  - Not changed: dropping the dispatch future does not stop work the CLI runtime runs on blocking threads
+    (`run_plan`); the legacy `DELETE /api/jobs/{id}` still writes `cancelled` directly (the runner's re-read keeps
+    it).

@@ -142,6 +142,10 @@ async fn poll_and_execute(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Execute a single job end-to-end: claim -> in_progress -> dispatch -> submit -> complete.
+///
+/// A cancel through `state.job_execution` (`POST /api/jobs/{id}/cancel`) stops
+/// the dispatch, and a job found `cancelled` on disk after the dispatch keeps
+/// that status: both return an error and write nothing (gap-2a9ed7).
 pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<String> {
     let path = job_path(&state.workdir, job_id);
     let data = tokio::fs::read_to_string(&path).await?;
@@ -156,6 +160,7 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
     job.updated_at = Utc::now().to_rfc3339();
     write_job(&state.workdir, &job).await?;
     publish_transition(state, &job, &prev_status);
+    let mut cancelled = state.job_execution.register_executor(job_id);
 
     // Emit execution started event.
     state.event_bus.publish(ServerEvent::JobExecutionStarted {
@@ -176,30 +181,21 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
         message: initial_progress.1.to_string(),
     });
 
-    // Dispatch by job type.
-    let result = match job.job_type.as_str() {
-        "research" => execute_research_job(state, &job).await,
-        "coding_task" | "coding" => execute_coding_job(state, &job).await,
-        "chain_monitor" => execute_chain_monitor_job(state, &job).await,
-        "chain_analysis" => execute_chain_analysis_job(state, &job).await,
-        _ => {
-            // Generic fallback: use description as prompt.
-            let prompt = if job.description.is_empty() {
-                job.title.clone()
-            } else {
-                job.description.clone()
-            };
-            state
-                .runtime
-                .run_once(&state.workdir, &prompt)
-                .await
-                .map(|r| {
-                    JobExecutionOutcome::summary_only(
-                        r.output_text.unwrap_or_else(|| "completed".to_string()),
-                    )
-                })
+    // Dispatch by job type, unless the job is cancelled first.
+    let result = tokio::select! {
+        result = dispatch_job(state, &job) => result,
+        Ok(()) = &mut cancelled => {
+            info!(job_id = %job_id, "job cancelled while running");
+            anyhow::bail!("job {job_id} was cancelled while running");
         }
     };
+    state.job_execution.unregister_executor(job_id);
+    // A cancel that raced the dispatch, or came from another process, wins
+    // over this run's result.
+    if cancelled_on_disk(&state.workdir, job_id).await {
+        info!(job_id = %job_id, "job cancelled while running; its result is dropped");
+        anyhow::bail!("job {job_id} was cancelled while running");
+    }
 
     // Emit midpoint progress for research jobs.
     if job.job_type == "research" && result.is_ok() {
@@ -270,6 +266,45 @@ pub async fn execute_job(state: &AppState, job_id: &str) -> anyhow::Result<Strin
             Err(err)
         }
     }
+}
+
+/// Run `job` by its type and return the outcome.
+async fn dispatch_job(
+    state: &AppState,
+    job: &MarketplaceJob,
+) -> anyhow::Result<JobExecutionOutcome> {
+    match job.job_type.as_str() {
+        "research" => execute_research_job(state, job).await,
+        "coding_task" | "coding" => execute_coding_job(state, job).await,
+        "chain_monitor" => execute_chain_monitor_job(state, job).await,
+        "chain_analysis" => execute_chain_analysis_job(state, job).await,
+        _ => {
+            // Generic fallback: use description as prompt.
+            let prompt = if job.description.is_empty() {
+                job.title.clone()
+            } else {
+                job.description.clone()
+            };
+            state
+                .runtime
+                .run_once(&state.workdir, &prompt)
+                .await
+                .map(|r| {
+                    JobExecutionOutcome::summary_only(
+                        r.output_text.unwrap_or_else(|| "completed".to_string()),
+                    )
+                })
+        }
+    }
+}
+
+/// Whether the file of job `job_id` records it `cancelled`.
+async fn cancelled_on_disk(workdir: &Path, job_id: &str) -> bool {
+    let Ok(data) = tokio::fs::read_to_string(job_path(workdir, job_id)).await else {
+        return false;
+    };
+    serde_json::from_str::<MarketplaceJob>(&data)
+        .is_ok_and(|job| effective_status(&job) == "cancelled")
 }
 
 /// Execute a research job: build a research prompt and run it.
@@ -1098,6 +1133,6 @@ mod tests {
         let raw = std::fs::read_to_string(job_path(dir.path(), "job-legacy")).expect("job file");
         let written: serde_json::Value = serde_json::from_str(&raw).expect("job json");
         assert_eq!(written["status"], "in_progress");
-        assert!(written.get("state").is_none(), "stale legacy state key: {raw}");
+        assert!(written.get("state").is_none(), "stale state key: {raw}");
     }
 }

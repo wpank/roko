@@ -807,16 +807,17 @@ Examples:
         #[arg(long)]
         quick: bool,
     },
-    /// Diagnose why a plan failed. Outputs structured JSON.
+    /// Diagnose why a plan failed: a readable report, or structured JSON with `--json`.
     #[command(after_help = "\
 Examples:
   roko diagnose my-plan             Show failure report for a plan
-  roko diagnose my-plan --verbose   Also list the attempts of tasks that completed")]
+  roko diagnose my-plan --verbose   Also list the tasks that completed, with their attempts
+  roko diagnose my-plan --json      Print the full report as JSON")]
     Diagnose {
         /// Plan ID to diagnose.
         plan_id: String,
-        /// Also list attempts, verify failures and episodes of tasks that
-        /// completed (they are always listed for tasks that did not).
+        /// Also list the tasks that completed, with their attempts, verify
+        /// failures and episodes (always listed for tasks that did not).
         #[arg(long)]
         verbose: bool,
         /// Working directory (default: cwd / --repo).
@@ -4075,7 +4076,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose)
+            commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose, cli.json)
         }
         Command::LayerCheck => {
             eprintln!("warning: 'roko layer-check' is deprecated, use 'roko doctor'");

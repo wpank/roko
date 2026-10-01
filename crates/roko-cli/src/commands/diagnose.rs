@@ -1,4 +1,5 @@
-//! `roko diagnose <plan-id>` — structured JSON diagnostic report for plan failures.
+//! `roko diagnose <plan-id>` — diagnostic report for plan failures, as readable
+//! text or, with `--json`, as structured JSON.
 //!
 //! A Graph run is reported from the plan's checkpoint under
 //! `.roko/state/graph/<plan>/` (status, recorded task outputs, spend), the
@@ -10,6 +11,7 @@
 //! checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt::Write as _;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -48,11 +50,16 @@ const EPISODE_MATCH_WINDOW_MS: i64 = 5_000;
 /// Episode ids kept on [`FailedTaskInfo`].
 const FAILED_TASK_EPISODE_IDS: usize = 5;
 
-/// Run the diagnose command, printing a JSON report to stdout.
-pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32> {
+/// Run the diagnose command, printing the report to stdout as text, or as JSON
+/// with `json`.
+pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool, json: bool) -> Result<i32> {
     let report = build_report(workdir, plan_id, verbose)?;
-    let json = serde_json::to_string_pretty(&report).context("serializing diagnose report")?;
-    println!("{json}");
+    if json {
+        let json = serde_json::to_string_pretty(&report).context("serializing diagnose report")?;
+        println!("{json}");
+    } else {
+        print!("{}", render_text(&report, verbose));
+    }
     Ok(0)
 }
 
@@ -1686,6 +1693,130 @@ fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// Text output
+// ---------------------------------------------------------------------------
+
+/// The report for a person: the status, then each task that did not complete
+/// (every task with `verbose`) with why, the verify step it failed and its
+/// attempts, then what to do next. `--json` prints the report itself.
+pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
+    let mut out = String::new();
+    let (plan_id, status) = (&report.plan_id, &report.status);
+    let _ = writeln!(out, "Plan {plan_id}: {status}");
+    if let Some(run) = &report.graph_run {
+        let (run_id, checkpoint) = (&run.run_id, &run.checkpoint);
+        let updated = run.updated_at.as_deref().unwrap_or("unknown");
+        let _ = writeln!(out, "  run {run_id}");
+        let _ = writeln!(out, "  checkpoint {checkpoint}, updated {updated}");
+        if let Some(spent) = run.spent_usd {
+            let _ = writeln!(out, "  spent ${spent:.2}");
+        }
+    } else {
+        let phase = report.phase.as_deref().unwrap_or("unknown");
+        let _ = writeln!(out, "  from the Runner-v2 snapshot, phase {phase}");
+    }
+    if let Some(plan_dir) = &report.plan_dir {
+        let _ = writeln!(out, "  plan {plan_dir}");
+    }
+    if let Some(run_state) = &report.run_state {
+        let (completed, total) = (run_state.tasks_completed, run_state.tasks_total);
+        let failed = run_state.tasks_failed;
+        let _ = writeln!(
+            out,
+            "  {completed} of {total} tasks completed, {failed} failed"
+        );
+    }
+
+    let shown: Vec<&TaskDiagnosis> = report
+        .tasks
+        .iter()
+        .filter(|task| verbose || task.state != TaskState::Completed)
+        .collect();
+    for task in &shown {
+        out.push('\n');
+        render_task(&mut out, task);
+    }
+    let hidden = report.tasks.len() - shown.len();
+    if hidden > 0 {
+        let suffix = plural(hidden);
+        let _ = writeln!(
+            out,
+            "\n{hidden} completed task{suffix} not shown; --verbose lists them."
+        );
+    }
+
+    // A Runner-v2 snapshot names the failed task and the plan's gate results.
+    if report.tasks.is_empty() {
+        if let Some(failed) = &report.failed_task {
+            let task_id = &failed.task_id;
+            let _ = writeln!(out, "\nfailed task {task_id}");
+            if let Some(error) = &failed.last_error {
+                let _ = writeln!(out, "    last error: {error}");
+            }
+        }
+        for gate in report.gate_results.iter().filter(|gate| !gate.passed) {
+            let (name, summary) = (&gate.gate_name, &gate.summary);
+            let _ = writeln!(out, "    gate {name} failed: {summary}");
+        }
+    }
+
+    for (heading, lines) in [
+        ("Next steps", &report.suggested_recovery),
+        ("Notes", &report.notes),
+    ] {
+        if !lines.is_empty() {
+            let _ = writeln!(out, "\n{heading}:");
+            for line in lines {
+                let _ = writeln!(out, "  - {line}");
+            }
+        }
+    }
+    out
+}
+
+/// One task: its state and title, why it is in that state, the verify step it
+/// failed last, and its attempts.
+fn render_task(out: &mut String, task: &TaskDiagnosis) {
+    let task_id = &task.task_id;
+    let state = if task.blocked_by.is_empty() {
+        enum_label(&task.state).replace('_', " ")
+    } else {
+        "blocked".to_string()
+    };
+    let title = task.title.as_deref().unwrap_or("(not in tasks.toml)");
+    let reason = &task.reason;
+    let _ = writeln!(out, "{task_id} [{state}] {title}");
+    let _ = writeln!(out, "    {reason}");
+    let step = task
+        .gate_failures
+        .last()
+        .and_then(|failure| failure.verify_step.as_ref());
+    if let Some(step) = step {
+        let label = step.label();
+        let command = step.command.as_deref().unwrap_or("(not in tasks.toml)");
+        let _ = writeln!(out, "    failing verify step {label}: {command}");
+    }
+    for (index, attempt) in task.attempts.iter().enumerate() {
+        let number = index + 1;
+        let outcome = match (attempt.success, attempt.timed_out) {
+            (true, _) => "succeeded",
+            (false, true) => "timed out",
+            (false, false) => "failed",
+        };
+        let seconds = attempt.duration_ms as f64 / 1000.0;
+        let (cost, model) = (attempt.cost_usd, &attempt.model);
+        let _ = write!(
+            out,
+            "    attempt {number}: {outcome} after {seconds:.1} s, ${cost:.2}, {model}"
+        );
+        if let Some(reason) = &attempt.failure_reason {
+            let _ = write!(out, ": {reason}");
+        }
+        out.push('\n');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Recovery suggestions
 // ---------------------------------------------------------------------------
 
@@ -2456,6 +2587,31 @@ title = "Tidy the changelog"
         assert_eq!(json["resume"]["action"], "resume");
         assert_eq!(json["resume"]["tasks_to_run"][0], "T2");
         assert!(json["tasks"][0].get("attempts").is_none());
+    }
+
+    #[test]
+    fn a_graph_report_renders_as_readable_text() {
+        let workspace = failed_run();
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        let text = render_text(&report, false);
+
+        assert!(text.starts_with("Plan demo: failed\n"), "{text}");
+        assert!(serde_json::from_str::<Value>(&text).is_err(), "{text}");
+        assert!(text.contains("T2 [failed] Wire the parser"), "{text}");
+        assert!(text.contains("last error: verify[1:test]"), "{text}");
+        assert!(text.contains("verify step 1 (test): cargo test"), "{text}");
+        let second_attempt = "attempt 2: failed after 600.5 s, $1.00";
+        assert!(text.contains(second_attempt), "{text}");
+        assert!(text.contains("T3 [blocked] Document the parser"), "{text}");
+        assert!(text.contains("never ran: dependency T2 failed"), "{text}");
+        let resume = "Resume with `roko plan run plans/programme/demo`";
+        assert!(text.contains(resume), "{text}");
+        assert!(!text.contains("T1 [completed]"), "{text}");
+        assert!(text.contains("1 completed task not shown"), "{text}");
+
+        let verbose = render_text(&report, true);
+        let completed = "T1 [completed] Write the parser";
+        assert!(verbose.contains(completed), "{verbose}");
     }
 
     #[test]

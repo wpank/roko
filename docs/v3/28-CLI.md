@@ -397,10 +397,13 @@ roko doctor [disk|network|clean] [--workdir <path>] [--serve-url <url>]
 
 ### `roko diagnose`
 
-Diagnose why a plan failed. Outputs structured JSON.
+Diagnose why a plan failed. Prints a readable report: the plan's status, each task that did not complete with
+why (its last error, the verify step it failed and that step's command, its attempts with their cost), and the
+next steps, including the command that resumes the run. The global `--json` flag prints the full report as
+structured JSON instead.
 
 ```
-roko diagnose <plan-id> [--verbose] [--workdir <path>]
+roko diagnose <plan-id> [--verbose] [--workdir <path>] [--json]
 ```
 
 The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
@@ -414,7 +417,8 @@ read only for a plan without a Graph checkpoint.
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Also list attempts, verify failures and episodes of tasks that completed. |
+| `--verbose` | Also list the tasks that completed, with their attempts, verify failures and episodes. |
+| `--json` | Print the report as structured JSON. |
 
 ---
 

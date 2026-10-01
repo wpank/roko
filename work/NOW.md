@@ -32,7 +32,7 @@ _0 more open · 16 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 - **P2** [gap-51deff](items/gap-51deff-in-the-rich-topology-a-task-s.md) In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between · size M · verified 2026-09-30
 
-_0 more open · 16 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 

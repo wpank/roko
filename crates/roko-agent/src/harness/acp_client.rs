@@ -1254,6 +1254,58 @@ impl ServerMessageRouter {
     }
 }
 
+// ---- Test support -----------------------------------------------------------
+
+/// Stand-in ACP servers for the agent tests, run with `bash -c`.
+#[cfg(test)]
+pub(crate) mod test_servers {
+    use super::{AcpStdioClient, AcpStdioConfig};
+    use std::collections::HashMap;
+    use tokio::time::Duration;
+
+    /// Answers the handshake and `session/new`, then answers a prompt with
+    /// twenty `session/update` notifications, "0," to "19,", followed at
+    /// once by the turn's completion. Other requests get an empty result.
+    pub(crate) const BURST_THEN_DONE: &str = r##"
+set -u
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            for ((i = 0; i < 20; i++)); do
+                printf '{"jsonrpc":"2.0","method":"session/update","params":{"text":"%s,"}}\n' "$i"
+            done
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
+    /// The output an agent should report for a [`BURST_THEN_DONE`] turn.
+    pub(crate) fn burst_text() -> String {
+        (0..20).map(|i| format!("{i},")).collect()
+    }
+
+    /// A client whose server is the stand-in `script`, run with `bash -c`.
+    pub(crate) fn client(script: &str) -> AcpStdioClient {
+        AcpStdioClient::new(AcpStdioConfig {
+            command: "bash".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: Some(std::env::temp_dir()),
+            env: HashMap::new(),
+            protocol_version: "1".into(),
+            timeout: Duration::from_secs(10),
+        })
+    }
+}
+
 // ---- Tests ------------------------------------------------------------------
 
 #[cfg(test)]

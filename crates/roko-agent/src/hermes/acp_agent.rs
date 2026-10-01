@@ -368,6 +368,14 @@ impl Agent for HermesAcpAgent {
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
                 tokio::select! {
+                    // Biased: the deadline first, then notifications before the
+                    // completion, so what the agent sent just before it finished is
+                    // read before the turn ends.
+                    biased;
+                    () = &mut deadline => {
+                        tracing::warn!("hermes ACP turn timed out after {:?}", timeout);
+                        break;
+                    }
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
@@ -416,10 +424,6 @@ impl Agent for HermesAcpAgent {
                                 break;
                             }
                         }
-                    }
-                    () = &mut deadline => {
-                        tracing::warn!("hermes ACP turn timed out after {:?}", timeout);
-                        break;
                     }
                 }
             }
@@ -586,6 +590,17 @@ impl Agent for HermesAcpAgent {
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
                 tokio::select! {
+                    // Biased: the deadline first, then notifications before the
+                    // completion, so what the agent sent just before it finished is
+                    // read before the turn ends.
+                    biased;
+                    () = &mut deadline => {
+                        tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
+                        let _ = event_tx
+                            .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
+                            .await;
+                        break;
+                    }
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
@@ -668,13 +683,6 @@ impl Agent for HermesAcpAgent {
                                 break;
                             }
                         }
-                    }
-                    () = &mut deadline => {
-                        tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
-                        let _ = event_tx
-                            .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
-                            .await;
-                        break;
                     }
                 }
             }
@@ -773,9 +781,8 @@ impl HarnessAdapter for HermesAcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::acp_client::AcpStdioConfig;
+    use crate::harness::acp_client::test_servers;
     use serde_json::json;
-    use std::collections::HashMap;
 
     #[test]
     fn default_config() {
@@ -1020,20 +1027,12 @@ done
     /// A Hermes ACP agent whose server is `script`, run with `bash -c`, and
     /// whose turns time out after `timeout`.
     fn agent_backed_by(script: &str, timeout: Duration) -> HermesAcpAgent {
-        let client = AcpStdioClient::new(AcpStdioConfig {
-            command: "bash".into(),
-            args: vec!["-c".into(), script.into()],
-            cwd: Some(std::env::temp_dir()),
-            env: HashMap::new(),
-            protocol_version: "1".into(),
-            timeout: Duration::from_secs(10),
-        });
         let config = HermesAcpConfig {
             cwd: std::env::temp_dir(),
             timeout,
             ..HermesAcpConfig::default()
         };
-        HermesAcpAgent::with_config(client, config)
+        HermesAcpAgent::with_config(test_servers::client(script), config)
     }
 
     /// bug-f98a13: the turn timeout covers the whole turn. A notification
@@ -1108,5 +1107,50 @@ done
 
         let output = result.output.body.as_text().unwrap_or_default();
         assert_eq!(output, "chose no");
+    }
+
+    /// bug-7ef405: a turn reads every notification the agent sent before its
+    /// completion. Select used to take the completion as soon as it was
+    /// queued, dropping the text still waiting ahead of it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_turn_drains_notifications_before_completion() {
+        let agent = agent_backed_by(test_servers::BURST_THEN_DONE, Duration::from_secs(10));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, test_servers::burst_text());
+    }
+
+    /// bug-7ef405: the same for a streaming turn, whose text deltas carry
+    /// every notification too.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_streaming_turn_drains_notifications_before_completion() {
+        let agent = agent_backed_by(test_servers::BURST_THEN_DONE, Duration::from_secs(10));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+
+        let turn = agent.run_streaming(&input, &ctx, event_tx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, test_servers::burst_text());
+        let mut streamed = String::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let StreamEventKind::TextDelta(text) = event.kind {
+                streamed.push_str(&text);
+            }
+        }
+        assert_eq!(streamed, test_servers::burst_text());
     }
 }

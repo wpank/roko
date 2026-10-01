@@ -5077,10 +5077,7 @@ mod tests {
             assert!(message.contains("'roko knowledge dream'"), "{message}");
         }
         // An error about a real command stays that command's error.
-        for args in [
-            &["roko", "run"][..],
-            &["roko", "--model", "dream", "run"],
-        ] {
+        for args in [&["roko", "run"][..], &["roko", "--model", "dream", "run"]] {
             let error = try_parse_cli(args).expect_err("run needs a prompt");
             let kind = error.kind();
             assert_eq!(kind, ErrorKind::MissingRequiredArgument, "{args:?}");

@@ -680,9 +680,10 @@ fn provider_add_snippet(
 /// Whether `models`, the `[models.*]` tables of a `roko.toml`, already hold
 /// catalog `model`: under its table key, or as another table's slug.
 fn defines_model(models: &toml::Table, model: &roko_core::provider_catalog::CatalogModel) -> bool {
-    let slug = |table: &toml::Value| table.get("slug").and_then(toml::Value::as_str);
     models.contains_key(&model_table_key(model.slug))
-        || models.values().any(|table| slug(table) == Some(model.slug))
+        || models
+            .values()
+            .any(|table| table.get("slug").and_then(toml::Value::as_str) == Some(model.slug))
 }
 
 /// The `[models.*]` key `roko config providers add` gives a catalog model.

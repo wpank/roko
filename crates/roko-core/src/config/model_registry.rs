@@ -455,6 +455,10 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
     ),
 ];
 
+/// Price of one Perplexity Search API request (`POST /search`), which runs
+/// no model and reports no usage: a flat $5 per 1,000 requests.
+pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then any table key that is a prefix of the

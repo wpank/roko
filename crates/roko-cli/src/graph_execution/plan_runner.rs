@@ -1795,7 +1795,11 @@ async fn run_graph_plan_body(
                         })
                         .unwrap_or_default();
                     if !kept.is_empty() {
-                        println!("  attempt branches kept: {}", kept.join(", "));
+                        println!(
+                            "  {} attempt branch(es) kept: {}",
+                            kept.len(),
+                            kept.join(", ")
+                        );
                     }
                 }
             }
@@ -4909,6 +4913,45 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-415c54: with `[runner] delete_attempt_branches = true`, a
+    /// delivered plan's attempt branch goes with its checkout, and the plan
+    /// and batch branches still hold its work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivered_plan_deletes_its_attempt_branches_when_asked() {
+        let dir = repo_with_file_plans(&["alpha"], None);
+        let repo = dir.path();
+        let mut config = std::fs::read_to_string(repo.join("roko.toml")).expect("config");
+        config.push_str("\n[runner]\ndelete_attempt_branches = true\n");
+        std::fs::write(repo.join("roko.toml"), config).expect("config");
+        git_in(repo, &["commit", "-am", "delete attempt branches"]);
+
+        let exit_code = run_graph_plan_in_run(worktree_run_params(repo), Some("run-delete".into()))
+            .await
+            .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/attempt/"]),
+            ""
+        );
+        let worktrees = git_stdout(repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        let batch = "roko/batch/run-delete";
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(files.contains("alpha.txt"), "{files}");
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/plan/01-alpha"]),
+            git_stdout(repo, &["rev-parse", batch])
+        );
     }
 
     /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`

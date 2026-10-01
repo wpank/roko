@@ -181,7 +181,8 @@ Verified 2026-09-28: The diff + gate + summary half ran live in the 2026-09-25 p
     (gap-4ec59f wires it).
   - Summary: the `--json` summary has `batch` (branch, each delivery's record with its merge commit and
     `attempt_cleanup`: the checkouts removed and the branches kept or deleted, and the promotion), and the text
-    summary names each delivered plan's merge commit, the attempt branches kept and the promotion.
+    summary names each delivered plan's merge commit, how many attempt branches it kept (and which) and the
+    promotion.
   - Tests: `tests/worktree_task_diff.rs` runs the real binary in a scratch repository, as C3 does.
     `worktree_task_diff_is_gated_merged_and_cleaned` checks the commit on the plan branch and in the checkpoint,
     the delivery into the batch and the promotion into `release` (and the summary's commits), no attempt worktree
@@ -191,6 +192,8 @@ Verified 2026-09-28: The diff + gate + summary half ran live in the 2026-09-25 p
     its kept worktree on its attempt branch, and that no plan branch exists and neither the batch nor `release`
     moved. `release_accepted_removes_checkouts_and_keeps_branches_unless_asked` (worktree unit test) covers both
     branch modes and an unaccepted attempt. `a_worktree_run_delivers_each_plan_into_its_batch_branch`
-    (in-process) now also checks that the checkouts are gone and the branches kept.
+    (in-process) now also checks that the checkouts are gone and the branches kept, and
+    `a_delivered_plan_deletes_its_attempt_branches_when_asked` (in-process) runs with the setting on and checks
+    that the branch is gone while the plan and batch branches hold the work.
   - The live-run evidence the Done-when asks for is these binary tests' run in the batch check; gap-3aa9cb can
     fold them onto its shared scripted provider.

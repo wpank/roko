@@ -34,8 +34,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt
 
-- **36/39 closed** · goal `truth` · severity p0
-- open by lane: rust-hot 2, none 1
+- **38/39 closed** · goal `truth` · severity p0
+- open by lane: none 1
 - next: [gap-ad0d39](items/gap-ad0d39-cost-records-miss-claude-per-model-usage.md) Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet
 
 ## [spec-9230a9](items/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope
@@ -56,9 +56,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-a78d57](items/spec-a78d57-epic-scheduler.md) scheduler
 
-- **9/10 closed** · goal `golden-path` · severity p1
-- open by lane: none 1
-- next: [gap-c89b40](items/gap-c89b40-nothing-limits-concurrent-cargo-builds-across-processes.md) Nothing limits concurrent cargo builds across processes that share a target dir
+- **10/10 closed** · goal `golden-path` · severity p1
 
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
@@ -88,14 +86,14 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
-- **5/8 closed** · goal `tooling` · severity p1
-- open by lane: tracker 3
-- next: none ready (3 unverified)
+- **6/8 closed** · goal `tooling` · severity p1
+- open by lane: tracker 2
+- next: [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
-- **15/27 closed** · goal `tooling` · severity p2
-- open by lane: rust-cold 10, none 1, rust-hot 1
+- **23/27 closed** · goal `tooling` · severity p2
+- open by lane: rust-cold 2, none 1, rust-hot 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
@@ -107,11 +105,11 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
 | bench | 47 | 59 | 12 (0) |
-| docs | 14 | 15 | 1 (0) |
-| frontend | 1 | 2 | 1 (0) |
-| none | 193 | 391 | 198 (198) |
+| docs | 14 | 18 | 4 (0) |
+| frontend | 2 | 2 | 0 (0) |
+| none | 280 | 391 | 111 (111) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 122 | 147 | 25 (0) |
-| rust-hot | 77 | 90 | 13 (0) |
+| rust-cold | 136 | 166 | 30 (0) |
+| rust-hot | 81 | 116 | 35 (0) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 19 | 23 | 4 (0) |
+| tracker | 20 | 24 | 4 (2) |

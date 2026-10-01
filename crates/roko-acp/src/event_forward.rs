@@ -193,8 +193,8 @@ mod tests {
     use super::*;
     use crate::bridge_events::CognitiveEvent;
     use crate::types::{
-        ContentBlock, McpInitStatus, McpServerStatus, PlanEntry, PlanStatus, Priority, StopReason,
-        ToolCallKind, ToolCallStatus, UsageInfo,
+        ContentBlock, McpInitStatus, McpServerStatus, PlanEntry, PlanEntryStatus, Priority,
+        StopReason, ToolCallKind, ToolCallStatus, UsageInfo,
     };
     use roko_core::runtime_event::{RuntimeEvent, WorkflowOutcome};
 
@@ -356,12 +356,12 @@ mod tests {
                 PlanEntry {
                     content: "step one".into(),
                     priority: Priority::High,
-                    status: PlanStatus::Completed,
+                    status: PlanEntryStatus::Completed,
                 },
                 PlanEntry {
                     content: "step two".into(),
                     priority: Priority::Medium,
-                    status: PlanStatus::InProgress,
+                    status: PlanEntryStatus::InProgress,
                 },
             ],
         };

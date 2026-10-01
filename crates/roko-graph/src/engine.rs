@@ -299,8 +299,10 @@ impl FlowHandle {
 
     /// Request cancellation of the running graph execution.
     ///
-    /// No further node starts. Nodes already running are not interrupted;
-    /// the background task stops once they complete.
+    /// No further node starts. Nodes already running are not interrupted:
+    /// they see the cancellation through [`CellContext::is_cancelled`] and
+    /// start no further work (bug-ceb581), and the background task stops
+    /// once they complete.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -379,6 +381,9 @@ pub struct GraphEngine {
     event_sink: Option<Arc<dyn crate::events::GraphEventSink>>,
     /// Monotonic sequence counter for graph event emission.
     event_seq: crate::events::EventSeqCounter,
+    /// Events the event sink failed to take or dropped that no `Gap` it took
+    /// has reported yet (bug-4ba581).
+    lost_events: AtomicU64,
     /// Last complete per-node outputs for stateful Hot Graph ticks.
     tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
     /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
@@ -406,6 +411,7 @@ impl GraphEngine {
             telemetry: None,
             event_sink: None,
             event_seq: crate::events::EventSeqCounter::new(),
+            lost_events: AtomicU64::new(0),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
             allow_test_stubs: false,
@@ -1886,6 +1892,8 @@ impl GraphEngine {
         let started_at = Instant::now();
 
         let cancel = CancellationToken::new();
+        // Running cells see the cancellation (bug-ceb581).
+        let ctx = ctx.with_run_cancel(cancel.clone());
         let node_statuses: Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>> =
             Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let budget_consumed = Arc::new(AtomicU64::new(0));
@@ -2445,14 +2453,57 @@ impl GraphEngine {
     }
 
     /// Publish one graph execution event to the event sink, when one is
-    /// attached (reg-cbfff6). A failed delivery is logged: the sink observes
-    /// the run and does not stop it.
+    /// attached (reg-cbfff6). The sink observes the run and never stops it:
+    /// an event it fails to take, or drops, is lost, and the loss is reported
+    /// to it as a reliable `Gap` before its next event, right after the lost
+    /// one when it takes the `Gap` then (bug-4ba581).
     async fn publish_graph_event(&self, event: crate::events::GraphExecutionEvent) {
         let Some(sink) = &self.event_sink else {
             return;
         };
-        if let Err(error) = sink.publish(&event).await {
-            warn!(%error, event = event.variant_name(), "graph event delivery failed");
+        let run_id = event.common().run_id.clone();
+        self.report_lost_events(sink.as_ref(), &run_id).await;
+        if !Self::deliver_graph_event(sink.as_ref(), &event).await {
+            self.lost_events.fetch_add(1, Ordering::Relaxed);
+            self.report_lost_events(sink.as_ref(), &run_id).await;
+        }
+    }
+
+    /// Publish a `Gap` counting the events lost since the last one the sink
+    /// took, if any were.
+    async fn report_lost_events(&self, sink: &dyn crate::events::GraphEventSink, run_id: &str) {
+        let lost = self.lost_events.load(Ordering::Relaxed);
+        if lost == 0 {
+            return;
+        }
+        let gap = crate::events::GraphExecutionEvent::Gap {
+            common: crate::events::make_common(run_id, &self.graph.metadata.name, &self.event_seq),
+            lost_count: lost,
+        };
+        if Self::deliver_graph_event(sink, &gap).await {
+            self.lost_events.fetch_sub(lost, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether `sink` took `event`: neither failed to deliver it nor dropped
+    /// it. Either is logged.
+    async fn deliver_graph_event(
+        sink: &dyn crate::events::GraphEventSink,
+        event: &crate::events::GraphExecutionEvent,
+    ) -> bool {
+        match sink.publish(event).await {
+            Ok(crate::events::GraphEventDisposition::Dropped) => {
+                warn!(
+                    event = event.variant_name(),
+                    "graph event sink dropped an event"
+                );
+                false
+            }
+            Ok(_) => true,
+            Err(error) => {
+                warn!(%error, event = event.variant_name(), "graph event delivery failed");
+                false
+            }
         }
     }
 
@@ -6272,6 +6323,90 @@ to = "grandchild"
         }
     }
 
+    /// A graph event sink that fails its first delivery and drops its third,
+    /// recording the events it takes.
+    #[derive(Default)]
+    struct FlakyGraphSink {
+        calls: AtomicU64,
+        events: parking_lot::Mutex<Vec<crate::events::GraphExecutionEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::events::GraphEventSink for FlakyGraphSink {
+        async fn publish(
+            &self,
+            event: &crate::events::GraphExecutionEvent,
+        ) -> std::result::Result<crate::events::GraphEventDisposition, crate::events::GraphEventError>
+        {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(crate::events::GraphEventError::DeliveryFailed {
+                    reason: "the observer is down".to_string(),
+                }),
+                2 => Ok(crate::events::GraphEventDisposition::Dropped),
+                _ => {
+                    self.events.lock().push(event.clone());
+                    Ok(crate::events::GraphEventDisposition::Acknowledged)
+                }
+            }
+        }
+    }
+
+    /// bug-4ba581: an event the sink fails to take, or drops, is reported to
+    /// it right after as a `Gap` counting the loss, and the run goes on.
+    #[tokio::test]
+    async fn a_failed_sink_delivery_is_reported_and_followed_by_a_gap() {
+        use crate::events::GraphExecutionEvent;
+
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "flaky-sink"
+
+[[nodes]]
+id = "first"
+cell_type = "sleep"
+config = { label = "first" }
+
+[[nodes]]
+id = "second"
+cell_type = "sleep"
+config = { label = "second" }
+
+[[edges]]
+from = "first"
+to = "second"
+"#,
+        )
+        .unwrap();
+        let log = Arc::new(SleepLog::default());
+        let sink = Arc::new(FlakyGraphSink::default());
+        let output = GraphEngine::new(graph, sleep_registry(&log))
+            .with_event_sink(sink.clone())
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+        assert!(output.success, "a failing observer does not stop the run");
+
+        let events = sink.events.lock().clone();
+        let names: Vec<&str> = events
+            .iter()
+            .map(GraphExecutionEvent::variant_name)
+            .collect();
+        // The first node's start failed and its completion was dropped: each
+        // is followed by a gap of one.
+        assert_eq!(names, ["Gap", "Gap", "NodeStarted", "NodeCompleted"]);
+        let gaps: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                GraphExecutionEvent::Gap { lost_count, .. } => Some(*lost_count),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gaps, [1, 1]);
+        let seqs: Vec<u64> = events.iter().map(|event| event.common().seq).collect();
+        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+    }
+
     /// reg-cbfff6: a sink attached with `with_event_sink` receives each
     /// node's lifecycle while the graph runs, whichever execution path runs
     /// it: a start before the node's cell runs, then how the node settled. A
@@ -6962,5 +7097,82 @@ to = "after-first"
                 }
             }
         }
+    }
+
+    /// Waits until its context reports its run cancelled, then succeeds,
+    /// recording that it saw the cancellation.
+    struct WaitsForCancelCell {
+        started: Arc<std::sync::atomic::AtomicBool>,
+        saw_cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for WaitsForCancelCell {
+        fn cell_id(&self) -> &str {
+            "waits-for-cancel"
+        }
+
+        fn cell_name(&self) -> &str {
+            "WaitsForCancelCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            self.started.store(true, Ordering::SeqCst);
+            for _ in 0..500 {
+                if ctx.is_cancelled() {
+                    self.saw_cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(input)
+        }
+    }
+
+    /// bug-ceb581: `FlowHandle::cancel` reaches a cell that is already
+    /// running, through its context, so it can start no further work.
+    #[tokio::test]
+    async fn flow_cancel_reaches_a_running_cell() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "cancel-reaches-cell"
+
+[[nodes]]
+id = "waiting"
+cell_type = "waits-for-cancel"
+"#,
+        )
+        .unwrap();
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut registry = noop_registry();
+        let cell_started = Arc::clone(&started);
+        let cell_saw_cancel = Arc::clone(&saw_cancel);
+        registry.register("waits-for-cancel", move |_| {
+            Box::new(WaitsForCancelCell {
+                started: Arc::clone(&cell_started),
+                saw_cancel: Arc::clone(&cell_saw_cancel),
+            })
+        });
+
+        let flow = GraphEngine::new(graph, registry).start(CellContext::new());
+        for _ in 0..500 {
+            if started.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(started.load(Ordering::SeqCst), "the cell is running");
+        flow.cancel();
+        let _output = flow.await_completion().await.expect("flow output");
+        assert!(
+            saw_cancel.load(Ordering::SeqCst),
+            "the running cell saw the cancellation"
+        );
     }
 }

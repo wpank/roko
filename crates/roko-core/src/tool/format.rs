@@ -20,6 +20,10 @@
 
 #![allow(clippy::doc_lazy_continuation)] // wrapped-line continuations read as list items
 
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 // ─── ToolFormat ───────────────────────────────────────────────────────────
@@ -400,7 +404,27 @@ pub fn profile_for_model(slug: &str) -> ToolFormatProfile {
         return profile_for_model(slug.trim_start_matches("ollama/"));
     }
 
+    if first_unknown_slug(slug) {
+        tracing::warn!(slug, "{}", UNKNOWN_SLUG_WARNING);
+    }
     ToolFormatProfile::unknown_default()
+}
+
+/// Why a model whose slug no family above matches runs degraded, and how to
+/// fix it (find-a3f8f1): the fallback otherwise looks like poor model
+/// quality rather than a configuration gap.
+const UNKNOWN_SLUG_WARNING: &str = "no tool-format profile matches this model, so it gets the \
+     conservative default: at most 3 tools, and ReAct text instead of native tool calls unless \
+     its [models.*] entry sets a tool_format; set `max_tools` (and `tool_format`) on that entry";
+
+/// Whether `slug` falls back to [`ToolFormatProfile::unknown_default`] for
+/// the first time in this process, so that it is warned about once.
+fn first_unknown_slug(slug: &str) -> bool {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert(slug.to_string())
 }
 
 #[cfg(test)]
@@ -468,6 +492,19 @@ mod tests {
         assert!(!p.parallel_safe);
         assert_eq!(p.max_tools_before_degrade, 3);
         assert!(p.needs_stream_disabled);
+    }
+
+    /// find-a3f8f1: a slug that falls back to the default is warned about
+    /// once per process, not on every lookup.
+    #[test]
+    fn an_unknown_slug_is_warned_about_once() {
+        let slug = "find-a3f8f1-unknown-model";
+        assert!(first_unknown_slug(slug));
+        assert!(!first_unknown_slug(slug));
+        assert_eq!(
+            profile_for_model(slug),
+            ToolFormatProfile::unknown_default()
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use roko_core::{FileJobStore, MarketplaceJob};
+use roko_fs::workspace_plans::workspace_plans_dir;
 
 use crate::events::ServerEvent;
 use crate::runtime::PlanGenerationResult;
@@ -652,7 +653,7 @@ async fn prepare_coding_plan(
                 plans_root: targets
                     .first()
                     .and_then(|target| target.parent().map(Path::to_path_buf))
-                    .unwrap_or_else(|| state.workdir.join(".roko").join("plans")),
+                    .unwrap_or_else(|| workspace_plans_dir(&state.workdir)),
                 artifacts: collect_plan_artifact_paths(&targets),
                 plan_targets: targets,
             });
@@ -694,7 +695,8 @@ async fn synthesize_coding_plan(
     prd_path: &Path,
 ) -> anyhow::Result<PlanGenerationResult> {
     let slug = coding_job_slug(job);
-    let plans_root = workdir.join(".roko").join("plans");
+    // Where every new plan goes, so plan listings and discovery find it.
+    let plans_root = workspace_plans_dir(workdir);
     let plan_dir = plans_root.join(&slug);
     tokio::fs::create_dir_all(&plan_dir).await?;
     let plan_md = plan_dir.join("plan.md");
@@ -1069,6 +1071,33 @@ async fn remove_lock(job_path: &Path) {
 mod tests {
     use super::*;
 
+    /// bug-e3df7d: the fallback plan goes where every other new plan goes:
+    /// `plans/` once the workspace has one, not `.roko/plans/`.
+    #[tokio::test]
+    async fn synthesized_coding_plan_lands_in_the_workspace_plans_dir() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let plans = workdir.path().join("plans");
+        std::fs::create_dir_all(&plans).expect("plans directory");
+        let job = MarketplaceJob {
+            id: "job-42".into(),
+            title: "Add a widget".into(),
+            description: "Write the widget module.".into(),
+            ..Default::default()
+        };
+        let prd_path = workdir.path().join("job-42.md");
+
+        let plan = synthesize_coding_plan(workdir.path(), &job, &prd_path)
+            .await
+            .expect("synthesize the fallback plan");
+
+        let plan_dir = plans.join(coding_job_slug(&job));
+        assert_eq!(plan.plans_root, plans);
+        assert_eq!(plan.plan_targets, [plan_dir.clone()]);
+        assert!(plan_dir.join("tasks.toml").is_file());
+        assert!(plan_dir.join("plan.md").is_file());
+        assert!(!workdir.path().join(".roko").join("plans").exists());
+    }
+
     #[test]
     fn effective_status_prefers_status_field() {
         let job = MarketplaceJob {
@@ -1133,6 +1162,9 @@ mod tests {
         let raw = std::fs::read_to_string(job_path(dir.path(), "job-legacy")).expect("job file");
         let written: serde_json::Value = serde_json::from_str(&raw).expect("job json");
         assert_eq!(written["status"], "in_progress");
-        assert!(written.get("state").is_none(), "stale state key: {raw}");
+        assert!(
+            written.get("state").is_none(),
+            "stale legacy state key: {raw}"
+        );
     }
 }

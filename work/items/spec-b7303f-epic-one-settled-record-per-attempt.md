@@ -122,8 +122,8 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] bug-ea7723: The codex, cursor and openai_parity streaming tests stay ignored until testutil's stream events carry session ids
 - [x] bug-e35fdb: roko learn role-costs averages unknown costs as $0 through compute_role_profiles
 - [x] bug-4c553b: A stall-watchdog timeout settles as provider_error with infra blame, because its error text lacks the "timed out after" marker the classifier keys on
-- [ ] bug-3aa61f: Non-streamed Gemini tool-loop turns record no usage: send_turn returns raw Gemini JSON and extract_usage reads only an OpenAI-shaped usage block
-- [ ] bug-3a3b0f: With both stall thresholds at 0 there is no AttemptProgress, so a stopped or cancelled call settles with unknown usage
+- [x] bug-3aa61f: Non-streamed Gemini tool-loop turns record no usage: send_turn returns raw Gemini JSON and extract_usage reads only an OpenAI-shaped usage block
+- [x] bug-3a3b0f: With both stall thresholds at 0 there is no AttemptProgress, so a stopped or cancelled call settles with unknown usage
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.
 

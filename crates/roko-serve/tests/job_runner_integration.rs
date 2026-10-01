@@ -387,9 +387,9 @@ async fn coding_job_without_plan_materializes_prd_and_synthetic_plan() {
     );
     assert!(
         dir.path()
-            .join(".roko/plans/job-coding-no-plan/tasks.toml")
+            .join("plans/job-coding-no-plan/tasks.toml")
             .exists(),
-        "fallback plan tasks should be materialized"
+        "fallback plan tasks should be materialized in the workspace plans directory"
     );
 
     let artifacts = final_job["submission"]["artifacts"]
@@ -402,7 +402,7 @@ async fn coding_job_without_plan_materializes_prd_and_synthetic_plan() {
     assert!(
         artifacts
             .iter()
-            .any(|artifact| artifact["path"] == ".roko/plans/job-coding-no-plan/tasks.toml"),
+            .any(|artifact| artifact["path"] == "plans/job-coding-no-plan/tasks.toml"),
         "synthetic plan artifact missing: {artifacts:?}"
     );
 }

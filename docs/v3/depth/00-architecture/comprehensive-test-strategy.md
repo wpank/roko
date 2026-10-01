@@ -45,7 +45,7 @@ preservation across self-modification cycles).
 |---|---|---|---|---|
 | `roko-core` | L0 Kernel | 1,200+ | +824 | High coverage, pub(crate) encapsulation |
 | `roko-agent` | L1 Framework | 1,100+ | +754 | 12 provider kinds, MCP, safety |
-| `roko-serve` | L4 Application | 800+ | +774 | ~376 canonical routes tested |
+| `roko-serve` | L4 Application | 800+ | +774 | canonical routes (counts in `tools/http_route_inventory.snapshot.json`) tested |
 | `roko-graph` | L1 Engine | 600+ | New | Sole execution engine |
 | `roko-learn` | Cross-cut | 600+ | +499 | Experiments, playbooks, bandits |
 | `roko-gate` | L3 Harness | 500+ | +300 | 19 gates, 7-rung pipeline |
@@ -166,7 +166,7 @@ Each crate's tests verify:
 
 | Module | What to test | Tests |
 |---|---|---|
-| ~376 canonical routes | Request validation, response format, auth, error handling | 400+ |
+| Canonical routes (counts in `tools/http_route_inventory.snapshot.json`) | Request validation, response format, auth, error handling | 400+ |
 | StateHub | Push-based projections, SSE delivery, cursor atomicity | 80+ |
 | WebSocket | Agent streaming, bidirectional control | 40+ |
 | Marketplace routes | Artifact/package/publish/economics/fork | 60+ |

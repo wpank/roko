@@ -464,7 +464,7 @@ Standalone MCP servers used by agents via `--mcp-config`.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-cli` | `crates/roko-cli/` | CLI binary, plan DAG/runner, merge queue, worktree manager, ratatui TUI | Main entry point, wired |
-| `roko-serve` | `crates/roko-serve/` | HTTP control plane: ~376 canonical REST routes (~421 incl. aliases) + SSE + WebSocket on :6677 | Wired |
+| `roko-serve` | `crates/roko-serve/` | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 | Wired |
 | `roko-demo` | `crates/roko-demo/` | Demo/example binary for showcasing features | Built |
 
 ### Application binaries
@@ -876,7 +876,7 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 | # | Document | What It Defines | Status |
 |---|---|---|---|
 | **[25](25-TUI.md)** | Interactive TUI | ratatui dashboard. 11 tabs (F1-F11). StateHub bridge. File/git watchers. ROSEDUST design language. Spectre creature visualization. Collective display. Sonification. A2UI generative interfaces. Onboarding flow. Accessibility. | WIRED |
-| **[26](26-HTTP-API.md)** | HTTP Control Plane | ~376 canonical routes (~421 incl. aliases). SSE. WebSocket. OpenAPI. REST conventions. | WIRED |
+| **[26](26-HTTP-API.md)** | HTTP Control Plane | REST routes (counts in `tools/http_route_inventory.snapshot.json`). SSE. WebSocket. OpenAPI. REST conventions. | WIRED |
 | **[27](27-ACP.md)** | Agent Client Protocol | ACP server for Cursor/editor integration. Mutation consent. Experiments. Budget enforcement. 180 tests. | WIRED (E17 8/8) |
 | **[28](28-CLI.md)** | CLI Reference | All subcommands: prd, plan, agent, research, knowledge, learn, config, serve, dashboard, etc. | WIRED |
 

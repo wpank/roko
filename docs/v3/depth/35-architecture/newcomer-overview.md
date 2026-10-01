@@ -348,7 +348,7 @@ and work down only when you need to.
 
 | Crate | One-liner |
 |-------|-----------|
-| **roko-serve** | HTTP control plane: ~376 routes + SSE + WebSocket on :6677 |
+| **roko-serve** | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 |
 | **roko-acp** | Editor integration protocol (Cursor, etc.) |
 | **roko-agent-server** | Per-agent HTTP sidecar: 14 routes |
 | **roko-execution** | Shared RuntimeServices builder for CLI/serve/ACP |

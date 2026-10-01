@@ -613,8 +613,7 @@ fn reported_reasoning_tokens(
         .iter()
         .map(|event| match event {
             roko_agent::AgentRuntimeEvent::TokenUsage {
-                reasoning_tokens,
-                ..
+                reasoning_tokens, ..
             } => *reasoning_tokens,
             _ => 0,
         })
@@ -1092,9 +1091,15 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             reasoning_tokens: Some(7),
             ..roko_core::UsageObservation::default()
         };
-        assert_eq!(reported_reasoning_tokens(&usage, Some(&observed), &events), 7);
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            7
+        );
         usage.reasoning_tokens = 9;
-        assert_eq!(reported_reasoning_tokens(&usage, Some(&observed), &events), 9);
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            9
+        );
 
         usage.input_tokens = 1_000;
         usage.output_tokens = 500;
@@ -1107,8 +1112,15 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         };
         let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
             .expect("the profile prices the model");
-        assert!(uncached > f64::from(usage.cost_usd), "{uncached} against {}", usage.cost_usd);
-        assert_eq!(usage_cost_without_cache(&usage, None, "unpriced-model"), None);
+        assert!(
+            uncached > f64::from(usage.cost_usd),
+            "{uncached} against {}",
+            usage.cost_usd
+        );
+        assert_eq!(
+            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            None
+        );
     }
 
     /// bug-07bc75: a Graph dispatch teaches the router only through its

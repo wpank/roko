@@ -8,8 +8,8 @@ severity = "p2"
 goal = "tooling"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "d9e79e9d8"
 source = "tmp/work-management/02-artifact-inventory.md"
 discovered_from = "doc:tmp/work-management/02-artifact-inventory.md"
@@ -30,3 +30,14 @@ Re-verified 2026-09-29 at d9e79e9d8: still no write-back. Correction: plan listi
 ## Notes
 
 - **From wk-filer2 (2026-09-29):** 13 portal-programme plans ran in side worktrees (roko-portal-wt, roko-portal2-wt, roko-backend-wt, roko-backend2-wt), so their Graph checkpoints live there. MAIN's plan index and backlog readers can't see them; the write-back must go to the plan's own checkout, or the readers must know about side worktrees.
+- 2026-10-01 (wk-taskdef): blocked on a decision; no code change here. The two readers left need different answers.
+  `roko backlog audit` will derive status from Graph checkpoints with gap-759041 (same branch, work/bug-e3df7d).
+  plans/INDEX.md cannot: checkpoints live in untracked `.roko/state/graph/`, and CI checks the tracked INDEX.md
+  against a fresh rendering (`roko plan index --check`, `.github/workflows/plan-validate.yml:63`). MAIN holds 27
+  succeeded checkpoints, so an overlay would make every INDEX.md rebuilt there fail that check. Next step (Will):
+  either write terminal statuses back into tasks.toml after a Graph run (a `toml_edit` write in graph_execution, which
+  keeps the INDEX deterministic and fixes every reader at once), or declare checkpoints canonical for run status, have
+  the INDEX count authored statuses only, and change this item's verify.
+- 2026-10-01 (wk-taskdef): the audit half landed with gap-759041 on the same branch. `roko backlog audit` reads each
+  plan's checkpoint through `graph_checkpoint::inspect_canonical_checkpoint`, a name this item's verify grep does not
+  accept; widen the grep when the INDEX half is decided.

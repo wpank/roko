@@ -135,8 +135,14 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
 ];
 
 /// Claude Code's managed-settings directory, where an administrator puts
-/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it. This
+/// crate's tests look in a directory that never exists instead, so that they
+/// do not depend on the host's managed config; a test that wants one passes
+/// its own directory ([`ClaudeIsolation::with_managed_settings_dir`]).
 fn claude_managed_settings_dir() -> PathBuf {
+    if cfg!(test) {
+        return PathBuf::from("/nonexistent/roko-tests/claude-code-managed-settings");
+    }
     PathBuf::from(if cfg!(target_os = "macos") {
         "/Library/Application Support/ClaudeCode"
     } else if cfg!(windows) {
@@ -326,6 +332,12 @@ pub struct ClaudeCliAgent {
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
     resource_limits: Option<ResourceLimits>,
+    /// The provider whose `max_concurrent` caps this agent's runs, with the
+    /// shared semaphores that enforce it (bug-eba31d).
+    provider_id: Option<String>,
+    provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
+    /// Where a run reports that it waits for its provider's permit.
+    live_output: Option<crate::live_output::LiveOutput>,
     name: String,
 }
 
@@ -363,6 +375,9 @@ impl ClaudeCliAgent {
             dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
+            provider_id: None,
+            provider_semaphores: None,
+            live_output: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -386,6 +401,57 @@ impl ClaudeCliAgent {
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
         self
+    }
+
+    /// Attach shared provider semaphores, so that no more `claude` processes
+    /// run at once than `[providers.<provider_id>] max_concurrent` allows: a
+    /// run waits for a permit before it spawns and holds it until it ends.
+    #[must_use]
+    pub fn with_provider_semaphores(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_semaphores: Arc<crate::provider::ProviderSemaphores>,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_semaphores = Some(provider_semaphores);
+        self
+    }
+
+    /// Report on `live_output` when a run has to wait for its provider's
+    /// concurrency permit, and when it gets it, so that a stall watchdog
+    /// counts the wait as queued rather than silent.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: crate::live_output::LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Wait for this provider's concurrency permit when a cap applies
+    /// (bug-eba31d). A run that has to wait reports it on its live output,
+    /// and reports again once it has the permit and starts.
+    async fn provider_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let (Some(provider_id), Some(provider_semaphores)) =
+            (&self.provider_id, &self.provider_semaphores)
+        else {
+            return None;
+        };
+        if let Some(permit) = provider_semaphores.try_acquire(provider_id) {
+            return Some(permit);
+        }
+        self.report_queued(true).await;
+        let permit = provider_semaphores.acquire(provider_id).await.ok();
+        self.report_queued(false).await;
+        permit
+    }
+
+    /// Tell the live output, if any, whether the run waits for its permit.
+    async fn report_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .send(crate::live_output::LiveAgentEvent::Queued { waiting })
+                .await;
+        }
     }
 
     /// Override the reasoning-effort label passed to Claude.
@@ -802,6 +868,34 @@ impl ClaudeCliAgent {
                     ),
                 );
             }
+            // `usage` counts only the main model; `modelUsage` counts every
+            // model the session used, background turns and subagents
+            // included, as `total_cost_usd` does, and its thinking tokens
+            // (gap-ad0d39).
+            if let Some(per_model) = event.get("modelUsage").and_then(Value::as_object)
+                && !per_model.is_empty()
+            {
+                let total = |key: &str| {
+                    per_model
+                        .values()
+                        .filter_map(|entry| entry.get(key).and_then(Value::as_u64))
+                        .reduce(|sum, count| sum + count)
+                };
+                Self::update_stream_usage_field(&mut usage.input_tokens, total("inputTokens"));
+                Self::update_stream_usage_field(&mut usage.output_tokens, total("outputTokens"));
+                Self::update_stream_usage_field(
+                    &mut usage.cache_creation_tokens,
+                    total("cacheCreationInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.cache_read_tokens,
+                    total("cacheReadInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.reasoning_tokens,
+                    total("thinkingTokens"),
+                );
+            }
         }
         if usage.source == UsageSource::Unknown {
             return streamed.stream_usage(fallback_model);
@@ -819,7 +913,7 @@ impl ClaudeCliAgent {
             output_tokens: stream_usage.output_tokens,
             cache_creation_tokens: stream_usage.cache_creation_tokens,
             cache_read_tokens: stream_usage.cache_read_tokens,
-            reasoning_tokens: None,
+            reasoning_tokens: stream_usage.reasoning_tokens,
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
             model: stream_usage.model.clone(),
@@ -1234,6 +1328,9 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, "claude run not started: {reason}");
             return self.failure(input, &reason, started);
         }
+        // The provider's concurrency cap (bug-eba31d): wait for a permit
+        // before spawning, and hold it until the run ends.
+        let _permit = self.provider_permit().await;
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -1448,9 +1545,35 @@ impl ClaudeCliAgent {
 
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = stdout_handle.await.unwrap_or_default();
-        let stderr = stderr_handle.await.unwrap_or_default();
-        tree_guard.disarm();
+        // A process the run started and left running (a backgrounded shell,
+        // a dev server) can hold the output pipes open, so the readers would
+        // never see EOF and the run would hang after `claude` exited
+        // (gap-5d3b82). Give them `EXITED_OUTPUT_DRAIN_MS`, then end the
+        // run's process group and keep what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (stdout, stderr) = match drained {
+            Ok((stdout, stderr)) => {
+                tree_guard.disarm();
+                (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "claude exited but a process it started holds its output open; ending its group"
+                );
+                // The armed guard signals the run's process group: SIGTERM,
+                // then SIGKILL.
+                drop(tree_guard);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1583,6 +1706,8 @@ struct StreamUsage {
     output_tokens: Option<u64>,
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
+    /// Thinking tokens, a part of `output_tokens`, from `modelUsage`.
+    reasoning_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
     /// Agent turns the CLI reported in its final `result` event, or the
@@ -1604,6 +1729,7 @@ impl StreamUsage {
                 self.cache_creation_tokens =
                     self.cache_creation_tokens.or(other.cache_creation_tokens);
                 self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.reasoning_tokens = self.reasoning_tokens.or(other.reasoning_tokens);
                 self.cost_usd = self.cost_usd.or(other.cost_usd);
                 self.model = self.model.or(other.model);
                 self.num_turns = self.num_turns.or(other.num_turns);
@@ -1720,6 +1846,7 @@ impl StreamedMessages {
             output_tokens: Some(output),
             cache_creation_tokens: Some(cache_creation),
             cache_read_tokens: Some(cache_read),
+            reasoning_tokens: None,
             cost_usd,
             model: top_level().rev().find_map(|message| message.model.clone()),
             num_turns: Some(top_level().count() as u64),
@@ -1730,6 +1857,16 @@ impl StreamedMessages {
 
 /// Longest wait for a killed run's output readers to reach end of file.
 const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// How long a run's output readers may take to reach EOF after `claude`
+/// exited, before the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
 
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
@@ -2588,6 +2725,27 @@ mod tests {
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
+    /// gap-ad0d39: `modelUsage` counts every model the session used, so the
+    /// background turns on a small model count with the main model's, and
+    /// its thinking tokens are the output's reasoning part.
+    #[test]
+    fn parse_stream_usage_counts_every_model_in_model_usage() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","model":"claude-sonnet-4-6","total_cost_usd":0.2791,"usage":{"input_tokens":38,"output_tokens":3120,"cache_creation_input_tokens":21904,"cache_read_input_tokens":186112},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":38,"outputTokens":3120,"thinkingTokens":1450,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costUSD":0.2756},"claude-haiku-4-5":{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.0035}}}"#,
+            "claude-test-model",
+        );
+
+        assert_eq!(usage.source, UsageSource::ProviderReported);
+        assert_eq!(usage.input_tokens, Some(38 + 2_513));
+        assert_eq!(usage.output_tokens, Some(3_120 + 196));
+        assert_eq!(usage.cache_read_tokens, Some(186_112));
+        assert_eq!(usage.cache_creation_tokens, Some(21_904));
+        assert_eq!(usage.reasoning_tokens, Some(1_450));
+        assert_eq!(usage.cost_usd, Some(0.2791));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.reasoning_tokens, Some(1_450));
+    }
+
     #[test]
     fn parse_stream_usage_leaves_missing_fields_none_and_keeps_zeroes() {
         let usage = ClaudeCliAgent::parse_stream_usage(
@@ -2917,6 +3075,29 @@ mod tests {
             .position(|arg| arg == "--mcp-config")
             .expect("workspace MCP config");
         assert_eq!(args[mcp + 1], own.to_string_lossy());
+    }
+
+    /// bug-a70def: the isolation tests read no managed MCP config from the
+    /// host, so they pass whether or not it has one; a test that wants one
+    /// points the isolation at its own directory.
+    #[test]
+    fn mcp_isolation_tests_ignore_the_hosts_managed_mcp_json() {
+        let host_dir = claude_managed_settings_dir();
+        assert!(!host_dir.exists(), "{} exists", host_dir.display());
+        let strict = |args: &[String]| args.iter().any(|arg| arg == "--strict-mcp-config");
+        let workdir = tempdir().unwrap();
+        let isolation = ClaudeIsolation::new(workdir.path());
+        assert_eq!(isolation.managed_mcp_config(), None);
+        assert!(strict(&isolation.args()));
+        assert_eq!(isolation.mcp_config_refusal(), None);
+
+        let tmp = tempdir().unwrap();
+        let managed = tmp.path();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let isolation = isolation.with_managed_settings_dir(managed);
+        assert!(isolation.managed_mcp_config().is_some());
+        assert!(!strict(&isolation.args()));
+        assert!(isolation.mcp_config_refusal().is_some());
     }
 
     #[tokio::test]
@@ -3400,6 +3581,134 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
         write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
         let plain = agent.run(&prompt("finish it"), &Context::now()).await;
         assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
+    /// bug-eba31d: a run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`, and says
+    /// on its live output that it is queued, then that it got the permit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_cli_waits_for_provider_permit() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+touch "$(dirname "$0")/launched"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut configs = indexmap::IndexMap::new();
+        configs.insert(
+            "capped".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: Some(1),
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
+        let held = semaphores.acquire("capped").await.expect("the only permit");
+        let (sink, mut events) = mpsc::channel(8);
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+            .with_provider_semaphores("capped", Arc::clone(&semaphores))
+            .with_live_output(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            });
+        let launched = tmp.path().join("launched");
+
+        let input = prompt("go");
+        let ctx = Context::now();
+        let run = agent.run(&input, &ctx);
+        tokio::pin!(run);
+        assert!(
+            timeout(Duration::from_millis(100), &mut run).await.is_err(),
+            "the run waits while the provider's only permit is held"
+        );
+        assert!(!launched.exists(), "claude is not spawned before a permit");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
+
+        drop(held);
+        let result = timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends once the permit is free");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert!(launched.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: false })
+        ));
+    }
+
+    /// gap-5d3b82: `claude` exits while a process it started still holds its
+    /// output open. The run ends soon after the exit with what `claude`
+    /// printed, and that process is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_agent_with_open_stdout_does_not_hang() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let holder = tmp.path().join("holder.pid");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+sleep 600 &
+echo $! > '{holder}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                holder = holder.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("go"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let pid = fs::read_to_string(&holder).unwrap().trim().to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = StdCommand::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
     }
 
     /// Dropping a run's future, which is how a cancel or the stall watchdog

@@ -11,13 +11,10 @@
 //!
 //! ## Relationship to other pools
 //!
-//! Three distinct "pool" constructs exist in the workspace:
-//!
-//! | Pool | Crate | Layer | Purpose |
-//! |---|---|---|---|
-//! | `AgentPool` | `roko-agent` | Agent | Sequential FIFO queue for one role; primary + optional fallback agent; per-task retry semantics. Unit-test only. |
-//! | `MultiAgentPool` | `roko-agent` | Agent | Parallel multi-role pool with concurrency limits, active/warm state, and bulk-kill. Unit-test only. |
-//! | [`WarmPool`] | `roko-cli` | Dispatcher | **This file.** Lightweight per-role LRU of agent *handles*. The production-wired pool used by `Dispatcher`. |
+//! [`WarmPool`] is the workspace's only agent pool: a lightweight per-role
+//! LRU of agent *handles*, used by `Dispatcher`. roko-agent's `AgentPool` and
+//! `MultiAgentPool` never ran outside their own tests and were removed
+//! (gap-ee8dc0).
 //!
 //! `WarmPool` does not own agent spawning — it stores opaque handle ids so
 //! the dispatcher can reuse existing processes across role transitions without

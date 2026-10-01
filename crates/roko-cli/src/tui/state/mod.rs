@@ -44,6 +44,7 @@ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
 use super::segment::CachedRender;
 use super::tabs::Tab;
+use super::widgets::stream_output::display_text;
 use crate::config::Config;
 use crate::plan::PlanSummary;
 
@@ -588,6 +589,11 @@ impl AgentOutputHistory {
             let new_oldest = evicted_record.seq + 1;
             self.oldest_seq.insert(agent_id.to_string(), new_oldest);
             self.evicted += 1;
+            // Only text and reasoning records are tracked as unscreened, and
+            // they are never evicted as part of a tool pair below.
+            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                unscreened.remove(&evicted_record.seq);
+            }
 
             // If we just evicted a ToolCall, also evict any immediately
             // following ToolResult with the same tool_id to keep pairs intact.
@@ -698,7 +704,7 @@ impl AgentOutputHistory {
                         return false;
                     }
                 }
-                pattern.is_match(&r.text)
+                pattern.is_match(&display_text(&r.text))
                     || r.tool_name.as_deref().is_some_and(|n| pattern.is_match(n))
                     || pattern.is_match(&r.role)
             })
@@ -749,34 +755,42 @@ impl AgentOutputHistory {
     /// `live_unscreened_seqs` so they can be dropped when the screened
     /// transcript arrives via [`settle_screened_transcript`].
     pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
+        for line in lines {
+            self.ingest_line(agent_id, line, role);
+        }
+    }
+
+    /// Convert one raw output line into a record for an agent, as
+    /// [`Self::ingest_lines`] does. A stream record keeps its encoded line as
+    /// the record's text, which the renderer and search decode, so a line
+    /// published live (`TuiState::ingest_agent_output`) and the same line
+    /// backfilled from a snapshot give the same record.
+    pub fn ingest_line(&mut self, agent_id: &str, line: &str, role: &str) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-
-        for line in lines {
-            let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
-            // Assign the sequence number before push so we can track it.
-            let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
-            self.push(
-                agent_id,
-                AgentOutputRecord {
-                    seq: 0, // overwritten by push()
-                    timestamp_ms: now_ms,
-                    role: role.to_string(),
-                    kind,
-                    text: line.clone(),
-                    redacted: false,
-                    tool_id,
-                    tool_name,
-                },
-            );
-            if is_live_unscreened {
-                self.live_unscreened_seqs
-                    .entry(agent_id.to_string())
-                    .or_insert_with(HashSet::new)
-                    .insert(seq);
-            }
+        let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
+        // Assign the sequence number before push so we can track it.
+        let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
+        self.push(
+            agent_id,
+            AgentOutputRecord {
+                seq: 0, // overwritten by push()
+                timestamp_ms: now_ms,
+                role: role.to_string(),
+                kind,
+                text: line.to_string(),
+                redacted: false,
+                tool_id,
+                tool_name,
+            },
+        );
+        if is_live_unscreened {
+            self.live_unscreened_seqs
+                .entry(agent_id.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(seq);
         }
     }
 
@@ -1493,7 +1507,7 @@ impl AgentOutputSearchState {
         self.match_seqs.clear();
         if let Some(ref re) = self.compiled {
             for record in history.records_for(agent_id) {
-                if re.is_match(&record.text)
+                if re.is_match(&display_text(&record.text))
                     || record.tool_name.as_deref().is_some_and(|n| re.is_match(n))
                     || re.is_match(&record.role)
                 {

@@ -5,7 +5,9 @@
 //! hard deadline minus settlement headroom, so the run stops cleanly before
 //! the evidence wrapper kills it. At the deadline the run stops through its
 //! [`PlanRunInterruptHandle`]: the running graph is cancelled, its checkpoint
-//! is finalized as `interrupted`, and the run exits 143, as on SIGTERM.
+//! is finalized as `interrupted`, and the run exits 143, as on SIGTERM. Its
+//! summary and `--log-file` name the stop [`PlanRunInterrupt::Deadline`]
+//! (`deadline`), not SIGTERM (gap-9efe8e).
 
 use std::time::Duration;
 
@@ -36,17 +38,23 @@ pub fn arm_plan_deadline(interrupt: &PlanRunInterruptHandle) -> Option<FastPlanD
             .ok()
             .as_deref(),
     );
+    Some(arm_deadline(interrupt, deadline))
+}
+
+/// Stop `interrupt`'s run as [`PlanRunInterrupt::Deadline`] once `deadline`
+/// has elapsed.
+fn arm_deadline(interrupt: &PlanRunInterruptHandle, deadline: Duration) -> FastPlanDeadline {
     let interrupt = interrupt.clone();
     let timer = tokio::spawn(async move {
         tokio::time::sleep(deadline).await;
-        if interrupt.request(PlanRunInterrupt::Terminate) {
+        if interrupt.request(PlanRunInterrupt::Deadline) {
             tracing::warn!(
                 deadline_secs = deadline.as_secs(),
                 "FAST run deadline elapsed; stopping the plan run"
             );
         }
     });
-    Some(FastPlanDeadline { timer })
+    FastPlanDeadline { timer }
 }
 
 fn plan_deadline(configured: Option<&str>) -> Duration {
@@ -76,5 +84,20 @@ mod tests {
         assert_eq!(plan_deadline(Some("0")), DEFAULT_PLAN_DEADLINE);
         assert_eq!(plan_deadline(Some("soon")), DEFAULT_PLAN_DEADLINE);
         assert_eq!(plan_deadline(None), DEFAULT_PLAN_DEADLINE);
+    }
+
+    /// gap-9efe8e: an elapsed deadline stops its run as a deadline, which
+    /// the summary and `--log-file` can tell apart from SIGTERM.
+    #[tokio::test]
+    async fn an_elapsed_deadline_stops_the_run_as_a_deadline() {
+        let interrupt = PlanRunInterruptHandle::default();
+        let _deadline = arm_deadline(&interrupt, Duration::from_millis(10));
+        for _ in 0..200 {
+            if interrupt.requested().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(interrupt.requested(), Some(PlanRunInterrupt::Deadline));
     }
 }

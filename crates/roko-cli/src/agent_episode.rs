@@ -97,6 +97,10 @@ pub fn build_capture_episode(
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
     episode.duration_secs = wall_time_ms as f64 / 1000.0;
     episode.usage.wall_ms = wall_time_ms;
+    // A capture carries no tokens or cost, so its cost is a 0 placeholder and
+    // no $0 cost record is derived from it. The caller records the call's
+    // spend where it has the usage (`AuthoringSpend`).
+    episode.mark_cost_unknown();
     episode.success = success;
     episode.turns = 1;
     if !success {
@@ -188,6 +192,7 @@ mod tests {
             episode.extra.get("session_id"),
             Some(&serde_json::json!("sess-1"))
         );
+        assert!(!episode.cost_known(), "a capture records no usage");
     }
 
     /// Verify that PRD plan dispatch episodes include all fields required by

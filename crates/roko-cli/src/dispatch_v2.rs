@@ -1616,30 +1616,7 @@ impl AgentDispatcherV2 {
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &created.target);
 
-        // Record provider outcome for the circuit breaker (E48-T05). A run
-        // stopped at its turn cap is a task outcome, not a provider fault.
-        if let Some(registry) = &self.health_registry {
-            let provider_id = &created.target.provider_id;
-            let turn_cap_stop = result
-                .output
-                .body
-                .as_text()
-                .ok()
-                .and_then(roko_agent::provider::error_classify::detect_turn_cap)
-                .is_some();
-            if result.success || turn_cap_stop {
-                registry.record_provider_success(provider_id);
-            } else {
-                let output_text = result
-                    .output
-                    .body
-                    .as_text()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                registry
-                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
-            }
-        }
+        self.record_provider_outcome(&created.target.provider_id, &result);
 
         record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
@@ -1836,25 +1813,10 @@ impl AgentDispatcherV2 {
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &target);
 
-        // Record provider outcome for the circuit breaker (E48-T05).
         // This must happen before any gate verdict is applied so a provider
         // success followed by a failing code/test gate remains a provider
         // success in the health registry.
-        if let Some(registry) = &self.health_registry {
-            let provider_id = &target.provider_id;
-            if result.success {
-                registry.record_provider_success(provider_id);
-            } else {
-                let output_text = result
-                    .output
-                    .body
-                    .as_text()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                registry
-                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
-            }
-        }
+        self.record_provider_outcome(&target.provider_id, &result);
 
         record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
@@ -1877,6 +1839,37 @@ impl AgentDispatcherV2 {
         let audit = self.tool_audit.as_ref()?;
         let attempt_key = request.attempt_key.as_deref()?;
         Some(ToolAuditMark::at(audit.path().to_path_buf(), attempt_key).await)
+    }
+
+    /// Record a provider run's outcome for the circuit breaker (E48-T05).
+    ///
+    /// - A successful run, or one stopped at its turn cap (a task outcome,
+    ///   not a provider fault), is a provider success.
+    /// - A run killed at its attempt's wall-clock timeout says how long the
+    ///   task took, not how healthy the provider is, so it records nothing
+    ///   (bug-7cdce7): three slow attempts must not open the circuit.
+    /// - Any other unsuccessful run is a provider failure, classified from
+    ///   its text.
+    fn record_provider_outcome(&self, provider_id: &str, result: &AgentResult) {
+        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
+
+        let Some(registry) = &self.health_registry else {
+            return;
+        };
+        let text = result.output.body.as_text().unwrap_or_default();
+        if result.success || detect_turn_cap(text).is_some() {
+            registry.record_provider_success(provider_id);
+        } else if detect_attempt_timeout(text) {
+            tracing::debug!(
+                provider = %provider_id,
+                "an attempt timeout is a task outcome; the provider's health is unchanged"
+            );
+        } else {
+            registry.record_provider_failure(
+                provider_id,
+                classify_provider_error(&text.to_ascii_lowercase()),
+            );
+        }
     }
 
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
@@ -1999,10 +1992,17 @@ fn validate_contract_support(
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
 pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
+    use roko_agent::provider::error_classify::{detect_provider_exhaustion, is_billing_message};
+
+    // A usage-window refusal ("you've hit your session limit · resets 4pm")
+    // mentions "limit" and sometimes "quota", so it must win over billing and
+    // rate-limit detection, as in roko-agent's CLI classifier (gap-28ceb9).
     // Billing/credit errors must be checked before generic rate-limit detection
     // so that messages containing "quota" + billing indicators are not
     // misclassified as transient rate limits.
-    if roko_agent::provider::error_classify::is_billing_message(output_text_lower) {
+    if detect_provider_exhaustion(output_text_lower).is_some() {
+        "provider_exhausted"
+    } else if is_billing_message(output_text_lower) {
         "insufficient_credits"
     } else if output_text_lower.contains("rate limit")
         || output_text_lower.contains("rate_limit")
@@ -3489,6 +3489,163 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         assert!(
             !tmp.path().join(".roko/learn/cascade-router.json").exists(),
             "the bridge must not observe or save the cascade router"
+        );
+    }
+
+    /// A config whose one model, `dispatch-model`, runs the Claude CLI
+    /// `script` through the `dispatch-cli` provider.
+    fn fake_claude_config(script: &Path) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "dispatch-model".to_string();
+        config.providers.insert(
+            "dispatch-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "dispatch-model".to_string(),
+            ModelProfile {
+                provider: "dispatch-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    /// A request for `dispatch-model` in `workdir`, killed after
+    /// `timeout_ms`.
+    fn fake_claude_request(workdir: &Path, timeout_ms: u64) -> AgentDispatchRequest {
+        AgentDispatchRequest {
+            model_key: "dispatch-model".to_string(),
+            prompt: "do work".to_string(),
+            system_prompt: "system".to_string(),
+            workdir: workdir.to_path_buf(),
+            immune_root: None,
+            agent_id: "dispatch-agent".to_string(),
+            command: None,
+            timeout_ms: Some(timeout_ms),
+            mcp_config: None,
+            env: Vec::new(),
+            extra_args: Vec::new(),
+            effort: None,
+            tools: None,
+            agent_contract: None,
+            bare_mode: false,
+            dangerously_skip_permissions: false,
+            max_turns: None,
+            live_output: None,
+            attempt_key: None,
+        }
+    }
+
+    /// bug-7cdce7: an attempt killed at its wall-clock timeout, or stopped at
+    /// its turn cap, is a task outcome. Three in a row through the Graph
+    /// bridge leave the provider's circuit closed, while three real provider
+    /// failures still open it.
+    #[tokio::test]
+    async fn attempt_timeouts_do_not_open_the_provider_circuit() {
+        let cases = [
+            (
+                "attempt timeout",
+                "#!/bin/sh\ncat >/dev/null\nexec sleep 30\n",
+                100,
+                "timed out after",
+                true,
+            ),
+            (
+                "turn cap",
+                r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"total_cost_usd":0}'
+exit 1
+"#,
+                10_000,
+                "turn cap reached",
+                true,
+            ),
+            (
+                "provider failure",
+                r#"#!/bin/sh
+cat >/dev/null
+echo '503 service temporarily unavailable' >&2
+exit 1
+"#,
+                10_000,
+                "503",
+                false,
+            ),
+        ];
+        for (case, body, timeout_ms, says, stays_closed) in cases {
+            let tmp = tempdir().expect("tempdir");
+            let script = write_fake_claude_script(&tmp, body);
+            let registry = Arc::new(ProviderHealthRegistry::new());
+            let dispatcher = AgentDispatcherV2::new(Arc::new(fake_claude_config(&script)))
+                .with_health_registry(registry.clone());
+            for _ in 0..3 {
+                let dispatch = dispatcher
+                    .run_agent_result_bridge_with_tools_and_cli_mcp(
+                        fake_claude_request(tmp.path(), timeout_ms),
+                        None,
+                        None,
+                        None,
+                        false,
+                    )
+                    .await
+                    .expect("dispatch");
+                let text = dispatch.result.output.body.as_text().unwrap_or_default();
+                assert!(!dispatch.result.success, "{case}: {text}");
+                assert!(text.contains(says), "{case}: {text}");
+            }
+            let health = registry.get("dispatch-cli");
+            assert_eq!(
+                registry.is_available("dispatch-cli"),
+                stays_closed,
+                "{case}: {health:?}"
+            );
+            if stays_closed {
+                assert_eq!(health.consecutive_failures, 0, "{case}: {health:?}");
+            }
+        }
+    }
+
+    /// gap-28ceb9: a usage-window refusal is a class of its own, which the
+    /// circuit breaker records as exhaustion, ahead of the billing and
+    /// rate-limit wording it can share.
+    #[test]
+    fn classify_provider_error_detects_usage_exhaustion() {
+        for text in [
+            "You've hit your session limit · resets 4pm",
+            "You've hit your usage limit. Upgrade to Pro or try again later.",
+            "usage limit reached for this quota window",
+        ] {
+            assert_eq!(
+                classify_provider_error(&text.to_ascii_lowercase()),
+                "provider_exhausted",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            classify_provider_error("429 too many requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            classify_provider_error("insufficient credits"),
+            "insufficient_credits"
         );
     }
 

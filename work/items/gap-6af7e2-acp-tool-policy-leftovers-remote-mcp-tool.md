@@ -3,13 +3,14 @@ id = "gap-6af7e2"
 kind = "gap"
 title = "ACP tool policy leftovers: remote MCP tool names and the session safety layer's mode"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-acp"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-55eada"
 anchors = ["crates/roko-acp/src/bridge_events/mod.rs", "crates/roko-acp/src/bridge_events/dispatch.rs"]
@@ -35,3 +36,9 @@ Check remote MCP tool names against ForbiddenTools, and map the mode to its cont
 ## Notes
 
 - Reported on 2026-10-01 by wk-specq, working on gap-55eada, during the evening close-out round.
+- 2026-10-01 (wk-specq): implemented on work/bug-8dbffd; cargo verification deferred to the batch check.
+  `setup_session_mcp_tools` takes the contract role, and `AcpMcpToolHandler` refuses a tool whose remote name is in
+  the role's `ForbiddenTools` (`tools.rs::contract_forbids_tool`). The pre/post-dispatch layer comes from
+  `mod.rs::session_safety_layer`, which uses `acp_contract_role_for_mode`. Behaviour change to watch: in `plan` and
+  `research` modes, the post-dispatch check now blocks a turn that changed files (strategist and researcher forbid
+  writes). Edits the user makes in the workspace during that turn also count.

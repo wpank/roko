@@ -55,6 +55,11 @@ enabled = false
 [gates]
 max_review_cycles = 0
 cargo_fix_enabled = false
+
+# The shared working tree, which these checks were written for before per-task worktrees became the default
+# (gap-4ec59f).
+[runner]
+worktree_per_task = false
 """
 
 PLAN_TOML = """[meta]

@@ -6,9 +6,10 @@
 > finish (up to the plan's `max_parallel`; omitted, as wide as the DAG allows when every
 > writing task declares its `files`, else 1), each task's authored
 > `verify` commands check it, and durable checkpoints allow resume after crash. Three
-> parts of the design are not on this path. Tasks run in the operator's working tree:
-> `--worktree-per-task` is opt-in, and its worktrees are never merged back (section 10).
-> Nothing merges: the merge queue has no production caller (section 11). The 19-gate
+> parts of the design are not on this path. Plans get no worktree of their own: since
+> 2026-10-01 (gap-4ec59f) each task attempt runs in its own worktree by default, and
+> finished plans are delivered into the run's batch branch, never the operator's checkout
+> (section 10). The merge queue has no production caller (section 11). The 19-gate
 > rung pipeline runs only in tests ([07-GATES](07-GATES.md)).
 
 > The plan-execute-verify-persist pipeline. A plan directory becomes a Graph of
@@ -555,12 +556,16 @@ closed.
 ## 10. Worktree Isolation
 
 > **Status (2026-09-29, at `7c556bc0a`): PARTIAL.** This section describes the design.
-> On Graph runs every task edits the operator's working tree by default.
-> `plan run --worktree-per-task` is opt-in: each attempt gets a worktree under
-> `.roko/worktrees/`, forked from `HEAD`, and a successful attempt's edits are never
-> merged back, which is why `crates/roko-cli/src/graph_execution/plan_runner.rs` refuses
-> the flag when plans run in parallel. The per-plan path (`ensure_for_plan`,
-> `create_for_plan`) and `reclaim_idle` have no production caller, and `max_live` is unset.
+> Updated 2026-10-01 (gap-4ec59f): `plan run` gives each task attempt its own worktree
+> under `.roko/worktrees/` by default (`[runner] worktree_per_task`; `--no-worktree-per-task`
+> opts out). An attempt starts from its plan's branch, `roko/plan/<plan>`, and a passed
+> attempt is committed onto it. Each finished plan is delivered into the run's batch
+> branch, `roko/batch/<run-id>`. The operator's checkout is never changed: the run ends
+> with the `git merge` command that takes the work. A workdir that is not the top level
+> of a git checkout with a commit runs its tasks in the shared working tree.
+> `crates/roko-cli/src/graph_execution/plan_runner.rs` still refuses worktrees when plans
+> run in parallel. The per-plan path (`ensure_for_plan`, `create_for_plan`) and
+> `reclaim_idle` have no production caller, and `max_live` is unset.
 
 Git worktrees provide per-plan filesystem isolation. Each active plan gets
 its own worktree -- a separate working directory on its own branch, sharing
@@ -652,7 +657,8 @@ first attempts `reclaim_idle()`. If still over budget, it returns
 
 ### Tasks that share the operator's tree
 
-Without `--worktree-per-task`, the tasks of a plan run side by side in one
+With `--no-worktree-per-task` (or `[runner] worktree_per_task = false`, or in a
+workdir that cannot hold worktrees), the tasks of a plan run side by side in one
 working tree. Two rules keep them from reading or writing each other's
 half-finished edits:
 
@@ -712,8 +718,8 @@ turns it off, and FAST mode never runs it.
 > **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,
 > whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it:
 > only tests construct `MergeQueue`, and `PlanMerger` was deleted (gap-3505fb). Graph runs
-> under `--worktree-per-task` deliver each finished plan into the run's batch branch with
-> git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
+> with per-task worktrees (the default) deliver each finished plan into the run's batch
+> branch with git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
 
 The merge queue serializes plan merges to prevent file conflicts.
 

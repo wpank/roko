@@ -414,19 +414,36 @@ pub fn new_batch_run_id() -> String {
     )
 }
 
-/// Whether `repo` is a git checkout with a commit at `HEAD`, which a run's
-/// batch branch and per-task worktrees start from (gap-4ec59f).
+/// Why the workdir `repo` cannot run each task in its own git worktree, or
+/// `None` when it can (gap-4ec59f). A run's batch branch and worktrees start
+/// from the commit at `HEAD`, and each attempt runs at the top level of its
+/// worktree, so `repo` must be the top level of a git checkout with a commit.
 #[must_use]
-pub fn has_head_commit(repo: &Path) -> bool {
+pub fn worktree_isolation_blocker(repo: &Path) -> Option<&'static str> {
+    let Some(prefix) = git_probe(repo, &["rev-parse", "--show-prefix"]) else {
+        return Some("is not a git checkout");
+    };
+    if !prefix.stdout.trim_ascii().is_empty() {
+        return Some("is a subdirectory of a git checkout, not its top level");
+    }
+    if git_probe(repo, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).is_none() {
+        return Some("is a git checkout with no commit yet");
+    }
+    None
+}
+
+/// The output of `git <args>` in `repo` when it succeeds, run without the
+/// invoking environment's `GIT_DIR` and `GIT_WORK_TREE`.
+fn git_probe(repo: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .args(args)
         .current_dir(repo)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
 }
 
 /// The commit `rev` names in `repo`, if it names one.
@@ -467,15 +484,29 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    /// gap-4ec59f: a workdir can isolate its tasks only as a git checkout
-    /// with a commit for the batch and the worktrees to start from.
+    /// gap-4ec59f: a workdir can isolate its tasks only as the top level of
+    /// a git checkout, with a commit for the batch and the worktrees to start
+    /// from.
     #[test]
-    fn has_head_commit_needs_a_checkout_with_a_commit() {
+    fn worktree_isolation_needs_the_top_level_of_a_checkout_with_a_commit() {
         let dir = tempfile::tempdir().expect("dir");
-        assert!(!has_head_commit(dir.path()), "not a git checkout");
+        assert_eq!(
+            worktree_isolation_blocker(dir.path()),
+            Some("is not a git checkout")
+        );
         git(dir.path(), &["init", "--quiet"]);
-        assert!(!has_head_commit(dir.path()), "no commit yet");
-        assert!(has_head_commit(repo_with_plan_branches().path()));
+        assert_eq!(
+            worktree_isolation_blocker(dir.path()),
+            Some("is a git checkout with no commit yet")
+        );
+        let repo = repo_with_plan_branches();
+        assert_eq!(worktree_isolation_blocker(repo.path()), None);
+        let subdirectory = repo.path().join("sub");
+        std::fs::create_dir(&subdirectory).expect("subdirectory");
+        assert_eq!(
+            worktree_isolation_blocker(&subdirectory),
+            Some("is a subdirectory of a git checkout, not its top level")
+        );
     }
 
     /// A repository on `main`, with plan branches `roko/plan/plan-a` and

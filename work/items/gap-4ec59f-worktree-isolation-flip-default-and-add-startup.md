@@ -14,11 +14,11 @@ last_verified = 2026-10-01
 last_verified_rev = "c58c7c2ba"
 source = "tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 discovered_from = "audit:tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
-anchors = ["crates/roko-cli/src/orchestrator/executor/mod.rs::ExecutorConfig::default_use_worktrees", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-cli/src/graph_execution/plan_runner.rs:1155", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::with_workspace_provider", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/commands/plan.rs::cmd_resume", "crates/roko-cli/src/main.rs:2138", "crates/roko-cli/src/serve_runtime.rs:888", "crates/roko-cli/src/serve_client.rs:560", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::prune"]
+anchors = ["crates/roko-core/src/config/schema.rs::CoreRunnerConfig::default_worktree_per_task", "crates/roko-cli/src/commands/plan.rs::resolve_worktree_per_task", "crates/roko-cli/src/graph_execution/batch.rs::worktree_isolation_blocker", "crates/roko-cli/src/graph_execution/batch.rs::merge_command", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-cli/src/graph_execution/plan_runner.rs:1155", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::with_workspace_provider", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/commands/plan.rs::cmd_resume", "crates/roko-cli/src/main.rs:2138", "crates/roko-cli/src/serve_runtime.rs:888", "crates/roko-cli/src/serve_client.rs:560", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::prune"]
 links = { depends_on = [], blocks = [], related = ["bug-109b5a", "bug-53475e", "gap-d58ae8"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -A1 'const fn default_use_worktrees' crates/roko-cli/src/orchestrator/executor/mod.rs | grep -q true && grep -rqn 'use_worktrees' crates/roko-cli/src/graph_execution crates/roko-cli/src/commands/plan.rs crates/roko-cli/src/serve_runtime.rs && grep -rn 'clear_stale_locks()\\|clear_stuck_mutation_lock()' crates/roko-cli/src --include='*.rs' | grep -v 'orchestrator/worktree/' | grep -q ."
+command = "grep -A1 'const fn default_worktree_per_task' crates/roko-core/src/config/schema.rs | grep -q true && grep -q 'fn resolve_worktree_per_task' crates/roko-cli/src/commands/plan.rs && grep -q 'runner.worktree_per_task' crates/roko-cli/src/serve_runtime.rs && grep -rn 'clear_stale_locks()\\|clear_stuck_mutation_lock()' crates/roko-cli/src --include='*.rs' | grep -v 'orchestrator/worktree/' | grep -q ."
 +++
 
 ## Problem
@@ -274,6 +274,43 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
     ViabilityBench suite passes: 373 passed, 5 skipped (3 of the skips because this worktree has no roko binary).
   - A possible follow-up for Will is option (b): an opt-in fast-forward of the operator's branch at the end of the
     run, when `HEAD` is still the batch base and the checkout is clean.
+- 2026-10-01 (wk-tiers): steps 5 (the flip) and 6 on work/gap-4ec59f; cargo verification deferred to the batch check.
+  - `CoreRunnerConfig::default_worktree_per_task()` now returns `true`. A plain `roko plan run`, `roko resume` and
+    serve-started runs isolate each task, and deliver finished plans into `roko/batch/<run-id>`.
+  - Isolation that comes from config needs the workdir to be the top level of a git checkout with a commit
+    (`batch::worktree_isolation_blocker`, which replaces `has_head_commit`). Otherwise the tasks run in the shared
+    tree, with a warning that names the reason.
+    - The new case is a subdirectory of a checkout. Each attempt runs at the top level of its worktree, so the task
+      paths, `plans/` and `roko.toml` would no longer be where they are in the subdirectory.
+    - This also covers a temp dir that happens to sit inside another repository.
+  - Help text (`--worktree-per-task`, `--no-worktree-per-task`, `--rich-topology`, `--promote`) and docs updated:
+    `docs/v3/28-CLI.md`, `docs/v3/04-EXECUTION.md` §10/§11, and the depth pages `worktree-isolation.md` and
+    `plan-to-graph-conversion.md`.
+  - Shared-tree fixtures are pinned to `worktree_per_task = false`, so they keep testing what they were written for.
+    `--worktree-per-task` still overrides the pin. Pinned:
+    - `tests/common/mod.rs`: `ScriptedPlanWorkspace` (used by C1, C2, `secret_canary` and `run_serve_share`) and
+      `setup_sample_plan_workspace`;
+    - `attempt_diff_canary` (C5);
+    - `scripts/test_run_evidence_graph.py`;
+    - `tests/proof/mori-diffs/prove-runtime-end-to-end.sh`.
+  - Tests in non-git temp dirs need no pin: they fall back to the shared tree. These are C6–C8,
+    `graph_budget_resume`, `learning_wiring_census` and `plan_run_config_flag`.
+  - Step 6 test: `plan_branch_integration::a_plain_plan_run_isolates_its_tasks_by_default`, which runs in CI's
+    golden-path job. A plain run with no flag and no `[runner]` key:
+    - runs T2 on T1's work (T2's verify needs `one.txt`);
+    - delivers the plan into one batch branch, and leaves the operator's checkout unchanged;
+    - prints `git merge --ff-only roko/batch/<id>`, which `roko --json plan status` repeats under `delivery`;
+    - and the merge brings both files into the checkout.
+  - Other step 6 coverage:
+    - the opt-out: `worktree_per_task_follows_the_flag_then_the_runner_config`;
+    - the startup repair: `worktree_startup_repair_clears_a_stale_index_lock`;
+    - the fallbacks: `worktree_isolation_needs_the_top_level_of_a_checkout_with_a_commit`.
+  - `[[verify]]` and the anchors now point at the `[runner]` design. The verify passes in this worktree.
+  - Left for follow-up, not done here:
+    - A run that started shared under an older binary and is resumed after the flip continues in worktrees. Its earlier
+      tasks' uncommitted edits stay in the checkout, outside the batch; `--no-worktree-per-task` resumes it shared.
+    - Attempts in a Rust workdir build in their own worktree's `target/`, unless `CARGO_TARGET_DIR` is set, and a
+      failed attempt keeps its worktree. Self-hosting runs therefore cost more disk.
 
 ## Original notes
 

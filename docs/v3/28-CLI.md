@@ -714,7 +714,8 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget]
               [--dangerously-skip-permissions]
-              [--log-file <path>] [--worktree-per-task] [--rich-topology]
+              [--log-file <path>] [--worktree-per-task | --no-worktree-per-task]
+              [--rich-topology] [--promote <branch>]
 ```
 
 | Arg/Flag | Default | Description |
@@ -735,8 +736,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
-| `--worktree-per-task` | false | Run each task in an isolated git worktree. |
-| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
+| `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
+| `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
+| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
+| `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
 
 ```bash
 roko plan run plans/                            # Run all plans
@@ -804,7 +807,7 @@ roko plan cancel [--plan-id <id>] [--workdir <path>]
 #### `roko plan review`
 
 Approve or reject a task that a running plan holds for review. A plan holds each verified task when its
-`tasks.toml` sets `[meta] approval = "per_task"`, which needs `--worktree-per-task` and the default topology. The
+`tasks.toml` sets `[meta] approval = "per_task"`, which needs per-task worktrees (the default) and the default topology. The
 held task's diff is in `.roko/state/review-holds/<plan>/<task>.json` and on `GET /api/plans/:id/tasks/:task_id/diff`.
 Approval merges the task into its plan branch. A rejection fails the attempt, and the note is the next attempt's
 feedback. `POST /api/plans/:id/tasks/:task_id/review` records the same decision.
@@ -828,10 +831,12 @@ roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
 
 #### `roko plan status`
 
-Show lightweight runner status from `.roko/state/status.json`.
+Show lightweight runner status from `.roko/state/status.json`. With a plan directory, show that plan's tasks and
+status, why its whole-plan check failed if it did, and, for a plan delivered into its run's batch branch, the branch,
+the commit, and the command that takes the work into your checkout.
 
 ```
-roko plan status [--workdir <path>]
+roko plan status [<plan-dir>] [--workdir <path>]
 ```
 
 #### `roko plan queue`

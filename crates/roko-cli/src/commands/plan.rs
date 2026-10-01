@@ -2471,9 +2471,10 @@ async fn cmd_plan_run_engine(
 
 /// Whether a plan run in `workdir` isolates each task in its own git
 /// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
-/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). Worktrees
-/// start from a commit, so the setting alone does not isolate a workdir that
-/// is not a git checkout with one; an explicit flag there fails the run.
+/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). The setting
+/// alone does not isolate a workdir that cannot be isolated, such as one that
+/// is not the top level of a git checkout with a commit (see
+/// `worktree_isolation_blocker`); an explicit flag there fails the run.
 fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
     if let Some(flag) = flag {
         return flag;
@@ -2482,11 +2483,13 @@ fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> b
         .unwrap_or_default()
         .runner
         .worktree_per_task;
-    if configured && !roko_cli::graph_execution::batch::has_head_commit(workdir) {
+    if configured
+        && let Some(blocker) = roko_cli::graph_execution::batch::worktree_isolation_blocker(workdir)
+    {
         tracing::warn!(
             workdir = %workdir.display(),
-            "[runner] worktree_per_task is on, but the workdir is not a git checkout with a \
-             commit: the tasks run in the shared working tree"
+            "[runner] worktree_per_task is on, but the workdir {blocker}: the tasks run in the \
+             shared working tree"
         );
         return false;
     }

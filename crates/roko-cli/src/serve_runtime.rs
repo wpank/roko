@@ -926,10 +926,11 @@ fn run_plan_on_local_runtime(
                 cli_model_override: None,
                 dangerously_skip_permissions,
                 log_file: None,
-                // The server's `[runner] worktree_per_task`, in a git checkout
-                // with a commit to start worktrees from (gap-4ec59f).
+                // The server's `[runner] worktree_per_task`, where the workdir
+                // can isolate tasks (gap-4ec59f).
                 worktree_per_task: roko_config.runner.worktree_per_task
-                    && crate::graph_execution::batch::has_head_commit(&workdir),
+                    && crate::graph_execution::batch::worktree_isolation_blocker(&workdir)
+                        .is_none(),
                 rich_topology: false,
                 promote: None,
                 // Never launch an interactive TUI from an HTTP handler.

@@ -456,6 +456,16 @@ impl GraphTaskDispatcher {
                 "restored gate feedback for the next attempts of resumed tasks"
             );
         }
+        // The tasks' spend and turn-cap retries the earlier process kept
+        // (gap-34b2ed).
+        for (task_id, micro_usd) in self.gate_retry_context.kept_task_spend(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.task_spend.restore(&key, micro_usd);
+        }
+        for (task_id, retry) in self.gate_retry_context.kept_turn_caps(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.turn_cap_retries.lock().insert(key, retry);
+        }
     }
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
@@ -962,7 +972,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         );
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
-        let turn_cap_resume = self.turn_cap_retries.lock().remove(&task_spend_key);
+        let turn_cap_resume = self.take_turn_cap_retry(&spec.plan_id, &task.id);
         if let Some(previous) = turn_cap_resume {
             max_turns = max_turns.max(raised_turn_cap(previous.cap));
             tracing::info!(
@@ -1392,8 +1402,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                    self.task_spend
-                        .record(&task_spend_key, &dispatch.result.usage);
+                    self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                     if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                         tracing::warn!(
                             plan_id = %spec.plan_id,
@@ -1442,8 +1451,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
-        self.task_spend
-            .record(&task_spend_key, &dispatch.result.usage);
+        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -1543,8 +1551,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
 
             if let Some(hit) = roko_agent::provider::error_classify::detect_turn_cap(&message) {
-                self.turn_cap_retries.lock().insert(
-                    task_spend_key.clone(),
+                self.keep_turn_cap_retry(
+                    &spec.plan_id,
+                    &task.id,
                     TurnCapRetry {
                         cap: max_turns,
                         num_turns: hit.num_turns,

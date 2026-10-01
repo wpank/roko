@@ -44,7 +44,7 @@ _0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 - nothing checked and open
 
-_0 more open · 5 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

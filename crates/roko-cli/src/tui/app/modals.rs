@@ -199,11 +199,14 @@ impl App {
                     Some(task_id),
                 )
             }
+            // The reset keys cancel the plan, and their labels say so: a
+            // Graph run cannot reset a plan yet (gap-c002bb).
             ConfirmAction::ResetSelectedPlan(plan_id) => {
                 (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
             }
-            // P3-TUI-4: skip the specific task, causing the graph engine to
-            // terminate the associated agent and mark the task skipped.
+            // P3-TUI-4: skip the specific task. A Graph run cannot stop a
+            // single task yet, so it rejects this with its reason
+            // (gap-c002bb).
             ConfirmAction::CancelAgent { plan_id, task_id } => (
                 ExecutionCommandKind::Skip,
                 Some(plan_id.clone()),

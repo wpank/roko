@@ -1532,12 +1532,13 @@ async fn run_graph_plan_body(
     }
     drop(running);
 
-    // Commands that arrived after the last plan finished.
+    // Commands that arrived after the last plan finished have nothing left
+    // to act on.
     while let Ok(cmd) = exec_cmd_rx.try_recv() {
         let ack = ack_for(
             &cmd,
-            CommandAckStatus::Accepted,
-            Some("plan finished — re-run to apply".into()),
+            CommandAckStatus::Rejected,
+            Some("the plan run has finished".into()),
         );
         let _ = tui_ack_tx.try_send(ack);
     }
@@ -2315,9 +2316,11 @@ fn report_blocked_plan(
 ///
 /// Cancel reaches the plan it names when that plan is running, drops it
 /// when it has not started, and reaches every running plan when it names
-/// none. Pause and resume set the pause flag every plan shares. Other
-/// commands are acknowledged and take effect only after the run. Returns
-/// the plans cancelled before they started.
+/// none. Pause and resume set the pause flag every plan shares. Every other
+/// command, and a cancel naming a plan that is neither running nor waiting,
+/// is rejected with the reason it cannot take effect ([`reject_command`]):
+/// none is acknowledged and then dropped (gap-c002bb). Returns the plans
+/// cancelled before they started.
 fn route_execution_commands(
     commands: &mut tokio::sync::mpsc::Receiver<crate::execution_control::ExecutionCommand>,
     acks: &tokio::sync::mpsc::Sender<crate::execution_control::CommandAck>,
@@ -2337,10 +2340,7 @@ fn route_execution_commands(
                         cancelled_before_start.push(plan_id.to_string());
                         (CommandAckStatus::Completed, None)
                     } else {
-                        (
-                            CommandAckStatus::Accepted,
-                            Some(format!("plan '{plan_id}' is not running")),
-                        )
+                        reject_command(&cmd, &format!("plan '{plan_id}' is not running"))
                     }
                 }
                 None => {
@@ -2363,21 +2363,27 @@ fn route_execution_commands(
                 tracing::info!(command_id = %cmd.command_id, "TUI resume: execution resumed");
                 (CommandAckStatus::Completed, None)
             }
-            // Post-execution commands: ack as accepted; the TUI can re-send
-            // after plan completion.
             ExecutionCommandKind::SoftRetry
             | ExecutionCommandKind::Repair { .. }
-            | ExecutionCommandKind::ReverifyGates
-            | ExecutionCommandKind::Skip
-            | ExecutionCommandKind::Approve { .. }
-            | ExecutionCommandKind::RejectApproval { .. }
-            | ExecutionCommandKind::Reset => {
-                tracing::debug!(
-                    command_id = %cmd.command_id,
-                    kind = %cmd.kind,
-                    "TUI command queued (post-execution; plan still running)"
-                );
-                (CommandAckStatus::Accepted, None)
+            | ExecutionCommandKind::Reset => reject_command(
+                &cmd,
+                "retry, repair and reset are not available during a Graph run; once it ends, \
+                 `roko plan run --resume-plan` re-runs the tasks that did not pass",
+            ),
+            ExecutionCommandKind::ReverifyGates => reject_command(
+                &cmd,
+                "re-verifying gates is not available during a Graph run",
+            ),
+            ExecutionCommandKind::Skip => reject_command(
+                &cmd,
+                "stopping or skipping one task is not available during a Graph run; cancel its \
+                 plan instead",
+            ),
+            ExecutionCommandKind::Approve { .. } | ExecutionCommandKind::RejectApproval { .. } => {
+                reject_command(
+                    &cmd,
+                    "a Graph run takes a held task's approval from `roko plan review`",
+                )
             }
         };
         if matches!(cmd.kind, ExecutionCommandKind::Cancel) {
@@ -2390,6 +2396,21 @@ fn route_execution_commands(
         let _ = acks.try_send(ack_for(&cmd, status, note));
     }
     cancelled_before_start
+}
+
+/// The acknowledgement of a TUI command that takes no effect: rejected with
+/// `reason`, which the TUI shows as a warning.
+fn reject_command(
+    cmd: &crate::execution_control::ExecutionCommand,
+    reason: &str,
+) -> (CommandAckStatus, Option<String>) {
+    tracing::info!(
+        command_id = %cmd.command_id,
+        kind = %cmd.kind,
+        reason,
+        "TUI command rejected"
+    );
+    (CommandAckStatus::Rejected, Some(reason.to_string()))
 }
 
 /// [`run_one_plan`], tagged with the plan's ID for the plan-set driver.
@@ -4648,6 +4669,97 @@ exec sleep 60
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// Route `commands`, each a kind and the plan it names, through
+    /// [`route_execution_commands`] while plan `01-run` runs and `02-wait`
+    /// waits to start. Returns the plans cancelled before they started, the
+    /// acknowledgements, and whether `01-run` was asked to cancel.
+    fn route_tui_commands(
+        commands: Vec<(ExecutionCommandKind, Option<&str>)>,
+    ) -> (Vec<String>, Vec<crate::execution_control::CommandAck>, bool) {
+        let (sender, mut receiver, ack_tx, ack_rx) = ExecutionCommandSender::channel("graph");
+        for (kind, plan_id) in commands {
+            let command = sender.build_command(
+                kind,
+                plan_id.map(str::to_string),
+                Some("T1".to_string()),
+                None,
+            );
+            sender.try_send(command).expect("queue the command");
+        }
+        let order = PlanSetOrder {
+            order: vec!["01-run".to_string(), "02-wait".to_string()],
+            ..PlanSetOrder::default()
+        };
+        let mut scheduler = PlanSetScheduler::new(&order, PlanConflicts::new(), 2, false);
+        let running = PlanControl::default();
+        let controls = HashMap::from([("01-run".to_string(), running.clone())]);
+        let pause = AtomicBool::new(false);
+        let cancelled =
+            route_execution_commands(&mut receiver, &ack_tx, &controls, &mut scheduler, &pause);
+        let acks = CommandAckReceiver::new(ack_rx).drain();
+        (cancelled, acks, running.cancel.load(Ordering::Acquire))
+    }
+
+    /// gap-c002bb: a Graph run carries out pause, resume and cancel. Every
+    /// other TUI command, and a cancel naming a plan that is neither running
+    /// nor waiting, is rejected with its reason, never accepted and dropped.
+    #[test]
+    fn unsupported_tui_commands_are_rejected_with_a_reason() {
+        let unsupported = [
+            ExecutionCommandKind::SoftRetry,
+            ExecutionCommandKind::Repair {
+                preserve_completed: true,
+            },
+            ExecutionCommandKind::Repair {
+                preserve_completed: false,
+            },
+            ExecutionCommandKind::ReverifyGates,
+            ExecutionCommandKind::Skip,
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-1".to_string(),
+            },
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-1".to_string(),
+                reason: "not now".to_string(),
+            },
+            ExecutionCommandKind::Reset,
+        ];
+        let mut commands: Vec<_> = unsupported
+            .into_iter()
+            .map(|kind| (kind, Some("01-run")))
+            .collect();
+        commands.push((ExecutionCommandKind::Cancel, Some("03-gone")));
+        let sent = commands.len();
+
+        let (cancelled, acks, run_cancelled) = route_tui_commands(commands);
+
+        assert!(cancelled.is_empty());
+        assert!(!run_cancelled);
+        assert_eq!(acks.len(), sent);
+        for ack in &acks {
+            assert_eq!(ack.status, CommandAckStatus::Rejected, "{ack:?}");
+            assert!(
+                !ack.message.as_deref().unwrap_or_default().is_empty(),
+                "{ack:?}"
+            );
+        }
+    }
+
+    /// A TUI cancel stops the running plan it names and drops a waiting one
+    /// before it starts; both are acknowledged as done.
+    #[test]
+    fn tui_cancel_reaches_a_running_plan_and_drops_a_waiting_one() {
+        let (cancelled, acks, run_cancelled) = route_tui_commands(vec![
+            (ExecutionCommandKind::Cancel, Some("01-run")),
+            (ExecutionCommandKind::Cancel, Some("02-wait")),
+        ]);
+
+        assert_eq!(cancelled, vec!["02-wait".to_string()]);
+        assert!(run_cancelled);
+        let statuses: Vec<_> = acks.iter().map(|ack| ack.status).collect();
+        assert_eq!(statuses, vec![CommandAckStatus::Completed; 2]);
     }
 
     /// gap-19e596: with per-task worktrees no two tasks share a tree, so the

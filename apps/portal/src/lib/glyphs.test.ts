@@ -37,6 +37,7 @@ describe('glyphStateForTask', () => {
     const cases: Array<[TaskStatus | 'pending' | 'marked_done', GlyphState]> = [
       ['active',                 'active'],
       ['passed',                 'done'],
+      ['passed_with_preexisting_failures', 'preexisting'],
       ['failed',                 'failed'],
       ['accepted_with_failures', 'accepted'],
       ['already_satisfied',      'satisfied'],
@@ -59,6 +60,13 @@ describe('glyphStateForTask', () => {
 
   it('maps passed to done', () => {
     expect(glyphStateForTask('passed')).toBe('done');
+  });
+
+  it('shows a pass over pre-existing failures as a pass, but not a clean one', () => {
+    const state = glyphStateForTask('passed_with_preexisting_failures');
+    expect(GLYPHS[state].token).toBe(GLYPHS.done.token);
+    expect(GLYPHS[state].glyph).not.toBe(GLYPHS.done.glyph);
+    expect(GLYPHS[state].label).toBe('passed (pre-existing failures)');
   });
 
   it('maps cancelled to skipped', () => {

@@ -1751,7 +1751,24 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
                 passed: *passed,
                 output_text: None,
             }),
-            _ => None,
+            ExecutionEvent::TaskBlocked {
+                task_id,
+                title,
+                blocked_by,
+                reason,
+            } => Some(DashboardEvent::TaskBlocked {
+                plan_id: plan_id.clone(),
+                task_id: task_id.clone(),
+                title: title.clone(),
+                blocked_by: blocked_by.clone(),
+                reason: reason.clone(),
+            }),
+            // Plans start and finish through the top-level plan events;
+            // re-plans and watcher alerts have no dashboard event.
+            ExecutionEvent::PlanStarted
+            | ExecutionEvent::PlanCompleted { .. }
+            | ExecutionEvent::ReplanTriggered { .. }
+            | ExecutionEvent::WatcherAlert { .. } => None,
         },
         ServerEvent::PhaseTransition { plan_id, from, to } => {
             Some(DashboardEvent::PhaseTransition {
@@ -1934,7 +1951,61 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         ServerEvent::FeedAgentOffline { agent_id } => Some(DashboardEvent::FeedAgentOffline {
             agent_id: agent_id.clone(),
         }),
-        _ => None,
+        // Not bridged (bug-bfdb9a): the dashboard has no event for these.
+        // Task progress reaches it through `Execution`; the top-level
+        // `TaskStarted`, `TaskCompleted` and `TaskFailed` have no producer.
+        // The match lists every variant, so a new one fails to compile until
+        // it is bridged or listed here.
+        ServerEvent::AgentTrace { .. }
+        | ServerEvent::Episode { .. }
+        | ServerEvent::InferenceStarted { .. }
+        | ServerEvent::InferenceCompleted { .. }
+        | ServerEvent::InferenceFailed { .. }
+        | ServerEvent::SomaticMarkerFired { .. }
+        | ServerEvent::OperationStarted { .. }
+        | ServerEvent::OperationCompleted { .. }
+        | ServerEvent::DeploymentCreated { .. }
+        | ServerEvent::DeploymentReady { .. }
+        | ServerEvent::DeploymentFailed { .. }
+        | ServerEvent::DeploymentTornDown { .. }
+        | ServerEvent::JobCreated { .. }
+        | ServerEvent::JobPostedToCandidate { .. }
+        | ServerEvent::JobUpdated { .. }
+        | ServerEvent::JobTransitioned { .. }
+        | ServerEvent::WorkerTaskStarted { .. }
+        | ServerEvent::WorkerTaskCompleted { .. }
+        | ServerEvent::JobAgentOutput { .. }
+        | ServerEvent::ChainTriageResult { .. }
+        | ServerEvent::HeartbeatReceived { .. }
+        | ServerEvent::TaskStarted { .. }
+        | ServerEvent::TaskCompleted { .. }
+        | ServerEvent::TaskFailed { .. }
+        | ServerEvent::JobSubmitted { .. }
+        | ServerEvent::JobEvaluated { .. }
+        | ServerEvent::JobStateChanged { .. }
+        | ServerEvent::Heartbeat { .. }
+        | ServerEvent::TriggerFired { .. }
+        | ServerEvent::TriggerLifecycle { .. }
+        | ServerEvent::ServerShutdown
+        | ServerEvent::WebhookReceived { .. }
+        | ServerEvent::VisionLoopIteration { .. }
+        | ServerEvent::VisionLoopCompleted { .. }
+        | ServerEvent::ConfigReloaded { .. }
+        | ServerEvent::StrategyReloaded { .. }
+        | ServerEvent::BenchLearningEvent { .. }
+        | ServerEvent::BenchRegressionReport { .. }
+        | ServerEvent::MatrixRunStarted { .. }
+        | ServerEvent::MatrixLaneCompleted { .. }
+        | ServerEvent::MatrixRunCompleted { .. }
+        | ServerEvent::BenchGateVerdict { .. }
+        | ServerEvent::BenchTokenVelocity { .. }
+        | ServerEvent::BenchAgentOutput { .. }
+        | ServerEvent::SweRunStarted { .. }
+        | ServerEvent::SweInstanceCompleted { .. }
+        | ServerEvent::SweRunCompleted { .. }
+        | ServerEvent::ChainLogObserved { .. }
+        | ServerEvent::ChainFinalityUpdated { .. }
+        | ServerEvent::ChainReorg { .. } => None,
     }
 }
 
@@ -2122,9 +2193,121 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::Error { message } => Some(ServerEvent::Error {
             message: message.clone(),
         }),
-        // Unmapped variants (Diagnosis, ExperimentWinnersUpdated, CFactorTrendUpdated,
-        // CascadeRouterUpdated, GateThresholdsUpdated, etc.) are dropped.
-        _ => None,
+        DashboardEvent::TaskBlocked {
+            plan_id,
+            task_id,
+            title,
+            blocked_by,
+            reason,
+        } => Some(ServerEvent::Execution {
+            plan_id: plan_id.clone(),
+            event: ExecutionEvent::TaskBlocked {
+                task_id: task_id.clone(),
+                title: title.clone(),
+                blocked_by: blocked_by.clone(),
+                reason: reason.clone(),
+            },
+        }),
+        DashboardEvent::ChainBlock {
+            number,
+            hash,
+            parent_hash,
+            timestamp,
+            gas_used,
+            gas_limit,
+            tx_count,
+            base_fee_per_gas,
+        } => Some(ServerEvent::ChainBlock {
+            number: *number,
+            hash: hash.clone(),
+            parent_hash: parent_hash.clone(),
+            timestamp: *timestamp,
+            gas_used: *gas_used,
+            gas_limit: *gas_limit,
+            tx_count: *tx_count,
+            base_fee_per_gas: *base_fee_per_gas,
+        }),
+        DashboardEvent::ChainTx {
+            block_number,
+            tx_hash,
+            from,
+            to,
+            value_wei,
+            gas_used,
+            method_sig,
+            success,
+        } => Some(ServerEvent::ChainTx {
+            block_number: *block_number,
+            tx_hash: tx_hash.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            value_wei: value_wei.clone(),
+            gas_used: *gas_used,
+            method_sig: method_sig.clone(),
+            success: *success,
+        }),
+        DashboardEvent::FeedTick {
+            agent_id,
+            feed_id,
+            topic,
+            payload,
+            timestamp_ms,
+        } => Some(ServerEvent::FeedTick {
+            agent_id: agent_id.clone(),
+            feed_id: feed_id.clone(),
+            topic: topic.clone(),
+            payload: payload.clone(),
+            timestamp_ms: *timestamp_ms,
+        }),
+        DashboardEvent::FeedAgentOnline {
+            agent_id,
+            name,
+            feed_count,
+        } => Some(ServerEvent::FeedAgentOnline {
+            agent_id: agent_id.clone(),
+            name: name.clone(),
+            feed_count: *feed_count,
+        }),
+        DashboardEvent::FeedAgentOffline { agent_id } => Some(ServerEvent::FeedAgentOffline {
+            agent_id: agent_id.clone(),
+        }),
+        // Not bridged (bug-bfdb9a). `RunCompleted` names no run, which
+        // `ServerEvent::RunCompleted` needs, and `ChainContractEvent` does not
+        // say whether the raw log evidence was published.
+        DashboardEvent::RunCompleted { .. } | DashboardEvent::ChainContractEvent { .. } => None,
+        // Dashboard state the server stream has no event for: the dashboard's
+        // own stream and snapshot carry it. The match lists every variant, so
+        // a new one fails to compile until it is bridged or listed here.
+        DashboardEvent::GateOutputLine { .. }
+        | DashboardEvent::Diagnosis { .. }
+        | DashboardEvent::ExperimentWinnersUpdated { .. }
+        | DashboardEvent::CFactorTrendUpdated { .. }
+        | DashboardEvent::ProjectionUpdated { .. }
+        | DashboardEvent::EpisodeRecorded { .. }
+        | DashboardEvent::TaskOutputAppended { .. }
+        | DashboardEvent::EventLogEntry { .. }
+        | DashboardEvent::CascadeRouterUpdated { .. }
+        | DashboardEvent::GateThresholdsUpdated { .. }
+        | DashboardEvent::AgentCompleted { .. }
+        | DashboardEvent::MarketplaceJobsUpdated { .. }
+        | DashboardEvent::AtelierPrdsUpdated { .. }
+        | DashboardEvent::KnowledgeEntriesUpdated { .. }
+        | DashboardEvent::EfficiencyTrendUpdated { .. }
+        | DashboardEvent::PaymentReceived { .. }
+        | DashboardEvent::SettlementCompleted { .. }
+        | DashboardEvent::InboxItemReceived { .. }
+        | DashboardEvent::InboxApprove { .. }
+        | DashboardEvent::InboxReject { .. }
+        | DashboardEvent::InboxDefer { .. }
+        | DashboardEvent::InboxDismiss { .. }
+        | DashboardEvent::AgentHeartbeat { .. }
+        | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::AffectUpdated { .. }
+        | DashboardEvent::AgentTopologyUpdated { .. }
+        | DashboardEvent::CriticalPathEtaUpdated { .. }
+        | DashboardEvent::CostAnomaly { .. }
+        | DashboardEvent::CrossCutCascade { .. }
+        | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }
 
@@ -3248,6 +3431,44 @@ mod plan_set_event_mapping_tests {
         assert_eq!(wire["type"], "plan_set_loaded");
         assert_eq!(wire, serde_json::to_value(&dashboard).expect("serialize"));
         assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
+    }
+
+    /// bug-bfdb9a: newer dashboard events cross the bridge both ways: a
+    /// blocked task (gap-f59fe9), and chain and feed events.
+    #[test]
+    fn newer_dashboard_events_bridge_both_ways() {
+        let events = [
+            roko_core::DashboardEvent::TaskBlocked {
+                plan_id: "p1".into(),
+                task_id: "T4".into(),
+                title: "Fourth".into(),
+                blocked_by: Some("T1".into()),
+                reason: "blocked by failed task 'T1'".into(),
+            },
+            roko_core::DashboardEvent::FeedAgentOnline {
+                agent_id: "feed-1".into(),
+                name: "prices".into(),
+                feed_count: 2,
+            },
+            roko_core::DashboardEvent::FeedAgentOffline {
+                agent_id: "feed-1".into(),
+            },
+            roko_core::DashboardEvent::ChainTx {
+                block_number: 7,
+                tx_hash: "0xabc".into(),
+                from: "0x1".into(),
+                to: None,
+                value_wei: "0".into(),
+                gas_used: 21_000,
+                method_sig: None,
+                success: true,
+            },
+        ];
+        for dashboard in events {
+            let server = dashboard_event_to_server(&dashboard)
+                .unwrap_or_else(|| panic!("{dashboard:?} reaches the server stream"));
+            assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
+        }
     }
 }
 

@@ -11,6 +11,7 @@ import type { TaskStatus } from '@/lib/runState';
 
 export type GlyphState =
   | 'done'
+  | 'preexisting'
   | 'satisfied'
   | 'active'
   | 'unverified'
@@ -46,11 +47,15 @@ export interface GlyphDef {
  * amber too, since green means verified. `satisfied` is a task whose work was
  * already there: its verify steps passed on the tree its attempt left
  * unchanged. It is verified, but not a pass of this attempt, so it is cyan.
+ * `preexisting` is a pass whose verify steps failed only on tests that also
+ * failed on the plan run's start commit: green, since it counts as passed, but
+ * with its own glyph and label so it never looks like a clean pass.
  * `marked` is a task its plan file marks done that the run holds no record
  * of: done on paper, with nothing to show it passed, so it stays faint.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
+  preexisting: { glyph: '✔', token: 'var(--state-done)', label: 'passed (pre-existing failures)' },
   satisfied: { glyph: '≡', token: 'var(--state-satisfied)', label: 'already satisfied' },
   active:   { glyph: '►', token: 'var(--state-active)',   label: 'active'   },
   unverified: { glyph: '▷', token: 'var(--state-accepted)', label: 'running, not verified' },
@@ -71,6 +76,7 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
  * Mapping:
  *   active               → active
  *   passed               → done
+ *   passed_with_preexisting_failures → preexisting (green, but not a clean pass)
  *   failed               → failed
  *   accepted_with_failures → accepted  (NEVER done — amber, not green)
  *   already_satisfied    → satisfied (cyan: its verify steps passed, but it is not a pass)
@@ -86,6 +92,8 @@ export function glyphStateForTask(status: TaskStatus | 'pending' | 'marked_done'
       return 'active';
     case 'passed':
       return 'done';
+    case 'passed_with_preexisting_failures':
+      return 'preexisting';
     case 'failed':
       return 'failed';
     case 'accepted_with_failures':

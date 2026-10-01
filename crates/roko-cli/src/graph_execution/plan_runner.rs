@@ -2968,6 +2968,8 @@ async fn run_one_plan(
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
     let task_outcomes = task_outcomes(&output, &node_titles);
+    // The live views list each such task as blocked, with its blocker or
+    // reason (gap-f59fe9).
     for (task_id, blocker) in &task_outcomes.blocked_by {
         graph_tui_bridge.log_event(
             "graph.task_blocked",
@@ -2975,6 +2977,13 @@ async fn run_one_plan(
                 "plan '{}': task '{task_id}' blocked by failed task '{blocker}'",
                 plan.id
             ),
+        );
+        graph_tui_bridge.task_blocked(
+            &plan.id,
+            task_id,
+            node_titles.get(task_id).map_or("", String::as_str),
+            Some(blocker.as_str()),
+            &format!("blocked by failed task '{blocker}'"),
         );
     }
     for (task_id, reason) in &task_outcomes.not_started {
@@ -2985,6 +2994,8 @@ async fn run_one_plan(
                 plan.id
             ),
         );
+        let title = node_titles.get(task_id).map_or("", String::as_str);
+        graph_tui_bridge.task_blocked(&plan.id, task_id, title, None, reason);
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
     if outcome == PlanOutcome::Unverified {
@@ -3896,6 +3907,13 @@ max_retries = 0
             }),
             "the block is reported"
         );
+        // The live task list shows T4 blocked by T1, and the plan does not
+        // count it as a skipped task that is done (gap-f59fe9).
+        let snapshot = hub.current_snapshot();
+        let blocked = snapshot.tasks.get("isolation/T4").expect("T4 is listed");
+        assert_eq!(blocked.outcome.as_deref(), Some("blocked"));
+        assert_eq!(blocked.blocked_by.as_deref(), Some("T1"));
+        assert_eq!(snapshot.plans["isolation"].tasks_skipped, 0);
     }
 
     /// `fail_fast`, from `[conductor] plan_failure_policy` or a plan's

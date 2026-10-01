@@ -262,7 +262,7 @@ crates directly.
 | **Lang** | `roko-lang-{rust,ts,go}` | Shipping | Language-specific support |
 | **MCP** | `roko-mcp-{code,github,slack,scripts,stdio}` | Shipping/Partial | MCP integrations |
 | **CLI** | `roko-cli` | Shipping | User-facing binary, TUI, plan runner |
-| **Server** | `roko-serve` | Shipping | HTTP control plane (~376 routes) |
+| **Server** | `roko-serve` | Shipping | HTTP control plane (route counts in `tools/http_route_inventory.snapshot.json`) |
 | **Server** | `roko-agent-server` | Shipping | Per-agent HTTP sidecar (14 routes) |
 | **ACP** | `roko-acp` | Shipping | Agent Client Protocol for editor integration |
 | **Demo** | `roko-demo` | Shipping | Demo/example binary |

@@ -264,6 +264,14 @@ pub struct MetricRegistry {
     inner: RwLock<Vec<Family>>,
 }
 
+impl std::fmt::Debug for MetricRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetricRegistry")
+            .field("families", &self.family_count())
+            .finish_non_exhaustive()
+    }
+}
+
 impl MetricRegistry {
     /// Construct an empty registry.
     #[must_use]

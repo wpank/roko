@@ -218,6 +218,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
         };
+        // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
+        let request = self.fast_bounded(request);
         let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
             prompt_experiment,
             &dispatch_plan.prompt.diagnostics.experiment_assignments,
@@ -246,6 +248,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             &watched,
             Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         // ── Provider invocation ──────────────────────────────────────────
@@ -459,7 +462,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
                         .await,
                 );
-                let verified = matches!(verification, Some(Ok(_)));
 
                 // ── Learning/feedback pipeline (streaming) ───────────────
                 //
@@ -488,10 +490,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 )
                 .await;
 
-                let outcome_kind = if verified {
-                    TaskDispatchOutcomeKind::Succeeded
-                } else {
-                    TaskDispatchOutcomeKind::Failed
+                let outcome_kind = match &verification {
+                    Some(Ok(_)) => TaskDispatchOutcomeKind::Succeeded,
+                    // A verify its stopping plan run cut short (bug-82cbef).
+                    Some(Err(RokoError::Cancelled(_))) => TaskDispatchOutcomeKind::Cancelled,
+                    _ => TaskDispatchOutcomeKind::Failed,
                 };
 
                 let output_signals = match &verification {

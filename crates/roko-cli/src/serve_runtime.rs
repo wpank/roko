@@ -851,7 +851,7 @@ fn run_plan_on_local_runtime(
     _config: Config,
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
-    _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
     fresh: bool,
     force_resume: bool,
@@ -949,6 +949,7 @@ fn run_plan_on_local_runtime(
                 force_disk_check: false,
                 effort: None,
                 no_cascade: false,
+                metrics,
             },
             run_id,
         )

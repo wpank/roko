@@ -2414,8 +2414,9 @@ async fn cmd_plan_run_engine(
         );
     }
 
-    // SIGINT/SIGTERM stop this run gracefully (cancel, finalize checkpoints,
-    // restore the terminal, exit 130/143) for as long as the guard lives.
+    // SIGINT, SIGTERM and SIGHUP stop this run gracefully (cancel, finalize
+    // checkpoints, restore the terminal, exit 130, 143 or 129) for as long as
+    // the guard lives.
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
 
@@ -2437,7 +2438,28 @@ async fn cmd_plan_run_engine(
         }
     };
 
-    run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
+    // A `roko dashboard` in another terminal follows this run live through
+    // the hub socket, as it follows a server's runs (gap-6533bf). Binding is
+    // best-effort: without the socket the dashboard polls files as before.
+    let state_hub = roko_cli::state_hub::shared_state_hub();
+    #[cfg(unix)]
+    let ipc_shutdown = tokio_util::sync::CancellationToken::new();
+    #[cfg(unix)]
+    let ipc_server = {
+        use roko_cli::state_hub_ipc::start_hub_ipc_server;
+        match start_hub_ipc_server(state_hub.clone(), workdir, ipc_shutdown.clone()) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "StateHub IPC server failed to bind; a dashboard beside this run polls files"
+                );
+                None
+            }
+        }
+    };
+
+    let exit_code = run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
         plans_dir: plans_dir.to_path_buf(),
         workdir: workdir.to_path_buf(),
         quiet: cli.quiet,
@@ -2457,7 +2479,7 @@ async fn cmd_plan_run_engine(
         rich_topology,
         promote,
         no_tui,
-        state_hub: None,
+        state_hub: Some(state_hub),
         interrupt: Some(interrupt),
         max_parallel_plans,
         fail_fast,
@@ -2466,8 +2488,19 @@ async fn cmd_plan_run_engine(
         force_disk_check: force,
         effort: None,
         no_cascade: false,
+        metrics: None,
     })
-    .await
+    .await;
+
+    // Stop serving, and wait until the socket and token files are gone.
+    #[cfg(unix)]
+    {
+        ipc_shutdown.cancel();
+        if let Some(server) = ipc_server {
+            let _ = server.await;
+        }
+    }
+    exit_code
 }
 
 /// Whether a plan run in `workdir` isolates each task in its own git
@@ -2495,33 +2528,6 @@ fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> b
         return false;
     }
     configured
-}
-
-/// Resolve the effective per-plan USD ceiling from CLI flags and config.
-///
-/// Priority order (highest to lowest):
-/// 1. `no_budget = true` → `0.0` (unlimited — no enforcement)
-/// 2. `budget_override = Some(amount)` → `amount.max(0.0)` (explicit CLI ceiling)
-/// 3. `config_max_plan_usd` (from `roko.toml [budget].max_plan_usd`)
-///
-/// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
-/// when the caller explicitly provided a ceiling via the CLI (so the runner
-/// warns on overage instead of hard-blocking).
-pub(crate) fn resolve_budget_ceiling(
-    budget_override: Option<f64>,
-    no_budget: bool,
-    config_max_plan_usd: f64,
-) -> (f64, bool) {
-    if no_budget {
-        // Disable enforcement: ceiling 0.0 means unlimited.
-        (0.0, true)
-    } else if let Some(ceiling) = budget_override {
-        // Explicit CLI ceiling — clamp negatives to 0.0 (unlimited).
-        (ceiling.max(0.0), true)
-    } else {
-        // Use the config value unchanged; no CLI override active.
-        (config_max_plan_usd, false)
-    }
 }
 
 #[cfg(test)]
@@ -2620,74 +2626,6 @@ mod tests {
 
         let state = read_executor_state(dir.path()).expect("state");
         assert_eq!(state, vec![("plan-a".to_string(), 1, 3)]);
-    }
-
-    // ── resolve_budget_ceiling unit tests ────────────────────────────────
-
-    /// No CLI flags: config value is used, bypass is false.
-    #[test]
-    fn budget_ceiling_no_override_uses_config() {
-        let (ceiling, bypass) = resolve_budget_ceiling(None, false, 25.0);
-        assert!((ceiling - 25.0).abs() < 1e-12);
-        assert!(!bypass, "should not bypass block when using config value");
-    }
-
-    /// `--budget-override 50.0`: ceiling is set to 50.0, bypass is true.
-    #[test]
-    fn budget_ceiling_override_amount_sets_ceiling_and_bypass() {
-        let (ceiling, bypass) = resolve_budget_ceiling(Some(50.0), false, 25.0);
-        assert!((ceiling - 50.0).abs() < 1e-12);
-        assert!(bypass, "CLI override should enable bypass");
-    }
-
-    /// `--budget-override 0`: ceiling is 0.0 (unlimited), bypass is true.
-    #[test]
-    fn budget_ceiling_override_zero_means_unlimited() {
-        let (ceiling, bypass) = resolve_budget_ceiling(Some(0.0), false, 25.0);
-        assert!((ceiling - 0.0).abs() < 1e-12);
-        assert!(bypass, "zero ceiling should enable bypass");
-    }
-
-    /// `--budget-override <negative>`: clamped to 0.0 (unlimited), bypass is true.
-    #[test]
-    fn budget_ceiling_override_negative_clamped_to_zero() {
-        let (ceiling, bypass) = resolve_budget_ceiling(Some(-10.0), false, 25.0);
-        assert!(
-            (ceiling - 0.0).abs() < 1e-12,
-            "negative should be clamped to 0"
-        );
-        assert!(bypass, "negative ceiling should enable bypass");
-    }
-
-    /// `--no-budget`: ceiling is 0.0, bypass is true regardless of config.
-    #[test]
-    fn budget_ceiling_no_budget_flag_disables_enforcement() {
-        let (ceiling, bypass) = resolve_budget_ceiling(None, true, 100.0);
-        assert!(
-            (ceiling - 0.0).abs() < 1e-12,
-            "--no-budget should set ceiling to 0.0"
-        );
-        assert!(bypass, "--no-budget should enable bypass");
-    }
-
-    /// `--no-budget` takes precedence over config even when config is unlimited.
-    #[test]
-    fn budget_ceiling_no_budget_with_zero_config() {
-        let (ceiling, bypass) = resolve_budget_ceiling(None, true, 0.0);
-        assert!((ceiling - 0.0).abs() < 1e-12);
-        assert!(bypass);
-    }
-
-    /// When `budget_override` is Some, the config value is ignored entirely.
-    #[test]
-    fn budget_ceiling_override_ignores_config() {
-        let config_val = 999.0;
-        let (ceiling, bypass) = resolve_budget_ceiling(Some(5.0), false, config_val);
-        assert!(
-            (ceiling - 5.0).abs() < 1e-12,
-            "override should ignore config"
-        );
-        assert!(bypass);
     }
 
     #[test]

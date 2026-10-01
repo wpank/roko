@@ -752,13 +752,11 @@ impl AgentServeRuntimeConfig {
             "starting cognitive loop as Hot Graph (stub cells)"
         );
 
-        match roko_graph::start_hot_resumable(
-            graph,
-            registry,
-            policy,
-            None,
-            roko_graph::HotCheckpointOptions::new(&checkpoint_dir),
-        ) {
+        // The flag opted into the loop's stub cells (`claude-agent` builds the
+        // pass-through ActCell), which a Hot Graph start refuses otherwise.
+        let mut checkpoint = roko_graph::HotCheckpointOptions::new(&checkpoint_dir);
+        checkpoint.allow_test_stubs = true;
+        match roko_graph::start_hot_resumable(graph, registry, policy, None, checkpoint) {
             Ok(handle) => Some(handle),
             Err(error) => {
                 warn!(

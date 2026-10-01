@@ -26,7 +26,7 @@ at any stage short-circuits and the error is returned to the caller.
 
 ```
 1. VALIDATE   -- identity + args against JSON schema from registry
-2. AUTHORIZE  -- profile/task filters and role capabilities
+2. AUTHORIZE  -- task tool filters and role capabilities
 3. SAFETY     -- hooks, policy, durable immune controls
 4. EXECUTE    -- handler under timeout/cancellation, panic-catching
 5. BOUND      -- recursively scrub, recover, re-bound results
@@ -46,7 +46,7 @@ Validates the tool call's identity and arguments:
 
 ### Step 2: AUTHORIZE
 
-Applies profile and task filters:
+Applies the task's tool filters and the role's capabilities:
 
 - Role capabilities from `AgentContract` determine which tools the
   current role may invoke.
@@ -224,7 +224,6 @@ is documented as M19 in MISTAKES-LEARNED.md.
 | `production_safety_chain` | Production safety hook chain |
 | `result_cache` | Explicit cache primitives (dispatcher does NOT cache internally) |
 | `timeout` | Timeout enforcement via `with_timeout` |
-| `tool_selector` | Tool selection logic for context-aware tool filtering |
 | `truncate` | Result truncation and bounding; `bounded_json_bytes`, `bounded_serialized_bytes` |
 | `validate` | Input validation against ToolDef JSON schemas |
 

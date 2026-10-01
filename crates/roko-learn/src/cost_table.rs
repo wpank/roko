@@ -6,6 +6,9 @@ use std::sync::OnceLock;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use roko_agent::Usage;
+use roko_core::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use roko_core::config::schema::ModelProfile;
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +115,9 @@ impl CostTable {
         ((3.0 * pricing.input_per_m + pricing.output_per_m) / 4.0) * pricing.tokenizer_ratio
     }
 
-    /// Load pricing rows from config model profiles.
+    /// Load pricing rows from config model profiles. A profile with no cache
+    /// prices gets the shared default multiples of its input price
+    /// (bug-0c0747).
     #[must_use]
     pub fn from_config(models: &IndexMap<String, ModelProfile>) -> Self {
         let mut table = HashMap::new();
@@ -126,8 +131,12 @@ impl CostTable {
                     ModelPricing {
                         input_per_m: input,
                         output_per_m: output,
-                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                        cache_read_per_m: profile
+                            .cost_cache_read_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
+                        cache_write_per_m: profile
+                            .cost_cache_write_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                         tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
                     },
                 );
@@ -167,15 +176,16 @@ impl CostTable {
     pub fn refresh_from_config(&mut self, config: &roko_core::config::schema::RokoConfig) -> usize {
         let mut updated = 0;
         for (slug, profile) in &config.models {
+            let input = profile.cost_input_per_m.unwrap_or(0.0);
             let pricing = ModelPricing {
-                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+                input_per_m: input,
                 output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
                 cache_read_per_m: profile
                     .cost_cache_read_per_m
-                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 0.5),
+                    .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
                 cache_write_per_m: profile
                     .cost_cache_write_per_m
-                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 1.25),
+                    .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                 tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
             };
             let entry = self.models.entry(slug.clone());
@@ -346,10 +356,10 @@ mod tests {
             .models
             .get("claude-opus-4-6")
             .expect("claude-opus-4-6");
-        assert!((claude_opus.input_per_m - 15.00).abs() < 1e-12);
-        assert!((claude_opus.output_per_m - 75.00).abs() < 1e-12);
-        assert!((claude_opus.cache_read_per_m - 3.75).abs() < 1e-12);
-        assert!((claude_opus.cache_write_per_m - 18.75).abs() < 1e-12);
+        assert!((claude_opus.input_per_m - 5.00).abs() < 1e-12);
+        assert!((claude_opus.output_per_m - 25.00).abs() < 1e-12);
+        assert!((claude_opus.cache_read_per_m - 0.50).abs() < 1e-12);
+        assert!((claude_opus.cache_write_per_m - 6.25).abs() < 1e-12);
         assert!((claude_opus.tokenizer_ratio - 1.0).abs() < 1e-12);
 
         let custom = table.models.get("custom-model").expect("custom-model");
@@ -409,6 +419,187 @@ mod tests {
         assert!(table.calculate("unknown-model", &usage).abs() < 1e-12);
     }
 
+    /// bug-3de629: a cached Opus 4.6 token costs a tenth of an input token;
+    /// the built-in row used to charge a quarter.
+    #[test]
+    fn cache_read_rates_price_cached_opus_tokens_at_a_tenth_of_input() {
+        let table = CostTable {
+            models: HashMap::new(),
+        }
+        .with_defaults();
+        let usage = Usage {
+            cache_read_tokens: 1_000_000,
+            ..Usage::default()
+        };
+        let cost = table.calculate("claude-opus-4-6", &usage);
+        assert!((cost - 0.50).abs() < 1e-12, "1M cached tokens cost {cost}");
+    }
+
+    /// bug-3de629: cache reads and writes as multiples of the input rate, as
+    /// each provider's price page gave them on 2026-10-01 (the pages are
+    /// cited beside `BUILTIN_PRICING`). A built-in row is pinned here or
+    /// listed in `UNVERIFIED_PRICING`.
+    #[test]
+    fn cache_read_rates_match_each_providers_price_page() {
+        // (slug, cache read / input, cache write / input)
+        let multipliers = [
+            // Anthropic: reads 0.1x, 5-minute writes 1.25x.
+            ("claude-opus-4-6", 0.1, 1.25),
+            ("claude-sonnet-4-6", 0.1, 1.25),
+            ("claude-haiku-4-5", 0.1, 1.25),
+            // Z.AI: $0.26 cached against $1.40, and $0.20 against $1.00.
+            ("glm-5.1", 0.26 / 1.40, 1.0),
+            ("glm-5", 0.2, 1.0),
+            // OpenAI: half for gpt-4o, a quarter for o3 and o4-mini, a
+            // tenth for gpt-5.x; only gpt-5.6-sol charges for a write.
+            ("gpt-4o", 0.5, 1.0),
+            ("o3", 0.25, 1.0),
+            ("o4-mini", 0.25, 1.0),
+            ("gpt-5.2", 0.1, 1.0),
+            ("gpt-5.4", 0.1, 1.0),
+            ("gpt-5.4-mini", 0.1, 1.0),
+            ("gpt-5.5", 0.1, 1.0),
+            ("gpt-5.6-sol", 0.1, 1.25),
+            // Perplexity: Sonar caches at $0.0625 against $1; Sonar Pro
+            // has no cache price.
+            ("sonar", 0.0625, 1.0),
+            ("sonar-pro", 1.0, 1.0),
+            // Gemini 2.5: context caching at a tenth of input.
+            ("gemini-2.5-pro", 0.1, 1.0),
+            ("gemini-2.5-flash", 0.1, 1.0),
+        ];
+        let table = CostTable {
+            models: HashMap::new(),
+        }
+        .with_defaults();
+        for &(slug, read, write) in &multipliers {
+            let pricing = table.lookup(slug).expect("a built-in row");
+            assert!(
+                (pricing.cache_read_per_m - read * pricing.input_per_m).abs() < 1e-9,
+                "{slug}: cache read {} against input {}",
+                pricing.cache_read_per_m,
+                pricing.input_per_m
+            );
+            assert!(
+                (pricing.cache_write_per_m - write * pricing.input_per_m).abs() < 1e-9,
+                "{slug}: cache write {} against input {}",
+                pricing.cache_write_per_m,
+                pricing.input_per_m
+            );
+        }
+        for (slug, _) in roko_core::config::model_registry::BUILTIN_PRICING {
+            assert!(
+                multipliers.iter().any(|(pinned, _, _)| pinned == slug)
+                    || roko_core::config::model_registry::UNVERIFIED_PRICING.contains(slug),
+                "{slug}: pin its cache multipliers here or list it as unverified"
+            );
+        }
+    }
+
+    /// bug-0c0747: the provider catalog lists no price for a model the
+    /// shared registry prices, so `roko config providers add` leaves its
+    /// rates to the registry, and lists one for every other model.
+    #[test]
+    fn price_tables_agree_provider_catalog_with_builtin_pricing() {
+        for entry in roko_core::provider_catalog::catalog() {
+            for model in entry.models {
+                let in_registry = roko_core::config::model_registry::BUILTIN_PRICING
+                    .iter()
+                    .any(|(slug, _)| *slug == model.slug);
+                assert_eq!(
+                    model.cost_input_per_m.is_none(),
+                    in_registry,
+                    "{}",
+                    model.slug
+                );
+                assert_eq!(
+                    model.cost_output_per_m.is_none(),
+                    in_registry,
+                    "{}",
+                    model.slug
+                );
+            }
+        }
+    }
+
+    /// bug-0c0747: a Codex turn's cost estimate prices its model at the
+    /// shared registry's rates, and a model the registry does not know at
+    /// gpt-5.6-sol's, the Codex CLI's default.
+    #[test]
+    fn price_tables_agree_codex_turn_estimate_with_builtin_pricing() {
+        use roko_agent::AgentRuntimeEvent;
+        use roko_agent::provider::codex_cli::stream::parse_stream_line_with_model;
+        use roko_core::config::model_registry::builtin_pricing;
+
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100}}"#;
+        for (model, priced_as) in [
+            (Some("gpt-5.6-sol"), "gpt-5.6-sol"),
+            (Some("gpt-5.4-mini"), "gpt-5.4-mini"),
+            (Some("codex-mini"), "codex-mini"),
+            (Some("gpt-9-future"), "gpt-5.6-sol"),
+            (None, "gpt-5.6-sol"),
+        ] {
+            let cost = parse_stream_line_with_model(line, model)
+                .into_iter()
+                .find_map(|event| match event {
+                    AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => total_cost_usd,
+                    _ => None,
+                })
+                .expect("a turn cost");
+            let pricing = builtin_pricing(priced_as).expect("a registry row");
+            let expected = (600.0 * pricing.input_per_m
+                + 400.0 * pricing.cache_read_per_m
+                + 100.0 * pricing.output_per_m)
+                / 1e6;
+            assert!(
+                (cost - expected).abs() < 1e-12,
+                "{model:?}: {cost} against {expected}"
+            );
+        }
+    }
+
+    /// bug-0c0747: a configured model with no cache prices gets the same
+    /// cache rates on every cost path: this table, the task runner's table
+    /// and a usage's own cost fill.
+    #[test]
+    fn price_tables_agree_on_default_cache_prices() {
+        let mut profiles = IndexMap::new();
+        profiles.insert(
+            "custom".to_string(),
+            ModelProfile {
+                slug: "custom-model".into(),
+                cost_input_per_m: Some(2.0),
+                cost_output_per_m: Some(8.0),
+                ..Default::default()
+            },
+        );
+        let read = 2.0 * DEFAULT_CACHE_READ_MULTIPLIER;
+        let write = 2.0 * DEFAULT_CACHE_WRITE_MULTIPLIER;
+
+        let learn = CostTable::from_config(&profiles);
+        let learn = &learn.models["custom-model"];
+        assert!((learn.cache_read_per_m - read).abs() < 1e-12, "{learn:?}");
+        assert!((learn.cache_write_per_m - write).abs() < 1e-12, "{learn:?}");
+
+        let agent = roko_agent::CostTable::from_config_with_defaults(&profiles);
+        let agent = &agent.models["custom-model"];
+        assert!((agent.cache_read_per_m - read).abs() < 1e-12, "{agent:?}");
+        assert!((agent.cache_write_per_m - write).abs() < 1e-12, "{agent:?}");
+
+        // What a usage priced with no cache prices pays for a million tokens.
+        let filled = |cache_read_tokens, cache_create_tokens| {
+            let mut usage = Usage {
+                cache_read_tokens,
+                cache_create_tokens,
+                ..Usage::default()
+            };
+            usage.fill_cost_from_pricing(Some(2.0), Some(8.0), None, None);
+            f64::from(usage.cost_usd)
+        };
+        assert!((filled(1_000_000, 0) - read).abs() < 1e-6);
+        assert!((filled(0, 1_000_000) - write).abs() < 1e-6);
+    }
+
     #[test]
     fn codex_and_gpt5x_price_from_registry_not_sonnet_fallback() {
         let table = CostTable {
@@ -416,27 +607,30 @@ mod tests {
         }
         .with_defaults();
 
-        // Codex slugs resolve to codex rates ($2/$8), not the $3/$15 sonnet
-        // fallback they silently got before.
+        // Codex slugs resolve to their own rows (gpt-5.6-sol $4/$20,
+        // codex-mini $2/$8), not the $3/$15 sonnet fallback they silently
+        // got before.
         let usage = Usage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
             ..Usage::default()
         };
         let cost = table.calculate("gpt-5.6-sol", &usage);
-        assert!((cost - 10.00).abs() < 1e-12, "gpt-5.6-sol cost {cost}");
+        assert!((cost - 24.00).abs() < 1e-12, "gpt-5.6-sol cost {cost}");
         let cost = table.calculate("codex-mini", &usage);
         assert!((cost - 10.00).abs() < 1e-12, "codex-mini cost {cost}");
 
         // Date-/variant-suffixed codex slugs still prefix-match.
         let pricing = table.lookup("gpt-5.6-sol-2026").expect("prefix match");
-        assert!((pricing.input_per_m - 2.00).abs() < 1e-12);
+        assert!((pricing.input_per_m - 4.00).abs() < 1e-12);
 
         // Sonar rows exist now too.
         let pricing = table.lookup("sonar").expect("sonar pricing");
         assert!((pricing.input_per_m - 1.00).abs() < 1e-12);
 
-        // Truly unknown models stay unpriced (gap-ad0d39): no sonnet guess.
+        // Truly unknown models are unpriced, not priced at Sonnet's rates
+        // (gap-ad0d39).
+        assert_eq!(table.price("totally-unknown-llm", &usage), None);
         let cost = table.calculate("totally-unknown-llm", &usage);
         assert!(cost.abs() < 1e-12, "unknown cost {cost}");
     }

@@ -600,6 +600,7 @@ pub async fn run_code_implementer_cloud(
                 force_disk_check: false,
                 effort: None,
                 no_cascade: false,
+                metrics: None,
             })
             .await?;
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;

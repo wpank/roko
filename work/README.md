@@ -128,8 +128,10 @@ epic; each takes `--json`.
 
 ## Item format
 
-Markdown with TOML front matter between `+++` lines. `python3 tools/work.py new --kind bug --title "…" --source "…"`
-creates one with the body template filled in.
+Markdown with TOML front matter between `+++` lines.
+`python3 tools/work.py new --kind bug --title "…" --source "…" --anchor path::symbol --verify "cargo test -p … name"`
+creates one with the body template filled in. A gap, bug or regression needs at least one `--anchor` and one
+`--verify` (or `--no-verify-yet`); `--dry-run` prints the item without writing it.
 
 ```toml
 +++

@@ -7,14 +7,17 @@
 //! safety wiring. This is the lowest-common-denominator LLM integration.
 
 use crate::agent::{Agent, AgentResult, derived_output};
+use crate::claude_cli_agent::{EXITED_OUTPUT_DRAIN_MS, drain_killed_output};
 use crate::process::{
     GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
     benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
     register_spawned_pid, set_process_group, unregister_pid,
 };
+use crate::provider::codex_cli::stream::parse_stream_line as parse_codex_line;
 use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
+use crate::runtime_events::AgentRuntimeEvent;
 use crate::safety::SafetyLayer;
-use crate::usage::Usage;
+use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -503,6 +506,44 @@ fn extract_codex_text(jsonl: &str) -> String {
     text
 }
 
+/// The usage a Codex run's `turn.completed` events reported, summed over its
+/// turns; `None` when it reported none, as a run killed before its end has
+/// not (bug-dc4d63). Codex counts cached tokens in its input, while the
+/// canonical input is the uncached part.
+fn codex_reported_usage(jsonl: &str) -> Option<UsageObservation> {
+    let mut total: Option<UsageObservation> = None;
+    for event in jsonl.lines().flat_map(parse_codex_line) {
+        let AgentRuntimeEvent::TokenUsage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            reasoning_tokens,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let usage = total.get_or_insert_with(|| UsageObservation {
+            source: UsageSource::ProviderReported,
+            ..UsageObservation::default()
+        });
+        let add = |count: Option<u64>, more: u64| Some(count.unwrap_or(0) + more);
+        usage.input_tokens = add(
+            usage.input_tokens,
+            input_tokens.saturating_sub(cache_read_tokens),
+        );
+        usage.output_tokens = add(usage.output_tokens, output_tokens);
+        usage.cache_read_tokens = add(usage.cache_read_tokens, cache_read_tokens);
+        usage.reasoning_tokens = add(usage.reasoning_tokens, reasoning_tokens);
+    }
+    total
+}
+
+/// A token count estimated at four characters a token.
+fn estimated_tokens(text: &str) -> u64 {
+    u64::try_from(text.len() / 4).unwrap_or(u64::MAX)
+}
+
 #[async_trait]
 #[allow(clippy::too_many_lines)]
 impl Agent for ExecAgent {
@@ -576,13 +617,13 @@ impl Agent for ExecAgent {
         // Write prompt to stdin, then close it.
         // When a stdin_prefix is set (e.g. system prompt for Codex CLI),
         // prepend it with a separator so the agent sees both pieces.
+        let full_stdin = match &self.stdin_prefix {
+            Some(prefix) if !prefix.trim().is_empty() => {
+                format!("{}\n\n---\n\n{}", prefix.trim(), prompt_text)
+            }
+            _ => prompt_text.clone(),
+        };
         if let Some(mut stdin) = child.stdin.take() {
-            let full_stdin = match &self.stdin_prefix {
-                Some(prefix) if !prefix.trim().is_empty() => {
-                    format!("{}\n\n---\n\n{}", prefix.trim(), prompt_text)
-                }
-                _ => prompt_text.clone(),
-            };
             if let Err(e) = stdin.write_all(full_stdin.as_bytes()).await {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
                 if track_pids()
@@ -698,10 +739,12 @@ impl Agent for ExecAgent {
                     %violation,
                     "Codex operation denied by policy broker; process stopped"
                 );
-                return self.failure_signal(
+                // What the stopped run consumed is still spent (bug-dc4d63).
+                let raw_stdout = drain_killed_output(stdout_handle).await;
+                return self.failure_with_usage(
                     input,
                     &format!("Codex operation policy violation: {violation}"),
-                    started,
+                    self.run_usage(&full_stdin, &raw_stdout, started),
                 );
             }
         };
@@ -714,7 +757,12 @@ impl Agent for ExecAgent {
                 {
                     unregister_pid(pid);
                 }
-                return self.failure_signal(input, &format!("wait failed: {e}"), started);
+                let raw_stdout = drain_killed_output(stdout_handle).await;
+                return self.failure_with_usage(
+                    input,
+                    &format!("wait failed: {e}"),
+                    self.run_usage(&full_stdin, &raw_stdout, started),
+                );
             }
             Err(_) => {
                 heartbeat_handle.abort();
@@ -724,10 +772,13 @@ impl Agent for ExecAgent {
                 {
                     unregister_pid(pid);
                 }
-                return self.failure_signal(
+                // The killed run's usage is what it consumed and streamed,
+                // estimated, not $0 (bug-dc4d63).
+                let raw_stdout = drain_killed_output(stdout_handle).await;
+                return self.failure_with_usage(
                     input,
                     &format!("timed out after {} ms", self.timeout_ms),
-                    started,
+                    self.run_usage(&full_stdin, &raw_stdout, started),
                 );
             }
         };
@@ -782,10 +833,10 @@ impl Agent for ExecAgent {
                         %violation,
                         "Codex operation denied by policy broker"
                     );
-                    return self.failure_signal(
+                    return self.failure_with_usage(
                         input,
                         &format!("Codex operation policy violation: {violation}"),
-                        started,
+                        self.run_usage(&full_stdin, &raw_stdout, started),
                     );
                 }
             }
@@ -798,7 +849,6 @@ impl Agent for ExecAgent {
             self.scrub_text(&raw_stdout)
         };
         let stderr = self.scrub_text(&raw_stderr);
-        let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         if !status.success() {
             let code = status
@@ -809,17 +859,21 @@ impl Agent for ExecAgent {
                 || first_line(&stderr).to_string(),
                 |exhaustion| self.scrub_text(&exhaustion.into_error().to_string()),
             );
-            return self.failure_signal(input, &format!("exit {code}: {reason}"), started);
+            return self.failure_with_usage(
+                input,
+                &format!("exit {code}: {reason}"),
+                self.run_usage(&full_stdin, &raw_stdout, started),
+            );
         }
 
         if let Err(err) = self
             .safety
             .check_recovery(&ToolResult::text(stdout.clone()))
         {
-            return self.failure_signal(
+            return self.failure_with_usage(
                 input,
                 &format!("exec result blocked by safety layer: {err}"),
-                started,
+                self.run_usage(&full_stdin, &raw_stdout, started),
             );
         }
 
@@ -841,12 +895,7 @@ impl Agent for ExecAgent {
 
         AgentResult::ok(out_signal)
             .with_trace(trace)
-            .with_usage(Usage {
-                input_tokens: u32::try_from(prompt_text.len() / 4).unwrap_or(u32::MAX),
-                output_tokens: u32::try_from(stdout.len() / 4).unwrap_or(u32::MAX),
-                wall_ms,
-                ..Default::default()
-            })
+            .with_usage_obs(self.run_usage(&full_stdin, &raw_stdout, started))
     }
 
     fn name(&self) -> &str {
@@ -880,15 +929,55 @@ impl ExecAgent {
 
     fn failure_signal(&self, input: &Signal, reason: &str, started: Instant) -> AgentResult {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let usage = Usage {
+            wall_ms,
+            ..Default::default()
+        };
+        self.failure_with_usage(input, reason, usage.into())
+    }
+
+    /// A failed run that `usage` accounts for: one that got as far as its
+    /// subprocess consuming tokens (bug-dc4d63).
+    fn failure_with_usage(
+        &self,
+        input: &Signal,
+        reason: &str,
+        usage: UsageObservation,
+    ) -> AgentResult {
         let output = derived_output(input, Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag("failed", "true")
             .build();
-        AgentResult::fail(output).with_usage(Usage {
+        AgentResult::fail(output).with_usage_obs(usage)
+    }
+
+    /// The usage of a run that was sent `stdin` and wrote `raw_stdout`
+    /// (bug-dc4d63): a Codex run's `turn.completed` counts, as the provider
+    /// reported them, or else an estimate of four characters a token from the
+    /// text that went in and came out, so a failed or killed run is not free.
+    fn run_usage(&self, stdin: &str, raw_stdout: &str, started: Instant) -> UsageObservation {
+        let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if self.extract_codex_jsonl
+            && let Some(reported) = codex_reported_usage(raw_stdout)
+        {
+            return UsageObservation {
+                wall_ms,
+                ..reported
+            };
+        }
+        let output = if self.extract_codex_jsonl {
+            extract_codex_text(raw_stdout)
+        } else {
+            raw_stdout.to_string()
+        };
+        UsageObservation {
+            input_tokens: Some(estimated_tokens(stdin)),
+            output_tokens: Some(estimated_tokens(&output)),
+            source: UsageSource::Estimated,
             wall_ms,
-            ..Default::default()
-        })
+            ..UsageObservation::default()
+        }
     }
 
     fn scrub_text(&self, content: &str) -> String {
@@ -927,29 +1016,6 @@ fn first_line(s: &str) -> &str {
 
 const fn track_pids() -> bool {
     !cfg!(test)
-}
-
-/// How long a run's output readers may take to reach EOF after the agent
-/// exited, before the run's process group is ended (gap-5d3b82).
-#[cfg(not(test))]
-const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
-
-/// Tests keep the grace short: a reader that only needed more time still
-/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
-#[cfg(test)]
-const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
-
-/// How long the readers of an ended process group may take to finish.
-const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
-
-/// What `reader` collected from an ended run's pipe. A reader still blocked
-/// after [`KILLED_OUTPUT_DRAIN_MS`] is left behind, and its output is lost.
-async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
-    timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default()
 }
 
 fn maybe_warn_and_filter_benign(name: &str, line: &str) -> bool {
@@ -1323,6 +1389,84 @@ mod tests {
         let result = agent.run(&prompt(""), &Context::now()).await;
         assert!(result.success);
         assert!(result.trace.is_empty());
+    }
+
+    /// bug-dc4d63: a run killed at its timeout reports the usage it
+    /// consumed, estimated, rather than none.
+    #[tokio::test]
+    async fn a_timed_out_exec_run_reports_estimated_usage() {
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".into(),
+                "cat >/dev/null; printf 'partial output'; exec sleep 5".into(),
+            ],
+        )
+        .with_timeout_ms(300)
+        .with_kill_grace_ms(50);
+        let result = agent.run(&prompt(&"x".repeat(400)), &Context::now()).await;
+
+        assert!(!result.success);
+        assert!(result.output.body.as_text().unwrap().contains("timed out"));
+        let usage = result.usage_obs.expect("the run's usage");
+        assert_eq!(usage.source, UsageSource::Estimated);
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(result.usage.input_tokens, 100);
+    }
+
+    /// bug-dc4d63: a Codex run reports the usage of its `turn.completed`
+    /// event, cached input apart, instead of a length estimate.
+    #[tokio::test]
+    async fn codex_exec_reports_turn_completed_usage() {
+        let script = r#"cat >/dev/null
+printf '%s\n' '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":50,"reasoning_output_tokens":10}}'"#;
+        let agent =
+            exec_agent("sh", vec!["-c".into(), script.into()]).with_extract_codex_jsonl(true);
+        let result = agent.run(&prompt("hello"), &Context::now()).await;
+
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.body.as_text().unwrap(), "done");
+        let usage = result.usage_obs.expect("the run's usage");
+        assert_eq!(usage.source, UsageSource::ProviderReported);
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens
+            ),
+            (Some(800), Some(200), Some(50), Some(10))
+        );
+    }
+
+    /// bug-dc4d63: a Codex run the policy broker stops reports the usage it
+    /// consumed, estimated, as a timed-out run does.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_run_the_policy_broker_stops_reports_estimated_usage() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let started = concat!(
+            r#"{"type":"item.started","item":{"id":"item_0","type":"command_execution","#,
+            r#""command":"ls","status":"in_progress"}}"#,
+        );
+        let script = format!("cat >/dev/null; printf '%s\\n' '{started}'; exec sleep 30");
+        let contract = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+            ..AgentContract::default()
+        };
+        let agent = exec_agent("sh", vec!["-c".into(), script])
+            .with_timeout_ms(10_000)
+            .with_extract_codex_jsonl(true)
+            .with_codex_operation_policy(CodexOperationPolicy::from_contract(&contract));
+
+        let result = agent.run(&prompt(&"x".repeat(400)), &Context::now()).await;
+
+        assert!(!result.success);
+        let usage = result.usage_obs.expect("the stopped run's usage");
+        assert_eq!(usage.source, UsageSource::Estimated);
+        assert_eq!(usage.input_tokens, Some(100));
     }
 
     #[test]

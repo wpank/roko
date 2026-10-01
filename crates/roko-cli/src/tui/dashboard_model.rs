@@ -27,10 +27,11 @@ use roko_runtime::load_durable_runner_projection;
 use super::dashboard::{
     CASCADE_ROUTER_FILE, EFFICIENCY_FILE, EXPERIMENTS_FILE, FileStamp, GATE_THRESHOLDS_FILE,
     KNOWLEDGE_CONFIRMATIONS_FILE, KNOWLEDGE_FILE, LATENCY_STATS_FILE, LEARN_DIR, MEMORY_DIR,
-    NEURO_DIR, PROVIDER_HEALTH_FILE, SKILLS_FILE, TASK_METRICS_FILE, build_agent_activity_snapshot,
-    build_gate_results_page_data, file_stamp, format_duration_ms, format_elapsed_ms,
-    load_efficiency_trend, load_gate_signal_summaries, load_recent_signals, now_ms,
-    resolve_episodes_path, runner_task_outcomes_for_plan, runner_terminal_task_outcome,
+    NEURO_DIR, PROVIDER_HEALTH_FILE, SKILLS_FILE, TASK_METRICS_FILE, bounded_by_gates,
+    build_agent_activity_snapshot, build_gate_results_page_data, file_stamp, format_duration_ms,
+    format_elapsed_ms, load_efficiency_trend, load_gate_signal_summaries, load_recent_signals,
+    now_ms, resolve_episodes_path, runner_task_outcomes_for_plan, runner_terminal_task_outcome,
+    workspace_gates_config,
 };
 use super::dashboard_types::{
     AgentSummary, GateResultsPageData, GateTrend, KnowledgeBrowseEntry, SignalSummary,
@@ -185,7 +186,8 @@ impl TuiDashboardModel {
         let efficiency_trend = load_efficiency_trend(&efficiency_path);
         let experiments = load_json_opt::<ExperimentStore>(&learn_dir.join(EXPERIMENTS_FILE));
         let adaptive_thresholds =
-            load_json_opt::<AdaptiveThresholds>(&learn_dir.join(GATE_THRESHOLDS_FILE));
+            load_json_opt::<AdaptiveThresholds>(&learn_dir.join(GATE_THRESHOLDS_FILE))
+                .map(|thresholds| bounded_by_gates(thresholds, &workspace_gates_config(&root)));
         let gate_signals = load_gate_signal_summaries(&signals_path);
         let gate_results_page =
             build_gate_results_page_data(&gate_signals, adaptive_thresholds.as_ref());

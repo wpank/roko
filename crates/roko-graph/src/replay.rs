@@ -23,8 +23,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +189,7 @@ impl ActivityReplayer {
     /// # Errors
     /// Returns an `std::io::Error` if the file cannot be opened.
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        Self::load_inner(path.as_ref(), None)
+        Self::load_inner(path.as_ref(), None, u64::MAX)
     }
 
     /// Load a recording and reject malformed entries or entries from another
@@ -200,12 +201,40 @@ impl ActivityReplayer {
         expected_graph_id: &str,
         expected_run_id: &str,
     ) -> std::io::Result<Self> {
-        Self::load_inner(path.as_ref(), Some((expected_graph_id, expected_run_id)))
+        Self::load_inner(
+            path.as_ref(),
+            Some((expected_graph_id, expected_run_id)),
+            u64::MAX,
+        )
     }
 
-    fn load_inner(path: &Path, expected: Option<(&str, &str)>) -> std::io::Result<Self> {
+    /// [`Self::load_scoped`] over the first `committed_len` bytes of the
+    /// recording only, such as its [`committed_activity_len`]: what a resume
+    /// replays once [`set_aside_uncommitted_activities`] has run. It changes
+    /// no file.
+    ///
+    /// # Errors
+    /// See [`Self::load_scoped`].
+    pub fn load_scoped_committed(
+        path: impl AsRef<Path>,
+        expected_graph_id: &str,
+        expected_run_id: &str,
+        committed_len: u64,
+    ) -> std::io::Result<Self> {
+        Self::load_inner(
+            path.as_ref(),
+            Some((expected_graph_id, expected_run_id)),
+            committed_len,
+        )
+    }
+
+    fn load_inner(
+        path: &Path,
+        expected: Option<(&str, &str)>,
+        limit: u64,
+    ) -> std::io::Result<Self> {
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::new(file.take(limit));
         let mut entries: HashMap<(String, u64), Vec<roko_core::Signal>> = HashMap::new();
         let mut rejected = Vec::new();
 
@@ -331,6 +360,74 @@ impl ActivityReplayer {
         }
         Ok(())
     }
+}
+
+/// Length of the committed part of the Activity log `bytes`: everything up
+/// to and including its last newline. [`ActivityRecorder`] ends each record
+/// with a newline, so the bytes after the last one are a record whose write
+/// did not finish.
+fn committed_len(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |last| last + 1)
+}
+
+/// Length in bytes of the committed part of the Activity log at `path`:
+/// everything up to and including its last newline (see
+/// [`set_aside_uncommitted_activities`]). A missing log has none.
+///
+/// # Errors
+/// Returns an `std::io::Error` if the log exists but cannot be read.
+pub fn committed_activity_len(path: impl AsRef<Path>) -> std::io::Result<u64> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(committed_len(&bytes) as u64),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
+/// Set aside the unfinished end of the Activity log at `path`.
+///
+/// The bytes after the log's last newline move to
+/// `<log>.uncommitted.<unix ms>`, and the log is cut back to its last complete
+/// record. Such an end is a record whose write did not finish, for example a
+/// line a crash tore: replaying it fails, and appending after it would corrupt
+/// the next record. Returns the file that now holds those bytes, or `None`
+/// when the log ends in a complete record or is missing.
+///
+/// # Errors
+/// Returns an `std::io::Error` if the log cannot be read or cut back, or the
+/// bytes cannot be saved. The log is cut only once they are saved.
+pub fn set_aside_uncommitted_activities(
+    path: impl AsRef<Path>,
+) -> std::io::Result<Option<PathBuf>> {
+    let path = path.as_ref();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let committed = committed_len(&bytes);
+    if committed == bytes.len() {
+        return Ok(None);
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".uncommitted.{millis}"));
+    let aside = PathBuf::from(aside);
+    {
+        let mut file = File::create_new(&aside)?;
+        file.write_all(&bytes[committed..])?;
+        file.sync_all()?;
+    }
+    let log = OpenOptions::new().write(true).open(path)?;
+    log.set_len(committed as u64)?;
+    log.sync_all()?;
+    Ok(Some(aside))
 }
 
 /// Rewrite an Activity log keeping only the records accepted by `keep`.
@@ -480,6 +577,45 @@ mod tests {
             .err()
             .expect("corrupt checkpoint must fail closed");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_torn_last_record_is_set_aside_and_never_replayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activities.jsonl");
+        let mut rec = ActivityRecorder::create_fresh("run", &path).unwrap();
+        rec.record("g", "done", 0, vec![make_signal("a")]).unwrap();
+        drop(rec);
+        let committed = std::fs::read(&path).unwrap();
+        // The process died while it appended the next record.
+        let torn = b"{\"graph_id\":\"g\",\"run_id\":\"run\",\"node_id\":\"ne";
+        let mut log = OpenOptions::new().append(true).open(&path).unwrap();
+        log.write_all(torn).unwrap();
+        drop(log);
+
+        assert!(ActivityReplayer::load_scoped(&path, "g", "run").is_err());
+        let len = committed_activity_len(&path).unwrap();
+        assert_eq!(len, committed.len() as u64);
+        let rep = ActivityReplayer::load_scoped_committed(&path, "g", "run", len).unwrap();
+        assert_eq!(rep.entry_count(), 1);
+        assert_eq!(
+            std::fs::read(&path).unwrap().len(),
+            committed.len() + torn.len()
+        );
+
+        let aside = set_aside_uncommitted_activities(&path)
+            .unwrap()
+            .expect("the torn record is set aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), torn);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(set_aside_uncommitted_activities(&path).unwrap(), None);
+
+        // Appends start on a line of their own again.
+        let mut rec = ActivityRecorder::create("run", &path).unwrap();
+        rec.record("g", "next", 0, vec![make_signal("b")]).unwrap();
+        drop(rec);
+        let rep = ActivityReplayer::load_scoped(&path, "g", "run").unwrap();
+        assert_eq!(rep.entry_count(), 2);
     }
 
     fn verdict_signal(text: &str, verdict: TaskGateVerdict) -> Signal {

@@ -4,6 +4,10 @@
 # - Conditional edges: route to different paths based on gate score
 # - OnSuccess / OnFailure branching
 # - When expressions with numeric comparison
+#
+# Not runnable yet: `claude-agent` builds ActCell, a stub that dispatches
+# nothing until it is wired to a provider (gap-3d5cce), so `roko graph run`
+# refuses this graph (bug-91a34e). `roko graph show` lists the stub nodes.
 
 [graph]
 name = "conditional-branch"

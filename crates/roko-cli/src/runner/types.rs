@@ -2478,8 +2478,10 @@ pub struct RunConfig {
     /// and consumed by [`self.conductor`] during periodic supervision ticks
     /// (E08-T04). Must be `Some` when `conductor` is `Some`.
     pub conductor_ring: Option<super::conductor_adapter::ConductorRing>,
-    /// Optional GitHub operations override. Tests inject a mock here; normal
-    /// runs construct a live adapter from `[github]`, with a no-op fallback.
+    /// GitHub operations for the runner's GitHub workflow. Normal runs get
+    /// the live adapter when `[github]` turns that workflow on (`auto_pr`,
+    /// with the repository named and `GITHUB_TOKEN` set), and `None`
+    /// otherwise. Tests inject a mock here.
     pub github_ops: Option<Arc<dyn GitHubOps>>,
     /// Structured JSONL logger for plan execution events.
     /// When set, every `RunnerEvent` is serialized and flushed to the file.
@@ -2593,6 +2595,9 @@ impl RunConfig {
         let plan_timeout_secs = effective_plan_timeout_secs(&roko_config);
         let daimon_state = Self::daimon_state_for_workdir(&workdir);
         let safety_layer = SafetyLayer::from_config(&roko_config);
+        // The Graph plan runner files its failed tasks' issues through this
+        // adapter (gap-cd51b7).
+        let github_ops = live_github_ops(&roko_config.github);
 
         // Build the conductor from the project's [conductor.watchers.*] config so
         // that watcher thresholds are live at runtime (not dead config). A shared
@@ -2668,11 +2673,39 @@ impl RunConfig {
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
-            github_ops: None,
+            github_ops,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
             screenshot_interval_secs: 60,
             screenshot_dir: None,
+        }
+    }
+}
+
+/// The live GitHub adapter when `[github]` turns the runner's GitHub workflow
+/// on (`auto_pr`), else `None`. A workflow that cannot start, because the
+/// section names no repository or `GITHUB_TOKEN` is unset, is logged. The
+/// adapter's blocking HTTP client must not be built on an async runtime's
+/// thread (reqwest panics there in debug builds), so it is built on a thread
+/// of its own.
+fn live_github_ops(config: &roko_core::config::GitHubConfig) -> Option<Arc<dyn GitHubOps>> {
+    if !config.auto_pr {
+        return None;
+    }
+    let built = std::thread::scope(|scope| {
+        scope
+            .spawn(|| crate::github_ops_impl::LiveGitHubOps::from_config(config))
+            .join()
+    });
+    match built {
+        Ok(Ok(ops)) => Some(Arc::new(ops)),
+        Ok(Err(reason)) => {
+            tracing::warn!(%reason, "[github] auto_pr is on, but GitHub automation is off");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("[github] auto_pr is on, but building the GitHub client panicked");
+            None
         }
     }
 }
@@ -3069,6 +3102,31 @@ mod tests {
 
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.plan_timeout_secs, 77);
+    }
+
+    /// gap-cd51b7: a run gets the live GitHub adapter only when `[github]`
+    /// turns `auto_pr` on, names its repository, and `GITHUB_TOKEN` is set.
+    #[test]
+    fn run_config_without_github_auto_pr_has_no_github_ops() {
+        let config = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            RokoConfig::default(),
+        );
+        assert!(config.github_ops.is_none());
+
+        let repository = roko_core::config::GitHubConfig {
+            owner: Some("octo".to_string()),
+            repo: Some("roko".to_string()),
+            ..roko_core::config::GitHubConfig::default()
+        };
+        assert!(live_github_ops(&repository).is_none(), "auto_pr is off");
+        let no_repo = roko_core::config::GitHubConfig {
+            repo: None,
+            auto_pr: true,
+            ..repository
+        };
+        assert!(live_github_ops(&no_repo).is_none(), "no repository");
     }
 
     #[test]

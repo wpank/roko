@@ -41,7 +41,6 @@ const VALID_STATUSES: &[&str] = &[
     "failed",
     "cancelled",
 ];
-const TERMINAL_STATUSES: &[&str] = &["completed", "failed", "cancelled"];
 
 fn valid_transitions(current: &str) -> &'static [&'static str] {
     match current {
@@ -58,9 +57,6 @@ fn can_transition(current: &str, next: &str) -> bool {
 }
 fn normalise_status(raw: &str) -> String {
     raw.trim().to_ascii_lowercase()
-}
-fn is_terminal(status: &str) -> bool {
-    TERMINAL_STATUSES.contains(&status)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,26 +754,14 @@ async fn evaluate_job(
     Ok(Json(job))
 }
 
+/// `DELETE /jobs/{id}`: the legacy cancel. Like `POST /jobs/{id}/cancel` it
+/// goes through the shared execution service, so a running job's executor is
+/// signalled (bug-96341e); it answers with the job alone.
 async fn cancel_job(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<JobRecord>, ApiError> {
-    validate_path_segment(&id, "job id")?;
-    let path = job_path(&state.workdir, &id);
-    let mut job = load_job(&state.workdir, &id).await?;
-    let current = normalise_status(&job.status);
-    if is_terminal(&current) {
-        return Err(ApiError::unprocessable_with_hint(
-            format!("cannot cancel job '{id}': current status '{current}' is terminal"),
-            format!("'{current}' is a terminal state with no valid transitions"),
-        ));
-    }
-    let prev_status = job.status.clone();
-    job.status = "cancelled".to_string();
-    job.updated_at = Utc::now().to_rfc3339();
-    write_job(&path, &job).await?;
-    publish_job_event(&state, ServerEventKind::Updated, &job)?;
-    publish_transition(&state, &job, &prev_status);
+    let (job, _receipt) = cancel_through_service(&state, &id).await?;
     Ok(Json(job))
 }
 
@@ -1238,20 +1222,30 @@ async fn cancel_job_endpoint(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<CancelJobResponse>, ApiError> {
-    validate_path_segment(&id, "job id")?;
-    // Require an exact id; the execution service would also resolve prefixes.
-    load_job(&state.workdir, &id).await?;
+    let (job, receipt) = cancel_through_service(&state, &id).await?;
+    Ok(Json(CancelJobResponse { job, receipt }))
+}
 
-    let svc = roko_core::JobExecutionService::new(jobs_dir(&state.workdir));
-    let receipt = svc
-        .cancel(&id, roko_core::JobExecutionMode::Serve)
+/// Cancel job `id` through the shared [`AppState::job_execution`], so a
+/// running job's executor receives the cancel, then publish the change.
+async fn cancel_through_service(
+    state: &AppState,
+    id: &str,
+) -> Result<(JobRecord, roko_core::JobTransitionReceipt), ApiError> {
+    validate_path_segment(id, "job id")?;
+    // Require an exact id; the execution service would also resolve prefixes.
+    load_job(&state.workdir, id).await?;
+
+    let receipt = state
+        .job_execution
+        .cancel(id, roko_core::JobExecutionMode::Serve)
         .await
-        .map_err(|error| cancel_error(&id, &error))?;
+        .map_err(|error| cancel_error(id, &error))?;
 
     let job = load_job(&state.workdir, &receipt.job_id).await?;
-    publish_job_event(&state, ServerEventKind::Updated, &job)?;
-    publish_transition(&state, &job, &receipt.prior_status);
-    Ok(Json(CancelJobResponse { job, receipt }))
+    publish_job_event(state, ServerEventKind::Updated, &job)?;
+    publish_transition(state, &job, &receipt.prior_status);
+    Ok((job, receipt))
 }
 
 /// Map a `JobExecutionService::cancel` failure to its HTTP status.
@@ -1424,6 +1418,31 @@ mod tests {
             .expect("AppState::new"),
         );
         (dir, state)
+    }
+
+    #[tokio::test]
+    async fn legacy_job_delete_signals_running_job() {
+        let (dir, state) = test_state();
+        let jobs = dir.path().join(".roko").join("jobs");
+        tokio::fs::create_dir_all(&jobs).await.expect("jobs dir");
+        tokio::fs::write(
+            jobs.join("job-busy.json"),
+            r#"{"id":"job-busy","status":"in_progress","job_type":"other"}"#,
+        )
+        .await
+        .unwrap();
+        // The job runner registers like this once it marks a job in_progress.
+        let mut cancelled = state.job_execution.register_executor("job-busy");
+
+        let path = AxumPath("job-busy".to_string());
+        let Json(job) = cancel_job(State(Arc::clone(&state)), path)
+            .await
+            .expect("DELETE cancels a running job");
+
+        assert_eq!(job.status, "cancelled");
+        assert!(cancelled.try_recv().is_ok(), "runner got no cancel");
+        let on_disk = load_job(dir.path(), "job-busy").await.expect("job on disk");
+        assert_eq!(on_disk.status, "cancelled");
     }
 
     #[tokio::test]

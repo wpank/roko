@@ -46,6 +46,7 @@ use super::{
     },
 };
 
+use roko_agent::safety::SafetyLayer;
 use roko_agent::safety::capabilities::PluginTier;
 
 // ── Anthropic Messages API dispatch ──────────────────────────────────
@@ -254,7 +255,8 @@ pub(crate) async fn run_anthropic_tool_loop(
 
     let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver { handlers });
-    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+    let safety = acp_tool_safety(roko_config, role);
+    let dispatcher = Arc::new(acp_tool_dispatcher(registry, resolver, safety));
 
     let (backend, translator) =
         roko_agent::provider::anthropic_api::tool_loop::create_anthropic_backend_with_runtime(
@@ -665,6 +667,9 @@ pub(crate) async fn run_openai_compat_cognitive_task(
         return Ok(());
     }
 
+    // Both tool loops check every call against the session role's contract.
+    let tool_safety = acp_tool_safety(&roko_config, role);
+
     // MCP tool-loop path (OpenAI-compatible providers with MCP servers).
     if !mcp_servers.is_empty()
         && openai_compat_tool_loop_supported(resolved.provider_kind)
@@ -677,6 +682,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             Arc::clone(&rate_limiter),
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
+            tool_safety.clone(),
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -699,6 +705,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
             role,
+            tool_safety,
             &roko_config.agent.env_passthrough,
             cancel_token.clone(),
             event_sender.clone(),
@@ -768,6 +775,24 @@ pub(crate) fn config_with_session_effort(roko_config: &RokoConfig, effort: &str)
     config
 }
 
+/// The safety layer for an ACP tool loop: the configured policies plus the
+/// `AgentContract` of the session's contract role (`acp_contract_role_for_mode`).
+/// A role without a bundled contract gets the deny-all restricted fallback.
+pub(crate) fn acp_tool_safety(roko_config: &RokoConfig, role: &str) -> SafetyLayer {
+    SafetyLayer::from_config(roko_config).with_role(role)
+}
+
+/// The dispatcher for an ACP tool loop, which checks every builtin and MCP tool
+/// call against `safety`. `ToolDispatcher::new` alone keeps the default layer,
+/// which carries no role contract and whose empty allow-list denies every tool.
+pub(crate) fn acp_tool_dispatcher(
+    registry: Arc<VecToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    safety: SafetyLayer,
+) -> ToolDispatcher {
+    ToolDispatcher::new(registry, resolver).with_safety(safety)
+}
+
 pub(crate) fn openai_compat_tool_loop_supported(provider_kind: ProviderKind) -> bool {
     matches!(
         provider_kind,
@@ -785,6 +810,8 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
     rate_limiter: Arc<ProviderRateLimiter>,
     tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
+    // Safety layer carrying the session role's contract (`acp_tool_safety`).
+    safety: SafetyLayer,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -863,7 +890,7 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
         handlers: mcp_state.handlers,
     });
-    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+    let dispatcher = Arc::new(acp_tool_dispatcher(registry, resolver, safety));
     let context_limit = usize::try_from(model.context_window).unwrap_or(usize::MAX);
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
@@ -977,6 +1004,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     allowed_tools: Option<Vec<String>>,
     // Agent role for AgentContract builtin tool permission checks.
     role: &str,
+    // Safety layer carrying the session role's contract (`acp_tool_safety`).
+    safety: SafetyLayer,
     // `[agent] env_passthrough`: variables the `bash` tool may inherit.
     env_passthrough: &[String],
     cancel_token: CancelToken,
@@ -1035,7 +1064,7 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     .map_err(|error| anyhow::anyhow!("create ACP builtin tool-loop backend: {error}"))?;
     let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
-    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+    let dispatcher = Arc::new(acp_tool_dispatcher(registry, resolver, safety));
     let context_limit = usize::try_from(model.context_window).unwrap_or(usize::MAX);
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)

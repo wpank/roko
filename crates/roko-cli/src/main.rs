@@ -2243,13 +2243,14 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
         /// replacing whatever is configured in roko.toml. Once the plan has
         /// spent it, no further task starts, as with a configured ceiling.
-        /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
+        /// `--budget-override 0` removes the plan ceiling; the per-task and
+        /// daily ceilings still apply.
         #[arg(long, value_name = "AMOUNT")]
         budget_override: Option<f64>,
         /// Disable budget enforcement entirely for this run.
         ///
-        /// Equivalent to `--budget-override 0`: sets the per-plan ceiling to
-        /// unlimited (0.0) so `BudgetAction::Block` is never triggered.
+        /// No plan, per-task or daily ceiling stops a dispatch; spend is still
+        /// recorded.
         #[arg(long, conflicts_with = "budget_override")]
         no_budget: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
@@ -3075,7 +3076,7 @@ enum ConfigCmd {
         /// Pre-set token budget.
         #[arg(long)]
         budget: Option<usize>,
-        /// Pre-set role string.
+        /// Ignored: no config key stores a role text any more.
         #[arg(long)]
         role: Option<String>,
         /// Enable default compile+clippy gates.
@@ -3839,7 +3840,7 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     // Authentication hint: match specific auth-related terms, not substrings
     // like "authoritative" or "authorization policy", and 401 only as an HTTP
     // status, never inside a path, an id or a longer number.
-    if mentions_http_401(&lower)
+    if roko_agent::provider::error_classify::mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
@@ -3866,30 +3867,6 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
-}
-
-/// Whether a lower-cased error message reports HTTP status 401: a standalone
-/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
-/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
-/// `gap-e4019c`, `14015 bytes`) is not a status.
-fn mentions_http_401(lower: &str) -> bool {
-    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
-    let words: Vec<&str> = lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
-        .map(|word| word.trim_end_matches('.'))
-        .filter(|word| !word.is_empty())
-        .collect();
-    for (at, &word) in words.iter().enumerate() {
-        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
-        if word == "401" && near.iter().copied().any(is_http_status_word) {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_http_status_word(word: &str) -> bool {
-    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]
@@ -6071,7 +6048,9 @@ mod tests {
             args.extend(conflicting);
             assert!(Cli::try_parse_from(args).is_err(), "{conflicting:?}");
         }
-        assert!(Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok()
+        );
     }
 
     #[test]
@@ -8436,9 +8415,9 @@ mod tests {
     // ── #262: CLI flag resolution contract tests ────────────────────
 
     use roko_cli::resolved_overrides::{
-        ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
-        DevelopInput, DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput,
-        PresentationMode, ResolvedExecutionOverrides, ServePolicy,
+        ApprovalPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput, DevelopInput,
+        DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode,
+        ResolvedExecutionOverrides, ServePolicy,
     };
 
     #[test]
@@ -8615,30 +8594,6 @@ mod tests {
         };
         let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
         assert_eq!(overrides.approval, ApprovalPolicy::AutoApprove);
-    }
-
-    #[test]
-    fn cli_flags_plan_run_budget_override() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            budget_override: Some(50.0),
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Override(50.0));
-    }
-
-    #[test]
-    fn cli_flags_plan_run_no_budget() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            no_budget: true,
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Disabled);
     }
 
     #[test]

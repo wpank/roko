@@ -94,6 +94,14 @@ impl CellDescriptor {
         self
     }
 
+    /// Builder: mark a registered cell type as a stub, whose cell does not do
+    /// its job yet. Production starts refuse graphs that use it.
+    #[must_use]
+    pub fn with_stub(mut self, is_stub: bool) -> Self {
+        self.is_stub = is_stub;
+        self
+    }
+
     /// Return the effective display name (falls back to `id`).
     #[must_use]
     pub fn effective_display_name(&self) -> &str {

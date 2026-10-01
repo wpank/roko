@@ -86,8 +86,10 @@ fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Resul
 }
 
 /// Entries for [`roko_core::DashboardEvent::PlanSetLoaded`], in execution
-/// order, with each plan's dependency wave, prerequisites and conflicts.
+/// order, with each plan's group under `plans_root`, dependency wave,
+/// prerequisites and conflicts.
 fn plan_set_entries(
+    plans_root: &Path,
     plans: &[crate::runner::plan_loader::Plan],
     order: &PlanSetOrder,
     conflicts: &PlanConflicts,
@@ -106,6 +108,7 @@ fn plan_set_entries(
                 } else {
                     title.to_string()
                 },
+                group: plan_set_group(plans_root, &plan.dir),
                 tasks_total: plan.tasks.tasks.len(),
                 wave: dag
                     .as_ref()
@@ -127,6 +130,29 @@ fn plan_set_entries(
         .collect()
 }
 
+/// The plan set containing `plan_dir`: its parent directory relative to
+/// `plans_root`, `/`-separated, as plan discovery names it. `None` for a plan
+/// directly under the root or outside it.
+fn plan_set_group(plans_root: &Path, plan_dir: &Path) -> Option<String> {
+    let parent = plan_dir.parent()?;
+    let relative = parent
+        .strip_prefix(plans_root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            // The two may be spelled differently, e.g. one relative, one absolute.
+            let parent = parent.canonicalize().ok()?;
+            let root = plans_root.canonicalize().ok()?;
+            parent.strip_prefix(root).ok().map(Path::to_path_buf)
+        })?;
+    let group = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!group.is_empty()).then_some(group)
+}
+
 // ── Stopping a plan run: SIGINT, SIGTERM, operator ───────────────────────
 
 /// Why a CLI plan run stopped before its plan set finished.
@@ -141,15 +167,19 @@ pub enum PlanRunInterrupt {
     /// The FAST run deadline (`ROKO_FAST_PLAN_DEADLINE_SECS`) elapsed
     /// (gap-9efe8e). It exits as SIGTERM does, which `./dev.sh fast` expects.
     Deadline,
+    /// A conductor watcher failed the run (gap-fab2cc); the run ends with
+    /// the watcher's error.
+    Conductor,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
         Self::Deadline,
+        Self::Conductor,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
@@ -157,12 +187,13 @@ impl PlanRunInterrupt {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
-            Self::Terminate | Self::Deadline => 143,
+            Self::Terminate | Self::Deadline | Self::Conductor => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, or `deadline`, for logs and summaries.
+    /// Signal name, `deadline` or `conductor`, for logs, summaries and the
+    /// checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -170,6 +201,7 @@ impl PlanRunInterrupt {
             Self::Terminate => "SIGTERM",
             Self::Hangup => "SIGHUP",
             Self::Deadline => "deadline",
+            Self::Conductor => "conductor",
         }
     }
 
@@ -179,6 +211,7 @@ impl PlanRunInterrupt {
             Self::Terminate => 2,
             Self::Hangup => 3,
             Self::Deadline => 4,
+            Self::Conductor => 5,
         }
     }
 
@@ -188,6 +221,7 @@ impl PlanRunInterrupt {
             2 => Some(Self::Terminate),
             3 => Some(Self::Hangup),
             4 => Some(Self::Deadline),
+            5 => Some(Self::Conductor),
             _ => None,
         }
     }
@@ -390,7 +424,8 @@ fn force_exit(interrupt: PlanRunInterrupt, reason: &str) -> ! {
         libc::SIGKILL,
     );
     let running: Vec<PathBuf> = running_plan_checkpoints().iter().cloned().collect();
-    let interrupted = mark_checkpoints_interrupted(running, FORCED_EXIT_CHECKPOINT_TIMEOUT);
+    let by = interrupt.label();
+    let interrupted = mark_checkpoints_interrupted(running, by, FORCED_EXIT_CHECKPOINT_TIMEOUT);
     tracing::error!(
         signal = interrupt.label(),
         reason,
@@ -432,9 +467,16 @@ impl Drop for RunningPlanCheckpoint {
 }
 
 /// Mark each checkpoint in `manifests` that still reads `running` as
-/// `interrupted`, on a thread of its own so a stuck disk cannot hold a forced
-/// exit past `timeout`. Returns how many were marked in time.
-fn mark_checkpoints_interrupted(manifests: Vec<PathBuf>, timeout: Duration) -> usize {
+/// `interrupted` by the stop request `by`, on a thread of its own so a stuck
+/// disk cannot hold a forced exit past `timeout`. Returns how many were
+/// marked in time.
+fn mark_checkpoints_interrupted(
+    manifests: Vec<PathBuf>,
+    by: &'static str,
+    timeout: Duration,
+) -> usize {
+    use crate::graph_checkpoint::mark_running_checkpoint_interrupted;
+
     if manifests.is_empty() {
         return 0;
     }
@@ -443,7 +485,7 @@ fn mark_checkpoints_interrupted(manifests: Vec<PathBuf>, timeout: Duration) -> u
         .name("roko-plan-run-exit-checkpoints".to_string())
         .spawn(move || {
             for manifest in manifests {
-                match crate::graph_checkpoint::mark_running_checkpoint_interrupted(&manifest) {
+                match mark_running_checkpoint_interrupted(&manifest, by) {
                     Ok(marked) => {
                         let _ = marked_tx.send(marked);
                     }
@@ -634,6 +676,17 @@ fn pending_interrupt(
     interrupt.requested()
 }
 
+/// What a plan's checkpoint names as the stop of its run (gap-fab2cc): the
+/// stop request, when the plan ended interrupted by it.
+fn stop_cause(
+    outcome: PlanOutcome,
+    interrupted_by: Option<PlanRunInterrupt>,
+) -> Option<&'static str> {
+    interrupted_by
+        .filter(|_| outcome == PlanOutcome::Interrupted)
+        .map(PlanRunInterrupt::label)
+}
+
 /// Terminal checkpoint status of a plan that ran and ended with `outcome`.
 const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
     match outcome {
@@ -655,7 +708,8 @@ const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
 /// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
 /// only under `--no-budget`, which also lets a spent day dispatch. An explicit
 /// CLI ceiling is a hard cap, as a configured one is: once the plan has spent
-/// it, no further task starts (gap-d31457).
+/// it, no further task starts (gap-d31457). `--budget-override 0` removes the
+/// plan ceiling but keeps the per-task and daily ones.
 pub fn resolve_budget_ceiling(
     budget_override: Option<f64>,
     no_budget: bool,
@@ -860,6 +914,11 @@ pub struct GraphPlanRunParams {
     /// gap-9980c6): the routing ladder, else the default model, routes each
     /// task. The run's outcomes still teach the router.
     pub no_cascade: bool,
+    /// Registry that counts this run's verify verdicts and durations
+    /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
+    /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
+    /// `None` keeps the tracing fields only.
+    pub metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -1044,6 +1103,7 @@ async fn run_graph_plan_body(
         force_disk_check,
         effort,
         no_cascade,
+        metrics,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -1249,7 +1309,12 @@ async fn run_graph_plan_body(
     // StateHub consumers show every plan, the whole-set task total, and one
     // run clock across plan boundaries.
     state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded {
-        plans: plan_set_entries(&plans, &plan_order, &plan_conflicts),
+        plans: plan_set_entries(
+            &crate::plan::plans_dir(workdir),
+            &plans,
+            &plan_order,
+            &plan_conflicts,
+        ),
     });
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
@@ -1300,10 +1365,13 @@ async fn run_graph_plan_body(
     )
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
+    // FAST lane (`./dev.sh fast`): bound each attempt (gap-4a6dcb).
+    .with_fast_bounds(super::fast_lane::FastAttemptBounds::from_env(workdir))
     .with_feedback(graph_feedback)
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)
-    .with_live_agent_output(live_agent_output);
+    .with_live_agent_output(live_agent_output)
+    .with_metrics(metrics);
 
     // ── Whole-plan checks (gap-60233f) ──
     // Each plan's `[meta] verify`, or the default for a Cargo workspace,
@@ -1429,7 +1497,7 @@ async fn run_graph_plan_body(
             move |stop| {
                 tracing::error!(%stop, "the conductor is stopping the plan run");
                 *conductor_stop.lock() = Some(stop);
-                interrupt.request(PlanRunInterrupt::Terminate);
+                interrupt.request(PlanRunInterrupt::Conductor);
             }
         },
     );
@@ -1580,10 +1648,13 @@ async fn run_graph_plan_body(
     let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
     // How the tasks of each plan that ran settled, for the run metrics.
     let mut plan_task_verdicts = std::collections::BTreeMap::<String, TaskVerdictCounts>::new();
-    // Set once SIGINT/SIGTERM (or closing the TUI) stops the run; later
-    // plans are left unstarted.
+    // Set once a stop request (a signal, closing the TUI, the FAST deadline
+    // or the conductor) stops the run; later plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
 
+    let failure_issues = graph_run_config.github_ops.clone().map(|ops| {
+        super::failure_issues::FailureIssues::new(ops, &roko_config.github.label_prefix)
+    });
     let run_context = PlanRunContext {
         workdir,
         resume_plan: resume_plan.as_deref(),
@@ -1611,6 +1682,7 @@ async fn run_graph_plan_body(
         interrupt: &interrupt,
         run_manifests: &run_manifests,
         caller_run_id: run_id.as_deref(),
+        failure_issues: failure_issues.as_ref(),
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -2261,7 +2333,8 @@ pub fn build_graph_feedback_facade(
             crate::runtime_feedback::HindsightSink::new(
                 &graph_episodes_path,
                 graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
-            ),
+            )
+            .with_router(cascade_router.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
         // progression included) under `.roko/neuro/`.
@@ -2384,6 +2457,9 @@ struct PlanRunContext<'a> {
     /// The run id the caller already gave this run (`roko run`); a single
     /// plan's fresh checkpoint takes it.
     caller_run_id: Option<&'a str>,
+    /// Files a GitHub issue for each task a plan leaves failed, when
+    /// `[github] auto_pr` is on (gap-cd51b7).
+    failure_issues: Option<&'a super::failure_issues::FailureIssues>,
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
@@ -3117,6 +3193,7 @@ async fn run_one_plan(
             was_cancelled_by_tui,
         );
         checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
+        checkpoint.record_stop_cause(stop_cause(outcome, interrupted_by))?;
         close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
         checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
         return Ok(PlanRunResult {
@@ -3224,6 +3301,24 @@ async fn run_one_plan(
         graph_tui_bridge.task_blocked(&plan.id, task_id, title, None, reason);
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
+    checkpoint.record_stop_cause(stop_cause(outcome, interrupted_by))?;
+    // Each task the run left failed gets a GitHub issue when `[github]
+    // auto_pr` is on (gap-cd51b7). A run that was interrupted or cancelled
+    // files none.
+    if let Some(failure_issues) = ctx.failure_issues
+        && interrupted_by.is_none()
+        && !was_cancelled_by_tui
+    {
+        failure_issues
+            .file(
+                &plan.id,
+                &run_id,
+                &output,
+                &task_outcomes.failed,
+                &node_titles,
+            )
+            .await;
+    }
     if outcome == PlanOutcome::Unverified {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",
@@ -3694,7 +3789,7 @@ mod tests {
             ..PlanSetOrder::default()
         };
 
-        let entries = plan_set_entries(&plans, &order, &PlanConflicts::new());
+        let entries = plan_set_entries(Path::new("plans"), &plans, &order, &PlanConflicts::new());
 
         let summary = entries
             .iter()
@@ -3710,6 +3805,32 @@ mod tests {
             summary,
             vec![("a-first", "a-first", 3), ("b-second", "Second", 1)]
         );
+    }
+
+    #[test]
+    fn plan_set_entries_name_each_plans_group() {
+        let root = Path::new("/workspace/plans");
+        let mut nested = test_plan("01-backend", "", 1);
+        nested.dir = root.join("portal-programme").join("01-backend");
+        let mut top_level = test_plan("02-docs", "", 1);
+        top_level.dir = root.join("02-docs");
+        let mut outside = test_plan("03-scratch", "", 1);
+        outside.dir = PathBuf::from("/elsewhere/plans/03-scratch");
+        let order = PlanSetOrder {
+            order: vec![
+                "01-backend".to_string(),
+                "02-docs".to_string(),
+                "03-scratch".to_string(),
+            ],
+            ..PlanSetOrder::default()
+        };
+
+        let plans = [nested, top_level, outside];
+        let entries = plan_set_entries(root, &plans, &order, &PlanConflicts::new());
+
+        assert_eq!(entries[0].group.as_deref(), Some("portal-programme"));
+        assert_eq!(entries[1].group, None);
+        assert_eq!(entries[2].group, None, "outside plans/");
     }
 
     /// Workspace config whose only role in use is disabled, so the task
@@ -3786,6 +3907,7 @@ files = ["README.md"]
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect("run plan set");
@@ -3996,6 +4118,7 @@ max_retries = 0
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect("run plan set");
@@ -4383,6 +4506,7 @@ max_retries = 0
     fn a_budget_override_is_a_hard_ceiling() {
         for (budget_override, no_budget, expected) in [
             (Some(2.0), false, (2.0, false)),
+            (Some(0.0), false, (0.0, false)),
             (Some(-1.0), false, (0.0, false)),
             (None, false, (25.0, false)),
             (None, true, (0.0, true)),
@@ -4829,6 +4953,86 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// One run of [`a_runs_cancel_stops_its_own_gate_command_only`]: a thread
+    /// in a spawn scope of its own, as `roko serve` runs a plan, that runs
+    /// [`SIGNALLED_GATE`] in `dir` and cancels its run when told to, or when
+    /// the test drops its sender. Joining it gives the number of processes
+    /// that cancel signalled.
+    #[cfg(unix)]
+    fn scoped_gate_run(
+        dir: &Path,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        std::thread::JoinHandle<usize>,
+    ) {
+        use roko_core::Verify as _;
+
+        std::fs::create_dir_all(dir).expect("run dir");
+        let payload = roko_gate::GatePayload::in_dir(dir);
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let run = std::thread::spawn(move || {
+            let _scope =
+                roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("run runtime");
+            runtime.block_on(async move {
+                let args = vec!["-c".to_string(), SIGNALLED_GATE.to_string()];
+                let gate = roko_gate::ShellGate::new("bash", args).with_timeout_ms(120_000);
+                let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+                    .body(roko_core::Body::from_json(&payload).expect("gate payload"))
+                    .build();
+                let gate_ctx = roko_core::Context::now();
+                let stop = async {
+                    let _ = cancelled.await;
+                    terminate_in_flight_agents()
+                };
+                let (_, signalled) = tokio::join!(gate.verify(&signal, &gate_ctx), stop);
+                signalled
+            })
+        });
+        (cancel, run)
+    }
+
+    /// q-9852b5: a gate command joins the agent PID registry in the spawn
+    /// scope of the run that starts it (gap-b367bf, find-65ff6b), so a run's
+    /// cancel stops its own running gate command and leaves another run's
+    /// alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_cancel_stops_its_own_gate_command_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (own, other) = (dir.path().join("own"), dir.path().join("other"));
+        let (cancel_own, own_run) = scoped_gate_run(&own);
+        let (cancel_other, other_run) = scoped_gate_run(&other);
+        let started = |run: &Path| {
+            for _ in 0..1_200 {
+                if run.join("gate-started").exists() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        };
+        assert!(started(&own) && started(&other), "both gate commands run");
+
+        cancel_own.send(()).expect("cancel the run");
+        let signalled = own_run.join().expect("the cancelled run");
+        assert!(signalled > 0, "the cancel signalled its gate command");
+        assert!(own.join("got-term").exists(), "it got SIGTERM");
+        // A SIGTERM the cancel sent the other command would have landed by now.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !other.join("got-term").exists(),
+            "another run's gate command runs on"
+        );
+
+        cancel_other.send(()).expect("cancel the other run");
+        assert!(other_run.join().expect("the other run") > 0);
+        assert!(other.join("got-term").exists());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
@@ -4837,6 +5041,7 @@ exec sleep 60
         // A FAST deadline exits as SIGTERM does, under its own label.
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
+        assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
         for interrupt in PlanRunInterrupt::ALL {
             assert_eq!(
                 PlanRunInterrupt::from_code(interrupt.code()),
@@ -4850,7 +5055,9 @@ exec sleep 60
     /// checkpoint is listed for it only while the plan runs.
     #[test]
     fn a_forced_exit_marks_running_checkpoints_interrupted() {
-        use crate::graph_checkpoint::{canonical_checkpoint_status, start_plan_checkpoint};
+        use crate::graph_checkpoint::{
+            canonical_checkpoint_status, canonical_stop_cause, start_plan_checkpoint,
+        };
 
         let dir = tempfile::tempdir().expect("tempdir");
         let running = start_plan_checkpoint(dir.path(), &test_plan("running", "Running", 1))
@@ -4869,7 +5076,7 @@ exec sleep 60
 
         let manifests = vec![manifest, finished.paths().manifest.clone()];
         assert_eq!(
-            mark_checkpoints_interrupted(manifests, Duration::from_secs(5)),
+            mark_checkpoints_interrupted(manifests, "SIGTERM", Duration::from_secs(5)),
             1
         );
         assert_eq!(
@@ -4877,10 +5084,31 @@ exec sleep 60
             Some(GraphCheckpointStatus::Interrupted)
         );
         assert_eq!(
+            canonical_stop_cause(dir.path(), "running").as_deref(),
+            Some("SIGTERM")
+        );
+        assert_eq!(
             canonical_checkpoint_status(dir.path(), "finished"),
             Some(GraphCheckpointStatus::Succeeded)
         );
-        assert_eq!(mark_checkpoints_interrupted(Vec::new(), Duration::ZERO), 0);
+        assert_eq!(canonical_stop_cause(dir.path(), "finished"), None);
+        assert_eq!(
+            mark_checkpoints_interrupted(Vec::new(), "SIGTERM", Duration::ZERO),
+            0
+        );
+    }
+
+    /// gap-fab2cc: a plan's checkpoint names the stop request that
+    /// interrupted it, and nothing when the plan ended any other way.
+    #[test]
+    fn an_interrupted_plan_names_its_stop() {
+        let interrupted = |by| stop_cause(PlanOutcome::Interrupted, by);
+        let deadline = Some(PlanRunInterrupt::Deadline);
+        let conductor = Some(PlanRunInterrupt::Conductor);
+        assert_eq!(interrupted(deadline), Some("deadline"));
+        assert_eq!(interrupted(conductor), Some("conductor"));
+        assert_eq!(interrupted(None), None);
+        assert_eq!(stop_cause(PlanOutcome::Succeeded, deadline), None);
     }
 
     /// Set by [`a_hangup_stops_the_plan_run`] for its child test process.
@@ -5598,6 +5826,7 @@ exec sleep 60
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
@@ -5637,6 +5866,43 @@ printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6",
         assert_eq!(exit_code, EXIT_SUCCESS);
         let args = std::fs::read_to_string(dir.path().join("provider-args")).expect("calls");
         assert!(args.contains("--effort low"), "{args}");
+    }
+
+    /// gap-d8c39a: a verify step a Graph run settles counts in the run's
+    /// metric registry, which serve's `/metrics` renders, and not only in
+    /// the tracing fields.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_verify_increments_gate_verdict_metrics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "metrics", "", &[("T1", &[], "true")]);
+        let registry = Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+        roko_core::obs::metrics::register_standard_metrics(&registry);
+
+        let exit_code = run_graph_plan(GraphPlanRunParams {
+            worktree_per_task: false,
+            metrics: Some(Arc::clone(&registry)),
+            ..worktree_run_params(dir.path())
+        })
+        .await
+        .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let text = registry.render_prometheus();
+        let passes = text
+            .lines()
+            .find(|line| {
+                line.starts_with("roko_gate_verdicts_total{") && line.contains("verdict=\"pass\"")
+            })
+            .unwrap_or_else(|| panic!("no passing verdict series in:\n{text}"));
+        let count: u64 = passes
+            .rsplit(' ')
+            .next()
+            .and_then(|value| value.parse().ok())
+            .expect("a count");
+        assert!(count >= 1, "{passes}");
+        assert!(text.contains("roko_gate_duration_seconds_count{"), "{text}");
     }
 
     /// A scripted provider: it writes `<name>.txt` for the "Write <name>.txt"
@@ -5743,6 +6009,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         }
     }
 

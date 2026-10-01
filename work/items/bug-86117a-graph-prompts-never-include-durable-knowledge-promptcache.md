@@ -117,3 +117,6 @@ has no caller.
     playbooks all ride in `domain_context`, which loses whenever it is longer than `conventions` (about 1,230
     bytes), and the dropped section is missing from `dropped_sections` too. The test's domain context is about
     250 bytes, so it keeps the section.
+- 2026-10-01 (wk-childenv): The foraging finding is bug-4aa696, fixed on this branch at `7531a3b39`.
+  `cached_knowledge_survives_a_long_domain_context` (`381dbd45a`) covers the knowledge path with a `domain_context`
+  longer than `conventions`.

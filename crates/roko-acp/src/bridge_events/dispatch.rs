@@ -46,6 +46,7 @@ use super::{
     },
 };
 
+use roko_agent::safety::DataLlmBoundary;
 use roko_agent::safety::SafetyLayer;
 use roko_agent::safety::capabilities::PluginTier;
 
@@ -214,6 +215,7 @@ pub(crate) async fn run_anthropic_tool_loop(
     let timeout_ms = provider_entry
         .and_then(|(_, provider)| provider.timeout_ms)
         .unwrap_or(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS);
+    let data_llm = acp_data_llm(roko_config, &event_sender).await?;
 
     let mut tools = Vec::new();
     let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
@@ -271,7 +273,8 @@ pub(crate) async fn run_anthropic_tool_loop(
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
-        .with_context_token_limit(context_limit);
+        .with_context_token_limit(context_limit)
+        .with_optional_data_llm(data_llm);
 
     let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
@@ -667,8 +670,16 @@ pub(crate) async fn run_openai_compat_cognitive_task(
         return Ok(());
     }
 
-    // Both tool loops check every call against the session role's contract.
+    // Both tool loops check every call against the session role's contract,
+    // and send tainted tool output through the data LLM when one is configured.
     let tool_safety = acp_tool_safety(&roko_config, role);
+    let data_llm = if (tools_enabled || !mcp_servers.is_empty())
+        && openai_compat_tool_loop_supported(resolved.provider_kind)
+    {
+        acp_data_llm(&roko_config, &event_sender).await?
+    } else {
+        None
+    };
 
     // MCP tool-loop path (OpenAI-compatible providers with MCP servers).
     if !mcp_servers.is_empty()
@@ -683,6 +694,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
             tool_safety.clone(),
+            data_llm.clone(),
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -706,6 +718,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             None, // single-agent chat path: all tools allowed
             role,
             tool_safety,
+            data_llm,
             &roko_config.agent.env_passthrough,
             cancel_token.clone(),
             event_sender.clone(),
@@ -782,6 +795,26 @@ pub(crate) fn acp_tool_safety(roko_config: &RokoConfig, role: &str) -> SafetyLay
     SafetyLayer::from_config(roko_config).with_role(role)
 }
 
+/// The CaMeL data-LLM boundary for an ACP tool loop, from `[agent.data_llm]`
+/// (gap-b0d514); `None` when the section is unset. One that is configured but
+/// cannot be built fails the turn, so tool output never reaches the model
+/// unscreened.
+pub(crate) async fn acp_data_llm(
+    roko_config: &RokoConfig,
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+) -> Result<Option<Arc<DataLlmBoundary>>> {
+    let Some(data_llm) = &roko_config.agent.data_llm else {
+        return Ok(None);
+    };
+    match roko_agent::provider::data_llm_boundary(roko_config, data_llm) {
+        Ok(boundary) => Ok(Some(boundary)),
+        Err(error) => {
+            emit_dispatch_failure(event_sender, format!("Error: {error}")).await;
+            Err(anyhow::anyhow!("ACP data LLM unavailable: {error}").into())
+        }
+    }
+}
+
 /// The dispatcher for an ACP tool loop, which checks every builtin and MCP tool
 /// call against `safety`. `ToolDispatcher::new` alone keeps the default layer,
 /// which carries no role contract and whose empty allow-list denies every tool.
@@ -812,6 +845,8 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
     allowed_tools: Option<Vec<String>>,
     // Safety layer carrying the session role's contract (`acp_tool_safety`).
     safety: SafetyLayer,
+    // The boundary tainted tool output goes through (`acp_data_llm`).
+    data_llm: Option<Arc<DataLlmBoundary>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -894,7 +929,8 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
     let context_limit = usize::try_from(model.context_window).unwrap_or(usize::MAX);
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
-        .with_context_token_limit(context_limit);
+        .with_context_token_limit(context_limit)
+        .with_optional_data_llm(data_llm);
 
     let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
@@ -1006,6 +1042,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     role: &str,
     // Safety layer carrying the session role's contract (`acp_tool_safety`).
     safety: SafetyLayer,
+    // The boundary tainted tool output goes through (`acp_data_llm`).
+    data_llm: Option<Arc<DataLlmBoundary>>,
     // `[agent] env_passthrough`: variables the `bash` tool may inherit.
     env_passthrough: &[String],
     cancel_token: CancelToken,
@@ -1068,7 +1106,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     let context_limit = usize::try_from(model.context_window).unwrap_or(usize::MAX);
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
         .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
-        .with_context_token_limit(context_limit);
+        .with_context_token_limit(context_limit)
+        .with_optional_data_llm(data_llm);
 
     let (chunk_sender, chunk_receiver) = mpsc::channel::<roko_agent::tool_loop::StreamEvent>(256);
     let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(

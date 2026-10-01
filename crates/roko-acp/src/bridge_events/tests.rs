@@ -2628,6 +2628,62 @@ async fn mcp_tool_loop_denies_tool_outside_role_contract() {
     assert!(!received, "a denied call must never reach the MCP server");
 }
 
+/// A config whose `[agent.data_llm]` names `data_model`: `api-reader` is a
+/// model roko calls over an API, `cli-reader` one that a CLI runs.
+fn data_llm_test_config(data_model: &str) -> RokoConfig {
+    RokoConfig::from_toml(&format!(
+        r#"
+[agent.data_llm]
+model = "{data_model}"
+
+[providers.local]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.cli]
+kind = "claude_cli"
+command = "claude"
+
+[models.api-reader]
+provider = "local"
+slug = "reader"
+context_window = 8192
+
+[models.cli-reader]
+provider = "cli"
+slug = "claude-haiku-4-5"
+context_window = 8192
+"#
+    ))
+    .expect("parse data LLM config")
+}
+
+/// gap-b0d514: ACP's tool loops get the `[agent.data_llm]` boundary, none
+/// without the section, and a configured one that cannot be built fails the
+/// turn with the reason instead of letting tool output through unscreened.
+#[tokio::test]
+async fn acp_data_llm_is_built_from_config_or_fails_the_turn() {
+    let (event_sender, mut events) = mpsc::channel(4);
+
+    let off = acp_data_llm(&RokoConfig::default(), &event_sender).await;
+    assert!(matches!(off, Ok(None)), "no section means no boundary");
+
+    let on = acp_data_llm(&data_llm_test_config("api-reader"), &event_sender).await;
+    assert!(matches!(on, Ok(Some(_))), "an API model builds one");
+    assert!(events.try_recv().is_err(), "building it reports nothing");
+
+    let cli = data_llm_test_config("cli-reader");
+    let refused = acp_data_llm(&cli, &event_sender).await;
+    assert!(refused.is_err(), "an unbuildable one fails the turn");
+    let Ok(CognitiveEvent::Failure { message }) = events.try_recv() else {
+        panic!("the turn must say why its data LLM is unavailable");
+    };
+    assert!(
+        message.contains("cannot serve as the data LLM"),
+        "{message}"
+    );
+}
+
 #[tokio::test]
 async fn permission_prompt_precedes_write() {
     let tmp = tempfile::tempdir().expect("create tmpdir");

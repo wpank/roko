@@ -90,8 +90,8 @@ pub struct AgentConfig {
     pub defaults: AgentDefaults,
 
     /// The CaMeL data-LLM boundary (`[agent.data_llm]`); `None`, the
-    /// default, turns it off. See [`DataLlmConfig`] for what it covers and
-    /// what is not wired yet (gap-b0d514).
+    /// default, turns it off. See [`DataLlmConfig`] for what it covers
+    /// (gap-b0d514).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_llm: Option<DataLlmConfig>,
 
@@ -300,12 +300,13 @@ pub struct RoutingOverrides {
 /// max_input_bytes = 32768
 /// ```
 ///
-/// It covers the tool loops roko runs itself: an agent the provider factory
-/// (`create_agent_for_model`) builds for an API provider sends untrusted tool
-/// output through it. CLI providers (Claude CLI, Codex, Gemini CLI, Cursor)
-/// run their own tool loops, so roko never sees their tool results first,
-/// and ACP's own tool loop does not use it yet (gap-b0d514). The data model
-/// must be one roko calls over an API; otherwise the agent fails to build.
+/// It covers the tool loops roko runs itself, which send untrusted tool
+/// output through it: those of an agent the provider factory
+/// (`create_agent_for_model`) builds for an API provider, and ACP's. CLI
+/// providers (Claude CLI, Codex, Gemini CLI, Cursor) run their own tool
+/// loops, so roko never sees their tool results first. The data model must
+/// be one roko calls over an API; otherwise the agent fails to build, or
+/// the ACP turn fails.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -211,11 +211,17 @@ LLM failure blocks the content instead of passing it through.
   Exhaustive `AgentOptions` literals gained `data_llm: None` (roko-dreams `runner.rs`, roko-serve `dispatch.rs`,
   roko-cli `tests/smoke.rs`, roko-agent `provider/claude_cli.rs` test). Test:
   `data_llm_boundary_needs_a_model_roko_calls_over_an_api`.
-- Left for step 6, part 2: ACP's two `ToolLoop`s (`roko-acp/src/bridge_events/dispatch.rs`), which can call
-  `provider::data_llm_boundary` with the session config; and the verify's end-to-end test,
-  `untrusted_tool_result_never_reaches_main_model_raw`, through a factory-built agent against a local HTTP server.
-  The verify's first clause now matches only an inert-list entry line, not the test's mention of the key. Steps 7-8
-  (audit records, cancellation coverage) remain.
+- The verify's first clause now matches only an inert-list entry line, not the test's mention of the key.
+- 2026-10-02 (wk-childenv): Plan step 6, part 2 (ACP) on work/gap-1555ac; cargo verification deferred to the batch
+  check. ACP's three `ToolLoop`s (`roko-acp/src/bridge_events/dispatch.rs`: the Anthropic loop and the
+  OpenAI-compatible MCP and builtin loops) take the boundary from the new `acp_data_llm`, which calls
+  `provider::data_llm_boundary` with the session config. Without `[agent.data_llm]` nothing changes. A configured
+  boundary that cannot be built fails the turn with a `Failure` event that says why, instead of running the tools
+  unscreened; the OpenAI-compatible path builds it only when one of its tool loops can run. `DataLlmConfig`'s doc
+  and the config docs now include ACP. Test: `acp_data_llm_is_built_from_config_or_fails_the_turn` (roko-acp
+  `bridge_events/tests.rs`).
+- Left: the verify's end-to-end test, `untrusted_tool_result_never_reaches_main_model_raw`, through a
+  factory-built agent against a local HTTP server; audit records (step 7); cancellation coverage (step 8).
 
 ## Original notes
 

@@ -549,9 +549,8 @@ force_tier = "focused"         # pin to a complexity tier
 
 `[agent.data_llm]` configures a separate, tool-less model that reads untrusted tool output (MCP,
 plugin, web-search, retrieval and network tool results) for every agent roko builds for an API
-provider, so the main model sees only the extracted summary and facts, or a notice that they were
-withheld. It cannot cover CLI providers, which run their own tool loops, and ACP's tool loop does
-not use it yet (gap-b0d514).
+provider and for ACP's tool loops, so the main model sees only the extracted summary and facts, or
+a notice that they were withheld. It cannot cover CLI providers, which run their own tool loops.
 
 ```toml
 [agent.data_llm]

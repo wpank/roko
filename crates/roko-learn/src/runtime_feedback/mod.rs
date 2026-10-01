@@ -1251,7 +1251,10 @@ impl LearningRuntime {
             ts_ms: Utc::now().timestamp_millis(),
         });
         if let Err(err) = self.save_cascade_router() {
-            eprintln!("[learn] cascade router save failed after conductor intervention: {err}");
+            tracing::warn!(
+                error = %err,
+                "[learn] cascade router save failed after conductor intervention"
+            );
         }
         true
     }
@@ -1509,7 +1512,7 @@ impl LearningRuntime {
 
         if update.router_updated {
             if let Err(e) = self.save_cascade_router() {
-                eprintln!("[learn] cascade router save failed: {e}");
+                tracing::warn!(error = %e, "[learn] cascade router save failed");
             }
         }
 
@@ -1572,15 +1575,22 @@ impl LearningRuntime {
                         &self.paths.experiment_winners_json,
                         &committed,
                     ) {
-                        eprintln!("[learn] experiment winner artifact save failed: {e}");
+                        tracing::warn!(
+                            error = %e,
+                            "[learn] experiment winner artifact save failed"
+                        );
                     }
                     if static_table_updated && let Err(e) = self.save_cascade_router() {
-                        eprintln!(
-                            "[learn] cascade router save failed after experiment conclusion: {e}"
+                        tracing::warn!(
+                            error = %e,
+                            "[learn] cascade router save failed after experiment conclusion"
                         );
                     }
                 }
-                Err(e) => eprintln!("[learn] experiment store transaction failed: {e}"),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "[learn] experiment store transaction failed"
+                ),
             }
         }
 
@@ -1765,9 +1775,11 @@ impl LearningRuntime {
         if !self.cascade_router.update_static_table(role, winner_slug) {
             return false;
         }
-        eprintln!(
-            "[learn] experiment concluded -- updated static routing table: experiment={} winner={} role={}",
-            experiment.experiment_id, winner_slug, role_raw
+        tracing::info!(
+            experiment = %experiment.experiment_id,
+            winner = winner_slug,
+            role = %role_raw,
+            "[learn] experiment concluded -- updated static routing table"
         );
         true
     }

@@ -26,6 +26,9 @@ pub struct Theme {
     pub danger: Color,
     /// Informational or active state color.
     pub info: Color,
+    /// Color of a task whose work was already there: verified, but not a
+    /// pass of this attempt.
+    pub satisfied: Color,
     /// Selection background color.
     pub selection_background: Color,
     /// Selection foreground color.
@@ -136,6 +139,7 @@ impl Theme {
             warning: Self::WARNING,
             danger: Self::EMBER,
             info: Self::DREAM,
+            satisfied: Self::TEAL,
             selection_background: Self::BG_HIGHLIGHT,
             selection_foreground: Self::BONE,
         }
@@ -154,6 +158,7 @@ impl Theme {
             warning: Color::Reset,
             danger: Color::Reset,
             info: Color::Reset,
+            satisfied: Color::Reset,
             selection_background: Color::Reset,
             selection_foreground: Color::Reset,
         }
@@ -172,10 +177,11 @@ impl Theme {
             background: Color::Black,
             accent: Color::Rgb(255, 180, 200), // bright pink
             accent_foreground: Color::Black,
-            success: Color::Rgb(100, 255, 100), // bright green
-            warning: Color::Rgb(255, 255, 80),  // bright yellow
-            danger: Color::Rgb(255, 80, 80),    // bright red
-            info: Color::Rgb(100, 180, 255),    // bright blue
+            success: Color::Rgb(100, 255, 100),  // bright green
+            warning: Color::Rgb(255, 255, 80),   // bright yellow
+            danger: Color::Rgb(255, 80, 80),     // bright red
+            info: Color::Rgb(100, 180, 255),     // bright blue
+            satisfied: Color::Rgb(80, 220, 220), // bright cyan
             selection_background: Color::Rgb(60, 60, 80),
             selection_foreground: Color::White,
         }
@@ -194,10 +200,11 @@ impl Theme {
             background: Color::Indexed(16),  // near-black
             accent: Color::Indexed(175),     // rose ~#B97894
             accent_foreground: Color::Indexed(16),
-            success: Color::Indexed(108), // sage green ~#7D9E8C
-            warning: Color::Indexed(179), // amber ~#C39B5F
-            danger: Color::Indexed(167),  // ember ~#C36E55
-            info: Color::Indexed(103),    // dream indigo ~#7873A5
+            success: Color::Indexed(108),  // sage green ~#7D9E8C
+            warning: Color::Indexed(179),  // amber ~#C39B5F
+            danger: Color::Indexed(167),   // ember ~#C36E55
+            info: Color::Indexed(103),     // dream indigo ~#7873A5
+            satisfied: Color::Indexed(73), // teal ~#5FAFAF
             selection_background: Color::Indexed(236), // dark grey
             selection_foreground: Color::Indexed(187), // bone ~#D7C69E
         }
@@ -317,6 +324,15 @@ impl Theme {
     #[must_use]
     pub fn info(self) -> Style {
         Style::default().fg(self.info).add_modifier(Modifier::BOLD)
+    }
+
+    /// The style of a task whose work was already there: its verify steps
+    /// passed on a tree its attempt left unchanged.
+    #[must_use]
+    pub fn satisfied(self) -> Style {
+        Style::default()
+            .fg(self.satisfied)
+            .add_modifier(Modifier::BOLD)
     }
 
     /// Default block background style.

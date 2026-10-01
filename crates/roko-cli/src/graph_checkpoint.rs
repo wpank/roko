@@ -813,6 +813,14 @@ impl PreparedGraphCheckpoint {
             .and_then(|extension| serde_json::from_value(extension.value.clone()).ok())
     }
 
+    /// The gate verdict of each task output recorded so far, replayed outputs
+    /// included. The engine records a node's output before it reports the
+    /// node complete, so a completed task's verdict is already here.
+    #[must_use]
+    pub fn recorded_gate_verdicts(&self) -> BTreeMap<String, TaskGateVerdict> {
+        recorded_gate_verdicts(&self.paths.activities)
+    }
+
     /// Rebuild the gate-verdict extension from the durable Activity log.
     ///
     /// The host-owned summary is replaced wholesale, so this bypasses the

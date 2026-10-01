@@ -10,7 +10,11 @@
  */
 
 import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
-import { TASK_OUTCOME_ACCEPTED_WITH_FAILURES } from '@/api/contracts';
+import {
+  TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+  TASK_OUTCOME_ALREADY_SATISFIED,
+  TASK_OUTCOME_UNVERIFIED,
+} from '@/api/contracts';
 import { decodeFrame } from '@/lib/streamRecord';
 import type { Frame, TranscriptEntry, AttemptDivider, ToolStep, UnscreenedEntry } from '@/lib/streamRecord';
 
@@ -27,6 +31,8 @@ export type TaskStatus =
   | 'passed'
   | 'failed'
   | 'accepted_with_failures'
+  | 'already_satisfied'
+  | 'unverified'
   | 'skipped'
   | 'cancelled';
 
@@ -68,6 +74,8 @@ export interface PlanRun {
   tasksDone: number;
   tasksFailed: number;
   tasksAccepted: number;
+  /** Tasks that completed without a verify step judging them; also in tasksDone. Absent means 0. */
+  tasksUnverified?: number;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   etaMinutes: number | null;
@@ -120,6 +128,8 @@ const TERMINAL: Set<TaskStatus> = new Set([
   'passed',
   'failed',
   'accepted_with_failures',
+  'already_satisfied',
+  'unverified',
   'skipped',
   'cancelled',
 ]);
@@ -151,15 +161,19 @@ export function parseCheckName(name: string): { index: number | null; phase: str
 
 /**
  * Classify a task outcome string into a TaskStatus.
- * Mirrors `classify_task_outcome` in the Rust source.
- * The accepted_with_failures check runs first because the string contains "fail".
+ * Mirrors `classify_task_outcome` in the Rust source: only an outcome that
+ * names a pass is 'passed', and any outcome it does not recognise is
+ * 'unverified'. The accepted_with_failures and already_satisfied checks run
+ * first: the one contains "fail".
  */
 function classifyOutcome(outcome: string): TaskStatus {
-  if (outcome === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
   const lo = outcome.toLowerCase();
-  if (lo.includes('fail') || lo.includes('error')) return 'failed';
-  if (lo === 'skipped' || lo === 'condition-skipped' || lo === 'unknown') return 'skipped';
-  return 'passed';
+  if (lo === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
+  if (lo === TASK_OUTCOME_ALREADY_SATISFIED) return 'already_satisfied';
+  if (lo.includes('skipped') || lo === 'unknown') return 'skipped';
+  if (lo === 'passed' || lo === 'succeeded' || lo.startsWith('success')) return 'passed';
+  if (['fail', 'error', 'cancel', 'halt'].some((word) => lo.includes(word))) return 'failed';
+  return TASK_OUTCOME_UNVERIFIED;
 }
 
 /** Append a TranscriptEntry to a Transcript, capping at MAX_TRANSCRIPT_ENTRIES. */
@@ -262,8 +276,9 @@ function upsertCheck(
  * are removed and all counters reset to zero.
  *
  * After 'failed' or 'cancelled': resume — task records whose status is
- * 'passed', 'skipped', or 'accepted_with_failures' are kept and counted;
- * every other task record (and its transcript) is removed.
+ * 'passed', 'already_satisfied', 'unverified', 'skipped', or
+ * 'accepted_with_failures' are kept and counted; every other task record (and
+ * its transcript) is removed.
  *
  * The plan's generation is incremented in both cases.
  */
@@ -286,6 +301,7 @@ function beginNewRun(
     tasksDone: 0,
     tasksFailed: 0,
     tasksAccepted: 0,
+    tasksUnverified: 0,
     startedAtMs,
     finishedAtMs: null,
     etaMinutes: null,
@@ -306,9 +322,16 @@ function beginNewRun(
     return { plan: basePlan, tasks, transcripts };
   } else {
     // Resume: keep tasks that finished well, remove the rest
-    const GOOD: Set<TaskStatus> = new Set(['passed', 'skipped', 'accepted_with_failures']);
+    const GOOD: Set<TaskStatus> = new Set([
+      'passed',
+      'already_satisfied',
+      'unverified',
+      'skipped',
+      'accepted_with_failures',
+    ]);
     let tasksDone = 0;
     let tasksAccepted = 0;
+    let tasksUnverified = 0;
     const tasks = { ...allTasks };
     const transcripts = { ...allTranscripts };
     for (const k of planTaskKeys) {
@@ -316,12 +339,17 @@ function beginNewRun(
       if (GOOD.has(t.status)) {
         tasksDone += 1;
         if (t.status === 'accepted_with_failures') tasksAccepted += 1;
+        if (t.status === 'unverified') tasksUnverified += 1;
       } else {
         delete tasks[k];
         delete transcripts[k];
       }
     }
-    return { plan: { ...basePlan, tasksDone, tasksAccepted }, tasks, transcripts };
+    return {
+      plan: { ...basePlan, tasksDone, tasksAccepted, tasksUnverified },
+      tasks,
+      transcripts,
+    };
   }
 }
 
@@ -681,15 +709,19 @@ export function applyEvent(
       let newPlans = state.plans;
       if (plan) {
         let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        let tasksUnverified = plan.tasksUnverified ?? 0;
         const wasTerminal = existing !== undefined && TERMINAL.has(existing.status);
         if (wasTerminal && (isRetry || isOlderGeneration)) {
           if (existing!.status === 'accepted_with_failures') {
             tasksDone = Math.max(0, tasksDone - 1);
             tasksAccepted = Math.max(0, tasksAccepted - 1);
+          } else if (existing!.status === 'unverified') {
+            tasksDone = Math.max(0, tasksDone - 1);
+            tasksUnverified = Math.max(0, tasksUnverified - 1);
           } else if (existing!.status === 'failed') {
             tasksFailed = Math.max(0, tasksFailed - 1);
           } else {
-            // passed or skipped
+            // passed, already satisfied or skipped
             tasksDone = Math.max(0, tasksDone - 1);
           }
         }
@@ -706,6 +738,7 @@ export function applyEvent(
             tasksDone,
             tasksFailed,
             tasksAccepted,
+            tasksUnverified,
             tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
           },
         };
@@ -735,18 +768,22 @@ export function applyEvent(
       let newPlans = state.plans;
       if (plan) {
         let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        let tasksUnverified = plan.tasksUnverified ?? 0;
         if (status === 'accepted_with_failures') {
           tasksDone += 1;
           tasksAccepted += 1;
+        } else if (status === 'unverified') {
+          tasksDone += 1;
+          tasksUnverified += 1;
         } else if (status === 'failed') {
           tasksFailed += 1;
         } else {
-          // passed or skipped both count as done
+          // passed, already satisfied and skipped all count as done
           tasksDone += 1;
         }
         newPlans = {
           ...state.plans,
-          [event.plan_id]: { ...plan, tasksDone, tasksFailed, tasksAccepted },
+          [event.plan_id]: { ...plan, tasksDone, tasksFailed, tasksAccepted, tasksUnverified },
         };
       }
 
@@ -1090,6 +1127,7 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       tasksDone: p.tasks_done,
       tasksFailed: p.tasks_failed,
       tasksAccepted: p.tasks_accepted_with_failures ?? 0,
+      tasksUnverified: p.tasks_unverified ?? 0,
       startedAtMs: p.started_at_ms ?? null,
       finishedAtMs: p.finished_at_ms ?? null,
       etaMinutes: null,

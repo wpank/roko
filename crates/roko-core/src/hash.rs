@@ -29,6 +29,14 @@ impl ContentHash {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// Compute a BLAKE3 keyed hash of `bytes` under `key`. Nobody without the
+    /// key can recompute it, so unlike [`Self::of`] it does not reveal a
+    /// low-entropy input to someone hashing guesses.
+    #[must_use]
+    pub fn keyed(key: &[u8; 32], bytes: &[u8]) -> Self {
+        Self(*blake3::keyed_hash(key, bytes).as_bytes())
+    }
+
     /// Hex-encoded representation (64 chars).
     #[must_use]
     pub fn to_hex(&self) -> String {
@@ -154,5 +162,14 @@ mod tests {
         // Should be a hex string, not a byte array
         assert!(json.starts_with('"'));
         assert_eq!(json.len(), 66); // "<64 hex>"
+    }
+
+    #[test]
+    fn keyed_hash_depends_on_its_key() {
+        let plain = ContentHash::of(b"guessable");
+        let keyed = ContentHash::keyed(&[1; 32], b"guessable");
+        assert_ne!(keyed, plain);
+        assert_eq!(keyed, ContentHash::keyed(&[1; 32], b"guessable"));
+        assert_ne!(keyed, ContentHash::keyed(&[2; 32], b"guessable"));
     }
 }

@@ -8,8 +8,8 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-agent/claude-cli", "roko-learn/cost-table"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
@@ -30,3 +30,17 @@ Also reported by the assessment but not re-checked here: the OpenAI-compatible p
 Fix: parse the full usage record, price from one dated snapshot, and flag unknown models instead of guessing.
 
 Re-checked 2026-09-29 (static): the two assessment claims not re-checked on 2026-09-28 also hold. The built-in claude-opus-4-6 entry prices cache reads at 3.75 against 15.00 input, i.e. 0.25x (asserted by the test at crates/roko-learn/src/cost_table.rs:325-329). No parsing of prompt_tokens_details.cached_tokens was found in provider/openai_compat.rs or tool_loop/backends/; openai_compat_backend.rs:826-834 only emits that field.
+
+## Notes
+
+- 2026-10-01 (wk-model-truth): partial on work/bug-3aa61f; cargo verification deferred to the batch check.
+  Done: the Claude CLI parser sums the `result` event's `modelUsage` over every model (background turns and
+  subagents included, as `total_cost_usd` is) and takes its `thinkingTokens` as reasoning tokens; roko-learn's
+  `CostTable` no longer prices an unknown model at Sonnet's rates: `price` returns `None` and `calculate` records the
+  unknown `0.0` (`Usage::has_known_cost`) and warns once per slug. Already true at BASE: the OpenAI-compatible usage
+  parser reads `prompt_tokens_details.cached_tokens` (`translate/openai.rs::parse_usage_observation`).
+  Left: roko-agent's `task_runner::CostTable`, a duplicate that `ModelCallService` uses for budget prediction and
+  unpriced results, still guesses Sonnet rates (changing the prediction changes budget admission); pricing from one
+  dated snapshot and the built-in claude-opus-4-6 cache-read rate (3.75 = 0.25x its 15.00 input) need a verified price
+  source; the cache-write TTL split and a per-model breakdown are not recorded.
+  Tests: `parse_stream_usage_counts_every_model_in_model_usage`, `an_unknown_model_is_unpriced_rather_than_priced_as_sonnet`.

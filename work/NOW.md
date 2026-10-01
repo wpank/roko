@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 12 anchor gone · 166 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 11 anchor gone · 101 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -26,7 +26,7 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 8 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -49,42 +49,42 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 ## 7. Plan runs work reliably
 
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-10-01
-- **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-09-29
+- **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-10-01
 - **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
 
-_53 more open · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_19 more open · 13 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
-- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-09-29
-- **P2** [bug-1cb461](items/bug-1cb461-aggregator-truncates-content-by-byte-index-and.md) Aggregator truncates content by byte index and can panic on non-ASCII text [bug] · size S · verified 2026-09-29
+- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-10-01
+- **P2** [gap-633184](items/gap-633184-tool-t014-control-events-vs-text-on.md) Control events vs text on bounded paths: zero-silent-drop under backpressure not tested · size M · verified 2026-09-29
 
-_21 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_10 more open · 5 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
 - **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
-- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-09-29
+- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-10-01
 - **P2** [find-49ec18](items/find-49ec18-evals-re-verify-8-eval-closures-2026.md) 8 eval closures (2026-09-05) wired via Runner-v2 dispatch/event loop [finding] · size M · verified 2026-09-29
 
-_12 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 4 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
-- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
-- **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
+- **P2** [gap-7a3527](items/gap-7a3527-df-0925-p4-dead-config-keys-that.md) Dead config keys that give false confidence · size M · verified 2026-10-01
+- **P2** [gap-4a6dcb](items/gap-4a6dcb-fast-mode-dev-sh-fast-guarantees-are.md) FAST mode (dev.sh fast) guarantees are only partly ported to the Graph engine · size M · verified 2026-09-29
+- **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 
-_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_9 more open · 19 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
 - **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
-- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-09-29
+- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-10-01
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-09-29
 
-_11 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_11 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · 1 unchecked (`TRIAGE.md`) · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
@@ -92,6 +92,6 @@ _11 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
 - **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-09-29
 
-_14 more open · `goal = "hermes"`_
+_14 more open · 5 unchecked (`TRIAGE.md`) · `goal = "hermes"`_
 
-10 open items have no goal (later); they are listed in `STATUS.md`.
+5 open items have no goal (later); they are listed in `STATUS.md`.

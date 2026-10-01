@@ -231,7 +231,7 @@ impl GraphTaskDispatcher {
                 let mut verdict = gate.verify(&gate_signal, &gate_ctx).await;
                 if !verdict.passed {
                     // A sibling editing this working tree may have caused the
-                    // failure: let it settle, then re-run the step once. The
+                    // failure: let it settle, then re-run the step. The
                     // compile lock is released meanwhile so the sibling's own
                     // cargo steps can finish.
                     drop(compile_permit);
@@ -508,8 +508,19 @@ impl GraphTaskDispatcher {
                                     limit: sibling_wait,
                                 })
                                 .await;
-                            let mut retry_verdict =
-                                retry_gate.verify(&gate_signal, &gate_ctx).await;
+                            // The re-run builds like the first run, so it
+                            // queues on the same compile lock.
+                            let mut retry_verdict = verify_step_locked(
+                                &retry_gate,
+                                &gate_signal,
+                                &gate_ctx,
+                                &effective_workdir,
+                                self.config.gates.compile_concurrency,
+                                step,
+                                &spec.plan_id,
+                                &task.id,
+                            )
+                            .await;
                             if !retry_verdict.passed {
                                 drop(reading);
                                 if let Some(judgement) = self
@@ -1052,15 +1063,21 @@ impl GraphTaskDispatcher {
                     let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                     if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                         // RAG-11: update experiment store with gate-fail outcome.
-                        if let Some(exp_path) = &self.feedback.experiment_store_path {
-                            // Locked: prompt treatments share the file.
-                            let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
-                                exp_path,
-                                |store| {
-                                    store.record_retrieval_outcome(&strategy, false);
-                                    Ok(())
-                                },
-                            );
+                        if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
+                            // Locked: prompt treatments share the file. The
+                            // store is read and written back whole, so off the
+                            // reactor (gap-5e818f).
+                            let outcome_strategy = strategy.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                roko_learn::prompt_experiment::ExperimentStore::transaction(
+                                    &exp_path,
+                                    |store| {
+                                        store.record_retrieval_outcome(&outcome_strategy, false);
+                                        Ok(())
+                                    },
+                                )
+                            })
+                            .await;
                         }
                         // RAG-10: write settled record.
                         if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -1180,15 +1197,21 @@ impl GraphTaskDispatcher {
                 let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                     // RAG-11: update experiment store with gate-pass outcome.
-                    if let Some(exp_path) = &self.feedback.experiment_store_path {
-                        // Locked: prompt treatments share the file.
-                        let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
-                            exp_path,
-                            |store| {
-                                store.record_retrieval_outcome(&strategy, true);
-                                Ok(())
-                            },
-                        );
+                    if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
+                        // Locked: prompt treatments share the file. The store
+                        // is read and written back whole, so off the reactor
+                        // (gap-5e818f).
+                        let outcome_strategy = strategy.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            roko_learn::prompt_experiment::ExperimentStore::transaction(
+                                &exp_path,
+                                |store| {
+                                    store.record_retrieval_outcome(&outcome_strategy, true);
+                                    Ok(())
+                                },
+                            )
+                        })
+                        .await;
                     }
                     // RAG-10: write settled record.
                     if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -1235,15 +1258,15 @@ impl GraphTaskDispatcher {
 }
 
 /// Queue a cargo verify step on the per-repository compile lock before its
-/// timeout starts, so a build by a plan running beside this one cannot time
-/// the step out. Other steps take no permit.
+/// timeout starts, so a build by a plan running beside this one, in this
+/// process or another, cannot time the step out. Other steps take no permit.
 pub(super) async fn verify_compile_permit(
     workdir: &Path,
     compile_concurrency: usize,
     step: &crate::task_parser::VerifyStep,
     plan_id: &str,
     task_id: &str,
-) -> Option<tokio::sync::OwnedSemaphorePermit> {
+) -> Option<crate::runner::gate_dispatch::CompileOwnership> {
     let runs_cargo = step
         .command
         .split(|c: char| c.is_whitespace() || "&|;({".contains(c))
@@ -1264,6 +1287,24 @@ pub(super) async fn verify_compile_permit(
         tracing::warn!(%error, "running the cargo verify step without the compile lock");
     })
     .ok()
+}
+
+/// Run a verify step's gate while holding the compile lock its command needs
+/// ([`verify_compile_permit`]). The post-auto-fix re-run goes through here
+/// (bug-951930).
+pub(super) async fn verify_step_locked(
+    gate: &ShellGate,
+    signal: &Signal,
+    ctx: &Context,
+    workdir: &Path,
+    compile_concurrency: usize,
+    step: &crate::task_parser::VerifyStep,
+    plan_id: &str,
+    task_id: &str,
+) -> roko_core::Verdict {
+    let _compile_permit =
+        verify_compile_permit(workdir, compile_concurrency, step, plan_id, task_id).await;
+    gate.verify(signal, ctx).await
 }
 
 impl GraphTaskDispatcher {
@@ -1288,14 +1329,17 @@ impl GraphTaskDispatcher {
         runs
     }
 
-    /// The workspace rungs a task of `spec`'s plan faces: the required
-    /// `[[gates.rungs]]`, none when the plan opts out.
-    pub(super) fn plan_rungs(
+    /// The workspace rungs an attempt at `task` of `spec`'s plan faces: the
+    /// `[[gates.rungs]]` [`task_runs_rung`] picks, none when the plan opts
+    /// out.
+    pub(super) fn task_rungs(
         &self,
         spec: &TaskExecutionSpec,
+        task: &TaskDef,
     ) -> impl Iterator<Item = &roko_core::config::GateRungConfig> {
         let runs = self.plan_runs_workspace_rungs(spec);
-        self.config.gates.required_rungs().filter(move |_| runs)
+        let rungs = self.config.gates.custom_rungs.iter();
+        rungs.filter(move |rung| runs && task_runs_rung(task, rung))
     }
 
     /// The verify steps an attempt at `task` runs, labelled
@@ -1305,7 +1349,7 @@ impl GraphTaskDispatcher {
         spec: &TaskExecutionSpec,
         task: &TaskDef,
     ) -> Vec<(String, crate::task_parser::VerifyStep)> {
-        attempt_verify_steps(task, self.plan_rungs(spec))
+        attempt_verify_steps(task, self.task_rungs(spec, task))
     }
 
     /// `task` as its prompt shows it: with every verify step that will judge
@@ -1319,6 +1363,22 @@ impl GraphTaskDispatcher {
             .collect();
         prompt_task
     }
+}
+
+/// Whether an attempt at `task` runs the workspace rung `rung`: a required
+/// rung with a command always, and an optional one when the task's
+/// gate-profile hints ask for it (gap-69a56e). A `quality_profile =
+/// "hardened"` task runs every declared rung, and a task that names
+/// `test_invariants` also runs the rungs that run tests.
+fn task_runs_rung(task: &TaskDef, rung: &roko_core::config::GateRungConfig) -> bool {
+    if rung.command.trim().is_empty() {
+        return false;
+    }
+    let invariants = task.hints.test_invariants.as_deref().unwrap_or_default();
+    let test_rung = matches!(rung_for_gate_name(&rung.name), Some(roko_gate::Rung::Test));
+    rung.required
+        || task.hints.quality_profile == Some(roko_core::TaskQualityProfile::Hardened)
+        || (test_rung && !invariants.is_empty())
 }
 
 /// The verify steps an attempt at `task` runs, each with its label: the
@@ -1490,7 +1550,10 @@ fn failed_step_summary(
         .unwrap_or(&verdict.reason);
     let output = verdict.detail.as_deref().unwrap_or_default().trim();
     let summary = format!("{}: {fail_msg}\n{output}", verdict.gate);
-    Some(head_and_tail(summary.trim_end(), GATE_FAILURE_SUMMARY_BYTES))
+    Some(head_and_tail(
+        summary.trim_end(),
+        GATE_FAILURE_SUMMARY_BYTES,
+    ))
 }
 
 /// Retry-facing summary of a failed verify run, including skipped steps.
@@ -2021,6 +2084,49 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
     }
 
+    /// bug-951930: the post-auto-fix re-run starts a cargo step only once it
+    /// holds the compile lock, as the first run does.
+    #[tokio::test]
+    async fn post_fix_rerun_takes_compile_lock() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let marker = workdir.join("ran.txt");
+        let step = verify_step("compile", "echo ran > ran.txt # cargo check");
+        let gate = ShellGate::new("bash", vec!["-c".into(), step.command.clone()])
+            .with_timeout_ms(step.timeout_ms)
+            .with_name("verify-1-compile")
+            .with_phase(&step.phase);
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&GatePayload::in_dir(workdir)).expect("gate payload"))
+            .build();
+        let ctx = Context::now();
+
+        // Another plan's build holds the repository's only compile permit.
+        let held = crate::runner::gate_dispatch::acquire_compile_ownership(
+            workdir,
+            1,
+            std::time::Duration::from_secs(5),
+            "other-plan",
+            "T9",
+            "cargo build",
+        )
+        .await
+        .expect("compile permit");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            verify_step_locked(&gate, &signal, &ctx, workdir, 1, &step, "plan", "T1"),
+        )
+        .await
+        .expect_err("the re-run must wait for the compile lock");
+        assert!(!marker.exists(), "the step ran without the compile lock");
+
+        drop(held);
+        let verdict =
+            verify_step_locked(&gate, &signal, &ctx, workdir, 1, &step, "plan", "T1").await;
+        assert!(verdict.passed, "{verdict:?}");
+        assert!(marker.exists());
+    }
+
     #[tokio::test]
     async fn verified_outcome_drives_output_verdict_and_feedback() {
         let temp = tempdir().expect("tempdir");
@@ -2422,6 +2528,48 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let text = prompt();
         assert!(text.contains("true # the own step"), "{text}");
         assert!(!text.contains("the lint rung"), "opted out:\n{text}");
+    }
+
+    /// gap-69a56e: a task's gate-profile hints choose optional workspace
+    /// rungs. A hardened task runs every declared rung, a task that names test
+    /// invariants also the rungs that run tests, and any other task only the
+    /// required ones.
+    #[tokio::test]
+    async fn quality_profile_and_test_invariants_select_gate_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                config.gates.custom_rungs = vec![
+                    rung("compile", "true # compile", true),
+                    rung("test", "true # test", false),
+                    rung("audit", "true # audit", false),
+                ];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = Vec::new();
+        let rungs_of = |task: &TaskDef| -> Vec<String> {
+            dispatcher
+                .verify_steps(&make_spec(task), task)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect()
+        };
+        assert_eq!(rungs_of(&task), ["rung[compile]"]);
+
+        let mut invariants = task.clone();
+        invariants.hints.test_invariants = Some(vec!["INV-1".to_string()]);
+        assert_eq!(rungs_of(&invariants), ["rung[compile]", "rung[test]"]);
+
+        let mut hardened = task.clone();
+        hardened.hints.quality_profile = Some(roko_core::TaskQualityProfile::Hardened);
+        assert_eq!(
+            rungs_of(&hardened),
+            ["rung[compile]", "rung[test]", "rung[audit]"]
+        );
     }
 
     /// A pinned acceptance step is quoted by its header line, not its

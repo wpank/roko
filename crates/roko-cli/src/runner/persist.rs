@@ -847,12 +847,6 @@ pub fn save_orchestrator_snapshot(
     atomic_write(&paths.orchestrator_json, json.as_bytes())
 }
 
-/// Save the set of live agent PIDs.
-pub fn save_agent_pids(paths: &PersistPaths, pids: &[u32]) -> Result<()> {
-    let json = serde_json::to_string_pretty(&pids).context("serializing agent PIDs")?;
-    atomic_write(&paths.agent_pids_json, json.as_bytes())
-}
-
 /// Atomically write the runner-owned [`RunStateSnapshot`].
 pub fn save_run_state(paths: &PersistPaths, snapshot: &RunStateSnapshot) -> Result<()> {
     let json = serde_json::to_string_pretty(snapshot).context("serializing run state")?;
@@ -1275,34 +1269,6 @@ pub fn section_outcomes_path(workdir: &Path) -> PathBuf {
         .join("section-outcomes.jsonl")
 }
 
-/// Read previously-saved agent PIDs and kill any that are still alive.
-pub fn cleanup_orphaned_agents(paths: &PersistPaths) {
-    let Ok(content) = fs::read_to_string(&paths.agent_pids_json) else {
-        return;
-    };
-    let pids = match serde_json::from_str::<Vec<u32>>(&content) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                path = %paths.agent_pids_json.display(),
-                err = %e,
-                "malformed agent PID file — removing"
-            );
-            let _ = fs::remove_file(&paths.agent_pids_json);
-            return;
-        }
-    };
-
-    for pid in pids {
-        // Delegate to roko-agent's registry-based cleanup.
-        roko_agent::process::register_spawned_pid(pid);
-    }
-    roko_agent::process::cleanup_orphaned_agents();
-
-    // Clean up the PID file.
-    let _ = fs::remove_file(&paths.agent_pids_json);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1379,17 +1345,6 @@ mod tests {
             }
         );
         assert_eq!(fs::read(&path).unwrap(), b"");
-    }
-
-    #[test]
-    fn save_agent_pids_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
-        save_agent_pids(&paths, &[1234, 5678]).unwrap();
-
-        let content = fs::read_to_string(&paths.agent_pids_json).unwrap();
-        let pids: Vec<u32> = serde_json::from_str(&content).unwrap();
-        assert_eq!(pids, vec![1234, 5678]);
     }
 
     #[test]
@@ -1660,7 +1615,11 @@ mod tests {
         let test = &thresholds.rungs[&2];
         assert_eq!(test.total_count, 16, "{thresholds:?}");
         assert_eq!(test.pass_count, 8, "{thresholds:?}");
-        assert_eq!(thresholds.rungs.len(), 7, "every canonical rung is filled in");
+        assert_eq!(
+            thresholds.rungs.len(),
+            7,
+            "every canonical rung is filled in"
+        );
     }
 
     /// bug-35c901: a gate-thresholds.json roko-acp wrote keeps the fields

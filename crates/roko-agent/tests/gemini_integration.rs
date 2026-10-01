@@ -230,6 +230,8 @@ fn gemini_model(slug: &str) -> ModelProfile {
         cost_per_request: None,
         use_max_completion_tokens: false,
         tier: None,
+        temperature: None,
+        seed: None,
     }
 }
 

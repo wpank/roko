@@ -10,15 +10,15 @@ goal = "learning"
 subsystem = ["roko-learn/efficiency"]
 created = 2026-09-01
 updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract"]
 links = { depends_on = [], blocks = [], related = ["bug-f9ae3e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! sed -n '/async fn emit_feedback/,/^    }/p' crates/roko-cli/src/graph_task_dispatch.rs | grep -Eq 'reasoning_tokens: 0,|time_to_first_token_ms: 0,|cost_usd_without_cache: cost_usd,|tools_available: eff_tool_calls.len'"
+command = "! sed -n '/async fn emit_feedback/,/^    }/p' crates/roko-cli/src/graph_task_dispatch/feedback.rs | grep -Eq 'reasoning_tokens: 0,|time_to_first_token_ms: 0,|cost_usd_without_cache: cost_usd,|tools_available: eff_tool_calls.len'"
 +++
 
 ## Problem
@@ -141,6 +141,20 @@ and latency are invisible in `roko learn efficiency` and in serve's projections 
 - Not parallel-safe with `bug-f9ae3e` (same lines of `emit_feedback`). Safe alongside other work.
 - Option A of step 4 touches the provider adapters in roko-agent; if that grows, split TTFT into its own item
   and land steps 1-3 and 5 first.
+
+- 2026-10-01 (wk-settle): PARTIAL on work/bug-f9ae3e; cargo verification deferred to the batch check. Plan steps
+  1, 2, 3 and 5 landed in `graph_task_dispatch/feedback.rs::emit_feedback`:
+  - `reasoning_tokens` comes from the usage, else its observation, else the streamed `TokenUsage` events
+    (`reported_reasoning_tokens`), and `dispatch_events_from_result` and the streaming path forward the result's
+    reasoning tokens instead of 0.
+  - `cost_usd_without_cache` uses `Usage::cost_without_cache` priced like `fill_usage_cost_from_pricing` (profile,
+    then built-in pricing; `dispatch_v2::usage_cost_without_cache`), never below `cost_usd`.
+  - `tools_available` is the contract allowlist's length, or 0 (unknown).
+  - `strategy_attempted` is `initial`, `retry`, or `replan` with `replan_on_gate_failure`.
+  - Test: `graph_efficiency_event_populates_usage_fields`. The verify command's `sed` now reads `feedback.rs`.
+- Left: step 4, `time_to_first_token_ms`. Nothing reachable from `emit_feedback` timestamps the first output, and
+  option A needs the provider adapters in roko-agent to report it. The verify command fails on that pattern until
+  it lands.
 
 ## Original notes
 

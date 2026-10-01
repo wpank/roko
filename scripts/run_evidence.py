@@ -1527,17 +1527,17 @@ def capture_graph_diagnose(
     destination: pathlib.Path,
     bundle: pathlib.Path,
 ) -> tuple[dict[str, Any], Any]:
-    """Run the read-only `roko diagnose <plan>` and keep its bounded answer."""
+    """Run the read-only `roko diagnose <plan> --json` and keep its bounded answer."""
     started = time.monotonic()
     result = run_bounded_command(
-        [str(binary), "diagnose", plan_id],
+        [str(binary), "diagnose", plan_id, "--json"],
         cwd,
         timeout=timeout,
         stdout_limit=MAX_DIAGNOSE_BYTES,
         env=env,
     )
     record: dict[str, Any] = {
-        "argv": ["roko", "diagnose", plan_id],
+        "argv": ["roko", "diagnose", plan_id, "--json"],
         "duration_ms": round((time.monotonic() - started) * 1000),
         **bounded_capture_metadata(result),
     }

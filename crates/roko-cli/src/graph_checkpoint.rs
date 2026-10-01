@@ -30,7 +30,10 @@ use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
-use roko_graph::replay::{RecordEntry, retain_recorded_activities};
+use roko_graph::replay::{
+    RecordEntry, committed_activity_len, retain_recorded_activities,
+    set_aside_uncommitted_activities,
+};
 use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
     plan_graph_fingerprint,
@@ -1319,6 +1322,19 @@ fn resume_checkpoint(
     plan_id: &str,
     graph: &Graph,
 ) -> Result<PreparedGraphCheckpoint> {
+    // A record whose write did not finish, such as a line a crash tore, was
+    // never committed: set it aside rather than fail on it, so the log ends
+    // in its last complete record and its node runs again (gap-dc1d16).
+    let uncommitted = set_aside_uncommitted_activities(&paths.activities)
+        .with_context(|| format!("set aside the torn end of {}", paths.activities.display()))?;
+    if let Some(aside) = uncommitted {
+        tracing::warn!(
+            activities = %paths.activities.display(),
+            set_aside = %aside.display(),
+            "resume: the Activity log ended in a record whose write did not finish; \
+             set it aside, and its node runs again"
+        );
+    }
     // Never resume a task whose recorded output was not verified: drop those
     // records so the nodes re-run.
     let invalidated_on_resume = invalidate_unverified_activities(&paths.activities, graph)?;
@@ -2126,8 +2142,17 @@ fn preview_graph_checkpoint(
     if let Err(error) = GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
         return Ok(preview.unusable(force_resume, format!("{error:#}")));
     }
-    let replayer = match ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
-    {
+    // A resume sets aside a record whose write did not finish, so only the
+    // committed records count here.
+    let loaded = committed_activity_len(&paths.activities).and_then(|committed| {
+        ActivityReplayer::load_scoped_committed(
+            &paths.activities,
+            plan_id,
+            &manifest.run_id,
+            committed,
+        )
+    });
+    let replayer = match loaded {
         Ok(replayer) => replayer,
         Err(error) => {
             return Ok(preview.refused(format!(
@@ -3355,6 +3380,57 @@ depends_on = ["T1"]
         let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
             .expect("second resume");
         assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
+    }
+
+    #[test]
+    fn resume_sets_aside_a_torn_activity_record() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let activities = fresh.paths().activities.clone();
+        let committed = std::fs::read(&activities).expect("committed log");
+        // The process died while it appended a record, in the middle of a
+        // multi-byte character.
+        let torn: &[u8] = b"{\"graph_id\":\"p\",\"node_id\":\"task-2\",\"text\":\"\xe2\x82";
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, torn).expect("tear the log");
+        drop(log);
+
+        // The preview changes no file, and expects what the resume does.
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.restored_tasks, ["task-1"]);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("a torn record does not block resume");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(std::fs::read(&activities).expect("log"), committed);
+        let set_aside: Vec<Vec<u8>> = std::fs::read_dir(activities.parent().expect("dir"))
+            .expect("checkpoint dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.to_string_lossy().contains(".uncommitted."))
+            .map(|path| std::fs::read(path).expect("set-aside bytes"))
+            .collect();
+        assert_eq!(set_aside, [torn.to_vec()]);
+
+        // The resumed run appends after the last complete record.
+        resumed
+            .take_recorder()
+            .record("p", "task-2", 0, Vec::new())
+            .expect("record");
+        let replayer = ActivityReplayer::load_scoped(&activities, "p", &run_id).expect("log");
+        assert_eq!(replayer.entry_count(), 2);
     }
 
     #[test]

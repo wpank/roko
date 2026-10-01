@@ -2636,7 +2636,10 @@ depends_on_plan = ["missing-foundation"]
         assert!(effort[0].contains("default_effort"), "{effort:?}");
 
         let preflight = graph_unsupported_flags(None, None, true, false, 60, None, None);
-        assert!(preflight[0].starts_with("--skip-preflight"), "{preflight:?}");
+        assert!(
+            preflight[0].starts_with("--skip-preflight"),
+            "{preflight:?}"
+        );
 
         let dir = std::path::Path::new("shots");
         for shots in [
@@ -2651,15 +2654,8 @@ depends_on_plan = ["missing-foundation"]
         let batch = graph_unsupported_flags(None, None, false, false, 60, None, Some(5));
         assert!(batch[0].starts_with("--batch-size"), "{batch:?}");
 
-        let all = graph_unsupported_flags(
-            Some("s1"),
-            Some(&high),
-            true,
-            true,
-            30,
-            Some(dir),
-            Some(5),
-        );
+        let all =
+            graph_unsupported_flags(Some("s1"), Some(&high), true, true, 30, Some(dir), Some(5));
         assert_eq!(all.len(), 5, "{all:?}");
     }
 }

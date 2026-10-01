@@ -178,9 +178,9 @@ const BLOCK_CLOSERS: &[&str] = &["done", "fi", "esac", "}"];
 /// Programs that print or copy the files they are given, besides the
 /// searchers, and so read a secret when a list they run on names one.
 const READERS: &[&str] = &[
-    "cat", "tac", "head", "tail", "less", "more", "nl", "sed", "awk", "gawk", "cut", "sort", "uniq",
-    "strings", "od", "xxd", "hexdump", "base64", "diff", "paste", "jq", "yq", "cp", "rsync", "tar",
-    "zip",
+    "cat", "tac", "head", "tail", "less", "more", "nl", "sed", "awk", "gawk", "cut", "sort",
+    "uniq", "strings", "od", "xxd", "hexdump", "base64", "diff", "paste", "jq", "yq", "cp",
+    "rsync", "tar", "zip",
 ];
 /// Most words a brace expansion or a glob in one component may yield.
 const EXPANSION_LIMIT: usize = 1024;
@@ -402,7 +402,9 @@ pub(super) fn shell_tokens(text: &str) -> Option<Vec<Token>> {
                     tokens.push(Token::Separator(";".to_string()));
                 } else if !c.is_ascii_whitespace() {
                     let mut operator = c.to_string();
-                    if let Some(&next) = chars.peek() && is_doubled_operator(c, next) {
+                    if let Some(&next) = chars.peek()
+                        && is_doubled_operator(c, next)
+                    {
                         operator.push(next);
                         chars.next();
                     }
@@ -427,7 +429,10 @@ pub(super) fn shell_tokens(text: &str) -> Option<Vec<Token>> {
 
 /// Whether `c` and `next` make one operator (`&&`, `||`, `|&`, `>>`, `<<`).
 const fn is_doubled_operator(c: char, next: char) -> bool {
-    matches!((c, next), ('&', '&') | ('|', '|' | '&') | ('>', '>') | ('<', '<'))
+    matches!(
+        (c, next),
+        ('&', '&') | ('|', '|' | '&') | ('>', '>') | ('<', '<')
+    )
 }
 
 /// The tokens of `text`; with a quote left open, as in a heredoc, those of
@@ -1014,7 +1019,11 @@ fn check_search(
     if searcher.name == "grep" && !recursive {
         return Ok(());
     }
-    if !names.iter().any(|name| searcher.pattern_options.contains(name)) && !operands.is_empty() {
+    if !names
+        .iter()
+        .any(|name| searcher.pattern_options.contains(name))
+        && !operands.is_empty()
+    {
         operands.remove(0);
     }
     if search_skips_config(&options, searcher.name) {
@@ -1106,7 +1115,10 @@ fn check_git(walk: &Walk, arguments: &[String]) -> Result<(), ToolError> {
             index += 1;
         }
     }
-    if arguments.get(index).is_some_and(|subcommand| subcommand == "grep") {
+    if arguments
+        .get(index)
+        .is_some_and(|subcommand| subcommand == "grep")
+    {
         check_git_grep(&arguments[index + 1..], &directory)?;
     }
     Ok(())

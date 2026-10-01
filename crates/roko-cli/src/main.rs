@@ -5985,11 +5985,13 @@ mod tests {
     fn resolve_workdir_still_redirects_from_the_data_dir() {
         let tmp = tempdir().unwrap();
         let project = tmp.path().canonicalize().unwrap();
-        let state = project.join(".roko").join("state");
+        let data_dir = project.join(".roko");
+        let state = data_dir.join("state");
         std::fs::create_dir_all(&state).unwrap();
 
-        assert_eq!(enclosing_project_of_data_dir(&state), Some(project.clone()));
-        assert_eq!(enclosing_project_of_data_dir(&project.join(".roko")), Some(project.clone()));
+        let expected = Some(project.clone());
+        assert_eq!(enclosing_project_of_data_dir(&state), expected);
+        assert_eq!(enclosing_project_of_data_dir(&data_dir), expected);
         assert_eq!(enclosing_project_of_data_dir(&project), None);
         // An explicit --repo is used as given, with a warning.
         let cli = Cli::try_parse_from(["roko", "--repo", state.to_str().unwrap()]).unwrap();
@@ -8573,7 +8575,11 @@ mod tests {
                 "a 401 outside an HTTP status must not blame the API key: {msg}"
             );
         }
-        for msg in ["HTTP 401", "request returned status 401", "server returned HTTP 401."] {
+        for msg in [
+            "HTTP 401",
+            "request returned status 401",
+            "server returned HTTP 401.",
+        ] {
             let hint = error_hint(msg);
             assert!(
                 hint.is_some_and(|h| h.contains("API key")),
@@ -8587,14 +8593,20 @@ mod tests {
         let msg = "API key invalid for provider 'openai' (HTTP 401). Check $OPENAI_API_KEY";
         let hint = error_hint(msg).expect("a provider 401 gets a hint");
         assert!(hint.contains("roko config check-secrets"), "got: {hint}");
-        assert!(!hint.contains("ROKO_API_KEY"), "ROKO_API_KEY is the serve key, got: {hint}");
+        assert!(
+            !hint.contains("ROKO_API_KEY"),
+            "ROKO_API_KEY is the serve key, got: {hint}"
+        );
     }
 
     #[test]
     fn error_hint_points_serve_auth_at_roko_api_key() {
         let msg = "the workspace server rejected the request (401): server returned HTTP 401";
         let hint = error_hint(msg).expect("a serve 401 gets a hint");
-        assert!(hint.contains("ROKO_API_KEY") && hint.contains("roko login"), "got: {hint}");
+        assert!(
+            hint.contains("ROKO_API_KEY") && hint.contains("roko login"),
+            "got: {hint}"
+        );
     }
 
     // ─── Impact CLI parsing ─────────────────────────────────────────────

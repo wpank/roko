@@ -1166,7 +1166,10 @@ fn session_update_spec_conformance() {
     let conforming = |update: SessionUpdate| {
         let params = json!({ "sessionId": "sess-1", "update": update });
         let errors = acp_schema_errors(&params, &defs["SessionNotification"], defs, "params");
-        assert!(errors.is_empty(), "{params} is not a spec session/update: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "{params} is not a spec session/update: {errors:?}"
+        );
         params["update"].clone()
     };
     let mapped = |event: CognitiveEvent| map_event_to_update(event).expect("maps to an update");
@@ -1184,7 +1187,10 @@ fn session_update_spec_conformance() {
     ] {
         let value = serde_json::to_value(&kind).expect("serialize tool kind");
         let errors = acp_schema_errors(&value, &defs["ToolKind"], defs, "kind");
-        assert!(errors.is_empty(), "{kind:?} is not a spec ToolKind: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "{kind:?} is not a spec ToolKind: {errors:?}"
+        );
     }
 
     conforming(mapped(CognitiveEvent::TokenChunk("hello".to_owned())));

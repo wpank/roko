@@ -135,8 +135,14 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
 ];
 
 /// Claude Code's managed-settings directory, where an administrator puts
-/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it. This
+/// crate's tests look in a directory that never exists instead, so that they
+/// do not depend on the host's managed config; a test that wants one passes
+/// its own directory ([`ClaudeIsolation::with_managed_settings_dir`]).
 fn claude_managed_settings_dir() -> PathBuf {
+    if cfg!(test) {
+        return PathBuf::from("/nonexistent/roko-tests/claude-code-managed-settings");
+    }
     PathBuf::from(if cfg!(target_os = "macos") {
         "/Library/Application Support/ClaudeCode"
     } else if cfg!(windows) {
@@ -2897,6 +2903,29 @@ mod tests {
             .position(|arg| arg == "--mcp-config")
             .expect("workspace MCP config");
         assert_eq!(args[mcp + 1], own.to_string_lossy());
+    }
+
+    /// bug-a70def: the isolation tests read no managed MCP config from the
+    /// host, so they pass whether or not it has one; a test that wants one
+    /// points the isolation at its own directory.
+    #[test]
+    fn mcp_isolation_tests_ignore_the_hosts_managed_mcp_json() {
+        let host_dir = claude_managed_settings_dir();
+        assert!(!host_dir.exists(), "{} exists", host_dir.display());
+        let strict = |args: &[String]| args.iter().any(|arg| arg == "--strict-mcp-config");
+        let workdir = tempdir().unwrap();
+        let isolation = ClaudeIsolation::new(workdir.path());
+        assert_eq!(isolation.managed_mcp_config(), None);
+        assert!(strict(&isolation.args()));
+        assert_eq!(isolation.mcp_config_refusal(), None);
+
+        let tmp = tempdir().unwrap();
+        let managed = tmp.path();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let isolation = isolation.with_managed_settings_dir(managed);
+        assert!(isolation.managed_mcp_config().is_some());
+        assert!(!strict(&isolation.args()));
+        assert!(isolation.mcp_config_refusal().is_some());
     }
 
     #[tokio::test]

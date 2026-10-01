@@ -42,7 +42,8 @@ pub struct TurnProgress {
     pub iteration: usize,
     /// Tool calls dispatched this turn.
     pub tool_calls: Vec<ToolCall>,
-    /// Brief text summaries of tool results (truncated to 120 chars each).
+    /// Brief text summaries of tool results (truncated to 120 chars each),
+    /// index-aligned with `tool_calls`.
     pub tool_results: Vec<String>,
     /// Any text the LLM produced alongside tool calls (often empty).
     pub text_output: String,
@@ -686,16 +687,33 @@ fn trace_turn(iterations: usize) -> u32 {
     capped as u32
 }
 
-fn tool_result_previews(results: &[(ToolCall, roko_core::tool::ToolResult)]) -> Vec<String> {
-    results
-        .iter()
-        .map(|(_call, result)| match result {
-            roko_core::tool::ToolResult::Ok { .. } => truncate_preview(&result.text_content(), 120),
-            roko_core::tool::ToolResult::Err(err) => {
-                truncate_preview(&format!("error: {err}"), 120)
-            }
-        })
-        .collect()
+/// Previews of a turn's results, one per call in `calls` and in their order:
+/// `dispatch_batch` returns parallel results as they complete, so each call
+/// takes the result that carries its id. A call without one gets a note.
+fn tool_result_previews(
+    calls: &[ToolCall],
+    results: &[(ToolCall, roko_core::tool::ToolResult)],
+) -> Vec<String> {
+    let mut unpaired: Vec<&(ToolCall, roko_core::tool::ToolResult)> = results.iter().collect();
+    let mut previews = Vec::with_capacity(calls.len());
+    for call in calls {
+        let index = unpaired
+            .iter()
+            .position(|(result_call, _)| result_call.id == call.id);
+        let preview = match index {
+            Some(index) => tool_result_preview(&unpaired.remove(index).1),
+            None => "error: no result for this call".to_string(),
+        };
+        previews.push(preview);
+    }
+    previews
+}
+
+fn tool_result_preview(result: &roko_core::tool::ToolResult) -> String {
+    match result {
+        roko_core::tool::ToolResult::Ok { .. } => truncate_preview(&result.text_content(), 120),
+        roko_core::tool::ToolResult::Err(err) => truncate_preview(&format!("error: {err}"), 120),
+    }
 }
 
 fn truncate_preview(text: &str, max_chars: usize) -> String {
@@ -1379,7 +1397,7 @@ impl ToolLoop {
             let current_calls = calls.clone();
             let results = self.dispatcher.dispatch_batch(calls, ctx).await;
             all_calls.extend(current_calls.clone());
-            let tool_results = tool_result_previews(&results);
+            let tool_results = tool_result_previews(&current_calls, &results);
 
             // §36.56 — shape results into messages for the next turn.
             let rendered_results = self.translator.render_results(&results);
@@ -2678,6 +2696,49 @@ mod tests {
             other => panic!("expected BackendError, got {other:?}"),
         }
         assert_eq!(backend.attempts(), 1);
+    }
+
+    /// bug-7debad (TD-006): `dispatch_batch` returns parallel results as they
+    /// complete, but a turn's trace keeps each result's preview beside its call.
+    #[tokio::test]
+    async fn turn_trace_pairs_results_with_their_calls() {
+        struct SlowFirstHandler;
+        #[async_trait]
+        impl ToolHandler for SlowFirstHandler {
+            fn name(&self) -> &str {
+                "echo"
+            }
+            async fn execute(&self, call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+                // The first call (`{"a": 1}`) finishes after the second.
+                if call.arguments.get("a").is_some() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                ToolResult::text(call.arguments.to_string())
+            }
+        }
+        let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+            Arc::new(VecToolRegistry::from_tools(test_tools()));
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(|name: &str| -> Option<Arc<dyn ToolHandler>> {
+                if name == "echo" {
+                    Some(Arc::new(SlowFirstHandler) as Arc<dyn ToolHandler>)
+                } else {
+                    None
+                }
+            });
+        let dispatcher = Arc::new(ToolDispatcher::new_unguarded(registry, resolver));
+        let translator: Arc<dyn Translator> = Arc::new(MockTranslator);
+        let backend: Arc<dyn LlmBackend> = Arc::new(ParallelCallsBackend::new());
+        let tl = ToolLoop::new(translator, dispatcher, backend).with_max_iterations(25);
+        let ctx = ToolContext::testing("/tmp");
+
+        let out = tl.run("system", "user", &test_tools(), &ctx).await;
+
+        let trace = out.turn_traces.first().expect("a tool turn");
+        let ids: Vec<&str> = trace.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["p1", "p2"]);
+        assert!(trace.tool_results[0].contains("\"a\""), "{:?}", trace.tool_results);
+        assert!(trace.tool_results[1].contains("\"b\""), "{:?}", trace.tool_results);
     }
 
     #[tokio::test]

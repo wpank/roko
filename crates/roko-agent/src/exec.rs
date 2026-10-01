@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -35,8 +36,8 @@ use tokio_util::task::AbortOnDropHandle;
 ///
 /// Codex's built-in file/shell/web operations are not roko tool calls; they
 /// bypass [`crate::dispatcher::ToolDispatcher`] because Codex owns its own
-/// tool loop. This policy type intercepts the JSONL event stream post-execution
-/// to enforce roko's deny/allow list at the operation level.
+/// tool loop. This policy type checks the JSONL event stream as Codex writes
+/// it to enforce roko's deny/allow list at the operation level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexOperationType {
     /// Shell/process execution (`command_execution` events).
@@ -103,10 +104,10 @@ impl CodexOperationType {
 ///
 /// Codex runs its own internal tool loop and does not surface individual
 /// tool-call approval points to the roko dispatcher. The only practical
-/// enforcement boundary is the JSONL output stream that Codex emits after
-/// each operation. By scanning that stream before returning a result roko can
-/// detect and reject unauthorised operations even though it cannot prevent
-/// them from executing inside the Codex subprocess.
+/// enforcement boundary is the JSONL output stream that Codex emits as each
+/// operation starts and completes. `ExecAgent` checks that stream while Codex
+/// runs and stops the process at the first denied operation, which bounds
+/// what the operation can do but cannot prevent it from starting.
 ///
 /// For stronger pre-execution guarantees consider sandboxing the subprocess
 /// at the OS level (namespaces, Landlock, Apple Sandbox) or using
@@ -206,9 +207,10 @@ const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
 /// Returns `Ok(())` when all observed operations are permitted, or `Err` with
 /// a human-readable description of the first policy violation found.
 ///
-/// This is the post-execution enforcement boundary: it cannot prevent Codex
-/// from running the operation, but it will cause the overall agent turn to be
-/// rejected before roko persists or acts on the output.
+/// `ExecAgent` runs this after Codex exits, as the last check before roko
+/// persists or acts on the output. It catches the denials that
+/// [`CodexStreamBroker`] had no chance to act on: one in a final line without
+/// a newline, or one that arrived as Codex exited.
 fn check_codex_output_against_policy(
     raw: &str,
     policy: &CodexOperationPolicy,
@@ -216,57 +218,90 @@ fn check_codex_output_against_policy(
     if !policy.has_constraints() {
         return Ok(());
     }
+    match raw
+        .lines()
+        .find_map(|line| codex_line_violation(line, policy))
+    {
+        Some(violation) => Err(violation),
+        None => Ok(()),
+    }
+}
 
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+/// The violation in one line of Codex JSONL: a description of the operation
+/// it starts or completes, when `policy` denies that operation.
+fn codex_line_violation(line: &str, policy: &CodexOperationPolicy) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let event = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    // Enforce on both item.started (pre-output) and item.completed (post-output).
+    if event_type != "item.started" && event_type != "item.completed" {
+        return None;
+    }
+    let item = event.get("item")?;
+    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let op = CodexOperationType::from_item_type(item_type)?;
+    if policy.permits(&op) {
+        return None;
+    }
+    let detail = match op {
+        CodexOperationType::CommandExecution => {
+            let cmd = item
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            format!("command_execution denied by policy: {cmd}")
         }
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        // Enforce on both item.started (pre-output) and item.completed (post-output).
-        if event_type != "item.started" && event_type != "item.completed" {
-            continue;
+        CodexOperationType::FileChange => {
+            let paths: Vec<&str> = item
+                .get("changes")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if paths.is_empty() {
+                "file_change denied by policy".to_string()
+            } else {
+                format!("file_change denied by policy: {}", paths.join(", "))
+            }
         }
-        let Some(item) = event.get("item") else {
-            continue;
-        };
-        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let Some(op) = CodexOperationType::from_item_type(item_type) else {
-            continue;
-        };
-        if !policy.permits(&op) {
-            let detail = match op {
-                CodexOperationType::CommandExecution => {
-                    let cmd = item
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<unknown>");
-                    format!("command_execution denied by policy: {cmd}")
-                }
-                CodexOperationType::FileChange => {
-                    let paths: Vec<&str> = item
-                        .get("changes")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if paths.is_empty() {
-                        "file_change denied by policy".to_string()
-                    } else {
-                        format!("file_change denied by policy: {}", paths.join(", "))
-                    }
-                }
+    };
+    Some(detail)
+}
+
+/// Checks Codex's JSONL while the process runs, so that `ExecAgent` can stop
+/// it when a denied operation starts rather than find the operation after
+/// Codex exits.
+struct CodexStreamBroker {
+    policy: CodexOperationPolicy,
+    /// Bytes of output already checked; they always end at a newline.
+    checked: usize,
+    /// Told the first denied operation; `None` once it has been.
+    denied: Option<oneshot::Sender<String>>,
+}
+
+impl CodexStreamBroker {
+    /// Check each complete line of `output` past the bytes already checked.
+    fn check(&mut self, output: &[u8]) {
+        while self.denied.is_some() {
+            let rest = &output[self.checked..];
+            let Some(end) = rest.iter().position(|byte| *byte == b'\n') else {
+                return;
             };
-            return Err(detail);
+            let line = String::from_utf8_lossy(&rest[..end]);
+            self.checked += end + 1;
+            if let Some(violation) = codex_line_violation(&line, &self.policy)
+                && let Some(denied) = self.denied.take()
+            {
+                let _ = denied.send(violation);
+            }
         }
     }
-    Ok(())
 }
 
 /// An agent that spawns a subprocess, pipes the input's text body to stdin,
@@ -302,8 +337,8 @@ pub struct ExecAgent {
     /// Optional operation-level policy broker for Codex CLI JSONL output.
     ///
     /// When set, each Codex operation event in the output stream is checked
-    /// against this policy before the agent turn is accepted. Any denied
-    /// operation causes the turn to fail with a policy-violation error.
+    /// against this policy as it arrives. The first denied operation stops
+    /// the process and fails the turn with a policy-violation error.
     /// Only meaningful when `extract_codex_jsonl` is `true`.
     codex_operation_policy: Option<CodexOperationPolicy>,
 }
@@ -425,9 +460,9 @@ impl ExecAgent {
     /// Attach a Codex operation policy broker.
     ///
     /// When set and `extract_codex_jsonl` is enabled, the raw JSONL output is
-    /// scanned for `command_execution` and `file_change` operation events.
-    /// Any operation that violates the policy causes the entire agent turn to
-    /// be rejected before the output is returned to the caller (fail-closed).
+    /// checked for `command_execution` and `file_change` operation events as
+    /// Codex writes it. The first operation that violates the policy stops
+    /// the process, and the entire agent turn is rejected (fail-closed).
     ///
     /// Use [`CodexOperationPolicy::from_contract`] to derive a policy from an
     /// [`AgentContract`](crate::safety::contract::AgentContract).
@@ -570,6 +605,10 @@ impl Agent for ExecAgent {
         let has_activity = Arc::new(AtomicBool::new(false));
 
         // Stream stdout in chunks, reporting progress without altering content.
+        // A Codex run's operations are checked against its policy as they
+        // arrive.
+        let (denied_tx, mut denied_rx) = oneshot::channel();
+        let mut broker = self.codex_stream_broker(denied_tx);
         let stdout_name = self.name.clone();
         let stdout_activity = has_activity.clone();
         let stdout_handle = tokio::spawn(async move {
@@ -585,6 +624,9 @@ impl Agent for ExecAgent {
                     Ok(n) => {
                         collected.extend_from_slice(&buf[..n]);
                         stdout_activity.store(true, Ordering::Relaxed);
+                        if let Some(broker) = broker.as_mut() {
+                            broker.check(&collected);
+                        }
                         // Report progress every ~4KB.
                         if collected.len() - last_report >= 4096 || last_report == 0 {
                             tracing::debug!(
@@ -639,8 +681,31 @@ impl Agent for ExecAgent {
             }
         }));
 
-        // Wait for exit with timeout.
-        let status = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
+        // Wait for exit with timeout. An operation the Codex policy denies
+        // stops the process at once.
+        let waited = tokio::select! {
+            waited = timeout(Duration::from_millis(self.timeout_ms), child.wait()) => waited,
+            Ok(violation) = &mut denied_rx => {
+                heartbeat_handle.abort();
+                let _ = kill_tree(&mut child, Duration::ZERO).await;
+                if track_pids()
+                    && let Some(pid) = pid
+                {
+                    unregister_pid(pid);
+                }
+                tracing::warn!(
+                    agent = %self.name,
+                    %violation,
+                    "Codex operation denied by policy broker; process stopped"
+                );
+                return self.failure_signal(
+                    input,
+                    &format!("Codex operation policy violation: {violation}"),
+                    started,
+                );
+            }
+        };
+        let status = match waited {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => {
                 heartbeat_handle.abort();
@@ -678,10 +743,10 @@ impl Agent for ExecAgent {
         let raw_stdout = stdout_handle.await.unwrap_or_default();
 
         // ── Codex operation policy broker ────────────────────────────────────
-        // Scan the raw JSONL before extracting text.  This is the primary
-        // enforcement boundary for Codex built-in operations (command_execution,
-        // file_change) that bypass the roko ToolDispatcher.  Fail-closed: any
-        // denied or unrecognised-in-policy operation rejects the whole turn.
+        // Scan the raw JSONL before extracting text.  The live check above
+        // stops the process at a denied operation; this scan catches one it
+        // had no chance to act on.  Fail-closed: any denied or
+        // unrecognised-in-policy operation rejects the whole turn.
         if self.extract_codex_jsonl {
             if let Some(ref policy) = self.codex_operation_policy {
                 if let Err(violation) = check_codex_output_against_policy(&raw_stdout, policy) {
@@ -772,6 +837,20 @@ impl Agent for ExecAgent {
 }
 
 impl ExecAgent {
+    /// The live check for a Codex run whose policy has constraints; `denied`
+    /// is told the first operation it denies.
+    fn codex_stream_broker(&self, denied: oneshot::Sender<String>) -> Option<CodexStreamBroker> {
+        let policy = self.codex_operation_policy.as_ref()?;
+        if !self.extract_codex_jsonl || !policy.has_constraints() {
+            return None;
+        }
+        Some(CodexStreamBroker {
+            policy: policy.clone(),
+            checked: 0,
+            denied: Some(denied),
+        })
+    }
+
     fn failure_signal(&self, input: &Signal, reason: &str, started: Instant) -> AgentResult {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let output = derived_output(input, Kind::AgentOutput, Body::text(reason))
@@ -1150,5 +1229,133 @@ mod tests {
         let result = agent.run(&prompt(""), &Context::now()).await;
         assert!(result.success);
         assert!(result.trace.is_empty());
+    }
+
+    #[test]
+    fn codex_policy_from_contract_maps_tool_names_to_operations() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let forbids_bash = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["Bash".into()])],
+            ..AgentContract::default()
+        };
+        let policy = CodexOperationPolicy::from_contract(&forbids_bash);
+        assert!(!policy.permits(&CodexOperationType::CommandExecution));
+        assert!(policy.permits(&CodexOperationType::FileChange));
+
+        // The live run's allowlist: no command tool, one edit tool.
+        let allowlist = AgentContract {
+            allowed_tools: Some(vec!["grep".into(), "read_file".into(), "write_file".into()]),
+            ..AgentContract::default()
+        };
+        let policy = CodexOperationPolicy::from_contract(&allowlist);
+        assert!(!policy.permits(&CodexOperationType::CommandExecution));
+        assert!(policy.permits(&CodexOperationType::FileChange));
+
+        let restricted = CodexOperationPolicy::from_contract(&AgentContract::restricted("x"));
+        assert!(!restricted.permits(&CodexOperationType::CommandExecution));
+        assert!(!restricted.permits(&CodexOperationType::FileChange));
+
+        let open = CodexOperationPolicy::from_contract(&AgentContract::default());
+        assert!(!open.has_constraints());
+        assert!(open.permits(&CodexOperationType::CommandExecution));
+    }
+
+    #[test]
+    fn codex_policy_denial_wins_over_the_allowlist() {
+        let policy = CodexOperationPolicy {
+            allowed: Some(vec![CodexOperationType::CommandExecution]),
+            denied: vec![CodexOperationType::CommandExecution],
+        };
+        assert!(!policy.permits(&CodexOperationType::CommandExecution));
+        assert!(!policy.permits(&CodexOperationType::FileChange));
+        assert!(CodexOperationPolicy::allow_all().permits(&CodexOperationType::FileChange));
+        assert!(!CodexOperationPolicy::deny_all().permits(&CodexOperationType::FileChange));
+    }
+
+    #[test]
+    fn codex_output_scan_reports_the_first_denied_operation() {
+        let policy = CodexOperationPolicy {
+            allowed: None,
+            denied: vec![CodexOperationType::FileChange],
+        };
+        let output = concat!(
+            "not json\n",
+            r#"{"type":"item.started","item":{"type":"command_execution","command":"ls"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"file_change","#,
+            r#""changes":[{"path":"src/a.rs"},{"path":"src/b.rs"}]}}"#,
+            "\n",
+        );
+        let violation = check_codex_output_against_policy(output, &policy).unwrap_err();
+        assert_eq!(violation, "file_change denied by policy: src/a.rs, src/b.rs");
+
+        let allow_all = CodexOperationPolicy::allow_all();
+        assert!(check_codex_output_against_policy(output, &allow_all).is_ok());
+        let message = r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#;
+        let deny_all = CodexOperationPolicy::deny_all();
+        assert!(check_codex_output_against_policy(message, &deny_all).is_ok());
+    }
+
+    #[test]
+    fn codex_stream_broker_checks_each_complete_line_once() {
+        let (denied_tx, mut denied_rx) = oneshot::channel();
+        let mut broker = CodexStreamBroker {
+            policy: CodexOperationPolicy::deny_all(),
+            checked: 0,
+            denied: Some(denied_tx),
+        };
+        let line = r#"{"type":"item.started","item":{"type":"file_change","changes":[]}}"#;
+        let mut output = line.as_bytes()[..20].to_vec();
+        broker.check(&output);
+        assert!(denied_rx.try_recv().is_err(), "half a line is not checked");
+
+        output.extend_from_slice(&line.as_bytes()[20..]);
+        output.push(b'\n');
+        broker.check(&output);
+        assert_eq!(denied_rx.try_recv().unwrap(), "file_change denied by policy");
+        assert_eq!(broker.checked, output.len());
+        assert!(broker.denied.is_none());
+    }
+
+    /// gap-baab0a: the broker stops Codex when an operation its contract
+    /// denies starts, rather than reading the output after Codex exits.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn codex_restrictive_contract_is_enforced() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_file = temp.path().join("pid");
+        let started = concat!(
+            r#"{"type":"item.started","item":{"id":"item_0","type":"command_execution","#,
+            r#""command":"git fsck","status":"in_progress"}}"#,
+        );
+        let script = format!(
+            "echo $$ > '{}'; printf '%s\\n' '{started}'; exec sleep 30",
+            pid_file.display()
+        );
+        let contract = AgentContract {
+            role: "reviewer".into(),
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+            ..AgentContract::default()
+        };
+        let agent = exec_agent("sh", vec!["-c".into(), script])
+            .with_timeout_ms(10_000)
+            .with_extract_codex_jsonl(true)
+            .with_codex_operation_policy(CodexOperationPolicy::from_contract(&contract));
+
+        let run_started = Instant::now();
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().unwrap();
+        assert!(text.contains("Codex operation policy violation"), "{text}");
+        assert!(text.contains("git fsck"), "{text}");
+        assert!(run_started.elapsed() < Duration::from_secs(5));
+        let pid = std::fs::read_to_string(&pid_file).expect("pid file");
+        let pid: u32 = pid.trim().parse().expect("pid");
+        let identity = crate::process::identity::process_identity(pid);
+        assert!(identity.is_none(), "codex {pid} still runs: {identity:?}");
     }
 }

@@ -444,6 +444,20 @@ pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel {
     }
 }
 
+/// [`resolve_model`] that fails for a key no `[models.*]` entry, configured
+/// slug or builtin model resolves, instead of guessing its backend from the
+/// slug and returning no profile (gap-fd44df).
+pub fn try_resolve_model(config: &RokoConfig, model_key: &str) -> crate::Result<ResolvedModel> {
+    let resolved = resolve_model(config, model_key);
+    if resolved.profile.is_some() {
+        return Ok(resolved);
+    }
+    Err(crate::RokoError::Config(format!(
+        "unknown model `{model_key}`: no [models.*] entry, configured slug or builtin model \
+         matches it; add a [models.<name>] entry with its provider and slug"
+    )))
+}
+
 fn resolved_from_profile(
     config: &RokoConfig,
     model_key: &str,
@@ -1703,6 +1717,19 @@ mod tests {
             profile.use_max_completion_tokens,
             "o3 must have use_max_completion_tokens=true"
         );
+    }
+
+    /// gap-fd44df: a key nothing configures is an error naming it, not a
+    /// guess with no profile; configured and builtin models still resolve.
+    #[test]
+    fn try_resolve_model_rejects_a_key_nothing_configures() {
+        let config = RokoConfig::default();
+
+        let error = try_resolve_model(&config, "typo-model").expect_err("an unknown key");
+        assert!(error.to_string().contains("`typo-model`"), "{error}");
+        assert!(resolve_model(&config, "typo-model").profile.is_none());
+        let builtin = try_resolve_model(&config, "o3").expect("a builtin model");
+        assert!(builtin.profile.is_some());
     }
 
     #[test]

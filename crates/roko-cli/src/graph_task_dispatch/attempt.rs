@@ -623,8 +623,25 @@ fn executed_model(
         executed.models_reported = served.all_reported;
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
+        executed.sampling = request_sampling(&dispatch.target);
     }
     executed
+}
+
+/// The sampling parameters the attempt's requests carried, from the
+/// provider and model that ran (gap-13bbbd); empty when the provider's
+/// defaults applied, or the target named no provider config or profile.
+fn request_sampling(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())
+        .map(|(provider, model)| {
+            roko_agent::provider::openai_compat::request_sampling(provider, model)
+        })
+        .unwrap_or_default()
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or

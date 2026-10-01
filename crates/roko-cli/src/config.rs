@@ -1421,6 +1421,10 @@ pub struct ModelProfileLayer {
     pub use_max_completion_tokens: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_iterations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl ModelProfileLayer {
@@ -1473,6 +1477,8 @@ impl ModelProfileLayer {
                 .use_max_completion_tokens
                 .or(self.use_max_completion_tokens),
             max_tool_iterations: overlay.max_tool_iterations.or(self.max_tool_iterations),
+            temperature: overlay.temperature.or(self.temperature),
+            seed: overlay.seed.or(self.seed),
         }
     }
 
@@ -1513,6 +1519,8 @@ impl ModelProfileLayer {
             use_max_completion_tokens: self.use_max_completion_tokens.unwrap_or(false),
             max_tool_iterations: self.max_tool_iterations,
             tier: self.tier,
+            temperature: self.temperature,
+            seed: self.seed,
         })
     }
 }

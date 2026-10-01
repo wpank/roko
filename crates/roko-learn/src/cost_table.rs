@@ -1,8 +1,10 @@
 //! Per-model pricing tables and cost normalization utilities.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use indexmap::IndexMap;
+use parking_lot::Mutex;
 use roko_agent::Usage;
 use roko_core::config::schema::ModelProfile;
 use serde::{Deserialize, Serialize};
@@ -21,15 +23,6 @@ pub struct ModelPricing {
     /// Tokenizer size ratio relative to OpenAI `o200k_base`.
     pub tokenizer_ratio: f64,
 }
-
-/// Sonnet-rate fallback used when a model slug is unknown but tokens > 0.
-const SONNET_FALLBACK: ModelPricing = ModelPricing {
-    input_per_m: 3.00,
-    output_per_m: 15.00,
-    cache_read_per_m: 0.30,
-    cache_write_per_m: 3.75,
-    tokenizer_ratio: 1.0,
-};
 
 /// Per-model pricing table keyed by canonical model slug.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,27 +52,39 @@ impl CostTable {
             .map(|(_, pricing)| pricing)
     }
 
-    /// Calculate request cost from raw token counts.
-    ///
-    /// Uses [`lookup`](Self::lookup) for prefix matching. Falls back to Sonnet
-    /// rates when the model is unknown but tokens > 0.
+    /// Price `usage` on `model_slug`, using [`lookup`](Self::lookup) for
+    /// prefix matching. `None` when the slug has no row but tokens were used:
+    /// an unknown model is unpriced, not priced at another model's rates
+    /// (gap-ad0d39).
     #[must_use]
-    pub fn calculate(&self, model_slug: &str, usage: &Usage) -> f64 {
+    pub fn price(&self, model_slug: &str, usage: &Usage) -> Option<f64> {
         let total_tokens = usage.input_tokens
             + usage.output_tokens
             + usage.cache_read_tokens
             + usage.cache_create_tokens;
 
-        let pricing = match self.lookup(model_slug) {
-            Some(pricing) => pricing,
-            None if total_tokens > 0 => &SONNET_FALLBACK,
-            None => return 0.0,
+        let Some(pricing) = self.lookup(model_slug) else {
+            return (total_tokens == 0).then_some(0.0);
         };
 
-        (usage.input_tokens as f64 * pricing.input_per_m / 1_000_000.0)
-            + (usage.output_tokens as f64 * pricing.output_per_m / 1_000_000.0)
-            + (usage.cache_read_tokens as f64 * pricing.cache_read_per_m / 1_000_000.0)
-            + (usage.cache_create_tokens as f64 * pricing.cache_write_per_m / 1_000_000.0)
+        Some(
+            (usage.input_tokens as f64 * pricing.input_per_m / 1_000_000.0)
+                + (usage.output_tokens as f64 * pricing.output_per_m / 1_000_000.0)
+                + (usage.cache_read_tokens as f64 * pricing.cache_read_per_m / 1_000_000.0)
+                + (usage.cache_create_tokens as f64 * pricing.cache_write_per_m / 1_000_000.0),
+        )
+    }
+
+    /// Calculate request cost from raw token counts: [`price`](Self::price),
+    /// with an unpriced model at `0.0`, which `Usage::has_known_cost` reads
+    /// as an unknown cost rather than a free one. Such a model is logged once;
+    /// it used to be priced at Sonnet's rates (gap-ad0d39).
+    #[must_use]
+    pub fn calculate(&self, model_slug: &str, usage: &Usage) -> f64 {
+        self.price(model_slug, usage).unwrap_or_else(|| {
+            warn_unpriced_model(model_slug);
+            0.0
+        })
     }
 
     /// Normalize a token count to OpenAI-equivalent tokens for cross-provider comparison.
@@ -191,6 +196,23 @@ impl CostTable {
             tracing::info!(updated, "P3-33: cost table refreshed from config");
         }
         updated
+    }
+}
+
+/// Log, once per slug, that `model_slug` has no price row, so its usage is
+/// recorded with an unknown cost (gap-ad0d39).
+fn warn_unpriced_model(model_slug: &str) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let first = WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert(model_slug.to_string());
+    if first {
+        tracing::warn!(
+            model = model_slug,
+            "no price for this model: its usage is recorded with an unknown cost; set \
+             cost_input_per_m and cost_output_per_m on its [models.*] entry"
+        );
     }
 }
 
@@ -369,20 +391,22 @@ mod tests {
         assert!(table.lookup("glmx").is_none());
     }
 
+    /// gap-ad0d39: an unknown model is unpriced, not priced at Sonnet's
+    /// rates: `price` says so, and `calculate` records the unknown `0.0`.
     #[test]
-    fn calculate_sonnet_fallback_for_unknown_model() {
+    fn an_unknown_model_is_unpriced_rather_than_priced_as_sonnet() {
         let table = CostTable {
             models: HashMap::new(),
         };
         let zero = Usage::default();
-        assert!((table.calculate("unknown-model", &zero)).abs() < 1e-12);
+        assert_eq!(table.price("unknown-model", &zero), Some(0.0));
         let usage = Usage {
             input_tokens: 1_000_000,
             output_tokens: 0,
             ..Usage::default()
         };
-        let cost = table.calculate("unknown-model", &usage);
-        assert!((cost - 3.00).abs() < 1e-12);
+        assert_eq!(table.price("unknown-model", &usage), None);
+        assert!(table.calculate("unknown-model", &usage).abs() < 1e-12);
     }
 
     #[test]

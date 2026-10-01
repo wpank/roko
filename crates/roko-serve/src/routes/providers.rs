@@ -789,6 +789,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -895,6 +897,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -991,6 +995,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1070,6 +1076,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1204,6 +1212,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
         config.models.insert(
@@ -1242,6 +1252,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1453,6 +1465,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 

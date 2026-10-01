@@ -1668,6 +1668,8 @@ fn build_schema_tree() -> toml::Value {
         search_context_size: Some(String::new()),
         tier: Some(crate::agent::ModelTier::Standard),
         use_max_completion_tokens: true,
+        temperature: Some(0.0),
+        seed: Some(0),
         ..ModelProfile::default()
     };
     config
@@ -3203,6 +3205,48 @@ contxt_window = 8192
         // The global config's loader strips the same keys.
         let global = deserialize_migrated_toml(TEXT).expect("the global loader strips them too");
         assert!(global.providers.contains_key("local"));
+    }
+
+    /// gap-13bbbd: a model's sampling settings are known keys, so a load
+    /// keeps them instead of stripping them as unknown.
+    #[test]
+    fn a_models_sampling_settings_survive_a_load() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[providers.local]
+kind = "openai_compat"
+base_url = "http://localhost:11434/v1"
+
+[models.local-model]
+provider = "local"
+slug = "llama3"
+temperature = 0.2
+seed = 42
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown") && diagnostic.key.starts_with("models.")
+            })
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        let model = &loaded.config().models["local-model"];
+        assert_eq!(model.temperature, Some(0.2));
+        assert_eq!(model.seed, Some(42));
     }
 
     #[test]

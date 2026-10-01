@@ -282,9 +282,19 @@ pub fn create_agent_for_model(
                     provider: resolved.provider_kind,
                 });
             }
+            // Without a command to run instead, a model key nothing resolves
+            // fails here rather than running `cat` as its agent, which
+            // echoed the prompt back as a successful answer (gap-fd44df).
+            let Some(command) = legacy_command else {
+                let reason = match roko_core::agent::try_resolve_model(config, model_key) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => format!("model `{model_key}` has no provider to run it"),
+                };
+                return Err(AgentCreationError::MissingConfig(reason));
+            };
             tracing::warn!(
                 model_key = model_key,
-                command = %legacy_command.unwrap_or("unknown"),
+                command = %command,
                 "no provider found — falling back to ExecAgent (no tool support)"
             );
 
@@ -293,15 +303,11 @@ pub fn create_agent_for_model(
             } else {
                 &options.env_passthrough
             };
-            let mut agent = ExecAgent::new(
-                legacy_command.unwrap_or("cat"),
-                options.extra_args.clone(),
-                safety_layer,
-            )
-            .with_timeout_ms(options.effective_timeout_ms(None))
-            .with_credential_scrub(
-                CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
-            );
+            let mut agent = ExecAgent::new(command, options.extra_args.clone(), safety_layer)
+                .with_timeout_ms(options.effective_timeout_ms(None))
+                .with_credential_scrub(
+                    CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
+                );
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -405,6 +411,14 @@ pub fn create_agent_for_model(
     }
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
+    }
+    // The system prompt's cache markers mean something only to the Anthropic
+    // API translators, which turn them into `cache_control` blocks; any other
+    // provider would get them as inert text (find-6ee709).
+    if provider_config.kind != ProviderKind::AnthropicApi
+        && let Some(prompt) = options.system_prompt.as_mut()
+    {
+        *prompt = crate::translate::claude::strip_cache_markers(prompt);
     }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
@@ -1720,6 +1734,8 @@ mod tests {
                 cost_per_request: None,
                 use_max_completion_tokens: false,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
         config
@@ -2132,6 +2148,66 @@ mod tests {
         handle.join().expect("server thread");
     }
 
+    /// find-6ee709: the system prompt's cache markers reach only the
+    /// Anthropic API translators; an OpenAI-compatible provider gets the
+    /// prompt without them.
+    #[tokio::test]
+    async fn cache_markers_are_stripped_for_non_anthropic_providers() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-test",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "factory-ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18
+            }
+        })
+        .to_string();
+        let (base_url, captured, handle) = spawn_chat_server(response);
+        let config = test_config(format!("{base_url}/v4"));
+        let system_prompt = "Role instructions\n\n<!-- cache:system -->\n\nWorkspace context\n\n\
+                             <!-- cache:session -->\n\nTurn notes";
+        let options = AgentOptions {
+            timeout_ms: Some(2_500),
+            name: "factory-agent".to_string(),
+            system_prompt: Some(system_prompt.to_string()),
+            ..Default::default()
+        };
+
+        let agent =
+            create_agent_for_model(&config, "glm-5-1", options).expect("create agent for model");
+        let result = agent.run(&prompt("hello"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        let request = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("captured request");
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("json request body");
+        let system = parsed["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
+            .and_then(|message| message["content"].as_str())
+            .expect("a system message");
+        assert!(!system.contains("<!-- cache:"), "{system}");
+        assert!(
+            system.contains("Role instructions\n\nWorkspace context\n\nTurn notes"),
+            "{system}"
+        );
+
+        handle.join().expect("server thread");
+    }
+
     #[tokio::test]
     async fn create_agent_for_model_routes_perplexity_search_grounded_chat() {
         let response = serde_json::json!({
@@ -2266,6 +2342,21 @@ mod tests {
         let result = agent.run(&prompt("fallback-ok"), &Context::now()).await;
         assert!(result.success);
         assert_eq!(result.output.body.as_text().unwrap_or(""), "fallback-ok");
+    }
+
+    /// gap-fd44df: a model key nothing resolves, with no command configured
+    /// to run instead, fails with the reason rather than running `cat`.
+    #[test]
+    fn an_unknown_model_without_a_command_is_an_error() {
+        let mut config = RokoConfig::default();
+        config.agent.command = None;
+
+        let result = create_agent_for_model(&config, "mystery-model", AgentOptions::default());
+
+        let Err(AgentCreationError::MissingConfig(message)) = result else {
+            panic!("an unknown model with no command must not get an agent");
+        };
+        assert!(message.contains("unknown model `mystery-model`"), "{message}");
     }
 
     #[test]

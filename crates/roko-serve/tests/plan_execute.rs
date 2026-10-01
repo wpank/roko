@@ -105,7 +105,8 @@ impl CliRuntime for StubRuntime {
         plan_target: &Path,
         options: PlanRunOptions,
     ) -> anyhow::Result<PlanExecutionResult> {
-        self.run_ids.lock().expect("lock run ids").push(options.run_id);
+        let run_id = options.run_id;
+        self.run_ids.lock().expect("lock run ids").push(run_id);
         self.run_plan(workdir, plan_target).await
     }
 
@@ -472,8 +473,8 @@ async fn execute_passes_run_id_to_runtime() {
             .expect("send request");
         assert_eq!(response.status(), StatusCode::ACCEPTED, "{uri}");
         let payload = body_json(response).await;
-        let run_id = payload["id"].as_str().expect("the 202 names its run").to_string();
-        assert_eq!(payload["run_id"], run_id.as_str(), "{uri}: {payload}");
+        let run_id = payload["id"].as_str().expect("the 202 names its run");
+        assert_eq!(payload["run_id"], run_id, "{uri}: {payload}");
 
         // The run starts on a spawned task: wait until the runtime sees it.
         let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -486,6 +487,6 @@ async fn execute_passes_run_id_to_runtime() {
         })
         .await
         .expect("the run starts");
-        assert_eq!(seen.as_deref(), Some(run_id.as_str()), "{uri}");
+        assert_eq!(seen.as_deref(), Some(run_id), "{uri}");
     }
 }

@@ -507,8 +507,19 @@ impl GraphTaskDispatcher {
                                     limit: sibling_wait,
                                 })
                                 .await;
-                            let mut retry_verdict =
-                                retry_gate.verify(&gate_signal, &gate_ctx).await;
+                            // The re-run builds like the first run, so it
+                            // queues on the same compile lock.
+                            let mut retry_verdict = verify_step_locked(
+                                &retry_gate,
+                                &gate_signal,
+                                &gate_ctx,
+                                &effective_workdir,
+                                self.config.gates.compile_concurrency,
+                                step,
+                                &spec.plan_id,
+                                &task.id,
+                            )
+                            .await;
                             if !retry_verdict.passed {
                                 drop(reading);
                                 if let Some(judgement) = self
@@ -1257,6 +1268,24 @@ pub(super) async fn verify_compile_permit(
     .ok()
 }
 
+/// Run a verify step's gate while holding the compile lock its command needs
+/// ([`verify_compile_permit`]). The post-auto-fix re-run goes through here
+/// (bug-951930).
+pub(super) async fn verify_step_locked(
+    gate: &ShellGate,
+    signal: &Signal,
+    ctx: &Context,
+    workdir: &Path,
+    compile_concurrency: usize,
+    step: &crate::task_parser::VerifyStep,
+    plan_id: &str,
+    task_id: &str,
+) -> roko_core::Verdict {
+    let _compile_permit =
+        verify_compile_permit(workdir, compile_concurrency, step, plan_id, task_id).await;
+    gate.verify(signal, ctx).await
+}
+
 impl GraphTaskDispatcher {
     /// Whether `spec`'s plan runs the workspace's `[[gates.rungs]]`: its
     /// `[meta] workspace_rungs`, read once per plan from
@@ -1986,6 +2015,49 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             TaskGateVerdict::from_signals(&outputs),
             Some(TaskGateVerdict::Passed)
         );
+    }
+
+    /// bug-951930: the post-auto-fix re-run starts a cargo step only once it
+    /// holds the compile lock, as the first run does.
+    #[tokio::test]
+    async fn post_fix_rerun_takes_compile_lock() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let marker = workdir.join("ran.txt");
+        let step = verify_step("compile", "echo ran > ran.txt # cargo check");
+        let gate = ShellGate::new("bash", vec!["-c".into(), step.command.clone()])
+            .with_timeout_ms(step.timeout_ms)
+            .with_name("verify-1-compile")
+            .with_phase(&step.phase);
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&GatePayload::in_dir(workdir)).expect("gate payload"))
+            .build();
+        let ctx = Context::now();
+
+        // Another plan's build holds the repository's only compile permit.
+        let held = crate::runner::gate_dispatch::acquire_compile_ownership(
+            workdir,
+            1,
+            std::time::Duration::from_secs(5),
+            "other-plan",
+            "T9",
+            "cargo build",
+        )
+        .await
+        .expect("compile permit");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            verify_step_locked(&gate, &signal, &ctx, workdir, 1, &step, "plan", "T1"),
+        )
+        .await
+        .expect_err("the re-run must wait for the compile lock");
+        assert!(!marker.exists(), "the step ran without the compile lock");
+
+        drop(held);
+        let verdict =
+            verify_step_locked(&gate, &signal, &ctx, workdir, 1, &step, "plan", "T1").await;
+        assert!(verdict.passed, "{verdict:?}");
+        assert!(marker.exists());
     }
 
     #[tokio::test]

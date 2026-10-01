@@ -2070,4 +2070,23 @@ mod tests {
         assert!(contract.check_pre_execution(&edit, &ctx).is_ok());
     }
 
+    /// find-8416f2: the roles that only read and report may neither write
+    /// nor run commands, and their tool menus offer neither.
+    #[test]
+    fn read_only_role_contracts_forbid_writes_and_bash() {
+        for role in ["architect", "researcher", "strategist"] {
+            let contract = AgentContract::load_for_role(role).expect("bundled contract");
+            for tool in [
+                "write_file",
+                "edit_file",
+                "multi_edit",
+                "apply_patch",
+                "notebook_edit",
+                "bash",
+            ] {
+                assert!(!contract.permits_tool(tool), "{role} may use `{tool}`");
+            }
+            assert!(contract.permits_tool("read_file"), "{role} cannot read");
+        }
+    }
 }

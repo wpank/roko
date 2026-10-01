@@ -867,7 +867,8 @@ async fn run_graph_plan_body(
         no_budget,
         cli_model_override,
         dangerously_skip_permissions,
-        log_file,
+        // `event_log::run_recorded` takes a `--log-file` run's path.
+        log_file: _,
         worktree_per_task,
         rich_topology,
         promote,
@@ -887,7 +888,6 @@ async fn run_graph_plan_body(
     let plans_dir: &Path = &plans_dir;
     let workdir: &Path = &workdir;
     let resume_plan: Option<PathBuf> = resume_plan;
-    let log_file: Option<PathBuf> = log_file;
     // Each task's plan gate judges the worktree its attempt ran in, never the
     // shared working tree (bug-50caf2), so the rich topology needs them.
     if rich_topology && !worktree_per_task {
@@ -1329,22 +1329,6 @@ async fn run_graph_plan_body(
         });
     }
 
-    // ── Canonical --log-file recorder for Graph Engine (#115) ──
-    let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> =
-        match log_file.as_deref() {
-            Some(path) => {
-                let resolved = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    workdir.join(path)
-                };
-                let logger = crate::runner::structured_log::GraphEventLogger::open(&resolved)
-                    .map_err(|e| anyhow!("open --log-file {}: {e}", resolved.display()))?;
-                Some(Arc::new(logger))
-            }
-            None => None,
-        };
-
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
 
@@ -1415,7 +1399,6 @@ async fn run_graph_plan_body(
         plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
-        graph_event_logger: graph_event_logger.as_ref(),
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
         run_manifests: &run_manifests,
@@ -2164,7 +2147,6 @@ struct PlanRunContext<'a> {
     plan_failure_policy: roko_core::config::PlanFailurePolicy,
     graph_tui_bridge: &'a crate::runner::graph_tui_bridge::GraphTuiBridge,
     graph_telemetry: &'a Arc<dyn roko_core::TelemetryEventSink>,
-    graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
     shared_pause_flag: &'a Arc<AtomicBool>,
     interrupt: &'a PlanRunInterruptHandle,
     /// Each checkpoint run's `manifest.json` (S01 §5.1).
@@ -2685,11 +2667,6 @@ async fn run_one_plan(
         // PassthroughCell stubs; without this the engine rejects the graph
         // at validate_for_start time.
         .with_allow_test_stubs(ctx.rich_topology);
-    // Wire canonical --log-file recorder (#115): attach the event sink
-    // so every GraphExecutionEvent is written to JSONL.
-    if let Some(sink) = ctx.graph_event_logger {
-        engine = engine.with_event_sink(Arc::clone(sink));
-    }
     if let Some(replayer) = checkpoint.take_replayer() {
         engine = engine.with_replayer(replayer);
     }

@@ -10,13 +10,15 @@ use super::creation_journal::{
     CreationMarker, CreationPhase, creation_record_name, ensure_cleanup_safe, unlink_claim_file,
 };
 use super::git_ops::{
-    isolate_worktree_config, read_gitdir, validate_id, worktree_list_contains_path,
+    RetainedOwnership, isolate_worktree_config, read_gitdir, validate_id,
+    worktree_list_contains_path,
 };
 use super::{
     AttemptAcceptance, CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK,
     RUNTIME_SHUTDOWN_WAIT, TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier,
-    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, format_attempt_branch_name,
-    format_attempt_worktree_id, format_branch_name, validate_workspace_file_kinds_with,
+    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, clear_stale_index_lock,
+    format_attempt_branch_name, format_attempt_worktree_id, format_branch_name,
+    validate_workspace_file_kinds_with,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -623,10 +625,144 @@ fn unproved_create_cleanup_permanently_withholds_mutation_owner() {
     });
     drop(runtime);
 
-    assert!(manager.operations.try_lock().is_err());
+    // The worker hands the reservation back, retaining the repository's
+    // ownership in it (bug-53475e).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let state = loop {
+        if let Ok(state) = manager.operations.try_lock() {
+            break state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never handed its reservation back"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(state.retained.is_some(), "{:?}", state.retained);
+    drop(state);
     assert!(manager.path_for("cleanup-unproved").exists());
     assert!(manager.creation_claim_path("cleanup-unproved").exists());
     assert_eq!(manager.active_count(), 0);
+}
+
+/// bug-109b5a: before dispatch, a stale `index.lock` in the git directory a
+/// `.git` file's `gitdir:` points at is removed, from the checkout or any
+/// directory below it; a fresh one, which a live git process may hold, is
+/// kept, as is one younger than the caller's threshold. A plain `.git`
+/// directory works the same way.
+#[test]
+fn stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection() {
+    let tmp = TempDir::new().unwrap();
+    let checkout = tmp.path().join("checkout");
+    let git_dir = tmp.path().join("repo.git/worktrees/checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(
+        checkout.join(".git"),
+        "gitdir: ../repo.git/worktrees/checkout\n",
+    )
+    .unwrap();
+    let place_lock = |lock: &Path, age: Duration| {
+        std::fs::File::create(lock)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    };
+    let lock = git_dir.join("index.lock");
+    let worktree_threshold = Duration::from_secs(60);
+
+    place_lock(&lock, Duration::from_secs(5));
+    assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
+    assert_eq!(clear_stale_index_lock(&checkout, Duration::ZERO), None);
+    assert!(
+        lock.exists(),
+        "a fresh lock may belong to a live git process"
+    );
+
+    place_lock(&lock, Duration::from_secs(120));
+    assert_eq!(
+        clear_stale_index_lock(&checkout, Duration::from_secs(600)),
+        None
+    );
+    assert!(
+        lock.exists(),
+        "younger than the shared checkout's threshold"
+    );
+    let removed = clear_stale_index_lock(&checkout.join("src"), worktree_threshold);
+    assert!(
+        removed.is_some(),
+        "the stale lock behind gitdir: is removed"
+    );
+    assert!(!lock.exists());
+    assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
+
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir_all(plain.join(".git")).unwrap();
+    let plain_lock = plain.join(".git").join("index.lock");
+    place_lock(&plain_lock, Duration::from_secs(120));
+    assert_eq!(
+        clear_stale_index_lock(&plain, worktree_threshold),
+        Some(plain_lock.clone())
+    );
+    assert!(!plain_lock.exists());
+}
+
+/// bug-53475e: while ownership retained by an unproved cleanup names a
+/// live git process, or none, the next mutation is refused at once with
+/// what to do, instead of waiting forever; once the named process is gone,
+/// the next mutation releases the ownership and runs.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn unproved_cleanup_fails_fast_instead_of_blocking_later_operations() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build caller runtime");
+    let retain = |pids: Vec<u32>| {
+        let mut state = manager.operations.try_lock().expect("reservation free");
+        state.retained = Some(RetainedOwnership {
+            pids,
+            since: std::time::SystemTime::now(),
+            repository_lock: None,
+        });
+    };
+    let prune = || {
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), manager.prune()).await
+            })
+            .expect("the mutation answers at once")
+    };
+
+    retain(Vec::new());
+    let started = std::time::Instant::now();
+    let error = prune().expect_err("no named process can be proved gone");
+    assert!(
+        matches!(error, WorktreeError::OwnershipRetained { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("restart roko"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    let mut stray = StdCommand::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn sleep");
+    retain(vec![stray.id()]);
+    let error = prune().expect_err("the stray git process still runs");
+    assert!(
+        error.to_string().contains(&stray.id().to_string()),
+        "{error}"
+    );
+    stray.kill().expect("kill the stray process");
+    stray.wait().expect("reap the stray process");
+
+    prune().expect("the mutation runs once the process is gone");
+    let state = manager.operations.try_lock().expect("reservation free");
+    assert!(state.retained.is_none(), "{:?}", state.retained);
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1632,6 +1768,45 @@ fn repository_flock_serializes_a_separate_process() {
     assert!(child.wait().unwrap().success());
 }
 
+/// bug-53475e: a process kept waiting on another's repository mutation lock
+/// fails after a bounded wait, naming the holder, instead of blocking forever.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_contended_repository_lock_times_out_naming_its_holder() {
+    let Some((tmp, manager)) = make_manager() else {
+        return;
+    };
+    let _owner = manager.acquire_repository_mutation_lock().unwrap();
+    let outcome = tmp.path().join("contender-outcome");
+    let mut child = StdCommand::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "orchestrator::worktree::tests::repository_lock_process_helper",
+            "--nocapture",
+        ])
+        .env("ROKO_TEST_REPO_ROOT", &manager.config.repo_root)
+        .env(
+            "ROKO_TEST_WORKTREES_ROOT",
+            tmp.path().join("contender-worktrees"),
+        )
+        .env("ROKO_TEST_LOCK_ACTION", "contend")
+        .env("ROKO_TEST_REPOSITORY_LOCK_WAIT_MS", "300")
+        .env(
+            "ROKO_TEST_LOCK_STARTED",
+            tmp.path().join("contender-started"),
+        )
+        .env("ROKO_TEST_LOCK_ACQUIRED", &outcome)
+        .spawn()
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    let error = std::fs::read_to_string(&outcome).unwrap();
+    assert!(error.contains("worktree mutations are on hold"), "{error}");
+    assert!(
+        error.contains(&format!("pid {} ", std::process::id())),
+        "{error}"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_root_create_serializes_a_subprocess_prune() {
@@ -1696,6 +1871,13 @@ fn repository_lock_process_helper() {
         idle_ttl: Duration::from_secs(3600),
     });
     std::fs::write(started, b"started").unwrap();
+    if std::env::var("ROKO_TEST_LOCK_ACTION").as_deref() == Ok("contend") {
+        let error = manager
+            .acquire_repository_mutation_lock()
+            .expect_err("the parent holds the lock throughout");
+        std::fs::write(acquired, error.to_string()).unwrap();
+        return;
+    }
     if std::env::var("ROKO_TEST_LOCK_ACTION").as_deref() == Ok("prune") {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()

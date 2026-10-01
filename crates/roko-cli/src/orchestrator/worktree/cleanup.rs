@@ -1,8 +1,8 @@
 //! Worktree cleanup, pruning, stale-lock detection, and health checks.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::creation_journal::{OperationLifecycle, retain_lock_if_cleanup_unproved};
 use super::git_ops::{await_owned_operation, is_stale_lock, read_gitdir};
@@ -155,14 +155,13 @@ impl WorktreeManager {
     /// Remove a stuck repository mutation lock file left behind by a
     /// crashed or killed process.
     ///
-    /// `retain_lock_if_cleanup_unproved` deliberately leaks the
-    /// `RepositoryMutationLock` via `std::mem::forget` so the kernel
-    /// `flock` stays held for the lifetime of the process. If that
-    /// process exits abnormally the kernel releases the flock, but the
-    /// lock *file* remains on disk.  Subsequent `acquire_repository_
-    /// mutation_lock` calls succeed immediately (the flock is unowned),
-    /// yet in long-lived processes where `mem::forget` already ran, all
-    /// later worktree operations are permanently blocked.
+    /// After an unproved cleanup, `retain_lock_if_cleanup_unproved` keeps
+    /// the `RepositoryMutationLock`, so the kernel `flock` stays held until
+    /// the manager proves the git processes gone (bug-53475e). If the
+    /// process exits abnormally the kernel releases the flock, but the lock
+    /// *file* remains on disk. Later `acquire_repository_mutation_lock`
+    /// calls succeed immediately (the flock is unowned), so the file only
+    /// costs disk hygiene; it never blocks anything.
     ///
     /// This helper performs a non-blocking exclusive `flock` attempt:
     ///
@@ -180,7 +179,6 @@ impl WorktreeManager {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn clear_stuck_mutation_lock(&self) -> Result<bool, WorktreeError> {
         use super::creation_journal::resolve_repository_identity;
-        use std::time::SystemTime;
 
         // Resolve the canonical Git common directory so the lock path
         // matches the one used by `acquire_repository_mutation_lock`.
@@ -230,9 +228,13 @@ impl WorktreeManager {
         ) {
             Ok(()) => {
                 // We own the lock now. The file is old and unowned -- remove it.
-                // Drop the fd first (releases flock), then unlink the path.
+                // Unlink the path while still holding the flock, then drop the
+                // fd: a process that opened the old file and takes its flock
+                // afterwards then fails its binding check instead of mutating
+                // beside a holder of the new file.
+                let removed = std::fs::remove_file(&lock_path);
                 drop(lock_fd);
-                if let Err(e) = std::fs::remove_file(&lock_path) {
+                if let Err(e) = removed {
                     if e.kind() != std::io::ErrorKind::NotFound {
                         return Err(WorktreeError::IoError(e));
                     }
@@ -273,9 +275,14 @@ impl WorktreeManager {
 
     pub(super) fn clear_stale_locks_unlocked(&self) -> Result<Vec<PathBuf>, WorktreeError> {
         let mut cleared = Vec::new();
+        // The repository root may itself be a linked worktree or a
+        // submodule, whose `.git` is a `gitdir:` file (bug-109b5a).
+        let Some(git_dir) = read_gitdir(&self.config.repo_root) else {
+            return Ok(cleared);
+        };
 
         // Main repo lock.
-        let main_lock = self.config.repo_root.join(".git").join("index.lock");
+        let main_lock = git_dir.join("index.lock");
         if main_lock.exists()
             && is_stale_lock(&main_lock)
             && std::fs::remove_file(&main_lock).is_ok()
@@ -283,8 +290,8 @@ impl WorktreeManager {
             cleared.push(main_lock);
         }
 
-        // Per-worktree locks stored under .git/worktrees/<name>/index.lock.
-        let wt_meta_dir = self.config.repo_root.join(".git").join("worktrees");
+        // Per-worktree locks stored under <common dir>/worktrees/<name>/index.lock.
+        let wt_meta_dir = common_git_dir(&git_dir).join("worktrees");
         if wt_meta_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&wt_meta_dir) {
                 for entry in entries.flatten() {
@@ -334,5 +341,58 @@ impl WorktreeManager {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// Remove a stale `index.lock` from the git directory that serves `workdir`,
+/// following a `.git` file's `gitdir:` indirection (linked worktrees,
+/// submodules), so that the next agent dispatched there can use git
+/// (bug-109b5a). A git process killed mid-command leaves the lock behind, and
+/// every index-writing git command then fails.
+///
+/// A lock younger than `stale_after`, and never one younger than
+/// `STALE_LOCK_SECS` (60 s), may belong to a live git process and is left
+/// alone. Returns the lock it removed.
+pub fn clear_stale_index_lock(workdir: &Path, stale_after: Duration) -> Option<PathBuf> {
+    let git_dir = workdir.ancestors().find_map(read_gitdir)?;
+    let lock = git_dir.join("index.lock");
+    let age = std::fs::symlink_metadata(&lock)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())?;
+    if age < stale_after.max(Duration::from_secs(super::STALE_LOCK_SECS)) {
+        tracing::debug!(
+            path = %lock.display(),
+            age_secs = age.as_secs(),
+            "leaving a git index.lock that a live git process may hold"
+        );
+        return None;
+    }
+    match std::fs::remove_file(&lock) {
+        Ok(()) => {
+            tracing::warn!(
+                path = %lock.display(),
+                age_secs = age.as_secs(),
+                "removed a stale git index.lock left by an earlier git process"
+            );
+            Some(lock)
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %lock.display(),
+                %error,
+                "could not remove a stale git index.lock"
+            );
+            None
+        }
+    }
+}
+
+/// The common git directory behind `git_dir`: a linked worktree's git
+/// directory names it in its `commondir` file; otherwise it is `git_dir`.
+fn common_git_dir(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(common) => git_dir.join(common.trim()),
+        Err(_) => git_dir.to_path_buf(),
     }
 }

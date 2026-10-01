@@ -891,6 +891,21 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let effective_workdir = lease
             .as_ref()
             .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+        // A git process killed mid-command (an earlier attempt's agent, a
+        // crashed run) leaves `index.lock` behind, and every index-writing git
+        // command here then fails: clear a stale one before the agent starts
+        // (bug-109b5a). The shared checkout is the user's, whose own git may
+        // hold the lock for minutes (a commit waiting on its editor), so a lock
+        // there must be much older than in a roko-owned worktree.
+        let stale_index_lock_after = if lease.is_some() {
+            std::time::Duration::from_secs(roko_core::defaults::DEFAULT_STALE_LOCK_SECS)
+        } else {
+            std::time::Duration::from_mins(10)
+        };
+        crate::orchestrator::worktree::clear_stale_index_lock(
+            &effective_workdir,
+            stale_index_lock_after,
+        );
         // Until this attempt ends, a sibling's failed verify step in the same
         // working tree may wait for it to settle. It starts editing once no
         // sibling runs a verify step that reads its files (gap-1920ba).

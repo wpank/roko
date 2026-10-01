@@ -27,6 +27,7 @@
 mod acceptance;
 pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod cleanup;
+pub use cleanup::clear_stale_index_lock;
 mod creation_journal;
 mod git_ops;
 #[cfg(test)]
@@ -52,9 +53,9 @@ use creation_journal::{
     retain_lock_if_cleanup_unproved,
 };
 use git_ops::{
-    await_optional_deadline, await_owned_operation, await_owned_operation_controlled,
-    ensure_git_success, isolate_worktree_config, reattach_rejected, validate_id,
-    validate_reflex_replay_id,
+    OperationState, await_optional_deadline, await_owned_operation,
+    await_owned_operation_controlled, ensure_git_success, isolate_worktree_config,
+    reattach_rejected, validate_id, validate_reflex_replay_id,
 };
 
 /// Locks older than this are considered stale (§15.7).
@@ -315,6 +316,17 @@ pub enum WorktreeError {
         /// Failed containment or extension invariant.
         reason: String,
     },
+    /// Worktree mutations are on hold: an earlier operation could not prove
+    /// its git process stopped, or another process holds the repository
+    /// mutation lock too long. Returned at once instead of waiting forever
+    /// (bug-53475e).
+    #[error("worktree mutations are on hold: {reason}")]
+    OwnershipRetained {
+        /// The git processes that may still run, when known.
+        pids: Vec<u32>,
+        /// What to check or do.
+        reason: String,
+    },
 }
 
 /// Interruption-aware error returned while preparing an attempt worktree.
@@ -477,8 +489,9 @@ pub struct WorktreeManager {
     /// The run each plan's attempts belong to in this process, set by
     /// [`WorktreeManager::begin_plan_run`] (bug-056b40).
     plan_runs: Arc<Mutex<HashMap<String, PlanRun>>>,
-    /// Shared fair reservation transferred into cancellation-independent tasks.
-    pub(super) operations: Arc<AsyncMutex<()>>,
+    /// Shared fair reservation transferred into cancellation-independent
+    /// tasks, and the ownership an unproved cleanup retained (bug-53475e).
+    pub(super) operations: Arc<AsyncMutex<OperationState>>,
     /// Canonical executable selected once and shared by probes and mutations.
     pub(super) resolved_git_executable: Arc<Mutex<Option<PathBuf>>>,
     #[cfg(test)]
@@ -506,7 +519,7 @@ impl WorktreeManager {
             accepted: Arc::new(Mutex::new(HashMap::new())),
             accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
-            operations: Arc::new(AsyncMutex::new(())),
+            operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),
@@ -551,7 +564,7 @@ impl WorktreeManager {
             accepted: Arc::new(Mutex::new(HashMap::new())),
             accepted_attempts: Arc::new(Mutex::new(HashMap::new())),
             plan_runs: Arc::new(Mutex::new(HashMap::new())),
-            operations: Arc::new(AsyncMutex::new(())),
+            operations: Arc::new(AsyncMutex::new(OperationState::default())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             git_binary: Arc::new(Mutex::new(PathBuf::from("git"))),

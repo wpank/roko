@@ -84,6 +84,14 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
   "not now" decisions.
 - `size = "S" | "M" | "L"` (optional): S is under an hour, M about a day, L several days.
   Batches prefer items that fit.
+- `lane = "<key>"` (optional): what can run side by side, from `work/lanes.toml` (hand-edited; Will sets the caps).
+  Each lane lists the paths its items touch, how many agents it takes at once (`max`) and an optional shared `pool`
+  (such as the four Rust builders on the cargo lock). `next --lane L` picks one lane; `next --mix "rust-hot=1,paper=2"`
+  fills a quota per lane. Both stop at a lane's `max` and its pool's cap, counting live claims. Items without a lane
+  are in the uncapped lane `none`. `check --lint` lists items whose anchors fall outside their lane's paths.
+- `parent = "<spec id>"` (optional): the epic the item belongs to; it must be a `kind = "spec"` item.
+- `milestone = "MS0" … "ME"` (optional): one of `lanes.toml`'s milestones; within a goal, `next` takes earlier
+  milestones first, then `rank`, then severity.
 - Decisions and questions (`kind = "decision" | "question"`) need Will. `next` skips them; they are listed in
   `DECISIONS.md`.
 
@@ -93,6 +101,7 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 work/
   README.md                 this file
   goals.toml                hand-edited: active goals, highest priority first
+  lanes.toml                hand-edited: lanes (paths, agents at once, pools) and milestones
   items/<id>-<slug>.md      one file per item (tracked, public)
   parked/<id>-<slug>.md     parked items: not planned, kept for search (see "Parking")
   NOW.md                    GENERATED — what to work on next: the top items of each goal
@@ -127,6 +136,9 @@ severity = "p2"                   # p0 (broken core loop / security) … p3 (pol
 goal = "core"                     # optional: a key from goals.toml; open items without a goal are "later"
 rank = 1                          # optional: pin the order within a goal (lower first)
 size = "M"                        # optional: S | M | L
+lane = "rust-cold"                # optional: a lane from lanes.toml
+parent = "spec-e9d7ec"            # optional: the epic (a spec item) this item belongs to
+milestone = "MS1"                 # optional: one of lanes.toml's milestones
 hold = "Waiting for the auth redesign"   # optional: keeps the item out of `next` and NOW.md
 subsystem = ["roko-serve/jobs"]   # crate or crate/area; used to group STATUS.md
 created = 2026-09-26

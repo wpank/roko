@@ -13,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -228,6 +229,81 @@ class TestWorktreeBusy(RepoTest):
         (self.root / "src" / "c.rs").write_text("fn dirty() {}\n")
         work.set_repo(self.add_worktree("work/worker"))
         self.assertEqual(work.worktree_changes(), {"src/c.rs": f"{self.root.name} (main)"})
+
+
+LANES = """milestones = ["MS0", "MS1"]
+
+[pools]
+p = 2
+
+[lane.x]
+paths = ["src/**"]
+max = 2
+
+[lane.y]
+paths = ["src/**"]
+max = 1
+pool = "p"
+
+[lane.z]
+paths = ["src/**"]
+max = 3
+pool = "p"
+"""
+
+
+class TestLanes(RepoTest):
+    def lane_items(self, specs):
+        """One item per (id, lane, milestone), each on its own file."""
+        for iid, lane, ms in specs:
+            (self.root / "src" / f"{iid}.rs").write_text("fn x() {}\n")
+            extra = f'lane = "{lane}"' + (f'\nmilestone = "{ms}"' if ms else "")
+            self.write(iid, item(iid, iid, anchors=[f"src/{iid}.rs"], extra=extra))
+        (self.root / "work" / "lanes.toml").write_text(LANES)
+        self.commit("lane items")
+
+    def test_check_rejects_unknown_lane_and_parent(self):
+        self.write("spec-eeeeee", item("bug-eeeeee", "Epic: E").replace("bug-eeeeee", "spec-eeeeee").replace(
+            'kind = "bug"', 'kind = "spec"'))
+        self.lane_items([("gap-111111", "x", "MS0")])
+        self.write("gap-222222", item("gap-222222", "unknown lane", extra='lane = "nowhere"\nparent = "spec-eeeeee"'))
+        self.write("gap-333333", item("gap-333333", "parent is a bug", extra='lane = "x"\nparent = "bug-aaaaaa"'))
+        self.write("gap-444444", item("gap-444444", "no such parent", extra='parent = "spec-999999"'))
+        self.write("gap-555555", item("gap-555555", "unknown milestone", extra='lane = "y"\nmilestone = "MS9"'))
+        errs = work.validate(self.items())
+        self.assertEqual(sorted(e.removeprefix("work/items/") for e in errs), sorted([
+            "gap-222222-x.md: lane 'nowhere' is not in work/lanes.toml",
+            "gap-333333-x.md: parent 'bug-aaaaaa' is not a spec item",
+            "gap-444444-x.md: parent 'spec-999999' is not a spec item",
+            "gap-555555-x.md: milestone 'MS9' is not one of work/lanes.toml's milestones",
+        ]))
+        # Without lanes.toml, lanes and milestones are not checked; parents still are.
+        (self.root / "work" / "lanes.toml").unlink()
+        self.assertEqual(len(work.validate(self.items())), 2)
+
+    def test_next_mix_respects_lane_caps(self):
+        self.lane_items([("gap-a00001", "x", None), ("gap-a00002", "x", None), ("gap-a00003", "x", None),
+                         ("gap-b00001", "y", None), ("gap-b00002", "y", None),
+                         ("gap-c00001", "z", None), ("gap-c00002", "z", None), ("gap-c00003", "z", None)])
+        # A live claim fills lane y, and also takes one of pool p's two places.
+        claims = {"gap-b00001": {"id": "gap-b00001", "by": "t", "stale": False}}
+        picked, skipped = work.pick_next(self.items(), claims=claims, worktrees={}, mix={"x": 3, "y": 1, "z": 3})
+        lanes = Counter(work.item_lane(i) for i in picked)
+        self.assertEqual(lanes, Counter({"x": 2, "z": 1}))
+        self.assertEqual(skipped["lane x is at its cap of 2"], 1)
+        self.assertEqual(skipped["lane y is at its cap of 1"], 1)
+        self.assertEqual(skipped["pool p is at its cap of 2"], 2)
+        # --lane picks one lane only, within its cap.
+        picked, _ = work.pick_next(self.items(), n=5, claims={}, worktrees={}, lane="z")
+        self.assertEqual([i["id"] for i in picked], ["gap-c00001", "gap-c00002"])  # pool p caps z at 2
+
+    def test_next_sorts_by_milestone_within_a_goal(self):
+        self.lane_items([("gap-d00001", "x", "MS1"), ("gap-d00002", "x", "MS0")])
+        picked, _ = work.pick_next([i for i in self.items() if i["id"].startswith("gap-d")], n=2, claims={}, worktrees={})
+        self.assertEqual([i["id"] for i in picked], ["gap-d00002", "gap-d00001"])
+        # The CLI takes the same mix and says so in --json.
+        out = json.loads(self.run_work("next", "--mix", "x=1", "--ignore-worktrees", "--json").stdout)
+        self.assertEqual([(r["id"], r["lane"]) for r in out], [("gap-d00002", "x")])
 
 
 class TestClaims(RepoTest):

@@ -229,10 +229,6 @@ impl TaskDef {
         let hints = &self.hints;
         [
             ("quality_profile", hints.quality_profile.is_some()),
-            ("context_weight", hints.context_weight.is_some()),
-            ("skills", hints.skills.is_some()),
-            ("plan_section", hints.plan_section.is_some()),
-            ("research_before_edit", hints.research_before_edit.is_some()),
             ("parallel_group", hints.parallel_group.is_some()),
             ("exclusive_files", hints.exclusive_files.is_some()),
             ("tags", hints.tags.is_some()),

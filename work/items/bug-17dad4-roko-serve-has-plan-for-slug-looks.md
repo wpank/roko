@@ -3,13 +3,14 @@ id = "bug-17dad4"
 kind = "bug"
 title = "roko-serve has_plan_for_slug looks only in .roko/plans, but generated plans now land in the workspace plans directory"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-e3df7d"
 anchors = ["crates/roko-serve/src/routes/prds.rs::has_plan_for_slug"]
@@ -36,3 +37,8 @@ command = "cargo test -p roko-serve --lib has_plan_for_slug"
 ## Notes
 
 - Reported on 2026-10-01 by the worker on bug-e3df7d, during the evening close-out round.
+- 2026-10-01 (wk-taskdef): implemented on work/bug-e3df7d; cargo verification deferred to the batch check.
+- `has_plan_for_slug` now finds a plan directory `<slug>/` (with `tasks.toml` or `plan.md`) in the workspace plans
+  directory or the legacy `.roko/plans/`, and still accepts a legacy `.roko/plans/<slug>.json` or `.toml` file. Before
+  this, it accepted only those legacy files, so it missed directory plans even in `.roko/plans/`. Tests:
+  `has_plan_for_slug_finds_a_plan_in_the_workspace_plans_dir` and `has_plan_for_slug_reads_legacy_plans`.

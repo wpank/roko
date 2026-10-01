@@ -17,7 +17,8 @@
 # - a word, with its braces and glob expanded (cat roko.{toml,lock}, cat *)
 #   and resolved with symlinks followed against the working directory and
 #   each cd target in the command, is a key file, or a roko config file that
-#   holds a secret (see below).
+#   holds a secret (see below). A brace expansion that makes more words than
+#   the guard checks (BRACE_LIMIT) is denied.
 #
 # The destructive commands are:
 #
@@ -57,13 +58,23 @@
 #
 # A roko config file outside .roko (roko.toml, the file ROKO_CONFIG names,
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
-# such as serve.auth.api_key, and so are a recursive search of a tree that
-# holds one (a Grep, grep -r, rg, ag, ack, git grep), unless the search's
-# glob or type leaves the file out, and a read (cat, grep, cp) of what find,
-# fd or xargs lists from such a tree, unless a find or fd name filter leaves
-# the file out. A command after a cd is judged where it runs. roko itself
-# refuses to load such a file (the secret belongs in .roko/.env), so this
-# matters for a secret added while roko runs; a script or a variable can
+# such as serve.auth.api_key, and so is a Grep of a tree that holds one,
+# unless its glob or type leaves the file out. roko itself refuses to load
+# such a file (the secret belongs in .roko/.env), so this matters for a
+# secret added while roko runs.
+#
+# A Bash command that reads a whole tree is denied when the tree holds a key
+# file or such a config and the read reaches it: a recursive search (grep
+# -r, rg, ag, ack, and git grep, which reads untracked files, key files
+# among them, only with --untracked or --no-index), or a read (cat, grep,
+# cp) of what find, fd or xargs lists. A tree holds the key files in its
+# .roko, in that of each subdirectory two levels down, and in the
+# workspace's (in the directory the command or the call runs in, or above
+# it) and ~/.roko when it holds those. A read reaches a file unless its
+# filters leave the file out (grep --exclude-dir=.roko, rg -g '!.roko', a
+# find test or -prune, an fd pattern) or it skips hidden files, as rg, ag
+# and fd do without --hidden, or hidden directories, as a list from ls does.
+# A command after a cd is judged where it runs; a script or a variable can
 # still hide the read. roko-std's bash tool applies the same rules
 # (sandbox/reads.rs), and both test the commands in roko-std's
 # sandbox/secret_read_cases.txt.
@@ -84,6 +95,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -166,6 +178,8 @@ SEARCH_OPTIONS = {
     "ack": (set("ABCgmt"), ACK_LONG_VALUES, {"-g", "-f", "--help-types"}, {"--match"}),
 }
 SEARCHERS = GREPS | RIPGREPS | {"ag", "ack"}
+# rg's options that give a glob (! leaves files out).
+RG_GLOBS = {"-g", "--glob", "--iglob"}
 # Programs that print or copy the files they are given, and so read a secret
 # when a list the guard cannot see (find -exec, xargs) names one.
 READERS = SEARCHERS | {
@@ -173,10 +187,26 @@ READERS = SEARCHERS | {
     "uniq", "strings", "od", "xxd", "hexdump", "base64", "diff", "paste", "jq", "yq", "cp",
     "rsync", "tar", "zip",
 }
-# find's tests on a file's name or path, and fd's options that take a value.
+# find's tests on a file's name or path; its other primaries that take one
+# argument (an -newerXY test takes one too); those that hold true whatever
+# the file, its actions among them; and its options after which -prune
+# prunes nothing. fd's options that take a value.
 FIND_NAME_TESTS = {
     "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
 }
+FIND_ONE_ARGUMENT = {
+    "-amin", "-anewer", "-atime", "-cmin", "-cnewer", "-context", "-ctime", "-fls", "-fprint",
+    "-fprint0", "-fstype", "-gid", "-group", "-ilname", "-inum", "-links", "-lname", "-maxdepth",
+    "-mindepth", "-mmin", "-mtime", "-newer", "-perm", "-printf", "-regextype", "-samefile",
+    "-size", "-type", "-uid", "-used", "-user", "-xtype",
+}
+FIND_TRUE = {
+    "-print", "-print0", "-printf", "-fprint", "-fprint0", "-fprintf", "-ls", "-fls", "-prune",
+    "-true", "-depth", "-d", "-maxdepth", "-mindepth", "-xdev", "-mount", "-follow", "-noleaf",
+    "-regextype", "-daystart", "-warn", "-nowarn", "-ignore_readdir_race",
+    "-noignore_readdir_race",
+}
+FIND_NO_PRUNE = {"-depth", "-d", "-delete"}
 FD_SHORT_VALUES = set("etEdSojc")
 FD_LONG_VALUES = {
     "--extension", "--type", "--exclude", "--max-depth", "--min-depth", "--exact-depth", "--size",
@@ -233,7 +263,12 @@ UNCHECKABLE_RM_ARGUMENT = re.compile(r"-.*[$`]|\$\{?[@*1-9]")
 SEPARATOR_CHARS = set(";&|()\n")
 OPERATOR_CHARS = SEPARATOR_CHARS | set("<>")
 FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
+# Stand-ins for a quoted or escaped parenthesis while shlex splits a command.
+HIDDEN_PARENTHESES = {"(": "", ")": ""}
+SHOWN_PARENTHESES = str.maketrans({"": "(", "": ")"})
 MAX_DEPTH = 8
+# The most words a brace expansion may make (roko-std's EXPANSION_LIMIT).
+BRACE_LIMIT = 4096
 
 # The Bash call being checked (check_bash sets it): the directory git
 # aliases are looked up in, and the whole command. dir is the directory the
@@ -241,7 +276,7 @@ MAX_DEPTH = 8
 # every directory the call may run a command in. bulk is set, to why a
 # delete may not run, while a command that runs on a list the guard cannot
 # see is checked: what find or fd lists, or what xargs reads; list is then
-# where that list comes from ([roots], whether a filter leaves roko.toml out).
+# where that list comes from, as ([roots], reads) (see check_tree_reads).
 BASH_CALL = {"cwd": None, "dir": None, "dirs": [], "command": "", "bulk": None, "list": None}
 FIND_BULK = "rm on what find or fd lists is forbidden: it deletes files across a whole tree"
 XARGS_BULK = (
@@ -253,7 +288,10 @@ BULK_RUNNERS = {"xargs": XARGS_BULK, "parallel": PARALLEL_BULK}
 
 
 def tokens(text):
-    lexer = shlex.shlex(text, posix=True, punctuation_chars="();<>|&\n")
+    """The words and operators of `text`. A quoted or escaped parenthesis
+    (find . \\( -name x \\)) belongs to its word, where shlex would make an
+    operator of it, so it stays hidden: shown() turns a word back."""
+    lexer = shlex.shlex(hide_quoted_parentheses(text), posix=True, punctuation_chars="();<>|&\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     # A shell starts a comment only at the start of a word; shlex would
@@ -265,6 +303,30 @@ def tokens(text):
         # Unbalanced quotes, as in a heredoc: split on whitespace and
         # operators instead, and drop the quotes.
         return [token.strip("\"'") for token in FALLBACK_TOKEN.findall(text)]
+
+
+def hide_quoted_parentheses(text):
+    """`text` with each parenthesis in quotes or after a backslash replaced
+    by a stand-in (see tokens)."""
+    hidden, quote, escaped = [], None, False
+    for character in text:
+        if escaped:
+            escaped = False
+            character = HIDDEN_PARENTHESES.get(character, character)
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = None if character == quote else quote
+            character = HIDDEN_PARENTHESES.get(character, character)
+        elif character in "'\"":
+            quote = character
+        hidden.append(character)
+    return "".join(hidden)
+
+
+def shown(word):
+    """A word of tokens with its hidden parentheses shown."""
+    return word.translate(SHOWN_PARENTHESES)
 
 
 def simple_commands(text):
@@ -283,7 +345,7 @@ def simple_commands(text):
                     blocks += 1
                 elif token in BLOCK_CLOSERS and blocks:
                     blocks -= 1
-            words.append(token)
+            words.append(shown(token))
             continue
         if words:
             commands.append((words, fed))
@@ -480,12 +542,12 @@ def git_argument_indices(words, index):
 def bulk(reason, source=None):
     """While the block checks a command that runs on a list the guard cannot
     see, deny any delete in it, for `reason`, and judge a read in it by where
-    the list comes from: `source`, as (roots, whether a filter leaves
-    roko.toml out), or the call's directory. None changes nothing."""
+    the list comes from: `source`, as (roots, reads) (see check_tree_reads),
+    or what ls lists in the call's directory. None changes nothing."""
     previous = BASH_CALL["bulk"], BASH_CALL["list"]
     if reason:
         BASH_CALL["bulk"] = previous[0] or reason
-        BASH_CALL["list"] = previous[1] or source or (["."], False)
+        BASH_CALL["list"] = previous[1] or source or (["."], lists_visible)
     try:
         yield
     finally:
@@ -502,16 +564,22 @@ def check_found(command, depth, reason=FIND_BULK, maybe_argument=False, source=N
 
 def check_listed_read():
     """Deny a read (cat, grep) run on a list the guard cannot see when the
-    list may name a roko config file that holds a secret: one in the tree
-    the list comes from, unless a finder's filter leaves roko.toml out."""
-    roots, excludes_config = BASH_CALL["list"]
-    if not excludes_config:
-        check_search_roots(roots, BASH_CALL["dir"] or os.getcwd())
+    list may name a key file or a roko config file that holds a secret, in
+    the tree it comes from (check_tree_reads)."""
+    roots, reads = BASH_CALL["list"]
+    check_tree_reads(roots, BASH_CALL["dir"] or os.getcwd(), reads)
+
+
+def lists_visible(rel, start, path):
+    """Whether a list the guard cannot see (ls | xargs cat, xargs cat <
+    list) may name the file at `rel`: one no hidden directory leads to, as
+    ls -a lists them."""
+    return not any(part.startswith(".") for part in rel.split("/")[:-1])
 
 
 def finder_list(words):
     """Where the list a find or fd command prints comes from: its starting
-    points, and whether its name filters leave roko.toml out."""
+    points, and what it lists from them (see check_tree_reads)."""
     words = command_start(words)
     for index, word in enumerate(words):
         name = program_name(word)
@@ -523,9 +591,10 @@ def finder_list(words):
 
 
 def find_list(arguments):
-    """find's starting points and whether its name tests leave roko.toml
-    out: at least one test, none matching it, and no -not or ! to turn one
-    around."""
+    """find's starting points, and what it lists from them (see
+    check_tree_reads): a file its expression may hold true, under no
+    directory the expression surely prunes, within -maxdepth and -mindepth.
+    An expression the guard cannot parse lists every file."""
     index = 0
     while index < len(arguments) and (
         arguments[index] in ("-H", "-L", "-P", "-D") or arguments[index].startswith("-O")
@@ -536,49 +605,215 @@ def find_list(arguments):
         if argument.startswith("-") or argument in ("(", "!", ","):
             break
         roots.append(argument)
-    tests = [
-        (test, arguments[position + 1])
-        for position, test in enumerate(arguments[:-1])
-        if test in FIND_NAME_TESTS
-    ]
-    excludes = bool(tests) and not ({"-not", "!"} & set(arguments)) and not any(
-        find_test_matches_config(test, pattern) for test, pattern in tests
-    )
-    return roots or ["."], excludes
+    words = arguments[index + len(roots):]
+    try:
+        expression = find_expression(words)
+    except ValueError:
+        expression = None
+    limits = {
+        word: int(words[position + 1])
+        for position, word in enumerate(words[:-1])
+        if word in ("-maxdepth", "-mindepth") and words[position + 1].isdigit()
+    }
+    prunes = not FIND_NO_PRUNE & set(words)
 
-
-def find_test_matches_config(test, pattern):
-    """Whether a find name test (-name '*.toml') can match roko.toml."""
-    if test in ("-iname", "-ipath", "-iwholename", "-iregex"):
-        pattern = pattern.lower()
-    if test in ("-name", "-iname"):
-        return fnmatch.fnmatchcase("roko.toml", pattern)
-    if test in ("-regex", "-iregex"):
-        try:
-            return re.search(pattern, "./roko.toml") is not None
-        except re.error:
+    def lists(rel, start, path):
+        parts = rel.split("/")
+        if not limits.get("-mindepth", 0) <= len(parts) <= limits.get("-maxdepth", len(parts)):
+            return False
+        if expression is None:
             return True
-    return any(fnmatch.fnmatchcase(path, pattern) for path in ("./roko.toml", "roko.toml"))
+        for count in range(1, len(parts)):
+            directory = printed_path(start, "/".join(parts[:count]))
+            if prunes and find_evaluate(expression, directory, "d")[1]:
+                return False
+        return find_evaluate(expression, printed_path(start, rel), file_kind(path))[0] is not False
+
+    return roots or ["."], lists
+
+
+def find_expression(words):
+    """find's expression (`words`, after its starting points) as a tree of
+    tuples: ("and" | "or" | ",", left, right), ("not", operand), or
+    ("primary", name, argument), the argument of -exec being its ; or +.
+    Raises ValueError when the words do not parse."""
+    position = 0
+
+    def primary():
+        nonlocal position
+        if position >= len(words):
+            raise ValueError("find's expression ends early")
+        word = words[position]
+        position += 1
+        if word in ("!", "-not"):
+            return ("not", primary())
+        if word == "(":
+            node = alternatives()
+            if position >= len(words) or words[position] != ")":
+                raise ValueError("find's expression leaves a parenthesis open")
+            position += 1
+            return node
+        argument = None
+        if word in FIND_EXEC:
+            while position < len(words) and words[position] not in (";", "+"):
+                position += 1
+            argument = words[position] if position < len(words) else ";"
+            position += 1
+        elif word in FIND_NAME_TESTS or word in FIND_ONE_ARGUMENT or word.startswith("-newer"):
+            argument = words[position] if position < len(words) else ""
+            position += 1
+        elif word == "-fprintf":
+            position += 2
+        return ("primary", word, argument)
+
+    def conjunction():
+        nonlocal position
+        node = primary()
+        while position < len(words) and words[position] not in ("-o", "-or", ",", ")"):
+            if words[position] in ("-a", "-and"):
+                position += 1
+            node = ("and", node, primary())
+        return node
+
+    def disjunction():
+        nonlocal position
+        node = conjunction()
+        while position < len(words) and words[position] in ("-o", "-or"):
+            position += 1
+            node = ("or", node, conjunction())
+        return node
+
+    def alternatives():
+        nonlocal position
+        node = disjunction()
+        while position < len(words) and words[position] == ",":
+            position += 1
+            node = (",", node, disjunction())
+        return node
+
+    if not words:
+        return ("primary", "-true", None)
+    node = alternatives()
+    if position < len(words):
+        raise ValueError("find's expression closes a parenthesis it never opened")
+    return node
+
+
+def find_evaluate(node, path, kind):
+    """What find's expression `node` gives for the entry it prints as
+    `path`, of file type `kind` (find's letter, None when unknown): True,
+    False, or None when the guard cannot tell; and whether it surely prunes
+    the entry. An operand that find may skip (after a true -o) prunes
+    nothing for sure."""
+    operator = node[0]
+    if operator == "primary":
+        return find_primary(node[1], node[2], path, kind), node[1] == "-prune"
+    if operator == "not":
+        value, prunes = find_evaluate(node[1], path, kind)
+        return (None if value is None else not value), prunes
+    left, prunes = find_evaluate(node[1], path, kind)
+    # Whether the right operand runs: after a comma always, after -a when
+    # the left one is true, after -o when it is false.
+    if operator == ",":
+        runs = True
+    elif operator == "and":
+        runs = left
+    else:
+        runs = None if left is None else not left
+    if runs is False:
+        return left, prunes
+    right, right_prunes = find_evaluate(node[2], path, kind)
+    prunes = prunes or (runs is True and right_prunes)
+    if runs is True:
+        return right, prunes
+    # The left operand is unknown: only the right one can decide.
+    decided = operator == "or"
+    return (decided if right is decided else None), prunes
+
+
+def find_primary(name, argument, path, kind):
+    """What a find primary gives for the entry printed as `path`: its name,
+    path and type tests as find decides them; True for actions and options;
+    None for -exec ... ; and the tests the guard does not model. find's
+    regexes are emacs regexes matched against the whole path, so a miss
+    there proves nothing."""
+    if name in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"):
+        text = path.rsplit("/", 1)[-1] if name in ("-name", "-iname") else path
+        if name.startswith("-i"):
+            text, argument = text.lower(), argument.lower()
+        return fnmatch.fnmatchcase(text, argument)
+    if name in ("-regex", "-iregex"):
+        try:
+            return True if re.fullmatch(argument, path, re.I if name == "-iregex" else 0) else None
+        except re.error:
+            return None
+    if name == "-type":
+        return None if kind is None else kind in argument.split(",")
+    if name in FIND_EXEC:
+        return True if argument == "+" else None
+    if name in FIND_TRUE:
+        return True
+    return False if name == "-false" else None
+
+
+def printed_path(start, rel):
+    """How find prints the entry at `rel` under the starting point `start`."""
+    return start.rstrip("/") + "/" + rel
+
+
+def file_kind(path):
+    """find's type letter (f, d or l) for the file at `path`, or None."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return None
+    if stat.S_ISDIR(mode):
+        return "d"
+    if stat.S_ISLNK(mode):
+        return "l"
+    return "f" if stat.S_ISREG(mode) else None
 
 
 def fd_list(arguments):
-    """fd's search paths, and whether its pattern (a regex, or a glob with
-    -g) or its extensions (-e) leave roko.toml out."""
+    """fd's search paths, and what it lists from them (see
+    check_tree_reads): no hidden file without -H or -u, nothing an -E glob
+    leaves out or deeper than -d, and only the names its pattern (a regex, a
+    glob with -g, a string with -F, the whole path with -p) and its
+    extensions (-e) match, case ignored."""
     options, operands = search_arguments(arguments, FD_SHORT_VALUES, FD_LONG_VALUES)
     names = {name for name, _ in options}
-    extensions = [value for name, value in options if name in ("-e", "--extension")]
     roots = operands[1:] + [value for name, value in options if name == "--search-path"]
-    excludes = bool(extensions) and "toml" not in extensions
-    if operands and operands[0]:
-        pattern = operands[0]
+    pattern = operands[0] if operands else ""
+    extensions = [
+        value.lower().lstrip(".") for name, value in options if name in ("-e", "--extension")
+    ]
+    hidden = bool(names & {"-H", "--hidden", "-u", "--unrestricted"})
+
+    def lists(rel, start, path):
+        parts = rel.split("/")
+        name = parts[-1].lower()
+        if not hidden and any(part.startswith(".") for part in parts):
+            return False
+        if extensions and not any(name.endswith("." + extension) for extension in extensions):
+            return False
+        for option, value in options:
+            if option in ("-E", "--exclude") and glob_excludes(value, rel, False):
+                return False
+            if option in ("-d", "--max-depth") and value.isdigit() and len(parts) > int(value):
+                return False
+        if not pattern:
+            return True
+        target = path.lower() if names & {"-p", "--full-path"} else name
         if names & {"-g", "--glob"}:
-            excludes = excludes or not fnmatch.fnmatch("roko.toml", pattern)
-        else:
-            try:
-                excludes = excludes or re.search(pattern, "roko.toml") is None
-            except re.error:
-                pass
-    return roots or ["."], excludes
+            return fnmatch.fnmatchcase(target, pattern.lower())
+        if names & {"-F", "--fixed-strings"}:
+            return pattern.lower() in target
+        try:
+            return re.search(pattern, target, re.I) is not None
+        except re.error:
+            return True
+
+    return roots or ["."], lists
 
 
 def check_find(arguments, depth):
@@ -624,8 +859,8 @@ def check_ssh(arguments, depth):
 
 
 def check_search(program, arguments):
-    """Deny a recursive search (grep -r, rg, ag, ack) that would read a roko
-    config file holding a secret, unless its filters leave the file out."""
+    """Deny a recursive search (grep -r, rg, ag, ack) that would read a key
+    file or a roko config file holding a secret (search_reads)."""
     kind = program if program in SEARCH_OPTIONS else "grep"
     short_values, long_values, lists_names, pattern_options = SEARCH_OPTIONS[kind]
     options, operands = search_arguments(arguments, short_values, long_values)
@@ -639,43 +874,76 @@ def check_search(program, arguments):
         return  # a file it names is checked with the other words
     if not names & pattern_options:
         operands = operands[1:]  # the first is the pattern
-    if not search_skips_config(options, kind):
-        check_search_roots(operands or ["."], BASH_CALL["dir"] or os.getcwd())
+    check_tree_reads(
+        operands or ["."], BASH_CALL["dir"] or os.getcwd(),
+        lambda rel, start, path: search_reads(options, kind, rel),
+    )
 
 
-def check_search_roots(roots, directory):
-    """Deny a search of `roots`, resolved against `directory`, that reads a
-    roko config file holding a secret (reads_secret_config); a brace or a
-    glob in a root is expanded as the shell would."""
+def check_tree_reads(roots, directory, reads):
+    """Deny a read of the trees at `roots`, resolved against `directory`,
+    that reaches a file agents must not read (sensitive_files) in one:
+    reads(rel, start, path) tells whether it reads the file at `path`, `rel`
+    being its path under the root and `start` the root as the program sees
+    it. A brace or a glob in a root is expanded as the shell would."""
     for root in roots:
         for variant in expand_braces(root):
             if re.search(r"[$`{]", variant):
                 continue
-            if any(reads_secret_config(path, directory) for path in expand(variant, directory)):
-                block(CONFIG_SECRET_REASON)
+            word = os.path.expanduser(variant)
+            for path in expand(variant, directory):
+                if not os.path.isdir(path):
+                    if is_secret_config_path(path, directory):
+                        block(CONFIG_SECRET_REASON)
+                    continue
+                start = word
+                if re.search(r"[*?\[]", variant) and not os.path.isabs(word):
+                    # The shell passes a glob's match as the glob gives it.
+                    start = os.path.relpath(path, directory)
+                    start = "./" + start if word.startswith("./") else start
+                top = os.path.realpath(path)
+                for found, reason in sensitive_files(top, directory):
+                    if reads(os.path.relpath(found, top), start, found):
+                        block(reason)
 
 
 def check_git_grep(arguments, options):
     """git grep reads the tracked files under the directory git runs in (git
-    -C), or under the paths and pathspecs it names; a revision it names reads
-    that commit's tree of the same directory."""
+    -C), or under the paths and pathspecs it names, down to --max-depth, and
+    the untracked ones too with --untracked or --no-index: a key file is
+    never tracked. A revision it names reads that commit's tree of the same
+    directory."""
     grep_options, operands = search_arguments(arguments, set("efmABC"), GIT_GREP_LONG_VALUES)
-    if not {name for name, _ in grep_options} & {"-e", "-f"}:
+    names = {name for name, _ in grep_options}
+    if not names & {"-e", "-f"}:
         operands = operands[1:]  # the first is the pattern
     directory = BASH_CALL["dir"] or os.getcwd()
     for position, option in enumerate(options[:-1]):
         if option == "-C":
             directory = os.path.join(directory, os.path.expanduser(options[position + 1]))
-    roots, narrowed = [], False
-    for operand in operands:
-        if re.search(r"[*?\[]", operand):
-            narrowed = True
-            if glob_matches_config(operand, False):
-                roots.append(".")
-        elif os.path.exists(os.path.join(directory, operand)):
-            narrowed = True
-            roots.append(operand)
-    check_search_roots(roots if narrowed else ["."], directory)
+    globs = [operand for operand in operands if re.search(r"[*?\[]", operand)]
+    paths = [
+        operand for operand in operands
+        if operand not in globs and os.path.exists(os.path.join(directory, operand))
+    ]
+    untracked = bool(names & {"--untracked", "--no-index"})
+    depths = [
+        int(value) for name, value in grep_options if name == "--max-depth" and value.isdigit()
+    ]
+
+    def reads(narrowed):
+        def git_reads(rel, start, path):
+            if not untracked and is_key_path(path, directory, False):
+                return False
+            if depths and rel.count("/") > depths[-1]:
+                return False
+            return not narrowed or any(glob_includes(pattern, rel) for pattern in globs)
+        return git_reads
+
+    if paths or not globs:
+        check_tree_reads(paths or ["."], directory, reads(False))
+    if globs:
+        check_tree_reads(["."], directory, reads(True))
 
 
 def search_arguments(arguments, short_values, long_values):
@@ -711,52 +979,137 @@ def search_arguments(arguments, short_values, long_values):
     return options, operands
 
 
-def search_skips_config(options, kind):
-    """Whether a search's filters leave roko.toml out: grep's --include and
-    --exclude, rg's -g (! excludes), -t and -T, ag's -G and --ignore, and
-    ack's -t and --ignore-file."""
-    includes, excludes, types, skipped_types = [], [], set(), set()
-    for name, value in options:
-        if name == "--include" and kind == "grep":
+def search_reads(options, kind, rel):
+    """Whether a recursive search reads the file at `rel` in the tree it
+    searches. grep and ack read hidden files and directories; rg and ag do
+    with --hidden or -uu (ag -u), and rg with a glob that names one. Filters
+    can leave the file out: grep's --include, --exclude and --exclude-dir;
+    rg's -g (! excludes), -t, -T and --max-depth; ag's -G, --ignore and
+    --depth; ack's -t, --ignore-dir and --ignore-file."""
+    parts = rel.split("/")
+    name = parts[-1]
+    includes, types, skipped_types = [], set(), set()
+    hidden, unrestricted, typed = kind in ("grep", "ack"), 0, True
+    for option, value in options:
+        if kind == "grep" and option == "--include" or (
+            kind == "rg" and option in RG_GLOBS and not value.startswith("!")
+        ):
             includes.append(value)
-        elif name == "--exclude" and kind == "grep" or name == "--ignore" and kind == "ag":
-            excludes.append(value)
-        elif kind == "rg" and name in ("-g", "--glob", "--iglob"):
-            if value.startswith("!"):
-                excludes.append(value[1:])
-            else:
-                includes.append(value)
-        elif kind in ("rg", "ack") and name in ("-t", "--type"):
+        elif kind == "rg" and option in RG_GLOBS or (
+            kind == "ag" and option in ("--ignore", "--ignore-dir")
+        ):
+            if glob_excludes(value[1:] if kind == "rg" else value, rel, option == "--iglob"):
+                return False
+        elif kind == "grep" and option == "--exclude" and fnmatch.fnmatchcase(name, value):
+            return False
+        elif kind == "grep" and option == "--exclude-dir" and any(
+            fnmatch.fnmatchcase(part, value.rstrip("/")) for part in parts[:-1]
+        ):
+            return False
+        elif kind == "ack" and option == "--ignore-dir" and any(
+            ack_filter(value, part) for part in parts[:-1]
+        ):
+            return False
+        elif kind == "ack" and option == "--ignore-file" and ack_filter(value, name):
+            return False
+        elif kind == "ag" and option in ("-G", "--file-search-regex"):
+            try:
+                if re.search(value, rel) is None:
+                    return False
+            except re.error:
+                pass
+        elif kind in ("rg", "ack") and option in ("-t", "--type"):
             if value.startswith("no"):
                 skipped_types.add(value[2:])
             else:
                 types.add(value)
-        elif kind == "rg" and name in ("-T", "--type-not"):
+        elif kind == "rg" and option in ("-T", "--type-not"):
             skipped_types.add(value)
-        elif kind == "ag" and name in ("-G", "--file-search-regex"):
-            try:
-                if re.search(value, "roko.toml") is None:
-                    return True
-            except re.error:
-                pass
-        elif kind == "ack" and name == "--ignore-file" and value in ("ext:toml", "is:roko.toml"):
+        elif kind == "rg" and option == "--type-add":
+            typed = False  # a type it adds may cover the file
+        elif kind in ("rg", "ag") and option == "--hidden" or kind == "rg" and option == "-.":
+            hidden = True
+        elif kind == "rg" and option == "--no-hidden":
+            hidden = False
+        elif kind in ("rg", "ag") and option in ("-u", "--unrestricted"):
+            unrestricted += 1
+        elif (
+            kind == "rg" and option in ("-d", "--max-depth", "--maxdepth")
+            or kind == "ag" and option == "--depth"
+        ) and value.isdigit():
+            # rg counts the files in the root as one level deep, ag as none.
+            if len(parts) - (kind == "ag") > int(value):
+                return False
+    hidden = hidden or unrestricted >= (2 if kind == "rg" else 1)
+    for count, part in enumerate(parts, 1):
+        if part.startswith(".") and not hidden and not (
+            kind == "rg"
+            and any(glob_includes(pattern, "/".join(parts[:count])) for pattern in includes)
+        ):
+            return False
+    if includes and not any(glob_includes(pattern, rel) for pattern in includes):
+        return False
+    types_of_file = file_types(name)
+    if typed and types and not types & (types_of_file | {"all"}):
+        return False
+    return not skipped_types & types_of_file
+
+
+def file_types(name):
+    """The rg file types (rg --type-list) of a key file or roko config file
+    named `name`: toml, json, and sh for a .env file."""
+    if name.endswith(".toml"):
+        return {"toml"}
+    if name.endswith(".json"):
+        return {"json"}
+    return {"sh"} if name.endswith(".env") else set()
+
+
+def ack_filter(value, name):
+    """Whether ack's filter (is:NAME, ext:EXT,..., match:/REGEX/, or a bare
+    name) matches the file or directory `name`."""
+    kind, colon, argument = value.partition(":")
+    if not colon:
+        return name == value
+    if kind == "is":
+        return name == argument
+    if kind == "ext":
+        return "." in name and name.rsplit(".", 1)[1] in argument.split(",")
+    if kind == "match":
+        try:
+            return re.search(argument.strip("/"), name) is not None
+        except re.error:
+            return False
+    return False
+
+
+def glob_includes(pattern, rel):
+    """Whether a glob that lets files in (grep --include, rg -g, a git
+    pathspec) may match the file at `rel`, by name or by path. Braces are
+    expanded and case ignored, so that a doubt counts as a match."""
+    name = rel.rsplit("/", 1)[-1].lower()
+    for variant in expand_braces(pattern.lower()):
+        variant = variant.lstrip("/")
+        while variant.startswith("**/"):
+            variant = variant[3:]
+        if fnmatch.fnmatchcase(name, variant) or fnmatch.fnmatchcase(rel.lower(), variant):
             return True
-    return bool(
-        (includes and not any(glob_matches_config(pattern, False) for pattern in includes))
-        or any(glob_matches_config(pattern, True) for pattern in excludes)
-        or (types and not types & {"toml", "all"})
-        or "toml" in skipped_types
-    )
+    return False
 
 
-def glob_matches_config(pattern, strict):
-    """Whether a file glob (grep --include, rg -g) matches roko.toml. Unless
-    `strict`, a glob that names toml counts too, as a brace glob may
-    (*.{rs,toml})."""
-    pattern = pattern.lower().lstrip("/")
+def glob_excludes(pattern, rel, fold):
+    """Whether a glob that leaves files out (rg -g '!...', ag --ignore, fd
+    -E) surely matches the file at `rel` or a directory it is in, by name or
+    by path from the root; `fold` ignores case (rg --iglob)."""
+    pattern = pattern.lstrip("/").rstrip("/")
     while pattern.startswith("**/"):
         pattern = pattern[3:]
-    return fnmatch.fnmatch("roko.toml", pattern) or (not strict and "toml" in pattern)
+    if fold:
+        pattern, rel = pattern.lower(), rel.lower()
+    parts = rel.split("/")
+    return any(fnmatch.fnmatchcase(part, pattern) for part in parts) or any(
+        fnmatch.fnmatchcase("/".join(parts[:count]), pattern) for count in range(1, len(parts) + 1)
+    )
 
 
 def short_flags(arguments):
@@ -898,6 +1251,14 @@ KEY_FILE_REASON = (
     "provider key files are off limits to agents (.env, secrets.toml, credentials.json"
     " and config.toml in any .roko directory, ~/.roko included)"
 )
+KEY_TREE_REASON = (
+    "this command reads the files of a tree that holds a provider key file (.env,"
+    " secrets.toml, credentials.json or config.toml in a .roko directory); leave .roko out"
+    " (grep --exclude-dir=.roko, rg -g '!.roko') or name a narrower tree"
+)
+# The most subdirectories a level in which the guard looks for a .roko
+# directory below a tree's root (sensitive_files).
+KEY_SEARCH_DIRS = 4096
 # A key file's name, ending there (.env, not .envrc).
 KEY_NAME = r"(?:\.env|secrets\.toml|credentials\.json|config\.toml)(?![\w-])"
 # In a command's text: a path to a key file, or a glob directly in a .roko
@@ -940,6 +1301,7 @@ def command_words(text, depth=0):
     for token in tokens(text.replace("\\\n", " ")):
         if set(token) <= OPERATOR_CHARS:
             continue
+        token = shown(token)
         words.append(token)
         words += [word for word in expand_braces(token) if word != token]
         if depth < MAX_DEPTH and re.search(r"[\s'\"\\]", token):
@@ -947,10 +1309,18 @@ def command_words(text, depth=0):
     return words
 
 
-def expand_braces(word, limit=64):
+def expand_braces(word):
     """The words a shell brace expansion makes of `word` (a{b,c}d gives abd
-    and acd), at most `limit`, or `word` itself when it has none. A ${...}
-    is no brace expansion, and neither is a {} without a comma in it."""
+    and acd), or `word` itself when it has none. A ${...} is no brace
+    expansion, and neither is a {} without a comma in it. An expansion that
+    makes more than BRACE_LIMIT words is denied: the guard would miss the
+    words past the limit."""
+    words = []
+    expand_braces_into(word, words)
+    return words
+
+
+def expand_braces_into(word, words):
     depth, start = 0, None
     for index, character in enumerate(word):
         if character == "{" and not (index and word[index - 1] == "$"):
@@ -960,21 +1330,16 @@ def expand_braces(word, limit=64):
         elif character == "}" and depth:
             depth -= 1
             if depth == 0 and commas:
-                parts, last = [], start + 1
-                for comma in commas:
-                    parts.append(word[last:comma])
+                last = start + 1
+                for comma in commas + [index]:
+                    expand_braces_into(word[:start] + word[last:comma] + word[index + 1:], words)
                     last = comma + 1
-                parts.append(word[last:index])
-                words = []
-                for part in parts:
-                    for expanded in expand_braces(word[:start] + part + word[index + 1:], limit):
-                        words.append(expanded)
-                        if len(words) >= limit:
-                            return words
-                return words
+                return
         elif character == "," and depth == 1:
             commas.append(index)
-    return [word]
+    words.append(word)
+    if len(words) > BRACE_LIMIT:
+        block("a brace expansion in the command makes more words than the guard can check")
 
 
 def names_key_file(command, directories):
@@ -1033,25 +1398,74 @@ def is_secret_config_path(path, cwd):
     return any(config_holds_secret(candidate) for candidate in {path, os.path.realpath(path)})
 
 
-def reads_secret_config(path, cwd):
-    """Whether a recursive search of `path` reads a roko config file that
-    holds a secret: path itself, or one in the tree under it, of those roko
-    reads: the roko.toml in path, the workspace's (in cwd or above it, as
-    roko finds it), the file ROKO_CONFIG names and the legacy
-    ~/.config/roko/config.toml."""
-    if not os.path.isdir(path):
-        return is_secret_config_path(path, cwd)
-    root = os.path.realpath(path)
+def sensitive_files(top, cwd):
+    """The files in the tree at `top`, a real directory, that agents must
+    not read, as (path, reason) pairs, of those the guard can find without
+    walking the whole tree:
+    - the roko config files that hold a secret, of those roko reads: the
+      roko.toml in top, the workspace's (in cwd or above it, as roko finds
+      it), the file ROKO_CONFIG names and the legacy
+      ~/.config/roko/config.toml;
+    - the key files in the .roko directories of key_directories."""
+    inside = top.rstrip("/") + "/"
+    found = []
     xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    configs = {
-        os.path.join(root, "roko.toml"), workspace_config(cwd), os.environ.get("ROKO_CONFIG"),
+    configs = [
+        os.path.join(top, "roko.toml"), workspace_config(cwd), os.environ.get("ROKO_CONFIG"),
         os.path.join(xdg, "roko", "config.toml"),
-    }
-    return any(
-        config and os.path.commonpath([os.path.realpath(os.path.dirname(config)), root]) == root
-        and config_holds_secret(config)
-        for config in configs
-    )
+    ]
+    for config in configs:
+        if config:
+            directory, name = os.path.split(config)
+            config = os.path.join(os.path.realpath(directory), name)
+            if config.startswith(inside) and config_holds_secret(config):
+                found.append((config, CONFIG_SECRET_REASON))
+    for directory in key_directories(top, cwd):
+        is_roko = os.path.basename(directory) == ".roko"
+        roko = directory if is_roko else os.path.join(directory, ".roko")
+        if (roko + "/").startswith(inside) and os.path.isdir(roko):
+            found += [
+                (os.path.join(roko, name), KEY_TREE_REASON)
+                for name in KEY_FILE_NAMES
+                if os.path.lexists(os.path.join(roko, name))
+            ]
+    return found
+
+
+def key_directories(top, cwd):
+    """The directories whose .roko holds key files a read of the tree at
+    `top` may reach: top, its subdirectories two levels down (not under a
+    hidden one, at most KEY_SEARCH_DIRS a level), cwd, the directory the
+    Bash call runs in, their ancestors, and HOME."""
+    directories, level = [top], [top]
+    for _ in range(2):
+        below = []
+        for directory in level:
+            if len(below) >= KEY_SEARCH_DIRS:
+                break
+            if directory != top and os.path.basename(directory).startswith("."):
+                continue
+            try:
+                with os.scandir(directory) as entries:
+                    below += [
+                        entry.path for entry in entries if entry.is_dir(follow_symlinks=False)
+                    ]
+            except OSError:
+                continue
+        level = below[:KEY_SEARCH_DIRS]
+        directories += level
+    for start in (cwd, BASH_CALL["cwd"]):
+        current = os.path.realpath(start) if start else "/"
+        while True:
+            directories.append(current)
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+    home = os.path.expanduser("~")
+    if home != "~":
+        directories.append(os.path.realpath(home))
+    return directories
 
 
 def workspace_config(cwd):
@@ -1132,15 +1546,21 @@ def literal_secret(value):
 
 def greps_secret_config(tool_input, cwd):
     """Whether a Grep reads a roko config file that holds a secret, in the
-    tree it searches (reads_secret_config), unless its glob or type leaves
-    the file out."""
+    tree it searches (sensitive_files), unless its glob or type leaves the
+    file out."""
     root = os.path.join(cwd, os.path.expanduser(tool_input.get("path") or "."))
     kind, pattern = tool_input.get("type"), tool_input.get("glob")
-    if kind and kind != "toml":
+    if not os.path.isdir(root):
         return False
-    if isinstance(pattern, str) and not glob_matches_config(pattern, False):
-        return False
-    return os.path.isdir(root) and reads_secret_config(root, cwd)
+    top = os.path.realpath(root)
+    return any(
+        reason == CONFIG_SECRET_REASON
+        and not (kind and kind not in file_types(os.path.basename(found)) | {"all"})
+        and not (
+            isinstance(pattern, str) and not glob_includes(pattern, os.path.relpath(found, top))
+        )
+        for found, reason in sensitive_files(top, cwd)
+    )
 
 
 def hook_cwd(data):

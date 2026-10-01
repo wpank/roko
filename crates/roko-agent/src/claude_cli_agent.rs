@@ -1806,6 +1806,9 @@ mod tests {
             "find . -execdir sudo rm {} +",
             "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
             "find . -exec git checkout {} \\;",
+            // Quoted or escaped parentheses group find's tests.
+            "find . \\( -name '*.o' -o -name '*.a' \\) -exec rm -f {} +",
+            "find . '(' -name x ')' -exec rm {} \\;",
             "sudo find . -delete",
             // rm on what find or fd lists, however it gets there.
             "find . -name x | xargs rm",
@@ -2154,7 +2157,8 @@ mod tests {
     }
 
     /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
-    /// holding a secret, from the table roko-std's bash tool checks too.
+    /// holding a secret, or a key file in .roko, from the table roko-std's
+    /// bash tool checks too.
     #[test]
     fn settings_hook_refuses_every_search_that_reaches_a_secret() {
         let workdir = tempdir().unwrap();
@@ -2163,6 +2167,15 @@ mod tests {
         fs::create_dir(&src).unwrap();
         fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
         fs::write(root.join("roko.lock"), "lock\n").unwrap();
+        for key in [
+            ".roko/.env",
+            ".roko/secrets.toml",
+            "vendor/pkg/.roko/credentials.json",
+        ] {
+            let key = root.join(key);
+            fs::create_dir_all(key.parent().unwrap()).unwrap();
+            fs::write(&key, "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        }
         fs::write(
             root.join("roko.toml"),
             "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",

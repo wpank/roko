@@ -24,10 +24,10 @@
 //! a secret ([`roko_core::child_env::is_config_with_secrets`]), are refused
 //! with [`ToolError::KeyFileBlocked`], inside the worktree too, by the path
 //! as given and with symlinks resolved, and the `bash` tool refuses a
-//! command that names one, or searches a tree or reads a list that holds a
-//! config with a secret ([`refuse_key_file_in_command`]). The tools check
-//! this themselves, so the block holds whichever dispatcher runs them, with
-//! or without roko-agent's `SafetyLayer`.
+//! command that names one, or searches a tree or reads a list that holds
+//! one ([`refuse_key_file_in_command`]). The tools check this themselves,
+//! so the block holds whichever dispatcher runs them, with or without
+//! roko-agent's `SafetyLayer`.
 
 mod reads;
 
@@ -96,16 +96,21 @@ pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
 ///   command, is a key file or a roko config file that holds a secret, as
 ///   [`refuse_key_file`] decides (a symlink to one too);
 /// - a recursive search (`grep -r`, `rg`, `git grep`, `ag`, `ack`) of a tree
-///   that holds such a config, or a read (`cat`, `grep`) of a list the check
-///   cannot see (`find -exec`, `xargs`) that may name one (the `reads`
-///   module).
+///   that holds a key file or such a config, or a read (`cat`, `grep`) of a
+///   list the check cannot see (`find -exec`, `xargs`) that may name one,
+///   unless its filters leave the file out (the `reads` module).
+///
+/// What the check cannot follow is refused too: command lines nested deeper
+/// than `MAX_COMMAND_NESTING`, an expansion too large to check, and a git
+/// alias.
 ///
 /// # Errors
 ///
-/// Returns [`ToolError::KeyFileBlocked`] naming the word or the config.
+/// Returns [`ToolError::KeyFileBlocked`] naming the word or the file, and
+/// [`ToolError::CommandNotAllowed`] for a command the check cannot follow.
 pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolError> {
     let mut words = Vec::new();
-    command_words(command, 0, &mut words);
+    command_words(command, 0, &mut words)?;
     if let Some(word) = words.iter().find(|word| key_path_in_text(word)) {
         return Err(ToolError::KeyFileBlocked(word.into()));
     }
@@ -123,7 +128,7 @@ pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolE
     for word in &words {
         let value = word.split_once('=').map(|(_, value)| value);
         for directory in &directories {
-            for path in reads::expand(word, directory) {
+            for path in reads::expand(word, directory)? {
                 refuse_key_file(&path)?;
             }
             if let Some(path) = value.and_then(|value| word_path(value, directory)) {
@@ -134,26 +139,29 @@ pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolE
     reads::refuse_secret_reads(command, cwd)
 }
 
-/// How deep [`command_words`] reads quoted strings as command lines.
+/// How deep command lines may nest (`sh -c '…'` in `sh -c '…'`):
+/// [`command_words`] reads quoted strings no deeper, and the `reads` check
+/// refuses a command that runs a deeper one.
 const MAX_COMMAND_NESTING: usize = 8;
 
 /// The words of `text`, each brace expansion's words as well, and those of
 /// each word that is itself a command line (`sh -c '…'`), with quotes and
 /// escapes removed.
-fn command_words(text: &str, depth: usize, words: &mut Vec<String>) {
+fn command_words(text: &str, depth: usize, words: &mut Vec<String>) -> Result<(), ToolError> {
     for word in shell_words(text) {
         if depth < MAX_COMMAND_NESTING
             && word.contains(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '\\'))
         {
-            command_words(&word, depth + 1, words);
+            command_words(&word, depth + 1, words)?;
         }
         words.extend(
-            reads::expand_braces(&word)
+            reads::expand_braces(&word)?
                 .into_iter()
                 .filter(|variant| *variant != word),
         );
         words.push(word);
     }
+    Ok(())
 }
 
 /// Whether `c` ends an unquoted word: whitespace, a shell operator, or a
@@ -432,7 +440,8 @@ mod tests {
     }
 
     /// bug-77413c: the bash tool had none of the Claude CLI guard's search
-    /// rules. Both check the commands in `sandbox/secret_read_cases.txt`.
+    /// rules. Both check the commands in `sandbox/secret_read_cases.txt`,
+    /// which reach key files in `.roko` too.
     #[test]
     fn bash_refuses_every_search_that_reaches_a_secret() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -441,6 +450,15 @@ mod tests {
         std::fs::create_dir(&src).expect("mkdir src");
         std::fs::write(src.join("a.rs"), "fn main() {}\n").expect("write a.rs");
         std::fs::write(root.join("roko.lock"), "lock\n").expect("write roko.lock");
+        let keys = [
+            root.join(".roko/.env"),
+            root.join(".roko/secrets.toml"),
+            root.join("vendor/pkg/.roko/credentials.json"),
+        ];
+        for key in &keys {
+            std::fs::create_dir_all(key.parent().expect("a .roko directory")).expect("mkdir .roko");
+            std::fs::write(key, "OPENAI_API_KEY=sk-test-not-real\n").expect("write key file");
+        }
         let config = root.join("roko.toml");
         std::fs::write(
             &config,
@@ -468,8 +486,11 @@ mod tests {
                 cwd.display()
             );
         }
-        // Without the secret, every command runs.
+        // Without the secret and the key files, every command runs.
         std::fs::write(&config, "[serve.auth]\nenabled = true\n").expect("rewrite roko.toml");
+        for key in &keys {
+            std::fs::remove_file(key).expect("remove key file");
+        }
         for &(_, cwd, command) in &cases {
             let result = refuse_key_file_in_command(command, cwd);
             assert!(
@@ -477,6 +498,120 @@ mod tests {
                 "`{command}` in {}: {result:?}",
                 cwd.display()
             );
+        }
+    }
+
+    /// bug-fa1537: a recursive search, or a read of what find or xargs
+    /// lists, reaches the key files in the tree's `.roko` and in the
+    /// workspace's above the command, unless it leaves `.roko` out or skips
+    /// hidden files.
+    #[test]
+    fn recursive_search_reaching_a_key_file_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        let key = root.join(".roko/.env");
+        std::fs::create_dir_all(root.join(".roko")).expect("mkdir .roko");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(&key, "OPENAI_API_KEY=sk-test-not-real\n").expect("write .env");
+        for command in [
+            "grep -r OPENAI .",
+            "rg --hidden OPENAI",
+            "rg -uu OPENAI",
+            "ag -u OPENAI",
+            "ack OPENAI",
+            "git grep --untracked OPENAI",
+            "find . -type f | xargs grep OPENAI",
+            "find . -exec cat {} +",
+            "fd -H -x cat",
+            "cd src && grep -r OPENAI ..",
+        ] {
+            let result = refuse_key_file_in_command(command, &root);
+            assert!(
+                matches!(&result, Err(ToolError::KeyFileBlocked(path)) if *path == key),
+                "`{command}`: {result:?}"
+            );
+        }
+        for command in [
+            "grep -r --exclude-dir=.roko OPENAI .",
+            "rg OPENAI",
+            "rg --hidden -g '!.roko' OPENAI",
+            "git grep OPENAI",
+            "find . -name '*.rs' -exec cat {} +",
+            "find . -name .roko -prune -o -type f -print | xargs cat",
+            "fd -x cat",
+            "grep -r OPENAI src",
+        ] {
+            let result = refuse_key_file_in_command(command, &root);
+            assert!(result.is_ok(), "`{command}`: {result:?}");
+        }
+
+        // The workspace's key files are found from the directory the command
+        // line runs in upwards, though they sit deeper below the searched
+        // root than the check looks; from the root, they are too deep.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        let workspace = root.join("a/b/c/d");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).expect("mkdir src");
+        std::fs::create_dir_all(workspace.join(".roko")).expect("mkdir .roko");
+        std::fs::write(workspace.join(".roko/secrets.toml"), "key = \"x\"\n").expect("write key");
+        for command in [
+            "grep -r OPENAI ../../../../..",
+            "cd ../../../../.. && grep -r OPENAI .",
+            "sh -c 'cd ../../../../.. && grep -r OPENAI .'",
+        ] {
+            assert!(
+                matches!(
+                    refuse_key_file_in_command(command, &src),
+                    Err(ToolError::KeyFileBlocked(_))
+                ),
+                "`{command}` should be refused"
+            );
+        }
+        assert!(refuse_key_file_in_command("grep -r OPENAI .", &src).is_ok());
+        assert!(refuse_key_file_in_command("grep -r OPENAI .", &root).is_ok());
+    }
+
+    /// bug-bb3262: the check refuses what it cannot follow rather than
+    /// letting it run: a command line nested too deeply, a brace expansion
+    /// too large to check, and a git subcommand that may be an alias.
+    #[test]
+    fn deep_nesting_and_git_aliases_fail_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        let nested = |depth: usize| format!("{}grep x src", "eval ".repeat(depth));
+        assert!(refuse_key_file_in_command(&nested(MAX_COMMAND_NESTING), &root).is_ok());
+        let deep = nested(MAX_COMMAND_NESTING + 1);
+        let braces = |count: usize| format!("echo {}", "{a,b}".repeat(count));
+        let alternatives: Vec<String> = (0..5000).map(|index| format!("x{index}")).collect();
+        let long_list = format!("cat {{{}}}", alternatives.join(","));
+        for command in [
+            deep.as_str(),
+            &braces(13),
+            &long_list,
+            "git st",
+            "git -c alias.x='!cat roko.toml' x",
+            "sudo git -C . x",
+            "git $sub",
+        ] {
+            assert!(
+                matches!(
+                    refuse_key_file_in_command(command, &root),
+                    Err(ToolError::CommandNotAllowed(_))
+                ),
+                "`{command}` should be refused"
+            );
+        }
+        for command in [
+            braces(12).as_str(),
+            "git status",
+            "git -C . log --oneline",
+            "git --version",
+            "timeout 5 grep git src",
+            "xargs grep git src",
+        ] {
+            let result = refuse_key_file_in_command(command, &root);
+            assert!(result.is_ok(), "`{command}`: {result:?}");
         }
     }
 

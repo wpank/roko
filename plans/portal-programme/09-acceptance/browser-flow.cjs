@@ -86,6 +86,34 @@ async function failStep(page, name, detail, evidenceDir) {
     process.exit(1);
 }
 
+// Browser errors the portal is expected to produce. `url` matches a failed request's URL and `text` a console
+// message; give every entry a `why`. Anything not listed fails the no-console-errors step (gap-9b0e6d). Add an entry
+// only for a request that is meant to fail; a real defect becomes a work item instead.
+const ALLOWED_BROWSER_ERRORS = [];
+
+function unexpectedBrowserErrors(consoleErrors, pageErrors, failedRequests) {
+    const allowed = (key, value) => ALLOWED_BROWSER_ERRORS.some(a => a[key] && a[key].test(value));
+    // Chrome logs a failed request as "Failed to load resource: …" without its URL; the request itself is judged below.
+    const messages = consoleErrors.filter(t => !t.startsWith('Failed to load resource') && !allowed('text', t));
+    const requests = failedRequests.filter(r => !allowed('url', r.url));
+    return [
+        ...pageErrors.map(e => `page error: ${e}`),
+        ...messages.map(t => `console: ${t}`),
+        ...requests.map(r => `${r.status || r.error} ${r.method} ${r.url}`),
+    ];
+}
+
+// After a completed flow: PASS when every browser error is on the allow-list, else FAIL with the first few.
+function checkBrowserErrors(consoleErrors, pageErrors, failedRequests) {
+    const unexpected = unexpectedBrowserErrors(consoleErrors, pageErrors, failedRequests);
+    if (unexpected.length === 0) {
+        passStep('no-console-errors', `${failedRequests.length} failed requests, all allowed`);
+    } else {
+        console.log(`BROWSER no-console-errors: FAIL ${unexpected.length} ${unexpected.slice(0, 3).join(' | ')}`);
+        process.exitCode = 1;
+    }
+}
+
 // Require a step: fn() must resolve; on throw → FAIL + exit 1
 async function requireStep(page, name, evidenceDir, fn) {
     try {
@@ -319,13 +347,20 @@ async function main() {
         viewport: { width: 1440, height: 900 },
     });
 
-    const consoleErrors = [];
-    const pageErrors    = [];
+    const consoleErrors  = [];
+    const pageErrors     = [];
+    const failedRequests = [];
 
     const page = await context.newPage();
     page.on('dialog', async d => { try { await d.accept(); } catch {} });
     page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
     page.on('pageerror', err => pageErrors.push(err.message));
+    page.on('response', r => {
+        if (r.status() >= 400) failedRequests.push({ method: r.request().method(), url: r.url(), status: r.status() });
+    });
+    page.on('requestfailed', r => failedRequests.push({
+        method: r.method(), url: r.url(), status: null, error: (r.failure() || {}).errorText || 'failed',
+    }));
 
     try {
         if (MODE === 'flow' || MODE === 'real') {
@@ -338,10 +373,11 @@ async function main() {
             console.error(`Unknown mode: ${MODE}`);
             process.exit(1);
         }
+        checkBrowserErrors(consoleErrors, pageErrors, failedRequests);
     } finally {
         fs.writeFileSync(
             path.join(EVIDENCE_DIR, `browser-${MODE}.json`),
-            JSON.stringify({ consoleErrors, pageErrors }, null, 2)
+            JSON.stringify({ consoleErrors, pageErrors, failedRequests }, null, 2)
         );
         await browser.close().catch(() => {});
     }

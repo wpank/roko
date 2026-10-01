@@ -4,6 +4,10 @@
 Usage:
   work.py id --kind gap --title "…" --created 2026-09-28 --source "…"   # print a hash ID
   work.py new --kind gap --title "…" --source "…" [--root work|local] [--subsystem a,b] [--severity p2] [--triage verified]
+              [--goal G] [--lane L] [--parent spec-…] [--milestone M] [--size S|M|L] [--rank N] [--hold "why"]
+              [--discovered-from "…"] [--doc PATH] [--anchor A]... [--verify CMD]... [--depends-on ids] [--related ids]
+              [--blocks ids] [--body-file F] [--no-verify-yet] [--dry-run]
+                                     # a gap, bug or regression needs an --anchor, and a --verify unless --no-verify-yet
   work.py check [--strict]                                               # validate both roots (+ verify-command lint)
   work.py render                                                         # regenerate views, including DRIFT.md and EPICS.md
   work.py list [--goal G] [--lane L] [--kind K] [--status open|all|<status>] [--parent ID] [--json]   # one line per item
@@ -1883,26 +1887,83 @@ Constraints (files not to touch, decisions already made, risky areas), and anyth
 """
 
 
+def comma_list(value) -> list[str]:
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def new_problems(a) -> list[str]:
+    """Why `new` must not write the item: a field `check` would refuse, or a verify command that `lint_verify` flags."""
+    probs = []
+    if a.goal and a.goal not in {g["key"] for g in load_goals()}:
+        probs.append(f"goal {a.goal!r} is not in work/goals.toml")
+    lanes = load_lanes()
+    if a.lane and lanes and a.lane not in (lanes.get("lane") or {}):
+        probs.append(f"lane {a.lane!r} is not in work/lanes.toml")
+    if a.milestone and lanes.get("milestones") is not None and a.milestone not in lanes["milestones"]:
+        probs.append(f"milestone {a.milestone!r} is not one of work/lanes.toml's milestones")
+    idx = index() if (a.parent or a.depends_on or a.blocks) else {}
+    if a.parent and idx.get(a.parent, {}).get("kind") != "spec":
+        probs.append(f"parent {a.parent!r} is not a spec item")
+    if a.hold is not None and not a.hold.strip():
+        probs.append("--hold needs a reason")
+    probs += [f"anchor {x!r} does not exist" for x in a.anchor if not valid_anchor(x)]
+    probs += [f"verify {cmd!r} {w}" for cmd in a.verify for w in lint_verify(cmd)]
+    for flag, value in (("--depends-on", a.depends_on), ("--blocks", a.blocks)):
+        probs += [f"{flag}: {x!r} is not a known item" for x in comma_list(value) if x not in idx]
+    probs += [f"--related: {x!r} is not an item id" for x in comma_list(a.related) if not ID_RE.match(x)]
+    if a.kind in ("gap", "bug", "regression"):
+        if not a.anchor:
+            probs.append(f"a {a.kind} needs at least one --anchor")
+        if not a.verify and not a.no_verify_yet:
+            probs.append(f"a {a.kind} needs a --verify (or --no-verify-yet when none can be written yet)")
+    if a.body_file and not Path(a.body_file).is_file():
+        probs.append(f"--body-file {a.body_file} is not a file")
+    return probs
+
+
+def new_text(a, iid: str, created: str, body: str) -> str:
+    """The item file `new` writes, its fields in the order of work/README.md's example."""
+    today = dt.date.today().isoformat()
+    lst = lambda xs: "[" + ", ".join(tomlstr(x) for x in xs) + "]"  # noqa: E731
+    fm = ["+++", f'id = "{iid}"', f'kind = "{a.kind}"', f"title = {tomlstr(a.title)}", f'status = "{a.status}"',
+          f'triage = "{a.triage}"', f'severity = "{a.severity}"']
+    fm += [f"goal = {tomlstr(a.goal)}"] if a.goal else []
+    fm += [f"milestone = {tomlstr(a.milestone)}"] if a.milestone else []
+    fm += [f"rank = {a.rank}"] if a.rank is not None else []
+    fm += [f'size = "{a.size}"'] if a.size else []
+    fm += [f"hold = {tomlstr(a.hold)}"] if a.hold else []
+    fm += [f"subsystem = {lst(comma_list(a.subsystem) or ['unknown'])}", f"created = {created}", f"updated = {today}"]
+    fm += [f"last_verified = {today}"] if a.triage == "verified" else []
+    fm += [f"source = {tomlstr(a.source)}"]
+    fm += [f"discovered_from = {tomlstr(a.discovered_from)}"] if a.discovered_from else []
+    fm += [f"anchors = {lst(a.anchor)}"]
+    fm += [f"doc = {tomlstr(a.doc)}"] if a.doc else []
+    fm += [f"lane = {tomlstr(a.lane)}"] if a.lane else []
+    fm += [f"parent = {tomlstr(a.parent)}"] if a.parent else []
+    fm += [f"links = {{ depends_on = {lst(comma_list(a.depends_on))}, blocks = {lst(comma_list(a.blocks))}, "
+           f'related = {lst(comma_list(a.related))}, supersedes = [], duplicate_of = "" }}']
+    for cmd in a.verify:
+        fm += ["", "[[verify]]", f"command = {tomlstr(cmd)}"]
+    return "\n".join(fm + ["+++", "", body if body.endswith("\n") else body + "\n"])
+
+
 def cmd_new(a):
+    problems = new_problems(a)
+    if problems:
+        sys.exit("new: refused:\n" + "\n".join(f"  - {p}" for p in problems))
     created = a.created or dt.date.today().isoformat()
     iid = make_id(a.kind, a.title, created, a.source)
     root = ROOTS[a.root] / home_dir(a.status)
-    root.mkdir(parents=True, exist_ok=True)
     path = root / f"{iid}-{slug(a.title)}.md"
     if path.exists():
         iid = make_id(a.kind, a.title, created, a.source, 8)
         path = root / f"{iid}-{slug(a.title)}.md"
-    subs = [s.strip() for s in (a.subsystem or "unknown").split(",") if s.strip()]
-    fm = [
-        "+++", f'id = "{iid}"', f'kind = "{a.kind}"', f"title = {tomlstr(a.title)}", f'status = "{a.status}"',
-        f'triage = "{a.triage}"', f'severity = "{a.severity}"', "subsystem = [" + ", ".join(tomlstr(s) for s in subs) + "]",
-        f"created = {created}", f"updated = {dt.date.today().isoformat()}",
-    ]
-    if a.triage == "verified":
-        fm.append(f"last_verified = {dt.date.today().isoformat()}")
-    fm += [f"source = {tomlstr(a.source)}", "anchors = []",
-           'links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }', "+++", "", BODY_TEMPLATE]
-    path.write_text("\n".join(fm))
+    text = new_text(a, iid, created, Path(a.body_file).read_text() if a.body_file else BODY_TEMPLATE)
+    if a.dry_run:
+        print(text, end="")
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
     print(path.relative_to(REPO))
 
 
@@ -1963,6 +2024,15 @@ def main():
     p.add_argument("--source", required=True); p.add_argument("--created"); p.add_argument("--root", default="work", choices=ROOTS)
     p.add_argument("--subsystem"); p.add_argument("--severity", default="p2", choices=SEV)
     p.add_argument("--status", default="open", choices=sorted(STATUSES - {"parked"})); p.add_argument("--triage", default="unverified", choices=sorted(TRIAGE))
+    p.add_argument("--goal"); p.add_argument("--lane"); p.add_argument("--parent"); p.add_argument("--milestone")
+    p.add_argument("--size", choices=SIZES); p.add_argument("--rank", type=int); p.add_argument("--hold")
+    p.add_argument("--discovered-from"); p.add_argument("--doc")
+    p.add_argument("--anchor", action="append", default=[], help="repeatable; path or path::symbol")
+    p.add_argument("--verify", action="append", default=[], help="repeatable; checked with lint_verify")
+    p.add_argument("--depends-on", help="comma list of ids"); p.add_argument("--related", help="comma list of ids")
+    p.add_argument("--blocks", help="comma list of ids"); p.add_argument("--body-file", help="replaces the body template")
+    p.add_argument("--no-verify-yet", action="store_true", help="let a gap, bug or regression start without --verify")
+    p.add_argument("--dry-run", action="store_true", help="print the file instead of writing it")
     p = sp.add_parser("park"); p.add_argument("ids", nargs="+"); p.add_argument("--reason", required=True)
     p = sp.add_parser("unpark"); p.add_argument("ids", nargs="+")
     sp.add_parser("tidy")

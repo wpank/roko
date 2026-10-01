@@ -215,6 +215,7 @@ impl DreamAgentConfig {
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
         }
     }
 }

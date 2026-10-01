@@ -18,7 +18,7 @@ anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/ro
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q '\"agent.data_llm\"' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
+command = "! grep -qE '^ +\"agent\\.data_llm\",$' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
 +++
 
 ## Problem
@@ -201,6 +201,21 @@ LLM failure blocks the content instead of passing it through.
   `tool/call.rs`; `classify_tool_error` maps it to `FailureKind::PermissionDenied`), not `ToolError::Other`. The
   fail-closed policy itself landed with step 3: there is no path back to the raw text. The serde and classification
   variant lists in roko-core's tests include it; the boundary's tool-loop test checks the notice.
+- 2026-10-02 (wk-childenv): Plan step 6, part 1 (provider factory) on work/gap-1555ac; cargo verification deferred
+  to the batch check. `AgentOptions::data_llm` carries the boundary. `create_agent_for_model` builds it from
+  `config.agent.data_llm` with the new `provider::data_llm_boundary` (the data model's backend comes from
+  `tool_loop::backends::create_tool_loop_backend`; a CLI model, or one it cannot resolve, fails the agent's
+  construction) for adapters that run tools in process (`supports_local_tool_runtime`: Anthropic API,
+  OpenAI-compatible, Cerebras, Gemini and Perplexity). Each of their `ToolLoop`s takes it through the new
+  `ToolLoop::with_optional_data_llm`. The inert-settings entry is gone, and the config docs say what is covered.
+  Exhaustive `AgentOptions` literals gained `data_llm: None` (roko-dreams `runner.rs`, roko-serve `dispatch.rs`,
+  roko-cli `tests/smoke.rs`, roko-agent `provider/claude_cli.rs` test). Test:
+  `data_llm_boundary_needs_a_model_roko_calls_over_an_api`.
+- Left for step 6, part 2: ACP's two `ToolLoop`s (`roko-acp/src/bridge_events/dispatch.rs`), which can call
+  `provider::data_llm_boundary` with the session config; and the verify's end-to-end test,
+  `untrusted_tool_result_never_reaches_main_model_raw`, through a factory-built agent against a local HTTP server.
+  The verify's first clause now matches only an inert-list entry line, not the test's mention of the key. Steps 7-8
+  (audit records, cancellation coverage) remain.
 
 ## Original notes
 

@@ -33,9 +33,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
     const NO_EVAL_SOURCE: &str = "the built-in eval template needs an assertion body that plan \
                                   tasks do not author, so nothing is written (bug-017c2d), and \
                                   nothing in plan run executes generated tests";
-    const NO_DATA_LLM_BOUNDARY: &str = "no dispatch path builds the data-LLM boundary from it \
-                                        yet (gap-b0d514), so untrusted tool output still \
-                                        reaches the main model as it is";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
@@ -102,11 +99,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                 != defaults.budget.max_agent_lifetime_usd.to_bits(),
             "budget.max_agent_lifetime_usd",
             NO_LONG_LIVED_AGENT,
-        ),
-        (
-            config.agent.data_llm.is_some(),
-            "agent.data_llm",
-            NO_DATA_LLM_BOUNDARY,
         ),
         (
             routing.algorithm != default_routing.algorithm,
@@ -282,12 +274,12 @@ mod tests {
             lifetime.reason
         );
 
-        // No dispatch path builds the data-LLM boundary yet (gap-b0d514).
+        // The agent factory builds the data-LLM boundary (gap-b0d514).
         config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
         assert!(
             graph_engine_inert_settings(&config)
                 .iter()
-                .any(|setting| setting.key == "agent.data_llm")
+                .all(|setting| setting.key != "agent.data_llm")
         );
     }
 }

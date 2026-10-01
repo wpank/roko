@@ -329,6 +329,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         tool_correlation: None,
         max_turns: None,
         thinking: None,
+        data_llm: None,
     };
 
     let agent = ClaudeCliAdapter

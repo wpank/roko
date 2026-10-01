@@ -545,13 +545,20 @@ force_tier = "focused"         # pin to a complexity tier
 </details>
 
 <details>
-<summary>CaMeL dual-LLM isolation (SAFE-07): not wired yet</summary>
+<summary>CaMeL dual-LLM isolation (SAFE-07)</summary>
 
-`[agent.data_llm]` configures a separate, tool-less model that would read untrusted tool output
-(MCP, plugin, web-search and network tool results) so the main model sees only its validated
-output. No dispatch path builds that boundary from the section yet (gap-b0d514), so setting it
-protects nothing today, and `roko config doctor` says so. It can only ever cover the tool loops
-roko drives itself (API providers), not CLI providers.
+`[agent.data_llm]` configures a separate, tool-less model that reads untrusted tool output (MCP,
+plugin, web-search, retrieval and network tool results) for every agent roko builds for an API
+provider, so the main model sees only the extracted summary and facts, or a notice that they were
+withheld. It cannot cover CLI providers, which run their own tool loops, and ACP's tool loop does
+not use it yet (gap-b0d514).
+
+```toml
+[agent.data_llm]
+model = "claude-haiku-4-5"   # a model roko calls over an API
+timeout_ms = 30000
+max_input_bytes = 32768
+```
 
 </details>
 

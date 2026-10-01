@@ -464,6 +464,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
         };
         let model = claude_model();
 

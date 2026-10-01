@@ -906,6 +906,16 @@ impl ToolLoop {
         self
     }
 
+    /// [`Self::with_data_llm`] when `boundary` is set, as an agent's options
+    /// carry it; the loop unchanged otherwise.
+    #[must_use]
+    pub fn with_optional_data_llm(self, boundary: Option<Arc<DataLlmBoundary>>) -> Self {
+        match boundary {
+            Some(boundary) => self.with_data_llm(boundary),
+            None => self,
+        }
+    }
+
     /// Build a [`TurnConfig`] from the current model profile and defaults.
     ///
     /// This consolidates the scattered parameters that previously had to be

@@ -300,12 +300,12 @@ pub struct RoutingOverrides {
 /// max_input_bytes = 32768
 /// ```
 ///
-/// It can only cover the tool loops roko drives itself (API providers): CLI
-/// providers (Claude CLI, Codex, Gemini CLI, Cursor) run their own tool
-/// loops, so roko never sees their tool results first. A roko-agent
-/// `ToolLoop` applies the boundary when built `with_data_llm`, but no
-/// dispatch path builds one from this section yet, so `plan run` reports
-/// the key as inert (gap-b0d514).
+/// It covers the tool loops roko runs itself: an agent the provider factory
+/// (`create_agent_for_model`) builds for an API provider sends untrusted tool
+/// output through it. CLI providers (Claude CLI, Codex, Gemini CLI, Cursor)
+/// run their own tool loops, so roko never sees their tool results first,
+/// and ACP's own tool loop does not use it yet (gap-b0d514). The data model
+/// must be one roko calls over an API; otherwise the agent fails to build.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

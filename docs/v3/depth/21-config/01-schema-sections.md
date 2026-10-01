@@ -71,10 +71,13 @@ results) goes to this separate, tool-less model, and the main model sees only it
 | `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
 | `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
 
-Leaving the section out turns the boundary off. It can only cover the tool loops roko drives
-itself (API providers): CLI providers run their own tool loops. No dispatch path builds the
-boundary from this section yet (gap-b0d514), so `roko config doctor` and `plan run` report the
-key as having no effect.
+Leaving the section out turns the boundary off. With it set, every agent roko builds for an API
+provider (Anthropic, OpenAI-compatible, Gemini, Perplexity, Cerebras) sends the output of MCP,
+plugin, web-search, retrieval and network tools through the data LLM, and the model sees only
+the extracted summary and facts, or a notice that they were withheld. CLI providers run their
+own tool loops, so it cannot cover them, and ACP's tool loop does not use it yet (gap-b0d514).
+The data model must be one roko calls over an API: if roko cannot build it, the agent fails to
+start rather than run without the boundary.
 
 ---
 

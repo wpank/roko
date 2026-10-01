@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::orchestrator::ExecutorConfig;
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderRouting, RokoConfig};
 use roko_core::config::{
@@ -48,9 +47,6 @@ pub struct Config {
     /// Gates to run on the agent output, in declaration order.
     #[serde(default, rename = "gate")]
     pub gates: Vec<GateConfig>,
-    /// Executor runtime settings.
-    #[serde(default)]
-    pub executor: ExecutorConfig,
     /// Plan-level runner settings.
     #[serde(default)]
     pub runner: RunnerConfig,
@@ -96,7 +92,6 @@ impl Default for Config {
             // No legacy `[[gate]]` entries, as when a file leaves them out:
             // these gates are only counted, never run.
             gates: Vec::new(),
-            executor: ExecutorConfig::default(),
             runner: RunnerConfig::default(),
             runtime: RuntimeControlConfig::default(),
             budget: BudgetConfig::default(),
@@ -142,9 +137,9 @@ impl Config {
     /// This is the primary conversion path used by `load_resolved_config()`.
     /// The core loader is the single source of truth for providers, models,
     /// agent defaults, and env overrides. CLI-only compatibility fields
-    /// (`gates`, `executor`, `runtime`, `prompt`) retain their existing
-    /// defaults because those sections are not yet part of the core schema;
-    /// once they are migrated, this function will map them directly.
+    /// (`gates`, `runtime`, `prompt`) retain their existing defaults because
+    /// those sections are not yet part of the core schema; once they are
+    /// migrated, this function will map them directly.
     pub fn from_roko_config(core: &RokoConfig) -> Result<Self> {
         let core_agent = &core.agent;
         let agent = ExecAgentConfig {
@@ -182,7 +177,6 @@ impl Config {
             prompt: PromptConfig::default(),
             repos: core.repos.clone(),
             gates: Vec::new(),
-            executor: ExecutorConfig::default(),
             runner: RunnerConfig {
                 plan_timeout_secs: core.runner.plan_timeout_secs,
                 dangerously_skip_permissions: core.runner.dangerously_skip_permissions,
@@ -1513,13 +1507,17 @@ impl ModelProfileLayer {
 ///
 /// An unknown key inside a `[providers.*]` or `[models.*]` entry is dropped
 /// with a warning, as the config loader drops it, rather than failing the
-/// parse (`strip_unknown_entry_fields`).
+/// parse (`strip_unknown_entry_fields`). So is a key roko removed, such as
+/// `[executor]` (`drop_removed_config_keys`).
 fn parse_toml_with_env<T>(text: &str, context: &'static str) -> Result<T>
 where
     T: DeserializeOwned,
 {
     let mut value: toml::Value = toml::from_str(text).context(context)?;
-    for diagnostic in roko_core::config::loader::strip_unknown_entry_fields(&mut value) {
+    let mut diagnostics = roko_core::config::loader::drop_removed_config_keys(&mut value);
+    let stripped = roko_core::config::loader::strip_unknown_entry_fields(&mut value);
+    diagnostics.extend(stripped);
+    for diagnostic in diagnostics {
         tracing::warn!(
             config_key = %diagnostic.key,
             "config warning: {}",
@@ -1579,8 +1577,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["agent", "clean_output"]
         | ["dreams", "auto_dream"]
         | ["tools", "prefer_mcp"]
-        | ["executor", "auto_replan"]
-        | ["executor", "use_worktrees"]
         | ["serve", "auto_start"]
         | ["serve", "auth", "enabled"]
         | ["learning", "replan_on_gate_failure"]
@@ -1598,10 +1594,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "episode_count_trigger"]
         | ["tools", "mcp_timeout_secs"]
         | ["prompt", "token_budget"]
-        | ["executor", "max_concurrent_tasks"]
-        | ["executor", "max_auto_fix_iterations"]
-        | ["executor", "max_merge_attempts"]
-        | ["executor", "task_timeout_secs"]
         | ["runner", "plan_timeout_secs"]
         | ["learning", "gate_threshold_flush_interval"] => {
             let n = value
@@ -1612,7 +1604,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         // Floats
         ["dreams", "quality_gain"]
         | ["dreams", "quality_penalty"]
-        | ["executor", "budget_usd"]
         | ["learning", "lookahead_threshold"] => {
             let f = value
                 .parse::<f64>()
@@ -2022,35 +2013,6 @@ pub struct PromptLayer {
     pub files: Option<Vec<PromptFile>>,
 }
 
-/// Partial `ExecutorConfig` — every field optional.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExecutorLayer {
-    /// Maximum number of tasks executing concurrently within a plan.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_tasks: Option<usize>,
-    /// Maximum auto-fix iterations before declaring failure.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_auto_fix_iterations: Option<u32>,
-    /// Maximum merge retry attempts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_merge_attempts: Option<u32>,
-    /// Per-task timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_timeout_secs: Option<u64>,
-    /// Optional cost cap in USD.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
-    /// Whether to auto-replan after repeated gate failures.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_replan: Option<bool>,
-    /// Whether to use isolated git worktrees for plan and task execution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub use_worktrees: Option<bool>,
-    /// Multiplier applied to expected-minutes before speculative task splits kick in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speculative_threshold_multiplier: Option<f64>,
-}
-
 /// Partial `RuntimeControlConfig` — every field optional.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RuntimeControlLayer {
@@ -2275,27 +2237,6 @@ impl ServeDeployWebhookLayer {
             provider: self.provider.unwrap_or_else(|| "github".to_string()),
             owner: self.owner.unwrap_or_default(),
             repo: self.repo.unwrap_or_default(),
-        }
-    }
-}
-
-impl ExecutorLayer {
-    /// Merge another layer on top — `overlay` wins.
-    #[must_use]
-    pub fn merge(self, overlay: Self) -> Self {
-        Self {
-            max_concurrent_tasks: overlay.max_concurrent_tasks.or(self.max_concurrent_tasks),
-            max_auto_fix_iterations: overlay
-                .max_auto_fix_iterations
-                .or(self.max_auto_fix_iterations),
-            max_merge_attempts: overlay.max_merge_attempts.or(self.max_merge_attempts),
-            task_timeout_secs: overlay.task_timeout_secs.or(self.task_timeout_secs),
-            budget_usd: overlay.budget_usd.or(self.budget_usd),
-            auto_replan: overlay.auto_replan.or(self.auto_replan),
-            use_worktrees: overlay.use_worktrees.or(self.use_worktrees),
-            speculative_threshold_multiplier: overlay
-                .speculative_threshold_multiplier
-                .or(self.speculative_threshold_multiplier),
         }
     }
 }
@@ -2811,8 +2752,10 @@ scheduled_cron = "not a cron expression"
         assert!(format!("{err:#}").contains("invalid dream schedule cron expression"));
     }
 
+    /// gap-666ab3: `[executor]` was removed. An old file that has one still
+    /// parses: the section is dropped with a warning.
     #[test]
-    fn parses_executor_section_from_toml() {
+    fn old_executor_section_still_parses() {
         let toml = r#"
 [agent]
 command = "cat"
@@ -2825,22 +2768,9 @@ mcp_timeout_secs = 15
 [executor]
 max_concurrent_plans = 8
 max_concurrent_tasks = 12
-max_auto_fix_iterations = 9
-max_merge_attempts = 4
-task_timeout_secs = 42
-budget_usd = 1.5
-auto_replan = false
 use_worktrees = true
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
-        assert_eq!(cfg.executor.max_concurrent_plans, 8);
-        assert_eq!(cfg.executor.max_concurrent_tasks, 12);
-        assert_eq!(cfg.executor.max_auto_fix_iterations, 9);
-        assert_eq!(cfg.executor.max_merge_attempts, 4);
-        assert_eq!(cfg.executor.task_timeout_secs, 42);
-        assert_eq!(cfg.executor.budget_usd, Some(1.5));
-        assert!(!cfg.executor.auto_replan);
-        assert!(cfg.executor.use_worktrees);
         assert!(!cfg.tools.prefer_mcp);
         assert_eq!(cfg.tools.global_denied, vec!["bash".to_string()]);
         assert_eq!(cfg.tools.mcp_timeout_secs, 15);

@@ -1523,6 +1523,12 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
         "agent.data_llm was removed because no dispatch path routed \
          untrusted content to a separate data LLM; setting it isolated nothing",
     ),
+    (
+        "executor",
+        "the [executor] section was removed because no plan run read it; \
+         conductor.max_parallel_plans sets how many plans run at once, and \
+         `roko plan run --worktree-per-task` runs each task in its own worktree",
+    ),
 ];
 
 /// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
@@ -1540,14 +1546,14 @@ pub fn drop_removed_config_keys(value: &mut toml::Value) -> Vec<ConfigDiagnostic
     removed
 }
 
-/// Remove the dotted `path`, below the top level, from `tree`, and return
-/// whether the tree had it.
+/// Remove the dotted `path` from `tree`, and return whether the tree had it.
 fn remove_dotted_key(tree: &mut toml::Value, path: &str) -> bool {
-    let Some((parent, leaf)) = path.rsplit_once('.') else {
+    let mut parents: Vec<&str> = path.split('.').collect();
+    let Some(leaf) = parents.pop() else {
         return false;
     };
-    parent
-        .split('.')
+    parents
+        .into_iter()
         .try_fold(tree, |node, key| node.get_mut(key))
         .and_then(toml::Value::as_table_mut)
         .is_some_and(|table| table.remove(leaf).is_some())
@@ -4569,6 +4575,30 @@ dream_on_completion = true
         let parsed = RokoConfig::from_toml(text).expect("parse the old file");
         assert_eq!(parsed.gates.max_rung, Some(2));
         assert!(parsed.learning.dream_on_completion);
+    }
+
+    /// gap-666ab3: the CLI-only `[executor]` section was removed. An old file
+    /// that has one is told why, and still loads and parses.
+    #[test]
+    fn removed_executor_section_still_loads() {
+        let text = r#"
+[executor]
+max_concurrent_tasks = 4
+use_worktrees = true
+
+[runner]
+plan_timeout_secs = 99
+"#;
+        let value: toml::Value = text.parse().expect("parse the old file");
+        let diags = validate_known_config_paths(&value);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].key, "executor");
+        assert!(diags[0].message.contains("was removed"));
+
+        let loaded = deserialize_migrated_toml(text).expect("load the old file");
+        assert_eq!(loaded.runner.plan_timeout_secs, 99);
+        let parsed = RokoConfig::from_toml(text).expect("parse the old file");
+        assert_eq!(parsed.runner.plan_timeout_secs, 99);
     }
 
     /// gap-e9660f: agents can read roko.toml, so a grep of the project would

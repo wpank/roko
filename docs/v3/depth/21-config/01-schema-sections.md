@@ -309,6 +309,7 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
 | `agent.data_llm` | No dispatch path routed untrusted content to a separate data LLM, so setting it isolated nothing. `DataLlmConfig` and `DataLlmRouter` remain for future CaMeL work (gap-7a3527) |
+| `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `roko plan run --worktree-per-task` runs each task in its own worktree (gap-666ab3) |
 
 ---
 

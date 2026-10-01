@@ -134,8 +134,8 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [ ] bug-8a78e1: chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens
 - [ ] dec-af63cc: Should T0 reflexes serve tasks that something verifies, running verification on their cached output?
 - [ ] gap-d65a17: build_settler's RoutingSink updates the router without journaling, and build_settler still has no production caller
-- [ ] gap-1a7f9c: The conductor's test and compile watchers get no gate signal on the Graph path, so RG2 stays PARTIAL
-- [ ] bug-386c9b: classify_gate_failure marks a test failure only when the gate's name starts with "test", so Graph verify and rung failures classify as unknown
+- [x] gap-1a7f9c: The conductor's test and compile watchers get no gate signal on the Graph path, so RG2 stays PARTIAL
+- [x] bug-386c9b: classify_gate_failure marks a test failure only when the gate's name starts with "test", so Graph verify and rung failures classify as unknown
 - [ ] bug-4aa696: The composer's foraging pre-pass keeps at most three optional sections, so domain_context (knowledge, episodes, playbooks) is silently dropped from real prompts
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1–M4 items join.

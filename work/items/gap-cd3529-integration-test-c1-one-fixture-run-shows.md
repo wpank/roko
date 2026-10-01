@@ -2,16 +2,16 @@
 id = "gap-cd3529"
 kind = "gap"
 title = "Integration test C1: one fixture run shows the same honest verdicts on every surface"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "7490cb94b"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canary C1)"
 anchors = ["crates/roko-cli/tests/"]
@@ -21,6 +21,13 @@ links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", 
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:19Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91, including the C1 canary honest_verdicts_canary (1/1). Merged 4c0e5646e (work/bug-7e1b6b 5c90262ec)."
 +++
 
 ## Problem

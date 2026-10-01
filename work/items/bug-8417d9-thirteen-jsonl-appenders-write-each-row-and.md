@@ -2,7 +2,7 @@
 id = "bug-8417d9"
 kind = "bug"
 title = "Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn", "roko-neuro", "roko-agent", "roko-core", "roko-acp", 
 created = 2026-09-30
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-specq's report, checked on work/bug-779ae7 at 101afcda1)"
 anchors = ["crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/run_metrics.rs", "crates/roko-core/src/forensic.rs", "crates/roko-neuro/src/admission.rs"]
@@ -20,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["bug-779ae7"], supersedes = [
 
 [[verify]]
 command = "! grep -rqF --include='*.rs' 'writeln!(file, \"{line}\")' crates/ && grep -rqw 'fn concurrent_jsonl_appends_never_interleave' crates/roko-core/src/ && cargo test -p roko-core --lib concurrent_jsonl_appends_never_interleave"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:14Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91, including concurrent_jsonl_appends_never_interleave and the one-write recording test. Merged e3df791b8 (work/bug-8417d9 348cfcf22)."
 +++
 
 ## Problem

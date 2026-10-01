@@ -2,7 +2,7 @@
 id = "bug-880b37"
 kind = "bug"
 title = "PLAN_038 misses accept-test copies made through a variable or a loop (A=…/accept, cp $A/…, for p in …)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/task_accept"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "f8553cea8"
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-runstate's report on gap-ba4d01, branch work/gap-ba4d01 at 0a68f0643)"
 anchors = ["crates/roko-cli/src/task_accept.rs::copies_accept_test_by_hand"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-ba4d01", "gap-d14a43"], 
 
 [[verify]]
 command = "grep -rqw 'fn variable_and_loop_accept_copies_are_plan_038' crates/roko-cli/src/ && cargo test -p roko-cli --lib variable_and_loop_accept_copies_are_plan_038"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:16Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91, including variable_and_loop_accept_copies_are_plan_038; the six portal plans report no PLAN_038 under the stricter detector. Merged 27b97a7a8."
 +++
 
 ## Problem

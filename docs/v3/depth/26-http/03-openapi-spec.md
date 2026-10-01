@@ -1,6 +1,6 @@
 # 26.03 -- OpenAPI Specification
 
-> Depth file for [26-HTTP.md](../../26-HTTP.md).
+> Depth file for [26-HTTP-API.md](../../26-HTTP-API.md).
 
 ---
 

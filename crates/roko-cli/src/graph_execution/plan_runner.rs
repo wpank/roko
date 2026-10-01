@@ -1392,6 +1392,9 @@ async fn run_graph_plan_body(
     // plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
 
+    let failure_issues = graph_run_config.github_ops.clone().map(|ops| {
+        super::failure_issues::FailureIssues::new(ops, &roko_config.github.label_prefix)
+    });
     let run_context = PlanRunContext {
         workdir,
         resume_plan: resume_plan.as_deref(),
@@ -1420,6 +1423,7 @@ async fn run_graph_plan_body(
         interrupt: &interrupt,
         run_manifests: &run_manifests,
         caller_run_id: run_id.as_deref(),
+        failure_issues: failure_issues.as_ref(),
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -2172,6 +2176,9 @@ struct PlanRunContext<'a> {
     /// The run id the caller already gave this run (`roko run`); a single
     /// plan's fresh checkpoint takes it.
     caller_run_id: Option<&'a str>,
+    /// Files a GitHub issue for each task a plan leaves failed, when
+    /// `[github] auto_pr` is on (gap-cd51b7).
+    failure_issues: Option<&'a super::failure_issues::FailureIssues>,
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
@@ -2998,6 +3005,17 @@ async fn run_one_plan(
         graph_tui_bridge.task_blocked(&plan.id, task_id, title, None, reason);
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
+    // Each task the run left failed gets a GitHub issue when `[github]
+    // auto_pr` is on (gap-cd51b7). A run that was interrupted or cancelled
+    // files none.
+    if let Some(failure_issues) = ctx.failure_issues
+        && interrupted_by.is_none()
+        && !was_cancelled_by_tui
+    {
+        failure_issues
+            .file(&plan.id, &run_id, &output, &task_outcomes.failed, &node_titles)
+            .await;
+    }
     if outcome == PlanOutcome::Unverified {
         graph_tui_bridge.log_event(
             "graph.plan_unverified",

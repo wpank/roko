@@ -9,9 +9,9 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "6531d787e"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 discovered_from = "audit:tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 anchors = ["crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker", "crates/roko-agent/src/safety/witness.rs::WitnessLogger", "crates/roko-agent/src/safety/provenance.rs::CustodyLogger", "crates/roko-cli/src/custody.rs::log_chained", "crates/roko-agent/src/dispatcher/mod.rs::ToolDispatcher::dispatch", "crates/roko-agent/src/provider/mod.rs::build_tool_dispatcher_with_audit", "crates/roko-graph/src/snapshot.rs::EXT_SAFETY_PROVENANCE", "crates/roko-cli/src/graph_checkpoint.rs::refresh_gate_verdicts"]
@@ -100,6 +100,22 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
 - Do not change the other EXT_* rows in `snapshot.rs`.
 - Size L (the original packet estimated 3-5 days). It conflicts with concurrent work in `crates/roko-agent/src/dispatcher/mod.rs` and `crates/roko-cli/src/graph_checkpoint.rs`, so do not run it in parallel with other items anchored there.
 - No hard dependencies remain open.
+- 2026-10-01 (wk-tamper): Plan steps 1-2 on work/gap-7147bb; cargo verification deferred to the batch check. The
+  premise still held at 6531d787e.
+  - `safety/provenance_sink.rs` adds `SafetyProvenanceSink` (`digest_key`, `record_intent` returning a
+    `ProvenanceAck`, `record_outcome`). Records carry IDs, keyed BLAKE3 digests (`ContentHash::keyed`, new in
+    roko-core; arguments are digested as RFC 8785 canonical JSON), taint levels and `tool_error_kind` reason codes,
+    nothing else. `track_intent` and `track_outcome` keep a `TaintTracker`: arguments taken in a tainted turn carry
+    its taint, and a result inherits from its arguments. `MemoryProvenanceSink` is the deterministic fake.
+  - `ToolDispatcher::with_provenance_sink`: once every safety stage has passed and the handler is resolved,
+    `record_intent` must succeed, or the call returns `PermissionDenied` without running. Every call then records
+    an outcome: succeeded, failed, or denied with its reason code (`provenance_intent_failed` for a refused intent).
+  - Tests: `safety_provenance_intent_recorded_before_handler`, `safety_provenance_records_hold_no_arguments_or_output`,
+    `safety_provenance_records_a_denied_call`, `safety_provenance_propagates_taint_to_the_result` and
+    `arguments_digest_ignores_key_order_and_depends_on_the_key` (roko-agent lib); `keyed_hash_depends_on_its_key`
+    (roko-core).
+  Still open: steps 3-7 (the roko-cli host sink and the `roko.safety-provenance@1` extension, restore and fail-closed
+  checks, replay idempotency, threading the sink through `build_tool_dispatcher_with_audit`, the restart tests).
 
 ## Original notes
 

@@ -1413,6 +1413,15 @@ async fn cmd_plan_dir_status(
     // Why the plan's whole-plan check failed, when it did (gap-60233f).
     let plan_check_failure =
         roko_cli::graph_checkpoint::recorded_plan_check_failure(workdir, &plan_id);
+    // Where a delivered plan's work is, and how to take it into the checkout,
+    // which the run never changes (gap-4ec59f).
+    let delivery = roko_cli::graph_checkpoint::recorded_batch_delivery(workdir, plan_id);
+    let merge_command = match &delivery {
+        Some(delivery) => {
+            roko_cli::graph_execution::batch::merge_command(workdir, &delivery.branch).await
+        }
+        None => None,
+    };
 
     if cli.json {
         let task_entries: Vec<serde_json::Value> = tasks_file
@@ -1439,6 +1448,11 @@ async fn cmd_plan_dir_status(
                 "completed": status_str == "complete",
                 "status": status_str,
                 "plan_check_failure": plan_check_failure,
+                "delivery": delivery.as_ref().map(|delivery| serde_json::json!({
+                    "branch": delivery.branch,
+                    "merge_commit": delivery.merge_commit,
+                    "merge_command": merge_command,
+                })),
                 "tasks": task_entries,
             }))?
         );
@@ -1449,6 +1463,12 @@ async fn cmd_plan_dir_status(
         println!("status:          {status_str}");
         if let Some(failure) = &plan_check_failure {
             println!("plan check:      {failure}");
+        }
+        if let Some(delivery) = &delivery {
+            println!("delivered:       {} at {}", delivery.branch, delivery.merge_commit);
+            if let Some(command) = &merge_command {
+                println!("take it with:    {command}");
+            }
         }
         println!();
         if tasks_file.tasks.is_empty() {

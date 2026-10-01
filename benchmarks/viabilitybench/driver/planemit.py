@@ -17,7 +17,9 @@
   the arm's dollar cap, priced at the snapshot's rates rather than roko.toml's defaults (S08 D9), whose per-dispatch
   reservation (`max_turn_usd`, a tenth of it, with one agent) satisfies Roko's config invariants and still leaves
   room for every retry; retries fixed at
-  `max_retries`; force-accept, cargo fix, replanning, playbook refresh and dreams off. `plan run` runs a workspace's
+  `max_retries`; the task in the shared working tree (`[runner] worktree_per_task = false`), so Roko's edits land in
+  the workdir the driver checks and exports, not on a batch branch (gap-4ec59f made per-task worktrees the default);
+  force-accept, cargo fix, replanning, playbook refresh and dreams off. `plan run` runs a workspace's
   required rungs after each task's own `[[task.verify]]` steps, but not a rung whose command a step already runs
   (gap-3506f1), so the visible check, which is both the verify step and the rung, runs once per attempt.
 
@@ -50,7 +52,7 @@ from pathlib import Path, PurePosixPath
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
-TEMPLATE_VERSION = "planemit-2"
+TEMPLATE_VERSION = "planemit-3"
 TASK_ID = "T01"
 SCAFFOLDING = ("roko.toml", "plans", ".roko")  # what Roko's run adds to the workspace; the runner removes it
 ROLE = "implementer"
@@ -89,8 +91,8 @@ fail_msg = "the task's visible check failed"
 
 CONFIG_TEMPLATE = """\
 # Emitted by the ViabilityBench driver ({version}) for one benchmark run: one provider, one pinned model, no
-# fallbacks and no routing ladder, explicit gate rungs that run only the visible check, and Roko's learning loops
-# held off.
+# fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in the shared
+# working tree, and Roko's learning loops held off.
 config_version = 2
 schema_version = 2
 
@@ -132,6 +134,9 @@ max_turns = {max_turns}
 
 [conductor]
 max_agents = 1
+
+[runner]
+worktree_per_task = false
 
 [budget]
 max_plan_usd = {usd_cap}
@@ -260,6 +265,8 @@ def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: 
             config["routing"]["fallback_models"] or config["routing"]["ladder"] != {"enabled": False}:
         raise PlanEmitError("roko.toml must hold exactly the pinned provider and model, with no fallbacks and the "
                             "routing ladder off")
+    if config["runner"] != {"worktree_per_task": False}:
+        raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
 
 
 def _files(paths: tuple[str, ...]) -> list[str]:

@@ -251,6 +251,29 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
 - 2026-10-01 (wk-tiers): step 6, part 1: `worktree_startup_repair_clears_a_stale_index_lock` (plan_runner tests) runs
   `repair_worktree_state` on a repository with a 2-minute-old `.git/index.lock` and checks the lock is cleared. This
   covers step 1's repair. Cargo verification deferred to the batch check.
+- 2026-10-01 (wk-tiers): step 4 (merge-back) on work/gap-4ec59f, option (a) as the coordinator decided; cargo
+  verification deferred to the batch check.
+  - The golden path's invariant stays: roko never changes the operator's checkout (C3/C4, proof case 2). Merge-back
+    already exists. Each passed attempt is accepted onto `roko/plan/<plan>` (gap-3b5361), and later attempts start
+    from it. Each passed plan is delivered into `roko/batch/<run>` after a regression check (spec-f830c4). What was
+    missing was telling the operator where the work is.
+  - The end of a worktree run now says: "The work is on branch roko/batch/<id>; your checkout was not changed. To
+    take it:", followed by the command from `batch::merge_command`:
+    - `git merge --ff-only roko/batch/<id>` while the checkout is still behind the batch;
+    - `git merge roko/batch/<id>` once the checkout has moved;
+    - nothing once the checkout has the batch's work.
+  - A `--promote` run prints the promotion's summary instead. The JSON summary's `batch` object gains
+    `merge_command`.
+  - `roko plan status <dir>` shows `delivered: <branch> at <commit>` and `take it with: <command>`, read from the
+    checkpoint's `roko.batch@1` record (`graph_checkpoint::recorded_batch_delivery`). `--json` adds a `delivery`
+    object.
+  - Tests: `merge_command_fast_forwards_until_the_checkout_moves` (batch.rs) and
+    `recorded_batch_delivery_reads_only_a_delivered_plan` (graph_checkpoint.rs).
+  - Bench: the Roko arm's emitted roko.toml sets `[runner] worktree_per_task = false` (planemit-3), so its results
+    keep landing in the task workdir the driver reads, and `planemit._check` refuses a config without it. The
+    ViabilityBench suite passes: 373 passed, 5 skipped (3 of the skips because this worktree has no roko binary).
+  - A possible follow-up for Will is option (b): an opt-in fast-forward of the operator's branch at the end of the
+    run, when `HEAD` is still the batch base and the checkout is clean.
 
 ## Original notes
 

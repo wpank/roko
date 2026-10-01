@@ -1793,6 +1793,13 @@ async fn run_graph_plan_body(
         }
     }
 
+    // gap-4ec59f: the run never changes the operator's checkout, so its
+    // summary says how to take the batch's work, unless a promotion did.
+    let merge_command = match (batch.as_ref(), promotion.as_ref()) {
+        (Some(batch), None) => batch.merge_command().await,
+        _ => None,
+    };
+
     let plan_outcome_labels = plan_execution_order
         .iter()
         .map(|plan_id| {
@@ -1974,6 +1981,7 @@ async fn run_graph_plan_body(
                         .map(|receipt| batch.summary_record(receipt))
                         .collect::<Vec<_>>(),
                     "promotion": promotion,
+                    "merge_command": merge_command,
                 })),
             }))
             .unwrap_or_default()
@@ -2042,6 +2050,13 @@ async fn run_graph_plan_body(
             }
             if let Some(promotion) = &promotion {
                 println!("{}", promotion.summary);
+            }
+            if let Some(command) = &merge_command {
+                println!(
+                    "The work is on branch {}; your checkout was not changed. To take it:\n  \
+                     {command}",
+                    batch.branch()
+                );
             }
         }
     }

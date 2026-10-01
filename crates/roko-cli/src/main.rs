@@ -1880,8 +1880,10 @@ enum BacklogCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// List backlog items and their import status.
+    /// List backlog items with their status and import state.
     List {
+        /// Backlog directory (default: tmp/backlog); its archive/ is listed too.
+        path: Option<PathBuf>,
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,

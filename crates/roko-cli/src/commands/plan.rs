@@ -687,7 +687,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
-            // code and writes to .roko/plans/ (per-slug, non-overlapping).
+            // code and writes one plan to the workspace plans directory
+            // (per-slug, non-overlapping).
             // No workspace lock needed (#226) — allows generating plans while
             // other plans are running.
             let gw = load_gateway_env(&workdir);
@@ -853,8 +854,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     "plan generate --from-notes",
                 )?;
 
-                // `roko plan generate` keeps its plans in `.roko/plans/`.
-                let plans_root = workdir.join(".roko").join("plans");
                 for cluster in &clusters {
                     let combined: String = cluster
                         .notes
@@ -866,7 +865,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     tracing::info!(%slug, "generating plan for cluster");
 
                     let request = roko_cli::prd::PlanRequest {
-                        plans_root: Some(&plans_root),
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
                         ..roko_cli::prd::PlanRequest::new(
@@ -941,11 +939,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 }
             };
 
-            // The one plan generator (gap-2623b2) validates and writes the
-            // plan; `roko plan generate` keeps its plans in `.roko/plans/`.
-            let plans_root = workdir.join(".roko").join("plans");
+            // The one plan generator (gap-2623b2) validates the plan and
+            // writes it to the workspace plans directory, where every other
+            // command looks for plans (bug-e3df7d).
             let request = roko_cli::prd::PlanRequest {
-                plans_root: Some(&plans_root),
                 context: Some(context_block.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),

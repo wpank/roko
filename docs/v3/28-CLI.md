@@ -865,8 +865,15 @@ roko backlog import <path> [--draft] [--execute] [--check] [--workdir <path>]
 #### `roko backlog list`
 
 ```
-roko backlog list [--workdir <path>]
+roko backlog list [<path>] [--workdir <path>]
 ```
+
+| Flag | Description |
+|---|---|
+| `<path>` | Backlog directory (default `tmp/backlog`). Its `archive/` is listed too. |
+
+Lists each spec with its id, its `**Status**:` line (the one `mark-done` writes) and whether `backlog import` has
+recorded it as a PRD idea.
 
 #### `roko backlog audit`
 

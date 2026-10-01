@@ -3,13 +3,15 @@ id = "bug-4c553b"
 kind = "bug"
 title = "A stall-watchdog timeout settles as provider_error with infra blame, because its error text lacks the \"timed out after\" marker the classifier keys on"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-agent/provider"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "faa378453"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tiers' report on gap-9eebcb, branch work/gap-9eebcb at 55ffa7074)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/watchdog.rs", "crates/roko-agent/src/provider/error_classify.rs", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs"]
@@ -38,3 +40,7 @@ Record truth (epic spec-b7303f): a stall is the agent's or the model's failure t
 
 - [ ] A watchdog-cancelled attempt settles as a timeout.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-tiers): implemented on `work/gap-9eebcb-l7` at `fe18ce50e`; cargo verification deferred to the batch check. `AttemptInterrupted::settlement` settles a stall as `timeout` on both dispatch paths, using the typed interruption rather than the error text. The timeout is the agent's once the attempt reported anything, the provider's before that. A conductor restart still settles as a provider failure, as before; it arguably belongs to the harness (`cancelled`), which is left for a follow-up. Test: `a_stalled_attempt_settles_as_a_timeout`.

@@ -715,7 +715,7 @@ impl AttemptFeed {
             LiveAgentEvent::Unscreened(StreamEventKind::TextDelta(text)) => {
                 GraphTaskEvent::Text { text: text.clone() }
             }
-            LiveAgentEvent::Unscreened(_) => return,
+            LiveAgentEvent::Unscreened(_) | LiveAgentEvent::Queued { .. } => return,
         };
         self.push(&event);
     }

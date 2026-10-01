@@ -1,0 +1,59 @@
++++
+id = "bug-4ba581"
+kind = "bug"
+title = "A failed GraphEventSink delivery is only logged, and a dropped event is not followed by a Gap event as the sink's docs say"
+status = "done"
+triage = "verified"
+severity = "p3"
+goal = "visibility"
+size = "S"
+subsystem = ["roko-graph"]
+created = 2026-10-01
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "db778db9b"
+source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
+discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-runstate's report on reg-cbfff6)"
+anchors = ["crates/roko-graph/src/events.rs"]
+lane = "rust-cold"
+links = { depends_on = [], blocks = [], related = ["reg-cbfff6"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn a_failed_sink_delivery_is_reported_and_followed_by_a_gap' crates/roko-graph/src/ && cargo test -p roko-graph --lib a_failed_sink_delivery_is_reported_and_followed_by_a_gap"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T18:45:15Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T16:12:00Z"
+forced = false
+evidence = "Gate 6b on 9e32a0d64, merged as db778db9b (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 11 crates; lib tests pass (roko-cli 3375, roko-agent 2241, roko-core 1971, roko-learn 1216, roko-serve 1003, roko-gate 696, roko-compose 561, roko-graph 483, roko-execution 245, roko-acp 200); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp, gemini, dispatch-feedback, e2e_domain, run_serve_share, property, job_runner and plan_execute integration tests pass; bin 447; Cargo.lock unchanged; portal tsc clean and vitest 800/800. Implemented in this round; the item's 2026-10-01 note names the change and its test."
++++
+
+## Problem
+
+Since reg-cbfff6 the Graph engine emits node lifecycle events to its sink. When a delivery fails the engine logs it and carries on, and a Dropped delivery is not followed by a Gap event, although events.rs (about line 93) documents both.
+
+## Why it matters
+
+Visibility: a consumer that misses events cannot tell it missed them.
+
+## Plan
+
+Follow the documented contract: emit a Gap after a Dropped delivery, and decide whether a sink failure stops the run or is surfaced as an event. Add the test named in the verify.
+
+## Done when
+
+- [ ] Dropped deliveries are followed by a Gap event, and failures are surfaced
+- [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  Decision: a sink failure doesn't stop the run; it is surfaced. The engine counts an event that its sink fails to
+  take (`Err`) or drops (`Dropped`) as lost, logs it, and publishes a reliable `Gap { lost_count }` right after it. If
+  the sink doesn't take that either, the Gap goes before the sink's next event. The `events.rs` docs that said a
+  failed reliable publish stops the graph now describe this. Test:
+  `a_failed_sink_delivery_is_reported_and_followed_by_a_gap`.

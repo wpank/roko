@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildTaskRows, focusTaskId } from './taskRows';
+import { blockedLabel, buildTaskRows, focusTaskId } from './taskRows';
 import type { TaskRowModel } from './taskRows';
 import { GLYPHS } from './glyphs';
 import { initialRunState, taskKey } from './runState';
 import type { RunState, TaskRun, PlanRun } from './runState';
 import type { WirePlanTask } from '@/api/contracts';
+import { TASK_OUTCOME_BLOCKED } from '@/api/contracts';
 
 // ── Test helpers ───────────────────────────────────────────────────────────────
 
@@ -380,5 +381,41 @@ describe('focusTaskId', () => {
     expect(focusTaskId(rows, null)).toBe('T02');
     // A selection still wins.
     expect(focusTaskId(rows, 'T01')).toBe('T01');
+  });
+});
+
+// ── blocked tasks ──────────────────────────────────────────────────────────────
+
+describe('buildTaskRows – blocked tasks (gap-2118f0)', () => {
+  it('says which task blocked a blocked task, and why', () => {
+    const tasks = [makeWireTask({ id: 'T01' }), makeWireTask({ id: 'T02', depends_on: ['T01'] })];
+    const run = makeRunState({
+      tasks: {
+        [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'failed', phase: 'failed' }),
+        [taskKey(PLAN_ID, 'T02')]: makeLiveTask('T02', {
+          status: 'skipped',
+          phase: TASK_OUTCOME_BLOCKED,
+          blockedBy: 'T01',
+          blockedReason: 'T01 failed',
+        }),
+      },
+    });
+    const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
+    expect(rows.find((r) => r.id === 'T02')!.blocked).toBe('blocked by T01: T01 failed');
+    expect(rows.find((r) => r.id === 'T01')!.blocked).toBeNull();
+  });
+
+  it('leaves an ordinary skipped task without a blocked label', () => {
+    const tasks = [makeWireTask({ id: 'T01' })];
+    const run = makeRunState({
+      tasks: { [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'skipped', phase: 'skipped' }) },
+    });
+    expect(buildTaskRows(tasks, run, PLAN_ID, NOW_MS).rows[0]!.blocked).toBeNull();
+  });
+
+  it('labels a blocker without a reason, a reason without a blocker, and neither', () => {
+    expect(blockedLabel('T01', null)).toBe('blocked by T01');
+    expect(blockedLabel(null, 'the plan was cancelled')).toBe('blocked: the plan was cancelled');
+    expect(blockedLabel(undefined, '  ')).toBe('blocked');
   });
 });

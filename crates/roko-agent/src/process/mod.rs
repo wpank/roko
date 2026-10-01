@@ -46,7 +46,8 @@ pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, kill_tree
 pub use limits::{ResourceLimits, apply_resource_limits, confined_command};
 pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch};
 pub use registry::{
-    cleanup_orphaned_agents, reap_orphaned_children, register_spawned_pid, registered_pids,
-    set_registry_root, unregister_pid,
+    SpawnScopeGuard, cleanup_orphaned_agents, current_spawn_scope, enter_spawn_scope,
+    new_spawn_scope, reap_orphaned_children, register_spawned_pid, registered_pids,
+    registered_pids_in_scope, set_registry_root, unregister_pid,
 };
 pub use stderr::{BenignStderr, benign_stderr_warn_once, classify_benign_stderr};

@@ -1921,6 +1921,48 @@ fn acp_episodes_start_no_dream_when_dreams_are_off() {
     assert_eq!(acp_dream_due(workdir, &opted_in), None);
 }
 
+/// bug-31bca6: a dream stays due until it writes its report, so the trigger
+/// starts no more than `learning.dreams.max_concurrent` dreams while they run.
+#[test]
+fn acp_starts_no_dream_while_one_is_running() {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let workdir = tmp.path();
+    let roko_dir = workdir.join(".roko");
+    std::fs::create_dir_all(&roko_dir).expect("create .roko");
+    let episode_log: String = (0..3)
+        .map(|i| {
+            let episode = Episode::new("code", format!("acp-session-{i}"));
+            serde_json::to_string(&episode).expect("serialize episode") + "\n"
+        })
+        .collect();
+    std::fs::write(roko_dir.join("episodes.jsonl"), episode_log).expect("write episode log");
+
+    let mut config = RokoConfig::default();
+    config.learning.dreams.trigger_on_acp_episodes = true;
+    config.learning.dreams.acp_episode_threshold = 2;
+    assert_eq!(config.learning.dreams.max_concurrent, 1);
+
+    // The first trigger takes the only slot; while that dream runs, the
+    // next trigger finds the dream still due and starts none.
+    let slots = DreamSlots::new();
+    let (episodes, first) = claim_acp_dream(&slots, workdir, &config).expect("a dream is due");
+    assert_eq!(episodes, 3);
+    assert!(claim_acp_dream(&slots, workdir, &config).is_none());
+
+    // A second slot admits one more dream, and no third.
+    config.learning.dreams.max_concurrent = 2;
+    let second = claim_acp_dream(&slots, workdir, &config).expect("a second slot is free");
+    assert!(claim_acp_dream(&slots, workdir, &config).is_none());
+
+    // Finished dreams free their slots. Zero counts as one.
+    drop(first);
+    drop(second);
+    config.learning.dreams.max_concurrent = 0;
+    let third = claim_acp_dream(&slots, workdir, &config).expect("the slots are free");
+    assert!(claim_acp_dream(&slots, workdir, &config).is_none());
+    drop(third);
+}
+
 #[test]
 fn acp_routing_context_maps_modes_to_roles() {
     let tmp = tempfile::tempdir().expect("create tmpdir");

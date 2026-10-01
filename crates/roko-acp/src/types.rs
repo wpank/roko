@@ -922,7 +922,7 @@ pub struct PlanEntry {
     /// Relative priority.
     pub priority: Priority,
     /// Current execution state.
-    pub status: PlanStatus,
+    pub status: PlanEntryStatus,
 }
 
 /// Plan entry priority.
@@ -937,10 +937,11 @@ pub enum Priority {
     Low,
 }
 
-/// Plan entry execution state.
+/// Plan entry execution state: the Agent Client Protocol's `PlanEntryStatus` on the wire. It is not
+/// roko's plan lifecycle (`roko_core::task::PlanStatus`), which has many more states.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlanStatus {
+pub enum PlanEntryStatus {
     /// Work is pending.
     Pending,
     /// Work is in progress.

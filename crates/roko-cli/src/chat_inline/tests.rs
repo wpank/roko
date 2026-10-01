@@ -728,6 +728,7 @@ fn make_agent_session(workdir: std::path::PathBuf) -> ChatAgentSession {
         timeout: None,
         provider_base_url: None,
         provider_api_key_env: None,
+        env_passthrough: Vec::new(),
         dangerously_skip_permissions: false,
     }
 }

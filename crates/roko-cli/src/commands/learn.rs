@@ -971,6 +971,8 @@ struct LearnJsonEpisodes {
     #[serde(skip_serializing_if = "Option::is_none")]
     last_seen: Option<String>,
     latest: Vec<LearnJsonEpisodeEntry>,
+    /// The seven compounding rates over the most recent episodes.
+    compounding: roko_learn::aggregate::AutocatalyticMetrics,
 }
 
 #[derive(serde::Serialize)]
@@ -999,6 +1001,43 @@ struct LearnJsonKnowledge {
 
 /// Maximum number of recent entries to include in JSON output.
 const JSON_LATEST_LIMIT: usize = 10;
+
+/// Number of most recent episodes the compounding metrics cover.
+const COMPOUNDING_WINDOW: usize = 200;
+
+/// Keep `episode` in the window of the most recent `COMPOUNDING_WINDOW`
+/// episodes.
+fn push_compounding_window(
+    window: &mut std::collections::VecDeque<roko_learn::episode_logger::Episode>,
+    episode: roko_learn::episode_logger::Episode,
+) {
+    if window.len() == COMPOUNDING_WINDOW {
+        window.pop_front();
+    }
+    window.push_back(episode);
+}
+
+/// Human lines for the compounding rates in `roko learn episodes`.
+fn format_compounding_metrics(
+    metrics: &roko_learn::aggregate::AutocatalyticMetrics,
+) -> Vec<String> {
+    let window = metrics.episode_window;
+    let rates = [
+        ("playbook hit rate:", metrics.playbook_hit_rate),
+        ("knowledge reuse rate:", metrics.knowledge_reuse_rate),
+        ("cache hit rate:", metrics.cache_hit_rate),
+        ("routing accuracy:", metrics.routing_accuracy),
+        ("gate pass rate:", metrics.gate_pass_rate),
+        ("error dedup rate:", metrics.error_dedup_rate),
+    ];
+    let mut lines = vec![format!("  Compounding (last {window} episodes):")];
+    for (label, rate) in rates {
+        lines.push(format!("    {label:<22}{:.1}%", rate * 100.0));
+    }
+    let cost = metrics.cost_per_success;
+    lines.push(format!("    {:<22}${cost:.4}", "cost per success:"));
+    lines
+}
 
 /// `roko learn [what] --json` — structured JSON output.
 #[allow(clippy::cast_precision_loss)]
@@ -1195,6 +1234,7 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut tail: Vec<LearnJsonEpisodeEntry> = Vec::new();
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -1229,6 +1269,7 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         if tail.len() > JSON_LATEST_LIMIT {
             tail.remove(0);
         }
+        push_compounding_window(&mut window, episode);
     }
 
     LearnJsonEpisodes {
@@ -1238,6 +1279,7 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         first_seen: first_seen.map(|ts| ts.to_rfc3339()),
         last_seen: last_seen.map(|ts| ts.to_rfc3339()),
         latest: tail,
+        compounding: roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window)),
     }
 }
 
@@ -1830,6 +1872,7 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut latest: Option<String> = None;
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -1863,6 +1906,7 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
                 episode.usage.output_tokens
             )
         ));
+        push_compounding_window(&mut window, episode);
     }
 
     if count == 0 {
@@ -1872,6 +1916,12 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     }
     println!("  Range: {}", format_range(first_seen, last_seen));
     println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
+    if count > 0 {
+        let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
+        for line in format_compounding_metrics(&metrics) {
+            println!("{line}");
+        }
+    }
 }
 
 pub(crate) fn print_learn_gate_thresholds(workdir: &std::path::Path) {
@@ -2917,6 +2967,46 @@ mod tests {
             learn_episodes_path(workdir),
             workdir.join(".roko").join("episodes.jsonl")
         );
+    }
+
+    #[tokio::test]
+    async fn learn_episodes_json_reports_compounding_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        // The first four episodes fall out of the window. Within it, every
+        // fourth episode used a playbook and was given knowledge; the rest
+        // say `knowledge_used: false`, as Graph episodes do.
+        let mut lines = String::new();
+        for index in 0..COMPOUNDING_WINDOW + 4 {
+            let mut episode =
+                roko_learn::episode_logger::Episode::new("agent", format!("task-{index}"));
+            episode.success = true;
+            let used = index < 4 || index % 4 == 0;
+            episode
+                .extra
+                .insert("knowledge_used".into(), serde_json::Value::Bool(used));
+            if used {
+                episode
+                    .extra
+                    .insert("playbook_id".into(), serde_json::json!("pb-1"));
+            }
+            lines.push_str(&serde_json::to_string(&episode).unwrap());
+            lines.push('\n');
+        }
+        std::fs::write(&log, lines).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, COMPOUNDING_WINDOW + 4);
+        assert_eq!(episodes.compounding.episode_window, COMPOUNDING_WINDOW);
+        assert_eq!(episodes.compounding.playbook_hit_rate, 0.25);
+        assert_eq!(episodes.compounding.knowledge_reuse_rate, 0.25);
+
+        let json = serde_json::to_value(&episodes).unwrap();
+        assert_eq!(json["compounding"]["playbook_hit_rate"], 0.25);
+        assert!(json["compounding"]["cost_per_success"].is_number());
+        let human = format_compounding_metrics(&episodes.compounding);
+        assert_eq!(human[1], "    playbook hit rate:    25.0%");
     }
 
     #[test]

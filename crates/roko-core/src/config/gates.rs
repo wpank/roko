@@ -157,8 +157,11 @@ pub struct GatesConfig {
     /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
     /// each standard-tier Graph task dispatch.
     ///
-    /// Defaults to `false`: `plan run` never executes these files. Only the
-    /// legacy Runner-v2 generated-test rung reads them.
+    /// Defaults to `false`. The files are for manual inspection: nothing in
+    /// `plan run` executes them. Only evaluations that pass
+    /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
+    /// written, and the built-in template needs an assertion body that Graph
+    /// tasks do not author, so today none is.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.
@@ -221,10 +224,6 @@ pub struct GatesConfig {
     /// `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
-    /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
-    /// values are shell commands to run as gates (e.g. `["shell:true"]`).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -303,7 +302,6 @@ impl Default for GatesConfig {
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
-            domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,
             ema_alpha: default_ema_alpha(),

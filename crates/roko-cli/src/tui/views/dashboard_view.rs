@@ -1208,8 +1208,10 @@ fn render_sub_gate(
             let mut failure = failure.clone();
             if failure.summary.trim().is_empty() {
                 if let Some(output) =
-                    task_gate_output(tui_state, &failure.plan_id, &failure.task_id)
-                        .filter(|output| !output.passed && output.gate == failure.gate)
+                    task_gate_outputs(tui_state, &failure.plan_id, &failure.task_id)
+                        .rev()
+                        .find(|output| output.gate == failure.gate)
+                        .filter(|output| !output.passed)
                 {
                     failure.summary = gate_output_summary(output);
                 }
@@ -1259,16 +1261,26 @@ fn verify_focus_task(tui_state: &TuiState) -> Option<(String, String)> {
         .map(|output| (output.plan_id.clone(), output.task_id.clone()))
 }
 
-/// Latest retained gate output for a task. An empty `plan_id` matches the
-/// task in any plan.
-fn task_gate_output<'a>(
+/// Retained gate outputs of a task, one per verify step, oldest first. An
+/// empty `plan_id` matches the task in any plan.
+fn task_gate_outputs<'a>(
     tui_state: &'a TuiState,
-    plan_id: &str,
-    task_id: &str,
-) -> Option<&'a TaskGateOutput> {
-    tui_state.task_gate_outputs.iter().rev().find(|output| {
+    plan_id: &'a str,
+    task_id: &'a str,
+) -> impl DoubleEndedIterator<Item = &'a TaskGateOutput> {
+    tui_state.task_gate_outputs.iter().filter(move |output| {
         output.task_id == task_id && (plan_id.is_empty() || output.plan_id == plan_id)
     })
+}
+
+/// The `$ command` line that leads retained output, when the gate published
+/// one.
+fn gate_output_command(output: &TaskGateOutput) -> Option<&str> {
+    output
+        .lines
+        .first()
+        .map(String::as_str)
+        .filter(|line| line.starts_with("$ "))
 }
 
 /// One-line summary of retained output: the `$ command` line plus the last
@@ -1290,8 +1302,9 @@ fn gate_output_summary(output: &TaskGateOutput) -> String {
         .join(" | ")
 }
 
-/// Each verify step of one task (latest verdict per gate, in run order),
-/// with the command and output tail of the step whose output is retained.
+/// Each verify step of one task (latest verdict per gate, in run order) with
+/// its command, then the output tail of the latest failing step, or of the
+/// latest step when none failed.
 fn render_task_verify(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -1327,7 +1340,7 @@ fn render_task_verify(
         return;
     }
 
-    let output = task_gate_output(tui_state, plan_id, task_id);
+    let outputs: Vec<&TaskGateOutput> = task_gate_outputs(tui_state, plan_id, task_id).collect();
     let mut steps: Vec<(&str, bool)> = Vec::new();
     for gate in tui_state
         .gate_results
@@ -1339,7 +1352,7 @@ fn render_task_verify(
             None => steps.push((gate.gate.as_str(), gate.passed)),
         }
     }
-    if let Some(output) = output {
+    for output in &outputs {
         match steps.iter_mut().find(|(name, _)| *name == output.gate) {
             Some(step) => step.1 = output.passed,
             None => steps.push((output.gate.as_str(), output.passed)),
@@ -1354,9 +1367,19 @@ fn render_task_verify(
         return;
     }
 
-    let command = output
-        .and_then(|output| output.lines.first())
-        .filter(|line| line.starts_with("$ "));
+    let step_command = |gate: &str| {
+        outputs
+            .iter()
+            .rev()
+            .find(|output| output.gate == gate)
+            .and_then(|output| gate_output_command(output))
+    };
+    let detail = outputs
+        .iter()
+        .rev()
+        .find(|output| !output.passed)
+        .or_else(|| outputs.last())
+        .copied();
     let gate_width = steps
         .iter()
         .map(|(gate, _)| gate.chars().count())
@@ -1383,15 +1406,15 @@ fn render_task_verify(
                 ),
                 Span::styled(verdict, style),
             ];
-            if let Some(command) = command.filter(|_| output.is_some_and(|o| o.gate == gate)) {
+            if let Some(command) = step_command(gate) {
                 spans.push(Span::styled(format!("  {command}"), theme.accent()));
             }
             Line::from(spans)
         })
         .collect();
 
-    if let Some(output) = output {
-        let tail = &output.lines[usize::from(command.is_some())..];
+    if let Some(output) = detail {
+        let tail = &output.lines[usize::from(gate_output_command(output).is_some())..];
         let room = (inner.height as usize).saturating_sub(lines.len() + 1);
         if room > 0 && !tail.is_empty() {
             let shown = tail.len().min(room);
@@ -3379,6 +3402,44 @@ mod tests {
             rendered.contains("$ cargo test -p roko-cli verify_panel | test result: FAILED"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn verify_tab_lists_each_steps_command_and_the_failing_output() {
+        let mut tui_state = TuiState::default();
+        let output = |gate: &str, passed: bool, lines: &[&str]| TaskGateOutput {
+            plan_id: "p1".to_string(),
+            task_id: "T03".to_string(),
+            gate: gate.to_string(),
+            passed,
+            lines: lines.iter().map(|line| (*line).to_string()).collect(),
+        };
+        // One output per verify step; the passing step after the failure
+        // does not hide the failing step's output.
+        tui_state.task_gate_outputs = vec![
+            output("compile", true, &["$ cargo check", "Finished dev"]),
+            output("test", false, &["$ cargo test verify_panel", "1 failed"]),
+            output("clippy", true, &["$ cargo clippy", "0 warnings"]),
+        ];
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_task_verify(frame, area, &tui_state, "p1", "T03", true, &Theme::dark());
+            })
+            .unwrap();
+        let rendered = rendered_text(&terminal);
+
+        assert!(rendered.contains("pass  $ cargo check"), "{rendered}");
+        assert!(
+            rendered.contains("FAIL  $ cargo test verify_panel"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("pass  $ cargo clippy"), "{rendered}");
+        assert!(rendered.contains("test output, last 1"), "{rendered}");
+        assert!(rendered.contains("1 failed"), "{rendered}");
+        assert!(!rendered.contains("0 warnings"), "{rendered}");
     }
 
     #[test]

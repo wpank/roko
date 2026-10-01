@@ -31,7 +31,7 @@ use crate::knowledge::prepend_context;
 use crate::pipeline::{PipelineAction, PipelineEvent, PipelinePhase, WorkflowTemplate};
 use crate::session::{CancelToken, SharedWorkflowRun};
 use crate::types::{
-    ContentBlock, FileChangeNotification, FileChangeType, PlanEntry, PlanStatus, Priority,
+    ContentBlock, FileChangeNotification, FileChangeType, PlanEntry, PlanEntryStatus, Priority,
     StopReason, ToolCallKind, ToolCallStatus,
 };
 use crate::workflow::WorkflowRun;
@@ -1283,9 +1283,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
     // Strategy phase (full only).
     if template.has_strategy() {
         let status = match phase {
-            PipelinePhase::Strategizing => PlanStatus::InProgress,
-            PipelinePhase::Pending => PlanStatus::Pending,
-            _ => PlanStatus::Completed,
+            PipelinePhase::Strategizing => PlanEntryStatus::InProgress,
+            PipelinePhase::Pending => PlanEntryStatus::Pending,
+            _ => PlanEntryStatus::Completed,
         };
         entries.push(PlanEntry {
             content: "Strategy brief".into(),
@@ -1296,9 +1296,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Implementation phase.
     let impl_status = match phase {
-        PipelinePhase::Implementing | PipelinePhase::AutoFixing => PlanStatus::InProgress,
-        PipelinePhase::Pending | PipelinePhase::Strategizing => PlanStatus::Pending,
-        _ => PlanStatus::Completed,
+        PipelinePhase::Implementing | PipelinePhase::AutoFixing => PlanEntryStatus::InProgress,
+        PipelinePhase::Pending | PipelinePhase::Strategizing => PlanEntryStatus::Pending,
+        _ => PlanEntryStatus::Completed,
     };
     let impl_label = if run.pipeline.iteration > 1 {
         format!(
@@ -1316,12 +1316,12 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Gates phase.
     let gate_status = match phase {
-        PipelinePhase::Gating => PlanStatus::InProgress,
+        PipelinePhase::Gating => PlanEntryStatus::InProgress,
         PipelinePhase::Pending
         | PipelinePhase::Strategizing
         | PipelinePhase::Implementing
-        | PipelinePhase::AutoFixing => PlanStatus::Pending,
-        _ => PlanStatus::Completed,
+        | PipelinePhase::AutoFixing => PlanEntryStatus::Pending,
+        _ => PlanEntryStatus::Completed,
     };
     entries.push(PlanEntry {
         content: "Run gates (compile + test)".into(),
@@ -1332,9 +1332,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
     // Review phase (standard, full only).
     if template.has_review() {
         let review_status = match phase {
-            PipelinePhase::Reviewing => PlanStatus::InProgress,
-            PipelinePhase::Committing | PipelinePhase::Complete => PlanStatus::Completed,
-            _ => PlanStatus::Pending,
+            PipelinePhase::Reviewing => PlanEntryStatus::InProgress,
+            PipelinePhase::Committing | PipelinePhase::Complete => PlanEntryStatus::Completed,
+            _ => PlanEntryStatus::Pending,
         };
         entries.push(PlanEntry {
             content: "Code review".into(),
@@ -1345,9 +1345,9 @@ fn build_plan_entries(run: &WorkflowRun) -> Vec<PlanEntry> {
 
     // Commit phase.
     let commit_status = match phase {
-        PipelinePhase::Committing => PlanStatus::InProgress,
-        PipelinePhase::Complete => PlanStatus::Completed,
-        _ => PlanStatus::Pending,
+        PipelinePhase::Committing => PlanEntryStatus::InProgress,
+        PipelinePhase::Complete => PlanEntryStatus::Completed,
+        _ => PlanEntryStatus::Pending,
     };
     entries.push(PlanEntry {
         content: "Commit changes".into(),
@@ -1691,9 +1691,14 @@ async fn run_agent_phase(
     output
 }
 
-/// Build a Signal with a GatePayload body pointing at `workdir`.
+/// Build a Signal with a GatePayload body pointing at `workdir`. Its gates get
+/// the workspace's `[gates] env_passthrough` on top of the gate allowlist, as
+/// plan-run verify steps do (gap-bbbfbc).
 fn build_gate_signal(workdir: &Path) -> Signal {
-    let payload = GatePayload::in_dir(workdir);
+    let env_passthrough = roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.gates.env_passthrough)
+        .unwrap_or_default();
+    let payload = GatePayload::in_dir(workdir).with_env_passthrough(env_passthrough);
     let body = Body::from_json(&payload).unwrap_or_else(|_| Body::empty());
     Signal::builder(Kind::Task).body(body).build()
 }

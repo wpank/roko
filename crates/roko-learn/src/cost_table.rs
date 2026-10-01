@@ -436,8 +436,10 @@ mod tests {
         let pricing = table.lookup("sonar").expect("sonar pricing");
         assert!((pricing.input_per_m - 1.00).abs() < 1e-12);
 
-        // Truly unknown models keep the sonnet fallback.
+        // Truly unknown models are unpriced, not priced at Sonnet's rates
+        // (gap-ad0d39).
+        assert_eq!(table.price("totally-unknown-llm", &usage), None);
         let cost = table.calculate("totally-unknown-llm", &usage);
-        assert!((cost - 18.00).abs() < 1e-12, "unknown cost {cost}");
+        assert!(cost.abs() < 1e-12, "unknown cost {cost}");
     }
 }

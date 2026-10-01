@@ -401,25 +401,6 @@ impl GateThresholds {
         residuals
     }
 
-    /// P1-09: Apply neuro-derived knowledge hints to threshold tuning.
-    ///
-    /// Known failure rungs get their EMA biased toward caution when few
-    /// observations exist. Known stable rungs are left untouched (the
-    /// existing EMA already captures stability).
-    pub(crate) fn apply_neuro_hints(
-        &mut self,
-        known_failure_rungs: &[u32],
-        known_stable_rungs: &[u32],
-    ) {
-        let _ = known_stable_rungs; // stability hints don't modify persist thresholds
-        for &rung in known_failure_rungs {
-            let stats = self.rungs.entry(rung).or_default();
-            if stats.total_count < 10 {
-                stats.ema_pass_rate = (stats.ema_pass_rate * 0.7).min(0.5);
-            }
-        }
-    }
-
     /// P1-10: Apply a domain-specific threshold profile.
     ///
     /// Sets rung priors from the profile when the rung has no prior

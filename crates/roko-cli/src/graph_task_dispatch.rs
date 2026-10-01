@@ -457,18 +457,21 @@ impl GraphTaskDispatcher {
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
     /// written, the rest set by `[gates]` and the adaptive gate thresholds
-    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]).
+    /// this dispatcher's verify runs record, biased by the workspace's
+    /// durable knowledge of failing rungs (see [`TaskRetryBudgets`]).
     pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
         let tasks_toml = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
             .into_iter()
             .map(|dir| dir.join("tasks.toml"))
             .find(|path| path.is_file())
             .unwrap_or_else(|| plan_dir.join("tasks.toml"));
+        let knowledge = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);
         TaskRetryBudgets::load(
             self.feedback.gate_thresholds_path.as_deref(),
             &self.config.gates,
             &tasks_toml,
         )
+        .with_neuro_gate_hints(&knowledge)
         .with_ladder_min_retries(self.ladder_min_retries())
     }
 

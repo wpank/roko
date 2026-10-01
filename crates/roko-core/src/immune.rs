@@ -677,6 +677,15 @@ impl QuarantineVault {
             .collect()
     }
 
+    /// Every entry, whatever its review status, oldest first; entries
+    /// quarantined at the same instant are ordered by hash.
+    #[must_use]
+    pub fn entries(&self) -> Vec<&QuarantineEntry> {
+        let mut entries = self.entries.values().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| (entry.quarantined_at, entry.hash.0));
+        entries
+    }
+
     /// Remove approved and rejected entries, returning the released hashes.
     pub fn drain_resolved(&mut self) -> (Vec<ContentHash>, Vec<ContentHash>) {
         let mut released = Vec::new();
@@ -888,6 +897,12 @@ impl QuarantineVault {
     #[must_use]
     pub fn count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Most entries the vault holds: a full vault refuses new ones.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.max_entries
     }
 
     /// Whether the vault has reached maximum capacity.
@@ -1385,6 +1400,32 @@ mod tests {
         assert!(vault.quarantine(dummy_hash(2), AnomalyScore::from_score(0.7)));
         assert!(!vault.quarantine(dummy_hash(3), AnomalyScore::from_score(0.8)));
         assert!(vault.is_full());
+    }
+
+    #[test]
+    fn vault_lists_every_entry_oldest_first_and_reports_its_capacity() {
+        let mut vault = QuarantineVault::new(0.5, 3, false);
+        let start = Utc::now();
+        for (n, seconds_later) in [(1, 20), (2, 10), (3, 10)] {
+            assert!(vault.quarantine(dummy_hash(n), AnomalyScore::from_score(0.9)));
+            vault.entries.get_mut(&dummy_hash(n)).expect("entry").quarantined_at =
+                start + chrono::Duration::seconds(seconds_later);
+        }
+        assert!(vault.review(&dummy_hash(3), QuarantineStatus::Escalated, None));
+
+        let listed = vault
+            .entries()
+            .iter()
+            .map(|entry| entry.hash)
+            .collect::<Vec<_>>();
+
+        assert_eq!(listed, [dummy_hash(2), dummy_hash(3), dummy_hash(1)]);
+        assert_eq!(vault.capacity(), 3);
+        assert!(vault.is_full());
+        assert_eq!(
+            QuarantineVault::with_defaults().capacity(),
+            DEFAULT_QUARANTINE_VAULT_CAPACITY
+        );
     }
 
     #[test]

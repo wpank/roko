@@ -11,8 +11,10 @@
 //! - `plan.gate` → `PlanGateCell` (see `cells/plan_gate.rs`)
 //!
 //! The legacy cognitive loop names (`signal-reader`, `relevance-scorer`, etc.)
-//! are no longer stubs -- they are registered in `default_registry()` as aliases
-//! for the real typed Cell implementations in `cells::cognitive`.
+//! are registered in `default_registry()` as aliases for the typed Cell
+//! implementations in `cells::cognitive`. `claude-agent`, like `act`, builds
+//! `ActCell`, which dispatches nothing yet (gap-3d5cce), so the registry marks
+//! both as stubs.
 
 use std::time::Duration;
 
@@ -83,10 +85,11 @@ impl Cell for PassthroughCell {
 
 /// Legacy cognitive loop alias names.
 ///
-/// These names are registered in `default_registry()` as aliases for the real
-/// cognitive Cell implementations (`SenseCell`, `AssessCell`, etc.). They are
-/// no longer `PassthroughCell` stubs -- each delegates to the corresponding
-/// typed Cell from `cells::cognitive`.
+/// These names are registered in `default_registry()` as aliases for the
+/// cognitive Cell implementations (`SenseCell`, `AssessCell`, etc.): each
+/// delegates to the corresponding typed Cell from `cells::cognitive` rather
+/// than to a `PassthroughCell`. `claude-agent` builds `ActCell`, which
+/// dispatches nothing yet (gap-3d5cce), so its descriptor is a stub.
 pub const COGNITIVE_LOOP_ALIASES: &[&str] = &[
     "signal-reader",
     "relevance-scorer",

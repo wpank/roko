@@ -3,13 +3,15 @@ id = "bug-ddd5bd"
 kind = "bug"
 title = "error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-learn/error_pattern_store"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "814fe5e90"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (the coordinator's report)"
 anchors = ["crates/roko-learn/src/error_pattern_store.rs"]
@@ -41,3 +43,7 @@ The store's append path and the test.
 
 - [ ] The test doesn't depend on the clock.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-10-01):** Implemented on `work/bug-ddd5bd` at `8424c410e`; cargo verification deferred to the batch check. `append` and `observe_gate_failure` keep their signatures and pass `Utc::now()` to the new `append_at` / `observe_gate_failure_at`.

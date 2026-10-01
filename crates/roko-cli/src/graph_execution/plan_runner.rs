@@ -2796,6 +2796,8 @@ async fn run_one_plan(
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
+            // An agent that exits on this SIGTERM settles as cancelled.
+            ctx.graph_task_dispatcher.begin_stop();
             let signalled = terminate_in_flight_agents();
             tracing::warn!(
                 plan_id = %plan.id,

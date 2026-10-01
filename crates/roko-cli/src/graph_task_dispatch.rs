@@ -211,6 +211,8 @@ pub struct GraphTaskDispatcher {
     task_spend: GraphTaskSpendLedger,
     /// Today's spend before this process, for `budget.max_daily_usd`.
     daily_budget: GraphDailyBudget,
+    /// Set once the plan run began to stop ([`Self::begin_stop`]).
+    stopping: std::sync::atomic::AtomicBool,
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
@@ -291,6 +293,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
+            stopping: std::sync::atomic::AtomicBool::new(false),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -506,6 +509,26 @@ impl GraphTaskDispatcher {
         self.budget_ledger
             .dispatch_stop(plan_id, self.budget_policy)
             .or_else(|| self.daily_dispatch_stop())
+    }
+
+    /// The plan run began to stop (an interrupt), and is signalling its
+    /// agents. From now on a provider call that ends without a successful
+    /// result, an agent that exits on that SIGTERM included, settles as
+    /// cancelled rather than as a provider failure, and fails with
+    /// [`RokoError::Cancelled`], which the task executor does not retry
+    /// (bug-28b604).
+    pub fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    /// The cancellation a call of `plan_id/task_id` that ended with `cause`
+    /// becomes once its run began to stop ([`Self::begin_stop`]).
+    fn stopped_call(&self, plan_id: &str, task_id: &str, cause: &str) -> Option<RokoError> {
+        self.stopping.load(Ordering::Acquire).then(|| {
+            RokoError::cancelled(format!(
+                "agent for {plan_id}/{task_id} ended while its plan run was stopping: {cause}"
+            ))
+        })
     }
 
     /// Return aggregate token and dispatch counts accumulated across all
@@ -1324,6 +1347,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,
             Err(error) => {
+                // A call that failed once the run began to stop, such as an
+                // agent that exited on the run's own SIGTERM, is a
+                // cancellation (bug-28b604).
+                let error = match error {
+                    RokoError::Cancelled(_) => error,
+                    error => self
+                        .stopped_call(&spec.plan_id, &task.id, &error.to_string())
+                        .unwrap_or(error),
+                };
                 // Best-effort release on dispatch failure when worktree isolation is active.
                 if let Some((provider, lease)) =
                     self.workspace_provider.as_ref().zip(lease.as_ref())
@@ -1454,10 +1486,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .as_text()
                 .unwrap_or("provider returned an unsuccessful result")
                 .to_string();
+            // An agent that exited on its run's SIGTERM was cancelled, not a
+            // failed provider (bug-28b604).
+            let stopped = self.stopped_call(&spec.plan_id, &task.id, &message);
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.
-            let settlement = Settlement::provider_failure(&message, first_token_seen(&dispatch));
+            let settlement = match &stopped {
+                Some(cancelled) => Settlement::provider_call_error(cancelled),
+                None => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
+            };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
             self.emit_feedback(
                 spec,
@@ -1477,6 +1515,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
                     )
                     .await;
+            }
+            if let Some(cancelled) = stopped {
+                return Err(cancelled);
             }
 
             // Detect billing/credit errors and log a clear warning so
@@ -2686,5 +2727,47 @@ sleep 30
             metrics.contains("read_file") && metrics.contains("api-model-1"),
             "{metrics}"
         );
+    }
+
+    /// bug-28b604: once the plan run began to stop, an agent that exits on
+    /// its SIGTERM within the drain settles as cancelled, not as a provider
+    /// failure, and fails with a cancellation, which the task executor does
+    /// not retry.
+    #[tokio::test]
+    async fn a_sigterm_exit_during_the_drain_settles_as_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        let script = "#!/bin/sh\ncat >/dev/null\nkill -TERM $$\n";
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        let runs = temp.path().join(".roko/runs");
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        dispatcher.begin_stop();
+        let ctx = CellContext::new().with_run_id("stopping-run".to_string());
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the agent exited on SIGTERM");
+        assert!(matches!(error, RokoError::Cancelled(_)), "got {error:?}");
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+
+        let attempts = runs.join("stopping-run").join("attempts.jsonl");
+        crate::background_writes::settled(&runs).await;
+        let mut verdict = None;
+        for _ in 0..300 {
+            verdict = std::fs::read_to_string(&attempts)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|row| row["schema_version"] == "roko.verdict/1");
+            if verdict.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let verdict = verdict.expect("the attempt settled");
+        assert_eq!(verdict["outcome"], "cancelled", "{verdict}");
     }
 }

@@ -2,7 +2,7 @@
 id = "gap-fc5d3d"
 kind = "gap"
 title = "The companion audit adjudicated 483 of 873 cited works, leaving 390 unchecked, and docs/v1's 103 known errata locations are untouched"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs/v1", "tools/docs_integrity"]
 created = 2026-09-30
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "e5da8676e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report)"
 anchors = ["tools/docs_integrity/citation_errata.json", "tools/docs_integrity/check_citation_errata.py", "docs/v1/"]
@@ -19,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b23ebd", "gap-212b75"], 
 
 [[verify]]
 command = "grep -q 'docs/v1' tools/docs_integrity/check_citation_errata.py && python3 tools/docs_integrity/check_citation_errata.py"
+
+[closed]
+at = 2026-10-01
+commit = "e5da8676e"
+evidence = "check_citation_errata.py covers docs/v1 (130 known errata at a4e175c9c -> 0, prose 259 -> 0); all 412 unadjudicated works checked against registry records: 356 clean, 52 errata added and fixed, 4 out of scope, listed in citation_errata.json 'checked'; verify and 13 tests pass"
 +++
 
 ## Problem

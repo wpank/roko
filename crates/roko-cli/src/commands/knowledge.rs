@@ -7,7 +7,12 @@ use sha2::{Digest, Sha256};
 
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
-        KnowledgeCmd::Query { topic, workdir, .. } => {
+        KnowledgeCmd::Query {
+            topic,
+            workdir,
+            limit,
+            verbose,
+        } => {
             // Read-only search: shared lock so query can coexist with an
             // active plan runner.
             let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
@@ -17,7 +22,8 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
                 NeuroCmd::Query {
                     topic,
                     workdir: Some(wd),
-                    limit: 10,
+                    limit,
+                    verbose,
                 },
             )
             .await
@@ -380,9 +386,44 @@ pub(crate) async fn cmd_archive(
     Ok(EXIT_SUCCESS)
 }
 
+/// Lines of a match that `roko knowledge query` prints without `--verbose`.
+const QUERY_PREVIEW_LINES: usize = 2;
+/// Characters kept of each previewed line.
+const QUERY_PREVIEW_LINE_CHARS: usize = 160;
+
+/// A knowledge entry's text as `roko knowledge query` prints it: in full with
+/// `--verbose`, otherwise its first two non-empty lines, each truncated to 160
+/// characters, then how many lines were left out. Continuation lines are
+/// indented under the entry's header line.
+fn query_entry_text(content: &str, verbose: bool) -> String {
+    if verbose {
+        return content.trim().to_string();
+    }
+    let lines: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut preview: Vec<String> = lines
+        .iter()
+        .take(QUERY_PREVIEW_LINES)
+        .map(|line| roko_cli::tui::display_utils::truncate(line, QUERY_PREVIEW_LINE_CHARS))
+        .collect();
+    let hidden = lines.len().saturating_sub(QUERY_PREVIEW_LINES);
+    if hidden > 0 {
+        preview.push(format!("… {hidden} more line(s); --verbose prints the entry in full"));
+    }
+    preview.join("\n   ")
+}
+
 pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
     match cmd {
-        NeuroCmd::Query { topic, workdir, .. } => {
+        NeuroCmd::Query {
+            topic,
+            workdir,
+            limit,
+            verbose,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let topic = topic.join(" ");
             let topic = topic.trim().to_string();
@@ -391,7 +432,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             }
 
             let store = KnowledgeStore::for_workdir(&wd);
-            let entries = store.query(&topic, 10).with_context(|| {
+            let entries = store.query(&topic, usize::from(limit)).with_context(|| {
                 format!(
                     "query knowledge store at {} for topic '{topic}'",
                     store.path().display()
@@ -424,7 +465,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                     idx + 1,
                     format!("{:?}", entry.kind).to_lowercase(),
                     entry.confidence.clamp(0.0, 1.0),
-                    entry.content.trim()
+                    query_entry_text(&entry.content, verbose)
                 );
                 if !entry.tags.is_empty() {
                     println!("   tags: {}", entry.tags.join(", "));
@@ -1712,5 +1753,24 @@ mod tests {
 
         // Store has exactly one entry.
         assert_eq!(store_b.read_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn knowledge_query_previews_two_lines_unless_verbose() {
+        let goal = "x".repeat(300);
+        let content = format!("# Playbook\n\nGoal: {goal}\n1. step one\n2. step two\n");
+
+        let preview = super::query_entry_text(&content, false);
+        let lines: Vec<&str> = preview.lines().collect();
+        assert_eq!(lines.len(), 3, "{preview}");
+        assert_eq!(lines[0], "# Playbook");
+        let goal_line = lines[1].trim_start();
+        assert!(goal_line.starts_with("Goal: x"), "{preview}");
+        assert_eq!(goal_line.chars().count(), 160);
+        assert!(goal_line.ends_with('…'));
+        assert!(lines[2].contains("2 more line(s)"), "{preview}");
+
+        assert_eq!(super::query_entry_text(&content, true), content.trim());
+        assert_eq!(super::query_entry_text("one line\n", false), "one line");
     }
 }

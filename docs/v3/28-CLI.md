@@ -1074,15 +1074,17 @@ custody (audit chain), and archival.
 
 ### `roko knowledge query`
 
-Query the durable knowledge store. Returns up to N matches ranked by confidence. Supports `--json`.
+Query the durable knowledge store. Returns up to N matches ranked by confidence. Each match shows its first
+two lines; `--verbose` shows it in full. Supports `--json`.
 
 ```
-roko knowledge query <topic...> [--workdir <path>] [--limit <n>]
+roko knowledge query <topic...> [--workdir <path>] [--limit <n>] [--verbose]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--limit <n>` | 10 | Maximum number of results (1-1000). |
+| `--verbose` | off | Print each match in full instead of its first two lines. |
 
 ### `roko knowledge stats`
 

@@ -1308,6 +1308,9 @@ enum KnowledgeCmd {
         /// Maximum number of results to return (1-1000, default: 10).
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=1000))]
         limit: u16,
+        /// Print each match in full instead of its first two lines.
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show aggregate statistics for the durable knowledge store.
     Stats {
@@ -2851,6 +2854,7 @@ enum NeuroCmd {
         topic: Vec<String>,
         workdir: Option<PathBuf>,
         limit: u16,
+        verbose: bool,
     },
     Stats {
         workdir: Option<PathBuf>,

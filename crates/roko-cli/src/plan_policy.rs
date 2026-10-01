@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use roko_core::task::TaskTier;
 
-use crate::task_parser::{TaskDef, TasksFile};
+use crate::task_parser::{ReadFile, TaskDef, TasksFile};
 
 /// Conservative absolute limits for ordinary plans. These are safety bounds,
 /// not generation targets; FAST and generated-plan policies are much tighter.
@@ -845,6 +845,12 @@ pub fn render_declared_context(
          stop and request plan repair instead of exploring.\n",
     );
 
+    // Explicit ranges and symbol anchors render first, so their size is known:
+    // they fail the task when they overrun the budget. Each file declared
+    // without a range then gets a fair share of what is left, and is cut to
+    // fit, with a marker, rather than fail the task (bug-7c8a57).
+    let mut blocks = Vec::with_capacity(context.read_files.len());
+    let mut unranged = Vec::new();
     for read_file in &context.read_files {
         let relative = validate_repo_relative_path(&read_file.path)
             .map_err(|reason| format!("unsafe context path `{}`: {reason}", read_file.path))?;
@@ -882,30 +888,22 @@ pub fn render_declared_context(
             }
         }
         if ranges.is_empty() {
-            ranges.push((1, lines.len().min(80)));
+            unranged.push((blocks.len(), read_file, content));
+            blocks.push(String::new());
+            continue;
         }
-        let ranges = merge_ranges(ranges);
-        for (start, end) in ranges {
-            output.push_str(&format!(
-                "\n<declared-file path=\"{}\" lines=\"{}-{}\" why=\"{}\">\n",
-                read_file.path,
-                start,
-                end,
-                read_file.why.replace('"', "'")
-            ));
-            for line_number in start..=end {
-                if let Some(line) = lines.get(line_number.saturating_sub(1)) {
-                    output.push_str(&format!("{line_number:>6} | {line}\n"));
-                }
-            }
-            output.push_str("</declared-file>\n");
-        }
-        if output.len() > policy.max_declared_context_bytes {
-            return Err(format!(
-                "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
-                task.id, policy.max_declared_context_bytes
-            ));
-        }
+        let block = merge_ranges(ranges)
+            .into_iter()
+            .map(|(start, end)| declared_block(read_file, &lines, start, end))
+            .collect::<String>();
+        blocks.push(block);
+    }
+    let fixed = output.len() + blocks.iter().map(String::len).sum::<usize>();
+    if fixed > policy.max_declared_context_bytes {
+        return Err(format!(
+            "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
+            task.id, policy.max_declared_context_bytes
+        ));
     }
 
     let missing = anchors
@@ -919,7 +917,102 @@ pub fn render_declared_context(
             missing.join(", ")
         ));
     }
+
+    let mut remaining = policy.max_declared_context_bytes - fixed;
+    let mut left = unranged.len();
+    for (index, read_file, content) in unranged {
+        let block = unranged_block(
+            read_file,
+            &content,
+            policy.max_range_lines,
+            remaining / left,
+        );
+        remaining = remaining.saturating_sub(block.len());
+        left -= 1;
+        blocks[index] = block;
+    }
+    output.extend(blocks);
     Ok(output)
+}
+
+/// The closing tag of a declared file block.
+const DECLARED_FILE_END: &str = "</declared-file>\n";
+
+/// The opening tag of a declared file block showing lines `start..=end` of a
+/// file `total` lines long.
+fn declared_file_tag(read_file: &ReadFile, start: usize, end: usize, total: usize) -> String {
+    format!(
+        "\n<declared-file path=\"{}\" lines=\"{start}-{end}\" total=\"{total}\" why=\"{}\">\n",
+        read_file.path,
+        read_file.why.replace('"', "'")
+    )
+}
+
+/// Line `line_number` of a declared file, numbered.
+fn numbered_line(line_number: usize, line: &str) -> String {
+    format!("{line_number:>6} | {line}\n")
+}
+
+/// Lines `start..=end` of the declared file `lines` as a block.
+fn declared_block(read_file: &ReadFile, lines: &[&str], start: usize, end: usize) -> String {
+    let mut block = declared_file_tag(read_file, start, end, lines.len());
+    for line_number in start..=end {
+        if let Some(line) = lines.get(line_number.saturating_sub(1)) {
+            block.push_str(&numbered_line(line_number, line));
+        }
+    }
+    block.push_str(DECLARED_FILE_END);
+    block
+}
+
+/// The line that ends a declared file cut short after its first `shown` of
+/// `total` lines.
+fn truncation_marker(shown: usize, total: usize) -> String {
+    if shown == 0 {
+        format!(
+            "[... truncated: showed none of its {total} lines; add a lines range to read_files]\n"
+        )
+    } else {
+        format!(
+            "[... truncated: showed lines 1-{shown} of {total}; add a lines range to read_files]\n"
+        )
+    }
+}
+
+/// A `read_files` entry declared without a range: the whole file when it has
+/// at most `max_lines` lines and its block fits in `share` bytes; else its
+/// first lines that do, and a marker saying the rest was cut. Only a share
+/// too small for the tag and the marker overruns it.
+fn unranged_block(read_file: &ReadFile, content: &str, max_lines: usize, share: usize) -> String {
+    let lines = content.lines().collect::<Vec<_>>();
+    let total = lines.len();
+    if total <= max_lines {
+        let whole = declared_block(read_file, &lines, 1, total);
+        if whole.len() <= share {
+            return whole;
+        }
+    }
+    let end = total.min(max_lines);
+    let frame = declared_file_tag(read_file, 1, end, total).len()
+        + truncation_marker(end, total).len()
+        + DECLARED_FILE_END.len();
+    let mut room = share.saturating_sub(frame);
+    let mut body = String::new();
+    let mut shown = 0;
+    for (line_number, line) in (1..=end).zip(&lines) {
+        let numbered = numbered_line(line_number, line);
+        if numbered.len() > room {
+            break;
+        }
+        room -= numbered.len();
+        body.push_str(&numbered);
+        shown = line_number;
+    }
+    let mut block = declared_file_tag(read_file, 1, shown, total);
+    block.push_str(&body);
+    block.push_str(&truncation_marker(shown, total));
+    block.push_str(DECLARED_FILE_END);
+    block
 }
 
 /// Return a normalized repository-relative path or a precise rejection.
@@ -1279,6 +1372,122 @@ mod tests {
         assert!(rendered.contains("path=\"src/lib.rs\""));
         assert!(rendered.contains("2 | pub struct Widget;"));
         assert!(rendered.contains("Do not search home directories"));
+    }
+
+    /// [`task`] with `paths` declared as read files without ranges, and no
+    /// symbol anchors.
+    fn unranged_task(paths: &[&str]) -> TaskDef {
+        let mut plan_task = task();
+        let context = plan_task.context.as_mut().expect("context");
+        context.read_files = paths
+            .iter()
+            .map(|path| ReadFile {
+                path: (*path).to_string(),
+                lines: None,
+                why: "whole file".into(),
+            })
+            .collect();
+        context.symbols.clear();
+        plan_task
+    }
+
+    /// Writes `count` lines, each `width` characters long, to `path`.
+    fn write_lines(root: &Path, path: &str, count: usize, width: usize) {
+        let content = (1..=count)
+            .map(|n| format!("{:<width$}\n", format!("// line {n}")))
+            .collect::<String>();
+        std::fs::write(root.join(path), content).expect("write source");
+    }
+
+    /// bug-7c8a57: a file declared without a range is injected whole, not
+    /// just its first 80 lines, and its tag says how long it is.
+    #[test]
+    fn renderer_injects_unranged_file_past_line_80() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        write_lines(root.path(), "src/lib.rs", 300, 12);
+        let rendered = render_declared_context(
+            &unranged_task(&["src/lib.rs"]),
+            root.path(),
+            PlanExecutionPolicy::normal(),
+        )
+        .expect("render context");
+        assert!(
+            rendered.contains("lines=\"1-300\" total=\"300\""),
+            "{rendered}"
+        );
+        assert!(rendered.contains("    81 | // line 81"), "{rendered}");
+        assert!(rendered.contains("   300 | // line 300"), "{rendered}");
+        assert!(!rendered.contains("truncated"), "{rendered}");
+    }
+
+    /// A file declared without a range that is longer than the policy's
+    /// range limit is cut there, with a marker saying what was shown, and
+    /// the task is not failed for it.
+    #[test]
+    fn renderer_marks_an_unranged_file_cut_at_the_line_limit() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        write_lines(root.path(), "src/lib.rs", 300, 12);
+        let policy = PlanExecutionPolicy::fast();
+        let limit = policy.max_range_lines;
+        let rendered =
+            render_declared_context(&unranged_task(&["src/lib.rs"]), root.path(), policy)
+                .expect("a file without a range never fails the task");
+        assert!(
+            rendered.contains(&format!("lines=\"1-{limit}\" total=\"300\"")),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!(
+                "[... truncated: showed lines 1-{limit} of 300; add a lines range to \
+                 read_files]\n</declared-file>"
+            )),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("{:>6} | ", limit + 1)),
+            "{rendered}"
+        );
+    }
+
+    /// Files declared without a range share what the prompt budget leaves
+    /// and are cut to fit it, each with a marker; an explicit range that
+    /// overruns the budget still fails the task.
+    #[test]
+    fn unranged_files_share_the_budget_and_explicit_ranges_still_fail() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        // 200 lines of 200 characters: about 40 KiB each, past FAST's budget.
+        write_lines(root.path(), "src/a.rs", 200, 200);
+        write_lines(root.path(), "src/b.rs", 200, 200);
+        let policy = PlanExecutionPolicy::fast();
+        let rendered = render_declared_context(
+            &unranged_task(&["src/a.rs", "src/b.rs"]),
+            root.path(),
+            policy,
+        )
+        .expect("files without a range never fail the task");
+        assert!(
+            rendered.len() <= policy.max_declared_context_bytes,
+            "{} bytes",
+            rendered.len()
+        );
+        assert_eq!(
+            rendered.matches("[... truncated: showed lines 1-").count(),
+            2,
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("path=\"src/b.rs\" lines=\"1-"),
+            "{rendered}"
+        );
+
+        let mut ranged = unranged_task(&["src/a.rs"]);
+        ranged.context.as_mut().expect("context").read_files[0].lines = Some("1-200".into());
+        let error = render_declared_context(&ranged, root.path(), policy)
+            .expect_err("an explicit range over the budget fails the task");
+        assert!(error.contains("byte prompt budget"), "{error}");
     }
 
     /// gap-1d1fa6: a task bigger than its tier allows is flagged, with the

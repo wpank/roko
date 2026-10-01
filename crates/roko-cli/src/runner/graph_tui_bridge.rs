@@ -638,6 +638,49 @@ mod tests {
         );
     }
 
+    /// bug-151964: a task replayed from a checkpoint goes from unseen straight
+    /// to `Complete`, so the stream carries its `TaskCompleted` without a
+    /// `TaskStarted`. The snapshot still lists it and counts it done.
+    #[test]
+    fn replayed_task_counts_as_done() {
+        let (hub, bridge) = make_bridge();
+        let mut sub = hub.subscribe_events_from(0);
+        bridge.plan_started("plan-1", 2);
+
+        // T1 is replayed; T2 runs.
+        let running = HashMap::from([("T2".to_string(), NodeStatus::Running)]);
+        let finished = HashMap::from([
+            ("T1".to_string(), NodeStatus::Complete),
+            ("T2".to_string(), NodeStatus::Complete),
+        ]);
+        bridge.poll_status_changes(
+            "plan-1",
+            &HashMap::new(),
+            &running,
+            &HashMap::new(),
+            BTreeMap::new,
+        );
+        bridge.poll_status_changes("plan-1", &running, &finished, &HashMap::new(), || {
+            BTreeMap::from([
+                ("T1".to_string(), TaskGateVerdict::Passed),
+                ("T2".to_string(), TaskGateVerdict::Passed),
+            ])
+        });
+
+        let mut snapshot = roko_core::dashboard_snapshot::DashboardSnapshot::default();
+        let mut started = Vec::new();
+        while let Ok(envelope) = sub.live.try_recv() {
+            if let roko_core::DashboardEvent::TaskStarted { task_id, .. } = &envelope.payload {
+                started.push(task_id.clone());
+            }
+            snapshot.apply(&envelope.payload);
+        }
+        assert_eq!(started, ["T2"], "the replayed task never starts");
+        assert!(snapshot.tasks.contains_key("plan-1/T1"), "{snapshot:?}");
+        assert!(snapshot.tasks.contains_key("plan-1/T2"), "{snapshot:?}");
+        assert_eq!(snapshot.plans["plan-1"].tasks_done, 2);
+    }
+
     #[test]
     fn build_node_title_map_collects_titles() {
         let tasks = vec![(

@@ -47,7 +47,8 @@ impl PromptCache {
     /// Load all prompt context data from disk.
     ///
     /// This performs all the I/O that would otherwise happen per-task:
-    /// - Neuro knowledge store query (all entries, not topic-filtered)
+    /// - Neuro knowledge store read (every hot entry; prompt assembly ranks
+    ///   them against each task)
     /// - Episode JSONL scan (all episode files)
     /// - Playbook directory iteration
     /// - Section effectiveness registry load
@@ -103,8 +104,9 @@ impl PromptCache {
 
 fn load_neuro_entries(workdir: &Path) -> Vec<KnowledgeEntry> {
     let store = roko_neuro::KnowledgeStore::for_workdir(workdir);
-    // query -> read_all handles NotFound internally (returns empty Vec).
-    store.query("", 500).unwrap_or_default()
+    // Not a query: an empty topic scores every entry 0, so the cache stayed
+    // empty (bug-86117a). read_all handles NotFound (returns empty Vec).
+    store.hot_entries().unwrap_or_default()
 }
 
 fn load_episodes(workdir: &Path) -> Vec<Episode> {

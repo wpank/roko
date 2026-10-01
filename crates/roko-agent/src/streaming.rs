@@ -224,14 +224,19 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     let line = value;
 
     let json: Value = serde_json::from_str(line).ok()?;
-    // Each chunk names the model that serves it (bug-bfd241).
+    // Each chunk names the model that serves it (bug-bfd241), and some name
+    // the response, session and thread ids.
     let model = json
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
-    parse_sse_chunk(&json).map(|event| event.with_model(model))
+    parse_sse_chunk(&json).map(|event| {
+        event
+            .with_model(model)
+            .with_session(crate::tool_loop::session_ids(&json))
+    })
 }
 
 /// The event of an OpenAI-compatible stream chunk, parsed from its JSON.
@@ -359,6 +364,28 @@ mod tests {
         let unnamed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
             .expect("a content chunk");
         assert_eq!(unnamed.model, None);
+    }
+
+    /// Each event carries the response, session and thread ids its chunk
+    /// named (bug-ea7723).
+    #[test]
+    fn stream_events_carry_session_ids() {
+        let named = parse_sse_line(
+            r#"data: {"id":"chatcmpl-1","session_id":"sess-1","thread_id":"thread-1","choices":[{"delta":{"content":"hi"}}]}"#,
+        )
+        .expect("a content chunk");
+        assert_eq!(
+            named.session,
+            Some(crate::translate::SessionState {
+                session_id: Some("sess-1".to_string()),
+                thread_id: Some("thread-1".to_string()),
+                conversation_id: Some("chatcmpl-1".to_string()),
+            })
+        );
+
+        let unnamed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
+            .expect("a content chunk");
+        assert_eq!(unnamed.session, None);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildTaskRows, focusTaskId } from './taskRows';
 import type { TaskRowModel } from './taskRows';
+import { GLYPHS } from './glyphs';
 import { initialRunState, taskKey } from './runState';
 import type { RunState, TaskRun, PlanRun } from './runState';
 import type { WirePlanTask } from '@/api/contracts';
@@ -86,11 +87,27 @@ describe('buildTaskRows – status sources', () => {
     expect(rows[0]!.state).toBe('active');
   });
 
-  it('uses passed when wire task is completed and no live record', () => {
-    const tasks = [makeWireTask({ id: 'T01', completed: true })];
+  it('done without a run record', () => {
+    // tasks.toml marks T01 done, but the run holds no record of it (bug-1cc498).
+    const tasks = [
+      makeWireTask({ id: 'T01', status: 'done', completed: true }),
+      makeWireTask({ id: 'T02', depends_on: ['T01'] }),
+    ];
     const { rows } = buildTaskRows(tasks, initialRunState(), PLAN_ID, NOW_MS);
-    expect(rows[0]!.status).toBe('passed');
-    expect(rows[0]!.state).toBe('done');
+    const t01 = rows.find((r) => r.id === 'T01')!;
+    expect(t01.status).toBe('marked_done');
+    expect(t01.state).toBe('marked');
+    expect(GLYPHS[t01.state].label).toBe('done without a run record');
+    // Its dependants do not wait on it.
+    expect(rows.find((r) => r.id === 'T02')!.waitingOn).toEqual([]);
+
+    // A run record takes precedence.
+    const run = makeRunState({
+      tasks: { [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'passed' }) },
+    });
+    const live = buildTaskRows(tasks, run, PLAN_ID, NOW_MS).rows.find((r) => r.id === 'T01')!;
+    expect(live.status).toBe('passed');
+    expect(live.state).toBe('done');
   });
 
   it('uses pending for an untouched task with no live record', () => {
@@ -152,7 +169,7 @@ describe('buildTaskRows – waitingOn', () => {
   it('only lists deps that are not passed / accepted_with_failures / skipped', () => {
     const tasks = [
       makeWireTask({ id: 'T01' }),              // pending → blocking
-      makeWireTask({ id: 'T02', completed: true }), // passed → not blocking
+      makeWireTask({ id: 'T02', completed: true }), // marked done → not blocking
       makeWireTask({ id: 'T03', depends_on: ['T01', 'T02'] }),
     ];
     const { rows } = buildTaskRows(tasks, initialRunState(), PLAN_ID, NOW_MS);
@@ -338,7 +355,7 @@ describe('focusTaskId', () => {
       makeWireTask({ id: 'T02', completed: true }),
     ];
     const { rows } = buildTaskRows(tasks, initialRunState(), PLAN_ID, NOW_MS);
-    // Both are passed; last one in row order is T02
+    // Both are marked done; last one in row order is T02
     expect(focusTaskId(rows, null)).toBe('T02');
   });
 

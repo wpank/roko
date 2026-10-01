@@ -757,14 +757,38 @@ export function applyEvent(
       const key = taskKey(event.plan_id, event.task_id);
       const existing = state.tasks[key];
 
-      // Ignore unknown tasks or already-terminal tasks (idempotent)
-      if (!existing || TERMINAL.has(existing.status)) return state;
+      // Ignore already-terminal tasks (idempotent)
+      if (existing && TERMINAL.has(existing.status)) return state;
 
       const status = classifyOutcome(event.outcome);
-      const task: TaskRun = { ...existing, status, finishedAtMs: nowMs };
+      const plan = state.plans[event.plan_id];
+      // A task can complete without a task_started this state saw: it never ran
+      // (skipped), it started before the page connected, or the start event was
+      // dropped. As in the server's snapshot, it counts all the same, with an
+      // unknown start time.
+      const task: TaskRun = existing
+        ? { ...existing, status, finishedAtMs: nowMs }
+        : {
+            planId: event.plan_id,
+            taskId: event.task_id,
+            title: '',
+            status,
+            phase: 'completed',
+            attempts: 1,
+            startedAtMs: null,
+            finishedAtMs: nowMs,
+            agentId: null,
+            role: null,
+            model: null,
+            costUsd: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            checks: [],
+            generation: plan?.generation ?? 0,
+          };
+      const newTasks = { ...state.tasks, [key]: task };
 
       // Update plan counters
-      const plan = state.plans[event.plan_id];
       let newPlans = state.plans;
       if (plan) {
         let { tasksDone, tasksFailed, tasksAccepted } = plan;
@@ -781,13 +805,24 @@ export function applyEvent(
           // passed, already satisfied and skipped all count as done
           tasksDone += 1;
         }
+        // A task first seen here can raise the plan's total, as in task_started.
+        const planTaskCount = Object.values(newTasks).filter(
+          (t) => t.planId === event.plan_id,
+        ).length;
         newPlans = {
           ...state.plans,
-          [event.plan_id]: { ...plan, tasksDone, tasksFailed, tasksAccepted, tasksUnverified },
+          [event.plan_id]: {
+            ...plan,
+            tasksDone,
+            tasksFailed,
+            tasksAccepted,
+            tasksUnverified,
+            tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
+          },
         };
       }
 
-      return { ...state, tasks: { ...state.tasks, [key]: task }, plans: newPlans };
+      return { ...state, tasks: newTasks, plans: newPlans };
     }
 
     // ── task_phase_changed ─────────────────────────────────────────────────────

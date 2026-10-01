@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
+use tokio_util::task::AbortOnDropHandle;
 
 // ── Codex operation policy ───────────────────────────────────────────────────
 
@@ -621,11 +622,12 @@ impl Agent for ExecAgent {
             collected
         });
 
-        // Heartbeat when no output activity.
+        // Heartbeat when no output activity, aborted however the run ends,
+        // a dropped run included.
         let heartbeat_name = self.name.clone();
         let heartbeat_started = started;
         let heartbeat_activity = has_activity.clone();
-        let heartbeat_handle = tokio::spawn(async move {
+        let heartbeat_handle = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(15));
             interval.tick().await;
             loop {
@@ -635,7 +637,7 @@ impl Agent for ExecAgent {
                     tracing::debug!(agent = %heartbeat_name, elapsed_s = elapsed, "waiting for response");
                 }
             }
-        });
+        }));
 
         // Wait for exit with timeout.
         let status = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
@@ -891,6 +893,47 @@ mod tests {
                       \"text\":\"You've hit your usage limit\"}}\n";
         assert!(usage_exhaustion(quoted, "").is_none());
         assert!(usage_exhaustion("", "error: connection reset").is_none());
+    }
+
+    /// A dropped run leaves no task of its own behind: its heartbeat stops
+    /// with it, and its output readers end once its process is killed.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_dropped_exec_run_stops_its_heartbeat() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let started = temp.path().join("started");
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("touch '{}'; exec sleep 30", started.display()),
+            ],
+        );
+        let run = tokio::spawn(async move {
+            let ctx = Context::now();
+            agent.run(&prompt("x"), &ctx).await
+        });
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the command started");
+        let metrics = tokio::runtime::Handle::current().metrics();
+
+        run.abort();
+        assert!(run.await.expect_err("the run is cancelled").is_cancelled());
+
+        let mut alive = metrics.num_alive_tasks();
+        for _ in 0..200 {
+            if alive == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            alive = metrics.num_alive_tasks();
+        }
+        assert_eq!(alive, 0, "a task of the dropped run outlived it");
     }
 
     #[tokio::test]

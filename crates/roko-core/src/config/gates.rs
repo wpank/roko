@@ -161,7 +161,8 @@ pub struct GatesConfig {
     /// `plan run` executes them. Only evaluations that pass
     /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
     /// written, and the built-in template needs an assertion body that Graph
-    /// tasks do not author, so today none is.
+    /// tasks do not author, so today none is: `plan run` and `roko config
+    /// doctor` report the key as inert.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.

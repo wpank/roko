@@ -475,6 +475,8 @@ mod tests {
                     .map_or((root.as_path(), rest), |command| (src.as_path(), command));
                 (verdict == "deny", cwd, command)
             })
+            // A Grep tool call is for the Claude CLI guard alone.
+            .filter(|(_, _, command)| !command.starts_with("Grep: "))
             .collect();
 
         for &(deny, cwd, command) in &cases {
@@ -546,8 +548,7 @@ mod tests {
         }
 
         // The workspace's key files are found from the directory the command
-        // line runs in upwards, though they sit deeper below the searched
-        // root than the check looks; from the root, they are too deep.
+        // line runs in upwards, however deep below the searched root.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().canonicalize().expect("canonical tempdir");
         let workspace = root.join("a/b/c/d");
@@ -569,6 +570,16 @@ mod tests {
             );
         }
         assert!(refuse_key_file_in_command("grep -r OPENAI .", &src).is_ok());
+        // From the root, the check looks two levels down, and deeper only
+        // while it has read fewer than 256 directories: it searches a small
+        // tree whole, but not a wide one.
+        assert!(matches!(
+            refuse_key_file_in_command("grep -r OPENAI .", &root),
+            Err(ToolError::KeyFileBlocked(_))
+        ));
+        for index in 0..300 {
+            std::fs::create_dir(root.join(format!("wide{index}"))).expect("mkdir");
+        }
         assert!(refuse_key_file_in_command("grep -r OPENAI .", &root).is_ok());
     }
 

@@ -58,26 +58,28 @@
 #
 # A roko config file outside .roko (roko.toml, the file ROKO_CONFIG names,
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
-# such as serve.auth.api_key, and so is a Grep of a tree that holds one,
-# unless its glob or type leaves the file out. roko itself refuses to load
-# such a file (the secret belongs in .roko/.env), so this matters for a
-# secret added while roko runs.
+# such as serve.auth.api_key. roko itself refuses to load such a file (the
+# secret belongs in .roko/.env), so this matters for a secret added while
+# roko runs. A Grep of a tree that holds such a config or a key file (see
+# below) is denied too: Claude Code runs it as rg --hidden, which reads the
+# file unless the Grep's glob or type leaves it out or git ignores it.
+# Glob only lists names, and a Read of a key file it lists is denied.
 #
 # A Bash command that reads a whole tree is denied when the tree holds a key
 # file or such a config and the read reaches it: a recursive search (grep
 # -r, rg, ag, ack, and git grep, which reads untracked files, key files
 # among them, only with --untracked or --no-index), or a read (cat, grep,
 # cp) of what find, fd or xargs lists. A tree holds the key files in its
-# .roko, in that of each subdirectory two levels down, and in the
-# workspace's (in the directory the command or the call runs in, or above
-# it) and ~/.roko when it holds those. A read reaches a file unless its
-# filters leave the file out (grep --exclude-dir=.roko, rg -g '!.roko', a
-# find test or -prune, an fd pattern) or it skips hidden files, as rg, ag
-# and fd do without --hidden, or hidden directories, as a list from ls does.
-# A command after a cd is judged where it runs; a script or a variable can
-# still hide the read. roko-std's bash tool applies the same rules
-# (sandbox/reads.rs), and both test the commands in roko-std's
-# sandbox/secret_read_cases.txt.
+# .roko, in those of its subdirectories two levels down (deeper in a small
+# tree, see key_directories), and in the workspace's (in the directory the
+# command or the call runs in, or above it) and ~/.roko when it holds those.
+# A read reaches a file unless its filters leave the file out (grep
+# --exclude-dir=.roko, rg -g '!.roko', a find test or -prune, an fd pattern)
+# or it skips hidden files, as rg, ag and fd do without --hidden, or hidden
+# directories, as a list from ls does. A command after a cd is judged where
+# it runs; a script or a variable can still hide the read. roko-std's bash
+# tool applies the same rules (sandbox/reads.rs), and both test the commands
+# in roko-std's sandbox/secret_read_cases.txt.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -1256,9 +1258,17 @@ KEY_TREE_REASON = (
     " secrets.toml, credentials.json or config.toml in a .roko directory); leave .roko out"
     " (grep --exclude-dir=.roko, rg -g '!.roko') or name a narrower tree"
 )
-# The most subdirectories a level in which the guard looks for a .roko
-# directory below a tree's root (sensitive_files).
+# Below a tree's root, the guard looks for .roko directories two levels
+# down, and deeper while it has read fewer than KEY_SMALL_TREE directories,
+# so that a small tree is searched whole (key_directories); at most
+# KEY_SEARCH_DIRS directories a level.
 KEY_SEARCH_DIRS = 4096
+KEY_SMALL_TREE = 256
+GREP_KEY_REASON = (
+    "this Grep would read a provider key file (.env, secrets.toml, credentials.json or"
+    " config.toml in a .roko directory): Grep searches hidden files in the tree it is given;"
+    " give it a narrower path, or a glob that leaves .roko out (!.roko)"
+)
 # A key file's name, ending there (.env, not .envrc).
 KEY_NAME = r"(?:\.env|secrets\.toml|credentials\.json|config\.toml)(?![\w-])"
 # In a command's text: a path to a key file, or a glob directly in a .roko
@@ -1434,17 +1444,20 @@ def sensitive_files(top, cwd):
 
 def key_directories(top, cwd):
     """The directories whose .roko holds key files a read of the tree at
-    `top` may reach: top, its subdirectories two levels down (not under a
-    hidden one, at most KEY_SEARCH_DIRS a level), cwd, the directory the
-    Bash call runs in, their ancestors, and HOME."""
-    directories, level = [top], [top]
-    for _ in range(2):
+    `top` may reach: top and its subdirectories, level by level, two levels
+    down and deeper while the guard has read fewer than KEY_SMALL_TREE
+    directories (none under a hidden one, at most KEY_SEARCH_DIRS a level);
+    cwd, the directory the Bash call runs in, and their ancestors; and
+    HOME."""
+    directories, level, read, depth = [top], [top], 0, 0
+    while level:
         below = []
         for directory in level:
-            if len(below) >= KEY_SEARCH_DIRS:
+            if len(below) >= KEY_SEARCH_DIRS or depth >= 2 and read >= KEY_SMALL_TREE:
                 break
             if directory != top and os.path.basename(directory).startswith("."):
                 continue
+            read += 1
             try:
                 with os.scandir(directory) as entries:
                     below += [
@@ -1454,6 +1467,7 @@ def key_directories(top, cwd):
                 continue
         level = below[:KEY_SEARCH_DIRS]
         directories += level
+        depth += 1
     for start in (cwd, BASH_CALL["cwd"]):
         current = os.path.realpath(start) if start else "/"
         while True:
@@ -1544,23 +1558,49 @@ def literal_secret(value):
     return bool(value) and "${" not in value
 
 
-def greps_secret_config(tool_input, cwd):
-    """Whether a Grep reads a roko config file that holds a secret, in the
-    tree it searches (sensitive_files), unless its glob or type leaves the
-    file out."""
+def greps_sensitive(tool_input, cwd):
+    """Why a Grep may not run, if it would read a file agents must not read
+    in the tree it searches (sensitive_files), else None. Claude Code runs
+    rg --hidden with the Grep's type and globs (grep_globs), and rg skips
+    what git ignores."""
     root = os.path.join(cwd, os.path.expanduser(tool_input.get("path") or "."))
-    kind, pattern = tool_input.get("type"), tool_input.get("glob")
     if not os.path.isdir(root):
-        return False
+        return None
+    options = [("--hidden", "")]
+    if isinstance(tool_input.get("type"), str) and tool_input["type"]:
+        options.append(("--type", tool_input["type"]))
+    if isinstance(tool_input.get("glob"), str):
+        options += [("--glob", pattern) for pattern in grep_globs(tool_input["glob"])]
     top = os.path.realpath(root)
-    return any(
-        reason == CONFIG_SECRET_REASON
-        and not (kind and kind not in file_types(os.path.basename(found)) | {"all"})
-        and not (
-            isinstance(pattern, str) and not glob_includes(pattern, os.path.relpath(found, top))
+    for found, reason in sensitive_files(top, cwd):
+        if search_reads(options, "rg", os.path.relpath(found, top)) and not git_ignores(found):
+            return GREP_KEY_REASON if reason == KEY_TREE_REASON else reason
+    return None
+
+
+def grep_globs(text):
+    """The globs Claude Code's Grep passes rg for its glob argument: the
+    words of `text`, each split at its commas unless it holds a brace."""
+    globs = []
+    for word in text.split():
+        braced = "{" in word and "}" in word
+        globs += [word] if braced else [part for part in word.split(",") if part]
+    return globs
+
+
+def git_ignores(path):
+    """Whether git ignores the file at `path` in the repository that holds
+    it, so that rg, which honours .gitignore, skips it. False when git
+    cannot tell, as outside a repository."""
+    directory, name = os.path.split(path)
+    try:
+        result = subprocess.run(
+            ["git", "-C", directory, "check-ignore", "-q", "--", name],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
         )
-        for found, reason in sensitive_files(top, cwd)
-    )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def hook_cwd(data):
@@ -1596,8 +1636,10 @@ def check_file(tool_input, data):
             block(KEY_FILE_REASON)
         if value and is_secret_config_path(value, cwd):
             block(CONFIG_SECRET_REASON)
-    if data.get("tool_name") == "Grep" and greps_secret_config(tool_input, cwd):
-        block(CONFIG_SECRET_REASON)
+    if data.get("tool_name") == "Grep":
+        reason = greps_sensitive(tool_input, cwd)
+        if reason:
+            block(reason)
 
 
 def main():

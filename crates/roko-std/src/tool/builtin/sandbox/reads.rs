@@ -28,9 +28,10 @@
 //! A tree holds a config when its `roko.toml` does, or when it holds the
 //! workspace's (found from the directory upwards), the file `ROKO_CONFIG`
 //! names or the legacy `~/.config/roko/config.toml`. It holds the key files
-//! in its `.roko`, in that of each subdirectory two levels down, and in the
-//! workspace's (in the directory the command or the call runs in, or above
-//! it) and `~/.roko` when it holds those. A command after a literal `cd` or
+//! in its `.roko`, in those of its subdirectories two levels down (deeper in
+//! a small tree, see [`key_directories`]), and in the workspace's (in the
+//! directory the command or the call runs in, or above it) and `~/.roko` when
+//! it holds those. A command after a literal `cd` or
 //! `pushd` is judged where it runs, and braces and globs in a search's
 //! operands are expanded as the shell would. Commands that wrappers (`sudo`,
 //! `timeout`, `xargs`), shells (`sh -c`), `eval` and substitutions run are
@@ -324,9 +325,12 @@ const READERS: &[&str] = &[
 /// Most words a brace expansion, or paths a glob's component, may yield; a
 /// command with more is refused, since the check would miss the rest.
 const EXPANSION_LIMIT: usize = 4096;
-/// Most subdirectories a level in which the check looks for a `.roko`
-/// directory below a tree's root.
+/// Below a tree's root, the check looks for `.roko` directories two levels
+/// down, and deeper while it has read fewer than [`KEY_SMALL_TREE`]
+/// directories, so that a small tree is searched whole; at most
+/// [`KEY_SEARCH_DIRS`] directories a level.
 const KEY_SEARCH_DIRS: usize = 4096;
+const KEY_SMALL_TREE: usize = 256;
 
 /// A program that searches file contents.
 struct Searcher {
@@ -1903,36 +1907,42 @@ fn sensitive_files(top: &Path, cwd: &Path, call_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The directories whose `.roko` holds key files that a read of the tree at
-/// `top` may reach: `top`, its subdirectories two levels down (not under a
-/// hidden one, at most [`KEY_SEARCH_DIRS`] a level), `cwd`, `call_dir`,
-/// their ancestors, and `HOME`.
+/// `top` may reach: `top` and its subdirectories, level by level, two levels
+/// down and deeper while the check has read fewer than [`KEY_SMALL_TREE`]
+/// directories (none under a hidden one, at most [`KEY_SEARCH_DIRS`] a
+/// level); `cwd`, `call_dir` and their ancestors; and `HOME`.
 fn key_directories(top: &Path, cwd: &Path, call_dir: &Path) -> Vec<PathBuf> {
     let mut directories = vec![top.to_path_buf()];
     let mut level = vec![top.to_path_buf()];
-    for _ in 0..2 {
+    let mut read = 0;
+    let mut depth = 0;
+    while !level.is_empty() {
         let mut below = Vec::new();
         for directory in &level {
-            if below.len() >= KEY_SEARCH_DIRS {
+            if below.len() >= KEY_SEARCH_DIRS || (depth >= 2 && read >= KEY_SMALL_TREE) {
                 break;
             }
             let hidden = directory
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with('.'));
-            if directory == top || !hidden {
-                let Ok(entries) = std::fs::read_dir(directory) else {
-                    continue;
-                };
-                below.extend(
-                    entries
-                        .flatten()
-                        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                        .map(|entry| entry.path()),
-                );
+            if directory != top && hidden {
+                continue;
             }
+            read += 1;
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                continue;
+            };
+            below.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .map(|entry| entry.path()),
+            );
         }
         below.truncate(KEY_SEARCH_DIRS);
         directories.extend(below.iter().cloned());
         level = below;
+        depth += 1;
     }
     for start in [cwd, call_dir] {
         let start = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());

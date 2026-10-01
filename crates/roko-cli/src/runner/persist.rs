@@ -799,8 +799,15 @@ fn append_buffered_run_index(
         );
     }
     if let Some(writer) = cache.writers.get_mut(&run_path) {
+        // The per-run index is a second copy of the event log, so it gets the
+        // redaction the global log's writer applies (roko_fs::log_rotation):
+        // agent output can quote a provider key.
+        let scrubbed = match std::str::from_utf8(line).map(roko_core::obs::scrub_secrets_in_jsonl) {
+            Ok(std::borrow::Cow::Owned(text)) => std::borrow::Cow::Owned(text.into_bytes()),
+            _ => std::borrow::Cow::Borrowed(line),
+        };
         writer
-            .write_all(line)
+            .write_all(&scrubbed)
             .with_context(|| format!("buffering run index {}", run_path.display()))?;
         if flush {
             writer

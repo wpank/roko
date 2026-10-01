@@ -57,7 +57,7 @@ use super::state::{PendingApproval, PlanEntry, TaskRowStatus, TuiState};
 use super::tabs::Tab;
 use super::verdicts::VerdictsAggregator;
 use super::views::{self, ViewState};
-use super::ws_client::{AgentStreamClient, StreamChunk};
+use super::ws_client::AgentStreamClient;
 
 pub use event_loop::run;
 
@@ -1318,6 +1318,20 @@ impl App {
         height: u16,
         tabs: &[Tab],
     ) -> Vec<(Tab, String)> {
+        self.render_tabs_to_buffers(width, height, tabs)
+            .into_iter()
+            .map(|(tab, buffer)| (tab, super::screenshot_diff::buffer_to_text(&buffer)))
+            .collect()
+    }
+
+    /// Render the requested tabs like [`Self::render_tabs_to_text`], keeping
+    /// each tab's whole buffer, colours and modifiers included.
+    pub fn render_tabs_to_buffers(
+        &mut self,
+        width: u16,
+        height: u16,
+        tabs: &[Tab],
+    ) -> Vec<(Tab, ratatui::buffer::Buffer)> {
         use ratatui::backend::TestBackend;
 
         if width == 0 || height == 0 {
@@ -1332,23 +1346,7 @@ impl App {
                 let backend = TestBackend::new(width, height);
                 let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
                 match terminal.draw(|frame| self.draw(frame)) {
-                    Ok(_) => {
-                        let buffer = terminal.backend().buffer();
-                        let w = buffer.area.width as usize;
-                        let text = buffer
-                            .content
-                            .chunks(w)
-                            .map(|row| {
-                                row.iter()
-                                    .map(|cell| cell.symbol())
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_string()
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (tab, text)
-                    }
+                    Ok(_) => (tab, terminal.backend().buffer().clone()),
                     Err(e) => {
                         tracing::error!(?tab, error = %e, "tab render failed");
                         // Re-render with a fallback error message so the
@@ -1365,21 +1363,7 @@ impl App {
                                 frame.area(),
                             );
                         });
-                        let buffer = term2.backend().buffer();
-                        let w = buffer.area.width as usize;
-                        let text = buffer
-                            .content
-                            .chunks(w)
-                            .map(|row| {
-                                row.iter()
-                                    .map(|cell| cell.symbol())
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_string()
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (tab, text)
+                        (tab, term2.backend().buffer().clone())
                     }
                 }
             })

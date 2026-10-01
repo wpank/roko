@@ -106,14 +106,12 @@ type EpisodeCompletionHook = Arc<dyn Fn(Episode) + Send + Sync>;
 /// from an [`Episode`]'s gate verdicts.
 struct EpisodeActions {
     actions: Vec<String>,
-    success: bool,
 }
 
 impl EpisodeActions {
     fn from_episode(ep: &Episode) -> Self {
         Self {
             actions: ep.gate_verdicts.iter().map(|v| v.gate.clone()).collect(),
-            success: ep.success,
         }
     }
 }
@@ -121,9 +119,6 @@ impl EpisodeActions {
 impl EpisodeView for EpisodeActions {
     fn actions(&self) -> &[String] {
         &self.actions
-    }
-    fn succeeded(&self) -> bool {
-        self.success
     }
 }
 

@@ -30,6 +30,7 @@ roko-std = { path = "../roko-std" }
 roko-learn = { path = "../roko-learn" }
 roko-dreams = { path = "../roko-dreams" }
 roko-neuro = { path = "../roko-neuro" }
+roko-fs = { path = "../roko-fs" }
 regex = { workspace = true }
 
 [dev-dependencies]

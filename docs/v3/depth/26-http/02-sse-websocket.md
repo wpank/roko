@@ -1,6 +1,6 @@
 # 26.02 -- SSE and WebSocket Protocol
 
-> Depth file for [26-HTTP.md](../../26-HTTP.md).
+> Depth file for [26-HTTP-API.md](../../26-HTTP-API.md).
 
 ---
 

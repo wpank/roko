@@ -1562,7 +1562,10 @@ pub use context::{
     VerifySpec,
 };
 pub use distiller::{DistillationBackend, Distiller};
-pub use episode_completion::spawn_episode_distillation;
+pub use episode_completion::{
+    DISTILLATION_ROLE, DistillationSpend, spawn_episode_distillation,
+    spawn_recorded_episode_distillation,
+};
 #[cfg(feature = "hdc")]
 pub use hdc::ResonancePair;
 pub use knowledge_store::{

@@ -147,10 +147,9 @@ async fn cognitive_loop_loads_and_validates() {
     assert_eq!(graph.node_count(), 7);
 
     // The default registry has all cognitive loop cell types: the legacy
-    // alias names (signal-reader, etc.) delegate to the real cognitive Cell
-    // implementations, so no stubs are needed.
-    let registry = default_registry();
-    let engine = GraphEngine::new(graph, registry);
+    // alias names (signal-reader, etc.) delegate to the cognitive Cell
+    // implementations.
+    let engine = GraphEngine::new(graph.clone(), default_registry());
 
     let issues = engine.validate();
     assert!(
@@ -158,8 +157,15 @@ async fn cognitive_loop_loads_and_validates() {
         "cognitive loop should validate cleanly: {issues:?}"
     );
 
-    // Execute -- the cognitive cells pass input through in their current form.
+    // Its `claude-agent` node builds ActCell, which dispatches nothing yet
+    // (gap-3d5cce), so a production start refuses the loop (bug-91a34e).
     let ctx = roko_graph::CellContext::new();
+    let refused = engine.execute(&ctx).await.expect_err("stub agent cell");
+    assert!(refused.to_string().contains("test-stub"), "{refused}");
+
+    // Execute with stubs allowed -- the cognitive cells pass input through in
+    // their current form.
+    let engine = GraphEngine::new(graph, default_registry()).with_allow_test_stubs(true);
     let output = engine.execute(&ctx).await.unwrap();
     assert!(output.success);
     assert_eq!(output.node_results.len(), 7);

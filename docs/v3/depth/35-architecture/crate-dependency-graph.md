@@ -223,7 +223,7 @@ roko-serve -> roko-core, roko-agent, roko-agent-server, roko-chain,
               roko-compose, roko-daimon, roko-dreams, roko-execution,
               roko-fs, roko-gate, roko-gateway, roko-graph, roko-learn,
               roko-neuro, roko-plugin, roko-primitives, roko-runtime, roko-std
-    HTTP control plane. ~376 canonical REST routes (~421 incl. aliases) +
+    HTTP control plane. REST routes (counts in tools/http_route_inventory.snapshot.json) +
     SSE + WebSocket on port 6677. StateHub push-based dashboard. PeriodicObserver
     for telemetry sampling. Relay subscription execution. Arena/meta-agent services.
     Depends on 18 workspace crates.

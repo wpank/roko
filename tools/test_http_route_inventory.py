@@ -278,5 +278,50 @@ class TestSnapshotRoundTrip(unittest.TestCase):
         self.assertEqual(restored["total_registrations"], snapshot["total_registrations"])
 
 
+class TestSnapshotCheck(unittest.TestCase):
+    """--check-snapshot compares the route lists, not only their counts."""
+
+    @staticmethod
+    def _result(regs):
+        aliases, conflicts = inv.classify(regs, {})
+        return inv.InventoryResult(
+            registrations=regs, unparsed=[], conflicts=conflicts, aliases=aliases,
+        )
+
+    def _check(self, stored_regs, current_regs):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_file = Path(tmp) / "snapshot.json"
+            snapshot_file.write_text(json.dumps(inv.build_snapshot(self._result(stored_regs))))
+            return inv.check_snapshot(self._result(current_regs), snapshot_file)
+
+    def test_moved_lines_pass(self):
+        stored = [inv.RouteRegistration("a.rs", 10, "routes", "/x", "GET", "list_x")]
+        current = [inv.RouteRegistration("a.rs", 42, "routes", "/x", "GET", "list_x")]
+        self.assertEqual(self._check(stored, current), [])
+
+    def test_a_swapped_route_fails_although_the_counts_match(self):
+        stored = [
+            inv.RouteRegistration("a.rs", 1, "routes", "/x", "GET", "list_x"),
+            inv.RouteRegistration("a.rs", 2, "routes", "/y", "GET", "list_y"),
+        ]
+        current = [
+            inv.RouteRegistration("a.rs", 1, "routes", "/x", "GET", "list_x"),
+            inv.RouteRegistration("a.rs", 2, "routes", "/z", "POST", "create_z"),
+        ]
+        self.assertEqual(
+            self._check(stored, current),
+            [
+                "route added: POST /z -> create_z (a.rs::routes); run --refresh to update",
+                "route removed: GET /y -> list_y (a.rs::routes); run --refresh to update",
+            ],
+        )
+
+    def test_a_missing_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = inv.check_snapshot(self._result([]), Path(tmp) / "missing.json")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("snapshot file not found", errors[0])
+
+
 if __name__ == "__main__":
     unittest.main()

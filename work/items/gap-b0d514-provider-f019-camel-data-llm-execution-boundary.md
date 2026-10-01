@@ -148,6 +148,14 @@ LLM failure blocks the content instead of passing it through.
   be read and a behaviour test.
 - Touches `crates/roko-agent/src/tool_loop/mod.rs`, which many providers share. Do not run in parallel with other
   tool-loop work.
+- 2026-10-01 (wk-cfg): gap-7a3527 (`5e31a5e14` on `work/bug-ccfa0d`) removed the `[agent.data_llm]` key: the
+  `AgentConfig::data_llm` field, its schema sentinel and its inert-settings entry are gone, because the key looked
+  like a safety control and did nothing. `DataLlmConfig` and `DataLlmRouter` stay. When this item wires
+  `DataLlmRouter`, it must re-add `data_llm: Option<DataLlmConfig>` to `AgentConfig` (with a schema sentinel in
+  `build_schema_tree`, as before), and drop the `"agent.data_llm"` entry from `REMOVED_CONFIG_KEYS` in
+  `crates/roko-core/src/config/loader.rs`. While that entry exists, loading drops the key with a "was removed"
+  warning. The verify's first clause greps `graph_task_dispatch.rs`, but the inert list moved to
+  `graph_task_dispatch/inert_settings.rs`.
 
 ## Original notes
 

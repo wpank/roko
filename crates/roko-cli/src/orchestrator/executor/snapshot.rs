@@ -1,7 +1,7 @@
 //! Crash-recovery snapshot for the executor.
 //!
-//! [`ExecutorSnapshot`] captures the full mutable state of a
-//! [`ParallelExecutor`](super::ParallelExecutor) so it can be serialized
+//! [`ExecutorSnapshot`] captures the full mutable state of the executor
+//! (`executor.json`) so it can be serialized
 //! to disk and restored after a crash or restart. The snapshot is designed
 //! to be written atomically (write-to-temp + rename) by the persistence
 //! layer.

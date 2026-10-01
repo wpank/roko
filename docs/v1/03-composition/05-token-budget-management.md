@@ -243,7 +243,7 @@ The general principle: replace every LLM call you can with a deterministic opera
 
 **Selective Context** [Li et al., EMNLP 2023]. Information-theoretic approach to identifying and removing redundant content. 50% context reduction, 36% less memory usage, 32% faster inference with only 0.023 BERTscore drop. The principle — select context that maximizes mutual information with the task — is what Roko's priority-based dropping approximates.
 
-**CLEAR Framework** [2025]. Five evaluation dimensions: Cost, Latency, Efficacy, Assurance, Reliability. CLEAR's most important finding: optimizing for accuracy alone produces systems 4.4-10.8× more expensive than cost-aware alternatives. The budget system explicitly co-optimizes cost and quality.
+**CLEAR** [Mehta 2025, arXiv:2511.14136]. Five evaluation dimensions: Cost, Latency, Efficacy, Assurance, Reliability. CLEAR's most important finding: optimizing for accuracy alone yields agents 4.4-10.8× more expensive than cost-aware alternatives with comparable performance. The budget system explicitly co-optimizes cost and quality.
 
 **Sufficient Context** [Joren et al., ICLR 2025]. The most striking RAG finding: Gemma went from 10.2% incorrect with no context to 66.1% incorrect with insufficient context. Adding bad context made the model 6× worse. The budget system's min_tokens guard implements this principle: if a section cannot be included with sufficient fidelity, skip it entirely rather than including a truncated version that might mislead.
 

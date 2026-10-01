@@ -210,7 +210,7 @@ intervention.
 Self-improvement in AI systems is not a binary property. It spans a spectrum
 from simple parameter tuning to open-ended architecture search. This section
 taxonomizes where Roko sits on that spectrum, drawing on the RSI Survey
-(Teixeira et al. 2025, arXiv:2607.07663) and the broader literature on
+(Chen et al. 2026, arXiv:2607.07663) and the broader literature on
 recursive self-improvement.
 
 > **Cross-references:** [depth/31-self-hosting/01-rsi-taxonomy.md](depth/31-self-hosting/01-rsi-taxonomy.md)
@@ -583,7 +583,7 @@ are no orphan loops. Seven KPIs measure whether compounding is occurring:
 
 ### 5.3 Darwin Godel Machine (DGM)
 
-The Darwin Godel Machine (Lange et al. 2025, arXiv:2505.22954) extends
+The Darwin Godel Machine (Zhang et al. 2025, arXiv:2505.22954) extends
 Schmidhuber's original Godel Machine with archive-based open-ended evolution.
 Instead of requiring self-referential proofs of improvement (which are
 intractable for non-trivial systems), DGM maintains a population of candidate
@@ -606,7 +606,7 @@ own verification pipeline.
 
 ### 5.4 AI4AI-Bench: Evaluating Learning Algorithm Modification
 
-AI4AI-Bench (Clancy et al. 2026, arXiv:2608.20318) provides the first
+AI4AI-Bench (Chi et al. 2026, arXiv:2608.20318) provides the first
 systematic benchmark for evaluating whether AI systems can improve their own
 learning algorithms. The benchmark tests three capabilities:
 

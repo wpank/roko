@@ -55,21 +55,21 @@ $PY $PL census --manifest ~/vb-private/PL03-0001/feature.json --workdir ~/vb-wor
 
 - `materialize` renders `base/` with the seed's surface renames (the package name, drawn from the public surface
   stream), makes the workdir a task repo with a pristine bundle, and writes `description.md` and the manifest
-  `feature.json` (`vb.feature/1`, `feature.schema.json`) to the private directory. The private directory must lie
-  outside the workdir: the manifest records the canary.
+  `feature.json` to the private directory. The manifest is `vb.feature/1` (`schema/feature.schema.json`), which a
+  PL instance uses in place of `vb.task/1`. The private directory must lie outside the workdir, because the
+  manifest records the canary.
 - `census` exports the workdir as it is on disk. It records edited or deleted visible tests, skip markers added to
   them and canaries, restores the visible tests from the pristine base, and runs them. Then it adds the hidden suite
   to the export (never to the workdir) and runs it. Suites run in a child `python -I`, so a planted `unittest.py`
   or `sitecustomize.py` cannot take over the runner.
 - The verdict: `passed` (the hidden suite), `checks` (one per hidden test, with its requirement ids), `visible`,
   `gaming`, `canary_hits`, `leak_suspected`, `vf` and `verified`.
-  - `vf` is the census side of S09 §4.9's verified feature: the hidden suite passes and the visible tests were
-    neither edited nor skipped. The driver adds the arm's own "done", and a canary hit makes the run
-    `leak_suspected`, which is excluded and counted.
-  - `verified` is stricter, and it is what verifier CI demands of a reference: the visible tests pass too, with no
-    gaming flag and no canary. The visible tests include the base's own tests, so they catch regressions the hidden
-    suite does not cover. S09 §4.9 has no visible condition, because it assumes the arms share no visible checks.
-    They do share some here: both arms get the same base repo and its tests.
+  - `vf` is the census side of S09 §4.9's verified feature (v1.3). It needs the hidden suite to pass, the base's
+    visible tests to pass on the clean copy, and no edit or skip marker in the visible tests. Both arms get the
+    same base repo and its tests: the base package's own tests and a smoke test for the feature. The hidden suite
+    does not re-test the base's existing behaviour, so the visible tests are what catch a regression. The driver
+    adds the arm's own "done". A canary hit makes the run `leak_suspected`, which is excluded and counted.
+  - `verified` is `vf` with no canary hit. Verifier CI demands it of every reference.
 
 ## Verifier CI
 
@@ -81,18 +81,17 @@ checks.
 
 ## Run records
 
-Each `feature.toml` has a `[run_record]` table: the `task` values of the feature's `vb.run_record/1` rows. The
-manifest carries them as `run_record_task`, with the instance id. A test builds a full row from the schema's example
-for both of S09 §4.9's arms, `roko_plan` and `fd_claude`, and validates it.
+Each `feature.toml` has a `[run_record]` table with the `task` values of the feature's `vb.run_record/1` rows.
+`slicekit.run_record_task` adds `family = "PL"`, the instance id and `ladder = null`, and the manifest carries the
+result as `run_record_task`. The schema tests (`schema/test_schemas.py`) build full rows for both of S09 §4.9's
+arms, `roko_plan` and `fd_claude`, and validate them.
 
 - `family = "PL"`. S08 §4.7 calls the task set `plan_slice`, and S09's lock entry is `exploratory.PL`.
 - `spec_variant = "precise"`. The description is the precise spec: it states every requirement the hidden suite
   checks, and there are no vague or refined variants.
-- `ladder = 5` is a **placeholder**. The schema's `ladder` is required and closed (1–5), and a feature has no
-  difficulty level. 5 is the level whose S08 §4.4 `k_files` band, 5–8 files with ordered subgoals, holds every
-  feature (5–7 files). The other knobs sit at ℓ1–ℓ2 (documented conventions, main-path visible tests, a small
-  repo). No ℓ analysis may read PL rows: filter them out by `task.family` or by experiment (`E-PL`). Allowing
-  `null` in the schema's ladder enum would remove the placeholder.
+- `ladder = null`. A feature has no difficulty level. `vb.run_record/1` allows `null` for such rows, and
+  `schema/feature.schema.json` requires it in the manifest, so no ℓ analysis can mistake a PL row for a level.
+  `slicekit.py check` rejects a `[run_record]` that sets a ladder.
 
 ## Known gaps
 
@@ -104,4 +103,3 @@ for both of S09 §4.9's arms, `roko_plan` and `fd_claude`, and validates it.
   files. Only isolation and canaries keep them from the agent, and a model that has read this tree could pass them.
 - **No planted gaming solution** per feature. The generic detectors (test edits, skip markers, canaries) apply.
 - **One surface knob.** A seed renames the package, and nothing else varies.
-- **A placeholder ladder** in every run record (see "Run records").

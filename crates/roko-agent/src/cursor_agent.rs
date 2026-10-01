@@ -48,7 +48,7 @@ use crate::safety::SafetyLayer;
 use crate::streaming::parse_sse_line;
 use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
-use crate::usage::{Usage, UsageObservation, UsageSource};
+use crate::usage::{UsageObservation, UsageSource};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -405,7 +405,7 @@ impl CursorAgent {
                 "message": message,
                 "finish_reason": finish_reason_to_wire(&response.finish_reason),
             }],
-            "usage": usage_to_wire(&response.usage),
+            "usage": crate::translate::openai::usage_to_wire(&response.usage),
         });
         if let Some(body) = json.as_object_mut() {
             if let Some(response_id) = metadata.response_id {
@@ -438,7 +438,8 @@ impl CursorAgent {
             reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::Unknown,
-            model: Some(self.model.clone()),
+            // No response named a served model (bug-2379dc).
+            model: None,
             wall_ms,
         })
     }
@@ -560,7 +561,9 @@ impl Agent for CursorAgent {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let observation = parsed.usage.into_observation(
             wall_ms,
-            parsed.model.clone().or_else(|| Some(self.model.clone())),
+            // The model the response named, never the configured slug
+            // (bug-2379dc).
+            parsed.model.clone(),
         );
 
         let assistant_text = self.safety.scrub_text(&assistant_text);
@@ -611,17 +614,6 @@ fn finish_reason_to_wire(finish_reason: &crate::chat_types::FinishReason) -> Str
         crate::chat_types::FinishReason::ContentFilter => "content_filter".to_string(),
         crate::chat_types::FinishReason::Error(reason) => reason.clone(),
     }
-}
-
-fn usage_to_wire(usage: &Usage) -> Value {
-    serde_json::json!({
-        "prompt_tokens": usage.input_tokens,
-        "completion_tokens": usage.output_tokens,
-        "total_tokens": usage.input_tokens + usage.output_tokens,
-        "prompt_tokens_details": {
-            "cached_tokens": usage.cache_read_tokens,
-        },
-    })
 }
 
 fn extract_session(response: &Value) -> SessionState {

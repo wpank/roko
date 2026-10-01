@@ -16,9 +16,9 @@ use std::sync::Arc;
 use crate::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
-    build_tool_dispatcher_with_audit, openai_compat::tool_registry_for_options,
-    tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    build_provider_tool_dispatcher, openai_compat::tool_registry_for_options,
+    tool_loop_max_iterations_for_options, with_tool_observability,
 };
 use crate::tool_loop::ToolLoop;
 use crate::tool_loop::agent_wrapper::ToolLoopAgent;
@@ -56,11 +56,15 @@ impl ProviderAdapter for CerebrasAdapter {
 
         if model.supports_tools {
             let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-            let dispatcher =
-                build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
-
             // Strict translator for constrained decoding on small models.
             let translator: Arc<dyn Translator> = Arc::new(StrictOpenAiTranslator);
+            let dispatcher = build_provider_tool_dispatcher(
+                registry,
+                resolver,
+                options,
+                model,
+                translator.format(),
+            );
 
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
@@ -68,7 +72,7 @@ impl ProviderAdapter for CerebrasAdapter {
             let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-                .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+                .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
                 .with_context_token_limit(
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
@@ -89,6 +93,7 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)
                 .with_name(agent_name)
+                .with_env_passthrough(options.env_passthrough.clone())
                 .with_system_prompt(system_prompt);
             if let Some(ref dir) = options.working_dir {
                 agent = agent.with_worktree_path(dir.clone());
@@ -98,6 +103,10 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             }
             if let Some(ref token) = options.cancel_token {
                 agent = agent.with_cancel_token(Arc::clone(token));
+            }
+            agent = with_tool_observability(agent, options);
+            if let Some(max_turns) = options.max_turns {
+                agent = agent.with_turn_cap(max_turns);
             }
 
             return Ok(Box::new(agent));
@@ -110,6 +119,10 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

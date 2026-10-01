@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::task::TaskTier;
+
 // ---- [budget] ------------------------------------------------------------
 
 /// Spend / token budget settings.
@@ -42,9 +44,12 @@ pub struct BudgetConfig {
     /// Default: `5.0` ($5.00 per task across all retries).
     #[serde(default = "default_max_task_retry_usd")]
     pub max_task_retry_usd: f32,
-    /// Per-calendar-day cost ceiling in USD, enforced across all plan runs.
-    /// `0.0` means unlimited. When the day's total spend (read from the
-    /// costs log) reaches this ceiling, new dispatches are blocked.
+    /// Per-calendar-day (UTC) cost ceiling in USD, across every run and
+    /// command that records to `.roko/learn/costs.jsonl`. `0.0` means
+    /// unlimited. Once the day's spend reaches it, `roko plan run` starts no
+    /// further task and refuses provider dispatches. A call whose cost was
+    /// never priced makes the day's spend unknown, which counts as reaching
+    /// it. `--budget-override` only warns; `--no-budget` disables it.
     #[serde(default)]
     pub max_daily_usd: f32,
     /// Token budget for prompt composition.
@@ -53,11 +58,12 @@ pub struct BudgetConfig {
     /// Complexity multipliers applied to [`Self::max_task_usd`].
     #[serde(default)]
     pub tier_multipliers: TaskBudgetMultipliers,
-    /// P3-34: Per-agent cumulative lifetime cost ceiling in USD.
+    /// P3-34: Per-agent cumulative lifetime cost ceiling in USD (`0.0`, the
+    /// default, means unlimited).
     ///
-    /// `0.0` means unlimited (default). When a single agent's cumulative
-    /// cost exceeds this limit, an `AgentBudgetExhausted` event is emitted
-    /// and the agent is drained.
+    /// Not enforced: no production code reads it. A `roko plan run` attempt
+    /// is a fresh provider session, bounded by `max_task_usd` and
+    /// `max_task_retry_usd`.
     #[serde(default)]
     pub max_agent_lifetime_usd: f32,
 }
@@ -131,36 +137,45 @@ impl Default for BudgetConfig {
     }
 }
 
+impl TaskBudgetMultipliers {
+    /// Multiplier for a task tier.
+    #[must_use]
+    pub const fn for_tier(&self, tier: TaskTier) -> f32 {
+        match tier {
+            TaskTier::Mechanical => self.mechanical,
+            TaskTier::Focused => self.standard,
+            TaskTier::Integrative => self.complex,
+            TaskTier::Architectural => self.expert,
+        }
+    }
+}
+
 impl BudgetConfig {
     /// Return the effective task ceiling for a plan tier/model hint.
     ///
-    /// Unknown or omitted tiers fall back to the model family and then to the
-    /// standard multiplier. A zero base remains unlimited.
+    /// The tier is read by [`TaskTier::parse`]. An omitted tier (empty or
+    /// `"unknown"`) falls back to the model family; any other unknown tier
+    /// uses the focused (standard) multiplier. A zero base remains unlimited.
     #[must_use]
     pub fn task_limit_usd(&self, tier: &str, model_hint: Option<&str>) -> f64 {
         if self.max_task_usd <= 0.0 {
             return 0.0;
         }
-        let normalized = tier.trim().to_ascii_lowercase();
-        let inferred = if normalized.is_empty() || normalized == "unknown" {
+        let tier = TaskTier::parse(tier).unwrap_or_else(|| {
+            let omitted = tier.trim().is_empty() || tier.trim().eq_ignore_ascii_case("unknown");
+            if !omitted {
+                return TaskTier::Focused;
+            }
             let model = model_hint.unwrap_or_default().to_ascii_lowercase();
             if model.contains("haiku") || model.contains("mini") {
-                "mechanical"
+                TaskTier::Mechanical
             } else if model.contains("opus") {
-                "complex"
+                TaskTier::Integrative
             } else {
-                "standard"
+                TaskTier::Focused
             }
-        } else {
-            normalized.as_str()
-        };
-        let multiplier = match inferred {
-            "mechanical" => self.tier_multipliers.mechanical,
-            "integrative" | "complex" => self.tier_multipliers.complex,
-            "architectural" | "expert" => self.tier_multipliers.expert,
-            _ => self.tier_multipliers.standard,
-        };
-        f64::from(self.max_task_usd) * f64::from(multiplier)
+        });
+        f64::from(self.max_task_usd) * f64::from(self.tier_multipliers.for_tier(tier))
     }
 }
 
@@ -186,6 +201,16 @@ mod tests {
         );
         assert_eq!(
             budget.task_limit_usd("unknown", Some("claude-sonnet-4-6")),
+            2.0
+        );
+
+        // Tier aliases read through `TaskTier::parse`; a misspelt tier is
+        // focused, whatever the model hint.
+        assert!((budget.task_limit_usd(" T0 ", None) - 0.4).abs() < 1e-6);
+        assert_eq!(budget.task_limit_usd("complex", None), 6.0);
+        assert_eq!(budget.task_limit_usd("Premium", None), 10.0);
+        assert_eq!(
+            budget.task_limit_usd("mechancial", Some("claude-haiku-4-5")),
             2.0
         );
     }

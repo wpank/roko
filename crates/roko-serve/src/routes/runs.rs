@@ -19,6 +19,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::{self, StreamExt};
+use roko_core::dashboard_snapshot::{
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+};
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1333,25 +1337,55 @@ fn is_gate_event(kind: &str) -> bool {
 fn is_task_terminal(kind: &str) -> bool {
     matches!(
         kind,
-        "task.attempt.completed" | "task_completed" | "task_failed"
+        "task.attempt.completed" | "task_completed" | "task_failed" | "task_skipped"
     )
 }
 
+/// A task's status from one of its records. A dashboard `task_completed`
+/// names the outcome its task settled with and reports that outcome's class
+/// (bug-54c729), so a task that completed unverified, was skipped or found
+/// its work already there is not reported as failed. A runner attempt record
+/// passes only with a `passed` outcome.
 fn terminal_status(value: &Value) -> Value {
     let kind = event_type(value).unwrap_or_default();
     if kind.contains("cancel") {
         return json!("cancelled");
     }
+    if kind == "task_skipped" {
+        return json!("skipped");
+    }
     let data = event_data(value);
+    if kind == "task_completed"
+        && let Some(outcome) = value
+            .get("outcome")
+            .or_else(|| data.get("outcome"))
+            .and_then(Value::as_str)
+    {
+        return json!(outcome_status(outcome));
+    }
     if data.get("passed").and_then(Value::as_bool) == Some(true)
         || data.get("success").and_then(Value::as_bool) == Some(true)
-        || value.get("outcome").and_then(Value::as_str) == Some("passed")
+        || value.get("outcome").and_then(Value::as_str) == Some(TASK_OUTCOME_PASSED)
     {
         json!("passed")
     } else if is_task_terminal(kind) {
         json!("failed")
     } else {
         json!("observed")
+    }
+}
+
+/// The status a dashboard task outcome reports: its class, named as the
+/// dashboard's outcomes name it.
+fn outcome_status(outcome: &str) -> &'static str {
+    match classify_task_outcome(outcome) {
+        TaskOutcomeClass::Passed => TASK_OUTCOME_PASSED,
+        TaskOutcomeClass::Failed => "failed",
+        TaskOutcomeClass::AcceptedWithFailures => TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+        TaskOutcomeClass::AlreadySatisfied => TASK_OUTCOME_ALREADY_SATISFIED,
+        TaskOutcomeClass::Unverified => TASK_OUTCOME_UNVERIFIED,
+        TaskOutcomeClass::Skipped => "skipped",
+        TaskOutcomeClass::Blocked => TASK_OUTCOME_BLOCKED,
     }
 }
 
@@ -1945,5 +1979,133 @@ mod tests {
         assert_eq!(summary["metrics"]["tasks"], 1);
         assert_eq!(summary["metrics"]["gates_passed"], 1);
         assert_eq!(summary["metrics"]["duration_ms"], 10);
+    }
+
+    /// The statuses `GET /runs/{run_id}/tasks` reports for a run's tasks.
+    async fn task_statuses(state: &Arc<AppState>, run_id: &str) -> BTreeMap<String, String> {
+        let Json(body) = get_run_tasks(State(Arc::clone(state)), Path(run_id.to_string()))
+            .await
+            .unwrap();
+        body["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| {
+                (
+                    task["task_id"].as_str().unwrap().to_string(),
+                    task["status"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn write_rows(path: &FsPath, rows: &[Value]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// bug-54c729: a task that settled as unverified, skipped or already
+    /// satisfied is reported as that, not as failed. A runner attempt record
+    /// and a runtime event that says only whether the task passed keep their
+    /// passed or failed status.
+    #[tokio::test]
+    async fn runs_route_keeps_unverified_and_skipped_statuses() {
+        use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope};
+
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+
+        // Task records that name their outcome, as dashboard events do.
+        let outcomes = [
+            ("t-passed", "passed"),
+            ("t-unverified", "unverified"),
+            ("t-skipped", "skipped"),
+            ("t-condition", "condition-skipped"),
+            ("t-satisfied", "already_satisfied"),
+            ("t-accepted", "accepted_with_failures"),
+            ("t-failed", "failed"),
+        ];
+        let mut rows: Vec<Value> = outcomes
+            .iter()
+            .map(|(task, outcome)| {
+                json!({"type":"task_completed","run_id":"r1","plan_id":"p1","task_id":task,"outcome":outcome})
+            })
+            .collect();
+        rows.push(json!({"type":"task.attempt.completed","run_id":"r1","plan_id":"p1","task_id":"t-attempt","attempt":1,"outcome":"timed_out"}));
+        write_rows(
+            &roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), "r1").unwrap(),
+            &rows,
+        );
+        assert_eq!(
+            task_statuses(&state, "r1").await,
+            BTreeMap::from(
+                [
+                    ("t-passed", "passed"),
+                    ("t-unverified", "unverified"),
+                    ("t-skipped", "skipped"),
+                    ("t-condition", "skipped"),
+                    ("t-satisfied", "already_satisfied"),
+                    ("t-accepted", "accepted_with_failures"),
+                    ("t-failed", "failed"),
+                    ("t-attempt", "failed"),
+                ]
+                .map(|(task, status)| (task.to_string(), status.to_string()))
+            )
+        );
+
+        // Runtime events say whether a task passed, or that it was skipped.
+        let events = [
+            RuntimeEvent::TaskCompleted {
+                run_id: "r2".into(),
+                plan_id: "p1".into(),
+                task_id: "t-ok".into(),
+                passed: true,
+                duration_ms: 1,
+                outcome: None,
+            },
+            RuntimeEvent::TaskCompleted {
+                run_id: "r2".into(),
+                plan_id: "p1".into(),
+                task_id: "t-bad".into(),
+                passed: false,
+                duration_ms: 1,
+                outcome: None,
+            },
+            RuntimeEvent::TaskSkipped {
+                task_id: "t-never".into(),
+                reason: "its dependency failed".into(),
+            },
+        ];
+        let rows: Vec<Value> = events
+            .into_iter()
+            .zip(0..)
+            .map(|(event, seq)| {
+                serde_json::to_value(RuntimeEventEnvelope::new("r2", seq, "test", event)).unwrap()
+            })
+            .collect();
+        write_rows(&state.runtime_event_logger.run_path("r2").unwrap(), &rows);
+        assert_eq!(
+            task_statuses(&state, "r2").await,
+            BTreeMap::from(
+                [
+                    ("t-ok", "passed"),
+                    ("t-bad", "failed"),
+                    ("t-never", "skipped")
+                ]
+                .map(|(task, status)| (task.to_string(), status.to_string()))
+            )
+        );
     }
 }

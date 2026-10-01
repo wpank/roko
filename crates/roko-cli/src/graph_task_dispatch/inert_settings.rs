@@ -22,9 +22,13 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
     const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
                             adaptive_min_retries and adaptive_max_retries (task retry budgets); \
                             its gate EMA uses a fixed alpha";
-    const NOT_ENFORCED: &str = "not enforced by the Graph engine";
     const NO_READER: &str = "no production code reads it";
+    const NO_LONG_LIVED_AGENT: &str = "no production code reads it: each plan-run attempt is a \
+                                       fresh provider session, bounded by budget.max_task_usd and \
+                                       budget.max_task_retry_usd";
     const DISPLAY_ONLY: &str = "shown by config views; no routing decision reads it";
+    const LADDER: &str = "deprecated: no routing decision reads it; [routing.ladder] picks \
+                          plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
 
@@ -64,11 +68,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.custom_rungs != default_gates.custom_rungs,
-            "gates.rungs",
-            LEGACY_GATES,
-        ),
-        (
             gates.max_rung != default_gates.max_rung,
             "gates.max_rung",
             LEGACY_GATES,
@@ -94,15 +93,10 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             ADAPTIVE,
         ),
         (
-            config.budget.max_daily_usd.to_bits() != defaults.budget.max_daily_usd.to_bits(),
-            "budget.max_daily_usd",
-            NOT_ENFORCED,
-        ),
-        (
             config.budget.max_agent_lifetime_usd.to_bits()
                 != defaults.budget.max_agent_lifetime_usd.to_bits(),
             "budget.max_agent_lifetime_usd",
-            NOT_ENFORCED,
+            NO_LONG_LIVED_AGENT,
         ),
         (
             config.learning.replan_max_per_plan != defaults.learning.replan_max_per_plan,
@@ -128,12 +122,12 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             routing.standard_task_model != default_routing.standard_task_model,
             "routing.standard_task_model",
-            DISPLAY_ONLY,
+            LADDER,
         ),
         (
             routing.complex_task_model != default_routing.complex_task_model,
             "routing.complex_task_model",
-            DISPLAY_ONLY,
+            LADDER,
         ),
         (
             routing.context_strategy != default_routing.context_strategy,
@@ -238,8 +232,17 @@ mod tests {
         // Wired keys are never reported.
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
+        config.budget.max_daily_usd = 20.0;
         config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
+        // Every plan task runs the workspace's required rungs.
+        config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            timeout_secs: 300,
+            required: true,
+            parallel_with: Vec::new(),
+        }];
         let keys = graph_engine_inert_settings(&config)
             .iter()
             .map(|setting| setting.key)
@@ -251,6 +254,19 @@ mod tests {
             graph_engine_inert_settings(&config)
                 .iter()
                 .any(|setting| setting.key == "pipeline.focused")
+        );
+
+        // No agent outlives one attempt: the lifetime cap is not a plan-run
+        // control (bug-ae28ac).
+        config.budget.max_agent_lifetime_usd = 10.0;
+        let lifetime = graph_engine_inert_settings(&config)
+            .into_iter()
+            .find(|setting| setting.key == "budget.max_agent_lifetime_usd")
+            .expect("the lifetime cap is reported");
+        assert!(
+            lifetime.reason.contains("fresh provider session"),
+            "{}",
+            lifetime.reason
         );
     }
 }

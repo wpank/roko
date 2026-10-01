@@ -253,13 +253,15 @@ impl FeedbackSink for KnowledgeIngestionSink {
 
     async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
         let candidate = match event {
+            // Only a pass is a success candidate: an attempt without a
+            // learning label (unverified, provider or harness failures)
+            // teaches nothing.
             FeedbackEvent::TaskCompleted {
                 plan_id,
                 task_id,
                 outcome,
-                succeeded: true,
                 ..
-            } => KnowledgeCandidate {
+            } if event.learning_success() == Some(true) => KnowledgeCandidate {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
                 model: outcome.model.clone(),
@@ -302,6 +304,8 @@ impl FeedbackSink for KnowledgeIngestionSink {
 mod tests {
     use super::*;
     use crate::dispatch::{AgentOutcome, ModelChoiceSource};
+    use crate::runtime_feedback::settled_as;
+    use roko_learn::telemetry::AttemptOutcome;
     use tempfile::tempdir;
 
     fn outcome() -> AgentOutcome {
@@ -328,6 +332,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -355,6 +360,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: settled_as(AttemptOutcome::GateFailed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -381,6 +387,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "plan-x".into(),
             task_id: "task-y".into(),
             outcome: outcome(),
@@ -406,6 +413,44 @@ mod tests {
         assert_eq!(entry.confirmation_count, 1);
         assert_eq!(entry.distinct_contexts, ["plan-x:task-y"]);
         assert_eq!(entry.tier, roko_neuro::KnowledgeTier::Working);
+    }
+
+    /// A success candidate needs a pass: an attempt whose provider call
+    /// succeeded but carries no learning label (unverified, force-accepted,
+    /// or no settled record) writes and ingests nothing.
+    #[tokio::test]
+    async fn knowledge_candidates_skip_attempts_without_a_learning_label() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kc.jsonl");
+        let store = roko_neuro::KnowledgeStore::new(dir.path().join("knowledge.jsonl"));
+        let sink = KnowledgeIngestionSink::at(&path)
+            .with_ingestor(Arc::new(NeuroKnowledgeIngestor::new(store.clone())));
+        for settled in [
+            settled_as(AttemptOutcome::Unverified, false),
+            settled_as(AttemptOutcome::ForcedAccept, false),
+            None,
+        ] {
+            sink.on_event(&FeedbackEvent::TaskCompleted {
+                turns: 0,
+                failure_reason: None,
+                settled,
+                plan_id: "p".into(),
+                task_id: "t".into(),
+                outcome: outcome(),
+                model_source: ModelChoiceSource::Router,
+                succeeded: true,
+                routing_context: None,
+                prompt_text: None,
+                cache_read_tokens: 0,
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: String::new(),
+            })
+            .await
+            .unwrap();
+        }
+        assert!(!path.exists() || tokio::fs::read(&path).await.unwrap().is_empty());
+        assert!(store.read_all().expect("read entries").is_empty());
     }
 
     #[tokio::test]

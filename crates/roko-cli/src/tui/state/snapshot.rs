@@ -44,6 +44,10 @@ impl TuiState {
                             s.current_phase.clone()
                         };
                     }
+                    // A finished run shows how it ended (bug-f7f3bb).
+                    crate::runner::status_file::RunnerStatusRead::Finished(s) => {
+                        self.orchestrator_state = s.phase.clone();
+                    }
                     crate::runner::status_file::RunnerStatusRead::Stale(_) => {
                         self.orchestrator_state = String::from("stale/offline");
                     }
@@ -574,6 +578,9 @@ impl TuiState {
             .iter()
             .map(|task| {
                 let status = snapshot_task_status(task);
+                // A blocked task's row names the failed task that blocked it
+                // (gap-f59fe9).
+                let depends_on: Vec<String> = task.blocked_by.iter().cloned().collect();
                 tasks_by_plan
                     .entry(task.plan_id.clone())
                     .or_default()
@@ -586,6 +593,7 @@ impl TuiState {
                         },
                         status,
                         agent_id: None,
+                        depends_on: depends_on.clone(),
                         ..Default::default()
                     });
                 TaskRow {
@@ -597,7 +605,7 @@ impl TuiState {
                     },
                     status,
                     elapsed_secs: prev_task_elapsed.get(&task.task_id).copied().unwrap_or(0.0),
-                    depends_on: Vec::new(),
+                    depends_on,
                     acceptance_text: None,
                     verify_command: None,
                     files: Vec::new(),
@@ -1348,6 +1356,10 @@ fn snapshot_task_status(task: &roko_core::dashboard_snapshot::TaskState) -> Task
         Some(TaskOutcomeClass::Failed) => TaskStatus::Failed,
         Some(TaskOutcomeClass::AcceptedWithFailures) => TaskStatus::AcceptedWithFailures,
         Some(TaskOutcomeClass::Passed) => TaskStatus::Done,
+        Some(TaskOutcomeClass::AlreadySatisfied) => TaskStatus::AlreadySatisfied,
+        Some(TaskOutcomeClass::Unverified) => TaskStatus::Unverified,
+        Some(TaskOutcomeClass::Skipped) => TaskStatus::Skipped,
+        Some(TaskOutcomeClass::Blocked) => TaskStatus::Blocked,
         None => TaskStatus::from(task.phase.as_str()),
     }
 }

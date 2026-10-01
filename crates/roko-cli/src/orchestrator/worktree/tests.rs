@@ -10,13 +10,15 @@ use super::creation_journal::{
     CreationMarker, CreationPhase, creation_record_name, ensure_cleanup_safe, unlink_claim_file,
 };
 use super::git_ops::{
-    isolate_worktree_config, read_gitdir, validate_id, worktree_list_contains_path,
+    RetainedOwnership, isolate_worktree_config, read_gitdir, validate_id,
+    worktree_list_contains_path,
 };
 use super::{
-    CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK, RUNTIME_SHUTDOWN_WAIT,
-    TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier, WorktreeConfig,
-    WorktreeError, WorktreeHealth, WorktreeManager, format_attempt_branch_name,
-    format_attempt_worktree_id, format_branch_name, validate_workspace_file_kinds_with,
+    AttemptAcceptance, CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK,
+    RUNTIME_SHUTDOWN_WAIT, TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier,
+    WorktreeConfig, WorktreeError, WorktreeHealth, WorktreeManager, clear_stale_index_lock,
+    format_attempt_branch_name, format_attempt_worktree_id, format_branch_name,
+    validate_workspace_file_kinds_with,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -623,10 +625,144 @@ fn unproved_create_cleanup_permanently_withholds_mutation_owner() {
     });
     drop(runtime);
 
-    assert!(manager.operations.try_lock().is_err());
+    // The worker hands the reservation back, retaining the repository's
+    // ownership in it (bug-53475e).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let state = loop {
+        if let Ok(state) = manager.operations.try_lock() {
+            break state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never handed its reservation back"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(state.retained.is_some(), "{:?}", state.retained);
+    drop(state);
     assert!(manager.path_for("cleanup-unproved").exists());
     assert!(manager.creation_claim_path("cleanup-unproved").exists());
     assert_eq!(manager.active_count(), 0);
+}
+
+/// bug-109b5a: before dispatch, a stale `index.lock` in the git directory a
+/// `.git` file's `gitdir:` points at is removed, from the checkout or any
+/// directory below it; a fresh one, which a live git process may hold, is
+/// kept, as is one younger than the caller's threshold. A plain `.git`
+/// directory works the same way.
+#[test]
+fn stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection() {
+    let tmp = TempDir::new().unwrap();
+    let checkout = tmp.path().join("checkout");
+    let git_dir = tmp.path().join("repo.git/worktrees/checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(
+        checkout.join(".git"),
+        "gitdir: ../repo.git/worktrees/checkout\n",
+    )
+    .unwrap();
+    let place_lock = |lock: &Path, age: Duration| {
+        std::fs::File::create(lock)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    };
+    let lock = git_dir.join("index.lock");
+    let worktree_threshold = Duration::from_secs(60);
+
+    place_lock(&lock, Duration::from_secs(5));
+    assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
+    assert_eq!(clear_stale_index_lock(&checkout, Duration::ZERO), None);
+    assert!(
+        lock.exists(),
+        "a fresh lock may belong to a live git process"
+    );
+
+    place_lock(&lock, Duration::from_secs(120));
+    assert_eq!(
+        clear_stale_index_lock(&checkout, Duration::from_secs(600)),
+        None
+    );
+    assert!(
+        lock.exists(),
+        "younger than the shared checkout's threshold"
+    );
+    let removed = clear_stale_index_lock(&checkout.join("src"), worktree_threshold);
+    assert!(
+        removed.is_some(),
+        "the stale lock behind gitdir: is removed"
+    );
+    assert!(!lock.exists());
+    assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
+
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir_all(plain.join(".git")).unwrap();
+    let plain_lock = plain.join(".git").join("index.lock");
+    place_lock(&plain_lock, Duration::from_secs(120));
+    assert_eq!(
+        clear_stale_index_lock(&plain, worktree_threshold),
+        Some(plain_lock.clone())
+    );
+    assert!(!plain_lock.exists());
+}
+
+/// bug-53475e: while ownership retained by an unproved cleanup names a
+/// live git process, or none, the next mutation is refused at once with
+/// what to do, instead of waiting forever; once the named process is gone,
+/// the next mutation releases the ownership and runs.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn unproved_cleanup_fails_fast_instead_of_blocking_later_operations() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build caller runtime");
+    let retain = |pids: Vec<u32>| {
+        let mut state = manager.operations.try_lock().expect("reservation free");
+        state.retained = Some(RetainedOwnership {
+            pids,
+            since: std::time::SystemTime::now(),
+            repository_lock: None,
+        });
+    };
+    let prune = || {
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), manager.prune()).await
+            })
+            .expect("the mutation answers at once")
+    };
+
+    retain(Vec::new());
+    let started = std::time::Instant::now();
+    let error = prune().expect_err("no named process can be proved gone");
+    assert!(
+        matches!(error, WorktreeError::OwnershipRetained { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("restart roko"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    let mut stray = StdCommand::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn sleep");
+    retain(vec![stray.id()]);
+    let error = prune().expect_err("the stray git process still runs");
+    assert!(
+        error.to_string().contains(&stray.id().to_string()),
+        "{error}"
+    );
+    stray.kill().expect("kill the stray process");
+    stray.wait().expect("reap the stray process");
+
+    prune().expect("the mutation runs once the process is gone");
+    let state = manager.operations.try_lock().expect("reservation free");
+    assert!(state.retained.is_none(), "{:?}", state.retained);
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1632,6 +1768,45 @@ fn repository_flock_serializes_a_separate_process() {
     assert!(child.wait().unwrap().success());
 }
 
+/// bug-53475e: a process kept waiting on another's repository mutation lock
+/// fails after a bounded wait, naming the holder, instead of blocking forever.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn a_contended_repository_lock_times_out_naming_its_holder() {
+    let Some((tmp, manager)) = make_manager() else {
+        return;
+    };
+    let _owner = manager.acquire_repository_mutation_lock().unwrap();
+    let outcome = tmp.path().join("contender-outcome");
+    let mut child = StdCommand::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "orchestrator::worktree::tests::repository_lock_process_helper",
+            "--nocapture",
+        ])
+        .env("ROKO_TEST_REPO_ROOT", &manager.config.repo_root)
+        .env(
+            "ROKO_TEST_WORKTREES_ROOT",
+            tmp.path().join("contender-worktrees"),
+        )
+        .env("ROKO_TEST_LOCK_ACTION", "contend")
+        .env("ROKO_TEST_REPOSITORY_LOCK_WAIT_MS", "300")
+        .env(
+            "ROKO_TEST_LOCK_STARTED",
+            tmp.path().join("contender-started"),
+        )
+        .env("ROKO_TEST_LOCK_ACQUIRED", &outcome)
+        .spawn()
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    let error = std::fs::read_to_string(&outcome).unwrap();
+    assert!(error.contains("worktree mutations are on hold"), "{error}");
+    assert!(
+        error.contains(&format!("pid {} ", std::process::id())),
+        "{error}"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_root_create_serializes_a_subprocess_prune() {
@@ -1696,6 +1871,13 @@ fn repository_lock_process_helper() {
         idle_ttl: Duration::from_secs(3600),
     });
     std::fs::write(started, b"started").unwrap();
+    if std::env::var("ROKO_TEST_LOCK_ACTION").as_deref() == Ok("contend") {
+        let error = manager
+            .acquire_repository_mutation_lock()
+            .expect_err("the parent holds the lock throughout");
+        std::fs::write(acquired, error.to_string()).unwrap();
+        return;
+    }
     if std::env::var("ROKO_TEST_LOCK_ACTION").as_deref() == Ok("prune") {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1796,7 +1978,10 @@ async fn accepted_attempt_is_the_immutable_base_for_the_next_task() {
                 .success()
         );
     }
-    let accepted = manager.accept_attempt("plan", "first", 1).await.unwrap();
+    let accepted = manager
+        .accept_attempt("plan", "first", 1, &acceptance_in("run-1"))
+        .await
+        .unwrap();
     std::fs::write(first.path.join("late.txt"), b"must not propagate\n").unwrap();
     for args in [
         vec!["add", "late.txt"],
@@ -1829,6 +2014,367 @@ async fn accepted_attempt_is_the_immutable_base_for_the_next_task() {
     );
     assert_eq!(manager.accepted_for_plan("plan"), Some(accepted));
     assert_ne!(first.path, next.path);
+}
+
+/// bug-056b40: a resumed run's attempts start from the plan branch its
+/// earlier process accepted work onto, and re-attach the checkouts that
+/// process kept. Another run continues neither.
+#[tokio::test]
+async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
+    let Some((_tmp, first_process)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_process.config.worktrees_root.clone();
+    let repo = first_process.config.repo_root.clone();
+    let base = git_in(&repo, &["rev-parse", "main"]);
+    assert_eq!(
+        first_process.begin_plan_run("plan", "run-1").await.unwrap(),
+        None
+    );
+    let first = first_process
+        .create_for_attempt("plan", "first", 0)
+        .await
+        .unwrap();
+    std::fs::write(first.path.join("accepted.txt"), b"first\n").unwrap();
+    let tip = first_process
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap()
+        .commit_oid;
+    let kept = first_process
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"in progress\n").unwrap();
+
+    // A new process of the same run.
+    let resumed = manager_with_worktrees_root(&first_process, worktrees_root.clone());
+    assert_eq!(
+        resumed.begin_plan_run("plan", "run-1").await.unwrap(),
+        Some(tip.clone())
+    );
+    let next = resumed
+        .create_for_attempt("plan", "third", 0)
+        .await
+        .unwrap();
+    assert_eq!(git_in(&next.path, &["rev-parse", "HEAD"]), tip);
+    assert!(next.path.join("accepted.txt").exists());
+    let reattached = resumed
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .expect("the run's kept checkout is re-attached");
+    assert_eq!(reattached.path, kept.path);
+    assert_eq!(
+        std::fs::read_to_string(reattached.path.join("half-done.txt")).unwrap(),
+        "in progress\n"
+    );
+
+    // Another run starts from the configured base and does not take over
+    // the checkouts run-1 kept.
+    let other_run = manager_with_worktrees_root(&first_process, worktrees_root);
+    assert_eq!(
+        other_run.begin_plan_run("plan", "run-2").await.unwrap(),
+        None
+    );
+    let fresh = other_run
+        .create_for_attempt("plan", "fourth", 0)
+        .await
+        .unwrap();
+    assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
+    assert!(
+        other_run
+            .create_for_attempt("plan", "second", 0)
+            .await
+            .is_err()
+    );
+}
+
+fn acceptance_in(run_id: &str) -> AttemptAcceptance {
+    AttemptAcceptance {
+        run_id: run_id.to_string(),
+        attempt_key: format!("{run_id}:plan:task:1"),
+        verdict: "passed".to_string(),
+        title: "Accept the attempt".to_string(),
+    }
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let output = StdCommand::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// An attempt of `task` in `plan` that left `file` with `contents`,
+/// uncommitted, in its own checkout.
+async fn attempt_with_file(
+    manager: &WorktreeManager,
+    task: &str,
+    file: &str,
+    contents: &str,
+) -> super::WorktreeHandle {
+    let handle = manager.create_for_attempt("plan", task, 0).await.unwrap();
+    std::fs::write(handle.path.join(file), contents).unwrap();
+    handle
+}
+
+/// gap-3b5361: accepting commits each attempt's own changes and folds
+/// siblings that started from the same base into one plan branch, without
+/// touching the operator's checkout.
+#[tokio::test]
+async fn accept_folds_sibling_attempts_into_the_plan_branch() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let main = git_in(&repo, &["rev-parse", "main"]);
+    let first = attempt_with_file(&manager, "first", "first.txt", "first\n").await;
+    let sibling = attempt_with_file(&manager, "sibling", "sibling.txt", "sibling\n").await;
+
+    let one = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    let two = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    // The first fast-forwards the new plan branch; the sibling is merged in.
+    assert_eq!(one.commit_oid, one.attempt_commit);
+    let plan = format_branch_name("plan");
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), two.commit_oid);
+    let parents = git_in(
+        &repo,
+        &["rev-list", "--parents", "-n", "1", &two.commit_oid],
+    );
+    assert_eq!(
+        parents,
+        format!(
+            "{} {} {}",
+            two.commit_oid, one.commit_oid, two.attempt_commit
+        )
+    );
+    let files = git_in(&repo, &["ls-tree", "--name-only", &plan]);
+    assert!(
+        files.contains("first.txt") && files.contains("sibling.txt"),
+        "{files}"
+    );
+    // Each attempt's work is committed on its own branch, and its checkout
+    // is clean.
+    for handle in [&first, &sibling] {
+        assert_eq!(git_in(&handle.path, &["status", "--porcelain"]), "");
+    }
+    let body = git_in(&repo, &["log", "-1", "--format=%B", &one.attempt_commit]);
+    assert!(body.contains("Roko-Run: run-1"), "{body}");
+    assert!(body.contains("Roko-Attempt: run-1:plan:task:1"), "{body}");
+    // The operator's checkout never moved.
+    assert_eq!(git_in(&repo, &["rev-parse", "HEAD"]), main);
+    assert_eq!(git_in(&repo, &["symbolic-ref", "--short", "HEAD"]), "main");
+    assert_eq!(git_in(&repo, &["status", "--porcelain"]), "");
+    // Later attempts start from the plan branch.
+    assert_eq!(
+        manager.accepted_for_plan("plan").unwrap().commit_oid,
+        two.commit_oid
+    );
+    let next = manager.create_for_attempt("plan", "next", 0).await.unwrap();
+    assert!(next.path.join("first.txt").exists() && next.path.join("sibling.txt").exists());
+}
+
+/// gap-415c54: once its plan is delivered, an accepted attempt's checkout is
+/// removed and its branch kept, unless branch deletion is asked for. An
+/// attempt that was never accepted keeps its checkout and its work.
+#[tokio::test]
+async fn release_accepted_removes_checkouts_and_keeps_branches_unless_asked() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let accepted = attempt_with_file(&manager, "first", "first.txt", "first\n").await;
+    let failed = attempt_with_file(&manager, "failed", "failed.txt", "failed\n").await;
+    let first = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    let released = manager.release_accepted("plan", false).await.unwrap();
+    assert_eq!(released.removed_checkouts, vec![accepted.path.clone()]);
+    assert_eq!(released.kept_branches, vec![accepted.branch.clone()]);
+    assert!(released.deleted_branches.is_empty());
+    assert!(!accepted.path.exists());
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &accepted.branch]),
+        first.attempt_commit
+    );
+    assert!(failed.path.join("failed.txt").exists());
+    // Nothing is left to release.
+    assert_eq!(
+        manager.release_accepted("plan", false).await.unwrap(),
+        Default::default()
+    );
+
+    // Asked to, it deletes the branch as well; the plan branch still holds
+    // the attempt's commit.
+    let other = manager
+        .create_for_attempt("other", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(other.path.join("other.txt"), "other\n").unwrap();
+    let accepted_other = manager
+        .accept_attempt("other", "task", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    let released = manager.release_accepted("other", true).await.unwrap();
+    assert_eq!(released.deleted_branches, vec![other.branch.clone()]);
+    assert!(released.kept_branches.is_empty());
+    assert!(!other.path.exists());
+    assert_eq!(
+        git_in(
+            &repo,
+            &["for-each-ref", &format!("refs/heads/{}", other.branch)]
+        ),
+        ""
+    );
+    let plan_tip = git_in(&repo, &["rev-parse", &format_branch_name("other")]);
+    assert_eq!(plan_tip, accepted_other.commit_oid);
+    assert_eq!(
+        git_in(&repo, &["show", &format!("{plan_tip}:other.txt")]),
+        "other"
+    );
+}
+
+/// gap-3b5361: a sibling whose work conflicts with what the plan branch
+/// already holds is refused, and no ref moves.
+#[tokio::test]
+async fn accept_refuses_a_conflicting_sibling_and_moves_no_ref() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    attempt_with_file(&manager, "first", "same.txt", "first\n").await;
+    attempt_with_file(&manager, "sibling", "same.txt", "sibling\n").await;
+    let one = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    let error = manager
+        .accept_attempt("plan", "sibling", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, WorktreeError::Conflict { paths, .. } if paths.contains("same.txt")),
+        "{error}"
+    );
+    let plan = format_branch_name("plan");
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), one.commit_oid);
+    assert_eq!(manager.accepted_for_plan("plan").unwrap(), one);
+}
+
+/// gap-3b5361: a plan branch checked out anywhere is never moved.
+#[tokio::test]
+async fn accept_leaves_a_checked_out_plan_branch_alone() {
+    let Some((tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let plan = format_branch_name("plan");
+    git_in(&repo, &["branch", &plan, "main"]);
+    let checkout = tmp.path().join("operator-plan-checkout");
+    git_in(
+        &repo,
+        &["worktree", "add", &checkout.display().to_string(), &plan],
+    );
+    let tip = git_in(&repo, &["rev-parse", &plan]);
+    attempt_with_file(&manager, "first", "first.txt", "first\n").await;
+
+    let error = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("checked out"), "{error}");
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), tip);
+    assert!(!checkout.join("first.txt").exists());
+}
+
+/// gap-3b5361: a later run does not build on a plan branch another run
+/// left: the old tip is kept under `refs/roko/plan-archive/`, and the plan
+/// branch starts afresh. A resumed run (same run id) continues it.
+#[tokio::test]
+async fn accept_starts_afresh_from_another_runs_plan_branch() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    attempt_with_file(&manager, "old", "old.txt", "old\n").await;
+    let old = manager
+        .accept_attempt("plan", "old", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    // A new process: a manager with no acceptances of its own yet.
+    let later = manager_with_worktrees_root(&manager, manager.config.worktrees_root.join("later"));
+    attempt_with_file(&later, "new", "new.txt", "new\n").await;
+    let new = later
+        .accept_attempt("plan", "new", 0, &acceptance_in("run-2"))
+        .await
+        .unwrap();
+
+    let plan = format_branch_name("plan");
+    assert_eq!(new.commit_oid, new.attempt_commit);
+    assert_eq!(git_in(&repo, &["rev-parse", &plan]), new.commit_oid);
+    let archive = format!("refs/roko/plan-archive/plan/{}", old.commit_oid);
+    assert_eq!(git_in(&repo, &["rev-parse", &archive]), old.commit_oid);
+
+    // The same run, resumed in yet another process, continues the branch.
+    let resumed =
+        manager_with_worktrees_root(&manager, manager.config.worktrees_root.join("resumed"));
+    attempt_with_file(&resumed, "more", "more.txt", "more\n").await;
+    let more = resumed
+        .accept_attempt("plan", "more", 0, &acceptance_in("run-2"))
+        .await
+        .unwrap();
+    let files = git_in(&repo, &["ls-tree", "--name-only", &more.commit_oid]);
+    assert!(
+        files.contains("new.txt") && files.contains("more.txt"),
+        "{files}"
+    );
+    assert!(!files.contains("old.txt"), "{files}");
+}
+
+/// gap-3b5361: the config copies roko puts in an attempt's checkout are not
+/// part of the attempt's work.
+#[tokio::test]
+async fn accept_leaves_roko_config_copies_out_of_the_commit() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    std::fs::create_dir_all(repo.join(".cursor")).unwrap();
+    std::fs::write(repo.join(".cursor").join("mcp.json"), "{}\n").unwrap();
+    let handle = attempt_with_file(&manager, "first", "first.txt", "first\n").await;
+    assert!(handle.path.join(".cursor").join("mcp.json").exists());
+
+    let accepted = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    let files = git_in(
+        &repo,
+        &["ls-tree", "-r", "--name-only", &accepted.commit_oid],
+    );
+    assert!(files.contains("first.txt"), "{files}");
+    assert!(!files.contains(".cursor"), "{files}");
 }
 
 #[tokio::test]

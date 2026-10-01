@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use roko_core::obs::LogScrubber;
-use roko_core::tool::{ToolCall, ToolResult};
+use roko_core::tool::{CorrelationEnvelope, ToolCall, ToolResult};
 use roko_fs::tool_audit::{ScrubAuditAdapter, ToolAuditLog};
 use roko_learn::provider_health::ProviderHealthRegistry;
 use tempfile::TempDir;
@@ -118,11 +118,15 @@ async fn check_scrub_audit_adapter(
         "fs.read_file",
         serde_json::json!({ "path": format!("/data/{CANARY_SECRET}/file.txt") }),
     );
-    let _ = adapter.record_admit(&call).await;
+    let _ = adapter
+        .record_admit(&call, &CorrelationEnvelope::empty())
+        .await;
 
     // Record a result with the canary in the text — must be scrubbed.
     let result = ToolResult::text(format!("file content: {CANARY_SECRET}"));
-    let _ = adapter.record_result(&call, &result).await;
+    let _ = adapter
+        .record_result(&call, &result, &CorrelationEnvelope::empty())
+        .await;
 
     let raw = match std::fs::read_to_string(&audit_path) {
         Ok(s) => s,

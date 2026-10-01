@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::agent::default_true;
+use crate::task::TaskTier;
 
 // ---- [gates] -------------------------------------------------------------
 
@@ -57,6 +58,22 @@ const fn default_compile_concurrency() -> usize {
 
 const fn default_sibling_settle_secs() -> u64 {
     600
+}
+
+/// Output-token cap of a Graph attempt whose role `[gates] max_output_tokens`
+/// does not list: about five times the largest attempt recorded so far.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
+
+/// What a Graph attempt's edits to paths outside its task's `files` do
+/// (`[gates] diff_scope`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffScope {
+    /// Log them; the attempt goes on to its verify steps.
+    #[default]
+    Record,
+    /// Fail the attempt before its verify steps.
+    Enforce,
 }
 
 // ---- [gates.adaptive] defaults -------------------------------------------
@@ -160,8 +177,34 @@ pub struct GatesConfig {
     /// editing the same working tree waits for them to finish their current
     /// attempt before re-running once; only the re-run counts. `0` disables
     /// the wait, so every failure counts at once. Default: 600.
+    ///
+    /// It also bounds two waits in a shared working tree. A verify step
+    /// waits for siblings mid-edit on what it reads before it runs. An
+    /// attempt waits for a sibling's verify step that reads its files before
+    /// it starts editing.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// Whether a Graph verify step that runs cargo tests, and still fails
+    /// after sibling settlement, is run again on the plan run's start commit
+    /// to tell tests that failed before the run from new failures. A step
+    /// that fails only on the former passes, and its attempt is recorded as
+    /// `passed_with_preexisting_failures`. FAST mode never runs the baseline.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub baseline_filter: bool,
+    /// Runaway-output guard for Graph task attempts: the most output tokens
+    /// an attempt may report before it fails as a red flag, without running
+    /// its verify steps. Keyed by task role, with `default` for roles not
+    /// listed, e.g. `{ default = 150000, reviewer = 20000 }`; `0` turns the
+    /// cap off. Roles neither lists get [`DEFAULT_MAX_OUTPUT_TOKENS`].
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub max_output_tokens: HashMap<String, u64>,
+    /// What a Graph attempt's edits to paths outside its task's `files` do:
+    /// `record` (the default) logs them, `enforce` fails the attempt before
+    /// its verify steps. Edits that weaken tests or touch verify scripts,
+    /// pinned acceptance tests or gate config fail it either way.
+    #[serde(default)]
+    pub diff_scope: DiffScope,
     /// Extra roko environment variables that gate commands (task `verify`
     /// steps, build and test gates) may inherit: exact names or `PREFIX*`
     /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
@@ -183,6 +226,8 @@ pub struct GatesConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
+    /// `roko run` and every `roko plan run` task run the required ones as
+    /// verify steps ([`Self::required_rungs`]).
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
     /// Optional ceiling rung index. Rungs above this index are skipped.
@@ -254,6 +299,9 @@ impl Default for GatesConfig {
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            baseline_filter: default_true(),
+            max_output_tokens: HashMap::new(),
+            diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
@@ -269,10 +317,33 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// Output-token cap of an attempt of `role` (`max_output_tokens`), or
+    /// `None` when the cap is off.
+    #[must_use]
+    pub fn max_output_tokens_for(&self, role: &str) -> Option<u64> {
+        let cap = self
+            .max_output_tokens
+            .get(role)
+            .or_else(|| self.max_output_tokens.get("default"))
+            .copied()
+            .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+        (cap > 0).then_some(cap)
+    }
+
     /// Returns true when `[[gates.rungs]]` custom gate configuration is present.
     #[must_use]
     pub fn has_custom_rungs(&self) -> bool {
         !self.custom_rungs.is_empty()
+    }
+
+    /// The declared rungs every change must pass: `[[gates.rungs]]` entries
+    /// that are `required` and have a command. Empty when the workspace
+    /// declares none; the built-in defaults of [`Self::effective_rungs`] are
+    /// not declared rungs.
+    pub fn required_rungs(&self) -> impl Iterator<Item = &GateRungConfig> {
+        self.custom_rungs
+            .iter()
+            .filter(|rung| rung.required && !rung.command.trim().is_empty())
     }
 
     /// Returns custom rungs if configured, otherwise built-in defaults (compile, lint, test).
@@ -521,6 +592,21 @@ fn default_pipeline_template() -> String {
     "standard".to_string()
 }
 
+/// Whether dispatch sets turn caps and attempt timeouts from each tier's
+/// history (`[pipeline] learned_limits`, gap-5a6e01).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedLimitsMode {
+    /// Use the configured limits, and read no history.
+    Off,
+    /// Use the configured limits, and log each tier's learned ones beside
+    /// them.
+    #[default]
+    Shadow,
+    /// Use a tier's learned limits once it has enough history.
+    On,
+}
+
 /// Complexity-to-pipeline mapping.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -530,6 +616,12 @@ pub struct PipelineConfig {
     /// Defaults to "standard".
     #[serde(default = "default_pipeline_template")]
     pub default_template: String,
+    /// Turn caps and attempt timeouts from the p95 of each tier's passed
+    /// attempts (`roko_learn::tier_limits`): `off`, `shadow` (log them next
+    /// to the configured limits; the default) or `on` (use them). An
+    /// authored `timeout_secs` always wins.
+    #[serde(default)]
+    pub learned_limits: LearnedLimitsMode,
     /// Mechanical tasks: skip strategist and reviewers.
     #[serde(
         default = "default_mechanical_pipeline",
@@ -557,25 +649,23 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// Resolve the pipeline settings for a named complexity tier.
+    /// Resolve the pipeline settings for a task tier.
     #[must_use]
-    pub fn for_tier(&self, tier: &str) -> PipelineBandConfig {
+    pub fn for_tier(&self, tier: TaskTier) -> PipelineBandConfig {
         match tier {
-            "mechanical" => self.mechanical,
-            "focused" => self.focused,
-            "integrative" => self.integrative,
-            "architectural" => self.architectural,
-            _ => self.focused,
+            TaskTier::Mechanical => self.mechanical,
+            TaskTier::Focused => self.focused,
+            TaskTier::Integrative => self.integrative,
+            TaskTier::Architectural => self.architectural,
         }
     }
 
-    /// Agent turn cap for a task tier (case-insensitive). Unknown tiers use
-    /// the `focused` band, so the cap is never unbounded.
+    /// Agent turn cap for a task tier, never below one turn. A task whose
+    /// tier is unknown reads as focused (`TaskDef::tier_class`), so the cap
+    /// is never unbounded.
     #[must_use]
-    pub fn max_turns_for_tier(&self, tier: &str) -> u32 {
-        self.for_tier(tier.trim().to_ascii_lowercase().as_str())
-            .max_turns
-            .max(1)
+    pub fn max_turns_for_tier(&self, tier: TaskTier) -> u32 {
+        self.for_tier(tier).max_turns.max(1)
     }
 }
 
@@ -583,6 +673,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             default_template: default_pipeline_template(),
+            learned_limits: LearnedLimitsMode::default(),
             mechanical: PipelineBandConfig::mechanical(),
             focused: PipelineBandConfig::focused(),
             integrative: PipelineBandConfig::integrative(),
@@ -594,6 +685,7 @@ impl Default for PipelineConfig {
 #[cfg(test)]
 mod tests {
     use super::super::schema::RokoConfig;
+    use crate::task::TaskTier;
 
     #[test]
     fn gates_rungs_deserializes_as_custom_rungs() {
@@ -624,15 +716,53 @@ required = true
     }
 
     #[test]
+    fn required_rungs_are_the_declared_required_rungs_with_a_command() {
+        let default = RokoConfig::default();
+        assert_eq!(default.gates.effective_rungs().len(), 3);
+        assert_eq!(
+            default.gates.required_rungs().count(),
+            0,
+            "built-in defaults are not declared rungs"
+        );
+
+        let cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.rungs]]
+name = "bench"
+command = "cargo bench"
+required = false
+
+[[gates.rungs]]
+name = "blank"
+command = "  "
+"#,
+        )
+        .expect("config parses");
+        let names: Vec<&str> = cfg
+            .gates
+            .required_rungs()
+            .map(|rung| rung.name.as_str())
+            .collect();
+        assert_eq!(names, ["compile"]);
+    }
+
+    #[test]
     fn pipeline_max_turns_defaults_are_bounded_per_tier() {
         let pipeline = super::PipelineConfig::default();
-        assert_eq!(pipeline.max_turns_for_tier("mechanical"), 40);
-        assert_eq!(pipeline.max_turns_for_tier("focused"), 60);
-        assert_eq!(pipeline.max_turns_for_tier("integrative"), 90);
-        assert_eq!(pipeline.max_turns_for_tier("Architectural"), 120);
-        // Unknown and empty tiers fall back to the focused band, never unbounded.
-        assert_eq!(pipeline.max_turns_for_tier("trivial"), 60);
-        assert_eq!(pipeline.max_turns_for_tier(""), 60);
+        let turns =
+            |tier: &str| pipeline.max_turns_for_tier(TaskTier::parse(tier).unwrap_or_default());
+        assert_eq!(turns("mechanical"), 40);
+        assert_eq!(turns("trivial"), 40, "an alias of mechanical");
+        assert_eq!(turns("focused"), 60);
+        assert_eq!(turns("integrative"), 90);
+        assert_eq!(turns("Architectural"), 120);
+        // Unknown and empty tiers read as focused, never unbounded.
+        assert_eq!(turns("mechancial"), 60);
+        assert_eq!(turns(""), 60);
     }
 
     #[test]
@@ -648,18 +778,37 @@ max_turns = 0
         )
         .expect("config parses");
 
-        assert_eq!(cfg.pipeline.max_turns_for_tier("integrative"), 45);
+        assert_eq!(cfg.pipeline.max_turns_for_tier(TaskTier::Integrative), 45);
         assert!(
             cfg.pipeline.integrative.strategist,
             "unset keys keep defaults"
         );
         assert_eq!(cfg.pipeline.integrative.max_iterations, 2);
         assert_eq!(
-            cfg.pipeline.max_turns_for_tier("focused"),
+            cfg.pipeline.max_turns_for_tier(TaskTier::Focused),
             1,
             "zero is raised to one turn"
         );
-        assert_eq!(cfg.pipeline.max_turns_for_tier("architectural"), 120);
+        assert_eq!(
+            cfg.pipeline.max_turns_for_tier(TaskTier::Architectural),
+            120
+        );
+    }
+
+    #[test]
+    fn learned_limits_default_to_shadow_and_parse() {
+        use super::LearnedLimitsMode;
+
+        let defaults = super::PipelineConfig::default();
+        assert_eq!(defaults.learned_limits, LearnedLimitsMode::Shadow);
+        let cfg =
+            RokoConfig::from_toml("[pipeline]\nlearned_limits = \"on\"\n").expect("config parses");
+        assert_eq!(cfg.pipeline.learned_limits, LearnedLimitsMode::On);
+        assert_eq!(
+            cfg.pipeline.focused, defaults.focused,
+            "bands keep defaults"
+        );
+        assert!(RokoConfig::from_toml("[pipeline]\nlearned_limits = \"sometimes\"\n").is_err());
     }
 
     #[test]
@@ -668,5 +817,33 @@ max_turns = 0
         let cfg =
             RokoConfig::from_toml("[gates]\nwrite_eval_artifacts = true\n").expect("config parses");
         assert!(cfg.gates.write_eval_artifacts);
+    }
+
+    #[test]
+    fn output_token_caps_fall_back_from_role_to_default_to_builtin() {
+        let builtin = super::GatesConfig::default();
+        assert_eq!(
+            builtin.max_output_tokens_for("implementer"),
+            Some(super::DEFAULT_MAX_OUTPUT_TOKENS)
+        );
+
+        let cfg = RokoConfig::from_toml(
+            "[gates.max_output_tokens]\ndefault = 5000\nreviewer = 800\nscribe = 0\n",
+        )
+        .expect("config parses");
+        assert_eq!(cfg.gates.max_output_tokens_for("reviewer"), Some(800));
+        assert_eq!(cfg.gates.max_output_tokens_for("implementer"), Some(5000));
+        assert_eq!(cfg.gates.max_output_tokens_for("scribe"), None, "0 is off");
+    }
+
+    #[test]
+    fn diff_scope_records_by_default_and_parses_enforce() {
+        assert_eq!(
+            super::GatesConfig::default().diff_scope,
+            super::DiffScope::Record
+        );
+        let cfg = RokoConfig::from_toml("[gates]\ndiff_scope = \"enforce\"\n").expect("parses");
+        assert_eq!(cfg.gates.diff_scope, super::DiffScope::Enforce);
+        assert!(RokoConfig::from_toml("[gates]\ndiff_scope = \"strict\"\n").is_err());
     }
 }

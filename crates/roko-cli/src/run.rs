@@ -345,6 +345,115 @@ pub fn workflow_enabled_gate_names(gates: &[GateConfig]) -> Vec<String> {
         .collect()
 }
 
+/// Budget admission for `roko run`, checked before anything is dispatched.
+///
+/// Two guards mirror the plan runner so `roko run` respects the same spend
+/// ceilings that `roko plan run` enforces:
+///
+/// 1. Plan ceiling as a daily guard (`max_plan_usd`): read today's total
+///    from the costs JSONL log; reject the dispatch if today's accumulated
+///    spend already meets or exceeds the plan ceiling.
+/// 2. Turn ceiling (`max_turn_usd`): load the learned `BudgetPredictor` and
+///    compare the predicted token cost against the per-turn USD cap. The
+///    predictor provides a best-effort estimate; if no history is available
+///    the fallback token count is used. A conservative average price of
+///    $15 / million tokens is applied (sonnet-class output side).
+///
+/// A cap of `0.0` means no cap, as in the core `[budget]` section, and skips
+/// its guard. Both checks are soft-fail on I/O errors (best-effort).
+///
+/// # Errors
+///
+/// Fails when today's spend has reached `max_plan_usd`, or when the
+/// predicted turn cost exceeds `max_turn_usd`.
+pub async fn check_budget_admission(workdir: &Path, config: &Config) -> Result<()> {
+    let learn_dir = workdir.join(".roko").join("learn");
+    let budget = &config.budget;
+
+    // Guard 1: plan ceiling as a daily spend guard.
+    let max_plan = budget.max_plan_usd;
+    if max_plan > 0.0 {
+        let costs_path = learn_dir.join("costs.jsonl");
+        let costs_log = roko_learn::costs_log::CostsLog::at(&costs_path);
+        match costs_log.cost_today().await {
+            Ok(today_usd) if today_usd >= max_plan => {
+                bail!(
+                    "daily budget exhausted: spent ${today_usd:.4} of ${max_plan:.2} today \
+                     (max_plan_usd = {max_plan}). \
+                     Increase [budget].max_plan_usd in roko.toml or wait until tomorrow."
+                );
+            }
+            Ok(today_usd) => {
+                tracing::debug!(
+                    today_usd,
+                    max_plan_usd = max_plan,
+                    "daily budget admission: ok"
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("costs log not found; skipping daily budget check");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not read costs log for daily budget check; proceeding"
+                );
+            }
+        }
+    }
+
+    // Guard 2: per-turn ceiling via BudgetPredictor.
+    let max_turn = budget.max_turn_usd;
+    if max_turn > 0.0 {
+        // Load the predictor. When no budget-predictor.json exists yet,
+        // calibrate from efficiency.jsonl so historical cost data is used
+        // even on a fresh workspace (P2-LRN-2).
+        let predictor = match roko_compose::budget_predictor::load_or_calibrate(&learn_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not load or calibrate budget predictor; using defaults"
+                );
+                roko_compose::BudgetPredictor::new()
+            }
+        };
+
+        // Derive task features from config: role, complexity, domain.
+        let role = if config.prompt.role.trim().is_empty() {
+            "workflow".to_string()
+        } else {
+            config.prompt.role.trim().to_string()
+        };
+        let features = roko_compose::TaskFeatures::new(role, "standard", "code");
+        let predicted_tokens = predictor.predict(&features);
+
+        // Conservative price: $15 / million tokens (sonnet output tier).
+        // This errs on the side of caution so the cap is enforced before
+        // committing to a potentially over-budget dispatch.
+        const USD_PER_TOKEN: f64 = 15.0 / 1_000_000.0;
+        #[allow(clippy::cast_precision_loss)]
+        let predicted_usd = predicted_tokens as f64 * USD_PER_TOKEN;
+
+        if predicted_usd > max_turn {
+            bail!(
+                "predicted turn cost ${predicted_usd:.4} exceeds max_turn_usd ${max_turn:.4} \
+                 (estimated {predicted_tokens} tokens at $15/MTok). \
+                 Increase [budget].max_turn_usd in roko.toml or use a simpler prompt."
+            );
+        }
+
+        tracing::debug!(
+            predicted_tokens,
+            predicted_usd,
+            max_turn_usd = max_turn,
+            "turn budget admission: ok"
+        );
+    }
+
+    Ok(())
+}
+
 /// A prompt to execute through the Graph engine (see [`run_prompt`]).
 pub struct PromptRun<'a> {
     /// The prompt; it becomes the task description verbatim.
@@ -368,7 +477,11 @@ pub struct PromptRun<'a> {
 ///
 /// The prompt becomes a one-task plan in `.roko/runs/<run_id>/` (never under
 /// `plans/`): an `implementer` task whose verify steps are the workspace
-/// gates (see [`prompt_verify_steps`]). [`run_graph_plan`] executes it with
+/// gates (see [`prompt_verify_steps`]). A workspace with none, such as a docs
+/// or Python repository with no declared rung, still runs: its task ends
+/// unverified, which is not a success (bug-1410e8). The Graph run takes the
+/// same run id, so its attempt records and manifest share that directory.
+/// [`run_graph_plan`] executes it with
 /// the provider dispatch, failover, safety contracts, budget, checkpoints,
 /// and per-task episodes, efficiency, and cost records of `roko plan run`.
 /// The run then settles one `workflow_complete` episode carrying the gate
@@ -378,14 +491,14 @@ pub struct PromptRun<'a> {
 ///
 /// # Errors
 ///
-/// Fails before any provider call when no agent is configured, the role
-/// override is not a plan task role, or no gate can verify the change; and
-/// when the Graph engine cannot start the run.
+/// Fails before any provider call when no agent is configured or the role
+/// override is not a plan task role, and when the Graph engine cannot start
+/// the run.
 pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
+    use crate::graph_execution::GraphPlanRunParams;
     use crate::graph_execution::plan_runner::{
-        PlanRunInterruptHandle, install_plan_run_signal_handlers,
+        PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan_in_run,
     };
-    use crate::graph_execution::{GraphPlanRunParams, run_graph_plan};
 
     let (_config, model_config, selection) =
         resolve_workflow_model_selection(run.workdir, run.overrides)?;
@@ -401,10 +514,12 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         ),
     };
     let verify = prompt_verify_steps(run.workdir, &model_config.gates);
-    if verify.is_empty() {
-        bail!(
-            "no gate can verify this change: declare the project's build or test command \
-             in roko.toml as a `[[gates.rungs]]` entry (`name`, `command`)"
+    let unverified = verify.is_empty();
+    if unverified && !run.quiet {
+        eprintln!(
+            "note: no gate can verify this change, so it will end unverified; declare the \
+             project's build or test command in roko.toml as a `[[gates.rungs]]` entry \
+             (`name`, `command`)"
         );
     }
 
@@ -434,31 +549,38 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
     let started = std::time::Instant::now();
-    let exit_code = run_graph_plan(GraphPlanRunParams {
-        plans_dir: run_dir.clone(),
-        workdir: run.workdir.to_path_buf(),
-        quiet: run.quiet,
-        json: false,
-        resume_plan: None,
-        fresh: false,
-        force_resume: false,
-        max_retries: run.max_retries,
-        max_tasks: 0,
-        budget_override: None,
-        no_budget: false,
-        cli_model_override,
-        dangerously_skip_permissions: false,
-        log_file: None,
-        worktree_per_task: false,
-        rich_topology: false,
-        no_tui: true,
-        state_hub: Some(hub.clone()),
-        interrupt: Some(interrupt),
-        max_parallel_plans: None,
-        fail_fast: false,
-        only_plans: None,
-        live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
-    })
+    // The Graph run takes this run's id, so its attempt records and manifest
+    // land in `run_dir` beside the plan (bug-ccc7c4).
+    let exit_code = run_graph_plan_in_run(
+        GraphPlanRunParams {
+            plans_dir: run_dir.clone(),
+            workdir: run.workdir.to_path_buf(),
+            quiet: run.quiet,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: run.max_retries,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: false,
+            cli_model_override,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: false,
+            rich_topology: false,
+            promote: None,
+            no_tui: true,
+            state_hub: Some(hub.clone()),
+            interrupt: Some(interrupt),
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
+        },
+        Some(run_id.clone()),
+    )
     .await?;
     let duration = started.elapsed();
 
@@ -501,28 +623,26 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             .iter()
             .rev()
             .find_map(|episode| episode.failure_reason.clone())
-            .unwrap_or_else(|| format!("Graph engine exited with code {exit_code}"))
+            .unwrap_or_else(|| {
+                if unverified {
+                    "unverified: no gate could verify the change".to_string()
+                } else {
+                    format!("Graph engine exited with code {exit_code}")
+                }
+            })
     };
     record_workflow_feedback(layout.root(), &report, outcome, duration).await;
     Ok(report)
 }
 
-/// Verify steps for a prompt run: the workspace's declared gate rungs
+/// Verify steps for a prompt run: the workspace's required gate rungs
 /// (`[[gates.rungs]]`, which legacy `[[gate]]` entries migrate into), else
 /// the compile check of a Cargo or Go workspace. Empty when neither exists.
+/// Plan tasks run the workspace's rungs after their own steps, skipping any
+/// whose command a step already runs, so these rungs run once.
 fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -> Vec<VerifyStep> {
     if gates.has_custom_rungs() {
-        return gates
-            .effective_rungs()
-            .into_iter()
-            .filter(|rung| rung.required && !rung.command.trim().is_empty())
-            .map(|rung| VerifyStep {
-                phase: rung.name,
-                command: rung.command,
-                fail_msg: None,
-                timeout_ms: rung.timeout_secs.saturating_mul(1_000),
-            })
-            .collect();
+        return gates.required_rungs().map(VerifyStep::from).collect();
     }
     let compile = if workdir.join("Cargo.toml").is_file() {
         "cargo check --workspace"
@@ -539,6 +659,7 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .gate_test()
             .as_secs()
             .saturating_mul(1_000),
+        scope: Vec::new(),
     }]
 }
 
@@ -552,6 +673,9 @@ fn prompt_tasks_file(
     workdir: &Path,
 ) -> TasksFile {
     let title = prompt.lines().next().unwrap_or(prompt).trim();
+    // With no gate to verify it, the task may run without a verify step and
+    // end unverified (bug-1410e8).
+    let allow_unverified = verify.is_empty();
     TasksFile {
         meta: TaskMeta {
             plan: run_id.to_string(),
@@ -560,12 +684,16 @@ fn prompt_tasks_file(
             done: 0,
             status: "ready".to_string(),
             superseded_by: None,
-            max_parallel: 1,
+            max_parallel: Some(1),
             estimated_total_minutes: 0,
             // The prompt is the whole task definition.
             skip_enrichment: true,
             source_prd: None,
             failure_policy: None,
+            workspace_rungs: None,
+            verify: Vec::new(),
+            approval: None,
+            allow_unverified,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),
@@ -591,10 +719,12 @@ fn prompt_tasks_file(
             max_retries: crate::task_parser::default_max_retries(),
             acceptance: Vec::new(),
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }],
     }
 }
@@ -909,6 +1039,178 @@ mod tests {
     use roko_runtime::workflow_contract::WorkflowConfig;
     use tempfile::TempDir;
 
+    /// bug-ccc7c4: `roko run` keeps one directory under `.roko/runs`. Its
+    /// one-task plan, the Graph run's attempt records and the run manifest
+    /// all live in `.roko/runs/<run_id>/`, named by the run id the report
+    /// carries.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roko_run_uses_one_run_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let provider = tmp.path().join("fake-provider.sh");
+        std::fs::write(
+            &provider,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("make provider executable");
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[agent]
+default_model = "run-model"
+command = {provider:?}
+bare_mode = false
+
+[providers.run-cli]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.run-model]
+provider = "run-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[gates]
+sibling_settle_secs = 0
+
+[[gates.rungs]]
+name = "check"
+command = "true"
+"#,
+                provider = provider.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+        std::fs::write(tmp.path().join("README.md"), "# roko run\n").expect("README");
+
+        let report = run_prompt(PromptRun {
+            prompt: "Say done",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+        })
+        .await
+        .expect("roko run completes");
+
+        let layout = roko_fs::RokoLayout::for_project(tmp.path());
+        let run_dir = layout.run_dir(&report.run_id);
+        let run_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(layout.runs_dir())
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs, [run_dir.clone()], "one run, one directory");
+        assert!(run_dir.join("tasks.toml").is_file(), "the run's plan");
+        let attempts = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
+            .expect("the Graph run's attempt records are in the run's directory");
+        let lines: Vec<serde_json::Value> = attempts
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("an attempt record"))
+            .collect();
+        let schemas: Vec<&str> = lines
+            .iter()
+            .map(|line| line["schema_version"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(schemas, ["roko.attempt_open/1", "roko.verdict/1"]);
+        for line in &lines {
+            assert_eq!(line["run_id"], report.run_id.as_str(), "{line}");
+        }
+        let manifest = roko_learn::telemetry::RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the run's manifest");
+        assert_eq!(manifest.run_id, report.run_id);
+    }
+
+    /// bug-1410e8: a workspace with no Cargo.toml or go.mod and no declared
+    /// gate rung, here a docs repository, still runs: the agent is
+    /// dispatched and makes its change, the task ends unverified, and the
+    /// run is not a success.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prompt_plan_without_build_manifest() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let provider = tmp.path().join("fake-provider.sh");
+        std::fs::write(
+            &provider,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf 'Edited by the agent.\n' >> README.md
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("make provider executable");
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[agent]
+default_model = "run-model"
+command = {provider:?}
+bare_mode = false
+
+[providers.run-cli]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.run-model]
+provider = "run-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[gates]
+sibling_settle_secs = 0
+"#,
+                provider = provider.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+        std::fs::write(tmp.path().join("README.md"), "# docs\n").expect("README");
+        assert!(prompt_verify_steps(tmp.path(), &Default::default()).is_empty());
+
+        let report = run_prompt(PromptRun {
+            prompt: "Add a line to the README",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+        })
+        .await
+        .expect("roko run dispatches without a build manifest");
+
+        let readme = std::fs::read_to_string(tmp.path().join("README.md")).expect("README");
+        assert!(readme.contains("Edited by the agent."), "{readme}");
+        assert!(!report.success, "an unverified change is not a success");
+        let run_dir = roko_fs::RokoLayout::for_project(tmp.path()).run_dir(&report.run_id);
+        let attempts =
+            std::fs::read_to_string(run_dir.join("attempts.jsonl")).expect("attempt records");
+        let verdict = attempts
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("a record"))
+            .find(|line| line["schema_version"] == "roko.verdict/1")
+            .expect("the task's verdict");
+        assert_eq!(verdict["gate_verdict"], "unverified", "{verdict}");
+    }
+
     #[test]
     fn prompt_verify_steps_prefer_declared_rungs_then_workspace_kind() {
         let tmp = TempDir::new().unwrap();
@@ -951,6 +1253,7 @@ mod tests {
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 5_000,
+            scope: Vec::new(),
         }];
         prompt_tasks_file(
             "run-1",
@@ -1262,5 +1565,34 @@ mod tests {
         );
         assert_eq!(handle.instance_id(), "acp_workflow_test-session",);
         assert!(handle.cascade_enabled());
+    }
+
+    /// bug-5c25e1: the CLI config replaced the core `[budget]` with its own
+    /// legacy defaults, so a fresh workspace (`max_turn_usd = 0.0`, no cap)
+    /// failed admission against a $1.00 turn cap and the $1.50 fallback
+    /// estimate.
+    #[tokio::test]
+    async fn fresh_workspace_run_passes_budget_admission() {
+        let tmp = TempDir::new().unwrap();
+        crate::init::write_init_config(tmp.path(), false, crate::init::InitProvider::ClaudeCli)
+            .expect("roko init writes roko.toml");
+        let mut config = crate::config::load_resolved_config(tmp.path())
+            .expect("load the fresh workspace config")
+            .config;
+        assert_eq!(
+            config.budget.max_turn_usd, 0.0,
+            "roko init sets no turn cap"
+        );
+
+        check_budget_admission(tmp.path(), &config)
+            .await
+            .expect("a fresh workspace passes budget admission");
+
+        // A real turn cap below the fallback estimate still refuses the run.
+        config.budget.max_turn_usd = 0.01;
+        let err = check_budget_admission(tmp.path(), &config)
+            .await
+            .expect_err("a turn cap below the estimate refuses the run");
+        assert!(err.to_string().contains("exceeds max_turn_usd"), "{err}");
     }
 }

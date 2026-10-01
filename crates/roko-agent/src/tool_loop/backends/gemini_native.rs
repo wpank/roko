@@ -385,6 +385,10 @@ impl LlmBackend for GeminiNativeBackend {
             let mut acc_input: u64 = 0;
             let mut acc_output: u64 = 0;
             let mut acc_cache_read: Option<u64> = None;
+            // Thinking tokens, reported apart from the candidates (find-af6b7f).
+            let mut acc_thoughts: Option<u64> = None;
+            // The model version the chunks name (bug-a5f181).
+            let mut acc_model: Option<String> = None;
 
             loop {
                 match response.chunk().await {
@@ -408,8 +412,15 @@ impl LlmBackend for GeminiNativeBackend {
                             };
 
                             if data == "[DONE]" {
-                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
-                                    .await;
+                                emit_accumulated_usage(
+                                    acc_input,
+                                    acc_output,
+                                    acc_cache_read,
+                                    acc_thoughts,
+                                    acc_model.clone(),
+                                    &tx,
+                                )
+                                .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -424,6 +435,13 @@ impl LlmBackend for GeminiNativeBackend {
                             let Ok(chunk_json) = serde_json::from_str::<Value>(data) else {
                                 continue;
                             };
+                            if let Some(version) = chunk_json
+                                .get("modelVersion")
+                                .and_then(Value::as_str)
+                                .filter(|version| !version.is_empty())
+                            {
+                                acc_model = Some(version.to_string());
+                            }
 
                             // Extract usageMetadata from this chunk.
                             if let Some(usage) = chunk_json.get("usageMetadata") {
@@ -442,6 +460,11 @@ impl LlmBackend for GeminiNativeBackend {
                                 {
                                     acc_cache_read = Some(cache);
                                 }
+                                if let Some(thoughts) =
+                                    usage.get("thoughtsTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_thoughts = Some(thoughts);
+                                }
                             }
 
                             // Check for finish reason.
@@ -459,8 +482,15 @@ impl LlmBackend for GeminiNativeBackend {
                                 // before emitting Done.
                                 emit_gemini_content_events(&chunk_json, &tx).await;
 
-                                emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx)
-                                    .await;
+                                emit_accumulated_usage(
+                                    acc_input,
+                                    acc_output,
+                                    acc_cache_read,
+                                    acc_thoughts,
+                                    acc_model.clone(),
+                                    &tx,
+                                )
+                                .await;
                                 if !sent_done {
                                     sent_done = true;
                                     let _ = tx
@@ -478,7 +508,15 @@ impl LlmBackend for GeminiNativeBackend {
                     }
                     Ok(None) => {
                         // Stream ended.
-                        emit_accumulated_usage(acc_input, acc_output, acc_cache_read, &tx).await;
+                        emit_accumulated_usage(
+                            acc_input,
+                            acc_output,
+                            acc_cache_read,
+                            acc_thoughts,
+                            acc_model.clone(),
+                            &tx,
+                        )
+                        .await;
                         if !sent_done {
                             let _ = tx
                                 .send(Ok(StreamEvent::now(StreamEventKind::Done {
@@ -570,25 +608,36 @@ async fn emit_gemini_content_events(
 /// Gemini SSE chunks may contain `usageMetadata` with `promptTokenCount` and
 /// `candidatesTokenCount`. This function emits a Usage event only when at least
 /// one token count is non-zero, ensuring the tool loop can track usage from
-/// streaming responses.
+/// streaming responses. The event carries the `modelVersion` the chunks
+/// named, as the model that served (bug-a5f181).
 async fn emit_accumulated_usage(
     input: u64,
     output: u64,
     cache_read: Option<u64>,
+    thoughts: Option<u64>,
+    model: Option<String>,
     tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
 ) {
-    if input == 0 && output == 0 {
+    let thoughts = thoughts.unwrap_or(0);
+    if input == 0 && output == 0 && thoughts == 0 {
         return;
     }
+    // `promptTokenCount` includes the cached content; input is the uncached
+    // part, so each cached token counts once (bug-afcf63). Thinking is billed
+    // as output and counted as its reasoning part (find-af6b7f).
+    let cache_read = cache_read.unwrap_or(0);
     let usage = Usage {
-        input_tokens: input as u32,
-        output_tokens: output as u32,
-        cache_read_tokens: cache_read.unwrap_or(0) as u32,
+        input_tokens: input.saturating_sub(cache_read) as u32,
+        output_tokens: (output + thoughts) as u32,
+        reasoning_tokens: thoughts as u32,
+        cache_read_tokens: cache_read as u32,
         cache_create_tokens: 0,
         ..Default::default()
     };
     let _ = tx
-        .send(Ok(StreamEvent::now(StreamEventKind::Usage(usage))))
+        .send(Ok(
+            StreamEvent::now(StreamEventKind::Usage(usage)).with_model(model)
+        ))
         .await;
 }
 
@@ -598,6 +647,39 @@ mod tests {
     use crate::translate::RenderedTools;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    /// A streamed call's input and cache reads are disjoint and sum to
+    /// `promptTokenCount` (bug-afcf63).
+    #[tokio::test]
+    async fn streamed_gemini_usage_counts_cached_tokens_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_accumulated_usage(1_000, 50, Some(600), None, None, &tx).await;
+        let event = rx.recv().await.expect("a usage event").expect("no error");
+        let StreamEventKind::Usage(usage) = event.kind else {
+            panic!("expected usage, got {:?}", event.kind);
+        };
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens
+            ),
+            (400, 600, 50)
+        );
+    }
+
+    /// A streamed call's thinking tokens are billed output, as its reasoning
+    /// part (find-af6b7f).
+    #[tokio::test]
+    async fn streamed_gemini_usage_counts_thoughts_as_output() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_accumulated_usage(10, 120, None, Some(900), None, &tx).await;
+        let event = rx.recv().await.expect("a usage event").expect("no error");
+        let StreamEventKind::Usage(usage) = event.kind else {
+            panic!("expected usage, got {:?}", event.kind);
+        };
+        assert_eq!((usage.output_tokens, usage.reasoning_tokens), (1_020, 900));
+    }
 
     #[derive(Debug)]
     struct CapturedRequest {

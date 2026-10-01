@@ -681,9 +681,9 @@ mod tests {
     }
 
     /// [`config_with_claude_models`] whose provider command is an absolute
-    /// path that exists, so the project-default step, which skips models
-    /// whose provider is unavailable, does not depend on `claude` being on
-    /// `PATH`.
+    /// path that exists, so the cascade-router and project-default steps,
+    /// which skip models whose provider is unavailable, do not depend on
+    /// `claude` being on `PATH`.
     fn config_with_available_claude_models() -> RokoConfig {
         let mut config = config_with_claude_models();
         let command = std::env::current_exe().expect("test binary path");
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn cascade_router_is_consulted_when_no_explicit_selection_exists() {
-        let config = config_with_claude_models();
+        let config = config_with_available_claude_models();
         // Use claude-sonnet-4-6 because cold-start static routing for the
         // Standard tier selects from ["glm-5.1", "claude-sonnet-4-6", ...] and
         // only returns a slug present in the router's model_slugs.
@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn config_default_is_used_when_cascade_is_absent() {
-        let mut config = config_with_claude_models();
+        let mut config = config_with_available_claude_models();
         config.agent.default_model = "claude-opus-4-6".to_string();
 
         let selection =
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn display_line_and_json_are_canonical() {
-        let mut config = config_with_claude_models();
+        let mut config = config_with_available_claude_models();
         config.agent.default_model = "claude-opus-4-6".to_string();
 
         let selection =
@@ -1096,7 +1096,7 @@ mod tests {
     /// cascade router or project default (does not error).
     #[test]
     fn role_with_empty_model_falls_through() {
-        let mut config = config_with_claude_models();
+        let mut config = config_with_available_claude_models();
         config.agent.default_model = "claude-sonnet-4-6".to_string();
         config
             .agent

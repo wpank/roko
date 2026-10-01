@@ -401,7 +401,8 @@ impl ClaudeAgent {
             reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::Unknown,
-            model: Some(self.model.clone()),
+            // No response named a served model (bug-2379dc).
+            model: None,
             wall_ms,
         })
     }
@@ -512,7 +513,9 @@ impl Agent for ClaudeAgent {
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let observation = parsed.usage.into_observation(
             wall_ms,
-            parsed.model.clone().or_else(|| Some(self.model.clone())),
+            // The model the response named, never the configured slug
+            // (bug-2379dc).
+            parsed.model.clone(),
         );
 
         let mut builder = input

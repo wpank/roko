@@ -35,6 +35,7 @@ use roko_cli::runtime_feedback::{
 };
 use roko_cli::task_parser::TaskDef;
 use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord};
 use tempfile::tempdir;
 
 fn task() -> TaskDef {
@@ -62,10 +63,12 @@ fn task() -> TaskDef {
         max_retries: 1,
         acceptance: vec!["compiles".into()],
         acceptance_contract: None,
+        accept: None,
         domain: Some(roko_core::task::TaskDomain::Code),
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        hints: Default::default(),
     }
 }
 
@@ -78,6 +81,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         force_backend: None,
         budget_remaining_usd: 5.0,
         attempt: 0,
+        ladder_step: 0,
         prompt_experiment: None,
         gate_feedback: None,
         routing_context: None,
@@ -149,11 +153,19 @@ async fn dispatch_feeds_feedback_facade_and_projection() {
         .with_sink(Arc::new(EpisodeSink::at(&episodes_path)))
         .with_sink(Arc::new(RoutingObservationSink::new(router.clone())))
         .with_sink(Arc::new(KnowledgeIngestionSink::at(&knowledge_path)));
+    // Learners read the settled verdict's learning label: this attempt
+    // passed its gate.
+    let passed = AttemptVerdictRecord::settle(
+        AttemptIdentity::new(&AttemptKey::new("run-e2e", "plan-e2e", "wire-it-up", 1)),
+        AttemptOutcome::Passed,
+        true,
+    );
 
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: Some(Arc::new(passed)),
             plan_id: "plan-e2e".into(),
             task_id: "wire-it-up".into(),
             outcome: outcome.clone(),

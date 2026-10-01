@@ -152,7 +152,8 @@ pub mod hash;
 pub mod heartbeat;
 /// Cognitive immune system -- quarantine, anomaly detection, incident linking.
 pub mod immune;
-/// Atomic file I/O utilities for crash-safe state persistence.
+/// Atomic file I/O utilities for crash-safe state persistence, and JSONL
+/// appends that write each row in one write.
 pub mod io;
 /// Marketplace job types shared between serve, TUI, and CLI.
 pub mod job;
@@ -193,7 +194,10 @@ pub mod obs {
         STANDARD_METRICS, register_standard_metrics,
     };
     pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
-    pub use scrub::{LogScrubber, REDACTED};
+    pub use scrub::{
+        LogScrubber, REDACTED, add_secret_env_values, add_secret_values, install_secret_scrubber,
+        scrub_secrets, scrub_secrets_in_json, scrub_secrets_in_jsonl, secret_scrubber,
+    };
     pub use telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};
 }
 /// Canonical shared event taxonomy: [`CoreEvent`] type alias, producer/consumer
@@ -414,7 +418,8 @@ pub use signal::{
 pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
-    TaskDomain, TaskMeta, TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority, TaskStatus,
+    TaskDomain, TaskHints, TaskMeta, TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority,
+    TaskStatus, TaskTier,
 };
 pub use usage::{UsageObservation, UsageSource};
 // Note: tool::FailureKind (for tool-call failures) is NOT re-exported here to avoid

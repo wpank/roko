@@ -10,8 +10,9 @@ use crate::agent::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::openai_compat::{max_tokens_for_model, tool_registry_for_options};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
-    build_tool_dispatcher_with_audit, current_safety_layer, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    build_provider_tool_dispatcher, current_safety_layer, tool_loop_max_iterations_for_options,
+    with_tool_observability,
 };
 use crate::safety::SafetyLayer;
 use crate::tool_loop::backends::create_tool_loop_backend;
@@ -43,9 +44,9 @@ fn gemini_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher =
-        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
+    let dispatcher =
+        build_provider_tool_dispatcher(registry, resolver, options, model, translator.format());
     let timeout_ms = options.effective_timeout_ms(None);
     let mut extra_body_params = serde_json::Map::new();
     if let Some(cached_content) = options.cached_content.as_deref() {
@@ -68,7 +69,7 @@ fn gemini_tool_loop_agent(
         .with_poster(Box::new(ReqwestPoster::new()));
 
     let tool_loop = ToolLoop::new(translator, dispatcher, Arc::new(backend))
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -81,6 +82,7 @@ fn gemini_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::OpenAi);
     if let Some(prompt) = &options.system_prompt {
@@ -95,6 +97,10 @@ fn gemini_tool_loop_agent(
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
     }
+    agent = with_tool_observability(agent, options);
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
+    }
 
     Ok(Box::new(agent))
 }
@@ -105,14 +111,14 @@ fn gemini_native_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher =
-        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(GeminiTranslator);
+    let dispatcher =
+        build_provider_tool_dispatcher(registry, resolver, options, model, translator.format());
     let backend =
         create_tool_loop_backend(provider, model, options, Arc::new(ReqwestPoster::new()))?;
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -125,6 +131,7 @@ fn gemini_native_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::Gemini);
     if let Some(prompt) = &options.system_prompt {
@@ -138,6 +145,10 @@ fn gemini_native_tool_loop_agent(
     }
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    agent = with_tool_observability(agent, options);
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
     }
 
     Ok(Box::new(agent))
@@ -232,6 +243,10 @@ impl ProviderAdapter for GeminiAdapter {
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

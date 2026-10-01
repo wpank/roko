@@ -394,7 +394,8 @@ pub fn cmd_check_secrets(workdir: &Path) -> Result<()> {
     Err(anyhow!(message))
 }
 
-/// Validate the active `roko.toml` in three phases: syntax, schema, semantics.
+/// Validate the active `roko.toml` in phases: syntax, config paths, secrets,
+/// schema, the core loader's invariants, and semantics.
 pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     let paths = resolve_paths(workdir);
     let config_path = validate_config_path(&paths, workdir)?;
@@ -436,6 +437,18 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     }
     print_phase_status("Phase 1b: Config path validation", true);
 
+    // Phase 1c: the loader refuses a config file agents can read while it
+    // holds a secret, so validation does too.
+    let secrets = roko_core::config::loader::refuse_readable_secrets(&config_path, &parsed_value);
+    if let Err(err) = secrets {
+        print_phase_status("Phase 1c: Secrets", false);
+        println!("  ✗ {err}");
+        println!();
+        println!("Result: 0 warnings, 1 error");
+        return Err(anyhow!("config validation failed"));
+    }
+    print_phase_status("Phase 1c: Secrets", true);
+
     let config = match toml::from_str::<RokoConfig>(&text) {
         Ok(config) => config,
         Err(err) => {
@@ -448,6 +461,22 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     };
     print_phase_status("Phase 2: Schema validation", true);
 
+    // Phase 2b: the core loader, which every command loads roko.toml
+    // through. It merges the global config and env overrides and then
+    // enforces the cross-section invariants (budget ceilings, model ->
+    // provider references), so a file it rejects must fail here too.
+    let effective = match load_like_commands(&config_path, config.clone()) {
+        Ok(effective) => effective,
+        Err(err) => {
+            print_phase_status("Phase 2b: Loader invariants", false);
+            println!("  ✗ {err:#}");
+            println!();
+            println!("Result: 0 warnings, 1 error");
+            return Err(anyhow!("config validation failed"));
+        }
+    };
+    print_phase_status("Phase 2b: Loader invariants", true);
+
     let client = reqwest::Client::builder()
         .user_agent("roko-cli/0.1")
         .timeout(Duration::from_secs(VALIDATION_REACHABILITY_TIMEOUT_SECS))
@@ -457,6 +486,7 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     if let Some(warning) = legacy_layout_warning(&config) {
         report.schema_warnings.push(warning);
     }
+    report.schema_warnings.extend(loader_warnings(&effective));
 
     println!("Phase 3: Semantic validation:");
     print_warning_section("Schema warnings", &report.schema_warnings);
@@ -483,6 +513,129 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     } else {
         Err(anyhow!("config validation failed"))
     }
+}
+
+/// Check prospective `roko.toml` text before a command writes it to `path`.
+///
+/// Runs every offline check of [`cmd_validate`]: TOML syntax, no secret in a
+/// file agents can read, known config paths, the schema, the core loader
+/// (global config merge, env overrides and its cross-section invariants) and
+/// the provider/model semantic errors. Only the network probes, which can
+/// only warn, are left out. Text that passes loads in every command and
+/// passes `roko config validate`.
+pub fn check_config_text(path: &Path, text: &str) -> Result<()> {
+    let value = toml::from_str::<toml::Value>(text).context("invalid TOML")?;
+    roko_core::config::loader::refuse_readable_secrets(path, &value)?;
+    let unknown_paths = roko_core::config::loader::validate_known_config_paths(&value);
+    if !unknown_paths.is_empty() {
+        let messages = unknown_paths
+            .iter()
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>();
+        return Err(anyhow!("unknown config paths: {}", messages.join("; ")));
+    }
+    let config = toml::from_str::<RokoConfig>(text).context("config does not match the schema")?;
+    let errors = semantic_errors(&config);
+    load_like_commands(path, config)?;
+    if !errors.is_empty() {
+        return Err(anyhow!(errors.join("; ")));
+    }
+    Ok(())
+}
+
+/// Write config `text` to `path` if it passes [`check_config_text`].
+///
+/// Commands that write `roko.toml` go through this, so none of them leaves a
+/// config that `roko config validate` or the loader rejects: a rejected text
+/// is not written and the file keeps its previous contents.
+pub fn write_checked_config(path: &Path, text: &str) -> Result<()> {
+    check_config_text(path, text).with_context(|| {
+        format!(
+            "refusing to write {}: `roko config validate` would reject it",
+            path.display()
+        )
+    })?;
+    roko_fs::atomic_write_bytes(path, text.as_bytes())
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Append the TOML text `block` to the config file at `path`, keeping its
+/// existing text and comments, if the result passes [`check_config_text`].
+pub fn append_checked_config(path: &Path, block: &str) -> Result<()> {
+    let mut text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(block);
+    write_checked_config(path, &text)
+}
+
+/// Add a `[providers.*]` block to the `roko.toml` at `path` for each
+/// provider `roko setup` detected that the file does not configure yet, and
+/// return how many were added.
+///
+/// `clis` holds `(command, description)` for LLM CLIs found on `PATH`, and
+/// `api_keys` holds `(env var, display name, kind)` for API keys set in the
+/// environment. The blocks carry only schema keys, and the file must pass
+/// [`check_config_text`] afterwards or nothing is written.
+pub fn add_detected_providers(
+    path: &Path,
+    clis: &[(String, String)],
+    api_keys: &[(&str, &str, &str)],
+) -> Result<usize> {
+    let existing = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    // Parse rather than search the text: a commented-out block such as
+    // `# [providers.claude_cli]` configures nothing.
+    let parsed = toml::from_str::<toml::Value>(&existing)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let mut configured = parsed
+        .get("providers")
+        .and_then(toml::Value::as_table)
+        .map(|providers| providers.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let mut appended = String::new();
+    let mut count = 0usize;
+
+    // CLI providers.
+    for (cmd, _desc) in clis {
+        let (provider_name, kind) = match cmd.as_str() {
+            "claude" => ("claude_cli", "claude_cli"),
+            "codex" => ("codex_cli", "codex_cli"),
+            other => (other, "openai_compat"),
+        };
+        if !configured.insert(provider_name.to_string()) {
+            continue;
+        }
+        appended.push_str(&format!("\n[providers.{provider_name}]\n"));
+        appended.push_str(&format!("kind = \"{kind}\"\n"));
+        appended.push_str(&format!("command = \"{cmd}\"\n"));
+        count += 1;
+    }
+
+    // API key providers, named after their catalog entry.
+    for (env_var, _display, kind) in api_keys {
+        let entry = roko_core::provider_catalog::catalog()
+            .iter()
+            .find(|entry| entry.api_key_env == *env_var);
+        let provider_name =
+            entry.map_or_else(|| env_var.trim_end_matches("_API_KEY"), |entry| entry.id);
+        if !configured.insert(provider_name.to_string()) {
+            continue;
+        }
+        appended.push_str(&format!("\n[providers.{provider_name}]\n"));
+        appended.push_str(&format!("kind = \"{kind}\"\n"));
+        appended.push_str(&format!("api_key_env = \"{env_var}\"\n"));
+        let base_url = entry.map_or("", |entry| entry.base_url);
+        if !base_url.is_empty() {
+            appended.push_str(&format!("base_url = \"{base_url}\"\n"));
+        }
+        count += 1;
+    }
+
+    if count > 0 {
+        append_checked_config(path, &appended)?;
+    }
+    Ok(count)
 }
 
 /// Migrate a legacy project-local `roko.toml` into explicit provider/model tables.
@@ -542,6 +695,9 @@ pub fn cmd_set_secret(name: &str, value: &str) -> Result<()> {
 }
 
 fn write_secret_env_file(path: &Path, name: &str, value: &str) -> Result<()> {
+    if value.contains(['\n', '\r']) {
+        return Err(anyhow!("the value of {name} must fit on one line"));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -551,9 +707,23 @@ fn write_secret_env_file(path: &Path, name: &str, value: &str) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    let rendered = upsert_env_assignment(&existing, name, value);
+    let rendered = upsert_env_assignment(&existing, name, &env_file_value(value));
     write_atomic_restricted(path, &rendered)?;
     Ok(())
+}
+
+/// `value` as a `.env` value that dotenv reads back unchanged: bare when it
+/// is plain, else in single quotes, inside which dotenv expands no `$` and
+/// no escape.
+fn env_file_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.:/+=@,".contains(c))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
 }
 
 fn upsert_env_assignment(existing: &str, name: &str, value: &str) -> String {
@@ -679,39 +849,190 @@ pub fn cmd_edit(workdir: &Path, which: EditTarget) -> Result<()> {
 }
 
 /// Set a single dotted-key value and write it to the chosen layer file.
+///
+/// See [`set_config_key`]: the key is written under its v2 name, and a
+/// project `roko.toml` edit that `roko config validate` would reject is
+/// refused. A secret such as `serve.auth.api_key` goes to `.roko/.env`
+/// instead, whatever the target ([`set_secret_config_key`]).
 pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Result<()> {
-    let resolved = load_resolved_config(workdir)?;
+    // Only the paths are needed. Loading the config would stop `config set`
+    // from repairing a file that no longer loads.
+    let paths = resolve_paths(workdir);
+    if let Some(stored) = set_secret_config_key(workdir, &paths, key, value)? {
+        let StoredSecret {
+            key,
+            variable,
+            env_file,
+            removed_from,
+        } = stored;
+        println!(
+            "stored {key} as {variable} in {}, which agents cannot read",
+            env_file.display()
+        );
+        for path in removed_from {
+            println!("removed {key} from {}", path.display());
+        }
+        let summary = format!("config set {key} (stored as {variable} in .roko/.env)");
+        journal_config_set(workdir, &key, summary);
+        return Ok(());
+    }
     let path = match target {
-        EditTarget::Global | EditTarget::Auto => resolved
-            .paths
+        EditTarget::Global | EditTarget::Auto => paths
             .global
             .ok_or_else(|| anyhow!("cannot determine global config path: HOME is not set"))?,
-        EditTarget::Project => resolved
-            .paths
-            .project
-            .unwrap_or_else(|| workdir.join("roko.toml")),
+        EditTarget::Project => paths.project.unwrap_or_else(|| workdir.join("roko.toml")),
     };
 
-    let mut doc = if path.exists() {
-        read_toml_file(&path)?
-    } else {
-        toml::Value::Table(toml::map::Map::new())
-    };
-    set_toml_dotted_key(&mut doc, key, value).with_context(|| format!("set {key} = {value}"))?;
-    write_toml_file(&path, &doc)?;
+    let key = set_config_key(&path, target, key, value)?;
     println!("set {key} = {value} in {}", path.display());
+    journal_config_set(workdir, &key, format!("config set {key} = {value}"));
 
-    // Append an audit entry to the config journal so changes can be traced.
+    Ok(())
+}
+
+/// Append a `config set` entry to the config journal so changes can be traced.
+fn journal_config_set(workdir: &Path, key: &str, summary: String) {
     let journal_path = workdir.join(".roko").join("config-journal.jsonl");
     let change = ConfigChange {
         section: ConfigSection::Other(key.split('.').next().unwrap_or(key).to_string()),
-        summary: format!("config set {key} = {value}"),
+        summary,
     };
     if let Err(err) = hot_reload::append_config_journal(&journal_path, &[change], "config-set") {
         tracing::warn!(error = %err, "failed to append config journal entry");
     }
+}
 
-    Ok(())
+/// A secret that [`set_secret_config_key`] stored in `.roko/.env`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredSecret {
+    /// The field, under its v2 name (`serve.auth.api_key`).
+    pub key: String,
+    /// The variable that now sets it (`ROKO__SERVE__AUTH__API_KEY`).
+    pub variable: String,
+    /// The `.roko/.env` file written.
+    pub env_file: PathBuf,
+    /// The config files agents can read that set the field, which no longer do.
+    pub removed_from: Vec<PathBuf>,
+}
+
+/// Store a secret config field in the project's `.roko/.env`, as its `ROKO__`
+/// variable, and remove the field from the config files agents can read.
+///
+/// roko loads `.roko/.env` at startup, and agents cannot read it; the loader
+/// refuses a readable config file that holds a secret. `paths` are the config
+/// files of `workdir`: `roko.toml`, the file `ROKO_CONFIG` names and the
+/// legacy `~/.config/roko/config.toml`. A key file such as
+/// `~/.roko/config.toml` is left as it is. The project is the directory of
+/// its `roko.toml`, or `workdir` when there is none.
+///
+/// Returns `None` when `key = value` is no secret, for example an empty value
+/// or a `${VAR}` reference, so the caller writes it to a config file.
+///
+/// # Errors
+///
+/// A secret that no `ROKO__` variable can set, such as a provider header, a
+/// value that spans lines, or a file that cannot be read or written.
+pub fn set_secret_config_key(
+    workdir: &Path,
+    paths: &ConfigPaths,
+    key: &str,
+    value: &str,
+) -> Result<Option<StoredSecret>> {
+    let key = v2_config_key(key);
+    let mut probe = toml::Value::Table(toml::map::Map::new());
+    set_toml_dotted_key(&mut probe, &key, value).with_context(|| format!("set {key}"))?;
+    let fields = roko_core::config::loader::secret_fields(&probe);
+    let Some(field) = fields.first() else {
+        return Ok(None);
+    };
+    let variable = roko_core::config::loader::env_override_name(field)
+        .filter(|_| *field == key)
+        .ok_or_else(|| {
+            anyhow!(
+                "{field} is a secret, which roko keeps out of the config files agents can \
+                 read: set it in .roko/.env instead, and give a provider header a ${{VAR}} \
+                 reference to it"
+            )
+        })?;
+    let project = paths.project.as_deref().and_then(Path::parent);
+    let env_file = project.unwrap_or(workdir).join(".roko").join(".env");
+    write_secret_env_file(&env_file, &variable, value)?;
+
+    let mut removed_from = Vec::new();
+    for path in [&paths.env_override, &paths.project, &paths.global]
+        .into_iter()
+        .flatten()
+    {
+        if roko_core::child_env::is_key_file(path) || !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        if let Some(rest) = remove_toml_key(&text, &key) {
+            roko_fs::atomic_write_bytes(path, rest.as_bytes())
+                .with_context(|| format!("write {}", path.display()))?;
+            removed_from.push(path.clone());
+        }
+    }
+    Ok(Some(StoredSecret {
+        key,
+        variable,
+        env_file,
+        removed_from,
+    }))
+}
+
+/// The TOML document `text` without the dotted `key`, the rest kept as
+/// written. `None` when `text` does not parse or does not set `key`.
+fn remove_toml_key(text: &str, key: &str) -> Option<String> {
+    let mut document = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let segments = key.split('.').collect::<Vec<_>>();
+    remove_table_key(document.as_table_mut(), &segments).then(|| document.to_string())
+}
+
+fn remove_table_key(table: &mut dyn toml_edit::TableLike, segments: &[&str]) -> bool {
+    match segments {
+        [] => false,
+        [leaf] => table.remove(leaf).is_some(),
+        [parent, rest @ ..] => table
+            .get_mut(parent)
+            .and_then(toml_edit::Item::as_table_like_mut)
+            .is_some_and(|child| remove_table_key(child, rest)),
+    }
+}
+
+/// Set `key` to `value` in the config file at `path`, the `target` layer,
+/// and return the key that was written.
+///
+/// A v1 key name that schema v2 renamed (`agent.model`) is written under its
+/// v2 name (`agent.default_model`), so the file never gains a key that
+/// validation rejects. A project file must pass [`check_config_text`] after
+/// the edit, or it is not written.
+pub fn set_config_key(path: &Path, target: EditTarget, key: &str, value: &str) -> Result<String> {
+    let key = v2_config_key(key);
+    let mut doc = if path.exists() {
+        read_toml_file(path)?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    set_toml_dotted_key(&mut doc, &key, value).with_context(|| format!("set {key} = {value}"))?;
+    if target == EditTarget::Project {
+        let text = toml::to_string_pretty(&doc).context("serialize config")?;
+        write_checked_config(path, &text)?;
+    } else {
+        write_toml_file(path, &doc)?;
+    }
+    Ok(key)
+}
+
+/// The v2 name of a dotted config key (`agent.model` -> `agent.default_model`).
+fn v2_config_key(key: &str) -> String {
+    roko_core::config::loader::V1_RENAMED_KEYS
+        .iter()
+        .find(|(table, old, _)| key.split_once('.') == Some((*table, *old)))
+        .map_or_else(
+            || key.to_string(),
+            |(table, _, new)| format!("{table}.{new}"),
+        )
 }
 
 /// Which file `config edit` / `config set` should target.
@@ -1221,6 +1542,56 @@ fn legacy_layout_warning(config: &RokoConfig) -> Option<String> {
     None
 }
 
+/// Resolve a parsed `roko.toml` the way every command loads it: global config
+/// merge, env overrides, interpolation, file secrets and the loader's
+/// cross-section invariants.
+fn load_like_commands(path: &Path, config: RokoConfig) -> Result<RokoConfig> {
+    let effective = roko_core::config::loader::resolve_config_source(
+        config,
+        path,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .map_err(|err| anyhow!("{err}"))?;
+    // Commands then build their CLI config from it (`load_resolved_config`),
+    // which validates the dream schedule and the daimon strategy space.
+    crate::config::Config::from_roko_config(&effective)?;
+    Ok(effective)
+}
+
+/// The invariant warnings the loader logs for a resolved config.
+fn loader_warnings(config: &RokoConfig) -> Vec<String> {
+    roko_core::config::validate_invariants(config)
+        .into_iter()
+        .filter(|result| result.severity == roko_core::config::InvariantSeverity::Warning)
+        .map(|result| format!("{} (invariant {})", result.message, result.invariant_id))
+        .collect()
+}
+
+/// The errors of the semantic phase of `roko config validate`.
+///
+/// They need no network access; the reachability probes only ever warn.
+fn semantic_errors(config: &RokoConfig) -> Vec<String> {
+    let mut providers = config.providers.iter().collect::<Vec<_>>();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    let mut errors = providers
+        .into_iter()
+        .filter(|(_, provider)| {
+            provider
+                .api_key_env
+                .as_deref()
+                .is_some_and(|env_name| env_name.trim().is_empty())
+        })
+        .map(|(name, _)| format!("Provider '{name}' has an empty api_key_env value"))
+        .collect::<Vec<_>>();
+    errors.extend(
+        roko_core::config::validate_provider_semantics(config)
+            .into_iter()
+            .filter(|finding| finding.severity == roko_core::config::InvariantSeverity::Error)
+            .map(|finding| format!("[{}] {}", finding.code, finding.message)),
+    );
+    errors
+}
+
 async fn semantic_validate_config(
     config: &RokoConfig,
     client: &reqwest::Client,
@@ -1249,8 +1620,15 @@ async fn semantic_validate_config(
         }
     }
 
+    // A model reference resolves to a `[models]` key or a builtin model, as at
+    // runtime; only a name that neither knows is missing.
+    let resolves = |name: &str| {
+        models.contains_key(name)
+            || roko_core::config::model_registry::builtin_model(name).is_some()
+    };
+
     let default_model = config.agent.default_model.trim();
-    if !default_model.is_empty() && !models.contains_key(default_model) {
+    if !default_model.is_empty() && !resolves(default_model) {
         report.schema_warnings.push(format!(
             "agent.default_model references missing model '{default_model}'"
         ));
@@ -1262,7 +1640,7 @@ async fn semantic_validate_config(
             report
                 .schema_warnings
                 .push("agent.fallback_model must not be empty".to_string());
-        } else if !models.contains_key(fallback_model) {
+        } else if !resolves(fallback_model) {
             report.schema_warnings.push(format!(
                 "agent.fallback_model references missing model '{fallback_model}'"
             ));
@@ -1281,7 +1659,7 @@ async fn semantic_validate_config(
             report
                 .schema_warnings
                 .push(format!("agent.tier_models.{tier} must not be empty"));
-        } else if !models.contains_key(model.trim()) {
+        } else if !resolves(model.trim()) {
             report.schema_warnings.push(format!(
                 "agent.tier_models.{tier} references missing model '{}'",
                 model.trim()
@@ -1314,10 +1692,6 @@ async fn semantic_validate_config(
                      (provider will be unavailable at runtime)"
                 ));
             }
-        } else if provider.api_key_env.is_some() {
-            report.api_key_errors.push(format!(
-                "Provider '{provider_name}' has an empty api_key_env value"
-            ));
         }
 
         if let Some(base_url) = provider
@@ -1415,18 +1789,16 @@ async fn semantic_validate_config(
     }
 
     // Run roko-core provider/model semantic validation and merge findings.
+    // Its errors come from `semantic_errors`, which config writers share.
     let semantic_findings = roko_core::config::validate_provider_semantics(config);
     for finding in semantic_findings {
-        let msg = format!("[{}] {}", finding.code, finding.message);
-        match finding.severity {
-            roko_core::config::InvariantSeverity::Error => {
-                report.api_key_errors.push(msg);
-            }
-            roko_core::config::InvariantSeverity::Warning => {
-                report.field_warnings.push(msg);
-            }
+        if finding.severity == roko_core::config::InvariantSeverity::Warning {
+            report
+                .field_warnings
+                .push(format!("[{}] {}", finding.code, finding.message));
         }
     }
+    report.api_key_errors = semantic_errors(config);
 
     report
 }
@@ -1732,6 +2104,149 @@ scheduled_cron = "invalid cron"
         assert_eq!(err.to_string(), "config validation failed");
     }
 
+    /// bug-8465a2: `config validate` passed budget tables the core loader
+    /// rejected, and the loader rejected an uncapped turn beneath a finite
+    /// plan cap. Validation now runs the loader, and 0 means no cap in both.
+    #[tokio::test]
+    async fn config_validate_matches_the_core_loader_on_budgets() {
+        let loader_options = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        for (budget, valid) in [
+            // The old README example: plan and task caps, no turn cap.
+            ("[budget]\nmax_plan_usd = 10\nmax_task_usd = 1\n", true),
+            (
+                "[budget]\nmax_plan_usd = 10.0\nmax_task_usd = 1.0\nmax_turn_usd = 0.5\n",
+                true,
+            ),
+            // A turn cap above the plan cap contradicts it.
+            ("[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("roko.toml");
+            fs::write(&path, budget).unwrap();
+
+            let loaded = roko_core::config::loader::load_config_file(&path, &loader_options);
+            assert_eq!(loaded.is_ok(), valid, "loader on {budget:?}: {loaded:?}");
+            let validated = cmd_validate(dir.path()).await;
+            assert_eq!(
+                validated.is_ok(),
+                valid,
+                "config validate on {budget:?}: {validated:?}"
+            );
+        }
+    }
+
+    /// bug-1c93b4: `config set --project agent.default_model X` wrote the
+    /// legacy `agent.model` key, which validation rejects, and v2 keys such
+    /// as `budget.max_plan_usd` were refused as unknown.
+    #[tokio::test]
+    async fn config_set_project_keeps_the_file_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roko.toml");
+        crate::init::write_init_config(dir.path(), false, crate::init::InitProvider::ClaudeCli)
+            .unwrap();
+
+        let set = |key: &str, value: &str| cmd_set(dir.path(), EditTarget::Project, key, value);
+        set("agent.default_model", "claude-opus-4-6").unwrap();
+        set("budget.max_plan_usd", "10").unwrap();
+        // A v1 name is written under its v2 name.
+        set("agent.effort", "high").unwrap();
+
+        let doc = read_toml_file(&path).unwrap();
+        let agent = &doc["agent"];
+        assert_eq!(agent["default_model"].as_str(), Some("claude-opus-4-6"));
+        assert_eq!(agent["default_effort"].as_str(), Some("high"));
+        assert!(agent.get("model").is_none(), "legacy key written");
+        assert!(agent.get("effort").is_none(), "legacy key written");
+        assert_eq!(doc["budget"]["max_plan_usd"].as_float(), Some(10.0));
+        cmd_validate(dir.path())
+            .await
+            .expect("config validate accepts the edited file");
+
+        // An edit that validation would reject is refused, and the file is
+        // left as it was: a $20 turn cap cannot sit beneath a $10 plan cap.
+        let before = fs::read_to_string(&path).unwrap();
+        let err = set("budget.max_turn_usd", "20").unwrap_err();
+        assert!(format!("{err:#}").contains("invariant 1"), "{err:#}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    /// bug-131421: in an empty directory `roko setup --quick` skipped init,
+    /// because roko's own log had already created `.roko/`, and so wrote no
+    /// roko.toml; after `roko init` it wrote `providers.*.default_model`,
+    /// a key that validation rejects.
+    #[test]
+    fn setup_quick_in_empty_dir_writes_a_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // roko's own log creates `.roko/` before setup runs.
+        fs::create_dir_all(dir.path().join(".roko")).unwrap();
+        assert!(crate::init::needs_init(dir.path()));
+
+        // What `roko init` writes when neither claude nor a key is found;
+        // its provider blocks are commented out.
+        let unconfigured = crate::init::InitProvider::Unconfigured;
+        crate::init::write_init_config(dir.path(), false, unconfigured).unwrap();
+        assert!(!crate::init::needs_init(dir.path()));
+
+        let path = dir.path().join("roko.toml");
+        let clis = [("claude".to_string(), "Anthropic Claude CLI".to_string())];
+        let api_keys = [("ANTHROPIC_API_KEY", "Anthropic", "anthropic_api")];
+        let first = add_detected_providers(&path, &clis, &api_keys).unwrap();
+        let second = add_detected_providers(&path, &clis, &api_keys).unwrap();
+        assert_eq!((first, second), (2, 0));
+
+        let doc = read_toml_file(&path).unwrap();
+        let claude = &doc["providers"]["claude_cli"];
+        let anthropic = &doc["providers"]["anthropic"];
+        assert_eq!(claude["command"].as_str(), Some("claude"));
+        assert_eq!(anthropic["kind"].as_str(), Some("anthropic_api"));
+        assert!(anthropic.get("default_model").is_none());
+        // The offline checks of `roko config validate`, without its probes.
+        check_config_text(&path, &fs::read_to_string(&path).unwrap())
+            .expect("setup leaves a roko.toml that validation accepts");
+    }
+
+    /// bug-8d7d18: `config preset`, `tune` and the TUI's config and effects
+    /// saves wrote roko.toml without the check that `config set` runs. Each
+    /// library writer now refuses a result that validation rejects and keeps
+    /// the old file.
+    #[test]
+    fn every_roko_toml_writer_checks_before_writing() {
+        use crate::tui::config_meta::save_pending_edits;
+        use crate::tui::effects_config::{EffectsPreset, save_preset_to_root};
+
+        fn turn_cap(usd: &str) -> HashMap<String, String> {
+            HashMap::from([("budget.max_turn_usd".to_string(), usd.to_string())])
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roko.toml");
+        let valid = "[budget]\nmax_plan_usd = 10.0\n";
+        fs::write(&path, valid).unwrap();
+
+        // The TUI config editor and `roko config preset`: a $20 turn cap
+        // above the $10 plan cap fails config invariant 1.
+        let err = save_pending_edits(dir.path(), &turn_cap("20")).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), valid);
+        // A valid edit still saves.
+        save_pending_edits(dir.path(), &turn_cap("2")).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("max_turn_usd = 2.0"), "{saved}");
+
+        // The TUI effects preset: a save into a config that fails the check
+        // is refused too.
+        let invalid = "[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n";
+        fs::write(&path, invalid).unwrap();
+        let err = save_preset_to_root(dir.path(), EffectsPreset::Full).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+    }
+
     #[test]
     fn set_dotted_key_sets_prompt_budget() {
         let mut doc = empty_doc();
@@ -1915,6 +2430,95 @@ scheduled_cron = "invalid cron"
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(fs::read_to_string(&path).unwrap(), "TOKEN=abc123");
+    }
+
+    /// bug-524a3b: `roko config set serve.auth.api_key` wrote the key to a
+    /// config file, `roko.toml` with `--project`, which agents read and the
+    /// loader now refuses. The key goes to `.roko/.env` as the `ROKO__`
+    /// variable that sets it, whatever the target, and leaves the readable
+    /// config files; a key file keeps what it holds.
+    #[test]
+    fn config_set_writes_a_serve_secret_to_the_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        let write = |path: &Path, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        let project = workdir.join("roko.toml");
+        write(
+            &project,
+            "# serve settings\n[serve.auth]\nenabled = true\napi_key = \"sk-old\"\n",
+        );
+        let legacy = workdir.join("home/.config/roko/config.toml");
+        write(&legacy, "[serve.auth]\napi_key = \"sk-old\"\n");
+        let key_file = workdir.join("home/.roko/config.toml");
+        write(&key_file, "[serve.auth]\napi_key = \"sk-kept\"\n");
+        let opts = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        let load = |path: &Path| roko_core::config::loader::load_config_file(path, &opts);
+        assert!(matches!(
+            load(&project),
+            Err(roko_core::config::LoadConfigError::SecretInConfig { .. })
+        ));
+
+        let paths = ConfigPaths {
+            global: Some(legacy.clone()),
+            project: Some(project.clone()),
+            env_override: Some(key_file.clone()),
+        };
+        let stored = set_secret_config_key(workdir, &paths, "serve.auth.api_key", "sk-new $1")
+            .unwrap()
+            .expect("serve.auth.api_key is a secret");
+        assert_eq!(stored.variable, "ROKO__SERVE__AUTH__API_KEY");
+        assert_eq!(stored.env_file, workdir.join(".roko").join(".env"));
+        assert_eq!(stored.removed_from, [project.clone(), legacy.clone()]);
+
+        // roko reads the value back from .roko/.env as it was given.
+        let vars = dotenvy::from_path_iter(&stored.env_file)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let expected = (
+            "ROKO__SERVE__AUTH__API_KEY".to_string(),
+            "sk-new $1".to_string(),
+        );
+        assert_eq!(vars, [expected]);
+
+        // roko.toml keeps the rest as written and loads again, and a checked
+        // write does not put the key back.
+        assert_eq!(
+            fs::read_to_string(&project).unwrap(),
+            "# serve settings\n[serve.auth]\nenabled = true\n"
+        );
+        assert!(load(&project).unwrap().serve.auth.enabled);
+        let secret_text = "[serve.auth]\napi_key = \"sk-new\"\n";
+        assert!(check_config_text(&project, secret_text).is_err());
+        assert!(!fs::read_to_string(&legacy).unwrap().contains("sk-old"));
+        assert!(fs::read_to_string(&key_file).unwrap().contains("sk-kept"));
+
+        // No secret: an empty value, a reference, or another field.
+        for (key, value) in [
+            ("serve.auth.api_key", ""),
+            ("serve.auth.api_key", "${SERVE_KEY}"),
+            ("agent.default_model", "sk-looking-model"),
+            ("prompt.token_budget", "5000"),
+        ] {
+            let outcome = set_secret_config_key(workdir, &paths, key, value).unwrap();
+            assert_eq!(outcome, None, "{key} = {value}");
+        }
+
+        // A secret that no variable can set is refused and written nowhere.
+        let header = r#"{"Authorization": "Bearer sk-header"}"#;
+        let error = set_secret_config_key(workdir, &paths, "providers.x.extra_headers", header)
+            .expect_err("a provider header");
+        assert!(format!("{error:#}").contains("${VAR}"), "{error:#}");
+        let env_text = fs::read_to_string(&stored.env_file).unwrap();
+        assert!(!env_text.contains("sk-header"), "{env_text}");
     }
 
     #[test]
@@ -2119,24 +2723,63 @@ command = "claude"
         let client = reqwest::Client::builder().build().unwrap();
         let mut config = RokoConfig::default();
         config.models.clear();
-        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        // Names that neither `[models]` nor the builtin models know.
+        config.agent.default_model = "no-default".to_string();
         config
             .agent
             .tier_models
-            .insert("mechanical".to_string(), "claude-haiku-4-5".to_string());
-        config.agent.fallback_model = Some("claude-haiku-4-5".to_string());
+            .insert("mechanical".to_string(), "no-tier-model".to_string());
+        config.agent.fallback_model = Some("no-fallback".to_string());
 
         let report = semantic_validate_config(&config, &client).await;
 
+        assert!(
+            report
+                .schema_warnings
+                .contains(&"agent.default_model references missing model 'no-default'".to_string())
+        );
+        assert!(
+            report.schema_warnings.contains(
+                &"agent.fallback_model references missing model 'no-fallback'".to_string()
+            )
+        );
         assert!(report.schema_warnings.contains(
-            &"agent.default_model references missing model 'claude-sonnet-4-6'".to_string()
+            &"agent.tier_models.mechanical references missing model 'no-tier-model'".to_string()
         ));
-        assert!(report.schema_warnings.contains(
-            &"agent.fallback_model references missing model 'claude-haiku-4-5'".to_string()
-        ));
-        assert!(report.schema_warnings.contains(
-            &"agent.tier_models.mechanical references missing model 'claude-haiku-4-5'".to_string()
-        ));
+    }
+
+    /// bug-c1950e: a builtin model needs no `[models]` entry, yet validation
+    /// warned that it was missing.
+    #[tokio::test]
+    async fn validate_accepts_a_builtin_default_model() {
+        let client = reqwest::Client::builder().build().unwrap();
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        config.agent.fallback_model = Some("claude-haiku-4-5".to_string());
+        // A builtin alias resolves too.
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "haiku".to_string());
+
+        let report = semantic_validate_config(&config, &client).await;
+        let model_warnings = report
+            .schema_warnings
+            .iter()
+            .filter(|warning| warning.contains("references missing model"))
+            .collect::<Vec<_>>();
+        assert!(model_warnings.is_empty(), "{model_warnings:?}");
+
+        // A name that neither `[models]` nor the builtins know still warns.
+        config.agent.default_model = "not-a-model".to_string();
+        let report = semantic_validate_config(&config, &client).await;
+        let missing = "agent.default_model references missing model 'not-a-model'".to_string();
+        assert!(
+            report.schema_warnings.contains(&missing),
+            "{:?}",
+            report.schema_warnings
+        );
     }
 
     #[tokio::test]

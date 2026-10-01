@@ -21,7 +21,11 @@ export interface TaskRowModel {
   /** Zero-based wave index from Kahn layering. */
   wave: number;
   state: GlyphState;
-  status: TaskStatus | 'pending';
+  /**
+   * The live run record's status. Without one: 'skipped' after the plan failed, 'marked_done'
+   * when tasks.toml marks the task done, else 'pending'.
+   */
+  status: TaskStatus | 'pending' | 'marked_done';
   role: string | null;
   model: string | null;
   time: { kind: 'estimate' | 'elapsed' | 'actual' | 'none'; ms: number | null };
@@ -29,7 +33,10 @@ export interface TaskRowModel {
   attempts: number;
   checks: CheckRun[];
   dependsOn: string[];
-  /** IDs of dependsOn entries whose row is not passed, accepted_with_failures, or skipped. */
+  /**
+   * IDs of dependsOn entries whose row is not passed, already_satisfied, accepted_with_failures,
+   * unverified, skipped, or marked done.
+   */
   waitingOn: string[];
   files: string[];
   description: string | null;
@@ -40,14 +47,19 @@ export interface TaskRowModel {
 
 /**
  * Statuses that are "done" for waitingOn and focusTaskId purposes:
- * passed, accepted_with_failures, skipped.
+ * passed, passed_with_preexisting_failures, already_satisfied, accepted_with_failures,
+ * unverified, skipped, marked_done.
  *
  * Note: 'cancelled' is NOT included — a cancelled dep still blocks.
  */
-const FINISHED_STATUSES: ReadonlySet<TaskStatus | 'pending'> = new Set([
+const FINISHED_STATUSES: ReadonlySet<TaskRowModel['status']> = new Set([
   'passed',
+  'passed_with_preexisting_failures',
+  'already_satisfied',
   'accepted_with_failures',
+  'unverified',
   'skipped',
+  'marked_done',
 ] as const);
 
 // ── buildTaskRows ──────────────────────────────────────────────────────────────
@@ -90,7 +102,7 @@ export function buildTaskRows(
       const liveTask = run.tasks[taskKey(planId, id)];
 
       // ── status ──────────────────────────────────────────────────────────────
-      let status: TaskStatus | 'pending';
+      let status: TaskRowModel['status'];
       if (liveTask) {
         // Live run record takes precedence.
         status = liveTask.status;
@@ -98,8 +110,9 @@ export function buildTaskRows(
         // Plan failed/cancelled and this task never started.
         status = 'skipped';
       } else if (wireTask.completed) {
-        // Wire task completed (pre-existing state, no live event yet).
-        status = 'passed';
+        // tasks.toml marks it done, but the run holds no record of it: done on
+        // paper, not a verified pass (bug-1cc498).
+        status = 'marked_done';
       } else {
         status = 'pending';
       }
@@ -166,7 +179,7 @@ export function buildTaskRows(
 
   // ── 5. Fill in waitingOn ───────────────────────────────────────────────────
   // Build a status map so we can look up each dependency's current status.
-  const statusById = new Map<string, TaskStatus | 'pending'>();
+  const statusById = new Map<string, TaskRowModel['status']>();
   for (const row of rows) {
     statusById.set(row.id, row.status);
   }

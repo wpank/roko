@@ -1,0 +1,29 @@
+# Arm fd_claude (S08 §4.9, S09 §4.2): Claude Code alone, non-interactive, with no Roko prompt, on the author's
+# subscription. D2 pins claude-opus-5-5, and D42 (dec-b78874) allows scripted `claude -p` runs on the subscription, so
+# nothing is billed and the ledger carries the API-equivalent cost. driver/run_cli.py has the isolation, caps and costs.
+# The arm has Claude Code's default tools except WebFetch and WebSearch: the truth suites are in a public repository
+# (gap-f253cf).
+schema_version = "vb.arm/1"
+
+[arm]
+id = "fd_claude"
+harness = "claude-code"               # S09's harness vocabulary
+runner = "run_cli"
+models_allow = ["claude-opus-5-5"]    # D2; the arm never has a fallback model
+line = "BL0"                          # the pilot's budget line (Pilot B, gap-327242); P1 runs pass --line BL1
+billed = false                        # the subscription: $0 billed
+label = "frontier·direct"
+
+[caps]                                # S08 §4.10, subscription arms: native behaviour with safety limits
+turns_per_task = 50                   # passed as --max-turns
+wallclock_s = 1200                    # the runner kills the session at 20 minutes
+usd_per_task = 5.00                   # passed as --max-budget-usd; the runner also kills past $5 of live spend
+
+[cli]
+program = "claude"                    # resolved on the driver's PATH
+effort = "high"                       # explicit: Claude Code's default effort differs from the API's (high)
+credentials = "keychain"              # keychain | credentials_file: how the fresh config directory signs in
+cache_write_ttl = "1h"                # S09 §4.1: subscription turns write the 1-hour cache
+
+[providers.anthropic]                 # what `vb run` admits as a network provider; claude signs in by itself
+base_url = "https://api.anthropic.com"

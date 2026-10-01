@@ -19,7 +19,13 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 3. **Claim it** before touching code:
    `python3 tools/work.py claim <id> --by "<who you are>" --branch work/<id>`.
    A claim is a small file in the main checkout's `.roko/work-claims/`. It is shared by every worktree and never
-   committed. Claims older than 24 hours count as stale. `tools/work.py claims` lists them.
+   committed. `claim` takes a lock and refuses an item whose files overlap a live claim (one on the same branch
+   excepted) or a file another worktree is changing, or whose dependencies are still open; `--force` claims it anyway
+   and says what it overrode. A claim expires by the size it was claimed at, counted from its last renewal: S after
+   8 hours, M 24, L 72 (24 when the item has no size). Renew one you hold with
+   `python3 tools/work.py claim <id> --renew --by "<who you are>"`. `tools/work.py claims` lists the claims and changes
+   nothing; `claims --prune` drops the claims of closed items. The work skills also pass `--executor`, `--via` and
+   `--size`; `close` copies them into `[closed]`.
 4. **Work in your own worktree and branch**, never in the main checkout:
    `git worktree add ../roko-work-<id> -b work/<id>` (from the current working branch). If you were started in
    a worktree already, `git switch -c work/<id>` there. Rust: `export CARGO_TARGET_DIR=<main checkout>/target`
@@ -35,9 +41,9 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 8. **Commit on your branch** with `Closes: <id>` as the last line of the message. Then record the closure and
    commit the item file:
    `python3 tools/work.py close <id> --commit HEAD --evidence "what changed, where, and which check proves it"`.
-   Do not run `render` or commit the generated views (`NOW.md`, `STATUS.md`, …) on your branch: every branch
-   would conflict on them. They are regenerated in the main checkout after merging. Your claim stays until the
-   closed item is merged.
+   Do not run `render` or commit the generated views (`NOW.md`, `STATUS.md`, `EPICS.md`, …) on your branch:
+   every branch would conflict on them. They are regenerated in the main checkout after merging. Your claim stays
+   until the closed item is merged.
 9. **Merge.** In batch mode the orchestrator merges your branch (below). Working alone, merge it yourself the
    same way.
 
@@ -46,12 +52,20 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 - **Batch:** one session runs `/work-batch N` (a Claude Code skill in `.claude/skills/`). It picks `next --n N`,
   claims the items, gives each to an agent in its own worktree, and merges the branches that pass.
 - **Independent sessions:** any number of sessions run `/work-next`. Each claims one item and does steps 3-9.
-- **No collisions:** `next` never hands out an item that is claimed, and never two items whose anchors point at
-  the same file. Items with no file anchors have an unknown footprint, so `next` flags them.
+- **No collisions:** `next` never hands out an item that is claimed, never two items whose anchors point at
+  the same file, and never an item anchored on a file that another worktree is changing (committed on its branch
+  since it forked, or uncommitted; `work/` and build output excepted). The skip reasons name that worktree;
+  `--ignore-worktrees` turns the scan off. Items with no file anchors have an unknown footprint, so `next` flags them.
 - **Git rules for workers and the orchestrator** (decided by Will, 2026-09-29):
   - Workers commit only on their own branch `work/<id>`, in their own worktree.
   - The orchestrator merges passing branches into the current working branch of the main checkout with
     `git merge --no-ff work/<id>`, without asking each time. It never merges into `main` and never pushes.
+  - Several sessions merge and commit in the main checkout, so every merge or commit there runs under the shared
+    lock, after checking that no merge is in progress, and stages explicit paths only (never `git add -A` or
+    `git add work/`):
+    `lockf -k -t 900 "$(git rev-parse --git-common-dir)/roko-merge.lock" bash -c 'test ! -e "$(git rev-parse --git-path MERGE_HEAD)" && git merge --no-ff work/<id> -m "…"'`
+    (macOS `lockf`; on Linux use `flock -w 900` with the same lock file). Workers committing in their own
+    worktree do not need the lock.
   - After each merge, re-run the item's `[[verify]]` on the merged tree. If it fails, stop merging and report.
   - The main checkout may have other sessions' uncommitted changes. Never stash, reset, restore, force or check
     out anything there. If git refuses a merge because of local changes or a conflict, run `git merge --abort`
@@ -70,6 +84,14 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
   "not now" decisions.
 - `size = "S" | "M" | "L"` (optional): S is under an hour, M about a day, L several days.
   Batches prefer items that fit.
+- `lane = "<key>"` (optional): what can run side by side, from `work/lanes.toml` (hand-edited; Will sets the caps).
+  Each lane lists the paths its items touch, how many agents it takes at once (`max`) and an optional shared `pool`
+  (such as the four Rust builders on the cargo lock). `next --lane L` picks one lane; `next --mix "rust-hot=1,paper=2"`
+  fills a quota per lane. Both stop at a lane's `max` and its pool's cap, counting live claims. Items without a lane
+  are in the uncapped lane `none`. `check --lint` lists items whose anchors fall outside their lane's paths.
+- `parent = "<spec id>"` (optional): the epic the item belongs to; it must be a `kind = "spec"` item.
+- `milestone = "MS0" … "ME"` (optional): one of `lanes.toml`'s milestones; within a goal, `next` takes earlier
+  milestones first, then `rank`, then severity.
 - Decisions and questions (`kind = "decision" | "question"`) need Will. `next` skips them; they are listed in
   `DECISIONS.md`.
 
@@ -79,21 +101,30 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 work/
   README.md                 this file
   goals.toml                hand-edited: active goals, highest priority first
-  items/<id>-<slug>.md      one file per item (tracked, public)
+  lanes.toml                hand-edited: lanes (paths, agents at once, pools) and milestones
+  items/<id>-<slug>.md      one file per open item (tracked, public): status open, in_progress or blocked
+  done/<id>-<slug>.md       finished items (status done), with their [closed] evidence
+  closed/<id>-<slug>.md     items closed without being done (status wontfix or superseded)
   parked/<id>-<slug>.md     parked items: not planned, kept for search (see "Parking")
   NOW.md                    GENERATED — what to work on next: the top items of each goal
   STATUS.md                 GENERATED — open items by subsystem, recently closed
   DRIFT.md                  GENERATED — open items whose recorded state may be out of date
   CLAUDE-OPEN.md            GENERATED — p0/p1 open items
   DECISIONS.md              GENERATED — open decisions and questions
+  EPICS.md                  GENERATED — per epic, its children closed out of total, open ones by lane, the next one
   TRIAGE.md                 GENERATED — imported items not yet verified against current code
   history/                  frozen records (old GAPS.md sections, migration summary)
+  telemetry/                the development record: events, harvest, metric definitions, rollup and manifests
+                            (not for workers; see telemetry/README.md)
 .roko/work-local/items/     same format, untracked: private/local items (e.g. application-specific work)
 .roko/work-claims/          untracked: who is working on what right now
 ```
 
 Regenerate the views with `python3 tools/work.py render` after changing items, and validate with
-`python3 tools/work.py check` (`check --lint` also lists weak verify commands).
+`python3 tools/work.py check` (`check --lint` also lists weak verify commands). To look without changing anything:
+`list [--goal G] [--lane L] [--kind K] [--status S] [--parent ID]` prints one line per item, `show <id>` an item with
+its children, dependents, claim and verify commands, and `status` the open, claimed and done counts by goal, lane and
+epic; each takes `--json`.
 
 ## Item format
 
@@ -111,6 +142,9 @@ severity = "p2"                   # p0 (broken core loop / security) … p3 (pol
 goal = "core"                     # optional: a key from goals.toml; open items without a goal are "later"
 rank = 1                          # optional: pin the order within a goal (lower first)
 size = "M"                        # optional: S | M | L
+lane = "rust-cold"                # optional: a lane from lanes.toml
+parent = "spec-e9d7ec"            # optional: the epic (a spec item) this item belongs to
+milestone = "MS1"                 # optional: one of lanes.toml's milestones
 hold = "Waiting for the auth redesign"   # optional: keeps the item out of `next` and NOW.md
 subsystem = ["roko-serve/jobs"]   # crate or crate/area; used to group STATUS.md
 created = 2026-09-26
@@ -131,6 +165,8 @@ command = "grep -rqw 'fn cancel_from_assigned_state' crates/roko-serve/ && cargo
 
 [closed]                          # filled when status leaves open: evidence of the transition
 # at = 2026-10-02, commit = "abc1234", run_id = "graph-…", by = "plan:…#T03", evidence = "…"
+# optional, from the claim (gap-0b9056): at_ts = "2026-10-02T09:15:00Z", executor = "claude-agent",
+# via = "work-batch", size = "S", claimed_at = "…Z", model = "…", assist = "…", forced = false
 +++
 ```
 
@@ -179,7 +215,7 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
 - A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item.
 - `triage = "unverified"` items (bulk imports) are listed in `TRIAGE.md` until someone checks them against the
   code and sets `triage = "verified"` and `last_verified`.
-- Moving or renaming files is never closure.
+- Moving or renaming files is never closure: the `status` field is. The file follows its status: `close` moves a done item to `done/` and a won't-fix or superseded one to `closed/`, `park` and `unpark` move it to and from `parked/`, and `work.py tidy` moves any item that sits in the wrong folder (for example one closed by an older `work.py` on a branch). `check` reports a misplaced item.
 
 ## Keeping the graph current
 

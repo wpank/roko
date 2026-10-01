@@ -20,4 +20,5 @@ jobs:
           # Must match workspace rust-version in Cargo.toml
           toolchain: "1.91"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace
+      # rust-toolchain.toml overrides rustup's default toolchain, so name 1.91 explicitly.
+      - run: cargo +1.91 check --workspace

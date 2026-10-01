@@ -126,6 +126,144 @@ impl TaskComplexityBand {
     }
 }
 
+/// A plan task's tier: how much it changes, and so how capable a model it
+/// needs.
+///
+/// `tasks.toml` keeps `tier` as free text. This is its one reading, shared by
+/// model routing, per-task budgets, turn caps, express mode, `plan validate`
+/// and the plan generator; [`Self::parse`] holds the only alias table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TaskTier {
+    /// Imports, renames, field additions. At most 20 lines of change.
+    Mechanical,
+    /// A single function or test. At most 50 lines of change. A task whose
+    /// tier is missing or unknown counts as focused.
+    #[default]
+    Focused,
+    /// Connects several modules. At most 150 lines of change.
+    Integrative,
+    /// API design and decomposition. At most 300 lines of change.
+    Architectural,
+}
+
+impl TaskTier {
+    /// Every tier, least demanding first.
+    pub const ALL: [Self; 4] = [
+        Self::Mechanical,
+        Self::Focused,
+        Self::Integrative,
+        Self::Architectural,
+    ];
+
+    /// Every label [`Self::parse`] accepts, in lowercase, with its tier: the
+    /// one alias table.
+    pub const LABELS: [(&'static str, Self); 20] = [
+        ("mechanical", Self::Mechanical),
+        ("trivial", Self::Mechanical),
+        ("fast", Self::Mechanical),
+        ("quick", Self::Mechanical),
+        ("t0", Self::Mechanical),
+        ("0", Self::Mechanical),
+        ("focused", Self::Focused),
+        ("standard", Self::Focused),
+        ("t1", Self::Focused),
+        ("1", Self::Focused),
+        ("integrative", Self::Integrative),
+        ("complex", Self::Integrative),
+        ("t2", Self::Integrative),
+        ("2", Self::Integrative),
+        ("architectural", Self::Architectural),
+        ("premium", Self::Architectural),
+        ("expert", Self::Architectural),
+        ("deep", Self::Architectural),
+        ("t3", Self::Architectural),
+        ("3", Self::Architectural),
+    ];
+
+    /// Read a tier label or alias ([`Self::LABELS`]), ignoring case and
+    /// surrounding whitespace.
+    ///
+    /// | Tier | Accepted |
+    /// |---|---|
+    /// | mechanical | `mechanical`, `trivial`, `fast`, `quick`, `t0`, `0` |
+    /// | focused | `focused`, `standard`, `t1`, `1` |
+    /// | integrative | `integrative`, `complex`, `t2`, `2` |
+    /// | architectural | `architectural`, `premium`, `expert`, `deep`, `t3`, `3` |
+    ///
+    /// Anything else, including an empty string, is `None`.
+    #[must_use]
+    pub fn parse(tier: &str) -> Option<Self> {
+        let tier = tier.trim().to_ascii_lowercase();
+        Self::LABELS
+            .iter()
+            .find(|(label, _)| *label == tier)
+            .map(|&(_, parsed)| parsed)
+    }
+
+    /// Canonical `tasks.toml` label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mechanical => "mechanical",
+            Self::Focused => "focused",
+            Self::Integrative => "integrative",
+            Self::Architectural => "architectural",
+        }
+    }
+
+    /// Most lines of change the plan generator gives a task of this tier.
+    #[must_use]
+    pub const fn max_loc(self) -> u32 {
+        match self {
+            Self::Mechanical => 20,
+            Self::Focused => 50,
+            Self::Integrative => 150,
+            Self::Architectural => 300,
+        }
+    }
+
+    /// Routing band: mechanical is fast, focused standard, and integrative
+    /// and architectural complex.
+    #[must_use]
+    pub const fn complexity_band(self) -> TaskComplexityBand {
+        match self {
+            Self::Mechanical => TaskComplexityBand::Fast,
+            Self::Focused => TaskComplexityBand::Standard,
+            Self::Integrative | Self::Architectural => TaskComplexityBand::Complex,
+        }
+    }
+}
+
+impl std::fmt::Display for TaskTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl Serialize for TaskTier {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskTier {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let label = String::deserialize(deserializer)?;
+        Self::parse(&label).ok_or_else(|| {
+            de::Error::custom(format!(
+                "unknown task tier '{label}' (expected mechanical, focused, integrative or \
+                 architectural)"
+            ))
+        })
+    }
+}
+
 /// Broad class of work — drives playbook recall and prompt templates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -517,6 +655,118 @@ const fn default_exclusive_files() -> bool {
     true
 }
 
+// ─── TaskHints (optional per-task hints) ──────────────────────────────────
+
+/// The optional routing, gate, prompt and scheduling hints of a `tasks.toml`
+/// task: the fields of [`Task`] beyond its core ones, with the same keys and
+/// value types, plus `rung`.
+///
+/// `roko-cli` flattens it into its task definition, so each field is a
+/// top-level `[[task]]` key. A default `TaskHints` sets none of them, and
+/// unset hints are not serialized.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskHints {
+    // ── Routing ────────────────────────────────────────────────────
+    /// Broad task class used for playbook recall and routing summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<TaskCategory>,
+    /// Optional complexity override for task-aware model routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_band: Option<TaskComplexityBand>,
+    /// How much multi-step reasoning this task needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<TaskReasoningLevel>,
+    /// Whether to optimize for latency or correctness depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_priority: Option<TaskSpeedPriority>,
+    /// Explicit model override for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    /// Optional backend/provider preference (`codex`, `cursor`, `claude`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_provider: Option<String>,
+    /// Whether this task should escalate to a stronger band on retry.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_boolish",
+        serialize_with = "serialize_optional_boolish"
+    )]
+    pub escalate_on_retry: Option<bool>,
+    /// `[routing.ladder]` rung the task starts on (`"strong"`), in place of
+    /// the start rung of its role and tier. Unlike a model slug, a rung name
+    /// is portable across workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rung: Option<String>,
+
+    // ── Gates ──────────────────────────────────────────────────────
+    /// Expected implementation rigor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_profile: Option<TaskQualityProfile>,
+    /// Invariant IDs this task must test (from `## Verification`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_invariants: Option<Vec<String>>,
+
+    // ── Prompt and context ─────────────────────────────────────────
+    /// How much inline/file context the prompt should preload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_weight: Option<TaskContextWeight>,
+    /// Skills to inject into prompts for this task (additive to role defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Path to similar existing code to follow as pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example_pattern: Option<String>,
+    /// Context files to read before implementing (injected into prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_files: Option<Vec<String>>,
+    /// Specific section of plan to focus on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_section: Option<String>,
+    /// Type signatures this task must define (from plan Quick Reference).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types_to_define: Option<Vec<String>>,
+    /// Formulas to implement verbatim (from PRD2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<String>>,
+    /// Imports needed from other crates/modules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imports: Option<Vec<String>>,
+    /// Whether the agent should research patterns before editing code.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_boolish",
+        serialize_with = "serialize_optional_boolish"
+    )]
+    pub research_before_edit: Option<bool>,
+
+    // ── Scheduling and infrastructure ──────────────────────────────
+    /// Tasks sharing a `parallel_group` value can run simultaneously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_group: Option<String>,
+    /// When true, no other task should touch this task's files. Unset means
+    /// `true`, as in [`Task`]; it is optional here only so that an authored
+    /// value can be told from the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_files: Option<bool>,
+    /// Free-form routing and memory tags used by playbook recall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// Reusable dependency labels that this task relies on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_tags: Option<Vec<String>>,
+    /// Fixture keys available while executing this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_keys: Option<Vec<String>>,
+    /// Sidecars or local services this task expects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_requirements: Option<Vec<String>>,
+    /// High-level integration surfaces touched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_surfaces: Option<Vec<String>>,
+}
+
 // ─── TaskMeta (plan-level state) ──────────────────────────────────────────
 
 /// Plan-level metadata stored in `[meta]` header of `tasks.toml`.
@@ -697,6 +947,80 @@ mod tests {
     fn complexity_band_orders_fast_to_complex() {
         assert!(TaskComplexityBand::Fast < TaskComplexityBand::Standard);
         assert!(TaskComplexityBand::Standard < TaskComplexityBand::Complex);
+    }
+
+    #[test]
+    fn task_tier_parses_every_alias() {
+        let table: [(TaskTier, &[&str]); 4] = [
+            (
+                TaskTier::Mechanical,
+                &["mechanical", "trivial", "fast", "quick", "t0", "0"],
+            ),
+            (TaskTier::Focused, &["focused", "standard", "t1", "1"]),
+            (
+                TaskTier::Integrative,
+                &["integrative", "complex", "t2", "2"],
+            ),
+            (
+                TaskTier::Architectural,
+                &["architectural", "premium", "expert", "deep", "t3", "3"],
+            ),
+        ];
+        for (tier, aliases) in table {
+            for alias in aliases {
+                assert_eq!(TaskTier::parse(alias), Some(tier), "{alias}");
+                let padded_upper = format!("  {}\t", alias.to_ascii_uppercase());
+                assert_eq!(
+                    TaskTier::parse(&padded_upper),
+                    Some(tier),
+                    "{padded_upper:?}"
+                );
+            }
+            assert_eq!(TaskTier::parse(tier.label()), Some(tier));
+            assert_eq!(tier.to_string(), tier.label());
+        }
+        assert_eq!(table.map(|(tier, _)| tier), TaskTier::ALL);
+        let listed: usize = table.iter().map(|(_, aliases)| aliases.len()).sum();
+        assert_eq!(TaskTier::LABELS.len(), listed, "LABELS holds exactly these");
+        for (label, tier) in TaskTier::LABELS {
+            assert_eq!(TaskTier::parse(label), Some(tier), "{label}");
+        }
+
+        for unknown in ["mechancial", "", "  ", "unknown", "t4", "4", "fast-ish"] {
+            assert_eq!(TaskTier::parse(unknown), None, "{unknown:?}");
+        }
+        assert_eq!(TaskTier::default(), TaskTier::Focused);
+    }
+
+    #[test]
+    fn task_tier_sets_band_and_loc_budget() {
+        let bands = TaskTier::ALL.map(TaskTier::complexity_band);
+        assert_eq!(
+            bands,
+            [
+                TaskComplexityBand::Fast,
+                TaskComplexityBand::Standard,
+                TaskComplexityBand::Complex,
+                TaskComplexityBand::Complex,
+            ]
+        );
+        assert_eq!(TaskTier::ALL.map(TaskTier::max_loc), [20, 50, 150, 300]);
+        assert!(TaskTier::Mechanical < TaskTier::Architectural);
+    }
+
+    #[test]
+    fn task_tier_serde_reads_aliases_and_writes_labels() {
+        for tier in TaskTier::ALL {
+            let json = serde_json::to_string(&tier).unwrap();
+            assert_eq!(json, format!("\"{}\"", tier.label()));
+            assert_eq!(serde_json::from_str::<TaskTier>(&json).unwrap(), tier);
+        }
+        assert_eq!(
+            serde_json::from_str::<TaskTier>("\"T0\"").unwrap(),
+            TaskTier::Mechanical
+        );
+        let error = serde_json::from_str::<TaskTier>("\"mechancial\"").unwrap_err();
+        assert!(error.to_string().contains("unknown task tier 'mechancial'"));
     }
 
     #[test]

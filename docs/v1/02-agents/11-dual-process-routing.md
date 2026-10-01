@@ -492,7 +492,7 @@ or Standard → Fast (de-escalating) based on the task and model fleet.
 
 ### Router-R1: RL-Trained Multi-Round Router
 
-Chen et al. (2025, arXiv:2506.09033, NeurIPS 2025). Router instantiated as a
+Zhang et al. (2025, arXiv:2506.09033, NeurIPS 2025). Router instantiated as a
 capable LLM. Interleaves "think" actions (internal deliberation) with "route"
 actions (dynamic model invocation). Integrates each response into evolving
 context for multi-round routing. Open-sourced model weights on HuggingFace.
@@ -538,40 +538,24 @@ o4-mini performance at 10% of cost on out-of-domain queries.
 
 ## Citations
 
-1. Kahneman, D. (2011). "Thinking, Fast and Slow." — Dual-process theory.
-2. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow: Advances in
-   Dual-Process Theorizing." Current Directions in Psychological Science.
-   — Competing intuitions, activation strength.
-3. De Neys, W. (Ed.) (2018). "Dual Process Theory 2.0." Routledge. — Revised
-   framework.
-4. Evans, J. (2019). "Type 3" metacognitive process concept. — Triple-process
-   theory.
-5. Li, L. et al. (2010). "A contextual-bandit approach to personalized news
-   article recommendation." WWW 2010. — LinUCB algorithm.
+1. Kahneman, D. (2011). "Thinking, Fast and Slow."
+2. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow: Advances in Dual-Process Theorizing." Current Directions in Psychological Science.
+3. De Neys, W. (Ed.) (2018). "Dual Process Theory 2.0." Routledge.
+4. Evans, J. (2019). "Type 3" metacognitive process concept.
+5. Li, L. et al. (2010). "A contextual-bandit approach to personalized news article recommendation." WWW 2010.
 6. Chen, L. et al. (2023). "FrugalGPT." — Cascade routing.
 7. Friston, K. (2010). "The free-energy principle: a unified brain theory?"
-   — Active inference basis.
-8. Chen, Z. et al. (2025). "Router-R1: Teaching LLMs Multi-Round Routing via
-   RL." NeurIPS 2025. arXiv:2506.09033. — RL-trained router.
-9. Qian, C. et al. (2025). "xRouter: Cost-Aware LLMs Orchestration via RL."
-   Salesforce. arXiv:2510.08439. — 80–90% GPT-5 accuracy at <1/5 cost.
-10. Ong, I. et al. (2025). "RouteLLM: Learning to Route LLMs with Preference
-    Data." ICLR 2025. arXiv:2406.18665. — 85% cost reduction on MT Bench.
-11. Dekoninck, J. et al. (2025). "A Unified Approach to Routing and Cascading."
-    ICLR 2025. arXiv:2410.10347. — +14% on SWE-Bench.
-12. arXiv:2505.12601 (2025). "Rethinking Predictive Modeling for LLM Routing:
-    When Simple kNN Beats Complex Learned Routers." — kNN competitive.
-13. Song, J. et al. (2025). "IRT-Router." ACL 2025. arXiv:2506.01048.
-    — Psychometric routing.
-14. Ding, Y. et al. (2025). "BEST-Route." ICML 2025. arXiv:2506.22716.
-    — Test-time compute allocation. 60% cost reduction.
-15. Zhou, Y. et al. (2022). "Mixture-of-Experts with Expert Choice Routing."
-    arXiv:2202.09368. — Expert choice routing.
+8. Zhang et al. (2025). "Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning." NeurIPS 2025. arXiv:2506.09033.
+9. Qian, C. et al. (2025). "xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning." Salesforce. arXiv:2510.08439.
+10. Ong, I. et al. (2025). "RouteLLM: Learning to Route LLMs with Preference Data." ICLR 2025. arXiv:2406.18665.
+11. Dekoninck, J. et al. (2025). "A Unified Approach to Routing and Cascading." ICLR 2025. arXiv:2410.10347.
+12. arXiv:2505.12601 (2025). "Rethinking Predictive Modeling for LLM Routing: When Simple kNN Beats Complex Learned Routers."
+13. Song et al. (2025). "IRT-Router." ACL 2025. arXiv:2506.01048.
+14. Ding et al. (2025). "BEST-Route." ICML 2025. arXiv:2506.22716.
+15. Zhou, Y. et al. (2022). "Mixture-of-Experts with Expert Choice Routing." arXiv:2202.09368.
 16. arXiv:2508.21141 (2025). "PILOT: Preference-Prior Informed LinUCB."
-    — Offline priors + online bandits.
-17. arXiv:2509.25426 (2025). "RADAR." — IRT + multi-objective optimization.
-18. Varshney, T. & Surla, A. (2026). "LLM Router: Prefill is All You Need."
-    arXiv:2603.20895. — Near-zero overhead routing.
+17. arXiv:2509.25426 (2025). "RADAR."
+18. Varshney, T. & Surla, A. (2026). "LLM Router: Rethinking Routing with Prefill Activations." arXiv:2603.20895.
 19. Implementation plans `modelrouting/2G.10` through `modelrouting/2G.17`.
 20. Implementation plan `modelrouting/11-research-context.md`.
 21. Refactoring PRD §02-five-layers — Dual-Process Tier Router specification.

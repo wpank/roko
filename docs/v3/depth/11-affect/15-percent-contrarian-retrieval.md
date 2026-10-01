@@ -21,8 +21,7 @@ An overconfident agent always sees at least 15% of context from failures. This i
 implemented as a rolling window schedule across 200 ticks, not a fixed per-query
 quota.
 
-The mechanism is grounded in Bower's (1981) associative network theory and validated
-by Emotional RAG (2024, arXiv:2410.23041).
+The mechanism is grounded in Bower's (1981) associative network theory. Emotional RAG (2024, arXiv:2410.23041) supports only the mood-congruent half: emotion-aware retrieval improved role-playing agents on three datasets (§III). It tests no contrarian quota; the 15% figure is Roko's own choice.
 
 ---
 

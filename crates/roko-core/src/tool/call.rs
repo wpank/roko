@@ -318,9 +318,11 @@ pub enum ToolError {
     PathOutsideWorktree(PathBuf),
 
     /// A path argument named a file that holds provider keys or roko
-    /// credentials (`.roko/.env`, `.roko/secrets.toml`, anything in
-    /// `~/.roko`; see [`crate::child_env::is_key_file`]). Refused inside
-    /// the worktree too.
+    /// credentials: a key file in a `.roko` directory, `~/.roko` included
+    /// (see [`crate::child_env::is_key_file`]), or a roko config file such as
+    /// `roko.toml` while it holds a secret (see
+    /// [`crate::child_env::is_config_with_secrets`]). Refused inside the
+    /// worktree too.
     #[error("provider key file blocked: {0}")]
     KeyFileBlocked(PathBuf),
 

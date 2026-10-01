@@ -1,0 +1,39 @@
+# Arm roko_fixed (S08 §4.9, S09 §4.2): gpt-oss-120b inside Roko's Graph engine, the arm the pilot exists for. It has
+# one pinned model with no fallbacks, gates with at most 2 retries, S07's gate off and the learning loops held off.
+# The runner is driver/run_roko.py, which drives the built binary with `plan validate --strict --dag`, then
+# `plan run`. The plan and roko.toml come from driver/planemit.py.
+schema_version = "vb.arm/1"
+
+[arm]
+id = "roko_fixed"
+harness = "roko"                      # S09's harness vocabulary
+runner = "run_roko"
+models_allow = ["gpt-oss-120b"]
+line = "BL0"                          # S09 §4.6: the pilot's budget line (seeds 2-3 need its cap raised, W10 rec 7)
+billed = true
+label = "cheap·roko"
+
+[caps]                                # S08 §4.10: 150K input tokens and 12 turns per attempt, Roko ≤ 3 attempts
+turns_per_attempt = 12                # roko.toml [pipeline.<tier>] max_turns
+input_tokens_per_attempt = 150000     # Roko has no such cap: the metering proxy holds each attempt (conversation) to it
+turns_per_task = 36
+input_tokens_per_task = 450000        # the metering proxy refuses the task's calls once its input reaches this
+wallclock_s = 1200                    # the runner kills Roko's session at this limit
+model_calls_per_task = 45             # 3 attempts x (12 turns + 3 auxiliary calls after a failed gate)
+usd_per_task = 0.60                   # the token caps bind first ($0.43), which also becomes Roko's own plan budget
+max_output_tokens = 8192              # roko.toml max_output, and the worst case
+command_timeout_s = 120               # the visible check's timeout, as a verify step and a gate rung
+
+[roko]
+binary = "target/debug/roko"          # relative to the repository root; each attempt records the build it ran
+build = ""                            # a git sha pins the binary: a different build stops the task
+provider_kind = "openai_compat"
+context_window = 128000
+tier = "focused"
+max_retries = 2
+skip_enrichment = true                # explicit per arm (B §2.3)
+
+[providers.cerebras]
+base_url = "https://api.cerebras.ai/v1"
+api_key_env = "CEREBRAS_API_KEY"
+max_tokens_param = "max_completion_tokens"

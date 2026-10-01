@@ -1,6 +1,7 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
+use super::helper_calls::SideCall;
 use super::*;
 
 // ─── Provider failover ──────────────────────────────────────────────────────
@@ -10,6 +11,9 @@ use super::*;
 /// The error is non-retryable, so `TaskExecutorCell` fails the attempt at once
 /// instead of re-running a dispatch that would be refused again.
 const PROVIDER_EXHAUSTED_CATEGORY: &str = "provider_exhausted";
+
+/// `role` of the cost and efficiency rows of a call failover refused.
+const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 
 /// A model to dispatch: the key sent to the bridge and the config resolving it.
 #[derive(Clone)]
@@ -36,6 +40,54 @@ struct ProviderRefusal {
     /// credentials, out of usage, billing), unlike an open circuit that may
     /// already have recovered.
     definitive: bool,
+    /// Why, as a class ([`roko_learn::telemetry::FailoverRefusal::class`]).
+    class: &'static str,
+    /// Whether a call reached the provider before it refused.
+    called: bool,
+    /// When the refusal happened (unix ms).
+    at_ms: i64,
+}
+
+/// The models failover passed over before the one that ran (bug-35379d).
+/// Empty when the planned model ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct FailoverChain {
+    /// Refused model keys, in order: the planned model first.
+    pub(super) models: Vec<String>,
+    /// Why the planned model did not run.
+    pub(super) reason: Option<String>,
+    /// Every refusal, with its class and whether a call was made
+    /// (bug-220385).
+    pub(super) refusals: Vec<roko_learn::telemetry::FailoverRefusal>,
+}
+
+impl FailoverChain {
+    fn of(refusals: &[ProviderRefusal]) -> Self {
+        Self {
+            models: refusals
+                .iter()
+                .map(|refusal| refusal.model_key.clone())
+                .collect(),
+            reason: refusals.first().map(|refusal| {
+                format!(
+                    "`{}` on `{}`: {}",
+                    refusal.model_key, refusal.provider_id, refusal.reason
+                )
+            }),
+            refusals: refusals
+                .iter()
+                .map(|refusal| roko_learn::telemetry::FailoverRefusal {
+                    model: refusal.model_key.clone(),
+                    provider: refusal.provider_id.clone(),
+                    class: refusal.class.to_string(),
+                    reason: refusal.reason.clone(),
+                    called: refusal.called,
+                    at: Some(refusal.at_ms),
+                    until: refusal.until_ms,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Provider kinds that serve the same model family over another transport.
@@ -95,12 +147,21 @@ impl GraphTaskDispatcher {
     /// retry is burned. An explicit `--model` override is a pin and never
     /// fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
+    ///
+    /// Returns the dispatch with the models failover passed over, which the
+    /// attempt's records carry beside the one that ran. A call a provider
+    /// refused gets cost and efficiency rows of its own, keyed by
+    /// `attempt_key` (role `failover_refused`, bug-220385). Each call starts
+    /// on `progress`, so a call the watchdog cancels is recorded against the
+    /// model it ran on (bug-aa2044).
     pub(super) async fn run_bridge_with_failover(
         &self,
         spec: &TaskExecutionSpec,
         task_id: &str,
+        attempt_key: String,
         mut request: AgentDispatchRequest,
-    ) -> Result<crate::dispatch_v2::AgentResultDispatch> {
+        progress: Option<&super::watchdog::AttemptProgress>,
+    ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
             model_key: request.model_key.clone(),
@@ -126,6 +187,13 @@ impl GraphTaskDispatcher {
             }
 
             request.model_key = candidate.model_key.clone();
+            if let Some(progress) = progress {
+                progress.call_started(
+                    self.resolve_candidate(&candidate),
+                    FailoverChain::of(&refusals),
+                );
+            }
+            let call_started = Instant::now();
             let dispatch = match &candidate.config {
                 Some(config) => {
                     self.factory
@@ -139,7 +207,7 @@ impl GraphTaskDispatcher {
                 message: error.to_string(),
             })?;
             if dispatch.result.success {
-                return Ok(dispatch);
+                return Ok((dispatch, FailoverChain::of(&refusals)));
             }
             let Some(exhaustion) = dispatch
                 .result
@@ -149,7 +217,7 @@ impl GraphTaskDispatcher {
                 .ok()
                 .and_then(roko_agent::provider::error_classify::detect_provider_exhaustion)
             else {
-                return Ok(dispatch);
+                return Ok((dispatch, FailoverChain::of(&refusals)));
             };
 
             let cooldown_ms = i64::try_from(
@@ -171,10 +239,25 @@ impl GraphTaskDispatcher {
             // The caller settles only the result it receives; account the
             // refused call here.
             let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
-            self.task_spend
-                .record(&format!("{}/{task_id}", spec.plan_id), refused_cost_usd);
+            self.task_spend.record(
+                &format!("{}/{task_id}", spec.plan_id),
+                &dispatch.result.usage,
+            );
             self.budget_ledger
                 .settle(&spec.plan_id, 0, refused_cost_usd)?;
+            let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();
+            self.write_side_call_rows(
+                spec,
+                task_id,
+                &attempt_key,
+                &format!("{attempt_key}/refused-{}", refused_calls + 1),
+                FAILOVER_REFUSED_ROLE,
+                &SideCall::of(
+                    &dispatch,
+                    u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                ),
+            )
+            .await;
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id,
@@ -192,6 +275,9 @@ impl GraphTaskDispatcher {
                 reason: exhaustion.message,
                 until_ms: Some(until_ms),
                 definitive: true,
+                class: "provider_exhausted",
+                called: true,
+                at_ms: chrono::Utc::now().timestamp_millis(),
             });
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true));
@@ -218,7 +304,11 @@ impl GraphTaskDispatcher {
 
         let target = self.resolve_candidate(candidate);
         let provider_id = target.provider_id.clone();
-        let refusal = |reason: String, until_ms: Option<i64>, definitive: bool| ProviderRefusal {
+        // Skipped before any call.
+        let refusal = |class: &'static str,
+                       reason: String,
+                       until_ms: Option<i64>,
+                       definitive: bool| ProviderRefusal {
             model_key: candidate.model_key.clone(),
             model_slug: target.model_slug.clone(),
             provider_id: provider_id.clone(),
@@ -226,9 +316,13 @@ impl GraphTaskDispatcher {
             reason,
             until_ms,
             definitive,
+            class,
+            called: false,
+            at_ms: chrono::Utc::now().timestamp_millis(),
         };
         let Some(provider) = target.provider_config.as_ref() else {
             return Some(refusal(
+                "not_configured",
                 format!("provider `{provider_id}` is not configured"),
                 None,
                 true,
@@ -236,6 +330,7 @@ impl GraphTaskDispatcher {
         };
         if let ProviderRuntime::Unsupported(unsupported) = &target.runtime {
             return Some(refusal(
+                "not_dispatchable",
                 format!(
                     "provider `{provider_id}` is not dispatchable: {}",
                     unsupported.detail
@@ -251,6 +346,7 @@ impl GraphTaskDispatcher {
             .contains(&provider_id)
         {
             return Some(refusal(
+                "disabled",
                 "listed in routing.disabled_providers".to_string(),
                 None,
                 false,
@@ -259,6 +355,7 @@ impl GraphTaskDispatcher {
         let config = candidate.config.as_ref().unwrap_or(&self.config);
         if !config.provider_available_for_model_key(&candidate.model_key) {
             return Some(refusal(
+                "no_credentials",
                 missing_credentials_reason(provider, &provider_id),
                 None,
                 true,
@@ -269,12 +366,18 @@ impl GraphTaskDispatcher {
             return None;
         }
         let health = registry.get(&provider_id);
-        let (reason, definitive) = match health.failure_window.back().map(|r| r.error_class) {
-            Some(ErrorClass::Exhausted) => ("out of usage", true),
-            Some(ErrorClass::Billing) => ("billing failure", true),
-            _ => ("circuit open after repeated failures", false),
+        let (class, reason, definitive) = match health.failure_window.back().map(|r| r.error_class)
+        {
+            Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
+            Some(ErrorClass::Billing) => ("billing", "billing failure", true),
+            _ => (
+                "circuit_open",
+                "circuit open after repeated failures",
+                false,
+            ),
         };
         Some(refusal(
+            class,
             reason.to_string(),
             health.cooldown_until,
             definitive,
@@ -522,7 +625,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::graph_task_dispatch::tests::make_task_def;
+    use crate::graph_task_dispatch::tests::{
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, final_turn, jsonl_rows_where,
+        make_spec, make_task_def, recording_feedback, spawn_openai_mock, tool_call_turn,
+    };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
 
@@ -556,96 +662,6 @@ exit 1
         std::fs::read_to_string(calls).map_or(0, |log| log.lines().count())
     }
 
-    /// Serve canned OpenAI-compatible chat responses, one per connection,
-    /// capturing each request body.
-    fn spawn_openai_mock(
-        responses: Vec<serde_json::Value>,
-    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
-        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let requests = Arc::clone(&captured);
-        std::thread::spawn(move || {
-            for response in responses {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                let mut buf = Vec::new();
-                let mut chunk = [0_u8; 8192];
-                let body_start = loop {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
-                };
-                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
-                let length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                while buf.len() < body_start + length {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                }
-                let end = buf.len().min(body_start + length);
-                requests.lock().push(
-                    serde_json::from_slice(&buf[body_start..end])
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                let body = response.to_string();
-                let wire = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(wire.as_bytes());
-            }
-        });
-        (base_url, captured)
-    }
-
-    fn tool_call_turn(id: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({
-            "id": format!("chatcmpl-{id}"),
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": arguments.to_string() }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
-        })
-    }
-
-    fn final_turn(text: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "chatcmpl-final",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": text },
-                "finish_reason": "stop"
-            }],
-            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
-        })
-    }
-
     /// `claude_cli` (fake script) plus two OpenAI-compatible fallbacks: one
     /// whose key env var is never set, and one pointed at `api_base_url`.
     fn failover_config(claude: &Path, api_base_url: &str, fallback_models: &[&str]) -> RokoConfig {
@@ -657,9 +673,9 @@ exit 1
                     api_key_env: key_env.map(str::to_string),
                     command,
                     args: None,
-                    timeout_ms: Some(15_000),
-                    ttft_timeout_ms: Some(15_000),
-                    connect_timeout_ms: Some(5_000),
+                    timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,
@@ -727,6 +743,10 @@ exit 1
             api_model("mock_api", "api-model-1"),
         );
         config.routing.fallback_models = fallback_models.iter().map(|m| m.to_string()).collect();
+        // The mock API answers without SSE. The stall watchdog would attach
+        // live output, over which the tool loop streams, so keep it off.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
         config
     }
 
@@ -740,7 +760,7 @@ exit 1
             title: "Implement with failover".to_string(),
             description: Some("Edit notes and write hello.txt".to_string()),
             model_hint: Some(model_hint.to_string()),
-            timeout_secs: 30,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 2,
             ..make_task_def("focused")
         };
@@ -750,7 +770,10 @@ exit 1
                 toml::Value::String("p-failover".to_string()),
             ),
             ("title".to_string(), toml::Value::String(task.title.clone())),
-            ("timeout_secs".to_string(), toml::Value::Integer(30)),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
             ("max_retries".to_string(), toml::Value::Integer(2)),
             (
                 "task_def_json".to_string(),
@@ -883,6 +906,164 @@ exit 1
         );
     }
 
+    /// One attempt of a task planned for `claude-sonnet-4-6` on a Claude CLI
+    /// that refuses with its session limit, which fails over to
+    /// `api-model`, answering as `api-model-1`, with every record written
+    /// under the returned workdir's `.roko` for the returned run.
+    async fn fail_over_from_an_exhausted_cli(temp: &tempfile::TempDir) -> (PathBuf, &'static str) {
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let mut answer = final_turn("fallback finished");
+        answer["model"] = serde_json::json!("api-model-1");
+        let (base_url, _requests) = spawn_openai_mock(vec![answer]);
+        let config = Arc::new(failover_config(&claude, &base_url, &["api-model"]));
+        let health = Arc::new(
+            roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+                &temp.path().join("provider-health.json"),
+            ),
+        );
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(health),
+        );
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T08".to_string(),
+            title: "Implement with failover".to_string(),
+            model_hint: Some("claude-sonnet-4-6".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let run = "graph-failover-run";
+        dispatcher
+            .dispatch(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .expect("the fallback runs the task");
+        drop(dispatcher);
+        assert_eq!(invocations(&calls), 1);
+        (workdir, run)
+    }
+
+    /// A call a provider refused for its usage limit is on the attempt's
+    /// records (bug-220385): the verdict and episode list the refusal with
+    /// its class, and the refused call has its own cost and efficiency rows.
+    #[tokio::test]
+    async fn an_exhaustion_refusal_during_failover_is_recorded() {
+        let temp = tempdir().expect("tempdir");
+        let (workdir, run) = fail_over_from_an_exhausted_cli(&temp).await;
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        let key = verdict["attempt_key"].as_str().expect("attempt key");
+        let planned = verdict["executed"]["model_requested"]
+            .as_str()
+            .expect("planned model");
+        let refusals = verdict["executed"]["failover_refusals"]
+            .as_array()
+            .expect("failover refusals");
+        assert_eq!(refusals.len(), 1, "{verdict}");
+        let refusal = &refusals[0];
+        assert_eq!(refusal["model"], planned);
+        assert_eq!(refusal["provider"], "claude_cli");
+        assert_eq!(refusal["class"], "provider_exhausted");
+        assert_eq!(refusal["called"], true);
+        assert!(
+            refusal["at"].is_i64() && refusal["until"].is_i64(),
+            "{refusal}"
+        );
+        let reason = refusal["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("session limit"), "{reason}");
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("episodes");
+        assert_eq!(
+            episodes[0].extra["failover_refusals"][0]["class"],
+            "provider_exhausted"
+        );
+
+        let refused = |row: &serde_json::Value| row["role"] == FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, refused).await;
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0]["attempt_key"], key);
+        assert_eq!(costs[0]["provider"], "claude_cli");
+        assert_eq!(costs[0]["success"], false);
+        let efficiency =
+            jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                    && refused(row)
+            })
+            .await;
+        assert_eq!(efficiency[0]["attempt_id"], format!("{key}/refused-1"));
+    }
+
+    /// A task planned for an exhausted provider runs on a fallback: the
+    /// attempt's verdict, episode, cost and efficiency rows name the planned
+    /// model, why it did not run, and the model that did.
+    #[tokio::test]
+    async fn failover_records_planned_and_substitute_model() {
+        let temp = tempdir().expect("tempdir");
+        let (workdir, run) = fail_over_from_an_exhausted_cli(&temp).await;
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let executed = &verdicts[0]["executed"];
+        let planned = executed["model_requested"].as_str().expect("planned model");
+        assert_eq!(executed["failover_chain"], serde_json::json!([planned]));
+        let reason = executed["failover_reason"]
+            .as_str()
+            .expect("failover reason");
+        assert!(reason.contains("session limit"), "{reason}");
+        assert!(reason.contains("claude_cli"), "{reason}");
+        assert_eq!(executed["provider"], "mock_api");
+        assert_eq!(executed["model_dispatched"], "api-model-1");
+        assert_eq!(executed["model_reported"], "api-model-1");
+        assert_eq!(executed["model_mismatch"], false);
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].model, "api-model-1");
+        assert_eq!(episodes[0].extra["substituted_from"], planned);
+        assert_eq!(episodes[0].extra["failover_reason"], reason);
+        // The refused call has rows of its own; these are the call that ran.
+        let ran = |row: &serde_json::Value| row["role"] != FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, ran).await;
+        assert_eq!(costs[0]["model"], "api-model-1");
+        assert_eq!(costs[0]["substituted_from"], planned);
+        assert_eq!(costs[0]["substitution_reason"], reason);
+        let efficiency =
+            jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA && ran(row)
+            })
+            .await;
+        assert_eq!(efficiency[0]["model"], "api-model-1");
+        assert_eq!(efficiency[0]["substituted_from"], planned);
+    }
+
     #[tokio::test]
     async fn exhausted_provider_without_usable_fallback_fails_once_with_fix_hint() {
         let temp = tempdir().expect("tempdir");
@@ -969,9 +1150,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                 api_key_env: None,
                 command: Some(claude.display().to_string()),
                 args: None,
-                timeout_ms: Some(15_000),
-                ttft_timeout_ms: Some(15_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1004,9 +1185,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                     api_key_env: Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET".to_string()),
                     command: None,
                     args: None,
-                    timeout_ms: Some(15_000),
-                    ttft_timeout_ms: Some(15_000),
-                    connect_timeout_ms: Some(5_000),
+                    timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,

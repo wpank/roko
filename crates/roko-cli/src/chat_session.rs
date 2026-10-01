@@ -14,7 +14,8 @@ use anyhow::Result;
 use futures::StreamExt;
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::agent::{Agent, AgentResult};
-use roko_agent::claude_cli_agent::ClaudeCliAgent;
+use roko_agent::claude_cli_agent::{ClaudeCliAgent, ClaudeIsolation};
+use roko_agent::mcp::workspace_mcp_config;
 use roko_agent::model_call_service::ModelCallService;
 use roko_agent::process::{
     GRACE_STDIN_CLOSE_MS, apply_credential_scrub, config_file_env_names, kill_tree,
@@ -36,7 +37,7 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -80,12 +81,10 @@ impl ChatFeedbackRuntime {
             .join("learn")
             .join("cascade-router.json");
         let cascade_model_slugs = capture_runtime_model_slugs(config, model_slug);
-        let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-            Arc::new(CascadeRouter::load_or_new(
-                &cascade_path,
-                cascade_model_slugs,
-            ))
-        });
+        // The snapshot first takes what a crashed writer journaled and never
+        // saved (bug-8a78e1).
+        let cascade_router = (!cascade_model_slugs.is_empty())
+            .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
         // Observations are journaled in the learning WAL until `flush` saves
         // them (find-0dc1d5).
         let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
@@ -407,6 +406,10 @@ pub struct ChatAgentSession {
     pub provider_base_url: Option<String>,
     /// Env var name for the provider's API key (e.g. `ANTHROPIC_API_KEY`).
     pub provider_api_key_env: Option<String>,
+    /// Run Claude with `--dangerously-skip-permissions`. Mirrors the
+    /// workspace's `runner.dangerously_skip_permissions`, which is off by
+    /// default, so skipping Claude's permission checks is an explicit opt-in.
+    pub dangerously_skip_permissions: bool,
 }
 
 impl ChatAgentSession {
@@ -465,6 +468,7 @@ impl ChatAgentSession {
             timeout,
             provider_base_url,
             provider_api_key_env,
+            dangerously_skip_permissions: config.runner.dangerously_skip_permissions,
         })
     }
 
@@ -711,6 +715,7 @@ impl ChatAgentSession {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 
@@ -1010,7 +1015,8 @@ impl ChatAgentSession {
         )
         .with_effort(&self.effort)
         .with_bare_mode(false)
-        .with_credential_scrub(self.credential_scrub());
+        .with_credential_scrub(self.credential_scrub())
+        .with_dangerously_skip_permissions(self.dangerously_skip_permissions);
 
         if !self.system_prompt.is_empty() {
             agent = agent.with_system_prompt(&self.system_prompt);
@@ -1209,12 +1215,17 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
 }
 
-/// Build the Claude CLI command used by the streaming turn path.
+/// Build the Claude CLI command used by the streaming turn path. Like every
+/// `ClaudeCliAgent` run, it is isolated from the user's own Claude Code
+/// configuration (`--add-dir`, `--setting-sources`, `--strict-mcp-config`
+/// and their environment, from [`ClaudeIsolation`]).
 fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioCommand {
+    let isolation = ClaudeIsolation::new(&session.workdir);
     let mut cmd = TokioCommand::new(program);
     cmd.arg("--print")
         .arg("--verbose")
@@ -1225,7 +1236,8 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         .arg("--effort")
         .arg(&session.effort)
         .arg("--settings")
-        .arg(roko_agent::claude_cli_agent::build_settings_json());
+        .arg(roko_agent::claude_cli_agent::build_settings_json())
+        .args(isolation.args());
 
     if session.model_selection.backend_slug != "claude-haiku-4-5" {
         cmd.arg("--fallback-model").arg("claude-haiku-4-5");
@@ -1239,7 +1251,6 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
     }
     if let Some(ref mcp_config) = session.mcp_config {
         cmd.arg("--mcp-config").arg(mcp_config);
-        cmd.arg("--strict-mcp-config");
     }
     if let Some(ref resume) = session.session_id
         && !resume.trim().is_empty()
@@ -1247,7 +1258,9 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         cmd.arg("--resume").arg(resume);
     }
 
-    cmd.arg("--dangerously-skip-permissions");
+    if session.dangerously_skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
+    }
     cmd.arg("--max-turns")
         .arg(OperatingFrequency::Theta.turn_limit().to_string());
 
@@ -1258,9 +1271,17 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         .kill_on_drop(true);
     set_process_group(&mut cmd);
     apply_credential_scrub(&mut cmd, &session.credential_scrub());
+    for (key, value) in isolation.env() {
+        cmd.env(key, value);
+    }
     cmd.env("CARGO_INCREMENTAL", "0");
     cmd.env("CARGO_BUILD_JOBS", "2");
     cmd.env_remove("CLAUDECODE");
+    tracing::debug!(
+        isolation = ?isolation.tags(),
+        mcp_config = ?session.mcp_config,
+        "chat turn isolated from the user's Claude Code configuration"
+    );
     cmd
 }
 
@@ -1303,6 +1324,19 @@ async fn send_turn_streaming_with_program(
 
     let started = Instant::now();
     let timeout_duration = session.timeout.unwrap_or(Duration::from_secs(300));
+    // A managed MCP config makes Claude Code refuse the session's own; say
+    // so instead of failing at start.
+    if session.mcp_config.is_some()
+        && let Some(reason) = ClaudeIsolation::new(&session.workdir).mcp_config_refusal()
+    {
+        let _ = tx
+            .send(AgentRuntimeEvent::Error {
+                message: reason.clone(),
+            })
+            .await;
+        drop(tx);
+        return Err(anyhow::anyhow!(reason).into());
+    }
     let mut cmd = build_streaming_command(session, program);
 
     let mut child = match cmd.spawn() {
@@ -1872,9 +1906,12 @@ fn is_skipped_dir_name(name: &str) -> bool {
 /// Priority:
 /// 1. Explicit path in `config.agent.mcp_config`
 /// 2. Workspace `.roko/mcp.json`
-/// 3. Global `~/.claude/mcp-config.json`
+/// 3. The workspace's own `.mcp.json`, as agent runs use
+///    ([`workspace_mcp_config`])
 ///
-/// Returns `None` if no MCP config is found.
+/// Nothing from the user's Claude home: its MCP servers, and the tokens in
+/// their environment, are the user's, and chat sessions run isolated from
+/// them. Returns `None` if no MCP config is found.
 fn resolve_mcp_config(workdir: &Path, config: &Config) -> Option<PathBuf> {
     if let Some(ref path) = config.agent.mcp_config {
         let resolved = if path.is_absolute() {
@@ -1898,20 +1935,23 @@ fn resolve_mcp_config(workdir: &Path, config: &Config) -> Option<PathBuf> {
         return Some(workspace_mcp);
     }
 
-    if let Some(home) = home_dir() {
-        let global_mcp = home.join(".claude/mcp-config.json");
-        if global_mcp.exists() {
-            tracing::debug!("MCP config from global: {}", global_mcp.display());
-            return Some(global_mcp);
+    match workspace_mcp_config(workdir) {
+        Some(Ok((path, _))) => {
+            tracing::debug!(
+                "MCP config from the workspace's .mcp.json: {}",
+                path.display()
+            );
+            Some(path)
+        }
+        Some(Err(err)) => {
+            tracing::warn!("ignoring invalid MCP config: {err}");
+            None
+        }
+        None => {
+            tracing::debug!("no MCP config found");
+            None
         }
     }
-
-    tracing::debug!("no MCP config found");
-    None
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn preview_text(value: &str, max_chars: usize) -> String {
@@ -2015,6 +2055,70 @@ mod tests {
         }
     }
 
+    /// bug-8a78e1: chat routes with what a crashed writer journaled and
+    /// never saved, replayed into the snapshot before chat loads it.
+    #[test]
+    fn chat_routes_with_what_a_crashed_writer_journaled() {
+        let workdir = tempdir().unwrap();
+        let learn_dir = workdir.path().join(".roko").join("learn");
+        let model = "chat-journal-model";
+        {
+            let router = CascadeRouter::new(vec![model.to_string()]);
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, model, "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let feedback = ChatFeedbackRuntime::new(workdir.path(), &RokoConfig::default(), model);
+        let router = feedback.cascade_router.as_ref().expect("chat's router");
+        assert_eq!(
+            router.confidence_snapshot().get(model).copied(),
+            Some((1, 1))
+        );
+    }
+
+    /// bug-a9a251: a chat session takes the workspace's MCP config or roko's
+    /// own, never the user's Claude one. HOME is process-wide, so the check
+    /// runs in a child test whose HOME holds that config.
+    #[test]
+    fn chat_mcp_config_ignores_the_users_claude_home() {
+        let root = tempdir().unwrap();
+        let claude_home = root.path().join("home").join(".claude");
+        std::fs::create_dir_all(&claude_home).unwrap();
+        std::fs::write(claude_home.join("mcp-config.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let workdir = root.path().join("project");
+        std::fs::create_dir_all(&workdir).unwrap();
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "chat_session::tests::chat_mcp_config_child"])
+            .arg("--nocapture")
+            .env("HOME", root.path().join("home"))
+            .env("ROKO_CHAT_MCP_CHILD_WORKDIR", &workdir)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+    }
+
+    #[test]
+    fn chat_mcp_config_child() {
+        let Some(workdir) = std::env::var_os("ROKO_CHAT_MCP_CHILD_WORKDIR") else {
+            return;
+        };
+        let workdir = PathBuf::from(workdir);
+        let config = Config::default();
+        assert_eq!(resolve_mcp_config(&workdir, &config), None);
+
+        let project = workdir.join(".mcp.json");
+        std::fs::write(&project, r#"{"servers":[]}"#).unwrap();
+        assert_eq!(resolve_mcp_config(&workdir, &config), Some(project));
+    }
+
     /// Construct a minimal session for testing `build_agent()` and slash commands.
     fn test_session() -> ChatAgentSession {
         let model_selection = test_model_selection();
@@ -2033,6 +2137,7 @@ mod tests {
             timeout: Some(Duration::from_secs(30)),
             provider_base_url: None,
             provider_api_key_env: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -2053,6 +2158,7 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             provider_base_url: None,
             provider_api_key_env: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -2070,6 +2176,117 @@ mod tests {
 
     fn agent_debug(session: &ChatAgentSession) -> String {
         format!("{:?}", session.build_agent().expect("build agent"))
+    }
+
+    /// The values `env` gives `name`, in order.
+    fn env_values<'a>(env: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+        env.iter()
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    /// `roko chat`'s streaming turn and the CLI dispatcher that runs plan
+    /// tasks carry the same isolation as every `ClaudeCliAgent` run.
+    #[test]
+    fn claude_spawns_carry_the_isolation_flags() {
+        use crate::dispatch_v2::{CliDispatchProvider, CliDispatchRequest, CliProviderConfig};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().to_path_buf();
+        let mcp_config = workdir.join("mcp.json");
+        let isolation = ClaudeIsolation::new(&workdir).args();
+
+        let mut session = streaming_test_session(workdir.clone());
+        session.mcp_config = Some(mcp_config.clone());
+        let chat = build_streaming_command(&session, Path::new("claude"));
+        let chat_args: Vec<String> = chat
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let chat_env: Vec<(String, String)> = chat
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: String::new(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: workdir.clone(),
+            max_turns: 10,
+            effort: None,
+            dangerously_skip_permissions: true,
+            mcp_config: Some(mcp_config),
+            resume_session: None,
+            env: vec![(
+                "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD".to_string(),
+                "0".to_string(),
+            )],
+            agent_id: "p/claude-isolation".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+        let dispatch = CliProviderConfig::claude("claude_cli", "claude")
+            .build_invocation(&request)
+            .expect("claude invocation");
+
+        for (spawn, args, env) in [
+            ("chat", &chat_args, &chat_env),
+            ("dispatch", &dispatch.args, &dispatch.env),
+        ] {
+            let start = args
+                .iter()
+                .position(|arg| arg == "--add-dir")
+                .unwrap_or_else(|| panic!("{spawn}: no isolation flags in {args:?}"));
+            assert_eq!(
+                args.get(start..start + isolation.len()),
+                Some(&isolation[..]),
+                "{spawn}"
+            );
+            let strict = args
+                .iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count();
+            assert_eq!(strict, 1, "{spawn}: with an MCP config too");
+            let auto_memory = env_values(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+            assert_eq!(auto_memory, ["1"], "{spawn}");
+        }
+        let workdir_claude_md = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
+        assert_eq!(env_values(&chat_env, workdir_claude_md), ["1"]);
+        // A variable the request sets itself wins over the isolation's.
+        assert_eq!(env_values(&dispatch.env, workdir_claude_md), ["0"]);
+    }
+
+    /// `roko chat` skips Claude's permission checks only when the workspace
+    /// opts in with `runner.dangerously_skip_permissions`, on both the
+    /// streaming turn and the `ClaudeCliAgent` path.
+    #[test]
+    fn chat_skips_permissions_only_when_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut session = streaming_test_session(tmp.path().to_path_buf());
+        for enabled in [false, true] {
+            session.dangerously_skip_permissions = enabled;
+            let streaming = build_streaming_command(&session, Path::new("claude"));
+            let skips = streaming
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "--dangerously-skip-permissions");
+            assert_eq!(skips, enabled, "streaming turn");
+            let debug = agent_debug(&session);
+            assert!(
+                debug.contains(&format!("dangerously_skip_permissions: {enabled}")),
+                "{debug}"
+            );
+        }
     }
 
     #[test]
@@ -2283,6 +2500,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"chat feedback ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
         std::fs::write(

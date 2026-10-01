@@ -232,14 +232,14 @@ pub fn save_plan_source(
 /// Generate a minimal plan source that passes [`validate_plan_source`].
 ///
 /// The plan has one task with:
-/// - `role = "implementer"`, `tier = "focused"`
-/// - the supplied `default_model` as `model_hint`
+/// - `role = "implementer"`, `tier = "focused"`, and no model hint: its tier
+///   and role pick its model on the routing ladder
 /// - one placeholder output file
 /// - one verify step
 ///
 /// Comments and custom content can be added after generation; the save path
 /// uses [`save_plan_source`] which writes the text byte-for-byte.
-pub fn starter_plan_source(slug: &str, title: &str, default_model: &str) -> String {
+pub fn starter_plan_source(slug: &str, title: &str) -> String {
     format!(
         r#"[meta]
 plan = "{slug}"
@@ -252,7 +252,6 @@ title = "{title}"
 description = "Implement {title}."
 role = "implementer"
 tier = "focused"
-model_hint = "{default_model}"
 files = ["{slug}/src/lib.rs"]
 depends_on = []
 
@@ -511,6 +510,8 @@ impl AuthoringSpend {
             duration_ms: call.duration_ms,
             success: succeeded,
             session_id: String::new(),
+            // An `AgentCapture` does not say where its usage came from.
+            cost_source: roko_learn::telemetry::CostSource::Unknown,
         };
         self.append("costs.jsonl", &cost_record).await;
 
@@ -778,13 +779,15 @@ command = "echo ok"
         let workdir = tmp.path().join("workspace");
         std::fs::create_dir_all(&workdir).unwrap();
 
-        let toml = starter_plan_source("my-starter", "Build the feature", "claude-sonnet-4-6");
+        let toml = starter_plan_source("my-starter", "Build the feature");
         let report = validate_plan_source(&workdir, "my-starter", &toml, &empty_models());
         assert!(
             report.valid,
             "starter plan must be valid; errors: {:?}",
             report.diagnostics
         );
+        // gap-dbf2a6: the ladder picks its model; no hint pins one.
+        assert!(!toml.contains("model_hint"), "{toml}");
     }
 
     // ── apply_revision_output tests ───────────────────────────────────────

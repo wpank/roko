@@ -18,6 +18,7 @@ use roko_daimon::policy::DaimonPolicy;
 use roko_gate::gate_service::GateService;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -206,6 +207,16 @@ pub struct ServiceBundle {
     pub gate_runner: Arc<dyn GateRunner>,
     /// Optional affect policy shared with the effect driver.
     pub affect_policy: Option<Arc<tokio::sync::Mutex<dyn AffectPolicy>>>,
+    /// Cascade router the model-call service routes with, and that its
+    /// feedback observes each call's outcome into; `None` when cascade
+    /// routing is off. Hand it to every other surface that routes or
+    /// observes, so they share one router (bug-012303), and let that feedback
+    /// stay the one observer of a model call (bug-8b0d0a).
+    pub cascade_router: Option<Arc<CascadeRouter>>,
+    /// Journal for `.roko/learn/cascade-router.json`. Save `cascade_router`
+    /// through it, so the journal is truncated once the snapshot holds what
+    /// the services journaled (find-0dc1d5).
+    pub cascade_journal: Arc<ModelCallJournal>,
 }
 
 impl ServiceBundle {
@@ -240,12 +251,19 @@ impl ServiceFactory {
         workspace_config.agent.default_model = model.clone();
         let prompt_token_budget = workspace_config.budget.prompt_token_budget;
         let tool_instructions = tool_instructions_for_config(&workspace_config.tools);
+        // Model-call feedback is journaled before it reaches the router, so a
+        // crash before the next save loses none.
+        let cascade_journal = Arc::new(ModelCallJournal::for_learn_dir(
+            &config.roko_dir.join("learn"),
+        ));
+        // The router is loaded once the snapshot holds what a crashed writer
+        // journaled and never saved (bug-8a78e1).
         let cascade_router = if config.cascade_enabled {
             let cascade_model_slugs = model_slugs_for_config(&workspace_config, &model);
-            Some(Arc::new(CascadeRouter::load_or_new(
-                &config.roko_dir.join("learn").join("cascade-router.json"),
-                cascade_model_slugs,
-            )))
+            Some(Arc::new(
+                load_recovered_router(cascade_journal.snapshot_path(), cascade_model_slugs)
+                    .with_model_tiers(&workspace_config.effective_models()),
+            ))
         } else {
             None
         };
@@ -254,7 +272,11 @@ impl ServiceFactory {
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
             let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir);
             match &cascade_router {
-                Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
+                Some(router) => Arc::new(
+                    feedback_service
+                        .with_cascade_router(Arc::clone(router))
+                        .with_cascade_journal(Arc::clone(&cascade_journal)),
+                ),
                 None => Arc::new(feedback_service),
             }
         } else {
@@ -295,18 +317,19 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
-        if let Some(cascade_router) = cascade_router {
-            let model_router = Some(Arc::clone(&cascade_router));
-            model_call_service = model_call_service
-                .with_cascade_router(cascade_router)
-                .with_model_router(move |role| {
-                    routed_model_for_role(
-                        &routing_config,
-                        model_router.as_ref(),
-                        Some(routing_health_registry.as_ref()),
-                        agent_role_from_label(role.unwrap_or("implementer")),
-                    )
-                });
+        // The feedback sink observes every call's settled outcome on the
+        // router, so no override recorder records the same call again
+        // (bug-8b0d0a).
+        if let Some(cascade_router) = &cascade_router {
+            let model_router = Some(Arc::clone(cascade_router));
+            model_call_service = model_call_service.with_model_router(move |role| {
+                routed_model_for_role(
+                    &routing_config,
+                    model_router.as_ref(),
+                    Some(routing_health_registry.as_ref()),
+                    agent_role_from_label(role.unwrap_or("implementer")),
+                )
+            });
         }
         if let Some(observer) = config.inference_observer {
             model_call_service = model_call_service.with_inference_observer(observer);
@@ -389,6 +412,8 @@ impl ServiceFactory {
             feedback_sink,
             gate_runner,
             affect_policy,
+            cascade_router,
+            cascade_journal,
         })
     }
 
@@ -475,18 +500,18 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
-        if let Some(cascade_router) = cascade_router {
-            let model_router = Some(Arc::clone(&cascade_router));
-            model_call_service = model_call_service
-                .with_cascade_router(cascade_router)
-                .with_model_router(move |role| {
-                    routed_model_for_role(
-                        &routing_config,
-                        model_router.as_ref(),
-                        Some(routing_health_registry.as_ref()),
-                        agent_role_from_label(role.unwrap_or("implementer")),
-                    )
-                });
+        // As in `build`, the feedback sink is the router's one observer of a
+        // call (bug-8b0d0a).
+        if let Some(cascade_router) = &cascade_router {
+            let model_router = Some(Arc::clone(cascade_router));
+            model_call_service = model_call_service.with_model_router(move |role| {
+                routed_model_for_role(
+                    &routing_config,
+                    model_router.as_ref(),
+                    Some(routing_health_registry.as_ref()),
+                    agent_role_from_label(role.unwrap_or("implementer")),
+                )
+            });
         }
         if let Some(observer) = config.inference_observer {
             model_call_service = model_call_service.with_inference_observer(observer);
@@ -565,6 +590,12 @@ impl ServiceFactory {
             feedback_sink,
             gate_runner,
             affect_policy,
+            // These services journal nothing: whoever owns the RuntimeServices
+            // router saves it.
+            cascade_router,
+            cascade_journal: Arc::new(ModelCallJournal::for_learn_dir(
+                &config.roko_dir.join("learn"),
+            )),
         })
     }
 }
@@ -819,6 +850,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"provider-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 
@@ -881,6 +913,7 @@ exit 1
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 
@@ -936,6 +969,74 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
         assert_eq!(fallback_health.total_failures, 0);
         assert!(!snapshot.contains_key("primary_model_v1"));
         assert!(!snapshot.contains_key("fallback_model_v1"));
+    }
+
+    #[tokio::test]
+    async fn a_gateway_call_is_observed_once_on_the_shared_router() {
+        // bug-8b0d0a: serve's gateway calls through the model-call service,
+        // whose feedback observes the call on the shared router. Neither the
+        // gateway nor the forced-backend override records it again.
+        let tmp = TempDir::new().expect("tempdir");
+        let script = write_provider_script(
+            &tmp,
+            "gateway-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"gateway-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        );
+        let mut workspace_config = RokoConfig::default();
+        workspace_config.providers.clear();
+        workspace_config.models.clear();
+        workspace_config.agent.default_model = "gateway-model".to_string();
+        workspace_config.agent.fallback_model = None;
+        workspace_config.agent.tier_models.clear();
+        add_cli_model(
+            &mut workspace_config,
+            "gateway-provider",
+            "gateway-model",
+            "gateway-model-v1",
+            script,
+        );
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = crate::state::AppState::new(
+            tmp.path().to_path_buf(),
+            Arc::new(crate::runtime::NoOpRuntime),
+            workspace_config,
+            deploy_backend,
+        )
+        .expect("AppState::new");
+        let router = state
+            .cascade_router
+            .read()
+            .await
+            .clone()
+            .expect("serve's shared cascade router");
+
+        // An explicit model, so the model-call service sees a forced backend.
+        let request = roko_gateway::InferenceRequest {
+            model: "gateway-model-v1".to_string(),
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: "route this call once".to_string(),
+            }],
+            ..roko_gateway::InferenceRequest::default()
+        };
+        let budget = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
+        let response = state
+            .gateway_http
+            .gateway
+            .process_request(request, "gateway-agent", &budget)
+            .await
+            .expect("the gateway call succeeds");
+        assert_eq!(response.text, "gateway-ok");
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["gateway-model-v1"], (1, 1));
     }
 
     #[test]

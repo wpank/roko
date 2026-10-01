@@ -23,7 +23,10 @@ use roko_core::foundation::{
     CachePolicy, ChatMessage, MessageRole, ModelCallRequest, ModelCaller, caller,
 };
 use roko_core::{Body, Context as RokoContext, Kind, Provenance, Signal};
-use roko_learn::{episode_logger::EpisodeLogger, playbook::PlaybookStore};
+use roko_learn::{
+    episode_logger::{EpisodeLogger, learnable_episodes},
+    playbook::PlaybookStore,
+};
 use roko_neuro::{
     DEFAULT_GC_MIN_CONFIDENCE, Falsifier, KnowledgeEntry, KnowledgeKind, KnowledgeStore,
     KnowledgeTier,
@@ -206,8 +209,12 @@ impl DreamAgentConfig {
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            trace_sink: None,
+            metrics_sink: None,
+            tool_correlation: None,
             max_turns: None,
             live_output: None,
+            thinking: None,
         }
     }
 }
@@ -876,7 +883,8 @@ impl DreamRunner {
     }
 
     /// Replay the supplied episodes into durable insights without mutating the
-    /// workspace.
+    /// workspace. Only attempts with a learning label (S01 §4.1) replay,
+    /// each counted as its label says.
     ///
     /// # Errors
     ///
@@ -884,7 +892,8 @@ impl DreamRunner {
     #[allow(clippy::needless_pass_by_value)]
     #[must_use]
     pub fn replay_insights(&self, episodes: &[Episode]) -> Result<Vec<Insight>> {
-        let replay = self.plan_replay(episodes);
+        let episodes = learnable_episodes(episodes.iter().cloned());
+        let replay = self.plan_replay(&episodes);
         let progression = NeuroTierProgression::default();
         let report = progression.analyze(&replay.episodes);
         Ok(report.insights)
@@ -1709,6 +1718,7 @@ impl Agent for DreamReviewAgent {
                     tools: Vec::new(),
                     generation_settings: None,
                     mcp_config: None,
+                    thinking: None,
                 };
 
                 match model_caller.call(request).await {
@@ -2190,6 +2200,43 @@ mod tests {
         assert_eq!(merged.tier, KnowledgeTier::Consolidated);
         assert!(merged.content.contains("alpha"));
         assert!(merged.content.contains("gamma"));
+    }
+
+    /// gap-88c547: replay learns only from attempts with a learning label.
+    /// Five alike gate failures teach an insight; with a `null` label, as an
+    /// unverified or provider-failed attempt carries, they teach none.
+    #[test]
+    fn replay_insights_skip_episodes_without_a_learning_label() {
+        use roko_learn::episode_logger::{EpisodeGateVerdict, LEARNING_LABEL_KEY};
+
+        let temp = TempDir::new().expect("tempdir");
+        let runner = DreamRunner::new(temp.path(), test_loop_config());
+        let failures = |label: serde_json::Value| -> Vec<Episode> {
+            (1..=5)
+                .map(|index| {
+                    let mut episode = Episode::new("Implementer", format!("ep-{index}"));
+                    episode.id = format!("ep-{index}");
+                    episode.episode_id = episode.id.clone();
+                    episode.kind = "agent_turn".into();
+                    episode.trigger_kind = "gate_failure".into();
+                    episode.agent_template = "Implementer".into();
+                    episode.gate_verdicts = vec![EpisodeGateVerdict::new("compile", false)];
+                    episode
+                        .extra
+                        .insert(LEARNING_LABEL_KEY.into(), label.clone());
+                    episode
+                })
+                .collect()
+        };
+
+        let labelled = runner
+            .replay_insights(&failures(serde_json::json!(0)))
+            .expect("replay");
+        assert!(!labelled.is_empty(), "labelled failures teach an insight");
+        let unlabelled = runner
+            .replay_insights(&failures(serde_json::Value::Null))
+            .expect("replay");
+        assert!(unlabelled.is_empty(), "{unlabelled:?}");
     }
 
     #[test]

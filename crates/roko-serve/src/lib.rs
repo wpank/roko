@@ -449,6 +449,7 @@ impl ServerBuilder {
         let _orchestrator_bridge =
             start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
         let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
+        let _cascade_router_saver = start_cascade_router_saver(Arc::clone(&state));
         let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
         let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
         let _workspace_gc = start_workspace_gc(Arc::clone(&state));
@@ -944,8 +945,9 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
         tracing::warn!(
             "serve.auth.enabled = true but no API key or JWKS provider is configured. \
              Every /api/* request will be rejected with 401. \
-             Add an API key via `roko config set-secret api_key <secret>` \
-             or set serve.auth.api_key in roko.toml."
+             Add an API key with `roko config set serve.auth.api_key <secret>`, which \
+             stores it as ROKO__SERVE__AUTH__API_KEY in .roko/.env, where agents cannot \
+             read it; roko.toml may not hold it."
         );
     }
 }
@@ -1010,6 +1012,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     let _orchestrator_bridge =
         start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
     let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
+    let _cascade_router_saver = start_cascade_router_saver(Arc::clone(&state));
     let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
     let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
     let router = build_server_router(
@@ -1177,38 +1180,20 @@ fn build_app_state(
         state.local_access = crate::state::LocalAccess::new(launch_token);
     }
 
-    // Warm the cached cascade router once so gateway selection reuses the
-    // persisted bandit state instead of rebuilding it on the first request.
-    {
-        let config = state.load_roko_config();
-        let mut model_slugs: Vec<String> = config.model_slugs_for_cascade();
-        model_slugs.sort();
-
-        if !model_slugs.is_empty() {
-            let router_path = state.layout.cascade_router_path();
-            if !router_path.exists() {
-                info!(
-                    path = %router_path.display(),
-                    "no persisted CascadeRouter; starting fresh"
-                );
-            }
-            let router =
-                roko_learn::cascade_router::CascadeRouter::load_or_new(&router_path, model_slugs);
-            let observations = router.total_observations();
-
-            tokio::task::block_in_place(|| {
-                *state.cascade_router.blocking_write() = Some(router);
-            });
-
-            if observations > 0 {
-                info!(
-                    observations = observations,
-                    path = %router_path.display(),
-                    "loaded persisted CascadeRouter"
-                );
-            } else {
-                debug!(path = %router_path.display(), "initialized fresh CascadeRouter");
-            }
+    // AppState loaded the cascade router every surface shares (bug-012303)
+    // from the persisted snapshot, so gateway selection reuses the learned
+    // bandit state instead of rebuilding it on the first request.
+    if let Some(router) = state.cascade_router.get_mut().as_ref() {
+        let router_path = state.layout.cascade_router_path();
+        let observations = router.total_observations();
+        if observations > 0 {
+            info!(
+                observations = observations,
+                path = %router_path.display(),
+                "loaded persisted CascadeRouter"
+            );
+        } else {
+            debug!(path = %router_path.display(), "initialized fresh CascadeRouter");
         }
     }
 
@@ -1766,7 +1751,24 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
                 passed: *passed,
                 output_text: None,
             }),
-            _ => None,
+            ExecutionEvent::TaskBlocked {
+                task_id,
+                title,
+                blocked_by,
+                reason,
+            } => Some(DashboardEvent::TaskBlocked {
+                plan_id: plan_id.clone(),
+                task_id: task_id.clone(),
+                title: title.clone(),
+                blocked_by: blocked_by.clone(),
+                reason: reason.clone(),
+            }),
+            // Plans start and finish through the top-level plan events;
+            // re-plans and watcher alerts have no dashboard event.
+            ExecutionEvent::PlanStarted
+            | ExecutionEvent::PlanCompleted { .. }
+            | ExecutionEvent::ReplanTriggered { .. }
+            | ExecutionEvent::WatcherAlert { .. } => None,
         },
         ServerEvent::PhaseTransition { plan_id, from, to } => {
             Some(DashboardEvent::PhaseTransition {
@@ -1949,7 +1951,61 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         ServerEvent::FeedAgentOffline { agent_id } => Some(DashboardEvent::FeedAgentOffline {
             agent_id: agent_id.clone(),
         }),
-        _ => None,
+        // Not bridged (bug-bfdb9a): the dashboard has no event for these.
+        // Task progress reaches it through `Execution`; the top-level
+        // `TaskStarted`, `TaskCompleted` and `TaskFailed` have no producer.
+        // The match lists every variant, so a new one fails to compile until
+        // it is bridged or listed here.
+        ServerEvent::AgentTrace { .. }
+        | ServerEvent::Episode { .. }
+        | ServerEvent::InferenceStarted { .. }
+        | ServerEvent::InferenceCompleted { .. }
+        | ServerEvent::InferenceFailed { .. }
+        | ServerEvent::SomaticMarkerFired { .. }
+        | ServerEvent::OperationStarted { .. }
+        | ServerEvent::OperationCompleted { .. }
+        | ServerEvent::DeploymentCreated { .. }
+        | ServerEvent::DeploymentReady { .. }
+        | ServerEvent::DeploymentFailed { .. }
+        | ServerEvent::DeploymentTornDown { .. }
+        | ServerEvent::JobCreated { .. }
+        | ServerEvent::JobPostedToCandidate { .. }
+        | ServerEvent::JobUpdated { .. }
+        | ServerEvent::JobTransitioned { .. }
+        | ServerEvent::WorkerTaskStarted { .. }
+        | ServerEvent::WorkerTaskCompleted { .. }
+        | ServerEvent::JobAgentOutput { .. }
+        | ServerEvent::ChainTriageResult { .. }
+        | ServerEvent::HeartbeatReceived { .. }
+        | ServerEvent::TaskStarted { .. }
+        | ServerEvent::TaskCompleted { .. }
+        | ServerEvent::TaskFailed { .. }
+        | ServerEvent::JobSubmitted { .. }
+        | ServerEvent::JobEvaluated { .. }
+        | ServerEvent::JobStateChanged { .. }
+        | ServerEvent::Heartbeat { .. }
+        | ServerEvent::TriggerFired { .. }
+        | ServerEvent::TriggerLifecycle { .. }
+        | ServerEvent::ServerShutdown
+        | ServerEvent::WebhookReceived { .. }
+        | ServerEvent::VisionLoopIteration { .. }
+        | ServerEvent::VisionLoopCompleted { .. }
+        | ServerEvent::ConfigReloaded { .. }
+        | ServerEvent::StrategyReloaded { .. }
+        | ServerEvent::BenchLearningEvent { .. }
+        | ServerEvent::BenchRegressionReport { .. }
+        | ServerEvent::MatrixRunStarted { .. }
+        | ServerEvent::MatrixLaneCompleted { .. }
+        | ServerEvent::MatrixRunCompleted { .. }
+        | ServerEvent::BenchGateVerdict { .. }
+        | ServerEvent::BenchTokenVelocity { .. }
+        | ServerEvent::BenchAgentOutput { .. }
+        | ServerEvent::SweRunStarted { .. }
+        | ServerEvent::SweInstanceCompleted { .. }
+        | ServerEvent::SweRunCompleted { .. }
+        | ServerEvent::ChainLogObserved { .. }
+        | ServerEvent::ChainFinalityUpdated { .. }
+        | ServerEvent::ChainReorg { .. } => None,
     }
 }
 
@@ -2137,9 +2193,121 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::Error { message } => Some(ServerEvent::Error {
             message: message.clone(),
         }),
-        // Unmapped variants (Diagnosis, ExperimentWinnersUpdated, CFactorTrendUpdated,
-        // CascadeRouterUpdated, GateThresholdsUpdated, etc.) are dropped.
-        _ => None,
+        DashboardEvent::TaskBlocked {
+            plan_id,
+            task_id,
+            title,
+            blocked_by,
+            reason,
+        } => Some(ServerEvent::Execution {
+            plan_id: plan_id.clone(),
+            event: ExecutionEvent::TaskBlocked {
+                task_id: task_id.clone(),
+                title: title.clone(),
+                blocked_by: blocked_by.clone(),
+                reason: reason.clone(),
+            },
+        }),
+        DashboardEvent::ChainBlock {
+            number,
+            hash,
+            parent_hash,
+            timestamp,
+            gas_used,
+            gas_limit,
+            tx_count,
+            base_fee_per_gas,
+        } => Some(ServerEvent::ChainBlock {
+            number: *number,
+            hash: hash.clone(),
+            parent_hash: parent_hash.clone(),
+            timestamp: *timestamp,
+            gas_used: *gas_used,
+            gas_limit: *gas_limit,
+            tx_count: *tx_count,
+            base_fee_per_gas: *base_fee_per_gas,
+        }),
+        DashboardEvent::ChainTx {
+            block_number,
+            tx_hash,
+            from,
+            to,
+            value_wei,
+            gas_used,
+            method_sig,
+            success,
+        } => Some(ServerEvent::ChainTx {
+            block_number: *block_number,
+            tx_hash: tx_hash.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            value_wei: value_wei.clone(),
+            gas_used: *gas_used,
+            method_sig: method_sig.clone(),
+            success: *success,
+        }),
+        DashboardEvent::FeedTick {
+            agent_id,
+            feed_id,
+            topic,
+            payload,
+            timestamp_ms,
+        } => Some(ServerEvent::FeedTick {
+            agent_id: agent_id.clone(),
+            feed_id: feed_id.clone(),
+            topic: topic.clone(),
+            payload: payload.clone(),
+            timestamp_ms: *timestamp_ms,
+        }),
+        DashboardEvent::FeedAgentOnline {
+            agent_id,
+            name,
+            feed_count,
+        } => Some(ServerEvent::FeedAgentOnline {
+            agent_id: agent_id.clone(),
+            name: name.clone(),
+            feed_count: *feed_count,
+        }),
+        DashboardEvent::FeedAgentOffline { agent_id } => Some(ServerEvent::FeedAgentOffline {
+            agent_id: agent_id.clone(),
+        }),
+        // Not bridged (bug-bfdb9a). `RunCompleted` names no run, which
+        // `ServerEvent::RunCompleted` needs, and `ChainContractEvent` does not
+        // say whether the raw log evidence was published.
+        DashboardEvent::RunCompleted { .. } | DashboardEvent::ChainContractEvent { .. } => None,
+        // Dashboard state the server stream has no event for: the dashboard's
+        // own stream and snapshot carry it. The match lists every variant, so
+        // a new one fails to compile until it is bridged or listed here.
+        DashboardEvent::GateOutputLine { .. }
+        | DashboardEvent::Diagnosis { .. }
+        | DashboardEvent::ExperimentWinnersUpdated { .. }
+        | DashboardEvent::CFactorTrendUpdated { .. }
+        | DashboardEvent::ProjectionUpdated { .. }
+        | DashboardEvent::EpisodeRecorded { .. }
+        | DashboardEvent::TaskOutputAppended { .. }
+        | DashboardEvent::EventLogEntry { .. }
+        | DashboardEvent::CascadeRouterUpdated { .. }
+        | DashboardEvent::GateThresholdsUpdated { .. }
+        | DashboardEvent::AgentCompleted { .. }
+        | DashboardEvent::MarketplaceJobsUpdated { .. }
+        | DashboardEvent::AtelierPrdsUpdated { .. }
+        | DashboardEvent::KnowledgeEntriesUpdated { .. }
+        | DashboardEvent::EfficiencyTrendUpdated { .. }
+        | DashboardEvent::PaymentReceived { .. }
+        | DashboardEvent::SettlementCompleted { .. }
+        | DashboardEvent::InboxItemReceived { .. }
+        | DashboardEvent::InboxApprove { .. }
+        | DashboardEvent::InboxReject { .. }
+        | DashboardEvent::InboxDefer { .. }
+        | DashboardEvent::InboxDismiss { .. }
+        | DashboardEvent::AgentHeartbeat { .. }
+        | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::AffectUpdated { .. }
+        | DashboardEvent::AgentTopologyUpdated { .. }
+        | DashboardEvent::CriticalPathEtaUpdated { .. }
+        | DashboardEvent::CostAnomaly { .. }
+        | DashboardEvent::CrossCutCascade { .. }
+        | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }
 
@@ -2197,6 +2365,25 @@ fn start_state_snapshot_saver(state: Arc<AppState>) -> JoinHandle<()> {
             }
             if let Err(err) = state.save_snapshot().await {
                 warn!(error = %err, "periodic server state snapshot save failed");
+            }
+        }
+    })
+}
+
+/// Periodically save the cascade router every serve surface shares
+/// (bug-012303), so what serve learns reaches other processes while it runs.
+/// Each save merges into the snapshot on disk; shutdown saves once more.
+fn start_cascade_router_saver(state: Arc<AppState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await; // skip the first immediate tick
+        loop {
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            if let Err(err) = state.save_cascade_router().await {
+                warn!(error = %err, "periodic cascade router save failed");
             }
         }
     })
@@ -3245,6 +3432,44 @@ mod plan_set_event_mapping_tests {
         assert_eq!(wire, serde_json::to_value(&dashboard).expect("serialize"));
         assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
     }
+
+    /// bug-bfdb9a: newer dashboard events cross the bridge both ways: a
+    /// blocked task (gap-f59fe9), and chain and feed events.
+    #[test]
+    fn newer_dashboard_events_bridge_both_ways() {
+        let events = [
+            roko_core::DashboardEvent::TaskBlocked {
+                plan_id: "p1".into(),
+                task_id: "T4".into(),
+                title: "Fourth".into(),
+                blocked_by: Some("T1".into()),
+                reason: "blocked by failed task 'T1'".into(),
+            },
+            roko_core::DashboardEvent::FeedAgentOnline {
+                agent_id: "feed-1".into(),
+                name: "prices".into(),
+                feed_count: 2,
+            },
+            roko_core::DashboardEvent::FeedAgentOffline {
+                agent_id: "feed-1".into(),
+            },
+            roko_core::DashboardEvent::ChainTx {
+                block_number: 7,
+                tx_hash: "0xabc".into(),
+                from: "0x1".into(),
+                to: None,
+                value_wei: "0".into(),
+                gas_used: 21_000,
+                method_sig: None,
+                success: true,
+            },
+        ];
+        for dashboard in events {
+            let server = dashboard_event_to_server(&dashboard)
+                .unwrap_or_else(|| panic!("{dashboard:?} reaches the server stream"));
+            assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
+        }
+    }
 }
 
 /// Discover plugin manifests in the standard search paths and register any
@@ -3493,9 +3718,10 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+    use roko_core::foundation::FeedbackEvent;
     use roko_gate::AdaptiveThresholds;
     use roko_learn::cascade_router::CascadeRouter;
-    use roko_learn::model_router::CONTEXT_DIM;
+    use roko_learn::model_router::{CONTEXT_DIM, RoutingContext};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -3923,7 +4149,7 @@ mod tests {
         router.observe(vec![0.0; CONTEXT_DIM], 0, 1.0);
         {
             let mut guard = state.cascade_router.write().await;
-            *guard = Some(router);
+            *guard = Some(Arc::new(router));
         }
 
         state.shutdown().await;
@@ -3933,6 +4159,90 @@ mod tests {
             vec!["claude-sonnet-4-6".to_string()],
         );
         assert_eq!(reloaded.total_observations(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_cascade_router_persists_gateway_and_feedback_observations() {
+        // bug-012303: serve builds one cascade router. The inference gateway
+        // routes with it, observations through any handle on it land in it,
+        // and saving AppState's router persists them.
+        let dir = tempdir().expect("tempdir");
+        let model = "claude-sonnet-4-6";
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.models.insert(
+            "claude-sonnet".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: model.to_string(),
+                ..Default::default()
+            },
+        );
+        let state = build_app_state(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            None,
+            None,
+            None,
+        )
+        .expect("build_app_state");
+        let router = state
+            .cascade_router
+            .read()
+            .await
+            .clone()
+            .expect("serve loads one cascade router");
+        let gateway_router = state.gateway_http.gateway.cascade_router();
+        assert!(
+            Arc::ptr_eq(gateway_router, &router),
+            "the gateway routes with the shared router"
+        );
+
+        // A failed attempt, observed through the gateway's handle.
+        gateway_router.record_observation(&RoutingContext::default(), model, 0.0, false);
+        // A successful model call, as the model-call service reports one.
+        state
+            .model_call_service
+            .feedback_sink()
+            .expect("model calls report feedback")
+            .record(FeedbackEvent::ModelCall {
+                run_id: None,
+                request_id: None,
+                prompt_section_ids: Vec::new(),
+                knowledge_ids: Vec::new(),
+                model: Some(model.to_string()),
+                provider: Some("anthropic".to_string()),
+                token_usage: None,
+                cost: None,
+                role: "implementer".to_string(),
+                input_tokens: 100,
+                output_tokens: 20,
+                cost_usd: 0.01,
+                latency_ms: 1_500,
+                success: true,
+                error_class: None,
+                model_reported: None,
+                attempt_key: None,
+            })
+            .await
+            .expect("record the model call");
+        assert_eq!(router.confidence_snapshot()[model], (2, 1));
+
+        state.shutdown().await;
+
+        let router_path = state.layout.cascade_router_path();
+        let reloaded = CascadeRouter::load_or_new(&router_path, vec![model.to_string()]);
+        assert_eq!(reloaded.confidence_snapshot()[model], (2, 1));
+        assert_eq!(reloaded.total_observations(), 2);
+        // The journaled model call is in the saved snapshot, and the save
+        // truncated the journal, so a replay cannot count it twice.
+        let learn_dir = state.layout.learn_dir();
+        let segments_dir = learn_dir.join(roko_learn::wal::SEGMENTS_DIR);
+        for segment in std::fs::read_dir(&segments_dir).expect("the journal's segments") {
+            let path = segment.expect("segment").path();
+            let entries = roko_learn::wal::replay_wal(&path).expect("read the segment");
+            assert!(entries.is_empty(), "{} holds saved entries", path.display());
+        }
     }
 
     #[tokio::test]

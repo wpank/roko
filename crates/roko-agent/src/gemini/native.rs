@@ -192,7 +192,8 @@ impl GeminiNativeAgent {
             reasoning_tokens: None,
             cost_usd: None,
             source: UsageSource::Unknown,
-            model: Some(self.model.slug.clone()),
+            // No response named the model that served (bug-a5f181).
+            model: None,
             wall_ms,
         })
     }
@@ -395,7 +396,7 @@ impl GeminiNativeAgent {
         let metadata = GeminiMetadata {
             grounding_metadata: candidate.grounding_metadata.clone(),
             code_execution_results: code_results.clone(),
-            thinking_tokens: usage_metadata.and_then(|usage| usage.thinking_token_count),
+            thinking_tokens: usage_metadata.and_then(|usage| usage.thoughts_token_count),
             cached_tokens,
             safety_ratings: candidate.safety_ratings.clone(),
         };
@@ -404,10 +405,10 @@ impl GeminiNativeAgent {
             content: text_parts.join(""),
             reasoning: None,
             tool_calls,
-            usage: gemini_observation(usage_metadata, 0, Some(self.model.slug.clone())).into(),
+            usage: gemini_observation(usage_metadata, 0, response.model_version.clone()).into(),
             finish_reason,
             metadata: ResponseMetadata {
-                model_used: Some(self.model.slug.clone()),
+                model_used: response.model_version.clone(),
                 cached_tokens,
                 extra: serde_json::to_value(metadata).ok(),
                 raw_finish_reason,
@@ -498,10 +499,13 @@ impl Agent for GeminiNativeAgent {
         }
 
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // The model that served is the response's `modelVersion`, unknown
+        // when it names none; the configured slug stays on the `model` tag
+        // (bug-a5f181).
         let observation = gemini_observation(
             response.usage_metadata.as_ref(),
             wall_ms,
-            Some(self.model.slug.clone()),
+            response.model_version.clone(),
         );
 
         let content = self.safety.scrub_text(&parsed.content);
@@ -553,31 +557,45 @@ fn saturating_u64_to_u32(value: u64) -> u32 {
 ///
 /// `None` for `usage_metadata` means the API did not report usage at all
 /// — every token field is left as `None` instead of collapsing to `0`.
-/// When `usage_metadata` is present, `prompt_token_count` and
-/// `candidates_token_count` are surfaced as `Some(n)` (preserving an
-/// explicit `0`); `cached_content_token_count` is already optional in
-/// the wire shape and flows through unchanged.
+/// When `usage_metadata` is present, input and `candidates_token_count` are
+/// surfaced as `Some(n)` (preserving an explicit `0`);
+/// `cached_content_token_count` is already optional in the wire shape and
+/// becomes the cache reads. `prompt_token_count` includes the cached
+/// content, while the canonical classes are disjoint, so input is only its
+/// uncached part and each cached token is priced once (bug-afcf63).
 fn gemini_observation(
     usage_metadata: Option<&super::types::UsageMetadata>,
     wall_ms: u64,
     model: Option<String>,
 ) -> UsageObservation {
-    let (input_tokens, output_tokens, cache_read_tokens, source) = match usage_metadata {
-        Some(usage) => (
-            Some(usage.prompt_token_count),
-            usage.candidates_token_count,
-            usage.cached_content_token_count,
-            UsageSource::ProviderReported,
-        ),
-        None => (None, None, None, UsageSource::Unknown),
-    };
+    let (input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, source) =
+        match usage_metadata {
+            Some(usage) => (
+                Some(
+                    usage
+                        .prompt_token_count
+                        .saturating_sub(usage.cached_content_token_count.unwrap_or(0)),
+                ),
+                // Thinking is billed at the output rate but reported apart from
+                // the candidates; reasoning stays a part of output, as the
+                // canonical usage counts it (find-af6b7f).
+                match (usage.candidates_token_count, usage.thoughts_token_count) {
+                    (None, None) => None,
+                    (candidates, thoughts) => Some(candidates.unwrap_or(0) + thoughts.unwrap_or(0)),
+                },
+                usage.cached_content_token_count,
+                usage.thoughts_token_count,
+                UsageSource::ProviderReported,
+            ),
+            None => (None, None, None, None, UsageSource::Unknown),
+        };
 
     UsageObservation {
         input_tokens,
         output_tokens,
         cache_creation_tokens: None,
         cache_read_tokens,
-        reasoning_tokens: None,
+        reasoning_tokens,
         cost_usd: None,
         source,
         model,
@@ -879,8 +897,10 @@ mod tests {
                 "candidatesTokenCount": 8,
                 "totalTokenCount": 29,
                 "cachedContentTokenCount": 5,
+                // The name older fixtures used; it still reads.
                 "thinkingTokenCount": 3
-            }
+            },
+            "modelVersion": "gemini-2.5-pro-002"
         }))
         .expect("parse response");
 
@@ -889,8 +909,10 @@ mod tests {
             .expect("parse chat response");
 
         assert_eq!(parsed.content, "Grounded answer. Done.");
-        assert_eq!(parsed.usage.input_tokens, 21);
-        assert_eq!(parsed.usage.output_tokens, 8);
+        // 5 of the 21 prompt tokens were cached (bug-afcf63).
+        assert_eq!(parsed.usage.input_tokens, 16);
+        // 8 candidate tokens and 3 thinking tokens (find-af6b7f).
+        assert_eq!(parsed.usage.output_tokens, 11);
         assert_eq!(parsed.usage.cache_read_tokens, 5);
         assert_eq!(parsed.finish_reason, FinishReason::Stop);
         assert_eq!(parsed.tool_calls.len(), 1);
@@ -902,7 +924,7 @@ mod tests {
         );
         assert_eq!(
             parsed.metadata.model_used.as_deref(),
-            Some("gemini-2.5-pro")
+            Some("gemini-2.5-pro-002")
         );
         assert_eq!(parsed.metadata.cached_tokens, Some(5));
         assert_eq!(parsed.metadata.raw_finish_reason.as_deref(), Some("STOP"));
@@ -1031,6 +1053,53 @@ mod tests {
         );
     }
 
+    /// The model that served a native Gemini call is the response's
+    /// `modelVersion`, and unknown when it names none; the configured slug
+    /// stays the model asked for, on the `model` tag (bug-a5f181).
+    #[tokio::test]
+    async fn gemini_native_records_the_model_version() {
+        let run_answering = |response: serde_json::Value| async move {
+            let poster = Arc::new(MockPoster::ok(
+                Arc::new(Mutex::new(Captured::default())),
+                response,
+            ));
+            GeminiNativeAgent::new(
+                "test-key".to_string(),
+                "https://generativelanguage.googleapis.com".to_string(),
+                base_model(),
+                &AgentOptions::default(),
+                SafetyLayer::with_defaults(),
+            )
+            .with_http_poster(poster)
+            .run(&prompt("hello"), &Context::now())
+            .await
+        };
+        let answer = json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "hi" }] },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 15
+            }
+        });
+
+        let mut versioned = answer.clone();
+        versioned["modelVersion"] = json!("gemini-2.5-flash-001");
+        let served = run_answering(versioned).await;
+        assert!(served.success);
+        assert_eq!(served.output.tag("model"), Some("gemini-2.5-pro"));
+        let observation = served.usage_obs.expect("usage observation");
+        assert_eq!(observation.model.as_deref(), Some("gemini-2.5-flash-001"));
+
+        let unnamed = run_answering(answer).await;
+        assert!(unnamed.success);
+        let observation = unnamed.usage_obs.expect("usage observation");
+        assert_eq!(observation.model, None, "nobody reported a model");
+    }
+
     #[tokio::test]
     async fn gemini_native_agent_preserves_lineage_and_scrubs_output_when_safety_is_attached() {
         let captured = Arc::new(Mutex::new(Captured::default()));
@@ -1115,6 +1184,80 @@ mod tests {
         assert!(
             output.contains("blocked by safety layer"),
             "unexpected output: {output}"
+        );
+    }
+
+    /// Thinking tokens (`thoughtsTokenCount`) are billed output: they count
+    /// in output, as its reasoning part, and a response without them counts
+    /// as before (find-af6b7f).
+    #[test]
+    fn gemini_observation_counts_thoughts_as_output() {
+        let usage = |json: Value| -> crate::gemini::types::UsageMetadata {
+            serde_json::from_value(json).expect("usage metadata")
+        };
+        let thinking = gemini_observation(
+            Some(&usage(json!({
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 120,
+                "thoughtsTokenCount": 900,
+                "totalTokenCount": 1_030
+            }))),
+            0,
+            None,
+        );
+        assert_eq!(thinking.input_tokens, Some(10));
+        assert_eq!(thinking.output_tokens, Some(1_020));
+        assert_eq!(thinking.reasoning_tokens, Some(900));
+
+        let plain = gemini_observation(
+            Some(&usage(json!({
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 120,
+                "totalTokenCount": 130
+            }))),
+            0,
+            None,
+        );
+        assert_eq!(plain.output_tokens, Some(120));
+        assert_eq!(plain.reasoning_tokens, None);
+    }
+
+    /// `promptTokenCount` includes the cached content: a cached call's input
+    /// and cache reads are disjoint and sum to it (bug-afcf63).
+    #[tokio::test]
+    async fn gemini_native_usage_counts_cached_tokens_once() {
+        let poster = Arc::new(MockPoster::ok(
+            Arc::new(Mutex::new(Captured::default())),
+            json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "text": "ok" }] },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 1_000,
+                    "candidatesTokenCount": 50,
+                    "totalTokenCount": 1_050,
+                    "cachedContentTokenCount": 600
+                }
+            }),
+        ));
+        let agent = GeminiNativeAgent::new(
+            "test-key".to_string(),
+            "https://generativelanguage.googleapis.com".to_string(),
+            base_model(),
+            &AgentOptions::default(),
+            SafetyLayer::with_defaults(),
+        )
+        .with_http_poster(poster);
+
+        let result = agent.run(&prompt("hi"), &Context::now()).await;
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.input_tokens, Some(400));
+        assert_eq!(observation.cache_read_tokens, Some(600));
+        assert_eq!(observation.output_tokens, Some(50));
+        assert_eq!(
+            result.usage.input_tokens + result.usage.cache_read_tokens,
+            1_000
         );
     }
 

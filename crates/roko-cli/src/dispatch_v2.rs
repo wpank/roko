@@ -59,8 +59,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::learning_helpers::capture_runtime_model_slugs;
-
 /// A single tool execution output captured from a dispatch response.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
@@ -101,9 +99,8 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     use roko_core::foundation::{
         ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
     };
-    use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::feedback_service::FeedbackService;
-    use roko_learn::model_call_feedback::ModelCallJournal;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 
     let workdir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let config = crate::config::load_resolved_config(&workdir)
@@ -136,12 +133,10 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
         .join("learn")
         .join("cascade-router.json");
     let cascade_model_slugs = capture_runtime_model_slugs(&model_config, &model);
-    let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-        Arc::new(CascadeRouter::load_or_new(
-            &cascade_path,
-            cascade_model_slugs,
-        ))
-    });
+    // The snapshot first takes what a crashed writer journaled and never
+    // saved (bug-8a78e1).
+    let cascade_router = (!cascade_model_slugs.is_empty())
+        .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
     // Observations are journaled in the learning WAL until the save below
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
@@ -523,6 +518,7 @@ impl CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         let settings_json = roko_agent::claude_cli_agent::build_settings_json();
+        let isolation = roko_agent::claude_cli_agent::ClaudeIsolation::new(&request.workdir);
         let mut args = vec![
             "--print".to_string(),
             "--output-format".to_string(),
@@ -536,6 +532,10 @@ impl CliProviderConfig {
             settings_json,
         ];
         args.extend(self.provider_args.clone());
+        // The Claude Code isolation (`--add-dir`, `--setting-sources`,
+        // `--strict-mcp-config`), after the provider's own arguments so they
+        // cannot undo it.
+        args.extend(isolation.args());
 
         if request.dangerously_skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
@@ -553,6 +553,13 @@ impl CliProviderConfig {
             args.push(effort.clone());
         }
         if request.mcp_config.is_some() || request.plugin_mcp.is_some() {
+            if let Some(reason) = isolation.mcp_config_refusal() {
+                tracing::warn!(provider_id = %self.descriptor.provider_id, "{reason}");
+                return Err(DispatchV2Error::McpConfigUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             args.push("--mcp-config".to_string());
             if let Some(mcp_config) = &request.mcp_config {
                 args.push(mcp_config.to_string_lossy().to_string());
@@ -560,7 +567,6 @@ impl CliProviderConfig {
             if let Some(plugin_mcp) = &request.plugin_mcp {
                 args.push(claude_plugin_mcp_json(plugin_mcp));
             }
-            args.push("--strict-mcp-config".to_string());
         }
         if let Some(session) = &request.resume_session {
             args.push("--resume".to_string());
@@ -583,12 +589,20 @@ impl CliProviderConfig {
             }
         }
 
-        Ok(CliInvocation::new(
-            self,
-            request,
-            args,
-            request.prompt.clone(),
-        ))
+        let mut invocation = CliInvocation::new(self, request, args, request.prompt.clone());
+        // The request's own variables win.
+        for &(key, value) in isolation.env() {
+            if !invocation.env.iter().any(|(existing, _)| existing == key) {
+                invocation.env.push((key.to_string(), value.to_string()));
+            }
+        }
+        tracing::debug!(
+            provider_id = %self.descriptor.provider_id,
+            isolation = ?isolation.tags(),
+            mcp_config = ?request.mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
+        Ok(invocation)
     }
 
     fn build_codex_invocation(
@@ -1438,6 +1452,9 @@ pub struct AgentDispatcherV2 {
     /// When set, every tool call records scrubbed admit/result lines to
     /// `.roko/tool_audit.jsonl` for durable observability.
     tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Per-call trace and metrics sinks for the tool calls of every agent
+    /// this dispatcher creates (find-f489db).
+    observability: Option<roko_fs::FsObservabilitySinks>,
 }
 
 impl std::fmt::Debug for AgentDispatcherV2 {
@@ -1450,6 +1467,7 @@ impl std::fmt::Debug for AgentDispatcherV2 {
             .field("health_registry", &self.health_registry)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit)
+            .field("observability", &self.observability)
             .finish()
     }
 }
@@ -1468,6 +1486,7 @@ impl AgentDispatcherV2 {
             health_registry: None,
             cancel_token: None,
             tool_audit: None,
+            observability: None,
         }
     }
 
@@ -1485,6 +1504,7 @@ impl AgentDispatcherV2 {
             health_registry: None,
             cancel_token: None,
             tool_audit: None,
+            observability: None,
         }
     }
 
@@ -1526,6 +1546,16 @@ impl AgentDispatcherV2 {
     /// scrubbed admit/result lines to `.roko/tool_audit.jsonl`.
     pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
+        self
+    }
+
+    /// Attach per-call trace and metrics sinks.
+    ///
+    /// When set, every tool call an agent created by this dispatcher makes
+    /// leaves a closed trace under `.roko/traces/` and a record in
+    /// `.roko/metrics/tool_metrics.jsonl` (find-f489db).
+    pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
+        self.observability = Some(sinks);
         self
     }
 
@@ -1610,14 +1640,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
         Ok(AgentResultDispatch {
             target: created.target,
@@ -1715,14 +1738,7 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
 
         Ok(result)
     }
@@ -1833,7 +1849,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(&self.config, &request, &target, &result, latency_ms).await;
+        record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
         Ok(AgentResultDispatch {
             target,
@@ -1876,11 +1892,44 @@ impl AgentDispatcherV2 {
             // Thread the persistent file audit adapter so every tool call
             // records scrubbed admit/result lines to disk.
             tool_audit: self.tool_audit.clone(),
+            // find-f489db: each tool call also leaves a closed trace and a
+            // metrics record, and all three join back to the attempt.
+            trace_sink: self
+                .observability
+                .as_ref()
+                .map(roko_fs::FsObservabilitySinks::trace_sink_dyn),
+            metrics_sink: self
+                .observability
+                .as_ref()
+                .map(roko_fs::FsObservabilitySinks::metrics_sink_dyn),
+            tool_correlation: Some(tool_correlation(request)),
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
             ..Default::default()
         }
+    }
+}
+
+/// The correlation a dispatch's tool calls carry into their audit, trace and
+/// metrics records (find-f489db): the run and task of the attempt the
+/// request serves, the attempt's key (`"{run}:{plan}:{task}:{attempt}"`,
+/// which telemetry rows also carry), and the agent id. A request without an
+/// attempt key names only the agent.
+fn tool_correlation(request: &AgentDispatchRequest) -> roko_core::tool::CorrelationEnvelope {
+    let attempt = request
+        .attempt_key
+        .as_deref()
+        .and_then(roko_learn::telemetry::AttemptKey::parse);
+    roko_core::tool::CorrelationEnvelope {
+        run_id: attempt
+            .as_ref()
+            .map(|key| key.run_id.clone())
+            .unwrap_or_default(),
+        task_id: attempt.map(|key| key.task_id).unwrap_or_default(),
+        attempt_id: request.attempt_key.clone().unwrap_or_default(),
+        turn_id: String::new(),
+        agent_id: request.agent_id.clone(),
     }
 }
 
@@ -1953,15 +2002,21 @@ pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
     }
 }
 
+/// Record one bridge call's model-call feedback: its efficiency row and the
+/// provider's health.
+///
+/// The bridge never teaches the cascade router (bug-07bc75). Its callers are
+/// Graph dispatch's attempts and helper calls: the router learns each
+/// attempt's settled verdict through `RoutingObservationSink`, and a
+/// provider call's own success, before any gate ran, is no quality evidence.
 async fn record_agent_dispatch_feedback(
-    config: &RokoConfig,
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
     result: &AgentResult,
     latency_ms: u64,
 ) {
-    let cascade_model_slugs = capture_runtime_model_slugs(config, &target.model_slug);
-    let recorder = ModelCallFeedbackRecorder::from_workdir(&request.workdir, cascade_model_slugs);
+    let learn_dir = roko_fs::RokoLayout::for_project(&request.workdir).learn_dir();
+    let recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
     if let Err(error) = recorder
         .record(ModelCallFeedback {
             run_id: None,
@@ -1978,6 +2033,11 @@ async fn record_agent_dispatch_feedback(
             success: result.success,
             provider_success: Some(result.success),
             error_class: None,
+            model_reported: result
+                .usage_obs
+                .as_ref()
+                .and_then(|usage| usage.model.clone()),
+            attempt_key: request.attempt_key.clone(),
         })
         .await
     {
@@ -2047,6 +2107,11 @@ pub struct AgentDispatchRequest {
     /// `LiveOutput` is not serializable.
     #[serde(skip)]
     pub live_output: Option<roko_agent::live_output::LiveOutput>,
+    /// Key of the attempt this dispatch serves
+    /// (`"{run}:{plan}:{task}:{attempt}"`), when the caller has one. The
+    /// bridge's `model_call` row carries it (bug-92f655).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_key: Option<String>,
 }
 
 impl AgentDispatchRequest {
@@ -2193,16 +2258,15 @@ fn dispatch_events_from_result(
     events
 }
 
-/// Turns the provider reported (the Claude CLI tags its output with
-/// `num_turns`), or one when it did not say.
+/// Turns the agent reported: the Claude CLI's `num_turns`, or the model
+/// calls roko's tool loop made, both tagged `num_turns` on the output.
+/// `None` when the agent did not say (the Codex and Gemini CLIs): an
+/// unreported count is unknown, not one.
 fn reported_num_turns(result: &AgentResult) -> Option<u32> {
-    Some(
-        result
-            .output
-            .tag("num_turns")
-            .and_then(|turns| turns.parse().ok())
-            .unwrap_or(1),
-    )
+    result
+        .output
+        .tag("num_turns")
+        .and_then(|turns| turns.parse().ok())
 }
 
 /// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].
@@ -2691,6 +2755,7 @@ mod tests {
                 dangerously_skip_permissions: false,
                 max_turns: None,
                 live_output: None,
+                attempt_key: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3157,6 +3222,7 @@ mod tests {
             dangerously_skip_permissions: false,
             max_turns: None,
             live_output: None,
+            attempt_key: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3172,6 +3238,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 
@@ -3224,6 +3291,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             dangerously_skip_permissions: false,
             max_turns: None,
             live_output: None,
+            attempt_key: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -3259,10 +3327,12 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         // The registry normalizes provider keys (hyphens to underscores).
         assert!(provider_health.contains("dispatch_cli"));
 
-        let cascade_router =
-            std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))
-                .expect("read cascade router");
-        assert!(cascade_router.contains("claude-sonnet-4-6"));
+        // The bridge never teaches the router (bug-07bc75): Graph dispatch
+        // does, from each attempt's settled verdict.
+        assert!(
+            !tmp.path().join(".roko/learn/cascade-router.json").exists(),
+            "the bridge must not observe or save the cascade router"
+        );
     }
 
     /// E04-T06: Verify that the default Claude CLI dispatch path exercises

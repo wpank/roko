@@ -725,6 +725,7 @@ async fn test_runtime_harness_smoke() {
         .on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "test-plan".into(),
             task_id: "T1".into(),
             outcome: AgentOutcome {
@@ -757,6 +758,7 @@ async fn test_runtime_harness_smoke() {
         .on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "test-plan".into(),
             task_id: "T2".into(),
             outcome: AgentOutcome {

@@ -188,14 +188,24 @@ impl AnthropicStreamState {
                 cache_create_tokens,
             });
 
+            // The message names the model that serves it (bug-bfd241).
+            let model = json
+                .pointer("/message/model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string);
             // Emit an initial Usage event with input token counts.
-            return Ok(vec![StreamEvent::now(StreamEventKind::Usage(Usage {
-                input_tokens,
-                output_tokens: 0,
-                cache_read_tokens,
-                cache_create_tokens,
-                ..Default::default()
-            }))]);
+            return Ok(vec![
+                StreamEvent::now(StreamEventKind::Usage(Usage {
+                    input_tokens,
+                    output_tokens: 0,
+                    cache_read_tokens,
+                    cache_create_tokens,
+                    ..Default::default()
+                }))
+                .with_model(model),
+            ]);
         }
 
         Ok(Vec::new())

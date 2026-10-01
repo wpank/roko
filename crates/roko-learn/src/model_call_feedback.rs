@@ -13,15 +13,16 @@ use parking_lot::Mutex;
 use roko_core::Result;
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
 
-use crate::cascade_router::CascadeRouter;
+use crate::cascade::types::OVERRIDE_LEARNING_RATE;
+use crate::cascade_router::{CascadeRouter, normalized_cost_and_latency, outcome_reward};
 use crate::error::LearnError;
 use crate::feedback_service::FeedbackService;
-use crate::model_router::CONTEXT_DIM;
+use crate::model_router::{
+    CONTEXT_DIM, RewardWeights, RoutingContext, compute_routing_reward_with_weights,
+};
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
-use crate::wal::{self, WalEntry};
-
-/// The learning WAL, beside `cascade-router.json` in `.roko/learn`.
-const WAL_FILE_NAME: &str = "wal.jsonl";
+use crate::runtime_feedback::LearningPaths;
+use crate::wal::{self, WalEntry, WalSegment};
 
 /// Metrics and identity for one model call.
 #[derive(Debug, Clone)]
@@ -55,6 +56,11 @@ pub struct ModelCallFeedback {
     /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
     /// `None` on success.
     pub error_class: Option<String>,
+    /// Model the provider reported serving the call; `None` when it named
+    /// none.
+    pub model_reported: Option<String>,
+    /// Key of the attempt the call belongs to, when the caller has one.
+    pub attempt_key: Option<String>,
 }
 
 impl ModelCallFeedback {
@@ -84,12 +90,14 @@ impl ModelCallFeedbackRecorder {
         Self::from_learn_dir(workdir.join(".roko").join("learn"), model_slugs)
     }
 
-    /// Create a recorder rooted directly at a `.roko/learn` directory.
+    /// Create a recorder rooted directly at a `.roko/learn` directory. Its
+    /// router is loaded once the snapshot holds what a crashed writer
+    /// journaled ([`load_recovered_router`]).
     #[must_use]
     pub fn from_learn_dir(learn_dir: PathBuf, model_slugs: Vec<String>) -> Self {
         let cascade_journal = ModelCallJournal::for_learn_dir(&learn_dir);
         let cascade_router = (!model_slugs.is_empty()).then(|| {
-            Arc::new(CascadeRouter::load_or_new(
+            Arc::new(load_recovered_router(
                 cascade_journal.snapshot_path(),
                 model_slugs,
             ))
@@ -130,7 +138,8 @@ impl ModelCallFeedbackRecorder {
     /// Record model-call feedback, provider health, and cascade observation.
     ///
     /// The cascade observation is journaled in the learning WAL before it is
-    /// applied, and marked as folded once the router snapshot is saved.
+    /// applied, and dropped from the journal once the router snapshot is
+    /// saved.
     ///
     /// # Errors
     ///
@@ -163,6 +172,8 @@ impl ModelCallFeedbackRecorder {
                 latency_ms: feedback.latency_ms,
                 success: feedback.success,
                 error_class: feedback.error_class.clone(),
+                model_reported: feedback.model_reported,
+                attempt_key: feedback.attempt_key,
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -250,32 +261,37 @@ pub fn observe_model_call_on_router(
 }
 
 /// Write-ahead journal for the cascade observations of model-call surfaces
-/// (feedback Path B: chat, direct dispatch, ACP, the vision loop).
+/// (feedback Path B: chat, direct dispatch, ACP, the vision loop, serve), and
+/// of a Graph run's routing outcomes (bug-dfb28f).
 ///
-/// Those surfaces load `cascade-router.json`, observe a call and save the
+/// Those surfaces load `cascade-router.json`, observe calls and save the
 /// snapshot again. An observation applied but not yet saved used to be lost
 /// on a crash or a failed save (find-0dc1d5). The journal appends each
-/// observation to the learning WAL beside the snapshot before applying it,
-/// and appends a fold marker once a saved snapshot contains it.
-/// `LearningRuntime` replays the unfolded ones when it next opens, so an
-/// observation is neither lost nor counted twice.
+/// observation to its own WAL segment beside the snapshot before applying
+/// it, and truncates the segment once a saved snapshot holds its
+/// observations. The segment stays locked while the journal lives, so
+/// `LearningRuntime` and [`load_recovered_router`] replay it only once its
+/// writer is gone: each observation is saved by its writer or replayed after
+/// a crash, never both (bug-84de98).
 #[derive(Debug)]
 pub struct ModelCallJournal {
     snapshot_path: PathBuf,
-    wal_path: PathBuf,
-    /// Ids journaled and applied, but not yet in a saved snapshot.
-    unfolded: Mutex<Vec<String>>,
+    segments_dir: PathBuf,
+    /// The journal's WAL segment, created on its first observation. Holding
+    /// the lock also keeps `save` from truncating an observation that the
+    /// snapshot it writes does not hold.
+    segment: Mutex<Option<WalSegment>>,
 }
 
 impl ModelCallJournal {
-    /// Journal for the router saved at `snapshot_path`, in the learning WAL
+    /// Journal for the router saved at `snapshot_path`, in a WAL segment
     /// beside it.
     #[must_use]
     pub fn for_snapshot(snapshot_path: &Path) -> Self {
         Self {
             snapshot_path: snapshot_path.to_path_buf(),
-            wal_path: snapshot_path.with_file_name(WAL_FILE_NAME),
-            unfolded: Mutex::new(Vec::new()),
+            segments_dir: snapshot_path.with_file_name(wal::SEGMENTS_DIR),
+            segment: Mutex::new(None),
         }
     }
 
@@ -323,73 +339,148 @@ impl ModelCallJournal {
         reward: f64,
         success: bool,
     ) {
+        self.observe_weighted(router, model_slug, context_features, reward, success, 1.0);
+    }
+
+    /// Journal the settled outcome of a task that ran on the model the
+    /// router picked, then apply it to `router`. A success earns the
+    /// multi-objective reward at its cost and latency, and a failure 0,
+    /// since its cost and latency bought nothing (bug-8da8ba). A Graph run
+    /// records its routing outcomes through it (bug-dfb28f).
+    pub fn observe_task_outcome(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
+    ) {
+        let reward = task_outcome_reward(success, cost_usd, duration_ms);
+        self.observe_weighted(router, model_slug, ctx.to_features(), reward, success, 1.0);
+    }
+
+    /// Journal the settled outcome of a task that ran on an operator's
+    /// override, then apply it to `router` as
+    /// [`CascadeRouter::record_override_outcome`] does: the reward of
+    /// [`Self::observe_task_outcome`], at an override's dampened weight
+    /// (bug-f68404).
+    pub fn observe_override_outcome(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
+    ) {
+        let reward = task_outcome_reward(success, cost_usd, duration_ms);
+        self.observe_weighted(
+            router,
+            model_slug,
+            ctx.to_features(),
+            reward,
+            success,
+            OVERRIDE_LEARNING_RATE,
+        );
+    }
+
+    /// Journal an observation that carries `weight` (0.0 to 1.0) of a full
+    /// one, then apply it to `router`
+    /// ([`CascadeRouter::observe_weighted_outcome`]).
+    ///
+    /// When the WAL cannot be written the observation is still applied, and
+    /// is then only as durable as the next snapshot save.
+    pub fn observe_weighted(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        context_features: Vec<f64>,
+        reward: f64,
+        success: bool,
+        weight: f64,
+    ) {
         let Some(model_idx) = router.model_index_for_slug(model_slug) else {
             tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
             return;
         };
+        let weight = weight.clamp(0.0, 1.0);
 
-        let id = uuid::Uuid::new_v4().to_string();
         let entry = WalEntry::ModelCallObservation {
-            id: id.clone(),
+            id: uuid::Uuid::new_v4().to_string(),
             model_slug: model_slug.to_string(),
             context_features: context_features.clone(),
             model_idx,
             reward,
             success,
+            weight,
             ts_ms: Utc::now().timestamp_millis(),
         };
-        let journaled = match wal::append_entry(&self.wal_path, &entry) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(
-                    path = %self.wal_path.display(),
-                    %error,
-                    "[wal] model-call observation not journaled -- learning not durable this entry"
-                );
-                false
-            }
-        };
 
-        // Apply under the lock, so `save` never marks an observation as
-        // folded before the snapshot it writes contains it. This is the
-        // update `CascadeRouter::replay_observation` repeats on replay.
-        let mut unfolded = self.unfolded.lock();
-        router.observe_outcome(context_features, model_idx, reward, success);
-        if journaled {
-            unfolded.push(id);
+        // Journal and apply under the lock, so `save` never truncates an
+        // observation that the snapshot it writes does not hold. This is the
+        // update `CascadeRouter::replay_weighted_observation` repeats on
+        // replay.
+        let mut segment = self.segment.lock();
+        if let Err(error) = wal::append_to_segment(&mut segment, &self.segments_dir, &entry) {
+            tracing::warn!(
+                dir = %self.segments_dir.display(),
+                %error,
+                "[wal] model-call observation not journaled -- learning not durable this entry"
+            );
         }
+        router.observe_weighted_outcome(&context_features, model_idx, reward, success, weight);
     }
 
-    /// Save `router` to the snapshot, then mark the journaled observations as
-    /// folded so a replay skips them.
+    /// Save `router` to the snapshot, then truncate the journal's segment:
+    /// the snapshot holds its observations now.
     ///
     /// # Errors
     ///
-    /// Returns an error when the snapshot cannot be written. The observations
-    /// then stay unfolded, and `LearningRuntime` replays them when it next
-    /// opens.
+    /// Returns an error when the snapshot cannot be written. The segment then
+    /// keeps the observations, and `LearningRuntime` or
+    /// [`load_recovered_router`] replays them if this writer is gone before a
+    /// later save holds them.
     pub fn save(&self, router: &CascadeRouter) -> std::result::Result<(), LearnError> {
-        let mut unfolded = self.unfolded.lock();
+        let mut segment = self.segment.lock();
         router.save(&self.snapshot_path)?;
-        let ids = std::mem::take(&mut *unfolded);
-        drop(unfolded);
-        if ids.is_empty() {
-            return Ok(());
-        }
-
-        let marker = WalEntry::ModelCallObservationsFolded {
-            ids,
-            ts_ms: Utc::now().timestamp_millis(),
-        };
-        if let Err(error) = wal::append_entry(&self.wal_path, &marker) {
+        if let Some(segment) = segment.as_mut()
+            && let Err(error) = segment.truncate()
+        {
             tracing::warn!(
-                path = %self.wal_path.display(),
+                path = %segment.path().display(),
                 %error,
-                "[wal] fold marker not written -- a replay may count these observations twice"
+                "[wal] segment not truncated -- a replay may count these observations twice"
             );
         }
         Ok(())
     }
+}
+
+/// Load the router saved at `snapshot_path` for `model_slugs`, once the
+/// snapshot holds what the learning WAL beside it journaled but no snapshot
+/// saved: the observations of writers that are gone, such as a Graph run
+/// that crashed before it saved its router (bug-dfb28f). A live writer's
+/// segment is left to that writer, as [`LearningRuntime`] leaves it.
+///
+/// [`LearningRuntime`]: crate::runtime_feedback::LearningRuntime
+#[must_use]
+pub fn load_recovered_router(snapshot_path: &Path, model_slugs: Vec<String>) -> CascadeRouter {
+    if let Some(learn_dir) = snapshot_path.parent() {
+        let mut paths = LearningPaths::under(learn_dir);
+        paths.cascade_router_json = snapshot_path.to_path_buf();
+        crate::runtime_feedback::recover_wal(&paths);
+    }
+    CascadeRouter::load_or_new(snapshot_path, model_slugs)
+}
+
+/// A settled task's routing reward: the multi-objective reward of a success
+/// at its cost and latency, and 0 for a failure, whose cost and latency
+/// bought nothing (bug-8da8ba).
+fn task_outcome_reward(success: bool, cost_usd: f64, duration_ms: u64) -> f64 {
+    let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
+    let reward = compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
+    outcome_reward(success, reward)
 }
 
 fn model_call_reward(success: bool) -> f64 {
@@ -446,6 +537,8 @@ mod tests {
             latency_ms: 1_500,
             success,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         }
     }
 
@@ -453,6 +546,20 @@ mod tests {
         LearningRuntime::open_under_with_models(learn_dir, models)
             .await
             .expect("open learning runtime")
+    }
+
+    /// Entries journaled in the WAL segments under `learn_dir`, whether their
+    /// writers live or not.
+    fn journaled_entries(learn_dir: &Path) -> usize {
+        let Ok(listing) = std::fs::read_dir(learn_dir.join(crate::wal::SEGMENTS_DIR)) else {
+            return 0;
+        };
+        listing
+            .map(|segment| {
+                let path = segment.expect("segment").path();
+                replay_wal(&path).expect("read segment").len()
+            })
+            .sum()
     }
 
     #[tokio::test]
@@ -486,18 +593,17 @@ mod tests {
         let confidence = router.confidence_snapshot();
         assert_eq!(confidence["model-a"], (1, 0));
         assert_eq!(confidence["model-b"], (1, 1));
-        assert!(
-            replay_wal(&learn_dir.join("wal.jsonl"))
-                .expect("read WAL")
-                .is_empty(),
-            "the replayed entries are snapshotted and truncated"
+        assert_eq!(
+            journaled_entries(&learn_dir),
+            0,
+            "the replayed segment is removed once the snapshot holds it"
         );
     }
 
     #[tokio::test]
     async fn model_call_observation_replayed_from_wal_only_until_folded() {
-        // find-0dc1d5: once a saved snapshot contains an observation, its
-        // fold marker keeps the replay from counting it twice.
+        // find-0dc1d5: once a saved snapshot contains an observation, the
+        // save drops it from the journal, so a replay cannot count it twice.
         let tmp = tempdir().expect("tempdir");
         let learn_dir = tmp.path().join("learn");
         let models = vec!["model-a".to_string()];
@@ -508,6 +614,7 @@ mod tests {
         journal.save(&router).expect("save snapshot");
         journal.observe_model_call(&router, "model-a", "implementer", false, 1_000);
         // The process dies before the failure reaches a snapshot.
+        drop(journal);
 
         let runtime = reopen(&learn_dir, models).await;
         assert_eq!(runtime.cascade_router().total_observations(), 2);
@@ -515,6 +622,118 @@ mod tests {
             runtime.cascade_router().confidence_snapshot()["model-a"],
             (2, 1)
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_writers_unsaved_observations_are_counted_once() {
+        // bug-84de98: an opener leaves a live writer's journaled observations
+        // to that writer, which saves them once.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let router = CascadeRouter::new(models.clone());
+        let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+        journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+        journal.observe_model_call(&router, "model-a", "implementer", false, 1_000);
+
+        // Another process opens its learning runtime while the writer runs.
+        let opener = reopen(&learn_dir, models.clone()).await;
+        assert_eq!(
+            opener.cascade_router().total_observations(),
+            0,
+            "a live writer's entries are its own to save"
+        );
+        drop(opener);
+
+        journal.save(&router).expect("the writer saves");
+        drop(journal);
+        let after = reopen(&learn_dir, models).await;
+        assert_eq!(after.cascade_router().total_observations(), 2);
+        let confidence = after.cascade_router().confidence_snapshot();
+        assert_eq!(confidence["model-a"], (2, 1));
+    }
+
+    #[test]
+    fn the_wal_is_truncated_after_every_save() {
+        // bug-7a2630: a long-lived writer such as serve truncates its segment
+        // after every save, so the WAL stays bounded while it runs.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let router = CascadeRouter::new(vec!["model-a".to_string()]);
+        let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+        for round in 1..=3 {
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            journal.observe_model_call(&router, "model-a", "implementer", false, 1_000);
+            assert_eq!(
+                journaled_entries(&learn_dir),
+                2,
+                "round {round}: journaled until saved"
+            );
+            journal.save(&router).expect("save");
+            assert_eq!(
+                journaled_entries(&learn_dir),
+                0,
+                "round {round}: the save truncates the segment"
+            );
+        }
+        let saved =
+            CascadeRouter::load_or_new(journal.snapshot_path(), vec!["model-a".to_string()]);
+        assert_eq!(saved.confidence_snapshot()["model-a"], (6, 3));
+    }
+
+    #[tokio::test]
+    async fn wal_replay_keeps_entries_for_untracked_models() {
+        // bug-7a2630: an opener that tracks fewer models than the WAL names
+        // still saves every entry, so a wider router later sees them all.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string(), "model-b".to_string()];
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            journal.observe_model_call(&router, "model-b", "implementer", false, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let narrow = reopen(&learn_dir, vec!["model-a".to_string()]).await;
+        let narrow_confidence = narrow.cascade_router().confidence_snapshot();
+        assert_eq!(narrow_confidence["model-a"], (1, 1));
+        drop(narrow);
+
+        let wide = reopen(&learn_dir, models).await;
+        let confidence = wide.cascade_router().confidence_snapshot();
+        assert_eq!(confidence["model-a"], (1, 1));
+        assert_eq!(
+            confidence["model-b"],
+            (1, 0),
+            "the narrower opener kept model-b's entry"
+        );
+        assert_eq!(wide.cascade_router().total_observations(), 2);
+    }
+
+    #[test]
+    fn a_recorder_routes_with_what_a_crashed_writer_journaled() {
+        // bug-8a78e1: chat, the vision loop and serve's template dispatch
+        // build their recorder's router from the snapshot once it holds a
+        // crashed writer's journal.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let recorder = ModelCallFeedbackRecorder::from_learn_dir(learn_dir.clone(), models);
+        let router = recorder
+            .cascade_router
+            .as_ref()
+            .expect("the recorder's router");
+        assert_eq!(router.confidence_snapshot()["model-a"], (1, 1));
+        assert_eq!(journaled_entries(&learn_dir), 0, "the journal was replayed");
     }
 
     #[tokio::test]
@@ -539,6 +758,8 @@ mod tests {
                 success: true,
                 provider_success: None,
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
             .expect("record feedback");

@@ -1,6 +1,7 @@
 # Docker/Railway default configuration for roko.
 #
-# Copied into /workspace/roko.toml at image build time by the Dockerfile.
+# Copied into /workspace/roko.toml at image build time by the Dockerfile
+# (the runtime and distroless targets).
 # Runtime behavior is configured via ROKO_* environment variables injected
 # by the deployment platform (see: roko config export --env railway).
 #
@@ -22,7 +23,9 @@ timeout_ms = 300000
 bare_mode = true
 
 [server]
-# Bind and port are overridden by ROKO_BIND / ROKO_PORT / PORT at startup.
+# The runtime image's start-railway passes ROKO_BIND / ROKO_PORT / PORT as
+# --bind / --port. The distroless image uses these values; PORT, when set,
+# replaces the port.
 bind = "0.0.0.0"
 port = 6677
 

@@ -1,6 +1,8 @@
 //! Limits and failure reasons of one Graph task attempt: express tasks, turn caps,
 //! attempt timeouts, and the class-prefixed reason a failed attempt records.
 
+use roko_learn::tier_limits::LearnedTierLimits;
+
 use super::*;
 
 /// P3-AGT-2: Express mode turn limit for mechanical/trivial tasks.
@@ -14,7 +16,8 @@ const EXPRESS_MAX_TURNS: u32 = 5;
 ///
 /// Express mode is enabled when:
 /// - `conductor.express_mode = true` in the workspace config, AND
-/// - The task tier is `"mechanical"` or `"trivial"`.
+/// - The task tier reads as mechanical ([`TaskDef::tier_class`]: `mechanical`,
+///   `trivial`, `fast`, ...).
 ///
 /// When active, the dispatcher:
 /// - Routes to `routing.fast_task_model` (cheapest available model).
@@ -24,20 +27,35 @@ pub(super) fn is_express_task(
     config: &roko_core::config::schema::RokoConfig,
     task: &TaskDef,
 ) -> bool {
-    if !config.conductor.express_mode {
-        return false;
-    }
-    let tier_lower = task.tier.to_ascii_lowercase();
-    matches!(tier_lower.as_str(), "mechanical" | "trivial")
+    config.conductor.express_mode && task.tier_class() == roko_core::task::TaskTier::Mechanical
+}
+
+/// [`task_turn_limit_with`] without learned tier limits.
+#[cfg(test)]
+pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
+    task_turn_limit_with(config, None, task, express_active)
 }
 
 /// Provider turn cap for one Graph task dispatch.
 ///
 /// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
-/// use the `focused` band, so the cap is never unbounded); express dispatch
-/// lowers it further to [`EXPRESS_MAX_TURNS`].
-pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
-    let tier_limit = config.pipeline.max_turns_for_tier(&task.tier);
+/// read as focused, so the cap is never unbounded). With the workspace's
+/// `learned` tier limits and `[pipeline] learned_limits = "on"`, a tier with
+/// enough history gets its learned cap instead (gap-5a6e01). Express
+/// dispatch lowers the cap further to [`EXPRESS_MAX_TURNS`]. The provider
+/// adapter decides how the cap binds (`ProviderAdapter::turn_cap_enforcement`),
+/// and agent construction warns when a provider can treat it only as
+/// advisory.
+pub(super) fn task_turn_limit_with(
+    config: &RokoConfig,
+    learned: Option<&LearnedTierLimits>,
+    task: &TaskDef,
+    express_active: bool,
+) -> u32 {
+    let tier = task.tier_class();
+    let tier_limit = learned
+        .and_then(|learned| learned.applied(tier).max_turns)
+        .unwrap_or_else(|| config.pipeline.max_turns_for_tier(tier));
     if express_active {
         tier_limit.min(EXPRESS_MAX_TURNS)
     } else {
@@ -82,15 +100,54 @@ pub(super) fn turn_cap_resume_note(previous: TurnCapRetry, cap: u32) -> String {
 /// timeout.
 const MAX_TIMEOUT_ESCALATION: u64 = 4;
 
-/// Wall-clock budget of one Graph task attempt, in ms: the task's authored
-/// `timeout_secs`, else `timeouts.agent_dispatch_secs`.
+/// [`base_attempt_timeout_ms_with`] without learned tier limits.
+#[cfg(test)]
 pub(super) fn base_attempt_timeout_ms(config: &RokoConfig, spec: &TaskExecutionSpec) -> u64 {
-    let secs = if spec.timeout_secs == 0 {
-        config.timeouts.agent_dispatch_secs
-    } else {
-        spec.timeout_secs
-    };
-    secs.max(1).saturating_mul(1_000)
+    base_attempt_timeout_ms_with(config, None, spec)
+}
+
+/// Wall-clock budget of one Graph task attempt, in ms: the task's authored
+/// `timeout_secs`, which always wins; else, with the workspace's `learned`
+/// tier limits and `[pipeline] learned_limits = "on"`, the learned timeout of
+/// a tier with enough history (gap-5a6e01); else
+/// `timeouts.agent_dispatch_secs`.
+pub(super) fn base_attempt_timeout_ms_with(
+    config: &RokoConfig,
+    learned: Option<&LearnedTierLimits>,
+    spec: &TaskExecutionSpec,
+) -> u64 {
+    if spec.timeout_secs != 0 {
+        return spec.timeout_secs.saturating_mul(1_000);
+    }
+    let tier = roko_core::task::TaskTier::parse(&spec.tier).unwrap_or_default();
+    let configured = config
+        .timeouts
+        .agent_dispatch_secs
+        .max(1)
+        .saturating_mul(1_000);
+    learned
+        .and_then(|learned| learned.applied(tier).timeout_ms)
+        .unwrap_or(configured)
+}
+
+impl GraphTaskDispatcher {
+    /// The workspace's learned tier limits (gap-5a6e01), read on the first
+    /// dispatch from the settled attempts under the feedback `runs_dir` and
+    /// the tiers in its `costs_path`. None without a runs directory.
+    pub(super) fn learned_tier_limits(&self) -> &LearnedTierLimits {
+        self.learned_tier_limits.get_or_init(|| {
+            self.feedback
+                .runs_dir
+                .as_deref()
+                .map_or_else(LearnedTierLimits::default, |runs_dir| {
+                    LearnedTierLimits::load(
+                        &self.config,
+                        runs_dir,
+                        self.feedback.costs_path.as_deref(),
+                    )
+                })
+        })
+    }
 }
 
 /// Timeout for the attempt after one that ran out of `timeout_ms`: half
@@ -125,7 +182,7 @@ const MAX_FAILURE_REASON_BYTES: usize = 2_048;
 /// recorded on its episode. A reason within [`MAX_FAILURE_REASON_BYTES`]
 /// keeps every line, so a verify summary keeps the step that failed; a
 /// longer one keeps its first lines and its tail around an omission marker.
-fn attempt_failure_reason(class: &str, detail: &str) -> String {
+pub(super) fn attempt_failure_reason(class: &str, detail: &str) -> String {
     let detail = detail.trim();
     let detail = if detail.is_empty() {
         "no detail"
@@ -176,20 +233,37 @@ pub(super) fn verify_failure_reason(error: &RokoError) -> String {
     }
 }
 
-/// [`attempt_failure_reason`] for an unsuccessful provider result.
-pub(super) fn provider_failure_reason(message: &str) -> String {
+/// How an unsuccessful provider result, or a provider call that errored,
+/// ended (S01 §4.3), read from its message.
+pub(super) fn provider_failure_outcome(message: &str) -> AttemptOutcome {
     use roko_agent::provider::error_classify::{
         detect_attempt_timeout, detect_provider_exhaustion, detect_turn_cap,
     };
 
-    let class = if detect_turn_cap(message).is_some() {
-        "turn_cap"
+    if detect_turn_cap(message).is_some() {
+        AttemptOutcome::TurnCap
     } else if detect_provider_exhaustion(message).is_some() {
-        "provider_exhausted"
+        AttemptOutcome::ProviderExhausted
     } else if detect_attempt_timeout(message) {
-        "timeout"
+        AttemptOutcome::Timeout
     } else {
-        "provider"
+        AttemptOutcome::ProviderError
+    }
+}
+
+/// [`attempt_failure_reason`] for an attempt the stall watchdog cancelled
+/// (bug-4c553b).
+pub(super) fn stall_failure_reason(message: &str) -> String {
+    attempt_failure_reason("timeout", message)
+}
+
+/// [`attempt_failure_reason`] for an unsuccessful provider result.
+pub(super) fn provider_failure_reason(message: &str) -> String {
+    let class = match provider_failure_outcome(message) {
+        AttemptOutcome::TurnCap => "turn_cap",
+        AttemptOutcome::ProviderExhausted => "provider_exhausted",
+        AttemptOutcome::Timeout => "timeout",
+        _ => "provider",
     };
     attempt_failure_reason(class, message)
 }
@@ -200,7 +274,7 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, batch_ctx, make_batch_dispatcher,
+        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, batch_ctx, make_batch_dispatcher,
         make_scripted_batch_dispatcher, make_spec, make_task_def,
     };
     use crate::graph_task_dispatch::verification::verify_failure_summary;
@@ -402,6 +476,162 @@ mod tests {
         assert_eq!(raised_attempt_timeout_ms(u64::MAX, u64::MAX), u64::MAX);
     }
 
+    /// gap-5a6e01: with `learned_limits = "on"` a tier's learned cap and
+    /// timeout replace the configured ones; `shadow` and `off` change nothing,
+    /// and an authored timeout always wins.
+    #[test]
+    fn learned_tier_limits_reach_turn_cap_and_timeout() {
+        use roko_core::config::gates::LearnedLimitsMode;
+        use roko_core::task::TaskTier;
+        use roko_learn::telemetry::AttemptOutcome;
+        use roko_learn::tier_limits::TierAttempt;
+
+        let passed = |turns: u32, agent_ms: u64| TierAttempt {
+            tier: TaskTier::Focused,
+            outcome: AttemptOutcome::Passed,
+            passed: true,
+            turns: Some(turns),
+            agent_ms: Some(agent_ms),
+            settled_at: None,
+        };
+        // 40 focused passes, half at 20 turns and 200 s, half at 40 turns and
+        // 400 s: the p95 times 1.25 is 50 turns and 500 s.
+        let attempts: Vec<TierAttempt> = (0..40)
+            .map(|n| {
+                if n % 2 == 0 {
+                    passed(20, 200_000)
+                } else {
+                    passed(40, 400_000)
+                }
+            })
+            .collect();
+        let mut config = RokoConfig::default();
+        config.timeouts.agent_dispatch_secs = 600;
+        config.pipeline.learned_limits = LearnedLimitsMode::On;
+        let learned = LearnedTierLimits::from_attempts(&config, &attempts);
+        let focused = make_task_def("focused");
+        let spec = make_spec(&focused);
+
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &focused, false),
+            50
+        );
+        assert_eq!(
+            base_attempt_timeout_ms_with(&config, Some(&learned), &spec),
+            500_000
+        );
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &focused, true),
+            EXPRESS_MAX_TURNS,
+            "express still lowers the learned cap"
+        );
+        let mechanical = make_task_def("mechanical");
+        assert_eq!(
+            task_turn_limit_with(&config, Some(&learned), &mechanical, false),
+            40,
+            "a tier without history keeps its configured cap"
+        );
+        let mut authored = focused.clone();
+        authored.timeout_secs = 900;
+        assert_eq!(
+            base_attempt_timeout_ms_with(&config, Some(&learned), &make_spec(&authored)),
+            900_000,
+            "an authored timeout wins"
+        );
+
+        for mode in [LearnedLimitsMode::Shadow, LearnedLimitsMode::Off] {
+            config.pipeline.learned_limits = mode;
+            let learned = LearnedTierLimits::from_attempts(&config, &attempts);
+            assert_eq!(
+                task_turn_limit_with(&config, Some(&learned), &focused, false),
+                60
+            );
+            assert_eq!(
+                base_attempt_timeout_ms_with(&config, Some(&learned), &spec),
+                600_000
+            );
+        }
+        assert_eq!(task_turn_limit(&config, &focused, false), 60);
+        assert_eq!(base_attempt_timeout_ms(&config, &spec), 600_000);
+    }
+
+    /// gap-5a6e01: dispatch learns its tier limits from the settled attempts
+    /// under its runs directory, so with `learned_limits = "on"` a focused
+    /// task gets its tier's learned turn cap; its own open line names the
+    /// tier for the next run to learn from.
+    #[tokio::test]
+    async fn dispatch_reads_learned_tier_limits_from_its_runs() {
+        use roko_core::config::gates::LearnedLimitsMode;
+        use roko_learn::telemetry::records::ATTEMPTS_FILE;
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+            Stamped, TelemetryRecord,
+        };
+
+        fn stamped<T: TelemetryRecord>(record: T) -> String {
+            serde_json::to_string(&Stamped {
+                schema_version: T::SCHEMA.to_string(),
+                record_id: String::new(),
+                seq: 0,
+                ts: String::new(),
+                record,
+            })
+            .expect("serialize line")
+        }
+
+        // 40 focused passes, half at 20 turns and half at 40: the p95 times
+        // 1.25 is 50 turns.
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let history: Vec<String> = (1..=40)
+            .flat_map(|ordinal| {
+                let key = AttemptKey::new("history", "plan", "T", ordinal);
+                let mut open = AttemptOpenRecord::new(AttemptIdentity::new(&key), 1_000);
+                open.tier = Some("focused".to_string());
+                let mut verdict = AttemptVerdictRecord::settle(
+                    AttemptIdentity::new(&key),
+                    AttemptOutcome::Passed,
+                    true,
+                );
+                verdict.executed.turns = Some(if ordinal % 2 == 0 { 20 } else { 40 });
+                [stamped(open), stamped(verdict)]
+            })
+            .collect();
+        std::fs::create_dir_all(runs_dir.join("history")).expect("history run");
+        std::fs::write(
+            runs_dir.join("history").join(ATTEMPTS_FILE),
+            history.join("\n"),
+        )
+        .expect("write history");
+
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
+            config.pipeline.learned_limits = LearnedLimitsMode::On;
+        })
+        .await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        let ctx = batch_ctx().with_run_id("now".to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("dispatch");
+        let args = std::fs::read_to_string(temp.path().join("provider-args"))
+            .expect("the provider recorded its arguments");
+        assert!(args.contains("--max-turns 50"), "provider args: {args}");
+
+        dispatcher.close_run_attempts("now");
+        let lines = std::fs::read_to_string(runs_dir.join("now").join(ATTEMPTS_FILE))
+            .expect("this run's attempt log");
+        let open: serde_json::Value = lines
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|line: &serde_json::Value| line["schema_version"] == "roko.attempt_open/1")
+            .expect("an open line");
+        assert_eq!(open["tier"], "focused");
+    }
+
     #[test]
     fn the_base_attempt_timeout_is_the_authored_timeout_else_the_dispatch_default() {
         let mut config = RokoConfig::default();
@@ -506,33 +736,48 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
 
     #[tokio::test]
     async fn a_timed_out_attempt_is_resumed_with_an_escalated_timeout() {
-        let temp = tempdir().expect("tempdir");
-        let (dispatcher, mut task) =
-            make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {}).await;
-        task.timeout_secs = 1;
-        let spec = make_spec(&task);
+        for timeout_secs in TIMEOUT_SECS_UNDER_LOAD {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, mut task) =
+                make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {})
+                    .await;
+            task.timeout_secs = timeout_secs;
+            let spec = make_spec(&task);
+            let (first_ms, resumed_ms) = (timeout_secs * 1_000, timeout_secs * 1_500);
 
-        for expected in ["timed out after 1000 ms", "timed out after 1500 ms"] {
-            let error = dispatcher
-                .dispatch(&spec, Vec::new(), &batch_ctx())
-                .await
-                .expect_err("the attempt runs out of time");
+            for timeout_ms in [first_ms, resumed_ms] {
+                let expected = format!("timed out after {timeout_ms} ms");
+                let error = dispatcher
+                    .dispatch(&spec, Vec::new(), &batch_ctx())
+                    .await
+                    .expect_err("the attempt runs out of time");
+                assert!(
+                    matches!(&error, RokoError::Agent { message, .. } if *message == expected),
+                    "the retry must not rerun the same timeout: got {error:?}"
+                );
+            }
+
+            let prompt = |n: u32| std::fs::read_to_string(temp.path().join(format!("prompt-{n}")));
+            let (Ok(first_prompt), Ok(resumed_prompt)) = (prompt(1), prompt(2)) else {
+                // A provider ran out of time before it recorded its prompt.
+                continue;
+            };
+            assert!(!first_prompt.contains("Resuming"));
             assert!(
-                matches!(&error, RokoError::Agent { message, .. } if message == expected),
-                "the retry must not rerun the same timeout: got {error:?}"
+                resumed_prompt.contains("# Resuming a timed-out task"),
+                "{resumed_prompt}"
             );
+            let limit = |ms| format!("{:?}", std::time::Duration::from_millis(ms));
+            assert!(
+                resumed_prompt.contains(&format!("ran out of its {} time limit", limit(first_ms))),
+                "{resumed_prompt}"
+            );
+            assert!(
+                resumed_prompt.contains(&format!("This attempt has {}.", limit(resumed_ms))),
+                "{resumed_prompt}"
+            );
+            return;
         }
-
-        let first_prompt =
-            std::fs::read_to_string(temp.path().join("prompt-1")).expect("first prompt");
-        assert!(!first_prompt.contains("Resuming"));
-        let resumed_prompt =
-            std::fs::read_to_string(temp.path().join("prompt-2")).expect("second prompt");
-        assert!(
-            resumed_prompt.contains("# Resuming a timed-out task"),
-            "{resumed_prompt}"
-        );
-        assert!(resumed_prompt.contains("ran out of its 1s time limit"));
-        assert!(resumed_prompt.contains("This attempt has 1.5s."));
+        panic!("no provider recorded its prompt before its time ran out");
     }
 }

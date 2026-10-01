@@ -1,5 +1,9 @@
 # 39-04 Coordination and Multi-Agent -- Annotated Reference Map
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > Research foundations for stigmergic coordination, multi-agent cooperation, and
 > mesh-based knowledge sharing in Roko's Agent Mesh and Pheromone Field.
 >
@@ -10,105 +14,81 @@
 ## Stigmergy: Coordination Through Environmental Traces
 
 **[Grasse, 1959]** *La reconstruction du nid et les coordinations interindividuelles.* Insectes Sociaux, 6(1), 41--80.
-Coined "stigmergy" (stigma = mark, ergon = work). Termites coordinate without direct communication. Foundational for the Pheromone Field.
 
 **[Theraulaz & Bonabeau, 1999]** *A Brief History of Stigmergy.* Artificial Life, 5(2), 97--116.
-Distinguishes sematectonic from marker-based stigmergy. Agent Signals are marker-based deposits that decay via half-life.
 
 **[Parunak et al., 2002]** *Digital Pheromone Mechanisms for Coordination of Unmanned Vehicles.* AAMAS 2002.
-Digital pheromones enable emergent coordination through time-decaying signals. Directly grounds pheromone decay and reinforcement.
 
 **[Dorigo & Gambardella, 1997]** *Ant Colony System.* IEEE Transactions on Evolutionary Computation, 1(1), 53--66.
-Formalizes pheromone deposit/evaporation. Confirmed entries gain weight; unconfirmed entries decay.
 
 **[Xuan et al., 2026]** *Dual-Trail Stigmergic Coordination.* Journal of Marine Science and Engineering, 14(2).
-Dual-trail extension validates separate pheromone types (Threat/Opportunity/Wisdom) with distinct decay profiles.
-
-**[Xu et al., 2024]** *Stigmergy + Independent RL + Conflict-Avoidance.* Working paper.
-Combining stigmergy with RL produces emergent coordination without central control.
 
 ---
 
 ## Cooperation and Game Theory
 
 **[Grossman & Stiglitz, 1980]** *On the Impossibility of Informationally Efficient Markets.* American Economic Review, 70(3), 393--408.
-Freely shared information is immediately priced in. Agents share threats and structural knowledge, not alpha signals.
 
 **[Fontana et al., 2024]** *Nicer Than Humans: How Do LLMs Behave in the Prisoner's Dilemma?* arXiv:2406.13605v2.
-LLMs exhibit cooperation exceeding human baselines. Validates cooperative multi-agent LLM systems.
 
 **[Rossetti et al., 2025]** *Dynamics of Cooperation in Concurrent Games.* Nature Communications, 16.
-Cooperation dynamics in concurrent settings. Validates mesh synchronization where agents act concurrently.
 
 ---
 
 ## Agent Coordination Protocols
 
 **[Google, 2025]** *Agent-to-Agent (A2A) Protocol Specification.* google.github.io.
-Standardized A2A communication. Informs the Connect trait design.
 
 **[Anthropic, 2024]** *Model Context Protocol (MCP) Specification.* modelcontextprotocol.io.
-Tool interaction protocol. Grounds MCP integration in `roko-plugin`.
 
 ---
 
 ## Communitas and Shared Obligation
 
 **[Esposito, 2010]** *Communitas: The Origin and Destiny of Community.* Stanford University Press.
-Community constituted by shared obligation. The munus (shared gift) is knowledge contribution.
 
 **[Esposito, 2011]** *Immunitas: The Protection and Negation of Life.* Polity.
-Immunity as community protection. Grounds the immune Graph concept and permissioned subnets.
 
 ---
 
 ## Emergent Coordination in LLM Agents (2025--2026)
 
-**[Anonymous, 2025]** *Emergence in Multi-Agent Language Models.* arXiv:2510.05174.
+**[Riedl, 2025]** *Emergence in Multi-Agent Language Models.* arXiv:2510.05174.
 Information-theoretic framework for dynamical emergence. Validates Collective architecture.
 
-**[Anonymous, 2025]** *Multi-Agent Collaboration Mechanisms: A Survey.* arXiv:2501.06322.
-Taxonomizes role-based division, debate-style refinement, and stigmergic coordination.
+**[Tran et al., 2025]** *Multi-Agent Collaboration Mechanisms: A Survey.* arXiv:2501.06322.
 
-**[Anonymous, 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
-PDE-based framework treating swarms as fluids. Rigorous foundation for Pheromone Field dynamics.
+**[Boldini et al., 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
 
-**[Anonymous, 2024]** *Automatic Design of Stigmergy-Based Behaviours.* Communications Engineering, Nature.
-Automatic design validated in simulation and hardware. Validates automatic pheromone-type design.
+**[Salman et al., 2024]** *Automatic Design of Stigmergy-Based Behaviours.* Communications Engineering, Nature.
 
-**[Anonymous, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
-Human citation patterns follow stigmergic dynamics. Validates digital stigmergy beyond biology.
+**[Starominski-Uehara, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
 
-**[Anonymous, 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
-LLM groups develop asymmetric influence patterns without explicit role prompting.
+**[Parfenova et al., 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
 
-**[Anonymous, 2025]** *Multi-Agent Language Models: Advancing Cooperation.* arXiv:2506.09331.
-Comprehensive multi-agent LLM cooperation survey.
+**[Sudhakar, 2025]** *Multi-Agent Language Models: Advancing Cooperation.* arXiv:2506.09331.
 
-**[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
-Systematic failures in implicit LLM coordination. Motivates explicit Pheromone Field and Agent Mesh.
+**[La Malfa et al., 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 
-**[Anonymous, 2025]** *AgentsNet: Coordination and Collaborative Reasoning.* arXiv:2507.08616.
+**[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning.* arXiv:2507.08616.
 Distributed coordination benchmark probing up to 100 agents. Evaluation methodology for Collectives.
 
-**[Anonymous, 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination.* NAACL 2025.
-Benchmark for multi-agent LLM coordination abilities.
+**[Agashe et al., 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination.* NAACL 2025.
 
-**[Anonymous, 2025]** *Agentic LLMs in the Supply Chain: Multi-Agent Consensus-Seeking.* International Journal of Production Research.
-Multi-agent consensus with transactive reasoning.
+**[Jannelli et al., 2025]** *Agentic LLMs in the supply chain: towards autonomous multi-agent consensus-seeking.* International Journal of Production Research.
 
 ---
 
 ## 2025--2026 Additions: LatentMAS, FederatedSkill
 
-**[LatentMAS, 2025]** *LatentMAS: Latent-Space Agent Communication.* arXiv:2511.20639. ICML 2026 Spotlight.
-Latent-space communication achieves 4x speed, 14.6% accuracy gain. Frontier architecture for pheromone communication beyond natural language.
+**[Zou et al., 2025]** *Latent Collaboration in Multi-Agent Systems.* arXiv:2511.20639. ICML 2026 Spotlight.
+Latent-space communication achieves up to 14.6% higher accuracy, 4-4.3x faster inference. Frontier architecture for pheromone communication beyond natural language.
 
-**[FederatedSkill, 2026]** *FederatedSkill: Semantic Skill Diffs for Federated Learning.* arXiv:2606.03143.
-44.4% improvement via semantic skill diffs. Informs cross-workspace knowledge transfer and federated collective learning.
+**[Yang et al., 2026]** *FederatedSkill: Federated Learning for Agentic Skill Evolution.* arXiv:2606.03143.
+Up to 44.4% higher success than self-evolving baselines via semantic skill diffs. Informs cross-workspace knowledge transfer and federated collective learning.
 
-**[Anonymous, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
-41--87% of failures are coordination, not capability. Validates explicit coordination architecture.
+**[Nechepurenko & Shuvalov, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
+Multi-agent systems fail in production at 41--87%, mostly from coordination defects (§1, citing Cemri et al. 2025). Validates explicit coordination architecture.
 
 ---
 

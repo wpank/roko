@@ -312,11 +312,17 @@ pub(crate) fn stable_hash_hex(parts: &[&str]) -> String {
 // ── Cost derivation ───────────────────────────────────────────────────
 
 /// Build a [`CostRecord`] from an [`Episode`] and optional provider override.
+///
+/// An episode whose cost nobody measured ([`Episode::cost_known`]) gets no
+/// record: a $0 row in the cost ledger would read as a free run.
 pub(crate) fn derive_cost_record(
     episode: &Episode,
     provider_override: Option<&str>,
 ) -> Option<CostRecord> {
     if episode.agent_id.is_empty() && episode.task_id.is_empty() {
+        return None;
+    }
+    if !episode.cost_known() {
         return None;
     }
 
@@ -345,6 +351,8 @@ pub(crate) fn derive_cost_record(
         duration_ms: episode.usage.wall_ms,
         success: episode.success,
         session_id: extra_string(episode, "session_id").unwrap_or_default(),
+        // An episode does not say where its usage came from.
+        cost_source: crate::telemetry::CostSource::Unknown,
     })
 }
 

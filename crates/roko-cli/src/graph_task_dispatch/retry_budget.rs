@@ -3,7 +3,8 @@
 //! The Graph engine retries a failed task up to its `max_retries`. A task that
 //! authors `max_retries` in `tasks.toml` keeps exactly that: the thresholds
 //! never lower an author's budget, and never raise one either (fixtures and
-//! tests author `max_retries = 0` to fail fast). For the other tasks, each
+//! tests author `max_retries = 0` to fail fast). The log only says when the
+//! thresholds suggest another budget for it (P3-15). For the other tasks, each
 //! verify step that maps to a canonical gate rung (compile, clippy, test)
 //! suggests a budget from its rung's pass-rate EMA in
 //! `.roko/learn/gate-thresholds.json`, which Graph verify runs keep current: a
@@ -11,12 +12,16 @@
 //! Suggestions stay within `[gates] adaptive_min_retries..=adaptive_max_retries`,
 //! and a rung with under five observations suggests their midpoint. The task
 //! gets its likeliest-to-fail rung's suggestion. A task with no such step
-//! keeps the default budget. `plan run --max-retries` overrides all of this.
+//! keeps the default budget. While the model ladder routes tasks, one that no
+//! `model_hint` or `preferred_model` pins gets at least enough retries to
+//! climb it (gap-460230).
+//! `plan run --max-retries` overrides all of this.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use roko_core::config::GatesConfig;
+use roko_core::defaults::DEFAULT_GATE_RETRY_MIN_OBSERVATIONS;
 use roko_gate::AdaptiveThresholds;
 use roko_gate::rung_for_gate_name;
 
@@ -36,6 +41,8 @@ pub(crate) enum RetryBudgetSource {
         ema_pass_rate: f64,
         observations: u64,
     },
+    /// Raised to what climbing the model ladder takes (gap-460230).
+    Ladder,
 }
 
 /// A task's retry budget and where it came from.
@@ -51,6 +58,10 @@ pub(crate) struct TaskRetryBudgets {
     thresholds: Option<AdaptiveThresholds>,
     /// Ids of the tasks that author `max_retries`.
     authored: BTreeSet<String>,
+    /// Least budget of a task that does not author `max_retries` and whose
+    /// model is not pinned: `0`, or what climbing the model ladder takes
+    /// while it routes tasks.
+    ladder_min_retries: u32,
 }
 
 impl TaskRetryBudgets {
@@ -82,21 +93,47 @@ impl TaskRetryBudgets {
         Self {
             thresholds,
             authored,
+            ladder_min_retries: 0,
         }
+    }
+
+    /// Give every task that does not author `max_retries` at least
+    /// `min_retries`: two attempts on each rung the model ladder lets it climb
+    /// (gap-460230). An authored budget is still kept exactly, and a task
+    /// whose `model_hint` or `preferred_model` pins its model never climbs,
+    /// so it keeps its own.
+    #[must_use]
+    pub(crate) fn with_ladder_min_retries(mut self, min_retries: u32) -> Self {
+        self.ladder_min_retries = min_retries;
+        self
     }
 
     /// `task`'s retry budget.
     pub(crate) fn for_task(&self, task: &TaskDef) -> RetryBudget {
+        if self.authored.contains(&task.id) {
+            return RetryBudget {
+                max_retries: task.max_retries,
+                source: RetryBudgetSource::Authored,
+            };
+        }
+        let budget = self.suggested(task);
+        let pinned = task.model_hint.is_some() || task.hints.preferred_model.is_some();
+        if !pinned && budget.max_retries < self.ladder_min_retries {
+            return RetryBudget {
+                max_retries: self.ladder_min_retries,
+                source: RetryBudgetSource::Ladder,
+            };
+        }
+        budget
+    }
+
+    /// Budget of a task that does not author `max_retries`: the default, or
+    /// its likeliest-to-fail rung's suggestion.
+    fn suggested(&self, task: &TaskDef) -> RetryBudget {
         let default = RetryBudget {
             max_retries: task.max_retries,
             source: RetryBudgetSource::Default,
         };
-        if self.authored.contains(&task.id) {
-            return RetryBudget {
-                source: RetryBudgetSource::Authored,
-                ..default
-            };
-        }
         let Some(thresholds) = &self.thresholds else {
             return default;
         };
@@ -125,7 +162,8 @@ impl TaskRetryBudgets {
         }
     }
 
-    /// `task`'s retry budget, logging where an adaptive one came from.
+    /// `task`'s retry budget, logging where an adaptive one came from, and
+    /// what the thresholds would suggest instead of an authored one.
     pub(crate) fn max_retries(&self, plan_id: &str, task: &TaskDef) -> u32 {
         let budget = self.for_task(task);
         if let RetryBudgetSource::Adaptive {
@@ -145,7 +183,53 @@ impl TaskRetryBudgets {
                 "retry budget set by adaptive gate thresholds"
             );
         }
+        if budget.source == RetryBudgetSource::Ladder {
+            tracing::info!(
+                plan_id,
+                task_id = %task.id,
+                max_retries = budget.max_retries,
+                "retry budget raised so the task can climb the model ladder"
+            );
+        }
+        if let Some(advice) = self.authored_budget_advice(task)
+            && let RetryBudgetSource::Adaptive {
+                rung,
+                ema_pass_rate,
+                observations,
+            } = advice.source
+        {
+            tracing::info!(
+                plan_id,
+                task_id = %task.id,
+                max_retries = budget.max_retries,
+                suggested_max_retries = advice.max_retries,
+                rung,
+                ema_pass_rate,
+                observations,
+                "P3-15: the authored retry budget differs from what the gate thresholds suggest"
+            );
+        }
         budget.max_retries
+    }
+
+    /// The budget the thresholds would give a task that authors another one
+    /// (P3-15). The authored budget is kept either way. A rung with under
+    /// five observations suggests only the midpoint of the range, so it gives
+    /// no advice.
+    fn authored_budget_advice(&self, task: &TaskDef) -> Option<RetryBudget> {
+        if !self.authored.contains(&task.id) {
+            return None;
+        }
+        let suggested = self.suggested(task);
+        match suggested.source {
+            RetryBudgetSource::Adaptive { observations, .. }
+                if observations >= DEFAULT_GATE_RETRY_MIN_OBSERVATIONS
+                    && suggested.max_retries != task.max_retries =>
+            {
+                Some(suggested)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -246,6 +330,32 @@ command = "true"
         assert_eq!(budget.source, RetryBudgetSource::Authored);
     }
 
+    /// P3-15: an authored budget is kept, and the thresholds' advice names
+    /// the budget they would set once its rung has enough observations.
+    #[test]
+    fn an_authored_budget_gets_advice_only_from_a_warm_rung() {
+        let dir = tempdir().expect("tempdir");
+        let budgets = budgets(dir.path(), &GatesConfig::default());
+        let authored = task("AUTHORED");
+        assert_eq!(budgets.for_task(&authored).max_retries, 0);
+        let advice = budgets
+            .authored_budget_advice(&authored)
+            .expect("advice from the warm test rung");
+        assert!(
+            matches!(advice.source, RetryBudgetSource::Adaptive { rung: 2, .. }),
+            "{advice:?}"
+        );
+        assert!(advice.max_retries > 0, "{advice:?}");
+        assert_eq!(budgets.authored_budget_advice(&task("TEST")), None);
+
+        let cold = TaskRetryBudgets::load(
+            Some(&dir.path().join("missing.json")),
+            &GatesConfig::default(),
+            &dir.path().join("tasks.toml"),
+        );
+        assert_eq!(cold.authored_budget_advice(&authored), None);
+    }
+
     #[test]
     fn a_rung_that_often_fails_raises_the_default_budget() {
         let dir = tempdir().expect("tempdir");
@@ -273,6 +383,7 @@ command = "true"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         }];
 
         // The default floor is a task's default max_retries (3).
@@ -307,6 +418,48 @@ command = "true"
         };
         let cold = TaskRetryBudgets::load(Some(&missing), &gates, &tasks_toml);
         assert_eq!(cold.for_task(&task("TEST")).max_retries, 4);
+    }
+
+    /// gap-460230: while the ladder is on, a task that does not author
+    /// `max_retries` gets enough retries to climb it. An authored budget, a
+    /// pinned task's budget and a larger adaptive budget stay as they are.
+    #[test]
+    fn the_ladder_raises_unauthored_budgets_to_its_floor() {
+        let dir = tempdir().expect("tempdir");
+        let budgets = budgets(dir.path(), &GatesConfig::default()).with_ladder_min_retries(5);
+        let structural = budgets.for_task(&task("STRUCTURAL"));
+        assert_eq!(
+            structural,
+            RetryBudget {
+                max_retries: 5,
+                source: RetryBudgetSource::Ladder,
+            }
+        );
+        assert_eq!(budgets.for_task(&task("AUTHORED")).max_retries, 0);
+        let mut pinned = task("STRUCTURAL");
+        pinned.model_hint = Some("claude-sonnet-4-6".to_string());
+        assert_eq!(budgets.for_task(&pinned).source, RetryBudgetSource::Default);
+        let mut preferred = task("STRUCTURAL");
+        preferred.hints.preferred_model = Some("claude-sonnet-4-6".to_string());
+        assert_eq!(
+            budgets.for_task(&preferred).source,
+            RetryBudgetSource::Default
+        );
+        let gates = GatesConfig {
+            adaptive_min_retries: 6,
+            adaptive_max_retries: 8,
+            ..GatesConfig::default()
+        };
+        let generous = budgets_with(dir.path(), &gates, 5).for_task(&task("TEST"));
+        assert!(
+            matches!(generous.source, RetryBudgetSource::Adaptive { .. }),
+            "{generous:?}"
+        );
+        assert!(generous.max_retries > 5, "{generous:?}");
+    }
+
+    fn budgets_with(dir: &Path, gates: &GatesConfig, ladder_min: u32) -> TaskRetryBudgets {
+        budgets(dir, gates).with_ladder_min_retries(ladder_min)
     }
 
     #[test]

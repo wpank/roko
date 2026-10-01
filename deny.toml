@@ -12,8 +12,15 @@ all-features = true
 # Use the RustSec advisory database.
 db-path = "$CARGO_HOME/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Allow specific advisories that we've reviewed and accepted.
-ignore = []
+# Allow specific advisories that we've reviewed and accepted. Each reason names
+# the path that pulls the crate in; re-review an entry when that path changes.
+ignore = [
+    { id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 comes from ratatui 0.29 (layout cache) and apps/mirage-rs. The unsound API is LruCache::iter_mut(), which neither calls. ratatui 0.29 pins lru 0.12, so the fix needs a ratatui upgrade." },
+    { id = "RUSTSEC-2026-0253", reason = "lru 0.12.5 via ratatui 0.29 and apps/mirage-rs. The use-after-free needs a cache key whose Drop panics inside pop() and is caught by catch_unwind. Every key here is plain data with no such Drop: (Rect, Layout) in ratatui; B256, Address, (Address, U256) and u64 in mirage-rs." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, with no known vulnerability and no patched release. It is a compile-time proc macro, reached through alloy-primitives, ark-ff, ratatui, syn-solidity and tokenizers." },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained, with no known vulnerability and no patched release. It is compile-time proc-macro support, reached only through alloy-sol-macro." },
+    { id = "RUSTSEC-2023-0071", reason = "Marvin timing attack on RSA private-key operations; no patched rsa release. rsa 0.9 comes only from jsonwebtoken 10 inside octocrab, which signs with RSA only for GitHub App auth. roko builds octocrab clients with personal_token() only (roko-cli commands/server.rs, roko-serve feedback.rs), so no RSA private-key operation runs." },
+]
 
 # --- Licenses ----------------------------------------------------------------
 

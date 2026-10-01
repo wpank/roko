@@ -10,7 +10,7 @@ use roko_core::tool::{
 };
 use std::path::PathBuf;
 
-use super::sandbox::require_string;
+use super::sandbox::{refuse_key_file, require_string};
 
 /// Canonical `snake_case` name.
 pub const NAME: &str = "grep";
@@ -139,6 +139,10 @@ fn search(
                     continue;
                 }
                 stack.push(path);
+                continue;
+            }
+            // Skip provider key files, and symlinks to them, unread.
+            if refuse_key_file(&path).is_err() {
                 continue;
             }
             // Skip files that look binary (naive: any null byte in first 1024 bytes).

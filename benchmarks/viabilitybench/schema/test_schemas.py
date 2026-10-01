@@ -54,6 +54,17 @@ MUTANTS = [
     ("task", "recoverability", [], "$.recoverability: needs at least 1 item(s)"),
     ("task", "spec.vague.operator", DELETE, "$.spec.vague: missing required field 'operator'"),
     ("metric-record", "label_source", "visible", "$.label_source: \"visible\" is not one of"),
+    ("feature", "run_record_task.ladder", 5, "$.run_record_task.ladder: must be null, not 5"),
+    ("feature", "family", "F1", '$.family: must be "PL", not "F1"'),
+    ("feature", "canary", DELETE, "missing required field 'canary'"),
+    ("run-record", "task.ladder", "plan", '$.task.ladder: "plan" is not one of [1, 2, 3, 4, 5, null]'),
+    # S09 §4.9's per-class costs split api_equiv_usd (0.0231) without changing it; a queue wait is never below 0.
+    ("run-record", "costs.by_class", {"plan": 0.0, "execute": 0.02, "retry": 0.0, "escalate": 0.0, "integrate": 0.0},
+     "$.costs.by_class: the classes add up to 0.02, not api_equiv_usd 0.0231"),
+    ("run-record", "costs.by_class", {"plan": 0.03, "execute": None, "retry": 0.0, "escalate": 0.0, "integrate": 0.0},
+     "the known classes add up to 0.03, more than api_equiv_usd 0.0231"),
+    ("run-record", "costs.by_class", {"plan": 0.0, "execute": 0.0231}, "missing required field 'retry'"),
+    ("run-record", "execution.queue_wait_s", -1.0, "$.execution.queue_wait_s: a wait cannot be below 0"),
 ]
 
 
@@ -84,6 +95,32 @@ def test_spec_examples_validate_and_mutants_fail(kind, path, value, expected):
     mutate(doc, path, value)
     errors = validate.validate(kind, doc)
     assert any(expected in error for error in errors), errors
+
+
+def test_a_plan_slice_row_validates_without_a_placeholder_ladder():
+    # A plan-slice feature has no ladder level (S09 §4.9), so its run records carry ladder = null, never a level.
+    sys.path.insert(0, str(HERE.parent / "families" / "plan_slice"))
+    import slicekit
+    features = slicekit.load_features()
+    assert features and all("ladder" not in feature.source["run_record"] for feature in features)
+    tasks = [example("feature")["run_record_task"], *(slicekit.run_record_task(feature, 1) for feature in features)]
+    for task in tasks:
+        assert task["family"] == "PL" and task["ladder"] is None, task
+        for arm in ("roko_plan", "fd_claude"):  # the slice's two arms
+            record = {**example("run-record"), "arm": arm, "task": task}
+            assert validate.validate("run-record", record) == [], (arm, task["instance_id"])
+    for ladder, valid in ((None, True), (3, True), (0, False), (6, False), ("plan", False)):
+        record = {**example("run-record"), "task": {**tasks[0], "ladder": ladder}}
+        assert (validate.validate("run-record", record) == []) is valid, ladder
+
+
+def test_an_attempt_gate_verdict_is_one_of_s01s_tags():
+    # S01's verdict tags, already_satisfied included (gap-9eb1e1); null when the gate failed or the arm has no gate.
+    for verdict, valid in (("passed", True), ("already_satisfied", True), ("unverified", True),
+                           ("forced_accept", True), (None, True), ("satisfied", False), ("gate_failed", False)):
+        record = example("run-record")
+        record["execution"]["attempts"][0]["gate_verdict"] = verdict
+        assert (validate.validate("run-record", record) == []) is valid, verdict
 
 
 def test_price_snapshot_rows_have_every_column():
@@ -142,5 +179,6 @@ def test_cli_checks_json_jsonl_and_toml(tmp_path, capsys):
     records.write_text(json.dumps(good) + "\n" + json.dumps({**good, "simulated": True}) + "\n")
     assert validate.main(["price-snapshot", str(SNAPSHOT)]) == 0
     assert validate.main(["task", str(HERE / "examples" / "task.json")]) == 0
+    assert validate.main(["feature", str(HERE / "examples" / "feature.json")]) == 0
     assert validate.main(["run-record", str(records)]) == 1
     assert f"{records}:2: $.simulated: must be false, not true" in capsys.readouterr().out

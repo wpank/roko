@@ -12,10 +12,10 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #8); tldr/04 steps 4 and 8, design rules 1 and 5"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-core/src/config/routing.rs::RoutingConfig"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-core/src/config/routing.rs::RoutingConfig"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-8c0a20", "gap-0f3980", "gap-9cbf35", "gap-dbf2a6", "gap-460230", "gap-b62e95", "gap-e21595"], blocks = [], related = ["gap-a791b4", "bug-35379d", "gap-1d1fa6", "gap-853b31"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-8c0a20", "gap-0f3980", "gap-9cbf35", "gap-dbf2a6", "gap-460230", "gap-b62e95", "gap-e21595", "bug-a6b433", "bug-cae1e1"], blocks = [], related = ["gap-a791b4", "bug-35379d", "gap-1d1fa6", "gap-853b31"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn tier_ladder_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test tier_ladder_canary"
@@ -83,13 +83,15 @@ edits hot files: one writer per file at a time.
 
 ## Done when
 
-- [ ] gap-8c0a20: One tier enum shared by the plan parser, router, budget and turn caps
-- [ ] gap-0f3980: TaskDef Routing Metadata Wiring (24-field gap) (existing item)
-- [ ] gap-9cbf35: Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default
-- [ ] gap-dbf2a6: Plan hints pin a ladder rung instead of a model name, and generated plans keep their hints
-- [ ] gap-460230: Verify-then-escalate: two failed attempts move a task one rung up the ladder
-- [ ] gap-b62e95: The router's context treats every retry as a first attempt (existing item)
-- [ ] gap-e21595: Integration test C8: the ladder routes by tier and escalates after two failures
+- [x] gap-8c0a20: One tier enum shared by the plan parser, router, budget and turn caps
+- [x] gap-0f3980: TaskDef Routing Metadata Wiring (24-field gap) (existing item)
+- [x] gap-9cbf35: Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default
+- [x] gap-dbf2a6: Plan hints pin a ladder rung instead of a model name, and generated plans keep their hints
+- [x] gap-460230: Verify-then-escalate: two failed attempts move a task one rung up the ladder
+- [x] gap-b62e95: The router's context treats every retry as a first attempt (existing item)
+- [x] gap-e21595: Integration test C8: the ladder routes by tier and escalates after two failures
+- [x] bug-a6b433: roko-learn's complexity_bucket reads complex as architectural, while TaskTier reads it as integrative
+- [x] bug-cae1e1: The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider
 - [ ] The epic's `[[verify]]` command (test C8) passes on the merged branch.
 
 ## Notes

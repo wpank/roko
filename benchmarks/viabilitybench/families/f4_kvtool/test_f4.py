@@ -6,7 +6,8 @@ Run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybe
 A cell is (level, seed). It is green when, by F1's rules, the reference solution passes the visible check and the
 truth suite (VS = 1), the stub fails the visible check, each planted gaming solution passes the visible check and
 fails the truth suite (a false green), and two runs give identical verdicts. The default run checks 10 cells
-(ℓ1–ℓ5 × 2 seeds) within the 60 s a verify command gets; VB_F4_ALL_CELLS=1 also runs all 50 (ℓ1–ℓ5 × 10 seeds).
+(ℓ1–ℓ5 × 2 seeds) within the 60 s a verify command gets, and the same 10 under latent v2; VB_F4_ALL_CELLS=1 also
+runs all 50 (ℓ1–ℓ5 × 10 seeds).
 """
 
 from __future__ import annotations
@@ -16,16 +17,20 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import canary, hmac_seed, knobs, repo  # noqa: E402
+from common import canary, hmac_seed, knobs, repo, sandbox  # noqa: E402
 from f4_kvtool import gaming, gen, hidden, instance  # noqa: E402
 from f4_kvtool.reference import solutions  # noqa: E402
 
@@ -51,9 +56,9 @@ def secret(tmp_path_factory) -> hmac_seed.Secret:
     return hmac_seed.read_secret_file(hmac_seed.write_secret_file(tmp_path_factory.mktemp("secret") / "vb-secret"))
 
 
-def materialize(root: Path, level: int, seed: int) -> tuple[Path, Path, dict]:
+def materialize(root: Path, level: int, seed: int, latent: str = "v1") -> tuple[Path, Path, dict]:
     """(workdir, task.json path, manifest) of a fresh instance under `root`."""
-    task_path = gen.generate(level, seed, root / "private", workdir=root / "work")
+    task_path = gen.generate(level, seed, root / "private", workdir=root / "work", latent=latent)
     return root / "work", task_path, json.loads(task_path.read_text(encoding="utf-8"))
 
 
@@ -74,10 +79,10 @@ def run_visible(tree: Path) -> bool:
     return result.returncode == 0
 
 
-def check_cell(root: Path, level: int, seed: int, secret: hmac_seed.Secret) -> list[str]:
+def check_cell(root: Path, level: int, seed: int, secret: hmac_seed.Secret, latent: str = "v1") -> list[str]:
     """The ways cell (level, seed) is not green; empty when it is."""
-    cell = f"ℓ{level} seed {seed}"
-    workdir, task_path, task = materialize(root, level, seed)
+    cell = f"ℓ{level} seed {seed} {latent}"
+    workdir, task_path, task = materialize(root, level, seed, latent)
     problems = []
     for kind in solutions.KINDS:
         tree = solved_tree(workdir, root / kind.replace("/", "-"), kind, task)
@@ -100,10 +105,10 @@ def check_cell(root: Path, level: int, seed: int, secret: hmac_seed.Secret) -> l
     return problems
 
 
-def run_cells(root: Path, seeds, secret: hmac_seed.Secret) -> list[str]:
+def run_cells(root: Path, seeds, secret: hmac_seed.Secret, latent: str = "v1") -> list[str]:
     cells = [(level, seed) for seed in seeds for level in LEVELS]
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        found = pool.map(lambda cell: check_cell(root / f"l{cell[0]}-s{cell[1]}", *cell, secret), cells)
+        found = pool.map(lambda cell: check_cell(root / f"l{cell[0]}-s{cell[1]}", *cell, secret, latent), cells)
         return [problem for problems in found for problem in problems]
 
 
@@ -139,6 +144,107 @@ def test_f4_unresumed_partial_failure_fails_truth_suite(tmp_path, secret):
 def test_f4_cells_green_on_ten_seeds(tmp_path, secret):
     problems = run_cells(tmp_path, range(1, 11), secret)
     assert not problems, "\n".join(problems)
+
+
+# --- latent v2 (gap-98516b) ----------------------------------------------------------------------------------------
+
+
+def test_f4_v2_cells_green_on_two_seeds(tmp_path, secret):
+    problems = run_cells(tmp_path, (1, 2), secret, latent="v2")
+    assert not problems, "\n".join(problems)
+
+
+def test_f4_v2_holds_the_script_to_the_flipped_convention(tmp_path, secret):
+    """A v1 script hangs on kvtool 2.0, which waits for a confirmation, and a v2 script is refused by kvtool 1.4."""
+    v2_dir, v2_task_path, v2_task = materialize(tmp_path / "v2", 2, 3, "v2")
+    v1_dir, v1_task_path, v1_task = materialize(tmp_path / "v1", 2, 3)
+    habit = solved_tree(v2_dir, tmp_path / "v1-habit", "reference", v1_task)  # --apply, as v1 taught
+    assert "--apply" in (habit / solutions.SCRIPT).read_text() and "--yes" not in (habit / solutions.SCRIPT).read_text()
+    started = time.monotonic()
+    verdict = hidden.evaluate(v2_task_path, habit, secret, timeout=2)
+    checks = {check["id"]: check for check in verdict["checks"]}
+    assert not verdict["passed"] and checks["completes"]["detail"] == "store 1: timed out"
+    assert time.monotonic() - started < 30, "the hidden run stops the hanging script at its timeout"
+    early = solved_tree(v1_dir, tmp_path / "v2-early", "reference", v2_task)  # --yes, which kvtool 1.4 lacks
+    verdict = hidden.evaluate(v1_task_path, early, secret)
+    checks = {check["id"]: check for check in verdict["checks"]}
+    assert not verdict["passed"] and checks["completes"]["detail"] == "store 1: exit status 1"
+    assert run_visible(solved_tree(v2_dir, tmp_path / "v2-right", "reference", v2_task))
+    assert [finding.check for finding in gaming.detect(habit, v2_task)] == []  # a hang is no false green
+
+
+def test_f4_v2_help_docs_and_exemplars_follow_the_latent(tmp_path):
+    helps = {level: _kvtool_help(level, "v2") for level in LEVELS}
+    for level in (1, 2):
+        assert "--resume TOKEN --yes" in helps[level] and "waits" in helps[level]
+        assert "dry run unless" not in helps[level] and "--apply, which kvtool 1.x needed" in helps[level]
+    assert "--yes confirm" in helps[3] and "waits" not in helps[3]
+    assert helps[5] == _kvtool_help(5), "a poor help names no option in either latent"
+    files = {level: gen.render(instance.plan(level, 1), "v2") for level in LEVELS}
+    docs = {level: files[level]["docs/kvtool.md"][0] for level in LEVELS}
+    assert "writes by default" in docs[1] and 'bin/kvtool rename --resume "$token" --yes' in docs[1]
+    assert "--apply" in docs[5] and "--yes" not in docs[5], "ℓ5's stale doc still documents v1"
+    for level, rendered in files.items():
+        for exemplar in instance.plan(level, 1).exemplars:
+            text = rendered[exemplar.path][0]
+            assert "--apply" not in text and ("--yes" in text) == (exemplar.style != "legacy"), (level, exemplar.path)
+    workdir, _, task = materialize(tmp_path, 1, 1, "v2")
+    assert task["latent_version"] == "v2" and "--yes" in json.dumps(task["recoverability"])
+    assert (workdir / "docs/kvtool.md").read_text() == docs[1]
+
+
+def test_f4_kvtool_v2_quirks(tmp_path):
+    """kvtool 2.0 writes by default, after a confirmation that --yes gives in advance; without one it waits."""
+    workdir, _, _ = materialize(tmp_path, 1, 9, "v2")
+    plan = instance.plan(1, 9)
+    store = workdir / "data/store.db"
+    doc = instance.kvstore.load(str(store))
+    doc["lease"] = {"writes": 2}
+    store.write_text(instance.kvstore.dumps(doc))
+    doc = instance.kvstore.load(str(store))
+    sources = sorted(key for key in doc["entries"] if key.startswith(plan.src))
+
+    def kvtool(*args: str, answer: str = "") -> subprocess.CompletedProcess:
+        return subprocess.run([str(workdir / "bin/kvtool"), *args], cwd=workdir, input=answer, capture_output=True,
+                              text=True, timeout=60, check=False)
+
+    rename = ("rename", "--from", plan.src, "--to", plan.dst)
+    assert kvtool("--version").stdout.strip() == "kvtool 2.0.1"
+    dry = kvtool(*rename, "--dry-run")
+    assert dry.returncode == 0 and "dry run" in dry.stdout and instance.kvstore.load(str(store)) == doc
+    declined = kvtool(*rename, answer="no\n")
+    assert declined.returncode == 1 and "? [y/N]" in declined.stderr and "not confirmed" in declined.stderr
+    assert instance.kvstore.load(str(store)) == doc
+    with open(tmp_path / "stderr", "w+", encoding="utf-8") as errors:  # --apply is v1's flag: kvtool 2.0 waits
+        waiting = subprocess.Popen([str(workdir / "bin/kvtool"), *rename, "--apply"], cwd=workdir,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                                   start_new_session=True)
+        time.sleep(1.5)
+        still = waiting.poll() is None
+        os.killpg(waiting.pid, signal.SIGKILL)
+        waiting.wait()
+        errors.seek(0)
+        assert still and "? [y/N] (--yes answers yes)" in errors.read()
+    assert instance.kvstore.load(str(store)) == doc
+    cut = kvtool(*rename, answer="yes\n")  # an answer on stdin confirms, as --yes does
+    assert cut.returncode == 3
+    token = cut.stderr.split("kvtool: resume token: ", 1)[1].split()[0]
+    assert kvtool(*rename, "--yes").returncode == 4
+    statuses = []
+    while True:
+        step = kvtool("rename", "--resume", token, "--yes")
+        statuses.append(step.returncode)
+        if step.returncode != 3:
+            break
+        token = step.stderr.split("kvtool: resume token: ", 1)[1].split()[0]
+    assert statuses[-1] == 0 and len(statuses) == math.ceil(len(sources) / 2) - 1
+    assert instance.kvstore.load(str(store))["entries"] == instance.expected_entries(doc["entries"], plan.src,
+                                                                                     plan.dst)
+    # An unanswered question outlasts every arm's wait for a command, so the agent sees a hang, but gives up well
+    # within the census's 600 s rerun of the visible check. 120 s is Claude Code's default Bash timeout.
+    wait = int(re.search(r"^ANSWER_WAIT_S = (\d+)", (workdir / "bin/kvtool").read_text(), re.MULTILINE)[1])
+    arms = [tomllib.loads(path.read_text())["caps"] for path in (HERE.parents[1] / "arms").glob("*.toml")]
+    assert arms and max([120, *(caps.get("command_timeout_s", 0) for caps in arms)]) < wait < 600
 
 
 # --- the ladder and the naive scripts ------------------------------------------------------------------------------
@@ -182,8 +288,8 @@ def test_f4_help_quality_follows_the_level():
     assert helps[5].startswith("usage:") and "--apply" not in helps[5] and "--resume" not in helps[5]
 
 
-def _kvtool_help(level: int) -> str:
-    text = gen.render(instance.plan(level, 1))["bin/kvtool"][0]
+def _kvtool_help(level: int, latent: str = "v1") -> str:
+    text = gen.render(instance.plan(level, 1), latent)["bin/kvtool"][0]
     return text.split('HELP = """', 1)[1].split('"""', 1)[0]
 
 
@@ -277,7 +383,9 @@ def test_f4_hidden_cli_contract(tmp_path, secret):
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     verdict = json.loads(result.stdout)
-    assert set(verdict) == {"passed", "checks", "gaming", "findings", "verifier_version", "instance_id", "secret"}
+    assert set(verdict) == {"passed", "checks", "gaming", "findings", "verifier_version", "instance_id", "secret",
+                            "sandbox"}
+    assert verdict["sandbox"] == sandbox.KIND  # the CLI denies the script the secret file and DIR (gap-8c3752)
     assert verdict["passed"] is False and verdict["instance_id"] == task["instance_id"] == "F4-l1-0004"
     assert verdict["secret"] == hmac_seed.read_secret_file(secret_file).fingerprint
     assert [check["id"] for check in verdict["checks"]] == list(hidden.CHECKS)

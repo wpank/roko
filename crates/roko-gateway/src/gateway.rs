@@ -93,6 +93,10 @@ pub struct GatewayConfig {
     pub channel_capacity: usize,
     /// Optional durable event sink.
     pub event_writer: Option<Arc<GatewayEventWriter>>,
+    /// Whether the gateway records each provider attempt's outcome on
+    /// `cascade_router`. Off when the providers already report every call to
+    /// the same router, so each call is observed once (bug-8b0d0a).
+    pub observe_outcomes: bool,
 }
 
 impl GatewayConfig {
@@ -112,6 +116,7 @@ impl GatewayConfig {
             max_fallbacks: DEFAULT_MAX_FALLBACKS,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             event_writer: None,
+            observe_outcomes: true,
         }
     }
 
@@ -135,6 +140,14 @@ impl GatewayConfig {
     #[must_use]
     pub fn with_event_writer(mut self, writer: Arc<GatewayEventWriter>) -> Self {
         self.event_writer = Some(writer);
+        self
+    }
+
+    /// Route with `cascade_router` but leave observing call outcomes to the
+    /// providers, which report every call to the same router already.
+    #[must_use]
+    pub fn without_outcome_observation(mut self) -> Self {
+        self.observe_outcomes = false;
         self
     }
 }
@@ -239,6 +252,7 @@ pub struct InferenceGateway {
     provider_timeout: Duration,
     max_fallbacks: usize,
     event_writer: Option<Arc<GatewayEventWriter>>,
+    observe_outcomes: bool,
     sender: mpsc::Sender<InferenceEnvelope>,
     receiver: Mutex<Option<mpsc::Receiver<InferenceEnvelope>>>,
     counters: GatewayCounters,
@@ -264,6 +278,7 @@ impl InferenceGateway {
             provider_timeout: config.provider_timeout,
             max_fallbacks: config.max_fallbacks,
             event_writer: config.event_writer,
+            observe_outcomes: config.observe_outcomes,
             sender,
             receiver: Mutex::new(Some(receiver)),
             counters: GatewayCounters::default(),
@@ -518,7 +533,7 @@ impl InferenceGateway {
         // router learns from gateway-level quality/cost/latency. This is the
         // success's only router observation (bug-8da8ba), so it comes before
         // the event write, which can fail.
-        {
+        if self.observe_outcomes {
             let ctx = routing_context(&request.metadata);
             self.cascade_router.record_observation(
                 &ctx,
@@ -543,6 +558,12 @@ impl InferenceGateway {
             .completed_requests
             .fetch_add(1, Ordering::Relaxed);
         Ok(response)
+    }
+
+    /// The cascade router this gateway routes with and observes into.
+    #[must_use]
+    pub const fn cascade_router(&self) -> &Arc<CascadeRouter> {
+        &self.cascade_router
     }
 
     /// Last pipeline trace for a session.
@@ -654,12 +675,14 @@ impl InferenceGateway {
                     // with reward 0. bug-c34782 plugs in here if transport
                     // failures (`ProviderFailureKind`) should stop counting as
                     // model-quality evidence.
-                    self.cascade_router.record_observation(
-                        &routing_context(&request.metadata),
-                        model,
-                        0.0,
-                        false,
-                    );
+                    if self.observe_outcomes {
+                        self.cascade_router.record_observation(
+                            &routing_context(&request.metadata),
+                            model,
+                            0.0,
+                            false,
+                        );
+                    }
                     let retryable = match &error {
                         GatewayError::Provider { kind, .. } => {
                             if *kind == ProviderFailureKind::RateLimited {
@@ -1242,6 +1265,62 @@ mod tests {
         assert_eq!(observed.model, "claude-live");
         assert_eq!(observed.caller.as_deref(), Some("authoritative-agent"));
         assert_eq!(observed.run_id.as_deref(), Some("live-boundary"));
+    }
+
+    /// bug-b9cb83: a request's thinking setting reaches the live caller on
+    /// the complete and the stream path, and through the gateway with the
+    /// budget its ThinkingCap stage filled in.
+    #[tokio::test]
+    async fn model_caller_backend_forwards_thinking_config() {
+        use crate::{ThinkingConfig, ThinkingMode};
+
+        let caller = Arc::new(LiveCallerBoundary::default());
+        let live: Arc<dyn ModelCaller> = caller.clone();
+        let backend = ModelCallerBackend::anthropic(Arc::clone(&live));
+        let thinking = ThinkingConfig {
+            kind: ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+        let mut inference = request("claude-sonnet-4-6", "thinking");
+        inference.thinking = Some(thinking.clone());
+
+        backend.complete(&inference).await.unwrap();
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(observed.thinking, Some(thinking.clone()));
+        let chunks = backend
+            .stream(&inference)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(chunks.iter().all(Result::is_ok));
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(observed.thinking, Some(thinking));
+
+        let gateway = InferenceGateway::new(GatewayConfig::from_model_caller(
+            Arc::new(CascadeRouter::new(vec!["claude-opus-4-1".into()])),
+            live,
+            CostTable {
+                models: HashMap::new(),
+            },
+        ));
+        let mut inference = request("claude-opus-4-1", "thinking-default");
+        inference.thinking = Some(ThinkingConfig {
+            kind: ThinkingMode::Enabled,
+            budget_tokens: None,
+        });
+        gateway
+            .process_request(inference, "thinking-agent", &AtomicU64::new(1_000_000))
+            .await
+            .unwrap();
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            observed.thinking,
+            Some(ThinkingConfig {
+                kind: ThinkingMode::Enabled,
+                budget_tokens: Some(32_768),
+            })
+        );
     }
 
     #[tokio::test]

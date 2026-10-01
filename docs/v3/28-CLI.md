@@ -739,7 +739,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--screenshot-dir <path>` | auto | Directory for screenshot timeline. |
 | `--batch-size <n>` | -- | Pause for review after every N plan completions. |
 | `--worktree-per-task` | false | Run each task in an isolated git worktree. |
-| `--rich-topology` | false | Use the 11-node-per-task production topology. |
+| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
 
 ```bash
 roko plan run plans/                            # Run all plans
@@ -798,6 +798,18 @@ Control a running plan executor. Writes control signals to `.roko/state/control.
 roko plan pause [--workdir <path>]
 roko plan resume [--workdir <path>]
 roko plan cancel [--plan-id <id>] [--workdir <path>]
+```
+
+#### `roko plan review`
+
+Approve or reject a task that a running plan holds for review. A plan holds each verified task when its
+`tasks.toml` sets `[meta] approval = "per_task"`, which needs `--worktree-per-task` and the default topology. The
+held task's diff is in `.roko/state/review-holds/<plan>/<task>.json` and on `GET /api/plans/:id/tasks/:task_id/diff`.
+Approval merges the task into its plan branch. A rejection fails the attempt, and the note is the next attempt's
+feedback. `POST /api/plans/:id/tasks/:task_id/review` records the same decision.
+
+```
+roko plan review <plan-id> <task-id> (--approve | --reject) [--note <text>] [--workdir <path>]
 ```
 
 #### `roko plan retry`
@@ -1326,7 +1338,7 @@ roko learn feedback-proof [--workdir <path>]
 
 ### `roko learn role-costs`
 
-Show per-role cost profiles (average cost, token budget, pass rate).
+Show per-role cost profiles (average and p95 cost, token budget, pass rate). Cost figures cover only turns whose cost was measured; turns with an unknown cost are counted in a "No Cost" column, and a role with none measured shows `unknown`.
 
 ```
 roko learn role-costs [--workdir <path>]
@@ -1464,7 +1476,10 @@ roko config edit [--global] [--project] [--workdir <path>]
 
 #### `roko config set`
 
-Set a dotted key in the chosen config layer.
+Set a dotted key in the global config, or in the project's `roko.toml` with
+`--project`. A secret key such as `serve.auth.api_key` goes to the project's
+`.roko/.env` instead, as its `ROKO__` variable (`ROKO__SERVE__AUTH__API_KEY`),
+whatever the flags, and is removed from the config files agents can read.
 
 ```
 roko config set <key> <value> [--global] [--project] [--workdir <path>]
@@ -1473,6 +1488,7 @@ roko config set <key> <value> [--global] [--project] [--workdir <path>]
 ```bash
 roko config set agent.command claude
 roko config set agent.model claude-opus-4-5 --project
+roko config set serve.auth.api_key <key>   # stored in .roko/.env
 ```
 
 #### `roko config set-secret`
@@ -2049,7 +2065,7 @@ Run a native SWE-bench-style proxy batch.
 
 ```
 roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
-               [--agent-mode gold|prediction-file|command]
+               --agent-mode gold|empty|prediction-file|command
                [--predictions <path>] [--agent-command <cmd>]
                [--report <path>] [--export-predictions <path>]
                [--no-learning] [--keep-workdirs] [--workdir <path>]
@@ -2060,7 +2076,7 @@ roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
 | `--dataset <path>` | built-in smoke | Local JSONL dataset. |
 | `--batch-size <n>` | 2 | Number of instances to run. |
 | `--offset <n>` | 0 | Offset into the dataset. |
-| `--agent-mode <mode>` | `gold` | Agent adapter: `gold`, `prediction-file`, `command`. |
+| `--agent-mode <mode>` | required | Agent adapter: `prediction-file` or `command` measure an agent; `gold` and `empty` are controls that check the harness and are never recorded as learning. |
 | `--no-learning` | false | Disable episode, efficiency, and C-factor writes. |
 | `--keep-workdirs` | false | Keep per-instance benchmark workdirs for debugging. |
 

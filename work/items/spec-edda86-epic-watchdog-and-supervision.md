@@ -12,10 +12,10 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #14); evidence/field/CASES.md (CASE-004)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["spec-a0403b", "reg-7cf6f9", "gap-a791b4", "gap-5a6e01", "gap-9eebcb"], blocks = [], related = ["gap-ebd656", "find-43768e", "gap-c89b40"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["spec-a0403b", "reg-7cf6f9", "gap-a791b4", "gap-5a6e01", "gap-9eebcb", "bug-739dcc", "bug-2a2f63", "bug-2aa55f"], blocks = [], related = ["gap-ebd656", "find-43768e", "gap-c89b40"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn supervision_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test supervision_canary"
@@ -79,13 +79,16 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] spec-a0403b: Graph Engine Watchdog Integration (existing item)
-- [ ] reg-7cf6f9: Disk-aware worktree admission and the disk_budget_remaining metric were lost with Runner-v2
+- [x] spec-a0403b: Graph Engine Watchdog Integration (existing item)
+- [x] reg-7cf6f9: Disk-aware worktree admission and the disk_budget_remaining metric were lost with Runner-v2
       (existing item)
-- [ ] gap-a791b4: Per-tier turn caps reach only Claude CLI; other providers ignore AgentOptions.max_turns (existing
+- [x] gap-a791b4: Per-tier turn caps reach only Claude CLI; other providers ignore AgentOptions.max_turns (existing
       item)
-- [ ] gap-5a6e01: Turn caps and timeouts set from each tier's p95 over successful tasks
-- [ ] gap-9eebcb: Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start
+- [x] gap-5a6e01: Turn caps and timeouts set from each tier's p95 over successful tasks
+- [x] gap-9eebcb: Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start
+- [x] bug-739dcc: The Claude CLI adapter has no cancel path: dropping a run kills only the CLI process, and its tool subprocesses keep running
+- [x] bug-2a2f63: A dropped run's heartbeat task in graph_task_dispatch/watchdog.rs is never aborted
+- [x] bug-2aa55f: The stall watchdog counts silence only after an assistant message, so a provider that streams only content_block_delta is never cancelled
 - [ ] The epic's `[[verify]]` command (test C7) passes on the merged branch.
 
 ## Notes

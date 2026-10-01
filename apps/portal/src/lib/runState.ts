@@ -10,7 +10,13 @@
  */
 
 import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
-import { TASK_OUTCOME_ACCEPTED_WITH_FAILURES } from '@/api/contracts';
+import {
+  TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+  TASK_OUTCOME_ALREADY_SATISFIED,
+  TASK_OUTCOME_BLOCKED,
+  TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES,
+  TASK_OUTCOME_UNVERIFIED,
+} from '@/api/contracts';
 import { decodeFrame } from '@/lib/streamRecord';
 import type { Frame, TranscriptEntry, AttemptDivider, ToolStep, UnscreenedEntry } from '@/lib/streamRecord';
 
@@ -25,8 +31,13 @@ export const MAX_USAGE_SAMPLES = 600;
 export type TaskStatus =
   | 'active'
   | 'passed'
+  // Passed apart from tests that also failed on the run's start commit
+  // (gap-161be1): counted as passed, shown apart.
+  | 'passed_with_preexisting_failures'
   | 'failed'
   | 'accepted_with_failures'
+  | 'already_satisfied'
+  | 'unverified'
   | 'skipped'
   | 'cancelled';
 
@@ -58,6 +69,10 @@ export interface TaskRun {
   checks: CheckRun[];
   /** Monotonically increasing per plan; absent/0 means generation 0. */
   generation?: number;
+  /** For a blocked task (shown as skipped): the failed task that blocked it, if one did. */
+  blockedBy?: string | null;
+  /** For a blocked task: why it will not run. */
+  blockedReason?: string | null;
 }
 
 export interface PlanRun {
@@ -68,6 +83,8 @@ export interface PlanRun {
   tasksDone: number;
   tasksFailed: number;
   tasksAccepted: number;
+  /** Tasks that completed without a verify step judging them; also in tasksDone. Absent means 0. */
+  tasksUnverified?: number;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   etaMinutes: number | null;
@@ -118,8 +135,11 @@ export interface RunState {
 
 const TERMINAL: Set<TaskStatus> = new Set([
   'passed',
+  'passed_with_preexisting_failures',
   'failed',
   'accepted_with_failures',
+  'already_satisfied',
+  'unverified',
   'skipped',
   'cancelled',
 ]);
@@ -151,15 +171,23 @@ export function parseCheckName(name: string): { index: number | null; phase: str
 
 /**
  * Classify a task outcome string into a TaskStatus.
- * Mirrors `classify_task_outcome` in the Rust source.
- * The accepted_with_failures check runs first because the string contains "fail".
+ * Mirrors `classify_task_outcome` in the Rust source: only an outcome that
+ * names a pass is 'passed' (or 'passed_with_preexisting_failures', which
+ * counts as passed but is shown apart), and any outcome it does not recognise
+ * is 'unverified'. The accepted_with_failures, already_satisfied and
+ * passed_with_preexisting_failures checks run first: two of them contain
+ * "fail".
  */
 function classifyOutcome(outcome: string): TaskStatus {
-  if (outcome === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
   const lo = outcome.toLowerCase();
-  if (lo.includes('fail') || lo.includes('error')) return 'failed';
-  if (lo === 'skipped' || lo === 'condition-skipped' || lo === 'unknown') return 'skipped';
-  return 'passed';
+  if (lo === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
+  if (lo === TASK_OUTCOME_ALREADY_SATISFIED) return 'already_satisfied';
+  if (lo === TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES) return 'passed_with_preexisting_failures';
+  // A blocked task (gap-f59fe9) shows as skipped: the portal has no blocked state.
+  if (lo.includes('skipped') || lo === 'unknown' || lo === TASK_OUTCOME_BLOCKED) return 'skipped';
+  if (lo === 'passed' || lo === 'succeeded' || lo.startsWith('success')) return 'passed';
+  if (['fail', 'error', 'cancel', 'halt'].some((word) => lo.includes(word))) return 'failed';
+  return TASK_OUTCOME_UNVERIFIED;
 }
 
 /** Append a TranscriptEntry to a Transcript, capping at MAX_TRANSCRIPT_ENTRIES. */
@@ -262,8 +290,9 @@ function upsertCheck(
  * are removed and all counters reset to zero.
  *
  * After 'failed' or 'cancelled': resume — task records whose status is
- * 'passed', 'skipped', or 'accepted_with_failures' are kept and counted;
- * every other task record (and its transcript) is removed.
+ * 'passed', 'passed_with_preexisting_failures', 'already_satisfied',
+ * 'unverified', 'skipped' (but not blocked), or 'accepted_with_failures' are
+ * kept and counted; every other task record (and its transcript) is removed.
  *
  * The plan's generation is incremented in both cases.
  */
@@ -286,6 +315,7 @@ function beginNewRun(
     tasksDone: 0,
     tasksFailed: 0,
     tasksAccepted: 0,
+    tasksUnverified: 0,
     startedAtMs,
     finishedAtMs: null,
     etaMinutes: null,
@@ -306,22 +336,36 @@ function beginNewRun(
     return { plan: basePlan, tasks, transcripts };
   } else {
     // Resume: keep tasks that finished well, remove the rest
-    const GOOD: Set<TaskStatus> = new Set(['passed', 'skipped', 'accepted_with_failures']);
+    const GOOD: Set<TaskStatus> = new Set([
+      'passed',
+      'passed_with_preexisting_failures',
+      'already_satisfied',
+      'unverified',
+      'skipped',
+      'accepted_with_failures',
+    ]);
     let tasksDone = 0;
     let tasksAccepted = 0;
+    let tasksUnverified = 0;
     const tasks = { ...allTasks };
     const transcripts = { ...allTranscripts };
     for (const k of planTaskKeys) {
       const t = allTasks[k]!;
-      if (GOOD.has(t.status)) {
+      // A blocked task did not run, so the resume runs it (gap-f59fe9).
+      if (GOOD.has(t.status) && t.phase !== TASK_OUTCOME_BLOCKED) {
         tasksDone += 1;
         if (t.status === 'accepted_with_failures') tasksAccepted += 1;
+        if (t.status === 'unverified') tasksUnverified += 1;
       } else {
         delete tasks[k];
         delete transcripts[k];
       }
     }
-    return { plan: { ...basePlan, tasksDone, tasksAccepted }, tasks, transcripts };
+    return {
+      plan: { ...basePlan, tasksDone, tasksAccepted, tasksUnverified },
+      tasks,
+      transcripts,
+    };
   }
 }
 
@@ -592,9 +636,15 @@ export function applyEvent(
       // A task whose generation predates the current run is a fresh start, not a retry.
       const isOlderGeneration =
         existing !== undefined && (existing.generation ?? 0) < planGeneration;
+      // A blocked task never ran and counted nothing (gap-f59fe9): its start
+      // is no retry, and there is no count to take back.
+      const wasBlocked = existing?.phase === TASK_OUTCOME_BLOCKED;
       // Only a terminal record from the *current* generation starting again is a retry.
       const isRetry =
-        !isOlderGeneration && existing !== undefined && TERMINAL.has(existing.status);
+        !isOlderGeneration &&
+        existing !== undefined &&
+        TERMINAL.has(existing.status) &&
+        !wasBlocked;
 
       const attempts = isRetry ? existing.attempts + 1 : 1;
       // Preserve title when the event's title is empty
@@ -681,15 +731,21 @@ export function applyEvent(
       let newPlans = state.plans;
       if (plan) {
         let { tasksDone, tasksFailed, tasksAccepted } = plan;
-        const wasTerminal = existing !== undefined && TERMINAL.has(existing.status);
+        let tasksUnverified = plan.tasksUnverified ?? 0;
+        const wasTerminal =
+          existing !== undefined && TERMINAL.has(existing.status) && !wasBlocked;
         if (wasTerminal && (isRetry || isOlderGeneration)) {
           if (existing!.status === 'accepted_with_failures') {
             tasksDone = Math.max(0, tasksDone - 1);
             tasksAccepted = Math.max(0, tasksAccepted - 1);
+          } else if (existing!.status === 'unverified') {
+            tasksDone = Math.max(0, tasksDone - 1);
+            tasksUnverified = Math.max(0, tasksUnverified - 1);
           } else if (existing!.status === 'failed') {
             tasksFailed = Math.max(0, tasksFailed - 1);
           } else {
-            // passed or skipped
+            // passed (with or without pre-existing failures), already
+            // satisfied or skipped
             tasksDone = Math.max(0, tasksDone - 1);
           }
         }
@@ -706,6 +762,7 @@ export function applyEvent(
             tasksDone,
             tasksFailed,
             tasksAccepted,
+            tasksUnverified,
             tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
           },
         };
@@ -723,34 +780,160 @@ export function applyEvent(
     case 'task_completed': {
       const key = taskKey(event.plan_id, event.task_id);
       const existing = state.tasks[key];
+      // A blocked task counted nothing, so the outcome of a later run that
+      // settles it counts (gap-f59fe9).
+      const wasBlocked = existing?.phase === TASK_OUTCOME_BLOCKED;
 
-      // Ignore unknown tasks or already-terminal tasks (idempotent)
-      if (!existing || TERMINAL.has(existing.status)) return state;
+      // Ignore already-terminal tasks (idempotent)
+      if (existing && TERMINAL.has(existing.status) && !wasBlocked) return state;
 
       const status = classifyOutcome(event.outcome);
-      const task: TaskRun = { ...existing, status, finishedAtMs: nowMs };
+      const plan = state.plans[event.plan_id];
+      // A task can complete without a task_started this state saw: it never ran
+      // (skipped), it started before the page connected, or the start event was
+      // dropped. As in the server's snapshot, it counts all the same, with an
+      // unknown start time.
+      const task: TaskRun = existing
+        ? {
+            ...existing,
+            status,
+            finishedAtMs: nowMs,
+            ...(wasBlocked ? { phase: 'completed', blockedBy: null, blockedReason: null } : {}),
+          }
+        : {
+            planId: event.plan_id,
+            taskId: event.task_id,
+            title: '',
+            status,
+            phase: 'completed',
+            attempts: 1,
+            startedAtMs: null,
+            finishedAtMs: nowMs,
+            agentId: null,
+            role: null,
+            model: null,
+            costUsd: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            checks: [],
+            generation: plan?.generation ?? 0,
+          };
+      const newTasks = { ...state.tasks, [key]: task };
 
       // Update plan counters
-      const plan = state.plans[event.plan_id];
       let newPlans = state.plans;
       if (plan) {
         let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        let tasksUnverified = plan.tasksUnverified ?? 0;
         if (status === 'accepted_with_failures') {
           tasksDone += 1;
           tasksAccepted += 1;
+        } else if (status === 'unverified') {
+          tasksDone += 1;
+          tasksUnverified += 1;
         } else if (status === 'failed') {
           tasksFailed += 1;
-        } else {
-          // passed or skipped both count as done
+        } else if (event.outcome.toLowerCase() !== TASK_OUTCOME_BLOCKED) {
+          // passed (with or without pre-existing failures), already satisfied
+          // and skipped all count as done; blocked counts as neither done nor
+          // failed
           tasksDone += 1;
         }
+        // A task first seen here can raise the plan's total, as in task_started.
+        const planTaskCount = Object.values(newTasks).filter(
+          (t) => t.planId === event.plan_id,
+        ).length;
         newPlans = {
           ...state.plans,
-          [event.plan_id]: { ...plan, tasksDone, tasksFailed, tasksAccepted },
+          [event.plan_id]: {
+            ...plan,
+            tasksDone,
+            tasksFailed,
+            tasksAccepted,
+            tasksUnverified,
+            tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
+          },
         };
       }
 
-      return { ...state, tasks: { ...state.tasks, [key]: task }, plans: newPlans };
+      return { ...state, tasks: newTasks, plans: newPlans };
+    }
+
+    // ── task_blocked ───────────────────────────────────────────────────────────
+    case 'task_blocked': {
+      // A task that will not run: a task it depends on failed, or it did not
+      // start (gap-f59fe9). It shows as skipped with its blocker and, as in
+      // the server's snapshot, counts as neither done nor failed.
+      const key = taskKey(event.plan_id, event.task_id);
+      const existing = state.tasks[key];
+      const plan = state.plans[event.plan_id];
+      const blocked = {
+        status: 'skipped' as const,
+        phase: TASK_OUTCOME_BLOCKED,
+        blockedBy: event.blocked_by ?? null,
+        blockedReason: event.reason || null,
+      };
+      const task: TaskRun = existing
+        ? { ...existing, ...blocked, title: existing.title || event.title || '' }
+        : {
+            planId: event.plan_id,
+            taskId: event.task_id,
+            title: event.title ?? '',
+            ...blocked,
+            attempts: 1,
+            startedAtMs: null,
+            finishedAtMs: nowMs,
+            agentId: null,
+            role: null,
+            model: null,
+            costUsd: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            checks: [],
+            generation: plan?.generation ?? 0,
+          };
+      const newTasks = { ...state.tasks, [key]: task };
+
+      let newPlans = state.plans;
+      if (plan) {
+        let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        let tasksUnverified = plan.tasksUnverified ?? 0;
+        // The status poll can report the task skipped before its blocker is
+        // known: take back what that completion counted. A repeat counts
+        // nothing.
+        const counted =
+          existing !== undefined && existing.phase !== TASK_OUTCOME_BLOCKED ? existing.status : null;
+        if (counted === 'failed') {
+          tasksFailed = Math.max(0, tasksFailed - 1);
+        } else if (
+          counted === 'passed' ||
+          counted === 'passed_with_preexisting_failures' ||
+          counted === 'already_satisfied' ||
+          counted === 'skipped' ||
+          counted === 'accepted_with_failures' ||
+          counted === 'unverified'
+        ) {
+          tasksDone = Math.max(0, tasksDone - 1);
+          if (counted === 'accepted_with_failures') tasksAccepted = Math.max(0, tasksAccepted - 1);
+          if (counted === 'unverified') tasksUnverified = Math.max(0, tasksUnverified - 1);
+        }
+        const planTaskCount = Object.values(newTasks).filter(
+          (t) => t.planId === event.plan_id,
+        ).length;
+        newPlans = {
+          ...state.plans,
+          [event.plan_id]: {
+            ...plan,
+            tasksDone,
+            tasksFailed,
+            tasksAccepted,
+            tasksUnverified,
+            tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
+          },
+        };
+      }
+
+      return { ...state, tasks: newTasks, plans: newPlans };
     }
 
     // ── task_phase_changed ─────────────────────────────────────────────────────
@@ -1090,6 +1273,7 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       tasksDone: p.tasks_done,
       tasksFailed: p.tasks_failed,
       tasksAccepted: p.tasks_accepted_with_failures ?? 0,
+      tasksUnverified: p.tasks_unverified ?? 0,
       startedAtMs: p.started_at_ms ?? null,
       finishedAtMs: p.finished_at_ms ?? null,
       etaMinutes: null,
@@ -1190,6 +1374,8 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       inputTokens: 0,
       outputTokens: 0,
       checks: [],
+      ...(t.blocked_by ? { blockedBy: t.blocked_by } : {}),
+      ...(t.blocked_reason ? { blockedReason: t.blocked_reason } : {}),
     };
   }
 

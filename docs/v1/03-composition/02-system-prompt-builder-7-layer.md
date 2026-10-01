@@ -567,7 +567,7 @@ pub enum CompressionMethod {
 
 ### 9.4 Chain of Draft Integration
 
-Chain of Draft [Zoom Research, arXiv:2502.18600] demonstrated that instructing models to produce 5-word-maximum intermediate reasoning steps matches CoT accuracy while using only **7.6% of tokens**. This is directly applicable to Layer 1 (Role Identity) instructions:
+Chain of Draft [Xu et al. 2025, arXiv:2502.18600] demonstrated that instructing models to produce 5-word-maximum intermediate reasoning steps matches CoT accuracy while using only **7.6% of tokens**. This is directly applicable to Layer 1 (Role Identity) instructions:
 
 ```rust
 // Instead of verbose CoT instructions in role identity:
@@ -589,7 +589,7 @@ This reduces token overhead in the agent's response without sacrificing reasonin
 
 **Step-Back Prompting** [Zheng et al. 2023]. Asking the model to abstract before solving improves reasoning by 7-27%. The Strategist's Layer 1 identity explicitly instructs abstraction before decomposition: "step back from the implementation details, reason about the architectural intent, then decompose."
 
-**Chain of Draft** [Zoom Research, arXiv:2502.18600, February 2025]. Concise 5-word intermediate reasoning steps match CoT accuracy at 7.6% of the token cost. No model fine-tuning required — purely a prompt modification. Directly applicable to role identity instructions for token-constrained contexts.
+**Chain of Draft** [Xu et al. 2025, arXiv:2502.18600, February 2025]. Concise 5-word intermediate reasoning steps match CoT accuracy at 7.6% of the token cost. No model fine-tuning required — purely a prompt modification. Directly applicable to role identity instructions for token-constrained contexts.
 
 **The Decreasing Value of CoT** [Meincke et al., Wharton GAIL 2025]. For reasoning models (o3-mini, o4-mini), explicit CoT prompts add only 2.9-3.1% improvement at 20-80% higher latency. For non-reasoning models, CoT increases variance. Implication: CoT instructions in Layer 1 should be conditional on the model class — skip for reasoning models, include for standard models.
 
@@ -599,7 +599,7 @@ This reduces token overhead in the agent's response without sacrificing reasonin
 
 **RECOMP** [Xu et al., ICLR 2024, arXiv:2310.04408]. Two-compressor architecture (extractive + abstractive) achieves 94% token reduction with minimal performance loss. Selective augmentation: returns empty string when retrieved content is irrelevant. Directly applicable to Layer 3b compression.
 
-**Promptomatix** [arXiv:2507.14241, July 2025]. Automated prompt optimization framework that transforms natural language task descriptions into optimized prompts. Supports DSPy-powered compilation. Validates the concept of learning optimal prompt structure automatically — the same goal as Roko's learned layer ordering policy.
+**Promptomatix: An Automatic Prompt Optimization Framework for Large Language Models** [arXiv:2507.14241, July 2025]. Automated prompt optimization framework that transforms natural language task descriptions into optimized prompts. Supports DSPy-powered compilation. Validates the concept of learning optimal prompt structure automatically — the same goal as Roko's learned layer ordering policy.
 
 **IPEM: Inclusive Prompt Engineering Model** [Springer AI Review 2025]. Modular layered framework integrating Memory-of-Thought, Enhanced Chain-of-Thought, and feedback loops. Validates multi-layer prompt construction as superior to monolithic prompts.
 

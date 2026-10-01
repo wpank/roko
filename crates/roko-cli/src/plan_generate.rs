@@ -12,6 +12,11 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// Task tier: minimum model and maximum scope. The one tier enum, shared with
+/// routing, budgets and turn caps.
+pub use roko_core::task::TaskTier;
+
+use crate::plan_policy::{DEFAULT_GENERATED_TASK_LIMIT, PlanExecutionPolicy};
 use crate::task_parser::role_capabilities;
 
 const NAMING_GLOSSARY_RELATIVE_PATH: &str = "docs/00-architecture/01-naming-and-glossary.md";
@@ -112,50 +117,14 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
     out
 }
 
-/// Task tier determines minimum model and maximum scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskTier {
-    /// Mechanical: imports, renames, field additions. ≤20 LOC. Haiku-capable.
-    Mechanical,
-    /// Focused: single function, single test. ≤50 LOC. Sonnet-capable.
-    Focused,
-    /// Integrative: multi-module connection. ≤150 LOC. Sonnet/Opus.
-    Integrative,
-    /// Architectural: API design, decomposition. ≤300 LOC. Opus only.
-    Architectural,
-}
-
-impl TaskTier {
-    /// Maximum lines of code change for this tier.
-    #[must_use]
-    pub const fn max_loc(&self) -> u32 {
-        match self {
-            Self::Mechanical => 20,
-            Self::Focused => 50,
-            Self::Integrative => 150,
-            Self::Architectural => 300,
-        }
-    }
-
-    /// Label for TOML output.
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Mechanical => "mechanical",
-            Self::Focused => "focused",
-            Self::Integrative => "integrative",
-            Self::Architectural => "architectural",
-        }
-    }
-}
-
 /// The system prompt for the plan generator agent.
 ///
 /// This prompt produces tasks with surgical context, executable verification,
 /// and model-adaptive tier hints. It's designed to produce tasks that even
 /// the smallest models can execute successfully.
 ///
-/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`].
+/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`], and
+/// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`].
 const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
 Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
@@ -168,7 +137,6 @@ plan = "slug-matches-prd"
 total = 2
 done = 0
 status = "ready"
-max_parallel = 1
 
 [[task]]
 id = "T1"
@@ -214,7 +182,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
-5. **Model hints**: NEVER set `model_hint`. The runtime selects the right model based on the task `tier`. Hardcoded model names break across providers.
+5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
 
 ## Task tiers
 
@@ -224,6 +192,8 @@ You are a task decomposition engine for software projects. Your job is to take a
 | 1 | Focused | 50 | Implement function body, write single test |
 | 2 | Integrative | 150 | Wire module A→B, implement trait for type |
 | 3 | Architectural | 300 | Design new API, decompose complex feature |
+
+{TIER_SIZE_LIMITS}
 
 ## Output format
 
@@ -236,7 +206,7 @@ plan = "add-funding-rate"  # MUST match the PRD slug exactly
 total = 3
 done = 0
 status = "ready"
-max_parallel = 1  # default to 1 for safety; only increase when tasks are truly independent
+# max_parallel is omitted: tasks that do not depend on each other run together
 
 [[task]]
 id = "T1"
@@ -324,9 +294,11 @@ Each role has a default tool permission set. Tasks can further restrict via `all
 
 ## Model hints
 
-**NEVER set `model_hint`.** The runtime's model-selection chain (cascade router, project config, budget pressure) picks the right model automatically. Setting model_hint hardcodes a provider-specific model name that breaks when users run non-Claude providers.
+**NEVER set `model_hint`.** Setting model_hint hardcodes a provider-specific model name that breaks when users run non-Claude providers.
 
-Always omit the `model_hint` field entirely. The task `tier` field (mechanical/focused/integrative/architectural) already tells the runtime what capability level is needed.
+Always omit the `model_hint` field entirely. Set `tier` (mechanical/focused/integrative/architectural) and `role`: together they pick the task's start rung on the runtime's routing ladder, a list of models from cheapest to strongest.
+
+Set `rung` only when a task needs more than its tier's start rung, for example a small change that is hard to get right: `rung = "strong"`. The default ladder's rungs, cheapest first, are `cheap`, `mid`, `strong` and `top`. A rung names a capability level, not a model, so the plan stays portable.
 
 ## Before generating tasks, you MUST:
 
@@ -360,7 +332,7 @@ Detect the project language and use the right commands:
 
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the PRD slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
-- [ ] `meta.max_parallel` is 1 unless tasks are truly independent (shared files = not independent)
+- [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
 - [ ] Every task has ≤ max_loc lines of change for its tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
@@ -368,7 +340,7 @@ Before finalizing, verify your tasks against:
 - [ ] No task requires reading more than 3 files
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
-- [ ] `model_hint` is NEVER set — runtime selects models from `tier`
+- [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
 
 ## File Path Rules
 
@@ -394,7 +366,6 @@ plan = "add-health-check"
 total = 1
 done = 0
 status = "ready"
-max_parallel = 1
 
 [[task]]
 id = "T1"
@@ -484,6 +455,27 @@ pub fn render_role_tool_table() -> String {
     table
 }
 
+/// One prompt line with each tier's size limits for generated plans: the
+/// limits `roko plan validate` checks (`PLAN_TIER_SIZE`), capped by the
+/// generated-plan lane.
+#[must_use]
+pub fn render_tier_size_limits() -> String {
+    let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
+    let limits = TaskTier::ALL
+        .map(|tier| {
+            let limits = policy.tier_size_limits(tier);
+            format!(
+                "{tier} at most {} files, max_loc {} and {} description words",
+                limits.max_files, limits.max_loc, limits.max_description_words
+            )
+        })
+        .join("; ");
+    format!(
+        "Size each task for its tier ({limits}). `roko plan validate` warns about a larger \
+         task (PLAN_TIER_SIZE): split it, or give it a higher tier."
+    )
+}
+
 /// Build the shared system prompt for plan generation and regeneration.
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
@@ -491,23 +483,12 @@ pub fn build_generator_system_prompt(workdir: &Path) -> String {
     let _ = writeln!(
         prompt,
         "{}",
-        PLAN_GENERATOR_SYSTEM_PROMPT.replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+        PLAN_GENERATOR_SYSTEM_PROMPT
+            .replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+            .replace("{TIER_SIZE_LIMITS}", &render_tier_size_limits())
     );
     append_naming_glossary_prompt(&mut prompt, workdir);
     append_claude_md_prompt(&mut prompt, workdir);
-    prompt
-}
-
-/// Build the full prompt for plan generation from a source input.
-#[must_use]
-pub fn build_generation_prompt(workdir: &Path, source: &str, source_type: &str) -> String {
-    let mut prompt = build_generator_system_prompt(workdir);
-    let _ = writeln!(prompt, "\n---\n");
-    let _ = writeln!(prompt, "## Workspace: {}\n", workdir.display());
-    let _ = writeln!(
-        prompt,
-        "## Source type: {source_type}\n\n## Source content:\n\n{source}"
-    );
     prompt
 }
 
@@ -595,7 +576,8 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
          - exactly one focused `[[task.verify]]` command per task\n\
-         Do NOT set `model_hint` — the runtime selects models automatically from the task tier.\n\n\
+         Do NOT set `model_hint`: the task's tier and role pick its model. Set `rung` only when a \
+         task needs more than its tier's start rung.\n\n\
          ## Existing tasks.toml:\n\n```toml\n{existing_tasks_toml}\n```"
     );
     prompt
@@ -1011,32 +993,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tier_labels() {
-        assert_eq!(TaskTier::Mechanical.label(), "mechanical");
-        assert_eq!(TaskTier::Focused.label(), "focused");
-        assert_eq!(TaskTier::Integrative.label(), "integrative");
-        assert_eq!(TaskTier::Architectural.label(), "architectural");
-    }
-
-    #[test]
-    fn tier_max_loc() {
+    fn tier_labels_and_loc_budgets_match_the_generator_prompt() {
+        for tier in TaskTier::ALL {
+            assert!(
+                PLAN_GENERATOR_SYSTEM_PROMPT.contains(tier.label()),
+                "{tier}"
+            );
+        }
         assert_eq!(TaskTier::Mechanical.max_loc(), 20);
         assert_eq!(TaskTier::Focused.max_loc(), 50);
         assert_eq!(TaskTier::Integrative.max_loc(), 150);
         assert_eq!(TaskTier::Architectural.max_loc(), 300);
-    }
-
-    #[test]
-    fn build_prompt_includes_source() {
-        let prompt = build_generation_prompt(
-            std::path::Path::new("/test"),
-            "Add a logging system",
-            "prompt",
-        );
-        assert!(prompt.contains("Add a logging system"));
-        assert!(prompt.contains("## Source type: prompt"));
-        assert!(prompt.contains("## Source content:"));
-        assert!(prompt.contains("## Workspace: /test"));
     }
 
     #[test]
@@ -1045,6 +1012,10 @@ mod tests {
 
         assert!(prompt.contains("## Model hints"));
         assert!(prompt.contains("NEVER set `model_hint`"));
+        // gap-dbf2a6: a task that needs a stronger start names a ladder rung.
+        assert!(
+            prompt.contains("Set `rung` only when a task needs more than its tier's start rung")
+        );
         // Must NOT contain hardcoded model names that break non-Claude providers.
         assert!(!prompt.contains("claude-haiku-4-5"));
         assert!(!prompt.contains("claude-sonnet-4-6"));
@@ -1078,6 +1049,24 @@ mod tests {
         assert!(prompt.contains(&table));
         assert!(!prompt.contains("{ROLE_TOOL_TABLE}"));
         assert!(!prompt.contains("Same as implementer"));
+    }
+
+    /// gap-1d1fa6: the generator is told the size limits `plan validate`
+    /// checks, capped by the generated-plan lane.
+    #[test]
+    fn generator_prompt_states_the_tier_size_limits() {
+        let line = render_tier_size_limits();
+        assert!(
+            line.contains("mechanical at most 3 files, max_loc 20 and 300 description words"),
+            "{line}"
+        );
+        assert!(
+            line.contains("architectural at most 8 files, max_loc 300"),
+            "{line}"
+        );
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        assert!(prompt.contains(&line));
+        assert!(!prompt.contains("{TIER_SIZE_LIMITS}"));
     }
 
     // ── Backlog resolution tests (#227) ───────────────────────────────────

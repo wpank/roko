@@ -182,13 +182,14 @@ fn append_jsonl_line(path: &std::path::Path, value: &impl serde::Serialize) -> s
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let line = serde_json::to_string(value)
+    let mut line = serde_json::to_string(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    writeln!(file, "{line}")?;
+    file.write_all(line.as_bytes())?;
     file.flush()?;
     Ok(())
 }
@@ -197,7 +198,9 @@ fn append_jsonl_line(path: &std::path::Path, value: &impl serde::Serialize) -> s
 ///
 /// Serializes `value` on the calling async task (cheap), then offloads the
 /// blocking file I/O to a `spawn_blocking` thread so the Tokio reactor is
-/// not stalled on disk writes inside `async fn emit_feedback`.
+/// not stalled on disk writes inside `async fn emit_feedback`. The process's
+/// secrets are redacted from the record first: efficiency and gate-failure
+/// records carry agent and verify output.
 pub(super) async fn append_jsonl_line_async(
     path: std::path::PathBuf,
     line: String,
@@ -207,14 +210,51 @@ pub(super) async fn append_jsonl_line_async(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let mut line = roko_core::obs::scrub_secrets_in_jsonl(&line).into_owned();
+        line.push('\n');
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
-        writeln!(file, "{line}")?;
+        // One write per row, newline included: rows appended at once would
+        // otherwise interleave a row with another's newline (bug-779ae7).
+        file.write_all(line.as_bytes())?;
         file.flush()?;
         Ok(())
     })
     .await
     .unwrap_or_else(|join_err| Err(std::io::Error::new(std::io::ErrorKind::Other, join_err)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows appended at once each land whole, on a line of their own
+    /// (bug-779ae7).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rows_appended_at_once_stay_whole() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("rows.jsonl");
+        let appends: Vec<_> = (0..64_u64)
+            .map(|id| {
+                let row = serde_json::json!({ "id": id, "pad": "x".repeat(512) });
+                tokio::spawn(append_jsonl_line_async(path.clone(), row.to_string()))
+            })
+            .collect();
+        for append in appends {
+            append.await.expect("join").expect("append");
+        }
+
+        let mut ids: Vec<u64> = std::fs::read_to_string(&path)
+            .expect("rows")
+            .lines()
+            .map(|line| {
+                let row: serde_json::Value = serde_json::from_str(line).expect("a whole row");
+                row["id"].as_u64().expect("id")
+            })
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..64).collect::<Vec<_>>());
+    }
 }

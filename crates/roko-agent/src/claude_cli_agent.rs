@@ -8,11 +8,11 @@
 //! Claude-specific resume and tool-loop wiring are not needed.
 
 use crate::agent::{Agent, AgentResult};
-use crate::mcp::find_mcp_config;
+use crate::mcp::workspace_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
-    classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
+    benign_stderr_warn_once, classify_benign_stderr, config_file_env_names, confined_command,
+    kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
@@ -25,7 +25,7 @@ use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,6 +33,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
+use tokio_util::task::AbortOnDropHandle;
 
 /// The PreToolUse guard: destructive git commands anywhere in a Bash
 /// command, recursive `rm`, and provider key files named by a command or a
@@ -59,15 +60,14 @@ fn guard_hook_command(check: &str) -> String {
 
 /// Permission rules that keep Claude's file tools, and the file commands it
 /// recognizes in Bash (`cat`, `head`, redirections), away from provider key
-/// files. Deny rules hold in every permission mode, including
-/// `--dangerously-skip-permissions`; the guard hooks check the same files
-/// in case a Claude Code version does not apply a rule.
+/// files: each of [`KEY_FILE_NAMES`] in any `.roko` directory, `~/.roko`
+/// included. The rest of `.roko` stays readable, as
+/// [`roko_core::child_env::is_key_file`] explains. Deny rules hold in every
+/// permission mode, including `--dangerously-skip-permissions`; the guard
+/// hooks check the same files in case a Claude Code version does not apply
+/// a rule.
 fn key_file_deny_rules() -> Vec<String> {
-    let mut rules = vec![
-        "Read(~/.roko)".to_string(),
-        "Read(~/.roko/**)".to_string(),
-        "Edit(~/.roko/**)".to_string(),
-    ];
+    let mut rules = Vec::new();
     for name in KEY_FILE_NAMES {
         rules.push(format!("Read(//**/.roko/{name})"));
         rules.push(format!("Edit(//**/.roko/{name})"));
@@ -110,6 +110,199 @@ pub fn build_settings_json() -> String {
     .to_string()
 }
 
+/// The Claude Code setting sources (`user`, `project`, `local`) an agent
+/// loads by default: none. Only managed policy and Roko's `--settings` then
+/// apply, so the invoking user's own configuration stays out of the run:
+/// hooks, plugins, permission rules and `env` from settings files; skills,
+/// agents and commands from `.claude` directories; and discovered CLAUDE.md
+/// files. `project` is no substitute: besides the workdir's CLAUDE.md it
+/// loads those of every directory above it, and for a workdir under the
+/// home directory that includes `~/.claude/CLAUDE.md` and `~/.claude/rules`.
+/// The workdir's own instructions come back through `--add-dir` instead
+/// (see [`ISOLATION_ENV`]).
+pub const ISOLATED_SETTING_SOURCES: &str = "";
+
+/// Environment an agent gets on top of [`ISOLATED_SETTING_SOURCES`].
+/// Auto-memory loads what the user's own sessions saved for the project
+/// (`~/.claude/projects/<project>/memory/`) whatever the setting sources, so
+/// it is switched off. The second variable makes Claude load the CLAUDE.md,
+/// `.claude/CLAUDE.md` and `.claude/rules` of each `--add-dir` directory,
+/// and nothing above it; Roko passes the workdir, so the repository's own
+/// instructions reach the agent.
+pub const ISOLATION_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+];
+
+/// Claude Code's managed-settings directory, where an administrator puts
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+fn claude_managed_settings_dir() -> PathBuf {
+    PathBuf::from(if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode"
+    } else if cfg!(windows) {
+        r"C:\Program Files\ClaudeCode"
+    } else {
+        "/etc/claude-code"
+    })
+}
+
+/// The managed MCP config in `dir`, if there is one.
+fn managed_mcp_config_in(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("managed-mcp.json");
+    path.is_file().then_some(path)
+}
+
+/// The flags and environment that keep a Claude Code run apart from the
+/// invoking user's own configuration, as [`ISOLATED_SETTING_SOURCES`] and
+/// [`ISOLATION_ENV`] describe. Every Roko spawn of `claude` builds them here
+/// ([`ClaudeCliAgent`], `roko chat` and the CLI dispatcher), so the spawns
+/// cannot drift apart.
+///
+/// Shell snapshots are not covered. Claude Code's Bash tool runs commands
+/// with a snapshot of the user's shell (`~/.claude/shell-snapshots/`, taken
+/// from a login shell and `~/.zshrc` or `~/.bashrc`): their aliases,
+/// functions and exported variables. Claude Code 2.1.282 has no switch for
+/// it, and without a snapshot each command runs in a login shell that reads
+/// the user's profile anyway. Pointing `HOME` elsewhere would also move
+/// cargo, rustup, git and a Linux login, so each run records
+/// `shell_snapshot=user` instead (see [`tags`](Self::tags)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeIsolation {
+    setting_sources: String,
+    workdir: PathBuf,
+    managed_mcp_config: Option<PathBuf>,
+}
+
+impl ClaudeIsolation {
+    /// Isolation for a run whose working directory is `workdir`, on this
+    /// machine: a managed MCP config in Claude Code's managed-settings
+    /// directory changes it (see [`args`](Self::args)).
+    #[must_use]
+    pub fn new(workdir: impl Into<PathBuf>) -> Self {
+        Self {
+            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
+            workdir: workdir.into(),
+            managed_mcp_config: managed_mcp_config_in(&claude_managed_settings_dir()),
+        }
+    }
+
+    /// Look for the managed MCP config in `dir` instead of Claude Code's
+    /// managed-settings directory.
+    #[must_use]
+    pub fn with_managed_settings_dir(mut self, dir: &Path) -> Self {
+        self.managed_mcp_config = managed_mcp_config_in(dir);
+        self
+    }
+
+    /// The administrator's managed MCP config, when this machine has one.
+    #[must_use]
+    pub fn managed_mcp_config(&self) -> Option<&Path> {
+        self.managed_mcp_config.as_deref()
+    }
+
+    /// Load these setting sources instead; see
+    /// [`ClaudeCliAgent::with_setting_sources`].
+    #[must_use]
+    pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
+        self.setting_sources = sources.into();
+        self
+    }
+
+    /// The flags. Pass them after any caller-supplied arguments, because
+    /// Claude takes the last `--setting-sources` it is given. `--add-dir`
+    /// comes first since it takes every argument up to the next flag.
+    /// `--strict-mcp-config` keeps out every MCP server that Roko does not
+    /// pass with `--mcp-config`: none from `~/.claude.json`, `.mcp.json` or
+    /// claude.ai connectors, whether or not Roko passes a config. A managed
+    /// MCP config already keeps them out, and Claude Code refuses the flag
+    /// while one exists, so it is left off then.
+    #[must_use]
+    pub fn args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--add-dir".to_string(),
+            self.workdir.to_string_lossy().into_owned(),
+            "--setting-sources".to_string(),
+            self.setting_sources.clone(),
+        ];
+        if self.managed_mcp_config.is_none() {
+            args.push("--strict-mcp-config".to_string());
+        }
+        args
+    }
+
+    /// Why a run that passes an MCP config (`--mcp-config`) cannot start
+    /// here: Claude Code refuses one while a managed MCP config exists.
+    /// Checking before the spawn gives the run this reason instead of a
+    /// failed start. `None` when a run may pass one.
+    #[must_use]
+    pub fn mcp_config_refusal(&self) -> Option<String> {
+        self.managed_mcp_config.as_deref().map(|managed| {
+            format!(
+                "the managed MCP config {} keeps exclusive control of MCP servers on this \
+                 machine, and Claude Code refuses --mcp-config while it exists; run without \
+                 an MCP config ([agent] mcp_config, the workspace's .mcp.json or plugin tools)",
+                managed.display()
+            )
+        })
+    }
+
+    /// The environment. Set it before any caller-supplied variables, so an
+    /// explicit value wins. The config directory (`CLAUDE_CONFIG_DIR`) is
+    /// left alone: a subscription login is stored under it, and on macOS
+    /// the keychain entry's name depends on it.
+    #[must_use]
+    pub const fn env(&self) -> &'static [(&'static str, &'static str)] {
+        ISOLATION_ENV
+    }
+
+    /// The keys of [`tags`](Self::tags). A Graph attempt's verdict copies
+    /// them from the run's output (gap-751ac9).
+    pub const TAG_KEYS: &'static [&'static str] = &[
+        "setting_sources",
+        "mcp_servers",
+        "auto_memory",
+        "config_dir",
+        "shell_snapshot",
+    ];
+
+    /// What the run loads, as `(tag, value)` pairs. [`ClaudeCliAgent`] tags
+    /// its output with them, and every spawn logs them with the MCP config
+    /// it passes. `setting_sources` is `none` or the `--setting-sources`
+    /// list; `mcp_servers` is `roko` (only those Roko passes) or `managed`
+    /// (the managed MCP config's); `auto_memory` is `off` while
+    /// [`ISOLATION_ENV`] switches it off; `config_dir` is `user`, since the
+    /// config directory is left alone ([`env`](Self::env)); `shell_snapshot`
+    /// is always `user`.
+    #[must_use]
+    pub fn tags(&self) -> Vec<(&'static str, String)> {
+        let setting_sources: &str = if self.setting_sources.trim().is_empty() {
+            "none"
+        } else {
+            &self.setting_sources
+        };
+        let mcp_servers = if self.managed_mcp_config.is_some() {
+            "managed"
+        } else {
+            "roko"
+        };
+        let auto_memory = if self
+            .env()
+            .contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"))
+        {
+            "off"
+        } else {
+            "on"
+        };
+        vec![
+            ("setting_sources", setting_sources.to_string()),
+            ("mcp_servers", mcp_servers.to_string()),
+            ("auto_memory", auto_memory.to_string()),
+            ("config_dir", "user".to_string()),
+            ("shell_snapshot", "user".to_string()),
+        ]
+    }
+}
+
 /// Agent wrapper around the `claude` CLI.
 #[derive(Debug, Clone)]
 pub struct ClaudeCliAgent {
@@ -124,6 +317,7 @@ pub struct ClaudeCliAgent {
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
     settings_json: String,
+    isolation: ClaudeIsolation,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
     credential_scrub: CredentialScrub,
@@ -144,9 +338,11 @@ impl ClaudeCliAgent {
         model: impl Into<String>,
     ) -> Self {
         let model = model.into();
+        let current_dir: PathBuf = current_dir.into();
         Self {
             program: program.into(),
-            current_dir: current_dir.into(),
+            isolation: ClaudeIsolation::new(current_dir.clone()),
+            current_dir,
             model: model.clone(),
             effort: "medium".to_string(),
             fallback_model: Some(roko_core::defaults::MODEL_FAST.to_string()),
@@ -161,7 +357,10 @@ impl ClaudeCliAgent {
             credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
             mcp_config: None,
             resume: None,
-            dangerously_skip_permissions: true,
+            // Safe by default: Claude's own permission checks stay on unless
+            // the caller opts out, normally from
+            // `runner.dangerously_skip_permissions`.
+            dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
             name: format!("claude-cli:{model}"),
@@ -254,6 +453,19 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Override the setting sources passed via `--setting-sources`, a
+    /// comma-separated list of `user`, `project` and `local` (default:
+    /// [`ISOLATED_SETTING_SOURCES`], none). `project` also brings in the
+    /// CLAUDE.md files above the workdir, `~/.claude/CLAUDE.md` among them
+    /// when the workdir is under the home directory. Claude takes the last
+    /// `--setting-sources` it is given, so this flag beats one in
+    /// [`with_extra_args`](Self::with_extra_args).
+    #[must_use]
+    pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
+        self.isolation = self.isolation.with_setting_sources(sources);
+        self
+    }
+
     /// Pass through additional CLI args before the canonical Claude flags.
     #[must_use]
     pub fn with_extra_args<I, S>(mut self, args: I) -> Self
@@ -301,7 +513,10 @@ impl ClaudeCliAgent {
         self
     }
 
-    /// Toggle `--dangerously-skip-permissions` for role-gated policy.
+    /// Toggle `--dangerously-skip-permissions`. Off unless a caller turns it
+    /// on; callers pass the workspace's `runner.dangerously_skip_permissions`
+    /// (or a role-gated policy), so skipping Claude's permission checks is
+    /// always an explicit choice.
     #[must_use]
     pub const fn with_dangerously_skip_permissions(mut self, enabled: bool) -> Self {
         self.dangerously_skip_permissions = enabled;
@@ -326,6 +541,9 @@ impl ClaudeCliAgent {
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag("failed", "true");
+        for (key, value) in self.isolation.tags() {
+            output = output.tag(key, value);
+        }
         if let Some(model) = stream_usage
             .model
             .as_deref()
@@ -337,7 +555,7 @@ impl ClaudeCliAgent {
             output = output.tag("num_turns", num_turns.to_string());
         }
         let output = output.build();
-        AgentResult::fail(output).with_usage_obs(self.usage_observation(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(Self::usage_observation(stream_usage, wall_ms))
     }
 
     /// The run stopped at `--max-turns`: the final stream-json `result` has
@@ -364,11 +582,20 @@ impl ClaudeCliAgent {
         })
     }
 
+    /// Why this run cannot start on this machine with the MCP config it
+    /// would pass (see [`ClaudeIsolation::mcp_config_refusal`]).
+    fn mcp_config_refusal(&self) -> Option<String> {
+        let reason = self.isolation.mcp_config_refusal()?;
+        self.discovered_mcp_config().map(|_| reason)
+    }
+
+    /// The MCP config the run passes: the explicit one, or else the
+    /// workdir's own `.mcp.json` (never a file above it or in `$HOME`).
     fn discovered_mcp_config(&self) -> Option<PathBuf> {
         if let Some(path) = &self.mcp_config {
             return Some(path.clone());
         }
-        match find_mcp_config(&self.current_dir) {
+        match workspace_mcp_config(&self.current_dir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => {
                 tracing::warn!(agent = "claude-cli", "ignoring invalid MCP config: {err}");
@@ -414,7 +641,11 @@ impl ClaudeCliAgent {
             .arg("--effort")
             .arg(&self.effort)
             .arg("--settings")
-            .arg(&self.settings_json);
+            .arg(&self.settings_json)
+            // The invoking user's Claude Code configuration stays out of the
+            // run and the workdir's own CLAUDE.md files come in. The workdir
+            // is the working directory, so `--add-dir` grants no file access.
+            .args(self.isolation.args());
         if self.dangerously_skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
         }
@@ -447,8 +678,13 @@ impl ClaudeCliAgent {
         let mcp_config = self.discovered_mcp_config();
         if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
-            cmd.arg("--strict-mcp-config");
         }
+        tracing::debug!(
+            agent = %self.name,
+            isolation = ?self.isolation.tags(),
+            mcp_config = ?mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
         if let Some(resume) = &self.resume {
             cmd.arg("--resume").arg(resume);
         }
@@ -469,6 +705,10 @@ impl ClaudeCliAgent {
                 .unwrap_or_default(),
         );
         apply_credential_scrub(&mut cmd, &scrub);
+        // Before the caller's variables, so an explicit one wins.
+        for (key, value) in self.isolation.env() {
+            cmd.env(key, value);
+        }
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
@@ -564,15 +804,16 @@ impl ClaudeCliAgent {
             }
         }
         if usage.source == UsageSource::Unknown {
-            return streamed.into_stream_usage(fallback_model);
+            return streamed.stream_usage(fallback_model);
         }
         usage
     }
 
     /// Canonical usage for a run, keeping the source of `stream_usage`:
     /// provider-reported, estimated from what a killed run streamed, or
-    /// unknown.
-    fn usage_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+    /// unknown. Its model is the one the CLI's output named, `None` when it
+    /// named none (bug-2379dc): the configured slug is only the request.
+    fn usage_observation(stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
         UsageObservation {
             input_tokens: stream_usage.input_tokens,
             output_tokens: stream_usage.output_tokens,
@@ -581,10 +822,7 @@ impl ClaudeCliAgent {
             reasoning_tokens: None,
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
-            model: stream_usage
-                .model
-                .clone()
-                .or_else(|| Some(self.model.clone())),
+            model: stream_usage.model.clone(),
             wall_ms,
         }
     }
@@ -814,9 +1052,14 @@ impl ClaudeCliAgent {
     /// - `tool` events (subtype `result`) → `ToolResult`.
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
+    /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
+    ///   `ReasoningDelta`.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
         let mut events = Vec::new();
         match event.get("type").and_then(Value::as_str) {
+            Some("content_block_delta" | "stream_event") => {
+                events.extend(Self::delta_kind(event));
+            }
             Some("assistant") => {
                 let Some(content) = event
                     .get("message")
@@ -910,6 +1153,45 @@ impl ClaudeCliAgent {
         events
     }
 
+    /// The text or reasoning a partial-message delta carries: a bare
+    /// `content_block_delta` line, or one wrapped in the `stream_event` of
+    /// `--include-partial-messages`. Deltas are progress, which the stall
+    /// watchdog reads (bug-2aa55f).
+    fn delta_kind(event: &Value) -> Option<StreamEventKind> {
+        let event = match event.get("type").and_then(Value::as_str) {
+            Some("stream_event") => event.get("event")?,
+            _ => event,
+        };
+        if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+            return None;
+        }
+        let delta = event.get("delta")?;
+        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+            return Some(StreamEventKind::TextDelta(text.to_string()));
+        }
+        delta
+            .get("thinking")
+            .and_then(Value::as_str)
+            .map(|thinking| StreamEventKind::ReasoningDelta(thinking.to_string()))
+    }
+
+    /// Whether `stdout` is a stream-json run that never reached its final
+    /// `result` event, on either stream. Output that is not stream-json has
+    /// no `result` event to miss.
+    fn stream_without_result(stdout: &str, stderr: &str) -> bool {
+        let is_result = |event: &Value| event.get("type").and_then(Value::as_str) == Some("result");
+        let mut events = stdout
+            .lines()
+            .filter_map(Self::parse_stream_event)
+            .peekable();
+        events.peek().is_some()
+            && !events.any(|event| is_result(&event))
+            && !stderr
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .any(|event| is_result(&event))
+    }
+
     /// Core subprocess runner shared by [`run`](Self::run) and
     /// [`run_streaming`](Self::run_streaming).
     ///
@@ -928,6 +1210,10 @@ impl ClaudeCliAgent {
             Err(reason) => return self.failure(input, &reason, started),
         };
 
+        if let Some(reason) = self.mcp_config_refusal() {
+            tracing::warn!(agent = %self.name, "claude run not started: {reason}");
+            return self.failure(input, &reason, started);
+        }
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -946,6 +1232,10 @@ impl ClaudeCliAgent {
             }
         };
         let pid = child.id();
+        // `kill_on_drop` kills only `claude`: a run dropped by a cancel or the
+        // stall watchdog kills its tool subprocesses through this guard,
+        // declared after `child` so it drops first (bug-739dcc).
+        let mut tree_guard = KillTreeOnDrop::new(pid);
         if track_pids()
             && let Some(pid) = pid
         {
@@ -958,6 +1248,7 @@ impl ClaudeCliAgent {
             && let Err(e) = stdin.write_all(prompt_text.as_bytes()).await
         {
             let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+            tree_guard.disarm();
             if track_pids()
                 && let Some(pid) = pid
             {
@@ -982,6 +1273,7 @@ impl ClaudeCliAgent {
         let stdout_name = self.name.clone();
         let stdout_activity = has_activity.clone();
         let stdout_stream_tx = stream_tx;
+        let stdout_model = self.model.clone();
         let stdout_handle = tokio::spawn(async move {
             let Some(pipe) = stdout_pipe else {
                 return String::new();
@@ -991,6 +1283,7 @@ impl ClaudeCliAgent {
             let mut collected = String::new();
             let mut text_bytes: usize = 0;
             let mut tool_count: usize = 0;
+            let mut streamed = StreamedMessages::default();
 
             while let Ok(Some(line)) = lines.next_line().await {
                 collected.push_str(&line);
@@ -1017,6 +1310,13 @@ impl ClaudeCliAgent {
                         for kind in Self::event_kinds_from_value(&event) {
                             // Ignore send errors: receiver may have dropped.
                             let _ = tx.send(StreamEvent::now(kind)).await;
+                        }
+                        // The run is one call to the stream: each `Usage`
+                        // is its estimated total so far.
+                        if let Some(usage) = streamed.observe_live(&event, &stdout_model) {
+                            let _ = tx
+                                .send(StreamEvent::now(StreamEventKind::Usage(usage)))
+                                .await;
                         }
                     }
                 }
@@ -1067,11 +1367,12 @@ impl ClaudeCliAgent {
         });
 
         // Heartbeat: print elapsed time every 15s when there's no other
-        // output, so the user knows the agent is still running.
+        // output, so the user knows the agent is still running. Aborted
+        // however the run ends, a dropped run included.
         let heartbeat_name = self.name.clone();
         let heartbeat_started = started;
         let heartbeat_activity = has_activity.clone();
-        let heartbeat_handle = tokio::spawn(async move {
+        let heartbeat_handle = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(15));
             interval.tick().await; // skip immediate first tick
             loop {
@@ -1082,7 +1383,7 @@ impl ClaudeCliAgent {
                     tracing::debug!(agent = %heartbeat_name, elapsed_s = elapsed, "waiting for response");
                 }
             }
-        });
+        }));
 
         let waited = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
             Ok(Ok(status)) => Ok(status),
@@ -1094,6 +1395,7 @@ impl ClaudeCliAgent {
             Ok(status) => status,
             Err(reason) => {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+                tree_guard.disarm();
                 if track_pids()
                     && let Some(pid) = pid
                 {
@@ -1116,6 +1418,8 @@ impl ClaudeCliAgent {
                 return self.failure_with_stream_usage(input, &reason, started, &stream_usage);
             }
         };
+        // Tool subprocesses can still hold the output pipes open.
+        tree_guard.root_reaped();
         if track_pids()
             && let Some(pid) = pid
         {
@@ -1126,6 +1430,7 @@ impl ClaudeCliAgent {
 
         let stdout = stdout_handle.await.unwrap_or_default();
         let stderr = stderr_handle.await.unwrap_or_default();
+        tree_guard.disarm();
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1144,6 +1449,23 @@ impl ClaudeCliAgent {
             return self.failure_with_stream_usage(
                 input,
                 &format!("exit {code}: {reason}"),
+                started,
+                &stream_usage,
+            );
+        }
+
+        // The final `result` event reports the run's completion, usage and
+        // cost: a run that exits without it was cut short, so the call failed
+        // and keeps the usage it streamed (bug-acab47).
+        if Self::stream_without_result(&stdout, &stderr) {
+            tracing::warn!(
+                agent = %self.name,
+                elapsed_s = elapsed_secs,
+                "agent exited without its final result event"
+            );
+            return self.failure_with_stream_usage(
+                input,
+                "claude exited without its final `result` event (truncated output)",
                 started,
                 &stream_usage,
             );
@@ -1186,6 +1508,9 @@ impl ClaudeCliAgent {
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
             );
+        for (key, value) in self.isolation.tags() {
+            output_signal = output_signal.tag(key, value);
+        }
         if let Some(num_turns) = stream_usage.num_turns {
             output_signal = output_signal.tag("num_turns", num_turns.to_string());
         }
@@ -1193,7 +1518,7 @@ impl ClaudeCliAgent {
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage_obs(self.usage_observation(&stream_usage, wall_ms))
+            .with_usage_obs(Self::usage_observation(&stream_usage, wall_ms))
     }
 }
 
@@ -1330,10 +1655,23 @@ impl StreamedMessages {
             .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
     }
 
+    /// [`Self::observe`] `event` and, when it changed what the run streamed,
+    /// return the new totals for the live stream: the run's usage so far,
+    /// which the stall watchdog records for a run it drops (bug-aa2044).
+    fn observe_live(&mut self, event: &Value, fallback_model: &str) -> Option<Usage> {
+        if event.get("type").and_then(Value::as_str) != Some("assistant") {
+            return None;
+        }
+        let before = self.stream_usage(fallback_model);
+        self.observe(event);
+        let after = self.stream_usage(fallback_model);
+        (after != before).then(|| ClaudeCliAgent::usage_observation(&after, 0).into())
+    }
+
     /// The streamed totals as [`UsageSource::Estimated`] usage, each message
     /// priced from the model pricing table (`fallback_model` when it names
     /// none). Unknown when nothing was streamed.
-    fn into_stream_usage(self, fallback_model: &str) -> StreamUsage {
+    fn stream_usage(&self, fallback_model: &str) -> StreamUsage {
         if self.messages.is_empty() {
             return StreamUsage::default();
         }
@@ -1509,6 +1847,222 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_recursive_rm_in_any_form() {
+        let command = bash_hook_command();
+
+        for denied in [
+            "rm -rf target",
+            "rm -R x",
+            "rm --recursive x",
+            "rm --rec x",
+            "rm -f -r x",
+            "rm x -r",
+            "sudo rm -rf x",
+            "sudo -u git rm -rf x",
+            "/bin/rm -rf x",
+            "(rm -rf x)",
+            "{ rm -rf x; }",
+            "bash -c \"rm -rf x\"",
+            "sh -c 'rm -R x'",
+            "eval \"rm -rf x\"",
+            "echo $(rm -rf x)",
+            "echo `rm -r x`",
+            "FOO=1 rm -rf x",
+            "env FOO=1 rm -rf x",
+            "timeout 5 rm -r x",
+            "find . -name '*.o' | xargs rm -r",
+            "echo ok\nrm -rf x",
+            "if true; then rm -rf x; fi",
+            "rm -$FLAGS x",
+            "f() { rm -f \"$@\"; }; f -r x",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "rm x",
+            "rm -f x",
+            "rm -d emptydir",
+            "rm -- -r",
+            "rm -f \"$tmpfile\"",
+            "git rm -r --cached x",
+            "grep -rn 'rm -rf' src",
+            "echo \"rm -rf x\"",
+            "git commit -m \"fix; rm -rf build\"",
+            "cp -r a b",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_hook_denies_destructive_commands_behind_wrappers() {
+        let command = bash_hook_command();
+
+        for denied in [
+            // A command handed to a wrapper as one string.
+            "watch 'rm -rf x'",
+            "watch -n 1 'git stash'",
+            "flock /tmp/l -c 'rm -rf x'",
+            "flock /tmp/l --command='git checkout main'",
+            "su dev -c 'git stash'",
+            "script -c 'rm -rf x' /dev/null",
+            "env -S 'rm -rf x'",
+            // find deletes across the tree it walks.
+            "find . -delete",
+            "find . -name '*.o' -delete",
+            "find . -exec rm -rf {} +",
+            "find . -type f -exec rm {} \\;",
+            "find . -execdir sudo rm {} +",
+            "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
+            "find . -exec git checkout {} \\;",
+            // Quoted or escaped parentheses group find's tests.
+            "find . \\( -name '*.o' -o -name '*.a' \\) -exec rm -f {} +",
+            "find . '(' -name x ')' -exec rm {} \\;",
+            "sudo find . -delete",
+            // rm on what find or fd lists, however it gets there.
+            "find . -name x | xargs rm",
+            "find . -name x | while read f; do rm \"$f\"; done",
+            "rm $(find . -name '*.o')",
+            "fd -e rs -x rm",
+            "fd -X rm",
+            // A delete that xargs runs, whatever feeds it.
+            "ls | xargs rm",
+            "xargs rm < list.txt",
+            "xargs -a list.txt rm",
+            "ls *.tmp | xargs unlink",
+            // Commands that ssh and parallel run.
+            "ssh host rm -rf /srv/app",
+            "ssh -p 22 host 'cd app && git stash'",
+            "ssh -o ProxyCommand='rm -rf x' host",
+            "parallel rm -rf ::: a b",
+            "parallel 'rm -rf {}' ::: a b",
+            // A delete that parallel runs, like one xargs runs.
+            "parallel rm ::: a b c",
+            "ls | parallel rm",
+            // Multi-call binaries.
+            "busybox rm -rf x",
+            "/bin/busybox sh -c 'rm -rf x'",
+            "toybox rm -r x",
+            // A user named git hides nothing.
+            "sudo -u git rm -rf x",
+            "sudo -u git git stash",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "sudo -u git whoami",
+            "sudo -g git ls",
+            "watch -n 1 'git status'",
+            "flock /tmp/l -c 'cargo build'",
+            "find . -name '*.rs'",
+            "find . -type f -exec grep -l rm {} +",
+            "find . -name '*.rs' | wc -l",
+            "find . -name x | wc -l; rm tmp.txt",
+            "fd -e rs -x wc -l",
+            "xargs cat < list.txt",
+            "git ls-files -z | xargs -0 git rm --cached",
+            "ssh host ls -la",
+            "ssh -l git host uptime",
+            "parallel echo ::: a b",
+            // git rm removes tracked files, which git can restore.
+            "sudo git -C dir rm -r x",
+            "parallel git rm --cached ::: a",
+            "busybox ls",
+            "ionice -c 3 cargo build",
+            "git commit -m \"watch 'rm -rf x'\"",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_hook_denies_git_aliases_to_denied_commands() {
+        let command = bash_hook_command();
+        // A repository with its own aliases, and no user or system git
+        // config, so the invoking user's aliases play no part.
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let global_config = home.path().join("gitconfig");
+        let isolated = [
+            ("HOME", home.path()),
+            ("XDG_CONFIG_HOME", home.path()),
+            ("GIT_CONFIG_GLOBAL", global_config.as_path()),
+            ("GIT_CONFIG_NOSYSTEM", std::path::Path::new("1")),
+        ];
+        let setup: [&[&str]; 7] = [
+            &["init", "-q"],
+            &["config", "alias.co", "checkout"],
+            &["config", "alias.back", "co"],
+            &["config", "alias.save", "stash push"],
+            &["config", "alias.nuke", "!git clean -fdx"],
+            &["config", "alias.wipe", "!rm"],
+            &["config", "alias.st", "status --short"],
+        ];
+        for args in setup {
+            let status = StdCommand::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .envs(isolated)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let run = |bash_command: &str| {
+            let payload = serde_json::json!({
+                "cwd": repo.path(),
+                "tool_input": { "command": bash_command },
+            });
+            run_hook(&command, &payload.to_string(), &isolated)
+                .status
+                .code()
+        };
+
+        for denied in [
+            "git co main",
+            "git CO main",
+            "git back main",
+            "git save",
+            "git nuke",
+            "git wipe -rf target",
+            "sudo git co main",
+            "bash -c 'git co main'",
+            "git -c alias.sw=switch sw main",
+            // Defined by the command itself, so unknown when the guard runs.
+            "git config alias.drop-all 'reset --hard' && git drop-all",
+            "git frobnicate",
+            // Another directory's config may give the alias another meaning.
+            "cd sub && git st",
+        ] {
+            assert_eq!(run(denied), Some(2), "`{denied}` should be denied");
+        }
+        for allowed in [
+            "git st",
+            "git -c alias.lg='log --oneline' lg -5",
+            "git config alias.co",
+            "git count-objects -v",
+            "timeout 30 grep -rn git src",
+        ] {
+            assert_eq!(run(allowed), Some(0), "`{allowed}` should be allowed");
+        }
+    }
+
+    #[test]
     fn settings_hook_fails_closed_without_python3() {
         let command = bash_hook_command();
         let no_python = tempdir().unwrap();
@@ -1550,13 +2104,20 @@ mod tests {
             .filter_map(Value::as_str)
             .collect();
         for rule in [
-            "Read(~/.roko/**)",
             "Read(//**/.roko/.env)",
             "Read(//**/.roko/secrets.toml)",
             "Read(//**/.roko/credentials.json)",
+            "Read(//**/.roko/config.toml)",
+            "Edit(//**/.roko/.env)",
         ] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
         }
+        // Only the key files: when HOME is the workdir, ~/.roko holds the
+        // plan worktrees agents work in.
+        assert!(
+            deny.iter().all(|rule| !rule.contains("~/.roko")),
+            "{deny:?}"
+        );
 
         // The hooks deny the same files, in case a rule does not apply. HOME
         // points at an empty directory so no real key file is involved.
@@ -1580,6 +2141,7 @@ mod tests {
 
         for tool_input in [
             serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
             serde_json::json!({ "file_path": ".roko/.env" }),
             serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
             serde_json::json!({ "path": "~/.roko" }),
@@ -1595,6 +2157,7 @@ mod tests {
         for tool_input in [
             serde_json::json!({ "file_path": "src/lib.rs" }),
             serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "file_path": "~/.roko/logs/daemon.log" }),
             serde_json::json!({ "path": "src", "pattern": "fn main" }),
             serde_json::json!({ "pattern": "**/*.rs" }),
         ] {
@@ -1608,9 +2171,14 @@ mod tests {
 
         for denied in [
             "cat ~/.roko/.env",
+            "cat ~/.roko/config.toml",
             "cat .roko/secrets.toml",
             "cd .roko && cat .env",
             "grep KEY \"$HOME/.roko/credentials.json\"",
+            "cat ~/.roko/*",
+            "cd ~/.roko && cat *",
+            "cat .ro\"\"ko/.e''nv",
+            "sh -c 'cat .ro\"\"ko/.env'",
         ] {
             let output = run_hook(&bash_hook, &bash_payload(denied), &env);
             assert_eq!(
@@ -1619,7 +2187,7 @@ mod tests {
                 "`{denied}` should be blocked"
             );
         }
-        for allowed in ["cat README.md", "ls .roko/state"] {
+        for allowed in ["cat README.md", "ls .roko/state", "cp .env.example .env"] {
             let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
             assert_eq!(
                 output.status.code(),
@@ -1629,12 +2197,317 @@ mod tests {
         }
     }
 
+    #[test]
+    fn settings_hooks_refuse_a_roko_toml_holding_a_secret() {
+        let workdir = tempdir().unwrap();
+        let config = workdir.path().join("roko.toml");
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let file_code = |tool_name: &str, tool_input: Value| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            });
+            run_hook(file_hook, &payload.to_string(), &[]).status.code()
+        };
+        let bash_code = |command: &str| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_input": { "command": command },
+            });
+            run_hook(&bash_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+
+        fs::write(
+            &config,
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        let read = serde_json::json!({ "file_path": "roko.toml" });
+        let grep = serde_json::json!({ "pattern": "api_key" });
+        assert_eq!(file_code("Read", read.clone()), Some(2));
+        assert_eq!(file_code("Grep", grep.clone()), Some(2));
+        let rust_only = serde_json::json!({ "pattern": "fn main", "glob": "*.rs" });
+        assert_eq!(file_code("Grep", rust_only), Some(0));
+        assert_eq!(bash_code("cat roko.toml"), Some(2));
+        assert_eq!(bash_code("cargo test"), Some(0));
+        // A glob or a recursive search reads it too, unless a filter
+        // leaves it out.
+        fs::create_dir(workdir.path().join("src")).unwrap();
+        for read_all in [
+            "cat *",
+            "grep -r api_key .",
+            "rg api_key",
+            "grep -rn key src/..",
+        ] {
+            assert_eq!(
+                bash_code(read_all),
+                Some(2),
+                "`{read_all}` should be denied"
+            );
+        }
+        for filtered in [
+            "rg -g '*.rs' api_key",
+            "grep -r --include='*.rs' key .",
+            "grep -r key src",
+        ] {
+            assert_eq!(
+                bash_code(filtered),
+                Some(0),
+                "`{filtered}` should be allowed"
+            );
+        }
+
+        // Without the secret, roko.toml is an ordinary file.
+        fs::write(&config, "[serve.auth]\nenabled = true\n").unwrap();
+        assert_eq!(file_code("Read", read), Some(0));
+        assert_eq!(file_code("Grep", grep), Some(0));
+        assert_eq!(bash_code("cat roko.toml"), Some(0));
+        assert_eq!(bash_code("grep -r api_key ."), Some(0));
+    }
+
+    /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
+    /// holding a secret, or a key file in .roko, from the table roko-std's
+    /// bash tool checks too, and the Grep calls only this guard checks.
+    #[test]
+    fn settings_hook_refuses_every_search_that_reaches_a_secret() {
+        let workdir = tempdir().unwrap();
+        let root = workdir.path();
+        let src = root.join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("roko.lock"), "lock\n").unwrap();
+        for key in [
+            ".roko/.env",
+            ".roko/secrets.toml",
+            "vendor/pkg/.roko/credentials.json",
+        ] {
+            let key = root.join(key);
+            fs::create_dir_all(key.parent().unwrap()).unwrap();
+            fs::write(&key, "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        }
+        fs::write(
+            root.join("roko.toml"),
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        let bash_hook = bash_hook_command();
+        let file_hook = file_hook_command();
+        // A "Grep:" row is a Grep call, with its input as JSON.
+        let hook_code = |command: &str, cwd: &std::path::Path| {
+            let (hook, payload) = match command.strip_prefix("Grep: ") {
+                Some(input) => (
+                    &file_hook,
+                    serde_json::json!({
+                        "cwd": cwd,
+                        "tool_name": "Grep",
+                        "tool_input": serde_json::from_str::<Value>(input).unwrap(),
+                    }),
+                ),
+                None => (
+                    &bash_hook,
+                    serde_json::json!({ "cwd": cwd, "tool_input": { "command": command } }),
+                ),
+            };
+            run_hook(hook, &payload.to_string(), &[]).status.code()
+        };
+
+        let cases = include_str!("../../roko-std/src/tool/builtin/sandbox/secret_read_cases.txt");
+        for line in cases
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            let (verdict, rest) = line.split_once(' ').unwrap();
+            let (cwd, command) = rest
+                .strip_prefix("in src: ")
+                .map_or((root, rest), |command| (src.as_path(), command));
+            let want = if verdict == "deny" { Some(2) } else { Some(0) };
+            assert_eq!(
+                hook_code(command, cwd),
+                want,
+                "`{command}` in {}",
+                cwd.display()
+            );
+        }
+    }
+
+    /// bug-6af02b: Claude Code runs Grep as `rg --hidden`. The Read deny
+    /// rules in the settings keep the key files out of it (Claude Code turns
+    /// them into `--iglob` exclusions for its Grep and Glob), so the guard
+    /// lets such a Grep run. It refuses a Grep that would read a roko.toml
+    /// holding a secret, unless the Grep's path, glob or type leaves the file
+    /// out or git ignores it.
+    #[test]
+    fn grep_tool_at_a_workspace_root_cannot_read_a_key_file() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
+        let workdir = tempdir().unwrap();
+        let root = workdir.path();
+        fs::create_dir_all(root.join(".roko")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".roko/.env"), "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        fs::write(root.join("src/a.rs"), "fn main() {}\n").unwrap();
+        let file_hook = file_hook_command();
+        let code = |tool: &str, tool_input: Value| {
+            let payload =
+                serde_json::json!({ "cwd": root, "tool_name": tool, "tool_input": tool_input });
+            run_hook(&file_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+        let grep = |extra: Value| {
+            let mut tool_input = serde_json::json!({ "pattern": "OPENAI" });
+            tool_input
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            code("Grep", tool_input)
+        };
+
+        // The deny rules keep the key files out of a Grep at the root, so it
+        // runs; a Grep rooted at .roko, and a Read of a key file, do not.
+        assert_eq!(grep(serde_json::json!({})), Some(0));
+        assert_eq!(grep(serde_json::json!({ "path": ".roko" })), Some(2));
+        assert_eq!(
+            code("Read", serde_json::json!({ "file_path": ".roko/.env" })),
+            Some(2)
+        );
+
+        // No deny rule covers a roko.toml that holds a secret.
+        fs::write(
+            root.join("roko.toml"),
+            "[serve.auth]\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "glob": "*.toml" }),
+            serde_json::json!({ "glob": "*.rs *.toml" }),
+            serde_json::json!({ "type": "toml" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(2),
+                "Grep {extra} should be denied"
+            );
+        }
+        for extra in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "glob": "*.rs" }),
+            serde_json::json!({ "glob": "!roko.toml" }),
+            serde_json::json!({ "type": "rust" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(0),
+                "Grep {extra} should be allowed"
+            );
+        }
+
+        // rg skips what git ignores.
+        let git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(git(&["init", "-q"]), "git init");
+        assert_eq!(
+            grep(serde_json::json!({})),
+            Some(2),
+            "a config git does not ignore"
+        );
+        fs::write(root.join(".gitignore"), "roko.toml\n").unwrap();
+        assert_eq!(grep(serde_json::json!({})), Some(0), "a config git ignores");
+    }
+
+    #[test]
+    fn settings_hooks_key_file_policy_when_home_is_workdir() {
+        // With HOME set to the project, as in many containers, ~/.roko is
+        // the workdir's .roko, and plan worktrees live under it.
+        let workdir = tempdir().unwrap();
+        let worktree = workdir.path().join(".roko/worktrees/p-t1");
+        fs::create_dir_all(worktree.join("src")).unwrap();
+        let env = [("HOME", workdir.path())];
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let file_code = |tool_input: Value| {
+            let payload = serde_json::json!({ "cwd": worktree, "tool_input": tool_input });
+            run_hook(file_hook, &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        let bash_code = |command: &str| {
+            let payload =
+                serde_json::json!({ "cwd": worktree, "tool_input": { "command": command } });
+            run_hook(&bash_hook, &payload.to_string(), &env)
+                .status
+                .code()
+        };
+
+        for tool_input in [
+            serde_json::json!({ "file_path": "src/lib.rs" }),
+            serde_json::json!({ "file_path": worktree.join("src/lib.rs") }),
+            serde_json::json!({ "file_path": "~/.roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "path": "src", "pattern": "fn main" }),
+        ] {
+            let shown = tool_input.to_string();
+            assert_eq!(file_code(tool_input), Some(0), "{shown} should be allowed");
+        }
+        for tool_input in [
+            serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": workdir.path().join(".roko/secrets.toml") }),
+        ] {
+            let shown = tool_input.to_string();
+            assert_eq!(file_code(tool_input), Some(2), "{shown} should be denied");
+        }
+        let cd_worktree = format!("cd {} && cargo test", worktree.display());
+        for allowed in [cd_worktree.as_str(), "ls ~/.roko/state"] {
+            assert_eq!(bash_code(allowed), Some(0), "`{allowed}` should be allowed");
+        }
+        for denied in ["cat ~/.roko/.env", "cat ~/.roko/*"] {
+            assert_eq!(bash_code(denied), Some(2), "`{denied}` should be denied");
+        }
+    }
+
     fn bash_hook_command() -> String {
         let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
         value
             .pointer("/hooks/PreToolUse/0/hooks/0/command")
             .and_then(Value::as_str)
             .expect("hook command")
+            .to_string()
+    }
+
+    fn file_hook_command() -> String {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command")
             .to_string()
     }
 
@@ -1841,6 +2714,296 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--system-prompt"));
     }
 
+    fn args_of(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value `command` sets for `name`, or `None` when it sets none.
+    fn env_of(command: &Command, name: &str) -> Option<String> {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn command_isolates_claude_code_from_the_user_configuration() {
+        let workdir = tempdir().unwrap();
+        let command = ClaudeCliAgent::new("claude", workdir.path(), "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+
+        // An empty list loads no user, project or local settings file.
+        let sources = args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .expect("setting sources flag");
+        assert_eq!(args[sources + 1], "");
+        // The workdir's own CLAUDE.md files still load, and only those.
+        let add_dir = args
+            .iter()
+            .position(|arg| arg == "--add-dir")
+            .expect("add-dir flag");
+        assert_eq!(args[add_dir + 1], workdir.path().to_string_lossy());
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("1"));
+        // The block every Roko spawn of `claude` shares.
+        let isolation = ClaudeIsolation::new(workdir.path()).args();
+        assert_eq!(
+            args.get(add_dir..add_dir + isolation.len()),
+            Some(&isolation[..])
+        );
+        // Only the MCP servers Roko passes, even with no MCP config.
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count(),
+            1
+        );
+        // Auto-memory is off. The config directory is inherited, and with it
+        // the subscription login.
+        let auto_memory = env_of(&command, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+        assert_eq!(auto_memory.as_deref(), Some("1"));
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .all(|(key, _)| key != "CLAUDE_CONFIG_DIR"),
+            "the config directory must be the user's"
+        );
+
+        // Roko's own settings still apply: both guard hooks and the key-file
+        // deny rules.
+        let settings = args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .expect("settings flag");
+        assert_eq!(args[settings + 1], build_settings_json());
+        let value: Value = serde_json::from_str(&args[settings + 1]).unwrap();
+        for (index, matcher) in [(0, "Bash"), (1, FILE_TOOL_MATCHER)] {
+            assert_eq!(
+                value
+                    .pointer(&format!("/hooks/PreToolUse/{index}/matcher"))
+                    .and_then(Value::as_str),
+                Some(matcher)
+            );
+            let hook = value
+                .pointer(&format!("/hooks/PreToolUse/{index}/hooks/0/command"))
+                .and_then(Value::as_str)
+                .expect("guard hook command");
+            assert!(hook.contains("roko command guard"), "{matcher}: {hook}");
+        }
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for rule in ["Read(//**/.roko/.env)", "Edit(//**/.roko/credentials.json)"] {
+            assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
+        }
+    }
+
+    #[test]
+    fn only_explicit_caller_choices_widen_the_isolation() {
+        let workdir = tempdir().unwrap();
+        let mcp_config = workdir.path().join("mcp.json");
+        let command = ClaudeCliAgent::new("claude", workdir.path(), "claude-test-model")
+            .with_extra_args(["--setting-sources", "user,project,local"])
+            .with_setting_sources("project")
+            .with_mcp_config(mcp_config.clone())
+            .with_env_var("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+            .with_env_var("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "0")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+
+        // Claude takes the last `--setting-sources`: Roko's own, not one
+        // passed through in the extra args.
+        let first = args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .expect("extra setting sources");
+        let last = args
+            .iter()
+            .rposition(|arg| arg == "--setting-sources")
+            .expect("setting sources flag");
+        assert!(first < last);
+        assert_eq!(args[last + 1], "project");
+        let mcp = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("MCP config flag");
+        assert_eq!(args[mcp + 1], mcp_config.to_string_lossy());
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count(),
+            1
+        );
+        // Explicit variables beat the isolation's: "0" here turns off the
+        // workdir's CLAUDE.md too, for a run that must see no instructions.
+        let auto_memory = env_of(&command, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+        assert_eq!(auto_memory.as_deref(), Some("0"));
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn discovered_mcp_config_ignores_ancestor_and_home_files() {
+        // A config in a directory above the workdir, and one in a home
+        // directory above it. The test cannot point `$HOME` at `home`
+        // (setting a variable is unsafe in edition 2024), but the agent's
+        // lookup reads neither a parent directory nor `$HOME`.
+        let root = tempdir().unwrap();
+        let home = root.path().join("home");
+        let workdir = home.join("repo");
+        fs::create_dir_all(&workdir).unwrap();
+        for dir in [root.path(), home.as_path()] {
+            fs::write(dir.join(".mcp.json"), r#"{"servers":[]}"#).unwrap();
+        }
+        let discovered = crate::mcp::find_mcp_config(&workdir)
+            .and_then(Result::ok)
+            .map(|(path, _)| path);
+        assert_eq!(
+            discovered,
+            Some(home.join(".mcp.json")),
+            "discovery still walks up"
+        );
+
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        assert!(!args.iter().any(|arg| arg == "--mcp-config"), "{args:?}");
+
+        // The workspace's own config still reaches the run.
+        let own = workdir.join(".mcp.json");
+        fs::write(&own, r#"{"servers":[]}"#).unwrap();
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        let mcp = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("workspace MCP config");
+        assert_eq!(args[mcp + 1], own.to_string_lossy());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_managed_mcp_config_is_reported_before_the_run() {
+        let tmp = tempdir().unwrap();
+        // Stands in for Claude Code's managed-settings directory.
+        let managed = tmp.path().join("managed");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let started = tmp.path().join("started");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+touch "{started}"
+cat >/dev/null
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+            started = started.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let on_managed_machine = |mut agent: ClaudeCliAgent| {
+            agent.isolation = agent.isolation.with_managed_settings_dir(&managed);
+            agent
+        };
+
+        // Without an MCP config the run goes ahead, without the flag Claude
+        // Code refuses on such a machine, and records whose servers it had.
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let agent = on_managed_machine(agent);
+        let args = args_of(&agent.build_command().expect("build command"));
+        assert!(
+            !args.iter().any(|arg| arg == "--strict-mcp-config"),
+            "{args:?}"
+        );
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+        assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+        assert_eq!(result.output.tag("auto_memory"), Some("off"));
+        assert_eq!(result.output.tag("shell_snapshot"), Some("user"));
+
+        // With one, Claude Code would refuse to start: the run fails with
+        // the reason, and Claude Code is never started.
+        fs::remove_file(&started).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .with_mcp_config(tmp.path().join("mcp.json"));
+        let agent = on_managed_machine(agent);
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(!result.success);
+        let reason = result.output.body.as_text().expect("failure reason");
+        assert!(reason.contains("managed-mcp.json"), "{reason}");
+        assert!(!started.exists(), "Claude Code was started");
+        assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn run_disables_auto_memory_and_tags_its_setting_sources() {
+        let tmp = tempdir().unwrap();
+        let capture_env = tmp.path().join("env.txt");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' "${{CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}}" > "{env_file}"
+printf '%s\n' "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-unset}}" >> "{env_file}"
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+            env_file = capture_env.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let result = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .run(&prompt("x"), &Context::now())
+            .await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+        // Auto-memory off, the workdir's CLAUDE.md files on.
+        assert_eq!(fs::read_to_string(&capture_env).unwrap(), "1\n1\n");
+        assert_eq!(result.output.tag("setting_sources"), Some("none"));
+
+        // A failed run records them too.
+        let missing = tmp.path().join("no-claude");
+        let failed = ClaudeCliAgent::new(missing, tmp.path(), "claude-test-model")
+            .with_setting_sources("project")
+            .run(&prompt("x"), &Context::now())
+            .await;
+        assert!(!failed.success);
+        assert_eq!(failed.output.tag("setting_sources"), Some("project"));
+    }
+
     #[tokio::test]
     async fn runs_fake_claude_binary_and_passes_flags() {
         let tmp = tempdir().unwrap();
@@ -1855,6 +3018,7 @@ prompt_file="{prompt_file}"
 printf '%s\n' "$@" > "$args_file"
 cat > "$prompt_file"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
             prompt_file = capture_prompt.display(),
@@ -1871,7 +3035,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
             .with_system_prompt("system guidance")
             .with_allowed_tools("Read,Edit")
             .with_resume("session-123")
-            .with_bare_mode(true);
+            .with_bare_mode(true)
+            .with_dangerously_skip_permissions(true);
 
         let result = agent.run(&prompt("hi there"), &Context::now()).await;
         assert!(result.success);
@@ -1892,6 +3057,10 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
         assert!(!args_text.contains("--append-system-prompt"));
         assert!(args_text.contains("system guidance"));
         assert!(args_text.contains("--settings"));
+        assert!(args_text.contains("--setting-sources\n\n"));
+        let add_dir = format!("--add-dir\n{}\n", tmp.path().display());
+        assert!(args_text.contains(&add_dir));
+        assert!(args_text.contains("--strict-mcp-config"));
         assert!(args_text.contains("--dangerously-skip-permissions"));
         assert!(args_text.contains("--tools"));
         assert!(args_text.contains("Read,Edit"));
@@ -1900,6 +3069,43 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
 
         let prompt_text = fs::read_to_string(&capture_prompt).unwrap();
         assert_eq!(prompt_text, "hi there");
+    }
+
+    #[tokio::test]
+    async fn new_agent_keeps_claude_permission_checks_on() {
+        let tmp = tempdir().unwrap();
+        let capture_args = tmp.path().join("args.txt");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+set -eu
+args_file="{args_file}"
+printf '%s\n' "$@" > "$args_file"
+cat >/dev/null
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+            args_file = capture_args.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        // No opt-in: the default constructor must not skip permissions.
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        let args_text = fs::read_to_string(&capture_args).unwrap();
+        assert!(!args_text.contains("--dangerously-skip-permissions"));
     }
 
     #[tokio::test]
@@ -1914,6 +3120,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -1950,6 +3157,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -2007,6 +3215,36 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         assert_eq!(observation.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
+    /// A run whose output names no model records the served model as
+    /// unknown; the configured slug stays the model asked for, on the
+    /// output's `model` tag (bug-2379dc).
+    #[tokio::test]
+    async fn a_cli_that_names_no_model_leaves_the_served_model_unknown() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"hello"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-1","total_cost_usd":0.25,"usage":{"input_tokens":11,"output_tokens":22}}'
+"#;
+        fs::write(&script, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(result.success);
+        assert_eq!(result.output.tag("model"), Some("claude-test-model"));
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::ProviderReported);
+        assert_eq!(observation.model, None, "nobody reported a model");
+    }
+
     #[tokio::test]
     async fn nonzero_exit_still_carries_result_event_usage() {
         let tmp = tempdir().unwrap();
@@ -2056,35 +3294,200 @@ sleep 30
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
 
-        let agent =
-            ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6").with_timeout_ms(1_000);
-        let result = agent.run(&prompt("build it"), &Context::now()).await;
+        // A loaded machine may not deliver the whole stream before a short
+        // timeout: each timeout doubles the last until the run is killed
+        // after both messages arrived (bug-779ae7).
+        for timeout_ms in [1_000, 2_000, 4_000, 8_000, 16_000] {
+            let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+                .with_timeout_ms(timeout_ms);
+            let result = agent.run(&prompt("build it"), &Context::now()).await;
 
-        assert!(!result.success);
-        let text = result.output.body.as_text().expect("failure text");
-        assert_eq!(text, "timed out after 1000 ms");
-        assert!(crate::provider::error_classify::detect_attempt_timeout(
-            text
-        ));
-        assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
-        assert_eq!(result.output.tag("num_turns"), Some("2"));
-        assert_eq!(result.usage.input_tokens, 1_010);
-        assert_eq!(result.usage.output_tokens, 250);
-        assert_eq!(result.usage.cache_create_tokens, 3_000);
-        assert_eq!(result.usage.cache_read_tokens, 11_000);
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+            assert!(!result.success);
+            let text = result.output.body.as_text().expect("failure text");
+            assert_eq!(text, format!("timed out after {timeout_ms} ms"));
+            assert!(crate::provider::error_classify::detect_attempt_timeout(
+                text
+            ));
+            if result.output.tag("num_turns") != Some("2") {
+                continue;
+            }
+            assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
+            assert_eq!(result.usage.input_tokens, 1_010);
+            assert_eq!(result.usage.output_tokens, 250);
+            assert_eq!(result.usage.cache_create_tokens, 3_000);
+            assert_eq!(result.usage.cache_read_tokens, 11_000);
+            // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+            let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+            assert!(
+                (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
+                "{:?}",
+                result.usage
+            );
+            let observation = result.usage_obs.expect("usage observation");
+            assert_eq!(
+                observation.source,
+                UsageSource::Estimated,
+                "a killed run's usage is partial"
+            );
+            return;
+        }
+        panic!("no run was killed after both messages arrived");
+    }
+
+    /// A run that exits 0 without its final `result` event was cut short
+    /// (bug-acab47): a failed call that keeps the usage it streamed. Output
+    /// that is not stream-json has no `result` event to miss.
+    #[tokio::test]
+    async fn a_run_without_a_result_line_is_a_provider_failure() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let write = |body: &str| {
+            fs::write(&script, body).unwrap();
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        };
+        let streamed = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-t","model":"claude-sonnet-4-6"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+"#;
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        write(streamed);
+        let truncated = agent.run(&prompt("finish it"), &Context::now()).await;
         assert!(
-            (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
-            "{:?}",
-            result.usage
+            !truncated.success,
+            "a truncated run is not a completed call"
         );
-        let observation = result.usage_obs.expect("usage observation");
-        assert_eq!(
-            observation.source,
-            UsageSource::Estimated,
-            "a killed run's usage is partial"
+        let text = truncated.output.body.as_text().expect("failure text");
+        assert!(text.contains("without its final `result` event"), "{text}");
+        assert_eq!(truncated.usage.input_tokens, 1_000);
+        assert_eq!(truncated.usage.output_tokens, 200);
+        let observation = truncated.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::Estimated);
+
+        write(&format!(
+            "{streamed}printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.01}}'\n"
+        ));
+        let complete = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(
+            complete.success,
+            "with its `result` event the run completes"
         );
+
+        write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
+        let plain = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
+    /// Dropping a run's future, which is how a cancel or the stall watchdog
+    /// stops it, kills the subprocesses `claude` started, not only `claude`
+    /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    async fn cancelling_a_claude_run_kills_its_tool_subprocesses() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let pids = tmp.path().join("tool.pids");
+        let script_body = format!(
+            "#!/bin/sh\ncat >/dev/null\nsleep 30 &\necho $! >> '{pids}'\n\
+             (trap '' TERM; exec sleep 30) &\necho $! >> '{pids}'\nwait\n",
+            pids = pids.display()
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+        let run = tokio::spawn(async move {
+            let ctx = Context::now();
+            agent.run(&prompt("build it"), &ctx).await
+        });
+        let mut tool_pids: Vec<i32> = Vec::new();
+        for _ in 0..400 {
+            tool_pids = fs::read_to_string(&pids)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect();
+            if tool_pids.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(tool_pids.len(), 2, "the fake claude started its tools");
+
+        run.abort();
+        assert!(run.await.expect_err("the run is cancelled").is_cancelled());
+
+        for pid in tool_pids {
+            let mut alive = true;
+            for _ in 0..200 {
+                // SAFETY: signal 0 only checks that `pid` exists.
+                alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(!alive, "tool subprocess {pid} outlived its cancelled run");
+        }
+    }
+
+    /// A dropped run leaves no task of its own behind: its heartbeat stops
+    /// with it, and its output readers end once its process is killed.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_dropped_claude_run_stops_its_heartbeat() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let started = tmp.path().join("started");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ntouch '{}'\nexec sleep 30\n",
+                started.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+        let run = tokio::spawn(async move {
+            let ctx = Context::now();
+            agent.run(&prompt("build it"), &ctx).await
+        });
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the fake claude started");
+        let metrics = tokio::runtime::Handle::current().metrics();
+        assert!(
+            metrics.num_alive_tasks() >= 4,
+            "the run, its two output readers and its heartbeat"
+        );
+
+        run.abort();
+        assert!(run.await.expect_err("the run is cancelled").is_cancelled());
+
+        let mut alive = metrics.num_alive_tasks();
+        for _ in 0..200 {
+            if alive == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            alive = metrics.num_alive_tasks();
+        }
+        assert_eq!(alive, 0, "a task of the dropped run outlived it");
     }
 
     #[tokio::test]
@@ -2096,6 +3499,7 @@ set -eu
 cat >/dev/null
 echo 'Claude CLI is starting up...' 1>&2
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#;
         fs::write(&script, script_body).unwrap();
         #[cfg(unix)]
@@ -2192,6 +3596,34 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(matches!(&kinds[0], StreamEventKind::TextDelta(t) if t == "hello"));
+    }
+
+    /// Partial-message deltas, bare or wrapped in a `stream_event`, reach a
+    /// streaming receiver as text and reasoning deltas (bug-2aa55f).
+    #[test]
+    fn event_kinds_partial_message_deltas() {
+        let cases = [
+            serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}}),
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}
+            }),
+        ];
+        for event in cases {
+            let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+            assert!(
+                matches!(kinds.as_slice(), [StreamEventKind::TextDelta(t)] if t == "hi"),
+                "{event}"
+            );
+        }
+        let thinking = serde_json::json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&thinking);
+        assert!(matches!(kinds.as_slice(), [StreamEventKind::ReasoningDelta(t)] if t == "hmm"));
+        let start = serde_json::json!({"type": "stream_event", "event": {"type": "message_start"}});
+        assert!(ClaudeCliAgent::event_kinds_from_value(&start).is_empty());
     }
 
     #[test]

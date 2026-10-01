@@ -4,11 +4,14 @@ mod common;
 
 use std::fs;
 
-use common::{run_roko_isolated, setup_sample_plan_workspace};
+use common::{SAMPLE_PLAN_ID, run_roko_isolated, setup_sample_plan_workspace};
 use tempfile::tempdir;
 
+/// A bare `roko plan run` executes its plan on the Graph engine and leaves
+/// what readers of the workspace need (bug-230de6): the run's dashboard
+/// events in `.roko/events.jsonl` and in its per-run index, its episodes and
+/// its Graph checkpoint.
 #[test]
-#[ignore = "requires engine-convergence wiring: Graph engine events.jsonl not yet produced by mock plan runs"]
 fn default_engine_does_real_work() {
     let temp = tempdir().expect("tempdir");
     let workdir = temp.path();
@@ -27,18 +30,40 @@ fn default_engine_does_real_work() {
     let events_path = workdir.join(".roko/events.jsonl");
     let events = fs::read_to_string(&events_path)
         .unwrap_or_else(|err| panic!("read {}: {err}", events_path.display()));
+    let lines: Vec<serde_json::Value> = events
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let task_event = |line: &serde_json::Value| {
+        matches!(
+            line["type"].as_str(),
+            Some("task_started" | "task_completed")
+        ) && line["plan_id"] == SAMPLE_PLAN_ID
+            && line["task_id"] == "T1"
+    };
     assert!(
-        events.lines().any(|line| line.contains("task.attempt")),
-        "bare default plan run did not execute a task; events: {events}"
+        lines.iter().any(task_event),
+        "bare default plan run recorded no event for its task; events: {events}"
+    );
+    assert!(
+        lines.iter().any(|line| line["type"] == "gate_result"),
+        "bare default plan run recorded no gate result; events: {events}"
     );
 
-    let ledger_path = workdir.join(".roko/state/run-ledger.jsonl");
-    let ledger = fs::read_to_string(&ledger_path)
-        .unwrap_or_else(|err| panic!("read {}: {err}", ledger_path.display()));
+    // Every line names the run, and the run's index holds the same lines.
+    let run_id = lines
+        .iter()
+        .find_map(|line| line["run_id"].as_str())
+        .unwrap_or_else(|| panic!("no event names its run; events: {events}"));
     assert!(
-        ledger.lines().any(|line| line.contains("gate_outcome")),
-        "bare default plan run did not run gates; ledger: {ledger}"
+        lines.iter().all(|line| line["run_id"] == run_id),
+        "{events}"
     );
+    let index_path = roko_fs::run_index::run_index_path(&events_path, run_id)
+        .unwrap_or_else(|err| panic!("index path for {run_id}: {err}"));
+    let index = fs::read_to_string(&index_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", index_path.display()));
+    assert_eq!(index.lines().count(), events.lines().count(), "{index}");
 
     let episodes_path = workdir.join(".roko/episodes.jsonl");
     let episodes = fs::read_to_string(&episodes_path)
@@ -48,11 +73,13 @@ fn default_engine_does_real_work() {
         "bare default plan run did not persist an episode"
     );
 
-    let snapshot_path = workdir.join(".roko/state/state-snapshot.json");
-    let snapshot = fs::read_to_string(&snapshot_path)
-        .unwrap_or_else(|err| panic!("read {}: {err}", snapshot_path.display()));
+    let checkpoint_path = workdir
+        .join(".roko/state/graph")
+        .join(SAMPLE_PLAN_ID)
+        .join("checkpoint.json");
     assert!(
-        !snapshot.trim().is_empty(),
-        "bare default plan run wrote an empty state-snapshot.json"
+        checkpoint_path.is_file(),
+        "bare default plan run wrote no Graph checkpoint at {}",
+        checkpoint_path.display()
     );
 }

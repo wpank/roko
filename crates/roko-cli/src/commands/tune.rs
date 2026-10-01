@@ -159,28 +159,12 @@ pub(crate) async fn cmd_config_preset(cli: &Cli, cmd: ConfigPresetCmd) -> Result
         }
     }
 
-    // Ensure the target config file exists.
-    if global {
-        if let Some(parent) = write_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if !write_path.exists() {
-            std::fs::write(&write_path, "")?;
-        }
-    } else {
-        ensure_project_config(&workdir)?;
-    }
-
     // Apply the edits atomically via the existing config editor.
     let pending = edits
         .iter()
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect::<HashMap<_, _>>();
-
-    // save_pending_edits works on the directory containing roko.toml.
-    let config_dir = write_path.parent().unwrap_or(&workdir);
-    roko_cli::tui::config_meta::save_pending_edits(config_dir, &pending)
-        .map_err(anyhow::Error::msg)?;
+    write_preset(&workdir, &write_path, global, &pending)?;
 
     if json {
         let output = PresetDiffJson {
@@ -370,17 +354,44 @@ fn build_budget_preset() -> Vec<PresetDiffEntry> {
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
+/// Write the preset edits into `write_path`, creating the file if needed.
+///
+/// A global preset edits the global config file itself
+/// (`~/.roko/config.toml`), which the loader merges under every project. A
+/// project preset edits the workspace roko.toml, starting from the
+/// `roko init` template, and is refused if validation would reject it.
+fn write_preset(
+    workdir: &Path,
+    write_path: &Path,
+    global: bool,
+    pending: &HashMap<String, String>,
+) -> Result<()> {
+    let target = if global {
+        if let Some(parent) = write_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !write_path.exists() {
+            std::fs::write(write_path, "")?;
+        }
+        EditTarget::Global
+    } else {
+        ensure_project_config(workdir)?;
+        EditTarget::Project
+    };
+    roko_cli::tui::config_meta::save_pending_edits_to(write_path, target, pending)
+        .map_err(anyhow::Error::msg)
+}
+
 fn ensure_project_config(workdir: &Path) -> Result<()> {
     let path = workdir.join("roko.toml");
     if path.exists() {
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
+    // The `roko init` template, checked like `roko config validate` before
+    // it is written.
     let template = Config::default_toml_template(false)?;
-    std::fs::write(&path, template).with_context(|| format!("write {}", path.display()))?;
+    roko_cli::config_cmd::write_checked_config(&path, &template)?;
     Ok(())
 }
 
@@ -456,6 +467,39 @@ mod tests {
         assert_eq!(edits[1].value, "1.0");
         assert_eq!(edits[2].key, "budget.prompt_token_budget");
         assert_eq!(edits[2].value, "20000");
+    }
+
+    /// bug-4e7d40: `config preset --global` edited `~/.roko/roko.toml`, which
+    /// is not the global config, and failed unless that file existed.
+    #[test]
+    fn preset_global_writes_the_global_config_file() {
+        // A temporary HOME, whose global config is `.roko/config.toml`.
+        // `cmd_config_preset` resolves that path from HOME; the test hands
+        // it to the write step instead of changing HOME for the process.
+        let home = tempfile::tempdir().unwrap();
+        let global_path = home.path().join(".roko").join("config.toml");
+        let pending = build_budget_preset()
+            .into_iter()
+            .map(|entry| (entry.key, entry.value))
+            .collect::<HashMap<_, _>>();
+
+        write_preset(home.path(), &global_path, true, &pending).expect("write the global preset");
+
+        assert!(
+            !home.path().join(".roko").join("roko.toml").exists(),
+            "a global preset must not create ~/.roko/roko.toml"
+        );
+        let options = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        let global = roko_core::config::loader::load_config_file(&global_path, &options)
+            .expect("the loader reads the global config");
+        assert_eq!(global.budget.max_plan_usd, 10.0);
+        assert_eq!(global.budget.max_turn_usd, 1.0);
+        assert_eq!(global.budget.prompt_token_budget, 20_000);
     }
 
     #[test]

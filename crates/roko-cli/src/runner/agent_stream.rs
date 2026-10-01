@@ -233,6 +233,7 @@ pub enum AgentTermination {
 
 /// Result of naturally waiting for an agent and all stream readers.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentWait {
     /// The child is absent. Reader failures remain structured producer errors.
     Confirmed {

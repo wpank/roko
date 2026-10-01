@@ -279,9 +279,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
   - **Use**: Vertical (inter-generational) transmission exceeds performance ceilings that horizontal cannot.
   - **Application unchanged**: Backup/restore (vertical) complements Mesh sharing (horizontal).
 
-- **[PEREZ-2024]** Perez, J. et al. "Artificial Generational Intelligence." arXiv:2406.00392, 2024.
-  - **Use**: Pure imitation leads to stagnation. Innovation must accompany inheritance.
-  - **Application unchanged**: Anti-proletarianization mandate — restored knowledge needs independent validation.
+- **[PEREZ-2024]** Cook et al. "Artificial Generational Intelligence." arXiv:2406.00392, 2024.
 
 - **[WOOLLEY-2010]** Woolley, A.W. et al. "Evidence for a Collective Intelligence Factor." _Science_ 330(6004), 2010.
   - **Use**: C-Factor — collective intelligence exceeds individual intelligence.
@@ -353,11 +351,11 @@ These citations ground the knowledge transfer (backup/restore), generational con
   - **Application unchanged**: Motivates Dream consolidation scheduling.
 
 - **[LIN-SLEEPTIME-2025]** Lin, B. et al. "Sleep-time Compute: Beyond Inference Scaling at Test-Time." arXiv:2504.13171, 2025.
-  - **Use**: Dual-agent architecture: Sleeper precomputes, Server handles live. ~5× compute reduction.
+  - **Use**: Precomputes over a context offline, before queries arrive (§3). ~5× less test-time compute at equal accuracy.
   - **Application unchanged**: Grounds Sleepwalker mode (reduced-capability sleep).
 
 - **[WSCL-2024]** "Wake-Sleep Consolidated Learning." arXiv:2401.08623, 2024.
-  - **Use**: Three-phase CLS cycle: 38% reduction in catastrophic forgetting, 17.6% zero-shot transfer increase.
+  - **Use**: Three-phase CLS cycle (wake, NREM, REM) that beat continual-learning baselines on image classification, with positive forward transfer (abstract).
   - **Application unchanged**: Grounds three-phase Dream cycle.
 
 - **[XU-AMEM-2025]** Xu, W. et al. "A-MEM: Agentic Memory for LLM Agents." arXiv:2502.12110, 2025.
@@ -368,15 +366,11 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 ## 11. Affective Computing
 
-- **[CABRERA-2023]** Cabrera-Paniagua, D. & Rubilar-Torrealba, R. "Autonomous Stock Market Agents with Somatic Markers." _JAIHC_, 2023.
-  - **Use**: Somatic markers in agents produce higher Sharpe ratios. Empirical validation.
-  - **Application unchanged**: Daimon somatic marker implementation.
-
-- **[VAN-DEN-BROEK-2023]** Van den Broek, E. "Emotion Contagion in Multi-Agent Systems." _AAMAS_, 2023.
+- **[VAN-DEN-BROEK-2023]** van Haeringen et al. "Emotion contagion in agent-based simulations of crowds: a systematic review." _AAMAS_, 2023.
   - **Use**: Anger spreads competitively. Contagion dampening required.
   - **Application unchanged**: Mesh emotional state propagation controls.
 
-- **[EMOTIONAL-RAG-2024]** Zhang, Y. et al. "Emotional RAG." arXiv:2410.23041, 2024.
+- **[EMOTIONAL-RAG-2024]** Huang et al. "Emotional RAG." arXiv:2410.23041, 2024.
   - **Use**: Emotion-tagged retrieval for LLM agents.
   - **Application unchanged**: Daimon-tagged Engram retrieval.
 

@@ -1033,13 +1033,17 @@ impl RokoConfig {
 
     /// Interpolate `${VAR}` patterns in provider config strings.
     ///
-    /// **Scope**: Interpolation currently only applies to provider fields:
-    /// `base_url`, `api_key_env`, `command`, and `extra_headers`. Other
-    /// config sections (agent, budget, gates, etc.) do NOT support `${VAR}`
-    /// syntax -- literal strings are used as-is.
+    /// **Scope**: This covers the provider fields `base_url`, `api_key_env`,
+    /// `command` and `extra_headers`, where an unset variable becomes an
+    /// empty string. The loader expands the secret fields elsewhere
+    /// (`serve.auth.api_key`, `server.auth_token`, secret `agent.env`
+    /// entries), where an unset variable fails the load. Other fields (agent,
+    /// budget, gates, etc.) do NOT support `${VAR}` syntax -- literal strings
+    /// are used as-is.
     ///
     /// To set non-provider fields dynamically, use the named environment
-    /// variable overrides (e.g., `ROKO_MODEL`, `ROKO_BACKEND`) instead.
+    /// variable overrides (e.g., `ROKO_MODEL`, `ROKO_BACKEND`) or the
+    /// `ROKO__SECTION__FIELD` overrides instead.
     pub fn interpolate_env_vars(&mut self) {
         Self::interpolate_env_vars_with(&mut self.providers, &|key| std::env::var(key).ok());
     }
@@ -1486,7 +1490,11 @@ impl RokoConfig {
     fn write_example_webhooks(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Webhooks --");
         let _ = writeln!(out, "[webhooks.github]");
-        let _ = writeln!(out, "secret = \"change-me\"");
+        // Agents can read roko.toml, so the loader refuses a secret in it.
+        let _ = writeln!(
+            out,
+            "# secret: set ROKO__WEBHOOKS__GITHUB__SECRET in .roko/.env instead"
+        );
         let _ = writeln!(out, "\n# -- GitHub integration --");
         let _ = writeln!(out, "# [github]");
         let _ = writeln!(out, "# owner = \"my-org\"");
@@ -1760,17 +1768,25 @@ pub struct ConductorConfig {
     #[serde(default)]
     pub watchers: WatcherThresholds,
 
-    // ── Live supervisor intervention thresholds ─────────────────────────
+    // ── Live supervision thresholds ─────────────────────────────────────
     //
-    // These govern the conductor supervision loop (Branch 4c in event_loop).
-    // Each threshold maps a signal condition to an intervention type.
-    /// Seconds of agent silence before a Nudge is emitted (default 180).
+    // `silence_timeout_secs` and `task_stall_secs` drive the Graph
+    // dispatcher's per-attempt stall watchdog. An agent is silent while it
+    // waits on its model without reporting progress: silence starts counting
+    // when its provider call starts for a provider that streams as it goes
+    // (the Claude CLI), else once the attempt has reported something, and
+    // pauses while a tool call it made runs. `0` turns a threshold off; with
+    // both off a Graph run is not supervised at all. The hard `timeout_secs`
+    // stays the outer bound.
+    /// Seconds of agent silence before its task gets a warning diagnosis
+    /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]
     pub silence_timeout_secs: u64,
     /// Consecutive compile failures before a ForceAdvance (default 3).
     #[serde(default = "default_compile_fail_threshold")]
     pub compile_fail_threshold: u32,
-    /// Seconds of task stall (no progress after nudge) before cancel+retry (default 300).
+    /// Seconds of agent silence before the attempt is cancelled and retried
+    /// under its task's `max_retries` (default 300; 0 = off).
     #[serde(default = "default_task_stall_secs")]
     pub task_stall_secs: u64,
     /// Context window usage percentage that triggers a warning (default 80).
@@ -2553,6 +2569,12 @@ pub struct CoreRunnerConfig {
     /// files (by mtime) are removed. Defaults to 100.
     #[serde(default = "CoreRunnerConfig::default_prompt_log_retention")]
     pub prompt_log_retention: usize,
+    /// When `true`, a `--worktree-per-task` run deletes the `roko/attempt/*`
+    /// branches of a delivered plan's attempts, along with their checkouts
+    /// (gap-415c54). Defaults to `false`: the checkouts, which hold the disk,
+    /// are removed, and the branches stay for inspection and history.
+    #[serde(default)]
+    pub delete_attempt_branches: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2602,6 +2624,7 @@ impl Default for CoreRunnerConfig {
             warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
+            delete_attempt_branches: false,
         }
     }
 }

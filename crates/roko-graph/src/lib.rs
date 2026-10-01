@@ -52,7 +52,7 @@ pub mod delivery;
 pub mod engine;
 pub mod error;
 pub mod events;
-mod exclusion;
+pub mod exclusion;
 pub mod fingerprint;
 pub mod hot;
 pub mod loader;
@@ -71,7 +71,7 @@ pub use cell::{Cell, CellContext, CellResources, CellVersion};
 pub use engine::{
     DispatchStop, FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput,
     GraphSnapshot, GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus,
-    SerializableNodeStatus, SerializableSignal, ValidatedGraph, default_registry,
+    NodeTiming, SerializableNodeStatus, SerializableSignal, ValidatedGraph, default_registry,
     reconcile_running_status,
 };
 pub use registry::{CellDescriptor, CellFactory, CellRegistry};

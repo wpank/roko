@@ -36,6 +36,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
+use crate::graph_task_dispatch::baseline_verify::BaselineWorktree;
 use crate::task_parser::VerifyStep;
 
 use super::types::{
@@ -137,7 +138,7 @@ impl GateTaskContext {
     }
 }
 
-pub(super) fn fast_mode_enabled() -> bool {
+pub(crate) fn fast_mode_enabled() -> bool {
     std::env::var("ROKO_FAST_MODE").is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -2134,39 +2135,12 @@ async fn run_focused_baseline_verify(
     if steps.is_empty() {
         return None;
     }
-    let parent = tempfile::Builder::new()
-        .prefix("roko-gate-baseline-")
-        .tempdir()
-        .ok()?;
-    let mut baseline_guard = RegisteredBaselineWorktree::new(workdir, parent);
-    let baseline = baseline_guard.checkout.clone();
-    baseline_guard.cleanup_required = true;
-    let add = timeout(
-        Duration::from_secs(10),
-        Command::new("git")
-            .args(["worktree", "add", "--detach"])
-            .arg(&baseline)
-            .arg("HEAD")
-            .current_dir(workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    if !add.status.success() {
-        return None;
-    }
-
+    let baseline = BaselineWorktree::add(workdir, "HEAD").await?;
     let signal = gate_signal(
         plan_id,
         task_id,
         rung,
-        &baseline,
+        baseline.path(),
         target_crates,
         main_target_dir,
     );
@@ -2181,25 +2155,7 @@ async fn run_focused_baseline_verify(
         None,
     )
     .await;
-    let removal = timeout(
-        Duration::from_secs(10),
-        Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&baseline)
-            .current_dir(workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    if matches!(removal, Ok(Ok(ref output)) if output.status.success()) {
-        baseline_guard.cleanup_required = false;
-    } else {
-        warn!(path = %baseline.display(), "failed to remove temporary baseline worktree cleanly");
-    }
+    baseline.remove().await;
     Some(
         verdicts
             .into_iter()
@@ -2214,66 +2170,6 @@ async fn run_focused_baseline_verify(
             })
             .collect(),
     )
-}
-
-/// Cancellation-safe owner for a temporary registered Git worktree.
-pub(crate) struct RegisteredBaselineWorktree {
-    repository: PathBuf,
-    pub(crate) checkout: PathBuf,
-    parent: Option<tempfile::TempDir>,
-    pub(crate) cleanup_required: bool,
-}
-
-impl RegisteredBaselineWorktree {
-    pub(crate) fn new(repository: &Path, parent: tempfile::TempDir) -> Self {
-        let checkout = parent.path().join("checkout");
-        Self {
-            repository: repository.to_path_buf(),
-            checkout,
-            parent: Some(parent),
-            cleanup_required: false,
-        }
-    }
-}
-
-impl Drop for RegisteredBaselineWorktree {
-    fn drop(&mut self) {
-        if !self.cleanup_required {
-            return;
-        }
-        let removed = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&self.checkout)
-            .current_dir(&self.repository)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if removed {
-            return;
-        }
-
-        if self.checkout.exists() {
-            if let Some(parent) = self.parent.take() {
-                let retained = parent.keep();
-                warn!(
-                    path = %retained.display(),
-                    "preserving temporary baseline worktree after cleanup failure"
-                );
-            }
-        } else {
-            let _ = std::process::Command::new("git")
-                .args(["worktree", "prune", "--expire", "now"])
-                .current_dir(&self.repository)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-    }
 }
 
 fn verify_step_gate(
@@ -2291,6 +2187,7 @@ fn verify_step_gate(
         ],
     )
     .with_name(format!("task-verify:{}:{}", task_id, step.phase))
+    .with_phase(&step.phase)
     .with_timeout_ms(step.timeout_ms);
     if let Some(sink) = line_sink {
         gate = gate.with_line_sink(sink);
@@ -2302,7 +2199,6 @@ fn verify_step_gate(
 mod tests {
     use super::super::cargo_command::*;
     use super::super::gate_input::*;
-    use super::super::gate_report::*;
     use super::*;
 
     use std::collections::BTreeMap;
@@ -2346,6 +2242,7 @@ mod tests {
             command: command.to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         }
     }
 
@@ -2946,6 +2843,7 @@ path = "src/shared.rs"
             command: "false | tail -1".to_string(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -2963,6 +2861,7 @@ path = "src/shared.rs"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -2990,6 +2889,7 @@ path = "src/shared.rs"
                     command: "false".into(),
                     fail_msg: None,
                     timeout_ms: 10_000,
+                    scope: Vec::new(),
                 }],
                 Some(Vec::new()),
                 10,
@@ -3042,6 +2942,7 @@ path = "src/shared.rs"
                 command: "printf 'after\\n' > tracked.txt".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             Some(Vec::new()),
             10,
@@ -3082,6 +2983,7 @@ path = "src/shared.rs"
             command: "false".into(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         };
         let baseline = run_gate_once(
             gate_effect(GateCompletionKind::Preflight),
@@ -3156,6 +3058,7 @@ path = "src/shared.rs"
                 command: "ln -sfn b input".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             Some(Vec::new()),
             10,
@@ -3385,6 +3288,7 @@ path = "src/shared.rs"
                 command: "true".into(),
                 fail_msg: None,
                 timeout_ms: 10_000,
+                scope: Vec::new(),
             }],
             None,
             10,
@@ -3654,6 +3558,7 @@ cargo_fix_enabled = false
             command: "cargo test".into(),
             fail_msg: Some("tests failed".into()),
             timeout_ms: 60_000,
+            scope: Vec::new(),
         }];
         let cancel = tokio_util::sync::CancellationToken::new();
         let request = RunnerProductionGateAdapter::build_request(

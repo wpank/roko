@@ -24,11 +24,13 @@ estimated_total_minutes = 60
 #    whichever of the two arrives second completes the link.
 #
 # Runs in the main tree after 08f-final-polish and before 09-acceptance. Same
-# gate style as 08b-08f: tests in accept/ are copied into apps/portal/src by
-# each gate and must pass with their exact count; each fails on the tree its
-# task starts from and passed on the fixed reference. One production build, in
-# T03. The main tree's node_modules may predate jsdom, so gates install when
-# node_modules/jsdom is missing.
+# gate style as 08b-08f: tests in accept/ are pinned acceptance tests
+# ([task.accept], gap-d14a43, migrated by gap-ba4d01): a run pins each one
+# outside the working tree, and a generated gate that runs before the task's own
+# copies the pinned test into apps/portal/src and requires its exact passing
+# count. Each fails on the tree its task starts from and passed on the fixed
+# reference. One production build, in T03. The main tree's node_modules may
+# predate jsdom, so gates install when node_modules/jsdom is missing.
 
 [[task]]
 id = "T01"
@@ -75,10 +77,17 @@ anti_patterns = [
     "Do not edit the copied acceptance test; the gate overwrites it.",
 ]
 
+[[task.accept.files]]
+src = "accept/earlyAgent.accept.test.tsx"
+dest = "apps/portal/src/components/stream/earlyAgent.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/earlyAgent.accept.test.tsx {count}'
+count = 5
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08g-first-run/accept/earlyAgent.accept.test.tsx src/components/stream/earlyAgent.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/earlyAgent.accept.test.tsx 5 && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
-fail_msg = "the early-agent acceptance test (5) or a run-state suite does not pass"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
+fail_msg = "a run-state suite does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
@@ -89,7 +98,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08g-first-run/accept/earlyAgent.accept.test.tsx src/components/stream/earlyAgent.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -150,10 +159,18 @@ anti_patterns = [
     "Do not edit the copied acceptance tests; the gate overwrites them.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08g-first-run/accept && cp $A/firstPlan.accept.test.tsx src/components/shell/firstPlan.accept.test.tsx && cp $A/revisionLands.accept.test.tsx src/components/stage/revisionLands.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/firstPlan.accept.test.tsx 1 && node scripts/vitest-min.mjs src/components/stage/revisionLands.accept.test.tsx 1'
-fail_msg = "the first-plan (1) or revision (1) acceptance test does not pass"
+[[task.accept.files]]
+src = "accept/firstPlan.accept.test.tsx"
+dest = "apps/portal/src/components/shell/firstPlan.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/firstPlan.accept.test.tsx {count}'
+count = 1
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/revisionLands.accept.test.tsx"
+dest = "apps/portal/src/components/stage/revisionLands.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/revisionLands.accept.test.tsx {count}'
+count = 1
 timeout_ms = 600000
 
 [[task.verify]]
@@ -164,7 +181,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08g-first-run/accept && cp $A/firstPlan.accept.test.tsx src/components/shell/firstPlan.accept.test.tsx && cp $A/revisionLands.accept.test.tsx src/components/stage/revisionLands.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -174,11 +191,10 @@ title = "Prove the first-run fixes together and build once"
 description = '''
 Run the portal suite together and build the export once.
 
-The gates re-copy this plan's three acceptance tests from
-plans/portal-programme/08g-first-run/accept/ (they must be unchanged), then
-require: the full suite with at least 676 passing tests (669 after 08f, plus
-this plan's 7) and none failing; the orphan check; tsc; and the one production
-build.
+Its pinned acceptance tests put this plan's three acceptance tests back in the
+tree, each with its exact count; then the gates require: the full suite with at
+least 676 passing tests (669 after 08f, plus this plan's 7) and none failing;
+the orphan check; tsc; and the one production build.
 
 Fix only what a gate reports, in the module the failing test exercises. Do not
 edit the acceptance copies.
@@ -202,9 +218,30 @@ anti_patterns = [
     "Do not leave apps/portal/out behind.",
 ]
 
+[[task.accept.files]]
+src = "accept/earlyAgent.accept.test.tsx"
+dest = "apps/portal/src/components/stream/earlyAgent.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/earlyAgent.accept.test.tsx {count}'
+count = 5
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/firstPlan.accept.test.tsx"
+dest = "apps/portal/src/components/shell/firstPlan.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/firstPlan.accept.test.tsx {count}'
+count = 1
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/revisionLands.accept.test.tsx"
+dest = "apps/portal/src/components/stage/revisionLands.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/revisionLands.accept.test.tsx {count}'
+count = 1
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08g-first-run/accept && for p in components/stream/earlyAgent.accept.test.tsx components/shell/firstPlan.accept.test.tsx components/stage/revisionLands.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 676'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src 676'
 fail_msg = "the full suite, with every acceptance test, lacks 676 passing tests or has a failure"
 timeout_ms = 900000
 

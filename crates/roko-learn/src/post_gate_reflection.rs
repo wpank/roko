@@ -228,6 +228,8 @@ impl ReflectionInput {
     /// Build a reflection input from an episode with gate verdicts.
     #[must_use]
     pub fn from_episode(episode: &Episode) -> Option<Self> {
+        // An attempt without a learning label (S01 §4.1) teaches nothing.
+        episode.learning_success()?;
         let failed = episode.gate_verdicts.iter().find(|verdict| !verdict.passed);
         let passed = episode.gate_verdicts.iter().find(|verdict| verdict.passed);
         let verdict = failed.or(passed)?;
@@ -329,7 +331,9 @@ impl PostGateReflectionStore {
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
 
-    /// Save this store to disk using a temporary file and rename.
+    /// Save this store to disk using a temporary file and rename. Lessons
+    /// come from agent output, so the process's secrets are redacted from
+    /// them ([`roko_core::obs::scrub_secrets_in_json`]).
     ///
     /// # Errors
     ///
@@ -340,8 +344,9 @@ impl PostGateReflectionStore {
         }
         let text = serde_json::to_string_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let text = roko_core::obs::scrub_secrets_in_json(&text);
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
+        std::fs::write(&tmp, text.as_bytes())?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     }

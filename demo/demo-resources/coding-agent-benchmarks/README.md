@@ -56,6 +56,13 @@ small `roko.toml` configured for Ollama, runs `roko run`, then emits `git diff`
 to stdout. `roko bench swe --agent-mode command` scores that diff by checking
 format, `git apply --check`, patch application, and the task test command.
 
+The benchmark keeps its test command and grading tests from agents. The
+adapter's `roko.toml` gate and prompt therefore use `--validate-cmd` (or
+`ROKO_BENCH_VALIDATE_CMD`) when given. Otherwise they use the repo's visible
+`test*.py` files through `python -m unittest discover`. With neither, the
+adapter exits with an error rather than self-check against a command that
+cannot fail.
+
 ## Controls
 
 `run-controls.sh` executes:
@@ -160,9 +167,12 @@ Each JSONL row should include:
   "repo_path": "./fixtures/case-1",
   "problem_statement": "Fix the failing behavior.",
   "patch": "diff --git a/file.py b/file.py\n...",
-  "test_cmd": "python3 -m unittest"
+  "test_cmd": "python3 -m unittest",
+  "test_files": ["test_file.py"]
 }
 ```
+
+Every row must name the tests that grade it, in `test_files`, a SWE-bench-style `test_patch`, or both. Before `test_cmd` runs, the bench resets those files over the agent's patch, so a patch cannot rewrite its own grading tests. A row without them is rejected before anything is scored. The agent never sees `patch`, `test_cmd`, `test_patch` or `test_files`. The adapter's own check uses the repo's visible tests instead (see above).
 
 ## Troubleshooting
 

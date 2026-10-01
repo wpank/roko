@@ -53,7 +53,14 @@ use serde::{Deserialize, Serialize};
 use super::outcome::RunnerDispatchError;
 use super::prompt_cache::PromptCache;
 use super::{DispatchContext, PromptExperimentContext};
+use crate::task_accept;
 use crate::task_parser::TaskDef;
+
+/// Printed under a list of verify steps that includes a pinned acceptance test (gap-1b5636). The
+/// list shows such a step by its header line alone; the rest of it is the harness's plumbing.
+const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itself: it copies the \
+     pinned test over its destination, so edits to that copy are lost, and requires exactly the \
+     stated number of passing tests.";
 
 /// Maximum tokens an assembled prompt may emit before deterministic
 /// dropping kicks in. Roughly mirrors a 200K-context-window providers'
@@ -124,7 +131,8 @@ pub struct PromptContext {
     pub files_in_scope: Vec<String>,
     /// Acceptance criteria (from `task.acceptance`).
     pub acceptance_criteria: Vec<String>,
-    /// `task.verify` shell commands.
+    /// `task.verify` shell commands as prompts show them: a pinned acceptance step by its header
+    /// line only ([`task_accept::prompt_command`]).
     pub verify_commands: Vec<String>,
     /// Declared-scope impact warning included before implementation.
     pub impact_context: String,
@@ -257,7 +265,7 @@ impl PromptContext {
             verify_commands: task
                 .verify
                 .iter()
-                .map(|step| step.command.clone())
+                .map(|step| task_accept::prompt_command(&step.command).to_string())
                 .collect(),
             impact_context,
             gate_feedback: ctx.gate_feedback.clone(),
@@ -1004,6 +1012,10 @@ pub struct PromptDiagnostics {
     pub playbook_ids: Vec<String>,
     /// Neuro knowledge ids surfaced (if any).
     pub knowledge_ids: Vec<String>,
+    /// Prior-episode ids the episode section cited (if any). Feedback treats
+    /// `knowledge_ids` as knowledge entry ids, so these stay apart.
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
     /// Canonical source refs and score results produced by prompt composition.
     #[serde(default)]
     pub scored_signals: Vec<ScoredSignalDiagnostic>,
@@ -1308,7 +1320,17 @@ fn build_runner_context(
             .map(|v| format!("- `{v}`"))
             .collect::<Vec<_>>()
             .join("\n");
-        parts.push(format!("# Verify\nAfter editing, run:\n{list}"));
+        let pinned = ctx
+            .verify_commands
+            .iter()
+            .map(String::as_str)
+            .any(task_accept::is_pinned_command);
+        let note = if pinned {
+            format!("\n{PINNED_STEP_NOTE}")
+        } else {
+            String::new()
+        };
+        parts.push(format!("# Verify\nAfter editing, run:\n{list}{note}"));
     }
 
     if !ctx.impact_context.is_empty() {
@@ -1683,10 +1705,16 @@ impl PromptAssembler {
         // Gather playbook / knowledge ids and text for the canonical path.
         let mut playbook_ids: Vec<String> = Vec::new();
         let mut knowledge_ids: Vec<String> = Vec::new();
+        let mut episode_ids: Vec<String> = Vec::new();
         let mut code_context: Vec<String> = Vec::new();
         for sec in &source_sections {
             playbook_ids.extend(sec.playbook_ids.clone());
-            knowledge_ids.extend(sec.knowledge_ids.clone());
+            // The episode section cites prior episodes, not knowledge entries.
+            if sec.name == "episode_knowledge" {
+                episode_ids.extend(sec.knowledge_ids.clone());
+            } else {
+                knowledge_ids.extend(sec.knowledge_ids.clone());
+            }
             if !sec.body.is_empty()
                 && matches!(
                     sec.name.as_str(),
@@ -1892,6 +1920,7 @@ impl PromptAssembler {
             estimated_tokens,
             playbook_ids,
             knowledge_ids,
+            episode_ids,
             scored_signals,
             composition_manifest,
             experiment_assignments: experiment_assignment_diagnostics,
@@ -1947,6 +1976,7 @@ impl PromptAssembler {
                 }
             }
         }
+        user_prompt.push_str(&task.specification_section());
         if !task.acceptance.is_empty() {
             user_prompt.push_str("\n## Acceptance\n");
             for item in &task.acceptance {
@@ -1959,7 +1989,11 @@ impl PromptAssembler {
             user_prompt.push_str("\n## Verification Commands\n");
             for step in &task.verify {
                 user_prompt.push_str("- ");
-                user_prompt.push_str(&step.command);
+                user_prompt.push_str(task_accept::prompt_command(&step.command));
+                user_prompt.push('\n');
+            }
+            if task.verify.iter().any(task_accept::is_pinned_step) {
+                user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
         }
@@ -2258,24 +2292,21 @@ fn collect_neuro_knowledge_cached(
         return None;
     }
 
-    // Score entries by keyword overlap (mirrors KnowledgeStore::query's lexical path).
+    // Count the task keywords an entry holds as whole words: a substring test
+    // also finds them inside longer words ("log" in "catalog").
     let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
         .iter()
         .filter_map(|entry| {
             if is_group_scoped_knowledge(entry) {
                 return None;
             }
-            let haystack = format!(
+            let words = query_words(&format!(
                 "{} {} {}",
                 entry.content,
                 entry.tags.join(" "),
                 entry.source.as_deref().unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            let score = keywords
-                .iter()
-                .filter(|kw| haystack.contains(kw.as_str()))
-                .count();
+            ));
+            let score = keywords.intersection(&words).count();
             if score > 0 {
                 Some((score, entry))
             } else {
@@ -2287,7 +2318,8 @@ fn collect_neuro_knowledge_cached(
         b.0.cmp(&a.0)
             .then_with(|| b.1.confidence.total_cmp(&a.1.confidence))
     });
-    scored.truncate(5);
+    // The uncached path's cap.
+    scored.truncate(3);
 
     if scored.is_empty() {
         return None;
@@ -2462,12 +2494,35 @@ fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
     parts.join(" ")
 }
 
-fn query_keywords(text: &str) -> HashSet<String> {
+/// Words that say nothing about a task's topic, so they never match its
+/// context (bug-86117a).
+const QUERY_STOPWORDS: &[&str] = &[
+    "about", "after", "again", "all", "also", "and", "any", "are", "because", "been", "before",
+    "being", "both", "but", "can", "could", "did", "does", "doing", "done", "during", "each",
+    "every", "for", "from", "had", "has", "have", "here", "how", "into", "its", "just", "may",
+    "might", "more", "most", "must", "nor", "not", "off", "once", "only", "onto", "other", "our",
+    "out", "over", "own", "per", "same", "should", "some", "such", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through", "too", "under", "until",
+    "upon", "very", "via", "was", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "within", "without", "would", "yet", "you", "your",
+];
+
+/// The lowercase words of `text`. `-` and `_` join words, so `roko-cli` and
+/// `prompt_builder` are one word each.
+fn query_words(text: &str) -> HashSet<String> {
     text.to_ascii_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-        .filter(|word| word.len() > 2)
+        .filter(|word| !word.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+/// The words of a task's query text that can match its context: longer
+/// than two characters, and not stopwords.
+fn query_keywords(text: &str) -> HashSet<String> {
+    let mut keywords = query_words(text);
+    keywords.retain(|word| word.len() > 2 && !QUERY_STOPWORDS.contains(&word.as_str()));
+    keywords
 }
 
 fn episode_paths(workdir: &Path) -> Vec<PathBuf> {
@@ -2894,15 +2949,18 @@ mod tests {
                 command: "cargo test".into(),
                 fail_msg: None,
                 timeout_ms: 60_000,
+                scope: Vec::new(),
             }],
             timeout_secs: 60,
             max_retries: 1,
             acceptance: vec!["compiles".into()],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -2915,6 +2973,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            ladder_step: 0,
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
@@ -3378,6 +3437,112 @@ mod tests {
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
     }
 
+    /// Writes `entries` (id and content) to `workdir`'s knowledge store.
+    fn write_knowledge(workdir: &Path, entries: &[(&str, &str)]) {
+        let neuro_dir = workdir.join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entries
+            .iter()
+            .map(|(id, content)| {
+                let entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "content": content,
+                    "confidence": 0.8,
+                    "created_at": Utc::now(),
+                }))
+                .expect("knowledge entry");
+                serde_json::to_string(&entry).expect("knowledge json") + "\n"
+            })
+            .collect::<String>();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+    }
+
+    /// Assembles `task` in `workdir` as a plan run does, from a prompt cache
+    /// loaded once.
+    fn assemble_cached(task: &TaskDef, workdir: &Path) -> AssembledPrompt {
+        let mut dispatch = ctx();
+        dispatch.workdir = workdir.to_path_buf();
+        let prompt_ctx = PromptContext::from_task(task, &dispatch);
+        PromptAssembler::with_cache(Arc::new(PromptCache::load(workdir)))
+            .assemble(task, &prompt_ctx)
+            .expect("assemble")
+    }
+
+    /// A plan run's assembler reads knowledge from a cache loaded once
+    /// (bug-86117a). The cache holds every hot entry, and each prompt carries
+    /// those that share a content word with its task, not those that share
+    /// only stopwords.
+    #[test]
+    fn cached_prompt_surfaces_matching_durable_knowledge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The task explains "the wiring": the first entry shares "wiring",
+        // the second only "the", which a substring test also finds in "other".
+        write_knowledge(
+            temp.path(),
+            &[
+                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-stopwords", "Keep the other notes short"),
+            ],
+        );
+        assert_eq!(
+            PromptCache::load(temp.path()).neuro_entries.len(),
+            2,
+            "the cache holds every hot entry"
+        );
+        let prompt = assemble_cached(&task(), temp.path());
+
+        let system = &prompt.system_prompt;
+        assert!(system.contains("# Neuro knowledge"), "{system}");
+        assert!(
+            system.contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            "{system}"
+        );
+        assert!(!system.contains("Keep the other notes short"), "{system}");
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// The knowledge also reaches a prompt whose domain context is longer
+    /// than its conventions section. The composer's foraging pre-pass used
+    /// to drop that section, and the knowledge with it (bug-4aa696).
+    #[test]
+    fn cached_knowledge_survives_a_long_domain_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge(
+            temp.path(),
+            &[("k-wiring", "Register new wiring in the dispatcher table")],
+        );
+        let mut long_task = task();
+        long_task.description = Some(format!(
+            "Explain the wiring. {}",
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(30)
+        ));
+        let prompt = assemble_cached(&long_task, temp.path());
+
+        let manifest = prompt
+            .diagnostics
+            .composition_manifest
+            .as_ref()
+            .expect("composition manifest");
+        let tokens = |name: &str| {
+            manifest
+                .included
+                .iter()
+                .find(|section| section.name == name)
+                .map(|section| section.estimated_tokens)
+        };
+        let domain = tokens("domain_context").expect("domain_context is kept");
+        let conventions = tokens("conventions").expect("conventions is kept");
+        assert!(domain > conventions, "{domain} <= {conventions} tokens");
+        assert!(
+            prompt
+                .system_prompt
+                .contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            "{}",
+            prompt.system_prompt
+        );
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
     #[test]
     fn retry_attempt_renders_gate_feedback() {
         let assembler = PromptAssembler::minimal();
@@ -3445,6 +3610,55 @@ mod tests {
         assert!(!p.system_prompt.contains("# Verify"));
         assert!(!p.system_prompt.contains("# Allowed tools"));
         assert_eq!(p.tool_allowlist, None);
+    }
+
+    /// gap-0f3980: a task's specification hints and `context_files` reach
+    /// the prompt its agent gets.
+    #[test]
+    fn task_hints_reach_the_user_prompt() {
+        let assembler = PromptAssembler::minimal();
+        let t = crate::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "p"
+
+[[task]]
+id = "t"
+title = "Wire it up"
+role = "implementer"
+context_files = ["src/hints.rs"]
+formulas = ["retries = 2 * (k + 1) - 1"]
+"#,
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        // Dispatch refuses a context file that does not exist.
+        let workdir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(workdir.path().join("src")).expect("src dir");
+        std::fs::write(workdir.path().join("src/hints.rs"), "// hints\n").expect("context file");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = workdir.path().to_path_buf();
+        let p = assembler
+            .assemble(&t, &PromptContext::from_task(&t, &dispatch_ctx))
+            .unwrap();
+        assert!(
+            p.user_prompt
+                .contains("## Task Context\n- Read `src/hints.rs`: context\n"),
+            "{}",
+            p.user_prompt
+        );
+        assert!(
+            p.user_prompt
+                .contains("## Specification\n### Formulas\n- retries = 2 * (k + 1) - 1\n"),
+            "{}",
+            p.user_prompt
+        );
+
+        let plain = assembler
+            .assemble(&task(), &PromptContext::from_task(&task(), &ctx()))
+            .unwrap();
+        assert!(!plain.user_prompt.contains("## Specification"));
     }
 
     #[test]
@@ -3685,5 +3899,76 @@ mod tests {
             res_limits.prd_excerpt,
             impl_limits.prd_excerpt
         );
+    }
+
+    /// gap-1b5636: both verify listings show a pinned acceptance step by its header line and a
+    /// note, never the generated script; authored steps stay verbatim.
+    #[test]
+    fn pinned_accept_steps_show_only_their_header() {
+        let entry = task_accept::AcceptFile {
+            src: "accept/x.test.ts".into(),
+            dest: "apps/portal/src/x.test.ts".into(),
+            runner: "cd apps/portal && node scripts/vitest-min.mjs {dest} {count}".into(),
+            count: 16,
+            timeout_ms: None,
+        };
+        let pinned = task_accept::PinnedAccept {
+            stored: PathBuf::from("/accept-store/p/t/accept/x.test.ts"),
+            sha256: "ab".repeat(32),
+        };
+        let step = task_accept::pinned_verify_step("t", &entry, &pinned);
+        let header = step
+            .command
+            .lines()
+            .next()
+            .expect("a header line")
+            .to_string();
+        assert_eq!(
+            header,
+            concat!(
+                "# roko accept: t accept/x.test.ts -> apps/portal/src/x.test.ts ",
+                "(exactly 16 passing tests)"
+            )
+        );
+        let mut t = task();
+        t.verify.insert(0, step);
+
+        let pctx = PromptContext::from_task(&t, &ctx());
+        let p = PromptAssembler::minimal().assemble(&t, &pctx).unwrap();
+        for (section, prompt) in [
+            ("# Verify", &p.system_prompt),
+            ("## Verification Commands", &p.user_prompt),
+        ] {
+            assert!(prompt.contains(section), "{section} missing: {prompt}");
+            assert!(prompt.contains(&header), "{section}: no header: {prompt}");
+            assert!(
+                prompt.contains(PINNED_STEP_NOTE),
+                "{section}: no note: {prompt}"
+            );
+            assert!(
+                prompt.contains("cargo test"),
+                "{section}: authored step: {prompt}"
+            );
+            for plumbing in [
+                "roko_pinned=",
+                "/accept-store/",
+                "sha256sum",
+                "vitest-min.mjs",
+            ] {
+                assert!(
+                    !prompt.contains(plumbing),
+                    "{section}: {plumbing} leaked: {prompt}"
+                );
+            }
+        }
+
+        // Without a pinned step the note stays out.
+        let plain = task();
+        let plain_ctx = PromptContext::from_task(&plain, &ctx());
+        let p = PromptAssembler::minimal()
+            .assemble(&plain, &plain_ctx)
+            .unwrap();
+        assert!(!p.system_prompt.contains(PINNED_STEP_NOTE));
+        assert!(!p.user_prompt.contains(PINNED_STEP_NOTE));
     }
 }

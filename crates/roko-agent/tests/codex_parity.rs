@@ -11,7 +11,6 @@ async fn happy_path() {
 }
 
 #[tokio::test]
-#[ignore = "codex streaming usage mismatch — pre-existing fixture drift"]
 async fn streaming() {
     run_streaming(ParityBackend::Codex).await.unwrap();
 }

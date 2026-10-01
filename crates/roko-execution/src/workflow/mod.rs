@@ -6,8 +6,6 @@
 //! # Modules
 //!
 //! - [`templates`] -- Named workflow template descriptors and alias table.
-//!   Builds acyclic subgraphs per generation: Compose -> Implement -> Gate
-//!   -> [Review] -> [Commit].
 //!
 //! - [`controller`] -- Outer workflow lifecycle controller. Manages
 //!   generation creation on gate failure / review revise, enforces caps,
@@ -34,6 +32,5 @@ pub use report::build_report;
 pub use review_parser::{ReviewVerdict, parse_review};
 pub use templates::{
     CANONICAL_NAMES, TEMPLATE_VERSION, TemplateResolutionError, WorkflowTemplateDescriptor,
-    build_autofix_subgraph, build_generation_subgraph, cell_types, node_ids, resolve_template,
-    resolve_template_name,
+    resolve_template, resolve_template_name,
 };

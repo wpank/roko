@@ -9,7 +9,7 @@
 //! result counts. A failure that persists with every located error in a
 //! sibling's `files` names it: `blocked_by_sibling = <task>`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
@@ -20,13 +20,44 @@ use regex::Regex;
 use roko_core::Verdict;
 use tokio::sync::watch;
 
+mod verify_lease;
+mod verify_scope;
+
+pub(crate) use verify_lease::StepRead;
+pub(crate) use verify_scope::StepScope;
+
 /// Task attempts in flight, so a failed verify step can tell whether a
 /// sibling editing the same working tree may have caused it.
 pub(crate) struct InFlightTasks {
     attempts: parking_lot::Mutex<BTreeMap<u64, InFlightAttempt>>,
+    /// Attempts that have ended, by id, in the order they ended, so the
+    /// siblings that overlapped a task's attempts can still be named
+    /// afterwards ([`Self::sibling_files_since`]). Only those an open window
+    /// overlaps are kept, at most [`MAX_ENDED`] of them.
+    ended: parking_lot::Mutex<Vec<(u64, InFlightAttempt)>>,
+    /// Windows [`Self::mark`] opened and [`Self::release`] has not closed,
+    /// by window id.
+    marks: parking_lot::Mutex<BTreeMap<u64, WriterMark>>,
     next_id: AtomicU64,
+    next_mark: AtomicU64,
     /// Bumped whenever an attempt ends or starts settling.
     changed: watch::Sender<u64>,
+}
+
+/// Most ended attempts kept, whatever windows are open: a window whose task
+/// never passes is never released, and would otherwise keep every attempt
+/// that ends after it.
+const MAX_ENDED: usize = 4096;
+
+/// Where a task's window of edits to its working tree starts: the attempts
+/// in flight then, and the id the next attempt to register gets. The
+/// siblings that overlap the window are those attempts and every later one.
+#[derive(Debug, Clone)]
+pub(crate) struct WriterMark {
+    /// The window's id, for [`InFlightTasks::release`].
+    id: u64,
+    next_id: u64,
+    in_flight: BTreeSet<u64>,
 }
 
 struct InFlightAttempt {
@@ -37,6 +68,12 @@ struct InFlightAttempt {
     /// Waiting for its own siblings to settle: it writes nothing meanwhile,
     /// and waiting on it could deadlock.
     settling: bool,
+    /// Running its verify steps: it writes nothing meanwhile, so no verify
+    /// step waits for it ([`InFlightTasks::begin_verify`]).
+    verifying: bool,
+    /// What its current verify step reads, while one runs: a sibling that
+    /// would write there waits before it starts editing.
+    reading: Option<StepScope>,
 }
 
 /// A sibling attempt that may be editing the working tree.
@@ -71,7 +108,10 @@ impl Default for InFlightTasks {
     fn default() -> Self {
         Self {
             attempts: parking_lot::Mutex::default(),
+            ended: parking_lot::Mutex::default(),
+            marks: parking_lot::Mutex::default(),
             next_id: AtomicU64::new(0),
+            next_mark: AtomicU64::new(0),
             changed: watch::channel(0).0,
         }
     }
@@ -79,7 +119,11 @@ impl Default for InFlightTasks {
 
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
-        self.tasks.attempts.lock().remove(&self.id);
+        let ended = self.tasks.attempts.lock().remove(&self.id);
+        if let Some(attempt) = ended {
+            self.tasks.ended.lock().push((self.id, attempt));
+            self.tasks.forget_settled();
+        }
         self.tasks.bump();
     }
 }
@@ -93,17 +137,92 @@ impl InFlightTasks {
         workdir: &Path,
         files: &[String],
     ) -> InFlightGuard<'_> {
+        // The id is taken under the lock, so a [`WriterMark`] never sees an
+        // id handed out whose attempt is not in the map yet.
+        let mut attempts = self.attempts.lock();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.attempts.lock().insert(
+        attempts.insert(
             id,
             InFlightAttempt {
                 key: key.to_string(),
                 workdir: workdir.to_path_buf(),
                 files: files.to_vec(),
                 settling: false,
+                verifying: false,
+                reading: None,
             },
         );
         InFlightGuard { tasks: self, id }
+    }
+
+    /// Open a window from which [`Self::sibling_files_since`] names the
+    /// sibling attempts that may edit a task's working tree. It keeps the
+    /// attempts it overlaps after they end, until [`Self::release`] closes
+    /// it.
+    pub(crate) fn mark(&self) -> WriterMark {
+        let attempts = self.attempts.lock();
+        let mark = WriterMark {
+            id: self.next_mark.fetch_add(1, Ordering::Relaxed),
+            next_id: self.next_id.load(Ordering::Relaxed),
+            in_flight: attempts.keys().copied().collect(),
+        };
+        // Opened under the attempts lock, so an attempt the window holds
+        // cannot end, and be forgotten, before the window is open.
+        self.marks.lock().insert(mark.id, mark.clone());
+        mark
+    }
+
+    /// Close a window [`Self::mark`] opened, once its task needs no more
+    /// sibling names, and forget the ended attempts only it kept.
+    pub(crate) fn release(&self, mark: &WriterMark) {
+        self.marks.lock().remove(&mark.id);
+        self.forget_settled();
+    }
+
+    /// Forget the ended attempts no open window overlaps, then keep at most
+    /// [`MAX_ENDED`] of the rest, the last to end.
+    fn forget_settled(&self) {
+        let (floor, pinned) = {
+            let marks = self.marks.lock();
+            let floor = marks.values().map(|mark| mark.next_id).min();
+            let pinned: BTreeSet<u64> = marks
+                .values()
+                .flat_map(|mark| mark.in_flight.iter().copied())
+                .collect();
+            (floor, pinned)
+        };
+        let mut ended = self.ended.lock();
+        ended.retain(|(id, _)| floor.is_some_and(|floor| *id >= floor) || pinned.contains(id));
+        let excess = ended.len().saturating_sub(MAX_ENDED);
+        ended.drain(..excess);
+    }
+
+    /// The `files` declared by attempts of tasks other than `key` in
+    /// `workdir` that were in flight at `mark` or started since, ended or
+    /// not: what they edited there is theirs, not `key`'s.
+    pub(crate) fn sibling_files_since(
+        &self,
+        mark: &WriterMark,
+        key: &str,
+        workdir: &Path,
+    ) -> Vec<String> {
+        let overlaps = |id: u64, attempt: &InFlightAttempt| {
+            attempt.key != key
+                && attempt.workdir == workdir
+                && (id >= mark.next_id || mark.in_flight.contains(&id))
+        };
+        let mut files = BTreeSet::new();
+        for (id, attempt) in self.attempts.lock().iter() {
+            if overlaps(*id, attempt) {
+                files.extend(attempt.files.iter().cloned());
+            }
+        }
+        for (id, attempt) in self.ended.lock().iter() {
+            if overlaps(*id, attempt) {
+                files.extend(attempt.files.iter().cloned());
+            }
+        }
+        files.into_iter().collect()
     }
 
     /// Settle a verify step that failed while siblings may be editing its
@@ -199,7 +318,8 @@ impl InFlightTasks {
     }
 
     /// Siblings that may be editing `workdir` beside `key`: other attempts
-    /// there that declare files and are not settling themselves. When any
+    /// there that declare files and are neither settling themselves nor
+    /// running their verify steps. When any
     /// exist, `key` starts settling under the same lock, so two failing
     /// tasks never wait on each other.
     fn begin_settle(&self, key: &str, workdir: &Path) -> Vec<SiblingWriter> {
@@ -211,6 +331,7 @@ impl InFlightTasks {
                     && attempt.workdir == workdir
                     && !attempt.files.is_empty()
                     && !attempt.settling
+                    && !attempt.verifying
             })
             .map(|(id, attempt)| SiblingWriter {
                 id: *id,
@@ -239,8 +360,8 @@ impl InFlightTasks {
         }
     }
 
-    /// Wait up to `limit` until every writer has finished its attempt or is
-    /// settling itself. Returns whether they did in time.
+    /// Wait up to `limit` until every writer has finished its attempt, or is
+    /// settling itself or verifying. Returns whether they did in time.
     async fn wait_settled(&self, writers: &[SiblingWriter], limit: Duration) -> bool {
         let mut changed = self.changed.subscribe();
         tokio::time::timeout(limit, async {
@@ -259,13 +380,30 @@ impl InFlightTasks {
         writers.iter().all(|writer| {
             attempts
                 .get(&writer.id)
-                .is_none_or(|attempt| attempt.settling)
+                .is_none_or(|attempt| attempt.settling || attempt.verifying)
         })
     }
 
     fn bump(&self) {
         self.changed
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// Wait until an attempt of `key` (`"{plan_id}/{task_id}"`) begins to
+    /// settle a step that failed beside its siblings.
+    #[cfg(test)]
+    pub(crate) async fn settling_began(&self, key: &str) {
+        let mut changed = self.changed.subscribe();
+        while !self
+            .attempts
+            .lock()
+            .values()
+            .any(|attempt| attempt.key == key && attempt.settling)
+        {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 
@@ -438,7 +576,7 @@ fn lexical(path: &Path) -> PathBuf {
 /// Whether the task `files` entry `declared` covers `located`: the same file
 /// or a directory holding it, or either path a suffix of the other, since a
 /// tool run in a subproject (`cd web && tsc`) reports paths relative to it.
-fn declares(declared: &str, located: &Path) -> bool {
+pub(super) fn declares(declared: &str, located: &Path) -> bool {
     let declared = lexical(Path::new(declared.trim()));
     !declared.as_os_str().is_empty()
         && !located.as_os_str().is_empty()
@@ -762,5 +900,74 @@ mod tests {
         // The first to fail waits for the other, which sees it settling and
         // keeps its own failure.
         assert_ne!(a_verdict.passed, b_verdict.passed);
+    }
+
+    #[test]
+    fn sibling_files_since_names_every_attempt_that_overlapped_the_window() {
+        let tasks = InFlightTasks::default();
+        let workdir = Path::new(WORKDIR);
+        let before = tasks.register("plan/BEFORE", workdir, &files(&["done.rs"]));
+        drop(before);
+        let running = tasks.register("plan/RUNNING", workdir, &files(&["running.rs"]));
+        let own = tasks.register("plan/OWN", workdir, &files(&["own.rs"]));
+
+        let mark = tasks.mark();
+        // A sibling that starts and ends inside the window still counts.
+        drop(tasks.register("plan/BRIEF", workdir, &files(&["brief.rs"])));
+        drop(running);
+        let _elsewhere = tasks.register("plan/OTHER", Path::new("/other"), &files(&["x.rs"]));
+
+        assert_eq!(
+            tasks.sibling_files_since(&mark, "plan/OWN", workdir),
+            ["brief.rs", "running.rs"]
+        );
+        drop(own);
+    }
+
+    #[test]
+    fn in_flight_tasks_forget_settled_attempts() {
+        let tasks = InFlightTasks::default();
+        let workdir = Path::new(WORKDIR);
+        let ended = |tasks: &InFlightTasks| -> Vec<String> {
+            tasks
+                .ended
+                .lock()
+                .iter()
+                .map(|(_, attempt)| attempt.key.clone())
+                .collect()
+        };
+
+        // With no window open, an attempt is forgotten as it ends.
+        for n in 0..100 {
+            drop(tasks.register(&format!("plan/T{n}"), workdir, &files(&["t.rs"])));
+        }
+        assert!(ended(&tasks).is_empty());
+
+        // An open window keeps the attempts it overlaps until it closes.
+        drop(tasks.register("plan/BEFORE", workdir, &files(&["before.rs"])));
+        let running = tasks.register("plan/RUNNING", workdir, &files(&["running.rs"]));
+        let mark = tasks.mark();
+        drop(tasks.register("plan/LATER", workdir, &files(&["later.rs"])));
+        drop(running);
+        assert_eq!(ended(&tasks), ["plan/LATER", "plan/RUNNING"]);
+        assert_eq!(
+            tasks.sibling_files_since(&mark, "plan/OWN", workdir),
+            ["later.rs", "running.rs"]
+        );
+        tasks.release(&mark);
+        assert!(ended(&tasks).is_empty());
+
+        // A window that is never closed keeps only the last MAX_ENDED.
+        let _never_closed = tasks.mark();
+        for n in 0..MAX_ENDED + 10 {
+            drop(tasks.register(&format!("plan/B{n}"), workdir, &files(&["b.rs"])));
+        }
+        let kept = ended(&tasks);
+        assert_eq!(kept.len(), MAX_ENDED);
+        assert_eq!(kept.first().map(String::as_str), Some("plan/B10"));
+        assert_eq!(
+            kept.last().cloned(),
+            Some(format!("plan/B{}", MAX_ENDED + 9))
+        );
     }
 }

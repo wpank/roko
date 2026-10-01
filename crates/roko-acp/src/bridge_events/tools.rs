@@ -529,6 +529,7 @@ impl ToolHandler for AcpBuiltinToolHandler {
             &self.tool_name,
             &call.arguments,
             &self.workdir,
+            &ctx.env_passthrough,
             &self.event_sender,
         )
         .await;

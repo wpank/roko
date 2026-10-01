@@ -43,8 +43,7 @@ Performance
 - **End (recency):** Models attend second-most strongly to the last tokens.
   Information placed at the end is used well.
 - **Middle (degradation):** Information in the middle of long contexts is
-  largely ignored. Performance degrades over 30% when relevant information is
-  positioned mid-context.
+  largely ignored. For GPT-3.5-Turbo, accuracy with the relevant document mid-context fell below its closed-book accuracy (§1, §2.3).
 
 This is a **positional problem**, not a capacity problem. The same information
 the model ignores in position 10 of 20 might be used correctly in position 1
@@ -84,7 +83,7 @@ it. Models perform worse with irrelevant context than with no context at all.
 
 ## 3. Why It Is Architectural, Not Learned
 
-A 2025 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic
+A 2026 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic
 property** of causal decoder architectures, present at initialization before
 any training or positional encoding:
 
@@ -234,7 +233,7 @@ High-priority section in Middle.
 
 - **Liu et al. (2023)**, TACL 2024, arXiv:2307.03172. The foundational paper.
 - **"Lost in the Middle at Birth"**, arXiv:2603.10123, 2025. Algebraic proof.
-- **"Found in the Middle"**, He et al., ACL Findings 2024, arXiv:2406.16008.
+- **"Found in the Middle"**, Hsieh et al., ACL Findings 2024, arXiv:2406.16008.
   Calibration without retraining. Up to 15pp improvement.
 - **LLMLingua / LongLLMLingua**, Jiang et al., ACL 2024, arXiv:2310.06839.
   Semantic density ranking. Up to 21.4% improvement at 4x compression.

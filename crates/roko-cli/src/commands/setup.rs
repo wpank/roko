@@ -10,18 +10,18 @@
 //! 1. Detect available providers via `detect_auth_from_env()`
 //! 2. If `NeedsSetup`: prompt for API key (or print instructions)
 //! 3. Auto-select default model based on available provider
-//! 4. Run `roko init` if `.roko/` doesn't exist
+//! 4. Run `roko init` if `roko.toml` doesn't exist
 //! 5. Run `roko doctor` to verify
 //! 6. Print "next steps" message
 
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::process::Command as StdCommand;
 
 use crate::Cli;
-use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env};
+use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env, version_probe};
 use roko_cli::doctor::{DoctorOptions, run_doctor};
+use roko_core::child_env::CredentialScrub;
 use roko_core::provider_catalog::{ProviderAvailability, catalog, check_provider_availability};
 
 use super::util::cmd_init;
@@ -91,20 +91,19 @@ async fn cmd_setup_quick(workdir: &std::path::Path) -> Result<i32> {
 
     // ── Step 3: Init + write config ─────────────────────────────────────
     println!("\n[3/4] Initializing workspace...");
-    let roko_dir = workdir.join(".roko");
-    if roko_dir.is_dir() {
-        println!("  .roko/ already exists, skipping init.");
-    } else {
+    if roko_cli::init::needs_init(workdir) {
         cmd_init(Some(workdir.to_path_buf()), false, None, false).await?;
-        println!("  Created .roko/");
+        println!("  Created .roko/ and roko.toml");
+    } else {
+        println!("  roko.toml already exists, skipping init.");
     }
 
     let toml_path = workdir.join("roko.toml");
-    let entries_written = write_detected_providers_to_toml(&toml_path, &clis, &found_keys)?;
-    if entries_written == 0 {
+    let added = roko_cli::config_cmd::add_detected_providers(&toml_path, &clis, &found_keys)?;
+    if added == 0 {
         println!("  roko.toml already contains all detected providers.");
     } else {
-        println!("  Wrote {entries_written} provider(s) to roko.toml.");
+        println!("  Wrote {added} provider(s) to roko.toml.");
     }
 
     // ── Step 4: Summary ─────────────────────────────────────────────────
@@ -187,13 +186,12 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
     println!("\n[2/5] Default model: {model}");
 
     // ── Step 3: Init if needed ──────────────────────────────────────────
-    let roko_dir = workdir.join(".roko");
-    if roko_dir.is_dir() {
-        println!("\n[3/5] Workspace already initialized (.roko/ exists)");
-    } else {
+    if roko_cli::init::needs_init(workdir) {
         println!("\n[3/5] Initializing workspace...");
         cmd_init(Some(workdir.to_path_buf()), false, None, false).await?;
         println!("  Created .roko/ and roko.toml");
+    } else {
+        println!("\n[3/5] Workspace already initialized (roko.toml exists)");
     }
 
     // ── Step 3b: Offer to write provider entries for detected API keys ──
@@ -212,8 +210,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
                     let entry = format!(
                         "\n{section_header}\nkind = \"{kind}\"\napi_key_env = \"{env_var}\"\n"
                     );
-                    let mut file = std::fs::OpenOptions::new().append(true).open(&toml_path)?;
-                    file.write_all(entry.as_bytes())?;
+                    roko_cli::config_cmd::append_checked_config(&toml_path, &entry)?;
                     println!("  Added [providers.{name}] to roko.toml (detected {env_var})");
                 } else {
                     print!("  Detected {env_var}. Add [providers.{name}] to roko.toml? [Y/n] ");
@@ -225,8 +222,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
                         let entry = format!(
                             "\n{section_header}\nkind = \"{kind}\"\napi_key_env = \"{env_var}\"\n"
                         );
-                        let mut file = std::fs::OpenOptions::new().append(true).open(&toml_path)?;
-                        file.write_all(entry.as_bytes())?;
+                        roko_cli::config_cmd::append_checked_config(&toml_path, &entry)?;
                         println!("  Added [providers.{name}] to roko.toml");
                     }
                 }
@@ -288,11 +284,13 @@ fn detect_installed_clis() -> Vec<(String, String)> {
         ("aichat", "aichat"),
     ];
 
+    // A probed binary inherits no provider key, `.env`-loaded name or roko
+    // credential.
+    let scrub = CredentialScrub::default();
     candidates
         .iter()
         .filter(|(cmd, _)| {
-            StdCommand::new(cmd)
-                .arg("--version")
+            version_probe(cmd, &scrub)
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
@@ -396,88 +394,6 @@ fn recommend_provider(
         return Some(format!("{name} ({env})"));
     }
     None
-}
-
-/// Write provider entries to `roko.toml` for all detected providers that
-/// are not already present in the file.
-///
-/// Returns the number of new entries written.
-fn write_detected_providers_to_toml(
-    toml_path: &std::path::Path,
-    clis: &[(String, String)],
-    found_keys: &[(&'static str, &'static str, &'static str)],
-) -> Result<usize> {
-    if !toml_path.is_file() {
-        return Ok(0);
-    }
-
-    let existing = std::fs::read_to_string(toml_path).unwrap_or_default();
-    let mut appended = String::new();
-    let mut count = 0usize;
-
-    // CLI providers.
-    for (cmd, _desc) in clis {
-        let provider_name = match cmd.as_str() {
-            "claude" => "claude_cli",
-            "codex" => "codex_cli",
-            "ollama" => "ollama",
-            other => other,
-        };
-        let kind = match cmd.as_str() {
-            "claude" => "claude_cli",
-            "codex" => "codex_cli",
-            _ => "openai_compat",
-        };
-        let section = format!("[providers.{provider_name}]");
-        if existing.contains(&section) || appended.contains(&section) {
-            continue;
-        }
-        appended.push_str(&format!("\n{section}\n"));
-        appended.push_str(&format!("kind = \"{kind}\"\n"));
-        appended.push_str(&format!("command = \"{cmd}\"\n"));
-        count += 1;
-    }
-
-    // API key providers.
-    for (env_var, _display, kind) in found_keys {
-        // Derive a provider name from the catalog entry id.
-        let provider_name = catalog()
-            .iter()
-            .find(|e| e.api_key_env == *env_var)
-            .map(|e| e.id)
-            .unwrap_or_else(|| env_var.trim_end_matches("_API_KEY"));
-        let default_model = catalog()
-            .iter()
-            .find(|e| e.api_key_env == *env_var)
-            .and_then(|e| e.models.first())
-            .map(|m| m.slug)
-            .unwrap_or("default");
-        let base_url = catalog()
-            .iter()
-            .find(|e| e.api_key_env == *env_var)
-            .map(|e| e.base_url)
-            .unwrap_or("");
-
-        let section = format!("[providers.{provider_name}]");
-        if existing.contains(&section) || appended.contains(&section) {
-            continue;
-        }
-        appended.push_str(&format!("\n{section}\n"));
-        appended.push_str(&format!("kind = \"{kind}\"\n"));
-        appended.push_str(&format!("api_key_env = \"{env_var}\"\n"));
-        if !base_url.is_empty() {
-            appended.push_str(&format!("base_url = \"{base_url}\"\n"));
-        }
-        appended.push_str(&format!("default_model = \"{default_model}\"\n"));
-        count += 1;
-    }
-
-    if !appended.is_empty() {
-        let mut file = std::fs::OpenOptions::new().append(true).open(toml_path)?;
-        file.write_all(appended.as_bytes())?;
-    }
-
-    Ok(count)
 }
 
 /// Print instructions for getting API keys when no providers are detected.

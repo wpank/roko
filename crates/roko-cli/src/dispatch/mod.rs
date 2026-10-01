@@ -50,7 +50,9 @@ use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
 
 pub use factory::SharedAgentFactory;
-pub use model_routing::{ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs};
+pub use model_routing::{
+    LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs, RoutingLadder,
+};
 pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
     AssembledPrompt, GateFeedback, PromptAssembler, PromptContext, PromptDiagnostics,
@@ -114,6 +116,10 @@ pub struct DispatchContext {
     pub budget_remaining_usd: f64,
     /// Attempt number for this task (0 = first try, > 0 = retry).
     pub attempt: u32,
+    /// Rungs above its start rung on `[routing.ladder]` this attempt
+    /// climbs, after the task's agent-blamed failures (gap-460230). `0`
+    /// routes on the start rung; pinned models never move.
+    pub ladder_step: u32,
     /// Attempt-scoped durable prompt experiment context, when experiments are
     /// enabled for this dispatch.
     pub prompt_experiment: Option<PromptExperimentContext>,
@@ -233,6 +239,20 @@ impl Dispatcher {
         self
     }
 
+    /// Start tasks without an override or hint on their `[routing.ladder]`
+    /// rung ([`ModelRouter::with_routing_ladder`]).
+    #[must_use]
+    pub fn with_routing_ladder(mut self, ladder: RoutingLadder) -> Self {
+        self.router = self.router.with_routing_ladder(ladder);
+        self
+    }
+
+    /// The routing ladder the inner [`ModelRouter`] uses, if any.
+    #[must_use]
+    pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
+        self.router.routing_ladder()
+    }
+
     /// Read-only access to the prompt assembler -- exposed for bidder
     /// persistence and diagnostic endpoints.
     #[must_use]
@@ -270,6 +290,7 @@ impl Dispatcher {
         Ok(RunnerDispatchPlan {
             model: choice.model.clone(),
             forced: choice.forced(),
+            source: choice.source,
             prompt: assembled,
         })
     }
@@ -292,6 +313,7 @@ impl Dispatcher {
         Ok(RunnerDispatchPlan {
             model: choice.model.clone(),
             forced: choice.forced(),
+            source: choice.source,
             prompt: assembled,
         })
     }
@@ -352,6 +374,9 @@ pub struct RunnerDispatchPlan {
     /// observations as manual overrides and the router's learned policy
     /// is not corrupted.
     pub forced: bool,
+    /// Why the router picked `model`: override, task hint, ladder rung,
+    /// cascade router or default.
+    pub source: ModelChoiceSource,
     /// Assembled prompt, allowlist, diagnostics.
     pub prompt: AssembledPrompt,
 }
@@ -486,10 +511,12 @@ mod tests {
             max_retries: 1,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -502,6 +529,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            ladder_step: 0,
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,

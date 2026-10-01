@@ -6,6 +6,8 @@ use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
 use roko_core::AgentRole;
+use roko_core::config::GatesConfig;
+use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::ModelProfile;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
@@ -134,6 +136,7 @@ fn validate_plans_dir_impl(
 ) -> Result<ValidationReport> {
     let tasks_files = collect_tasks_files(dir)?;
     let plan_output_paths = collect_plan_output_paths(&tasks_files);
+    let ladder = workdir.map(workspace_ladder);
     let mut plans = Vec::with_capacity(tasks_files.len());
     let mut totals = Totals {
         plans_checked: tasks_files.len(),
@@ -175,6 +178,10 @@ fn validate_plans_dir_impl(
                         task_id: issue.task_id,
                         message: issue.message,
                     });
+                }
+                if let Some(ladder) = &ladder {
+                    let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
+                    plan.diagnostics.extend(diagnostics);
                 }
             }
 
@@ -255,6 +262,155 @@ pub fn render_text(report: &ValidationReport) -> String {
         "{diagnostic_count} diagnostics in {} {plan_word}",
         report.totals.plans_checked
     );
+    out
+}
+
+/// The `[routing.ladder]` of the workspace at `workdir`, whose rungs task
+/// `rung` hints must name. A workspace whose config does not load has the
+/// default ladder.
+pub fn workspace_ladder(workdir: &Path) -> LadderConfig {
+    roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.routing.ladder)
+        .unwrap_or_default()
+}
+
+/// Remove a generated `[[task]]` table's `rung` hint unless it names one of
+/// the task's `ladder` rungs, as plan generators must. Returns the value it
+/// removed.
+pub fn drop_unknown_rung(task: &mut toml::Table, ladder: &LadderConfig) -> Option<Value> {
+    let rung = task.get("rung")?;
+    let role = task
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("implementer");
+    if rung
+        .as_str()
+        .is_some_and(|name| ladder.has_rung(role, name))
+    {
+        return None;
+    }
+    task.remove("rung")
+}
+
+/// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs, and a
+/// task on the ladder that pins a model bypasses it.
+fn ladder_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+    ladder: &LadderConfig,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for task in &tasks_file.tasks {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        if let Some(rung) = task.hints.rung.as_deref()
+            && !ladder.has_rung(role, rung)
+        {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule_id: "PLAN_040".to_string(),
+                plan_id: Some(plan_id.to_string()),
+                task_id: Some(task.id.clone()),
+                message: format!(
+                    "task '{}' names rung '{rung}', which is not a rung of its routing ladder",
+                    task.id
+                ),
+            });
+        }
+        if ladder
+            .resolve(role, task.tier_class(), None, |_| true)
+            .is_none()
+        {
+            continue;
+        }
+        let pins = [
+            ("model_hint", task.model_hint.as_deref()),
+            ("preferred_model", task.hints.preferred_model.as_deref()),
+        ];
+        for (key, model) in pins {
+            if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_041".to_string(),
+                    plan_id: Some(plan_id.to_string()),
+                    task_id: Some(task.id.clone()),
+                    message: format!(
+                        "task '{}' sets {key} = '{model}', which pins a model and bypasses the \
+                         routing ladder; use `rung`",
+                        task.id
+                    ),
+                });
+            }
+        }
+    }
+    diagnostics
+}
+
+/// A workspace gate rung (`[[gates.rungs]]`) as `plan validate` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RungSummary {
+    pub name: String,
+    pub command: String,
+    pub required: bool,
+    /// Whether plan tasks run it: it is required and has a command.
+    pub runs: bool,
+}
+
+/// The workspace's gate rungs for the plans `plan validate` checked. Every
+/// task of a plan runs the rungs that run after its own verify steps,
+/// unless the plan opts out with `[meta] workspace_rungs = false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct WorkspaceRungs {
+    /// Every declared rung, in `roko.toml` order.
+    pub rungs: Vec<RungSummary>,
+    /// The `tasks.toml` of each plan that opts out.
+    pub opted_out: Vec<String>,
+}
+
+/// The rungs `gates` declares, and the plans under `dir` that opt out of
+/// them.
+pub fn workspace_rungs(dir: &Path, gates: &GatesConfig) -> Result<WorkspaceRungs> {
+    let rungs = gates
+        .custom_rungs
+        .iter()
+        .map(|rung| RungSummary {
+            name: rung.name.clone(),
+            command: rung.command.clone(),
+            required: rung.required,
+            runs: gates.required_rungs().any(|running| running == rung),
+        })
+        .collect();
+    let opted_out = collect_tasks_files(dir)?
+        .into_iter()
+        .filter(|path| {
+            roko_cli::task_parser::TasksFile::parse(path)
+                .is_ok_and(|tasks| !tasks.meta.runs_workspace_rungs())
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    Ok(WorkspaceRungs { rungs, opted_out })
+}
+
+/// `rungs` as `plan validate` prints them; empty when the workspace
+/// declares none.
+pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
+    if rungs.rungs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("workspace rungs, run after each task's own verify steps:");
+    for rung in &rungs.rungs {
+        let note = match (rung.runs, rung.required) {
+            (true, _) => "",
+            (false, false) => " (optional: does not run)",
+            (false, true) => " (no command: does not run)",
+        };
+        let _ = write!(out, "\n  {:<12} {}{note}", rung.name, rung.command);
+    }
+    if !rungs.opted_out.is_empty() {
+        out.push_str("\nplans that opt out with [meta] workspace_rungs = false:");
+        for path in &rungs.opted_out {
+            let _ = write!(out, "\n  {path}");
+        }
+    }
     out
 }
 
@@ -369,6 +525,24 @@ fn validate_tasks_file(
                     message: format!("schema validation failed: {schema_issue}"),
                 });
             }
+            // gap-0f3980: a hint that `plan run` ignores should not look like
+            // it steers the task.
+            for task in &tasks_file.tasks {
+                let fields = task.unused_hints();
+                if !fields.is_empty() {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_039".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: format!(
+                            "task '{}' sets {}, which plan run parses but does not act on yet",
+                            task.id,
+                            fields.join(", ")
+                        ),
+                    });
+                }
+            }
             // A role whose safety contract denies write tools cannot produce
             // the task's declared `files`; the task would fail at runtime.
             for issue in tasks_file.write_capability_issues() {
@@ -378,6 +552,39 @@ fn validate_tasks_file(
                     plan_id: Some(plan_id.clone()),
                     task_id: Some(issue.task_id.clone()),
                     message: issue.to_string(),
+                });
+            }
+            // gap-d14a43: a `[task.accept]` test must exist and pin a real
+            // passing count; a verify step that still copies a test out of
+            // `accept/` by hand should declare it in `[task.accept]` instead.
+            let plan_dir = tasks_path.parent().unwrap_or_else(|| Path::new("."));
+            for task in &tasks_file.tasks {
+                for issue in roko_cli::task_accept::accept_issues(task, plan_dir) {
+                    diagnostics.push(Diagnostic {
+                        severity: if issue.blocking {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                        rule_id: "PLAN_038".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: issue.message,
+                    });
+                }
+            }
+            // gap-1d1fa6: a task too big for its tier's executor is a warning,
+            // so `--strict` rejects it.
+            for issue in roko_cli::plan_policy::validate_tier_sizes(
+                &tasks_file,
+                roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+            ) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: issue.code.to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: issue.task_id,
+                    message: issue.message,
                 });
             }
         }
@@ -736,10 +943,17 @@ fn snapshot_task(ordinal: usize, task: &Value) -> TaskSnapshot {
                         .is_some_and(|path| !path.trim().is_empty())
                 })
             }),
+        // Pinned `[task.accept]` tests run as verify steps (gap-d14a43).
         has_verify_steps: table
             .and_then(|table| table.get("verify"))
             .and_then(Value::as_array)
-            .is_some_and(|steps| !steps.is_empty()),
+            .is_some_and(|steps| !steps.is_empty())
+            || table
+                .and_then(|table| table.get("accept"))
+                .and_then(Value::as_table)
+                .and_then(|accept| accept.get("files"))
+                .and_then(Value::as_array)
+                .is_some_and(|files| !files.is_empty()),
         acceptance_contract: table
             .and_then(|table| table.get("acceptance_contract"))
             .cloned(),
@@ -1105,7 +1319,7 @@ fn collect_task_path_references(parsed: &Value) -> Vec<TaskPathReferences> {
             outputs.extend(string_array(table, field));
         }
 
-        let prerequisites = table
+        let mut prerequisites: BTreeSet<String> = table
             .get("context")
             .and_then(Value::as_table)
             .and_then(|context| context.get("read_files"))
@@ -1124,6 +1338,8 @@ fn collect_task_path_references(parsed: &Value) -> Vec<TaskPathReferences> {
                     .collect()
             })
             .unwrap_or_default();
+        // A task's `context_files` join its `read_files` when it is parsed.
+        prerequisites.extend(string_array(table, "context_files"));
 
         out.push(TaskPathReferences {
             task_id,
@@ -1459,6 +1675,7 @@ id = "T1"
 files = ["src/lib.rs", "docs/guide.md"]
 write_files = ["crates/roko-cli/src/plan_validate.rs", " "]
 depends_on = []
+context_files = ["Cargo.lock", "Cargo.toml"]
 
 [task.context]
 read_files = [
@@ -1485,9 +1702,10 @@ depends_on_plan = ["foundation"]
                 "src/lib.rs".to_string(),
             ])
         );
+        // `context_files` are read files too (gap-0f3980).
         assert_eq!(
             refs[0].prerequisites,
-            BTreeSet::from(["Cargo.toml".to_string()])
+            BTreeSet::from(["Cargo.lock".to_string(), "Cargo.toml".to_string()])
         );
         assert_eq!(refs[1].depends_on, vec!["T1"]);
         assert_eq!(refs[1].depends_on_plan, vec!["foundation"]);
@@ -1654,6 +1872,355 @@ depends_on = ["T1"]
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// gap-1d1fa6: a task over its tier's size limits is a PLAN_TIER_SIZE
+    /// warning, which `--strict` rejects; the same task as integrative passes.
+    #[test]
+    fn task_over_its_tier_size_is_a_warning() {
+        for (tier, flagged) in [("mechanical", true), ("integrative", false)] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+            fs::create_dir_all(root.join("plans/demo")).unwrap();
+            fs::write(
+                root.join("plans/demo/tasks.toml"),
+                format!(
+                    r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rename the setting everywhere"
+role = "implementer"
+tier = "{tier}"
+files = ["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs"]
+max_loc = 150
+depends_on = []
+verify = [{{ phase = "compile", command = "cargo check -p roko-cli" }}]
+"#
+                ),
+            )
+            .unwrap();
+
+            let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+            let oversized = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_TIER_SIZE")
+                .collect::<Vec<_>>();
+            assert_eq!(oversized.len(), usize::from(flagged), "{tier}: {report:?}");
+            assert_eq!(report.totals.errors, 0, "{report:?}");
+            assert_eq!(report.exit_code(false), 0, "{tier}");
+            assert_eq!(report.exit_code(true), i32::from(flagged), "{tier}");
+            if flagged {
+                assert_eq!(oversized[0].severity, Severity::Warning);
+                assert_eq!(oversized[0].task_id.as_deref(), Some("T1"));
+                assert!(
+                    oversized[0]
+                        .message
+                        .contains("raise its tier to integrative"),
+                    "{}",
+                    oversized[0].message
+                );
+            }
+        }
+    }
+
+    /// gap-8c0a20: a tier that `TaskTier::parse` cannot read is a PLAN_035
+    /// schema error (`plan run` refuses the plan on the same check); a tier
+    /// alias passes.
+    #[test]
+    fn unknown_tier_is_a_schema_error_and_tier_aliases_pass() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rename the field"
+role = "implementer"
+tier = "T0"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+
+[[task]]
+id = "T2"
+title = "Wire the field through"
+role = "implementer"
+tier = "mechancial"
+files = ["src/lib.rs"]
+depends_on = ["T1"]
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let tier_errors = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.message.contains("unknown tier"))
+            .collect::<Vec<_>>();
+        assert_eq!(tier_errors.len(), 1, "{report:?}");
+        assert_eq!(tier_errors[0].rule_id, "PLAN_035");
+        assert_eq!(tier_errors[0].severity, Severity::Error);
+        assert!(
+            tier_errors[0]
+                .message
+                .contains("T2: unknown tier 'mechancial'"),
+            "{report:?}"
+        );
+        assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// gap-0f3980: a hint that `plan run` parses but ignores is a PLAN_039
+    /// warning naming it; a hint it acts on is not.
+    #[test]
+    fn unused_task_hints_are_a_plan_039_warning() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Write the code"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+category = "verification"
+quality_profile = "hardened"
+tags = ["parser"]
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let unused = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_039")
+            .collect::<Vec<_>>();
+        assert_eq!(unused.len(), 1, "{report:?}");
+        assert_eq!(unused[0].severity, Severity::Warning);
+        assert_eq!(unused[0].task_id.as_deref(), Some("T1"));
+        assert!(
+            unused[0].message.contains(
+                "sets quality_profile, tags, which plan run parses but does not act on yet"
+            ),
+            "{report:?}"
+        );
+        assert_eq!(report.totals.errors, 0, "{report:?}");
+    }
+
+    /// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs
+    /// (PLAN_040), and a task on the ladder that pins a model gets a PLAN_041
+    /// warning.
+    #[test]
+    fn rung_hints_and_model_pins_are_checked_against_the_ladder() {
+        let tasks = roko_cli::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rework error recovery"
+role = "implementer"
+tier = "mechanical"
+rung = "strong"
+
+[[task]]
+id = "T2"
+title = "Misspelt rung"
+role = "implementer"
+rung = "stronk"
+
+[[task]]
+id = "T3"
+title = "Pinned model"
+role = "implementer"
+model_hint = "claude-sonnet-4-6"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = ladder_diagnostics(&tasks, "demo", &LadderConfig::default());
+        let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+            .iter()
+            .map(|diag| {
+                (
+                    diag.rule_id.as_str(),
+                    diag.severity,
+                    diag.task_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("PLAN_040", Severity::Error, Some("T2")),
+                ("PLAN_041", Severity::Warning, Some("T3")),
+            ]
+        );
+        assert!(diagnostics[0].message.contains("rung 'stronk'"));
+        assert!(
+            diagnostics[1]
+                .message
+                .contains("model_hint = 'claude-sonnet-4-6'")
+        );
+
+        // With the ladder off a pin bypasses nothing, but an unknown rung is
+        // still an error.
+        let off = LadderConfig {
+            enabled: false,
+            ..LadderConfig::default()
+        };
+        let rules: Vec<String> = ladder_diagnostics(&tasks, "demo", &off)
+            .into_iter()
+            .map(|diag| diag.rule_id)
+            .collect();
+        assert_eq!(rules, ["PLAN_040"]);
+    }
+
+    /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy
+    /// out of `accept/` is a PLAN_038 warning, and a task whose only checks
+    /// are pinned acceptance tests counts as verified.
+    #[test]
+    fn accept_tests_are_validated_as_plan_038() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo/accept")).unwrap();
+        fs::write(
+            root.join("plans/demo/accept/x.test.ts"),
+            "test('x', () => {});\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Pass the pinned test"
+role = "implementer"
+files = ["src/x.ts", "src/x.test.ts"]
+depends_on = []
+
+[task.accept]
+files = [
+    { src = "accept/x.test.ts", dest = "src/x.test.ts", runner = "npx vitest run {dest}", count = 3 },
+]
+
+[[task]]
+id = "T2"
+title = "Pass two broken ones"
+role = "implementer"
+files = ["src/y.ts"]
+depends_on = ["T1"]
+verify = [{ phase = "test", command = "cp plans/demo/accept/x.test.ts src/y.test.ts && npx vitest run src/y.test.ts" }]
+
+[task.accept]
+files = [
+    { src = "accept/missing.test.ts", dest = "src/m.test.ts", runner = "npx vitest run {dest}", count = 1 },
+    { src = "accept/x.test.ts", dest = "src/z.test.ts", runner = "npx vitest run {dest}", count = 0 },
+]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+        let accept = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_038")
+            .collect::<Vec<_>>();
+        let errors = accept
+            .iter()
+            .filter(|diag| diag.severity == Severity::Error)
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 2, "{report:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("src `accept/missing.test.ts` is missing"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("count of `accept/x.test.ts` is 0"))
+        );
+        let warnings = accept
+            .iter()
+            .filter(|diag| diag.severity == Severity::Warning)
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{report:?}");
+        assert_eq!(warnings[0].task_id.as_deref(), Some("T2"));
+        assert!(
+            accept
+                .iter()
+                .all(|diag| diag.task_id.as_deref() == Some("T2")),
+            "T1's entry is valid: {report:?}"
+        );
+        // T1 has no [[task.verify]], yet its pinned test verifies it.
+        assert!(
+            report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .all(|diag| !(diag.rule_id == "PLAN_037" || diag.rule_id == "PLAN_035")),
+            "{report:?}"
+        );
+    }
+
+    /// gap-ba4d01: the portal plans that ship planner-written acceptance tests
+    /// pin every one with `[task.accept]`; none copies a test out of `accept/`
+    /// by hand, so none gets PLAN_038.
+    #[test]
+    fn portal_plans_have_no_hand_copied_acceptance_tests() {
+        let portal = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plans/portal-programme");
+        for name in [
+            "08b-portal-polish",
+            "08c-portal-live-steps",
+            "08d-portal-legibility",
+            "08e-portal-refine",
+            "08f-final-polish",
+            "08g-first-run",
+        ] {
+            let report = validate_plans_dir(&portal.join(name), None).unwrap();
+            // A plan with no diagnostics at all is checked but not listed.
+            assert_eq!(report.totals.plans_checked, 1, "{name}: {report:?}");
+            let accept: Vec<&str> = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_038")
+                .map(|diag| diag.message.as_str())
+                .collect();
+            assert!(accept.is_empty(), "{name}: {accept:#?}");
+        }
     }
 
     #[test]
@@ -1860,5 +2427,63 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .all(|diag| diag.rule_id != "PLAN_032" && diag.rule_id != "PLAN_033")
         }));
+    }
+
+    #[test]
+    fn plan_validate_lists_the_rungs_that_will_run() {
+        let temp = TempDir::new().expect("tempdir");
+        for (plan, meta) in [("default", ""), ("opted-out", "workspace_rungs = false")] {
+            let dir = temp.path().join(plan);
+            fs::create_dir_all(&dir).expect("plan dir");
+            let text = format!(
+                r#"
+[meta]
+plan = "{plan}"
+{meta}
+
+[[task]]
+id = "T1"
+title = "One task"
+"#
+            );
+            fs::write(dir.join("tasks.toml"), text).expect("tasks.toml");
+        }
+        let rung = |name: &str, command: &str, required| roko_core::config::GateRungConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_secs: 60,
+            required,
+            parallel_with: Vec::new(),
+        };
+        let gates = GatesConfig {
+            custom_rungs: vec![
+                rung("lint", "cargo clippy", true),
+                rung("bench", "cargo bench", false),
+            ],
+            ..GatesConfig::default()
+        };
+
+        let rungs = workspace_rungs(temp.path(), &gates).expect("rungs");
+        let runs: Vec<(&str, bool)> = rungs
+            .rungs
+            .iter()
+            .map(|rung| (rung.name.as_str(), rung.runs))
+            .collect();
+        assert_eq!(runs, [("lint", true), ("bench", false)]);
+        assert_eq!(rungs.opted_out.len(), 1);
+        assert!(
+            rungs.opted_out[0].ends_with("opted-out/tasks.toml"),
+            "{:?}",
+            rungs.opted_out
+        );
+
+        let text = render_rungs_text(&rungs);
+        assert!(text.contains("cargo clippy\n"), "{text}");
+        assert!(
+            text.contains("cargo bench (optional: does not run)"),
+            "{text}"
+        );
+        assert!(text.contains("opted-out/tasks.toml"), "{text}");
+        assert_eq!(render_rungs_text(&WorkspaceRungs::default()), "");
     }
 }

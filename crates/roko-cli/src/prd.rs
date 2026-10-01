@@ -23,8 +23,8 @@ use std::time::Instant;
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
-    AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
-    persist_capture_episode, run_agent_capture_silent_with_usage, run_agent_logged,
+    AgentCrashClass, AgentExecOpts, classify_agent_crash, persist_capture_episode,
+    run_agent_capture_silent_with_usage,
 };
 use crate::model_selection::resolve_planner_model;
 use crate::plan_authoring::AuthoringSpend;
@@ -35,7 +35,8 @@ use crate::workspace_paths::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use indexmap::IndexMap;
-use roko_core::config::schema::RokoConfig;
+use roko_core::config::routing::LadderConfig;
+use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::io::atomic_write_str;
 use roko_core::{Body, Kind, Provenance, Signal, Store};
 use roko_fs::FileSubstrate;
@@ -119,47 +120,27 @@ impl ArtifactOutcome {
     }
 }
 
-fn tier_rank(tier: &str) -> u8 {
-    match tier {
-        "mechanical" => 0,
-        "focused" => 1,
-        "integrative" => 2,
-        "architectural" => 3,
-        _ => 1,
-    }
-}
-
-fn rank_to_complexity(rank: u8) -> &'static str {
-    match rank {
-        0 => "mechanical",
-        1 => "focused",
-        2 => "integrative",
-        3 => "architectural",
-        _ => "focused",
-    }
-}
-
 fn generated_plan_stats(paths: &[PathBuf]) -> Result<(usize, String)> {
     if paths.is_empty() {
         return Ok((0, "unknown".to_string()));
     }
 
     let mut task_count = 0usize;
-    let mut max_rank = 0u8;
+    let mut max_tier = roko_core::task::TaskTier::Mechanical;
 
     for path in paths {
         let tasks_file =
             TasksFile::parse(path).with_context(|| format!("parse {}", path.display()))?;
         task_count = task_count.saturating_add(tasks_file.tasks.len());
         for task in &tasks_file.tasks {
-            max_rank = max_rank.max(tier_rank(task.tier.as_str()));
+            max_tier = max_tier.max(task.tier_class());
         }
     }
 
     let estimated_complexity = if task_count == 0 {
         "unknown".to_string()
     } else {
-        rank_to_complexity(max_rank).to_string()
+        max_tier.label().to_string()
     };
 
     Ok((task_count, estimated_complexity))
@@ -272,11 +253,11 @@ fn old_format_plan_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Regenerate the plan in `plan_dir` through the plan generator when its
+/// tasks.toml lacks modern fields. Returns whether it did.
 async fn regenerate_old_format_plan(
     workdir: &Path,
     model: Option<&str>,
-    effort: Option<&str>,
-    env_vars: &[(String, String)],
     plan_dir: &Path,
 ) -> Result<bool> {
     let tasks_path = plan_dir.join("tasks.toml");
@@ -290,114 +271,23 @@ async fn regenerate_old_format_plan(
         return Ok(false);
     }
 
-    let existing = std::fs::read_to_string(&tasks_path)
-        .with_context(|| format!("read {}", tasks_path.display()))?;
-    let existing_tasks = TasksFile::parse(&tasks_path).ok();
-    let source_path = find_plan_source_document(plan_dir)?;
-    let source_content = std::fs::read_to_string(&source_path)
-        .with_context(|| format!("read {}", source_path.display()))?;
-    let system = crate::plan_generate::build_generation_prompt(workdir, &source_content, "plan");
-    let task_prompt = format!(
-        "Regenerate the plan at {path} from the source plan document above. \
-         Rewrite tasks.toml in place with full modern metadata: tier, \
-         max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-         [task.context], and [[task.verify]]. Do NOT set model_hint — the runtime \
-         selects models automatically. Preserve the status of any task \
-         that is already marked done in the existing file. Do not create new plan \
-         directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```",
-        path = tasks_path.display(),
-        existing = existing,
-    );
-
-    let plan_name = plan_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown");
-    let task_id = format!("plan:regenerate:{plan_name}");
-    let exit_code = match run_agent_logged(
-        AgentExecOpts {
-            prompt: &task_prompt,
-            workdir,
-            model,
-            effort,
-            system_prompt: Some(&system),
-            resume_session: None,
-            env_vars,
-            role: Some("strategist"),
-            allowed_tools: None,
-        },
-        AgentExecEpisode {
-            task_kind: "plan-regenerate",
-            task_id: &task_id,
-        },
-    )
-    .await
-    {
-        Ok(code) => code,
-        Err(err) => {
-            std::fs::write(&tasks_path, &existing)
-                .with_context(|| format!("restore {}", tasks_path.display()))?;
-            return Err(err);
-        }
-    };
-
-    if exit_code != 0 {
-        std::fs::write(&tasks_path, &existing)
-            .with_context(|| format!("restore {}", tasks_path.display()))?;
-        anyhow::bail!("plan regeneration agent failed with exit code {exit_code}");
-    }
-
-    let regenerated = match TasksFile::parse(&tasks_path) {
-        Ok(tasks) => tasks,
-        Err(err) => {
-            std::fs::write(&tasks_path, &existing)
-                .with_context(|| format!("restore {}", tasks_path.display()))?;
-            return Err(err);
-        }
-    };
-
-    let merged = preserve_completed_task_status(existing_tasks.as_ref(), regenerated, plan_dir);
-    let rendered = toml::to_string_pretty(&merged).context("serialize regenerated tasks.toml")?;
-    if let Err(err) = atomic_write_str(&tasks_path, &rendered) {
-        std::fs::write(&tasks_path, &existing)
-            .with_context(|| format!("restore {}", tasks_path.display()))?;
-        return Err(err.into());
-    }
-
-    match TasksFile::validate_modern_fields(&tasks_path) {
-        Ok(issues) if !issues.is_empty() => {
-            std::fs::write(&tasks_path, &existing)
-                .with_context(|| format!("restore {}", tasks_path.display()))?;
-            anyhow::bail!(
-                "regenerated tasks.toml is missing modern fields: {}",
-                issues
-                    .into_iter()
-                    .map(|issue| format!("{}: {:?}", issue.task_id, issue.missing_fields))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            );
-        }
-        Ok(_) => {}
-        Err(err) => {
-            std::fs::write(&tasks_path, &existing)
-                .with_context(|| format!("restore {}", tasks_path.display()))?;
-            return Err(err);
-        }
-    }
-
+    let slug = plan_dir_slug(plan_dir);
+    generate_plan(PlanRequest {
+        model,
+        ..PlanRequest::new(PlanSource::Regenerate(plan_dir), &slug, workdir)
+    })
+    .await?;
     Ok(true)
 }
 
-async fn regenerate_old_format_plans(
-    workdir: &Path,
-    model: Option<&str>,
-    effort: Option<&str>,
-    env_vars: &[(String, String)],
-    plans_root: &Path,
-) -> Result<usize> {
+/// Regenerate, one planner call each, the plans in `workdir`'s plans
+/// directory whose tasks.toml lacks modern fields. Opt-in
+/// (`roko prd plan --regenerate-old`): no generate path runs it on its own.
+/// Returns how many plans it regenerated.
+pub async fn regenerate_old_format_plans(workdir: &Path, model: Option<&str>) -> Result<usize> {
     let mut regen_count = 0usize;
-    for plan_dir in old_format_plan_dirs(plans_root) {
-        if regenerate_old_format_plan(workdir, model, effort, env_vars, &plan_dir).await? {
+    for plan_dir in old_format_plan_dirs(&workspace_plans_dir(workdir)) {
+        if regenerate_old_format_plan(workdir, model, &plan_dir).await? {
             regen_count += 1;
         }
     }
@@ -1088,7 +978,7 @@ async fn maybe_generate_plan_after_promote(
         prd_path.to_path_buf(),
         auto_execute,
         |slug, path, dry_run| async move {
-            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, true, None).await
+            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, None).await
         },
     )
     .await
@@ -1169,6 +1059,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             log_file: None,
             worktree_per_task: false,
             rich_topology: false,
+            promote: None,
             no_tui: true,
             state_hub: None,
             interrupt: None,
@@ -1176,6 +1067,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {
@@ -1212,25 +1104,21 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 /// The plan is written by the planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true, None)
-            .await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, None).await?;
     Ok(plans_root)
 }
 
-/// Generate implementation plans from a published PRD file without triggering
-/// old-format plan regeneration across all existing plans.
-///
-/// Use this from the API so that a single "Generate" request does not start one
-/// LLM agent per old-format plan in the repository. Each agent call's spend is
-/// published on `live` when given (see [`crate::plan_authoring::AuthoringSpend`]).
-/// The plan is written by the planner model ([`resolve_planner_model`]).
+/// Generate implementation plans from a published PRD file, publishing each
+/// agent call's spend on `live` when given (see
+/// [`crate::plan_authoring::AuthoringSpend`]). The plan is written by the
+/// planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd_isolated(
     slug: &str,
     prd_path: &Path,
     live: Option<TuiBridge>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, false, live).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, live).await?;
     Ok(plans_root)
 }
 
@@ -1243,8 +1131,7 @@ pub async fn generate_plan_from_prd_with_model(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, true, None)
-            .await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, None).await?;
     Ok(plans_root)
 }
 
@@ -1257,39 +1144,39 @@ pub async fn generate_plan_from_prd_with_failure_context(
     failure_context: Option<&str>,
     model: Option<&str>,
 ) -> Result<PathBuf> {
-    let (plans_root, _) = generate_plan_from_prd_with_outcome(
-        slug,
-        prd_path,
-        dry_run,
-        failure_context,
-        model,
-        true,
-        None,
-    )
-    .await?;
+    let (plans_root, _) =
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, failure_context, model, None)
+            .await?;
     Ok(plans_root)
 }
 
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
-/// When `configured_models` is non-empty, candidates not present in the set are
-/// skipped so we never escalate to a model the workspace hasn't configured.
+/// When the workspace configures models, chain models it does not configure
+/// are skipped so we never escalate to a model it cannot run.
 const DEFAULT_ESCALATION_CHAIN: &[&str] =
     &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"];
 
 /// Return the next-tier model for escalation on validation failures.
 ///
 /// Checks `tier_models` config first (keys: `"haiku"`, `"sonnet"`, `"opus"`),
-/// falling back to [`DEFAULT_ESCALATION_CHAIN`]. Returns `None` if the current
-/// model is already at the highest tier or if no configured model is available
-/// at a higher tier.
+/// falling back to [`DEFAULT_ESCALATION_CHAIN`]. `current` and the chain
+/// entries are compared by slug, so a `[models.*]` key matches the chain entry
+/// for its slug.
 ///
-/// When `configured_models` is non-empty, only models present in that set are
-/// eligible for escalation. An empty set disables filtering (backward compat).
+/// Escalation only moves up from `current`, which starts as the planner model.
+/// It returns `None`, and the retry keeps `current`, when `current` is at the
+/// top of the chain, when no configured model sits above it, or when `current`
+/// is not in the chain at all: a model outside the chain, such as a newer
+/// frontier planner, has no known rank, so no chain model is known to be
+/// stronger.
+///
+/// When `models` is non-empty, only chain models it configures (by key or
+/// slug) are eligible. An empty map disables filtering (backward compat).
 fn next_tier_model(
     current: Option<&str>,
     tier_models: &HashMap<String, String>,
-    configured_models: &HashSet<String>,
+    models: &IndexMap<String, ModelProfile>,
 ) -> Option<String> {
     // Build the chain from config or defaults.
     let chain: Vec<&str> = if tier_models.is_empty() {
@@ -1302,49 +1189,392 @@ fn next_tier_model(
             .collect()
     };
 
-    let current_slug = current.unwrap_or("");
-    // Find position of the current model in the chain.
-    let pos = chain.iter().position(|m| *m == current_slug);
+    // Find the current model's rank; a model outside the chain stays put.
+    let current_slug = model_slug(models, current?);
+    let pos = chain
+        .iter()
+        .position(|m| model_slug(models, m) == current_slug)?;
 
-    // Candidates above the current position (or the whole chain when unknown).
-    let candidates: &[&str] = match pos {
-        Some(i) if i + 1 < chain.len() => &chain[i + 1..],
-        None if !chain.is_empty() => &chain,
-        _ => return None,
-    };
-
-    // When configured_models is non-empty, only return a model that's actually
-    // configured in the workspace so we don't escalate to an unavailable model.
-    if configured_models.is_empty() {
-        candidates.first().map(|m| (*m).to_string())
+    // Candidates above the current position. When models are configured, only
+    // return one the workspace configures so we don't escalate to an
+    // unavailable model.
+    let mut candidates = chain[pos + 1..].iter().copied();
+    if models.is_empty() {
+        candidates.next().map(str::to_string)
     } else {
         candidates
-            .iter()
-            .find(|m| configured_models.contains(**m))
-            .map(|m| (*m).to_string())
+            .find(|m| model_is_configured(models, m))
+            .map(str::to_string)
     }
 }
 
+/// The provider slug `model` names: the slug of its `[models.*]` entry when it
+/// is a key there, else `model` itself.
+fn model_slug<'a>(models: &'a IndexMap<String, ModelProfile>, model: &'a str) -> &'a str {
+    models
+        .get(model)
+        .map(|profile| profile.slug.trim())
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or(model)
+}
+
+/// Whether `model` names a `[models.*]` entry, by key or by slug.
+fn model_is_configured(models: &IndexMap<String, ModelProfile>, model: &str) -> bool {
+    models.contains_key(model) || models.values().any(|profile| profile.slug.trim() == model)
+}
+
+/// What a plan is generated from. Every plan-generating command runs
+/// [`generate_plan`] (gap-2623b2), so planner fixes land in one place.
+#[derive(Debug, Clone, Copy)]
+pub enum PlanSource<'a> {
+    /// A PRD file (`roko prd plan`, `roko do`'s complex band, serve). Its
+    /// frontmatter picks the plan template, the plan records it as
+    /// `source_prd`, and it records the plan.
+    Prd(&'a Path),
+    /// Text from `roko plan generate` or `roko do`'s standard band.
+    Text {
+        /// The text to plan from.
+        text: &'a str,
+        /// What the text is (`"prompt"`, `"file"`, `"notes"`).
+        kind: &'a str,
+    },
+    /// A plan directory (`roko plan regenerate`, and the old-format plans
+    /// `roko prd plan` refreshes), regenerated in place from its source
+    /// document. Tasks marked done stay done.
+    Regenerate(&'a Path),
+}
+
+/// One run of the plan generator ([`generate_plan`]).
+pub struct PlanRequest<'a> {
+    /// What the plan is generated from.
+    pub source: PlanSource<'a>,
+    /// The plan's slug: its `meta.plan` and its directory name.
+    pub slug: &'a str,
+    /// The workspace the plan is for.
+    pub workdir: &'a Path,
+    /// Where plan directories go. `None` is the workspace plans directory,
+    /// or a regenerated plan's parent.
+    pub plans_root: Option<&'a Path>,
+    /// More for the planner to read after the source: `--context` files or
+    /// earlier validation findings.
+    pub context: Option<&'a str>,
+    /// Plan in a scratch copy of the workspace, and only report.
+    pub dry_run: bool,
+    /// Why an earlier plan failed, for replanning.
+    pub failure_context: Option<&'a str>,
+    /// The planner model. `None` is `[authoring] planner_model`.
+    pub model: Option<&'a str>,
+    /// The planner's reasoning effort. `None` is `[agent] effort`.
+    pub effort: Option<&'a str>,
+    /// Where each agent call's spend is published.
+    pub live: Option<TuiBridge>,
+}
+
+impl<'a> PlanRequest<'a> {
+    /// A request for the plan `slug` from `source`, with every option unset.
+    #[must_use]
+    pub fn new(source: PlanSource<'a>, slug: &'a str, workdir: &'a Path) -> Self {
+        Self {
+            source,
+            slug,
+            workdir,
+            plans_root: None,
+            context: None,
+            dry_run: false,
+            failure_context: None,
+            model: None,
+            effort: None,
+            live: None,
+        }
+    }
+}
+
+/// How much of its source a planner reads inline, and how many repository
+/// files it may open, by its context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlannerBudget {
+    /// Characters of source in the prompt.
+    source_chars: usize,
+    /// Repository files the planner may read.
+    read_files: usize,
+}
+
+impl PlannerBudget {
+    /// The old fixed caps: the budget of a planner whose window is unknown,
+    /// and the floor for every planner.
+    const SMALL: Self = Self {
+        source_chars: 8_000,
+        read_files: 5,
+    };
+
+    /// A quarter of a `window`-token context for the source (about four
+    /// characters a token), and one file per 2,000 tokens of another quarter.
+    fn for_context_window(window: Option<u64>) -> Self {
+        let Some(quarter) = window.map(|window| usize::try_from(window / 4).unwrap_or(usize::MAX))
+        else {
+            return Self::SMALL;
+        };
+        Self {
+            source_chars: quarter.saturating_mul(4).max(Self::SMALL.source_chars),
+            read_files: (quarter / 2_000).max(Self::SMALL.read_files),
+        }
+    }
+}
+
+/// The context window a `[models.*]` entry (by key, else by slug) states for
+/// `model`.
+fn planner_context_window(models: &IndexMap<String, ModelProfile>, model: &str) -> Option<u64> {
+    models
+        .get(model)
+        .or_else(|| models.values().find(|profile| profile.slug.trim() == model))
+        .map(|profile| profile.context_window)
+        .filter(|&window| window > 0)
+}
+
+/// A plan source, read for the planner.
+struct ReadSource<'a> {
+    origin: PlanSource<'a>,
+    /// What the planner plans from.
+    content: String,
+    /// What the prompt calls it (`PRD`, `prompt`, `plan`, ...).
+    kind: String,
+    /// The file the content came from, which the planner need not reopen.
+    path: Option<PathBuf>,
+    /// Keywords for the repository context, beside the slug's.
+    title: String,
+    template: crate::plan_generate::PlanTemplateKind,
+    /// The plan being regenerated, for [`PlanSource::Regenerate`].
+    regeneration: Option<Regeneration>,
+}
+
+/// A plan being regenerated in place: its directory and current tasks.toml.
+struct Regeneration {
+    plan_dir: PathBuf,
+    existing_toml: String,
+    existing: Option<TasksFile>,
+}
+
+impl<'a> ReadSource<'a> {
+    fn read(origin: PlanSource<'a>) -> Result<Self> {
+        let read = |path: &Path| {
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
+        };
+        Ok(match origin {
+            PlanSource::Prd(path) => {
+                let content = read(path)?;
+                let meta = PrdMeta::parse(&content).unwrap_or_default();
+                Self {
+                    origin,
+                    kind: "PRD".to_string(),
+                    path: Some(path.to_path_buf()),
+                    title: meta.title,
+                    template: crate::plan_generate::PlanTemplateKind::resolve(
+                        meta.plan_template.as_deref(),
+                    ),
+                    content,
+                    regeneration: None,
+                }
+            }
+            PlanSource::Text { text, kind } => Self {
+                origin,
+                content: text.to_string(),
+                kind: kind.to_string(),
+                path: None,
+                title: String::new(),
+                template: crate::plan_generate::PlanTemplateKind::resolve(None),
+                regeneration: None,
+            },
+            PlanSource::Regenerate(plan_dir) => {
+                let existing_toml = read(&plan_dir.join("tasks.toml"))?;
+                let path = find_plan_source_document(plan_dir)?;
+                Self {
+                    origin,
+                    content: read(&path)?,
+                    kind: "plan".to_string(),
+                    path: Some(path),
+                    title: plan_dir
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    template: crate::plan_generate::PlanTemplateKind::resolve(None),
+                    regeneration: Some(Regeneration {
+                        plan_dir: plan_dir.to_path_buf(),
+                        existing: TasksFile::parse_str(&existing_toml).ok(),
+                        existing_toml,
+                    }),
+                }
+            }
+        })
+    }
+
+    /// The `task_id` and task kind of the planner call's episode.
+    fn episode(&self, slug: &str) -> (String, &'static str) {
+        match self.origin {
+            PlanSource::Prd(_) => (format!("prd:plan:{slug}"), "prd-plan-generate"),
+            PlanSource::Text { .. } => (format!("plan:generate:{slug}"), "plan-generate"),
+            PlanSource::Regenerate(_) => (format!("plan:regenerate:{slug}"), "plan-regenerate"),
+        }
+    }
+}
+
+/// The planner's task prompt: `source` within `budget`, what to output, and
+/// the checks the output must pass. `extra` follows the source.
+fn plan_task_prompt(
+    source: &ReadSource<'_>,
+    slug: &str,
+    budget: PlannerBudget,
+    template_guidance: &str,
+    extra: &str,
+) -> String {
+    let kind = source.kind.as_str();
+    let content = if source.content.len() > budget.source_chars {
+        let boundary = source.content.floor_char_boundary(budget.source_chars);
+        format!(
+            "{}\n\n[{kind} content truncated at {} chars]",
+            &source.content[..boundary],
+            budget.source_chars
+        )
+    } else {
+        source.content.clone()
+    };
+    let (task, shape) = match &source.regeneration {
+        Some(regeneration) => (
+            "Regenerate the plan below from its source document, with full modern metadata."
+                .to_string(),
+            format!(
+                "Keep each task's id where the task still applies; tasks already marked done \
+                 stay done.\n\n## Existing tasks.toml\n\n```toml\n{}\n```",
+                regeneration.existing_toml
+            ),
+        ),
+        None => (
+            format!("Generate an implementation plan from the {kind} below."),
+            "Each requirement (REQ-XXX in a PRD) becomes one or more tasks. Each acceptance \
+             criterion becomes a task verification command."
+                .to_string(),
+        ),
+    };
+    let reopen = source.path.as_ref().map_or_else(String::new, |path| {
+        format!(" — do NOT read {} again", path.display())
+    });
+    format!(
+        "{task}\n\n\
+         Plan slug (use exactly in meta.plan): {slug}\n\n\
+         IMPORTANT: The {kind} content is included inline{reopen}. You may read up to \
+         {read_files} codebase files to understand existing structure, but then you MUST \
+         produce your output.\n\n\
+         {shape}\n\n\
+         Do NOT create files directly. Instead, output the plan content \
+         as follows:\n\n\
+         1. Output a fenced block tagged `toml` containing the tasks.toml content.\n\
+         2. Optionally output a fenced block tagged `plan.md` containing the plan narrative.\n\n\
+         TOML quality checklist (every task MUST pass all of these):\n\
+         - `meta.plan` matches the slug exactly: {slug} (use `plan =`, NOT `name =`)\n\
+         - Every task has `id`, `title`, `description`, `status = \"ready\"`, `role`, and `tier`\n\
+         - `files` lists only real paths that exist in the codebase (no placeholders)\n\
+         - `depends_on` only references task ids defined in this same plan\n\
+         - No `model_hint` field: `tier` and `role` pick each task's model; add `rung` \
+           (for example `rung = \"strong\"`) only when a task needs more than its tier's \
+           start rung\n\
+         - No `mcp_servers` field unless the task genuinely requires an MCP server\n\
+         - Every `[[task.verify]]` entry has `phase` and `command`\n\
+         - Output ONLY a fenced ```toml block followed optionally by a fenced \
+           ```plan.md block — no prose, no explanation outside those blocks\n\n\
+         {template_guidance}\n\
+         {kind} content:\n{content}{extra}",
+        read_files = budget.read_files,
+    )
+}
+
+/// The slug of the plan in `plan_dir`: its `meta.plan`, else the directory's
+/// name.
+#[must_use]
+pub fn plan_dir_slug(plan_dir: &Path) -> String {
+    TasksFile::parse(&plan_dir.join("tasks.toml"))
+        .ok()
+        .map(|tasks| tasks.meta.plan)
+        .filter(|plan| !plan.trim().is_empty())
+        .unwrap_or_else(|| {
+            plan_dir.file_name().map_or_else(
+                || "unknown-plan".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+}
+
+/// Write `validated_toml`, a regeneration of `regeneration`'s plan, into
+/// `plan_dir`, keeping done tasks done and the plan's source PRD.
+fn write_regenerated_plan(
+    regeneration: &Regeneration,
+    plan_dir: &Path,
+    validated_toml: &str,
+) -> Result<()> {
+    let regenerated = TasksFile::parse_str(validated_toml)?;
+    let mut merged =
+        preserve_completed_task_status(regeneration.existing.as_ref(), regenerated, plan_dir);
+    if merged.meta.source_prd.is_none() {
+        merged.meta.source_prd = regeneration
+            .existing
+            .as_ref()
+            .and_then(|tasks| tasks.meta.source_prd.clone());
+    }
+    let rendered = toml::to_string_pretty(&merged).context("serialize regenerated tasks.toml")?;
+    atomic_write_str(&plan_dir.join("tasks.toml"), &rendered)
+        .with_context(|| format!("write tasks.toml to {}", plan_dir.display()))?;
+    println!("📋 Regenerated tasks.toml in {}", plan_dir.display());
+    Ok(())
+}
+
+/// Generate the plan for the PRD at `prd_path`. Other plans are left alone:
+/// refreshing old-format plans is opt-in ([`regenerate_old_format_plans`]).
 async fn generate_plan_from_prd_with_outcome(
     slug: &str,
     prd_path: &Path,
     dry_run: bool,
     failure_context: Option<&str>,
     model: Option<&str>,
-    regenerate_old_plans: bool,
     live: Option<TuiBridge>,
 ) -> Result<(PathBuf, GenerationOutcome)> {
     let workdir = prd_workdir(prd_path)?;
+    generate_plan(PlanRequest {
+        dry_run,
+        failure_context,
+        model,
+        live,
+        ..PlanRequest::new(PlanSource::Prd(prd_path), slug, &workdir)
+    })
+    .await
+}
+
+/// Generate one plan from `request`'s source. The planner model writes a
+/// tasks.toml, which is repaired, validated and checked against the
+/// generated-plan policy (retrying, and escalating the model, when it fails)
+/// before it is written under the plans root.
+pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, GenerationOutcome)> {
+    let PlanRequest {
+        source,
+        slug,
+        workdir,
+        plans_root: requested_plans_root,
+        context,
+        dry_run,
+        failure_context,
+        model,
+        effort,
+        live,
+    } = request;
+    let requested_plans_root = requested_plans_root.or(match source {
+        PlanSource::Regenerate(plan_dir) => plan_dir.parent(),
+        _ => None,
+    });
+    let workdir = workdir.to_path_buf();
     let result = async {
         let t_total = Instant::now();
         let t_phase = Instant::now();
-        let content = std::fs::read_to_string(prd_path)
-            .with_context(|| format!("read {}", prd_path.display()))?;
-        let prd_meta = PrdMeta::parse(&content).unwrap_or_default();
-        let template_kind =
-            crate::plan_generate::PlanTemplateKind::resolve(prd_meta.plan_template.as_deref());
+        let source = ReadSource::read(source)?;
+        let template_kind = source.template;
         let template_guidance = crate::plan_generate::render_plan_template_guidance(template_kind);
-        println!("📋 Generating plans from PRD: {slug}");
+        println!("📋 Generating a plan from the {}: {slug}", source.kind);
 
         let dry_run_workdir = if dry_run {
             Some(dry_run_fs::DryRunWorkspace::new(&workdir)?)
@@ -1359,6 +1589,8 @@ async fn generate_plan_from_prd_with_outcome(
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // Generated `rung` hints must name a rung of this ladder.
+        let ladder = crate::plan_validate::workspace_ladder(workdir_ref);
         // Callers that pass no model (the serve runtime, auto-plan on
         // promote) plan with the planner model.
         let planner_model = match model {
@@ -1369,14 +1601,30 @@ async fn generate_plan_from_prd_with_outcome(
             crate::plan_generate::build_generator_system_prompt(workdir_ref),
             failure_context,
         );
-        let plans_root = workspace_plans_dir(workdir_ref);
+        // A requested plans root in the workspace follows a dry run into its
+        // scratch copy.
+        let plans_root = requested_plans_root.map_or_else(
+            || workspace_plans_dir(workdir_ref),
+            |root| {
+                root.strip_prefix(&workdir)
+                    .map_or_else(|_| root.to_path_buf(), |relative| workdir_ref.join(relative))
+            },
+        );
+        // A regenerated plan keeps its directory, whatever its slug.
+        let plan_dir = match &source.regeneration {
+            Some(regeneration) => {
+                plans_root.join(regeneration.plan_dir.file_name().unwrap_or_default())
+            }
+            None => plans_root.join(slug),
+        };
+        let planner_effort = effort.unwrap_or(resolved.config.agent.effort.as_str());
         let tasks_before = dry_run_fs::snapshot_tasks_files(&plans_root);
         let init_ms = t_phase.elapsed().as_millis();
 
         // Build repo context to ground the planning agent in actual repository
         // structure. Keywords come from the PRD slug and title.
         let t_phase = Instant::now();
-        let prd_title = prd_meta.title.as_str();
+        let prd_title = source.title.as_str();
         let mut prd_feature_keywords: Vec<String> = slug
             .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
             .chain(prd_title.split(|c: char| c == '-' || c == '_' || c.is_whitespace()))
@@ -1419,57 +1667,27 @@ async fn generate_plan_from_prd_with_outcome(
         };
         let context_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
-        let prd_context_suffix = repo_context_section
-            .as_deref()
-            .map(|ctx| format!("\n\n---\n\n{ctx}"))
-            .unwrap_or_default();
+        let mut extra = String::new();
+        if let Some(context) = context.map(str::trim).filter(|context| !context.is_empty()) {
+            extra.push_str("\n\n");
+            extra.push_str(context);
+        }
+        if let Some(repo_context) = &repo_context_section {
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(repo_context);
+        }
 
-        // Trim PRD content to keep prompt size manageable for smaller models.
-        let max_prd_chars = 8000;
-        let trimmed_content = if content.len() > max_prd_chars {
-            let boundary = content.floor_char_boundary(max_prd_chars);
-            format!(
-                "{}\n\n[PRD content truncated at {max_prd_chars} chars]",
-                &content[..boundary]
-            )
-        } else {
-            content.clone()
-        };
-
-        let task_prompt = format!(
-            "Generate an implementation plan from the PRD below.\n\n\
-             Plan slug (use exactly in meta.plan): {slug}\n\n\
-             IMPORTANT: The PRD content is included inline — do NOT read {path} \
-             again. You may read up to 5 codebase files to understand existing \
-             structure, but then you MUST produce your output.\n\n\
-             Each REQ-XXX requirement becomes one or more tasks. \
-             Each acceptance criterion becomes a task verification command.\n\n\
-             Do NOT create files directly. Instead, output the plan content \
-             as follows:\n\n\
-             1. Output a fenced block tagged `toml` containing the tasks.toml content.\n\
-             2. Optionally output a fenced block tagged `plan.md` containing the plan narrative.\n\n\
-             TOML quality checklist (every task MUST pass all of these):\n\
-             - `meta.plan` matches the slug exactly: {slug} (use `plan =`, NOT `name =`)\n\
-             - Every task has `id`, `title`, `description`, `status = \"ready\"`, `role`, and `tier`\n\
-             - `files` lists only real paths that exist in the codebase (no placeholders)\n\
-             - `depends_on` only references task ids defined in this same plan\n\
-             - No `model_hint` field (the runtime selects the model automatically)\n\
-             - No `mcp_servers` field unless the task genuinely requires an MCP server\n\
-             - Every `[[task.verify]]` entry has `phase` and `command`\n\
-             - Output ONLY a fenced ```toml block followed optionally by a fenced \
-               ```plan.md block — no prose, no explanation outside those blocks\n\n\
-             {template_guidance}\n\
-             PRD content:\n{trimmed_content}{prd_context_suffix}",
-            slug = slug,
-            path = prd_path.display(),
-            template_guidance = template_guidance,
-            trimmed_content = trimmed_content,
-            prd_context_suffix = prd_context_suffix,
-        );
+        // A planner with a large context window sees the whole source
+        // (gap-2623b2); the old fixed caps are the floor.
+        let budget = PlannerBudget::for_context_window(planner_context_window(
+            &resolved.config.models,
+            &planner_model,
+        ));
+        let task_prompt = plan_task_prompt(&source, slug, budget, &template_guidance, &extra);
 
         let prompt_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
-        let task_id = format!("prd:plan:{slug}");
+        let (task_id, task_kind) = source.episode(slug);
         let effective_model = Some(planner_model.as_str());
         let plan_agent_command =
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
@@ -1479,7 +1697,7 @@ async fn generate_plan_from_prd_with_outcome(
             prompt: &task_prompt,
             workdir: workdir_ref,
             model: effective_model,
-            effort: Some(resolved.config.agent.effort.as_str()),
+            effort: Some(planner_effort),
             system_prompt: Some(&system),
             resume_session: None,
             env_vars: &resolved.config.agent.env,
@@ -1509,7 +1727,7 @@ async fn generate_plan_from_prd_with_outcome(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
-                "prd-plan-generate",
+                task_kind,
                 &task_id,
                 &task_prompt,
                 &output,
@@ -1566,7 +1784,7 @@ async fn generate_plan_from_prd_with_outcome(
                     prompt: &task_prompt,
                     workdir: workdir_ref,
                     model: effective_model,
-                    effort: Some(resolved.config.agent.effort.as_str()),
+                    effort: Some(planner_effort),
                     system_prompt: Some(&system),
                     resume_session: None,
                     env_vars: &resolved.config.agent.env,
@@ -1602,7 +1820,7 @@ async fn generate_plan_from_prd_with_outcome(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
-                "prd-plan-generate",
+                task_kind,
                 &task_id,
                 &task_prompt,
                 &output,
@@ -1653,6 +1871,7 @@ async fn generate_plan_from_prd_with_outcome(
                     slug,
                     &resolved.config.models,
                     resolved.config.agent.model.as_deref(),
+                    &ladder,
                 )
                 .map_err(|e| format!("{e:#}"))?;
                 let parsed = TasksFile::parse_str(&validated).map_err(|error| {
@@ -1679,7 +1898,6 @@ async fn generate_plan_from_prd_with_outcome(
                 // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
                 // not been written yet; PLAN_SOURCE_PRD_MISSING is suppressed
                 // because source_prd is injected after this closure returns.
-                let plan_dir = plans_root.join(slug);
                 let mut ctx_violations = crate::plan_policy::validate_plan_context(
                     &parsed,
                     workdir_ref,
@@ -1769,21 +1987,12 @@ async fn generate_plan_from_prd_with_outcome(
             let mut escalated_model: Option<String> = None;
             let mut last_output = output.clone();
 
-            // Collect configured model keys and slugs so escalation never
-            // picks a model that isn't actually available in this workspace.
-            let configured_models: HashSet<String> = resolved
-                .config
-                .models
-                .iter()
-                .flat_map(|(key, profile)| {
-                    std::iter::once(key.clone()).chain(std::iter::once(profile.slug.clone()))
-                })
-                .collect();
-
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
 
-                // Escalate model on format/validation failures (not auth/network).
+                // Escalate model on format/validation failures (not auth/network),
+                // only ever upward from the planner model, and only to a model
+                // this workspace configures.
                 let current_model = escalated_model
                     .as_deref()
                     .or(effective_model);
@@ -1791,7 +2000,7 @@ async fn generate_plan_from_prd_with_outcome(
                     if let Some(next) = next_tier_model(
                         current_model,
                         &resolved.config.agent.tier_models,
-                        &configured_models,
+                        &resolved.config.models,
                     ) {
                         tracing::info!(
                             from = current_model.unwrap_or("<default>"),
@@ -1838,7 +2047,7 @@ async fn generate_plan_from_prd_with_outcome(
                      total = 1\n\
                      done = 0\n\
                      status = \"ready\"\n\
-                     max_parallel = 1\n\n\
+                     # max_parallel is omitted: tasks that do not depend on each other run together\n\n\
                      [[task]]\n\
                      id = \"T1\"\n\
                      title = \"Task title\"\n\
@@ -1859,7 +2068,7 @@ async fn generate_plan_from_prd_with_outcome(
                     prompt: &retry_prompt,
                     workdir: workdir_ref,
                     model: retry_model,
-                    effort: Some(resolved.config.agent.effort.as_str()),
+                    effort: Some(planner_effort),
                     system_prompt: Some(&system),
                     resume_session: None,
                     env_vars: &resolved.config.agent.env,
@@ -1913,56 +2122,64 @@ async fn generate_plan_from_prd_with_outcome(
         }
 
         if let Ok(validated_toml) = validated_toml {
-            // Inject source_prd into the [meta] section so cmd_status can
-            // link plans back to their originating PRD by slug.
-            let validated_toml = if validated_toml.contains("source_prd") {
-                validated_toml
+            if let Some(regeneration) = &source.regeneration {
+                write_regenerated_plan(regeneration, &plan_dir, &validated_toml)?;
             } else {
-                validated_toml.replacen(
-                    "[meta]",
-                    &format!("[meta]\nsource_prd = \"{slug}\""),
-                    1,
-                )
-            };
-            let plan_dir = plans_root.join(slug);
-            std::fs::create_dir_all(&plan_dir)
-                .with_context(|| format!("create plan dir {}", plan_dir.display()))?;
-            atomic_write_str(&plan_dir.join("tasks.toml"), &validated_toml)
-                .with_context(|| format!("write tasks.toml to {}", plan_dir.display()))?;
-            println!(
-                "📋 Wrote tasks.toml ({} bytes) to {}",
-                validated_toml.len(),
-                plan_dir.display()
-            );
-            let plan_md_content = extract_fenced_block(&output, "plan.md")
-                .or_else(|| extract_fenced_block(&output, "markdown"))
-                .or_else(|| extract_fenced_block(&output, "md"));
-            if let Some(plan_md) = plan_md_content {
-                atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
-                    .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
+                // Inject source_prd into the [meta] section so cmd_status can
+                // link plans back to their originating PRD by slug.
+                let validated_toml = if !matches!(source.origin, PlanSource::Prd(_))
+                    || validated_toml.contains("source_prd")
+                {
+                    validated_toml
+                } else {
+                    validated_toml.replacen(
+                        "[meta]",
+                        &format!("[meta]\nsource_prd = \"{slug}\""),
+                        1,
+                    )
+                };
+                std::fs::create_dir_all(&plan_dir)
+                    .with_context(|| format!("create plan dir {}", plan_dir.display()))?;
+                atomic_write_str(&plan_dir.join("tasks.toml"), &validated_toml)
+                    .with_context(|| format!("write tasks.toml to {}", plan_dir.display()))?;
                 println!(
-                    "📋 Wrote plan.md ({} bytes) to {}",
-                    plan_md.len(),
+                    "📋 Wrote tasks.toml ({} bytes) to {}",
+                    validated_toml.len(),
                     plan_dir.display()
                 );
-            } else {
-                // Write minimal plan.md so plan discovery tools can find this directory.
-                let minimal_plan_md = format!(
-                    "---\nplan: {slug}\ntitle: {slug}\n---\n\n# {slug}\n\nGenerated plan.\n"
-                );
-                atomic_write_str(&plan_dir.join("plan.md"), &minimal_plan_md)
-                    .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
+                let plan_md_content = extract_fenced_block(&output, "plan.md")
+                    .or_else(|| extract_fenced_block(&output, "markdown"))
+                    .or_else(|| extract_fenced_block(&output, "md"));
+                if let Some(plan_md) = plan_md_content {
+                    atomic_write_str(&plan_dir.join("plan.md"), &plan_md)
+                        .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
+                    println!(
+                        "📋 Wrote plan.md ({} bytes) to {}",
+                        plan_md.len(),
+                        plan_dir.display()
+                    );
+                } else {
+                    // Write minimal plan.md so plan discovery tools can find
+                    // this directory.
+                    let minimal_plan_md = format!(
+                        "---\nplan: {slug}\ntitle: {slug}\n---\n\n# {slug}\n\nGenerated plan.\n"
+                    );
+                    atomic_write_str(&plan_dir.join("plan.md"), &minimal_plan_md)
+                        .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
+                }
             }
 
             // Update PRD frontmatter: record the generated plan slug.
-            if let Err(err) = update_prd_plans_generated(prd_path, slug) {
-                tracing::warn!(
-                    slug = %slug,
-                    error = %err,
-                    "failed to update PRD plans_generated field"
-                );
-            } else {
-                tracing::info!(slug = %slug, "updated PRD plans_generated field");
+            if let PlanSource::Prd(prd_path) = source.origin {
+                if let Err(err) = update_prd_plans_generated(prd_path, slug) {
+                    tracing::warn!(
+                        slug = %slug,
+                        error = %err,
+                        "failed to update PRD plans_generated field"
+                    );
+                } else {
+                    tracing::info!(slug = %slug, "updated PRD plans_generated field");
+                }
             }
         } else {
             // All attempts (initial + retries) failed to produce valid TOML.
@@ -1979,7 +2196,7 @@ async fn generate_plan_from_prd_with_outcome(
                 workdir_ref,
                 &plan_agent_command,
                 effective_model,
-                "prd-plan-generate",
+                task_kind,
                 &task_id,
                 &task_prompt,
                 &output,
@@ -2007,20 +2224,6 @@ async fn generate_plan_from_prd_with_outcome(
         );
         let t_phase = Instant::now();
         let generated_changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
-
-        if !dry_run && regenerate_old_plans {
-            if let Err(e) = regenerate_old_format_plans(
-                workdir_ref,
-                effective_model,
-                Some(resolved.config.agent.effort.as_str()),
-                &resolved.config.agent.env,
-                &plans_root,
-            )
-            .await
-            {
-                eprintln!("warning: old-format plan regeneration failed (non-fatal): {e}");
-            }
-        }
 
         let changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
         let mut artifact_valid = true;
@@ -2109,7 +2312,7 @@ async fn generate_plan_from_prd_with_outcome(
             workdir_ref,
             &plan_agent_command,
             effective_model,
-            "prd-plan-generate",
+            task_kind,
             &task_id,
             &task_prompt,
             &output,
@@ -2120,7 +2323,8 @@ async fn generate_plan_from_prd_with_outcome(
         .await;
 
         Ok((
-            workspace_plans_dir(&workdir),
+            requested_plans_root
+                .map_or_else(|| workspace_plans_dir(&workdir), Path::to_path_buf),
             task_count,
             estimated_complexity,
             outcome,
@@ -2130,7 +2334,7 @@ async fn generate_plan_from_prd_with_outcome(
 
     match result {
         Ok((plans_root, task_count, estimated_complexity, outcome)) => {
-            if !dry_run {
+            if !dry_run && matches!(source, PlanSource::Prd(_)) {
                 let signal_kind = if outcome.fully_successful() {
                     Some(Kind::Custom("prd:plan:generated".into()))
                 } else if outcome.process_success {
@@ -2162,6 +2366,7 @@ async fn generate_plan_from_prd_with_outcome(
         }
         Err(err) => {
             if !dry_run
+                && matches!(source, PlanSource::Prd(_))
                 && let Err(signal_err) = emit_prd_plan_signal(
                     &workdir,
                     Kind::Custom("prd:plan:failed".into()),
@@ -2540,6 +2745,10 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "max_parallel",
     "estimated_total_minutes",
     "skip_enrichment",
+    "failure_policy",
+    "workspace_rungs",
+    "verify",
+    "approval",
 ];
 
 /// Required field names for the `[meta]` section.
@@ -2571,15 +2780,43 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "max_retries",
     "acceptance",
     "acceptance_contract",
+    "accept",
     "domain",
     "gate_rung",
+    // `roko_core::TaskHints`
+    "category",
+    "complexity_band",
+    "reasoning_level",
+    "speed_priority",
+    "preferred_model",
+    "preferred_provider",
+    "escalate_on_retry",
+    "rung",
+    "quality_profile",
+    "test_invariants",
+    "context_weight",
+    "skills",
+    "example_pattern",
+    "context_files",
+    "plan_section",
+    "types_to_define",
+    "formulas",
+    "imports",
+    "research_before_edit",
+    "parallel_group",
+    "exclusive_files",
+    "tags",
+    "dependency_tags",
+    "fixture_keys",
+    "sidecar_requirements",
+    "integration_surfaces",
 ];
 
 /// Required field names for each `[[task]]`.
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
 /// Known field names for each `[[task.verify]]` entry.
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms"];
+const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
 
 /// Required field names for each `[[task.verify]]` entry.
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
@@ -2693,7 +2930,8 @@ fn strsim_distance(a: &str, b: &str) -> usize {
 /// 1. TOML syntax.
 /// 2. Required fields in `[meta]` and `[[task]]`.
 /// 3. Unknown / misspelled fields (with suggested corrections applied).
-/// 4. `model_hint` values validated against the config model table.
+/// 4. `model_hint` values stripped, and `rung` hints kept only when they name
+///    one of the task's `ladder` rungs.
 /// 5. `meta.plan` matched against the expected slug.
 ///
 /// On fixable issues the TOML is patched and a warning is logged to stderr.
@@ -2703,6 +2941,7 @@ fn validate_and_fix_generated_plan(
     slug: &str,
     _models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
     _default_model: Option<&str>,
+    ladder: &LadderConfig,
 ) -> Result<String> {
     // 0. Deterministic repair before parsing.
     let repaired = crate::task_parser::repair_toml(toml_str);
@@ -2874,13 +3113,24 @@ fn validate_and_fix_generated_plan(
                         }
                     }
 
-                    // Always strip model_hint from generated plans — the runtime
-                    // picks the best model via cascade routing.
+                    // Always strip model_hint from generated plans: a model
+                    // name ties the plan to one provider, while the tier and
+                    // role pick a model on this workspace's routing ladder.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
                         eprintln!(
                             "info: {task_id_label}: removing model_hint '{hint}' \
-                             (runtime will select via cascade routing)"
+                             (tier and role pick the model; a task that needs a \
+                             stronger one names a `rung`)"
+                        );
+                    }
+
+                    // gap-dbf2a6: keep a `rung` hint that names one of the
+                    // task's ladder rungs; drop any other.
+                    if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
+                        eprintln!(
+                            "warning: {task_id_label}: removing rung {rung}: no rung of the \
+                             routing ladder has that name"
                         );
                     }
 
@@ -3754,6 +4004,184 @@ mod tests {
         assert_eq!(prompt, "base prompt");
     }
 
+    /// gap-2623b2: a planner with a large context window reads a
+    /// 20,000-character PRD whole, with a file-read budget to match; a
+    /// planner whose window is unknown keeps the old 8,000-character and
+    /// 5-file caps, which are also every planner's floor.
+    #[test]
+    fn generator_prompt_keeps_a_long_prd_whole() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut prd = String::from("# Parser\n\n");
+        while prd.len() < 20_000 {
+            prd.push_str("REQ-001: the parser keeps every line of its input.\n");
+        }
+        prd.push_str("END-OF-PRD\n");
+        let prd_path = temp.path().join("parser.md");
+        std::fs::write(&prd_path, &prd).expect("write PRD");
+        let source = ReadSource::read(PlanSource::Prd(&prd_path)).expect("read PRD");
+
+        let mut models = IndexMap::new();
+        models.insert(
+            "frontier".to_string(),
+            ModelProfile {
+                slug: "frontier-1".to_string(),
+                context_window: 200_000,
+                ..ModelProfile::default()
+            },
+        );
+        let prompt = |model: &str| {
+            let budget = PlannerBudget::for_context_window(planner_context_window(&models, model));
+            plan_task_prompt(&source, "parser", budget, "", "")
+        };
+
+        let frontier = prompt("frontier");
+        assert!(frontier.contains(&prd), "the whole PRD reaches the planner");
+        assert!(!frontier.contains("content truncated"));
+        assert!(frontier.contains("read up to 25 codebase files"));
+        assert_eq!(prompt("frontier-1"), frontier, "a slug finds its entry");
+
+        let unknown = prompt("some-other-model");
+        assert!(unknown.contains("[PRD content truncated at 8000 chars]"));
+        assert!(!unknown.contains("END-OF-PRD"));
+        assert!(unknown.contains("read up to 5 codebase files"));
+        assert_eq!(
+            PlannerBudget::for_context_window(Some(8_000)),
+            PlannerBudget::SMALL
+        );
+    }
+
+    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
+    /// other. An old-format plan and a generated plan, which names no model,
+    /// keep their tasks.toml byte for byte, and the planner is called once.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_prd_plan_does_not_regenerate_other_plans() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        ensure_dirs(workdir).expect("PRD directories");
+        let prd_path = published_dir(workdir).join("widget.md");
+        std::fs::write(
+            &prd_path,
+            "---\nid: prd-widget\ntitle: Widget\nstatus: published\n---\n\n\
+             # Widget\n\nAdd a widget module.\n",
+        )
+        .expect("write PRD");
+
+        // Two plans are already in plans/: one in the old format, and one as
+        // the generator writes it, without a model_hint. Each has a plan.md a
+        // regeneration could start from.
+        let plans = workdir.join("plans");
+        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
+        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let dir = plans.join(name);
+            std::fs::create_dir_all(&dir).expect("plan directory");
+            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
+            std::fs::write(
+                dir.join("plan.md"),
+                format!("---\nplan: {name}\n---\n# {name}\n"),
+            )
+            .expect("plan.md");
+        }
+
+        // The planner answers every call with the widget plan, and logs it.
+        let bin = tempfile::tempdir().expect("tempdir");
+        let widget_toml = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+             description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
+        let reply = bin.path().join("reply.jsonl");
+        std::fs::write(
+            &reply,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type": "content_block_delta",
+                    "delta": {"text": format!("```toml\n{widget_toml}```\n")},
+                }),
+                serde_json::json!({
+                    "type": "result",
+                    "session_id": "planner",
+                    "model": "claude-sonnet-4-6",
+                    "total_cost_usd": 0.0,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "is_error": false,
+                }),
+            ),
+        )
+        .expect("planner reply");
+        // Work after a call (episode distillation) runs on the default model,
+        // a second fake that answers nothing, so the log counts planner calls.
+        let calls = bin.path().join("calls.log");
+        let planner = bin.path().join("planner.sh");
+        let background = bin.path().join("background.sh");
+        for (script, body) in [
+            (
+                &planner,
+                format!(
+                    "echo call >> '{}'\ncat '{}'",
+                    calls.display(),
+                    reply.display()
+                ),
+            ),
+            (&background, format!("sed -n 2p '{}'", reply.display())),
+        ] {
+            std::fs::write(
+                script,
+                format!("#!/bin/sh\nset -eu\ncat >/dev/null\n{body}\n"),
+            )
+            .expect("fake provider script");
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+                .expect("make the script executable");
+        }
+        std::fs::write(
+            workdir.join("roko.toml"),
+            format!(
+                "[agent]\ndefault_model = \"background\"\ncommand = {background:?}\n\
+                 bare_mode = false\n\n\
+                 [providers.fake]\nkind = \"claude_cli\"\ncommand = {planner:?}\n\n\
+                 [providers.quiet]\nkind = \"claude_cli\"\ncommand = {background:?}\n\n\
+                 [models.planner]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
+                 context_window = 200000\n\n\
+                 [models.background]\nprovider = \"quiet\"\nslug = \"claude-sonnet-4-6\"\n",
+                planner = planner.display().to_string(),
+                background = background.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+
+        generate_plan_from_prd_with_model("widget", &prd_path, false, Some("planner"))
+            .await
+            .expect("prd plan writes the widget plan");
+
+        let widget = std::fs::read_to_string(plans.join("widget").join("tasks.toml"))
+            .expect("the widget plan");
+        let widget = TasksFile::parse_str(&widget).expect("parse the widget plan");
+        assert_eq!(widget.tasks.len(), 1);
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let after =
+                std::fs::read_to_string(plans.join(name).join("tasks.toml")).expect("tasks.toml");
+            assert_eq!(after, tasks, "plans/{name} was rewritten");
+        }
+        let calls = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "one planner call: the widget plan"
+        );
+        // A plan that names no model is modern: only `old` counts as old.
+        assert_eq!(old_format_plan_dirs(&plans), [plans.join("old")]);
+    }
+
     #[test]
     fn augment_generator_system_prompt_includes_failure_context() {
         let prompt = augment_generator_system_prompt(
@@ -3987,7 +4415,13 @@ role = "implementer"
 tier = "mechanical"
 depends_on = ["T1"]
 "#;
-        let result = validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
     }
 
@@ -4006,8 +4440,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(
             parsed["meta"]["plan"].as_str().unwrap(),
@@ -4031,8 +4471,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "correct-slug", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "correct-slug",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(parsed["meta"]["plan"].as_str().unwrap(), "correct-slug");
     }
@@ -4056,7 +4502,14 @@ tier = "focused"
 pha = "test"
 command = "cargo test"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let verify = parsed["task"][0]["verify"][0].as_table().unwrap();
         assert!(
@@ -4083,9 +4536,14 @@ tier = "focused"
 model_hint = "gpt-nonexistent"
 "#;
         let models = sample_models();
-        let result =
-            validate_and_fix_generated_plan(toml, "test", &models, Some("claude-sonnet-4-6"))
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &models,
+            Some("claude-sonnet-4-6"),
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
@@ -4110,12 +4568,73 @@ tier = "focused"
 model_hint = "haiku"
 "#;
         let models = sample_models();
-        let result = validate_and_fix_generated_plan(toml, "test", &models, None).unwrap();
+        let result =
+            validate_and_fix_generated_plan(toml, "test", &models, None, &LadderConfig::default())
+                .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
             "model_hint aliases should be removed so runtime selects"
         );
+    }
+
+    /// gap-dbf2a6: a generated plan keeps a `rung` hint that names one of
+    /// the task's ladder rungs, drops any other, and still loses
+    /// `model_hint`.
+    #[test]
+    fn generated_plan_keeps_its_rung_hint() {
+        let toml = r#"
+[meta]
+plan = "test"
+total = 3
+status = "pending"
+
+[[task]]
+id = "T1"
+title = "Rework the parser's error recovery"
+status = "pending"
+role = "implementer"
+tier = "mechanical"
+rung = "strong"
+model_hint = "claude-opus-4-6"
+
+[[task]]
+id = "T2"
+title = "Rename a helper"
+status = "pending"
+role = "implementer"
+tier = "mechanical"
+rung = "stronk"
+
+[[task]]
+id = "T3"
+title = "Document the parser"
+status = "pending"
+role = "scribe"
+tier = "focused"
+rung = "docs"
+"#;
+        let mut ladder = LadderConfig::default();
+        ladder
+            .roles
+            .push(roko_core::config::routing::LadderRoleConfig {
+                role: "scribe".to_string(),
+                rungs: Some(vec![roko_core::config::routing::LadderRung {
+                    name: "docs".to_string(),
+                    model: "gpt-4o-mini".to_string(),
+                }]),
+                ..Default::default()
+            });
+        let result =
+            validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &ladder).unwrap();
+        let plan = TasksFile::parse_str(&result).expect("the fixed plan parses");
+        let rungs: Vec<Option<&str>> = plan
+            .tasks
+            .iter()
+            .map(|task| task.hints.rung.as_deref())
+            .collect();
+        assert_eq!(rungs, [Some("strong"), None, Some("docs")]);
+        assert_eq!(plan.tasks[0].model_hint, None);
     }
 
     #[test]
@@ -4128,7 +4647,13 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[meta] section is missing"), "msg: {msg}");
@@ -4142,7 +4667,13 @@ plan = "test"
 total = 0
 status = "pending"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[[task]] array is missing"), "msg: {msg}");
@@ -4159,7 +4690,13 @@ status = "pending"
 [[task]]
 id = "T1"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("missing required field 'title'"), "msg: {msg}");
@@ -4174,7 +4711,13 @@ id = "T1"
     #[test]
     fn validate_rejects_invalid_toml_syntax() {
         let toml = "this is not valid toml {{{}}}";
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("invalid TOML"), "msg: {msg}");
@@ -4195,7 +4738,14 @@ stat = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let task = parsed["task"][0].as_table().unwrap();
         assert!(
@@ -4225,9 +4775,14 @@ files = ["crates/<relevant-lib>/src/lib.rs"]
 phase = "build"
 command = "cargo check -p <crate>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "btc-funding-alert-cli", &empty_models(), None)
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "btc-funding-alert-cli",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         assert!(
             !result.contains("<relevant-lib>"),
             "placeholder <relevant-lib> should be replaced"
@@ -4268,8 +4823,14 @@ command = "cargo check -p <binary-crate>"
 phase = "test"
 command = "cargo test -p <crate> -- <test_name>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-cool-tool", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-cool-tool",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         // <binary-crate> and <crate> replaced with slug.
         assert!(
             !result.contains("<binary-crate>"),
@@ -4327,17 +4888,37 @@ command = "cargo test -p <crate> -- <test_name>"
 
     // ---- next_tier_model tests ----
 
+    /// `[models.*]` entries from `(key, slug)` pairs.
+    fn models_with(entries: &[(&str, &str)]) -> IndexMap<String, ModelProfile> {
+        entries
+            .iter()
+            .map(|(key, slug)| {
+                let profile = ModelProfile {
+                    slug: (*slug).to_string(),
+                    ..ModelProfile::default()
+                };
+                ((*key).to_string(), profile)
+            })
+            .collect()
+    }
+
+    /// `[models.*]` entries keyed by their own slug.
+    fn models_for(slugs: &[&str]) -> IndexMap<String, ModelProfile> {
+        let entries: Vec<(&str, &str)> = slugs.iter().map(|slug| (*slug, *slug)).collect();
+        models_with(&entries)
+    }
+
     #[test]
     fn next_tier_model_escalates_with_empty_configured_set() {
-        // Empty configured set = no filtering (backward compat).
+        // No configured models = no filtering (backward compat).
         let empty_tier = HashMap::new();
-        let empty_configured = HashSet::new();
+        let no_models = IndexMap::new();
         assert_eq!(
-            next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &no_models),
             Some("claude-sonnet-4-6".to_string()),
         );
         assert_eq!(
-            next_tier_model(Some("claude-sonnet-4-6"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-sonnet-4-6"), &empty_tier, &no_models),
             Some("claude-opus-4-6".to_string()),
         );
     }
@@ -4346,10 +4927,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_skips_unconfigured() {
         let empty_tier = HashMap::new();
         // Only sonnet is configured — opus should be skipped.
-        let configured: HashSet<String> = ["claude-sonnet-4-6"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let configured = models_for(&["claude-sonnet-4-6"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             Some("claude-sonnet-4-6".to_string()),
@@ -4365,8 +4943,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_skips_to_higher_configured() {
         let empty_tier = HashMap::new();
         // Only opus is configured — should skip sonnet and land on opus.
-        let configured: HashSet<String> =
-            ["claude-opus-4-6"].iter().map(|s| s.to_string()).collect();
+        let configured = models_for(&["claude-opus-4-6"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             Some("claude-opus-4-6".to_string()),
@@ -4377,8 +4954,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_none_when_no_configured_above() {
         let empty_tier = HashMap::new();
         // Only haiku is configured; already at haiku → nothing above.
-        let configured: HashSet<String> =
-            ["claude-haiku-4-5"].iter().map(|s| s.to_string()).collect();
+        let configured = models_for(&["claude-haiku-4-5"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             None,
@@ -4388,37 +4964,89 @@ command = "cargo test -p <crate> -- <test_name>"
     #[test]
     fn next_tier_model_at_top_returns_none() {
         let empty_tier = HashMap::new();
-        let empty_configured = HashSet::new();
+        let no_models = IndexMap::new();
         // Already at the highest tier — no escalation possible.
         assert_eq!(
-            next_tier_model(Some("claude-opus-4-6"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-opus-4-6"), &empty_tier, &no_models),
+            None,
+        );
+    }
+
+    /// bug-477ede: a planner outside the chain used to be "escalated" to the
+    /// cheapest configured chain model. The retry now keeps it.
+    #[test]
+    fn next_tier_model_never_downgrades_an_unknown_model() {
+        let empty_tier = HashMap::new();
+        // A frontier planner outside the chain, with Haiku configured.
+        let configured = models_for(&["claude-opus-5-5", "claude-haiku-4-5"]);
+        assert_eq!(
+            next_tier_model(Some("claude-opus-5-5"), &empty_tier, &configured),
+            None,
+        );
+        assert_eq!(
+            next_tier_model(Some("some-random-model"), &empty_tier, &configured),
+            None,
+        );
+        // Unfiltered (nothing configured), an unknown model stays put too.
+        assert_eq!(
+            next_tier_model(Some("claude-opus-5-5"), &empty_tier, &IndexMap::new()),
+            None,
+        );
+        // With no current model there is no known rank either.
+        assert_eq!(next_tier_model(None, &empty_tier, &configured), None);
+    }
+
+    /// Keys that are not slugs, as in this repo's roko.toml: the key
+    /// `claude-sonnet` is in the chain through its slug, so the retry moves up
+    /// to Opus, never down to Haiku.
+    #[test]
+    fn next_tier_model_matches_a_model_key_by_its_slug() {
+        let empty_tier = HashMap::new();
+        let configured = models_with(&[
+            ("claude-haiku", "claude-haiku-4-5"),
+            ("claude-sonnet", "claude-sonnet-4-6"),
+            ("claude-opus", "claude-opus-4-6"),
+        ]);
+        assert_eq!(
+            next_tier_model(Some("claude-sonnet"), &empty_tier, &configured),
+            Some("claude-opus-4-6".to_string()),
+        );
+        // Without Opus configured, the retry stays on Sonnet.
+        let configured = models_with(&[
+            ("claude-haiku", "claude-haiku-4-5"),
+            ("claude-sonnet", "claude-sonnet-4-6"),
+        ]);
+        assert_eq!(
+            next_tier_model(Some("claude-sonnet"), &empty_tier, &configured),
             None,
         );
     }
 
     #[test]
-    fn next_tier_model_unknown_current_picks_configured() {
-        let empty_tier = HashMap::new();
-        // Unknown current model with only sonnet configured → picks sonnet
-        // (skips haiku which is first in chain but not configured).
-        let configured: HashSet<String> = ["claude-sonnet-4-6"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    fn next_tier_model_follows_tier_models_named_by_key() {
+        let tiers = HashMap::from([
+            ("haiku".to_string(), "fast".to_string()),
+            ("sonnet".to_string(), "mid".to_string()),
+            ("opus".to_string(), "deep".to_string()),
+        ]);
+        let configured = models_with(&[
+            ("fast", "claude-haiku-4-5"),
+            ("mid", "claude-sonnet-4-6"),
+            ("deep", "claude-opus-4-6"),
+        ]);
+        // A current model named by slug finds its tier entry, named by key.
         assert_eq!(
-            next_tier_model(Some("some-random-model"), &empty_tier, &configured),
-            Some("claude-sonnet-4-6".to_string()),
+            next_tier_model(Some("claude-sonnet-4-6"), &tiers, &configured),
+            Some("deep".to_string()),
         );
+        assert_eq!(next_tier_model(Some("deep"), &tiers, &configured), None);
     }
 
     #[test]
     fn next_tier_model_none_configured_returns_none() {
         let empty_tier = HashMap::new();
-        // No chain model is in the configured set → None.
-        let configured: HashSet<String> = ["totally-different-model"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        // No chain model is configured → None.
+        let configured = models_for(&["totally-different-model"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             None,

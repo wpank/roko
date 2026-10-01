@@ -4,6 +4,8 @@
 //!
 //! - [`schema`] -- The unified `RokoConfig` type with hierarchical sections.
 //! - [`presets`] -- Named presets (minimal / balanced / thorough).
+//! - [`fingerprint`](mod@fingerprint) -- The secret-redacted config hash
+//!   run manifests record.
 
 use thiserror::Error;
 
@@ -14,6 +16,7 @@ pub mod cache;
 pub mod chain;
 pub mod env_registry;
 pub mod execution;
+pub mod fingerprint;
 pub mod gates;
 pub mod graduation;
 pub mod hot_reload;
@@ -37,6 +40,7 @@ pub mod validation;
 // Re-exports for ergonomic use.
 pub use crate::temperament::Temperament;
 pub use cache::ConfigCache;
+pub use fingerprint::{ConfigFingerprint, fingerprint};
 pub use presets::Preset;
 pub use provenance::{
     ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,
@@ -143,6 +147,28 @@ pub enum LoadConfigError {
         invariant_id: u8,
         /// Human-readable validation failure.
         message: String,
+    },
+    /// A config file that agents may read holds a secret, which belongs in
+    /// the environment instead, such as `ROKO__SERVE__AUTH__API_KEY` in
+    /// `.roko/.env`.
+    #[error(
+        "{path} holds secrets that agents could read: {fields}. \
+         `roko config set <field> <value>` stores one in .roko/.env and removes it from {path}"
+    )]
+    SecretInConfig {
+        /// Config file path.
+        path: std::path::PathBuf,
+        /// Each secret field, with where it belongs instead.
+        fields: String,
+    },
+    /// A secret field's `${VAR}` reference cannot be expanded, as when the
+    /// variable is not set.
+    #[error("{field}: {reason}")]
+    SecretReference {
+        /// The secret field, such as `serve.auth.api_key`.
+        field: String,
+        /// Why the reference cannot be expanded.
+        reason: String,
     },
     /// A versioned config migration could not reach the current schema.
     #[error("migrate {path}: {message}")]

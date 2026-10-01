@@ -265,8 +265,8 @@ port = 9090
 cors_origins = ["http://localhost:3000"]
 
 [serve.auth]
-enabled = false
-api_key = ""
+enabled = true                        # the default
+# api_key: set ROKO__SERVE__AUTH__API_KEY in .roko/.env, never here
 
 [auth]
 mode = "basic"                        # "basic", "oidc", "pat", "headers"

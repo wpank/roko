@@ -5,7 +5,7 @@
   ],
   "governance": [
     { "MaxToolCallsPerTurn": 6 },
-    { "ForbiddenTools": ["edit_file", "write_file", "multi_edit", "apply_patch", "bash"] },
+    { "ForbiddenTools": ["edit_file", "write_file", "multi_edit", "apply_patch", "notebook_edit", "bash"] },
     { "RequireToolBeforeEdit": "read_file" }
   ],
   "recovery": [

@@ -5,53 +5,31 @@
 //! is set, and swaps each assigned variant into its canonical section. This
 //! module owns the Graph side of the lifecycle around that:
 //!
-//! 1. [`context`] names the attempt (this process's run, plan, task, attempt
-//!    ordinal) and the root workspace store, when the store holds a prompt
-//!    experiment.
+//! 1. [`context`] names the attempt by its durable attempt key (S01: run,
+//!    plan, task and 1-based ordinal, so a resumed run never reuses one) and
+//!    the root workspace store, when the store holds a prompt experiment.
 //! 2. [`LaunchedTreatments::bind`] marks the treatments that survived
 //!    composition dispatched with the hash of the exact final prompt,
 //!    immediately before provider launch.
-//! 3. The attempt's feedback settles them with its outcome ([`settle`],
-//!    [`settlement`]). An attempt that ends before feedback abandons them
-//!    when its [`LaunchedTreatments`] drops, so no reservation stays open
-//!    and no trial is counted.
+//! 3. The attempt's feedback settles them with its learning label
+//!    ([`settle`], [`settlement`]). An attempt that ends before feedback
+//!    abandons them when its [`LaunchedTreatments`] drops, so no reservation
+//!    stays open and no trial is counted.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use roko_learn::prompt_experiment::{
     AssignmentSettlement, ExperimentStore, PromptAssignmentError, PromptAttemptKey,
 };
+use roko_learn::telemetry::AttemptKey;
 
 use crate::dispatch::{PromptExperimentAssignmentDiagnostic, PromptExperimentContext};
 
-/// Run identity of this process's Graph attempts. Attempt ordinals restart
-/// in every process, so a resumed plan must not reuse an earlier run's keys.
-pub(super) fn run_id() -> &'static str {
-    static RUN_ID: OnceLock<String> = OnceLock::new();
-    RUN_ID.get_or_init(|| format!("graph-{}", uuid::Uuid::new_v4().simple()))
-}
-
-/// Durable experiment key of the attempt `attempt_id` (`"{plan}/{task}/a{n}"`,
-/// from `GraphTaskDispatcher::next_attempt_id`).
-pub(super) fn attempt_key(plan_id: &str, task_id: &str, attempt_id: &str) -> PromptAttemptKey {
-    let ordinal = attempt_id
-        .rsplit_once("/a")
-        .and_then(|(_, ordinal)| ordinal.parse().ok())
-        .unwrap_or(0);
-    PromptAttemptKey::new(run_id(), plan_id, task_id, ordinal)
-}
-
-/// Experiment context for one attempt, or `None` when the store at
+/// Experiment context for the attempt `key`, or `None` when the store at
 /// `store_path` holds no prompt experiment (the retrieval-strategy
 /// experiment is not one) or cannot be read. An unreadable store is skipped
 /// rather than failing prompt assembly.
-pub(super) fn context(
-    store_path: &Path,
-    plan_id: &str,
-    task_id: &str,
-    attempt_id: &str,
-) -> Option<PromptExperimentContext> {
+pub(super) fn context(store_path: &Path, key: &AttemptKey) -> Option<PromptExperimentContext> {
     if !store_path.is_file() {
         return None;
     }
@@ -72,7 +50,7 @@ pub(super) fn context(
             experiment.experiment_id != ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID
         })
         .then(|| PromptExperimentContext {
-            attempt_key: attempt_key(plan_id, task_id, attempt_id),
+            attempt_key: key.to_prompt_attempt_key(),
             store_path: store_path.to_path_buf(),
         })
 }
@@ -91,19 +69,15 @@ pub(super) fn dispatch_prompt_hash(system_prompt: &str, user_prompt: &str) -> St
     hasher.finalize().to_hex().to_string()
 }
 
-/// How an attempt's outcome settles its treatments: a passed attempt, and a
-/// verify failure or turn-cap stop, observe the prompt; any other failure
-/// (a provider error or exhausted usage) says nothing about it and abandons
-/// the treatments without counting a trial.
-pub(super) fn settlement(succeeded: bool, failure_reason: Option<&str>) -> AssignmentSettlement {
-    if succeeded {
-        AssignmentSettlement::Observed { success: true }
-    } else if failure_reason
-        .is_some_and(|reason| reason.starts_with("verify: ") || reason.starts_with("turn_cap: "))
-    {
-        AssignmentSettlement::Observed { success: false }
-    } else {
-        AssignmentSettlement::Abandoned
+/// How an attempt settles its treatments, from its learning label (S01
+/// §4.1): a pass, and a failure of the agent's work (a verify failure, a
+/// turn-cap stop, a timeout after output), observe the prompt. An attempt
+/// without a label (unverified, a provider or harness failure) says nothing
+/// about the prompt and abandons the treatments without counting a trial.
+pub(super) fn settlement(learning: Option<bool>) -> AssignmentSettlement {
+    match learning {
+        Some(success) => AssignmentSettlement::Observed { success },
+        None => AssignmentSettlement::Abandoned,
     }
 }
 
@@ -245,32 +219,39 @@ mod tests {
         store.save(path).unwrap();
     }
 
+    fn key(task_id: &str) -> AttemptKey {
+        AttemptKey::new("graph-p-run", "p", task_id, 1)
+    }
+
     #[test]
-    fn attempt_keys_follow_the_attempt_ordinal_within_one_run() {
-        let first = attempt_key("plan", "T1", "plan/T1/a0");
-        let retry = attempt_key("plan", "T1", "plan/T1/a3");
-        assert_eq!(first.attempt, 0);
-        assert_eq!(retry.attempt, 3);
-        assert_eq!(first.run_id, retry.run_id);
-        assert!(first.run_id.starts_with("graph-"));
+    fn prompt_keys_are_the_attempt_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        save_store(&path);
+        let retry = AttemptKey::new("graph-p-run", "p", "T1", 3);
+        let ctx = context(&path, &retry).expect("context");
+        assert_eq!(
+            ctx.attempt_key,
+            PromptAttemptKey::new("graph-p-run", "p", "T1", 3)
+        );
     }
 
     #[test]
     fn only_a_prompt_experiment_store_gives_a_context() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none(), "no store");
+        assert!(context(&path, &key("T1")).is_none(), "no store");
 
         let mut retrieval_only = ExperimentStore::new();
         retrieval_only.ensure_retrieval_strategy_experiment();
         retrieval_only.save(&path).unwrap();
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none());
+        assert!(context(&path, &key("T1")).is_none());
 
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none(), "unreadable");
+        assert!(context(&path, &key("T1")).is_none(), "unreadable");
 
         save_store(&path);
-        let ctx = context(&path, "p", "T1", "p/T1/a0").expect("context");
+        let ctx = context(&path, &key("T1")).expect("context");
         assert_eq!(ctx.store_path, path);
         assert_eq!(ctx.attempt_key.task_id, "T1");
     }
@@ -288,24 +269,29 @@ mod tests {
     }
 
     #[test]
-    fn only_prompt_attributable_outcomes_are_observed() {
-        assert_eq!(
-            settlement(true, None),
-            AssignmentSettlement::Observed { success: true }
-        );
-        for reason in [
-            "verify: 1/1 verify step(s) failed",
-            "turn_cap: agent turn cap",
-        ] {
+    fn experiments_skip_attempts_without_a_learning_label() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptOutcome, AttemptVerdictRecord};
+
+        let observed = |success| AssignmentSettlement::Observed { success };
+        let abandoned = AssignmentSettlement::Abandoned;
+        let cases = [
+            (AttemptOutcome::Passed, false, observed(true)),
+            (AttemptOutcome::GateFailed, false, observed(false)),
+            (AttemptOutcome::TurnCap, false, observed(false)),
+            (AttemptOutcome::Timeout, true, observed(false)),
+            (AttemptOutcome::Unverified, false, abandoned),
+            (AttemptOutcome::Timeout, false, abandoned),
+            (AttemptOutcome::ProviderError, true, abandoned),
+            (AttemptOutcome::ProviderExhausted, false, abandoned),
+            (AttemptOutcome::HarnessError, false, abandoned),
+        ];
+        for (outcome, first_token_seen, expected) in cases {
+            let identity = AttemptIdentity::new(&key("T1"));
+            let verdict = AttemptVerdictRecord::settle(identity, outcome, first_token_seen);
             assert_eq!(
-                settlement(false, Some(reason)),
-                AssignmentSettlement::Observed { success: false }
-            );
-        }
-        for reason in ["provider: exit 1", "provider_exhausted: usage"] {
-            assert_eq!(
-                settlement(false, Some(reason)),
-                AssignmentSettlement::Abandoned
+                settlement(verdict.learning_success()),
+                expected,
+                "{outcome:?}"
             );
         }
     }
@@ -348,7 +334,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
         save_store(&path);
-        let ctx = context(&path, "p", "T1", "p/T1/a0").unwrap();
+        let ctx = context(&path, &key("T1")).unwrap();
         let assignments = prepare(&path, &ctx.attempt_key);
         assert_eq!(assignments.len(), 1);
 
@@ -358,7 +344,7 @@ mod tests {
             states(&path, &ctx.attempt_key),
             [PromptAssignmentState::Dispatched]
         );
-        settle(&path, ctx.attempt_key.clone(), settlement(true, None)).await;
+        settle(&path, ctx.attempt_key.clone(), settlement(Some(true))).await;
         drop(guard);
         tokio::task::yield_now().await;
 
@@ -374,7 +360,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
         save_store(&path);
-        let ctx = context(&path, "p", "T2", "p/T2/a0").unwrap();
+        let ctx = context(&path, &key("T2")).unwrap();
         let assignments = prepare(&path, &ctx.attempt_key);
 
         let guard = LaunchedTreatments::bind(Some(ctx.clone()), &assignments, "s", "u").await;

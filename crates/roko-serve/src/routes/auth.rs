@@ -15,13 +15,13 @@
 //! - `POST   /api/relay-tokens`           — issue a narrowed, parent-linked delegation
 //! - `DELETE /api/relay-tokens/:token_id` — revoke a delegation and its descendants
 //!
-//! Keys are stored as SHA-256 hashes in `.roko/api-keys.json`. Other processes
-//! (a second server on the same workspace, a key-management CLI) may change
-//! that file while the server runs, so every writer must hold
-//! `.roko/api-keys.json.lock` across a read-merge-write of its one change;
-//! `roko_fs::with_locked_json_transaction` does exactly that.
+//! Keys are stored as SHA-256 hashes in `.roko/api-keys.json`.
 //! Agent tokens are stored in `.roko/agent-tokens.json`.
 //! Relay tokens are stored in `.roko/relay-tokens.json`.
+//! Other processes (a second server on the same workspace, a key-management
+//! CLI) may change these files while the server runs, so every writer must
+//! hold the file's sibling `.lock` file across a read-merge-write of its one
+//! change; `roko_fs::with_locked_json_transaction` does exactly that.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -42,7 +42,6 @@ use roko_core::config::ApiKeyEntry;
 use roko_fs::with_locked_json_transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -205,16 +204,73 @@ const API_KEY_USE_PERSIST_INTERVAL_SECS: i64 = 60;
 /// replacement file is durable, preventing `last_used_at` updates from
 /// clobbering concurrent rotations or revocations.
 ///
-/// API keys may also change on disk while the server runs. Each API-key write
-/// is a locked read-merge-write of one change against the file as it is now
-/// (`update_api_keys`), and lookups re-read the file when it has changed, so a
-/// key another process adds works at once and a key it revokes stops working
-/// at once.
+/// The files may also change on disk while the server runs. Each write is a
+/// locked read-merge-write of one change against the file as it is now
+/// (`update_api_keys`, `RegistryCache::update`), and lookups re-read a file
+/// when it has changed, so a credential another process adds works at once
+/// and one it revokes stops working at once.
 pub(crate) struct AuthRegistry {
     workdir: PathBuf,
     api_keys: RwLock<ApiKeyState>,
-    agent_tokens: RwLock<Vec<AgentToken>>,
-    relay_tokens: RwLock<Vec<RelayToken>>,
+    agent_tokens: RwLock<RegistryCache<AgentToken>>,
+    relay_tokens: RwLock<RegistryCache<RelayToken>>,
+}
+
+/// This process's cached copy of a token registry file.
+struct RegistryCache<T> {
+    path: PathBuf,
+    entries: Vec<T>,
+    /// The file version `entries` was read from (`Some(None)`: there was no
+    /// file). `None` until the first lookup reads the file, and again after
+    /// this process writes it.
+    read_from: Option<Option<FileStamp>>,
+}
+
+impl<T> RegistryCache<T>
+where
+    T: Clone + Serialize + for<'de> Deserialize<'de> + Send + 'static,
+{
+    fn new(path: PathBuf, entries: Vec<T>) -> Self {
+        Self {
+            path,
+            entries,
+            read_from: None,
+        }
+    }
+
+    /// Apply one change to the file as a locked read-merge-write, then cache
+    /// the file's new contents. `change` sees the file as it is on disk now,
+    /// so tokens and revocations written by another process are kept.
+    async fn update<R, F>(&mut self, change: F) -> Result<R, ApiError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Vec<T>) -> Result<R, ApiError> + Send + 'static,
+    {
+        let (result, entries) = run_registry_change(self.path.clone(), change).await?;
+        self.entries = entries;
+        self.read_from = None;
+        Ok(result)
+    }
+}
+
+/// Re-read a token file into its cache if another process replaced it since
+/// this process last read or wrote it. Writers replace the file by rename, so
+/// a plain read sees one whole version and needs no lock.
+async fn refresh_registry<T>(lock: &RwLock<RegistryCache<T>>) -> Result<(), ApiError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    {
+        let cache = lock.read().await;
+        if cache.read_from == Some(registry_file_stamp(&cache.path)?) {
+            return Ok(());
+        }
+    }
+    let mut cache = lock.write().await;
+    let (entries, stamp) = read_registry_file(&cache.path)?;
+    cache.entries = entries;
+    cache.read_from = Some(stamp);
+    Ok(())
 }
 
 /// This process's cached view of `.roko/api-keys.json`.
@@ -265,13 +321,15 @@ impl AuthRegistry {
     /// rather than silently disabling every credential.
     pub(crate) fn load(workdir: &Path, configured_keys: &[ApiKeyEntry]) -> anyhow::Result<Self> {
         let (api_keys, stamp) = read_registry_file(&api_keys_path(workdir))?;
-        let agent_tokens = load_registry_file(&agent_tokens_path(workdir))?;
+        let agents_path = agent_tokens_path(workdir);
+        let relays_path = relay_tokens_path(workdir);
+        let agent_tokens = load_registry_file(&agents_path)?;
         let relay_tokens = load_relay_registry(workdir)?;
         Ok(Self {
             workdir: workdir.to_path_buf(),
             api_keys: RwLock::new(ApiKeyState::new(api_keys, stamp, configured_keys)),
-            agent_tokens: RwLock::new(agent_tokens),
-            relay_tokens: RwLock::new(relay_tokens),
+            agent_tokens: RwLock::new(RegistryCache::new(agents_path, agent_tokens)),
+            relay_tokens: RwLock::new(RegistryCache::new(relays_path, relay_tokens)),
         })
     }
 
@@ -299,8 +357,7 @@ impl AuthRegistry {
     /// version and needs no lock.
     async fn current_api_keys(&self) -> Result<Vec<ApiKeyEntry>, ApiError> {
         let path = api_keys_path(&self.workdir);
-        let on_disk = registry_file_stamp(&path)
-            .map_err(|error| ApiError::internal(format!("read {}: {error}", path.display())))?;
+        let on_disk = registry_file_stamp(&path)?;
         {
             let state = self.api_keys.read().await;
             if state.read_from == Some(on_disk) {
@@ -327,14 +384,12 @@ impl AuthRegistry {
     {
         // Held across the file transaction so this process's writes apply in order.
         let mut state = self.api_keys.write().await;
-        let path = api_keys_path(&self.workdir);
-        let transaction_path = path.clone();
         let unseeded = state.unseeded.clone();
-        let (result, keys) = tokio::task::spawn_blocking(move || {
-            apply_api_key_change(&transaction_path, &unseeded, change)
+        let (result, keys) = run_registry_change(api_keys_path(&self.workdir), move |keys| {
+            seed_configured_keys(keys, &unseeded);
+            change(keys)
         })
-        .await
-        .map_err(|error| ApiError::internal(format!("update {}: {error}", path.display())))??;
+        .await?;
         // The file now has every configured key that `change` kept.
         state.unseeded.clear();
         state.absorb(keys, None);
@@ -434,36 +489,55 @@ impl AuthRegistry {
     }
 
     pub(crate) async fn insert_agent_token(&self, token: AgentToken) -> Result<(), ApiError> {
-        let mut guard = self.agent_tokens.write().await;
-        let mut updated = guard.clone();
-        updated.push(token);
-        persist_registry_file(&agent_tokens_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(())
+        let mut agents = self.agent_tokens.write().await;
+        agents
+            .update(move |tokens| {
+                tokens.push(token);
+                Ok(())
+            })
+            .await
     }
 
-    pub(crate) async fn agent_tokens_snapshot(&self) -> Vec<AgentToken> {
-        self.agent_tokens.read().await.clone()
+    /// The current agent tokens, re-read first if the file has changed.
+    async fn current_agent_tokens(&self) -> Result<Vec<AgentToken>, ApiError> {
+        refresh_registry(&self.agent_tokens).await?;
+        Ok(self.agent_tokens.read().await.entries.clone())
+    }
+
+    #[cfg(test)]
+    async fn agent_tokens_snapshot(&self) -> Vec<AgentToken> {
+        self.current_agent_tokens()
+            .await
+            .expect("agent-token registry is readable")
     }
 
     async fn revoke_agent_token(&self, token_id: &str) -> Result<Option<String>, ApiError> {
-        let mut guard = self.agent_tokens.write().await;
-        let mut relay_guard = self.relay_tokens.write().await;
-        let mut updated = guard.clone();
-        let Some(token) = updated.iter_mut().find(|token| token.token_id == token_id) else {
+        // Hold both caches, agent tokens first, so an issuance in this process
+        // cannot interleave with the revocation and its cascade.
+        let mut agents = self.agent_tokens.write().await;
+        let mut relays = self.relay_tokens.write().await;
+        let id = token_id.to_string();
+        let agent_id = agents
+            .update(move |tokens| {
+                let Some(token) = tokens.iter_mut().find(|token| token.token_id == id) else {
+                    return Ok(None);
+                };
+                token.revoked = true;
+                Ok(Some(token.agent_id.clone()))
+            })
+            .await?;
+        let Some(agent_id) = agent_id else {
             return Ok(None);
         };
-        token.revoked = true;
-        let agent_id = token.agent_id.clone();
-        let mut updated_relays = relay_guard.clone();
-        cascade_relay_revocation(&mut updated_relays, token_id);
-        persist_registry_file(&agent_tokens_path(&self.workdir), &updated).await?;
-        // Commit the root revocation in memory as soon as its durable write
-        // succeeds. Full-chain validation then fails closed even if the
-        // best-effort materialized cascade write encounters an I/O error.
-        *guard = updated;
-        *relay_guard = updated_relays.clone();
-        persist_registry_file(&relay_tokens_path(&self.workdir), &updated_relays).await?;
+        // The root revocation is durable and cached now. Full-chain validation
+        // fails closed even if the best-effort materialized cascade below fails.
+        let id = token_id.to_string();
+        relays
+            .update(move |tokens| {
+                cascade_relay_revocation(tokens, &id);
+                Ok(())
+            })
+            .await?;
         Ok(Some(agent_id))
     }
 }
@@ -499,11 +573,14 @@ fn read_registry_file<T: for<'de> Deserialize<'de>>(
 }
 
 /// The version of a registry file now on disk (`None`: there is no file).
-fn registry_file_stamp(path: &Path) -> std::io::Result<Option<FileStamp>> {
+fn registry_file_stamp(path: &Path) -> Result<Option<FileStamp>, ApiError> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(Some(FileStamp::of(&metadata))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
+        Err(error) => Err(ApiError::internal(format!(
+            "read {}: {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -556,17 +633,33 @@ impl From<std::io::Error> for RegistryUpdateError {
     }
 }
 
-/// Run one change against the API-key file while holding its sibling lock.
+/// Run `change` against the registry file at `path` as a locked
+/// read-merge-write on the blocking pool. Returns the change's result and the
+/// file's new contents.
+async fn run_registry_change<T, R, F>(path: PathBuf, change: F) -> Result<(R, Vec<T>), ApiError>
+where
+    T: Clone + Serialize + for<'de> Deserialize<'de> + Send + 'static,
+    R: Send + 'static,
+    F: FnOnce(&mut Vec<T>) -> Result<R, ApiError> + Send + 'static,
+{
+    let task_path = path.clone();
+    tokio::task::spawn_blocking(move || apply_registry_change(&task_path, change))
+        .await
+        .map_err(|error| ApiError::internal(format!("update {}: {error}", path.display())))?
+}
+
+/// Run one change against a registry file while holding its sibling lock.
 /// Blocking: call it from `spawn_blocking`.
-fn apply_api_key_change<R>(
+fn apply_registry_change<T, R>(
     path: &Path,
-    unseeded: &[ApiKeyEntry],
-    change: impl FnOnce(&mut Vec<ApiKeyEntry>) -> Result<R, ApiError>,
-) -> Result<(R, Vec<ApiKeyEntry>), ApiError> {
-    with_locked_json_transaction::<Vec<ApiKeyEntry>, _, RegistryUpdateError, _>(path, |keys| {
-        seed_configured_keys(keys, unseeded);
-        let result = change(keys).map_err(RegistryUpdateError::Rejected)?;
-        Ok((result, keys.clone()))
+    change: impl FnOnce(&mut Vec<T>) -> Result<R, ApiError>,
+) -> Result<(R, Vec<T>), ApiError>
+where
+    T: Clone + Serialize + for<'de> Deserialize<'de>,
+{
+    with_locked_json_transaction::<Vec<T>, _, RegistryUpdateError, _>(path, |entries| {
+        let result = change(entries).map_err(RegistryUpdateError::Rejected)?;
+        Ok((result, entries.clone()))
     })
     .map_err(|error| match error {
         RegistryUpdateError::Io(error) => {
@@ -574,61 +667,6 @@ fn apply_api_key_change<R>(
         }
         RegistryUpdateError::Rejected(error) => error,
     })
-}
-
-async fn persist_registry_file<T: Serialize + ?Sized>(
-    path: &Path,
-    value: &T,
-) -> Result<(), ApiError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| ApiError::internal("credential registry path has no parent"))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|error| ApiError::internal(format!("create {}: {error}", parent.display())))?;
-    let data = serde_json::to_vec_pretty(value)
-        .map_err(|error| ApiError::internal(format!("serialize {}: {error}", path.display())))?;
-    let temp_path = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("auth"),
-        Uuid::new_v4()
-    ));
-    let result = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .await
-            .map_err(|error| {
-                ApiError::internal(format!("create {}: {error}", temp_path.display()))
-            })?;
-        file.write_all(&data).await.map_err(|error| {
-            ApiError::internal(format!("write {}: {error}", temp_path.display()))
-        })?;
-        // `sync_all` waits for the in-flight write but swallows its error;
-        // flush first so a failed write never gets renamed over the registry.
-        file.flush().await.map_err(|error| {
-            ApiError::internal(format!("write {}: {error}", temp_path.display()))
-        })?;
-        file.sync_all().await.map_err(|error| {
-            ApiError::internal(format!("sync {}: {error}", temp_path.display()))
-        })?;
-        drop(file);
-        tokio::fs::rename(&temp_path, path).await.map_err(|error| {
-            ApiError::internal(format!(
-                "replace {} with {}: {error}",
-                path.display(),
-                temp_path.display()
-            ))
-        })
-    }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp_path).await;
-    }
-    result
 }
 
 pub(crate) fn parse_rfc3339(value: &str) -> Option<DateTime<Utc>> {
@@ -685,7 +723,7 @@ pub(crate) struct AgentCredentialClaims {
 }
 
 /// Request payload for issuing a relay token.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IssueRelayTokenRequest {
     pub target_agent_id: String,
@@ -967,9 +1005,18 @@ impl AuthRegistry {
         &self,
         plaintext: &str,
     ) -> Option<AgentCredentialClaims> {
+        // An unreadable token file cannot vouch for any token: fail closed.
+        if let Err(error) = refresh_registry(&self.agent_tokens).await {
+            tracing::warn!(
+                error = %error,
+                "agent-token registry is unreadable; rejecting agent tokens"
+            );
+            return None;
+        }
         let hash = hash_api_key(plaintext);
         let tokens = self.agent_tokens.read().await;
         tokens
+            .entries
             .iter()
             .find(|token| constant_time_hash_eq(&token.token_hash, &hash))
             .and_then(|token| root_agent_claims(token, Utc::now()).ok())
@@ -979,14 +1026,30 @@ impl AuthRegistry {
         &self,
         plaintext: &str,
     ) -> Result<AgentCredentialClaims, ApiError> {
+        // A delegation is only as valid as every token file on its chain.
+        if let Err(error) = self.refresh_token_registries().await {
+            tracing::warn!(
+                error = %error,
+                "token registry is unreadable; rejecting delegated credentials"
+            );
+            return Err(error);
+        }
         let agents = self.agent_tokens.read().await;
         let relays = self.relay_tokens.read().await;
         let hash = hash_api_key(plaintext);
         let leaf = relays
+            .entries
             .iter()
             .find(|token| constant_time_hash_eq(&token.token_hash, &hash))
             .ok_or_else(|| ApiError::unauthorized("invalid delegated credential"))?;
-        validate_relay_chain(leaf, &relays, &agents, Utc::now())
+        validate_relay_chain(leaf, &relays.entries, &agents.entries, Utc::now())
+    }
+
+    /// Re-read both token files if another process changed them, agent tokens
+    /// first.
+    async fn refresh_token_registries(&self) -> Result<(), ApiError> {
+        refresh_registry(&self.agent_tokens).await?;
+        refresh_registry(&self.relay_tokens).await
     }
 
     pub(crate) async fn issue_relay_token(
@@ -1006,14 +1069,39 @@ impl AuthRegistry {
             return Err(ApiError::bad_request("ttl_secs must be positive"));
         }
 
-        let agents = self.agent_tokens.read().await;
+        refresh_registry(&self.agent_tokens).await?;
+        // Holding the agent-token cache until the relay write is done keeps a
+        // root revocation in this process from interleaving with the issuance.
+        let agent_cache = self.agent_tokens.read().await;
         let mut relays = self.relay_tokens.write().await;
+        let agents = agent_cache.entries.clone();
+        let parent = authenticated_parent.clone();
+        let request = request.clone();
+        // The chain is checked against the relay file as it is on disk now, so
+        // a parent that another process revoked cannot delegate.
+        relays
+            .update(move |tokens| {
+                let (token, secret) = Self::new_relay_token(&parent, &request, tokens, &agents)?;
+                tokens.push(token.clone());
+                Ok((token, secret))
+            })
+            .await
+    }
+
+    /// Validate a delegation from `authenticated_parent` against the token
+    /// lists as they are now, and build the relay token and its secret.
+    fn new_relay_token(
+        authenticated_parent: &AgentCredentialClaims,
+        request: &IssueRelayTokenRequest,
+        relays: &[RelayToken],
+        agents: &[AgentToken],
+    ) -> Result<(RelayToken, String), ApiError> {
         let now = Utc::now();
         let current_parent = if let Some(parent) = relays
             .iter()
             .find(|token| token.token_id == authenticated_parent.token_id)
         {
-            validate_relay_chain(parent, &relays, &agents, now)?
+            validate_relay_chain(parent, relays, agents, now)?
         } else {
             let parent = agents
                 .iter()
@@ -1078,35 +1166,31 @@ impl AuthRegistry {
             revoked: false,
             token_hash: hash_api_key(&plaintext),
         };
-        let mut updated = relays.clone();
-        updated.push(token.clone());
-        persist_registry_file(&relay_tokens_path(&self.workdir), &updated).await?;
-        *relays = updated;
         Ok((token, plaintext))
     }
 
     async fn revoke_relay_token(&self, token_id: &str) -> Result<Option<String>, ApiError> {
-        let mut guard = self.relay_tokens.write().await;
-        let Some(target_agent_id) = guard
-            .iter()
-            .find(|token| token.token_id == token_id)
-            .map(|token| token.target_agent_id.clone())
-        else {
-            return Ok(None);
-        };
-        let mut updated = guard.clone();
-        if let Some(token) = updated.iter_mut().find(|token| token.token_id == token_id) {
-            token.revoked = true;
-        }
-        cascade_relay_revocation(&mut updated, token_id);
-        persist_registry_file(&relay_tokens_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(Some(target_agent_id))
+        let mut relays = self.relay_tokens.write().await;
+        let id = token_id.to_string();
+        relays
+            .update(move |tokens| {
+                let Some(token) = tokens.iter_mut().find(|token| token.token_id == id) else {
+                    return Ok(None);
+                };
+                token.revoked = true;
+                let target_agent_id = token.target_agent_id.clone();
+                cascade_relay_revocation(tokens, &id);
+                Ok(Some(target_agent_id))
+            })
+            .await
     }
 
     #[cfg(test)]
     async fn relay_tokens_snapshot(&self) -> Vec<RelayToken> {
-        self.relay_tokens.read().await.clone()
+        refresh_registry(&self.relay_tokens)
+            .await
+            .expect("relay-token registry is readable");
+        self.relay_tokens.read().await.entries.clone()
     }
 }
 
@@ -1420,8 +1504,10 @@ async fn issue_agent_token(
 
 /// `GET /api/agent-tokens` — list active (non-revoked, non-expired) tokens.
 /// Returns metadata only; token secrets are never returned after issuance.
-async fn list_agent_tokens(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let tokens = state.auth_registry.agent_tokens_snapshot().await;
+async fn list_agent_tokens(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tokens = state.auth_registry.current_agent_tokens().await?;
     let now = Utc::now();
     let summaries: Vec<AgentTokenSummary> = tokens
         .into_iter()
@@ -1435,7 +1521,7 @@ async fn list_agent_tokens(State(state): State<Arc<AppState>>) -> Json<serde_jso
             revoked: t.revoked,
         })
         .collect();
-    Json(json!({ "tokens": summaries }))
+    Ok(Json(json!({ "tokens": summaries })))
 }
 
 /// `DELETE /api/agent-tokens/:token_id` — revoke a token by setting
@@ -2321,7 +2407,7 @@ mod tests {
         )
         .expect("write legacy registry");
         let registry = AuthRegistry::load(dir.path(), &[]).expect("legacy migration");
-        assert!(registry.relay_tokens.blocking_read().is_empty());
+        assert!(registry.relay_tokens.blocking_read().entries.is_empty());
         assert_eq!(
             std::fs::read_to_string(&path)
                 .expect("read migrated")
@@ -2332,6 +2418,188 @@ mod tests {
         std::fs::write(&path, r#"[{"token_id":"unknown-shape"}]"#)
             .expect("write malformed registry");
         assert!(AuthRegistry::load(dir.path(), &[]).is_err());
+    }
+
+    // Token files changed by another process (bug-39d54c)
+
+    async fn agent_accepted(store: &AuthRegistry, secret: &str) -> bool {
+        store.authenticate_agent_secret(secret).await.is_some()
+    }
+
+    async fn relay_accepted(store: &AuthRegistry, secret: &str) -> bool {
+        store.authenticate_relay_secret(secret).await.is_ok()
+    }
+
+    fn agent_tokens_on_disk(workdir: &Path) -> Vec<AgentToken> {
+        load_registry_file(&agent_tokens_path(workdir)).expect("read agent tokens")
+    }
+
+    fn relay_tokens_on_disk(workdir: &Path) -> Vec<RelayToken> {
+        load_registry_file(&relay_tokens_path(workdir)).expect("read relay tokens")
+    }
+
+    #[tokio::test]
+    async fn a_token_revoked_by_another_process_stays_revoked() {
+        let dir = tmp_workdir();
+        let (first, root) = registry_with_root(&dir, vec![AgentCapability::Inference]).await;
+        let (_relay, relay_secret) = first
+            .issue_relay_token(
+                &root,
+                &relay_request("child", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect("issue relay");
+        // A second registry on the workspace stands in for a second server
+        // process. It caches both tokens while they are still valid.
+        let second = AuthRegistry::load(dir.path(), &[]).expect("load second registry");
+        let root_secret = "roko_agent_root-secret";
+        assert!(agent_accepted(&second, root_secret).await);
+        assert!(relay_accepted(&second, &relay_secret).await);
+
+        first
+            .revoke_agent_token(&root.token_id)
+            .await
+            .expect("revoke root")
+            .expect("root exists");
+        // The second registry then issues a token of its own.
+        let other_secret = "roko_agent_other-secret";
+        second
+            .insert_agent_token(AgentToken {
+                token_id: "other-token".to_string(),
+                ..root_token(other_secret, vec![AgentCapability::Inference])
+            })
+            .await
+            .expect("insert another agent token");
+        let error = second
+            .issue_relay_token(
+                &root,
+                &relay_request("late-child", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect_err("a revoked root cannot delegate");
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+
+        // The revocation survived, and neither registry accepts the root or its
+        // delegation any more.
+        let agents = agent_tokens_on_disk(dir.path());
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].token_id, root.token_id);
+        assert!(agents[0].revoked);
+        let relays = relay_tokens_on_disk(dir.path());
+        assert_eq!(relays.len(), 1);
+        assert!(relays[0].revoked);
+        for store in [&first, &second] {
+            assert!(!agent_accepted(store, root_secret).await);
+            assert!(!relay_accepted(store, &relay_secret).await);
+        }
+        assert!(agent_accepted(&second, other_secret).await);
+    }
+
+    #[tokio::test]
+    async fn a_relay_revoked_by_another_process_stays_revoked() {
+        let dir = tmp_workdir();
+        let (first, root) = registry_with_root(&dir, vec![AgentCapability::Inference]).await;
+        let (revoked, revoked_secret) = first
+            .issue_relay_token(
+                &root,
+                &relay_request("child", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect("issue relay");
+        let second = AuthRegistry::load(dir.path(), &[]).expect("load second registry");
+        assert!(relay_accepted(&second, &revoked_secret).await);
+
+        first
+            .revoke_relay_token(&revoked.token_id)
+            .await
+            .expect("revoke relay")
+            .expect("relay exists");
+        // The second registry, whose cache still has the relay live, issues a
+        // sibling.
+        let (_sibling, sibling_secret) = second
+            .issue_relay_token(
+                &root,
+                &relay_request("sibling", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect("issue sibling relay");
+
+        let relays = relay_tokens_on_disk(dir.path());
+        assert_eq!(relays.len(), 2);
+        assert!(relays[0].revoked);
+        assert!(!relays[1].revoked);
+        for store in [&first, &second] {
+            assert!(!relay_accepted(store, &revoked_secret).await);
+            assert!(relay_accepted(store, &sibling_secret).await);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_token_writers_on_one_workspace_keep_every_token() {
+        let dir = tmp_workdir();
+        let (first, root) = registry_with_root(&dir, vec![AgentCapability::Inference]).await;
+        let first = Arc::new(first);
+        let second = Arc::new(AuthRegistry::load(dir.path(), &[]).expect("load second"));
+        let mut writers = Vec::new();
+        for index in 0..8 {
+            for store in [&first, &second] {
+                let store = Arc::clone(store);
+                let root = root.clone();
+                let target = format!("child-{index}");
+                writers.push(tokio::spawn(async move {
+                    let request = relay_request(&target, vec![AgentCapability::Inference], None);
+                    store.issue_relay_token(&root, &request).await
+                }));
+            }
+        }
+        for writer in writers {
+            writer.await.expect("writer task").expect("issue relay");
+        }
+
+        assert_eq!(relay_tokens_on_disk(dir.path()).len(), 16);
+        assert_eq!(first.relay_tokens_snapshot().await.len(), 16);
+        assert_eq!(second.relay_tokens_snapshot().await.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn unreadable_token_files_fail_closed_while_running() {
+        let dir = tmp_workdir();
+        let (registry, root) = registry_with_root(&dir, vec![AgentCapability::Inference]).await;
+        let (_relay, relay_secret) = registry
+            .issue_relay_token(
+                &root,
+                &relay_request("child", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect("issue relay");
+        let relays_path = relay_tokens_path(dir.path());
+        std::fs::write(&relays_path, "not-json").expect("corrupt relay tokens");
+
+        // No delegation authenticates, and no write replaces the file from the
+        // cached copy.
+        assert!(!relay_accepted(&registry, &relay_secret).await);
+        let error = registry
+            .issue_relay_token(
+                &root,
+                &relay_request("late-child", vec![AgentCapability::Inference], None),
+            )
+            .await
+            .expect_err("issuing into an unreadable file must fail");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let on_disk = std::fs::read_to_string(&relays_path).expect("read relay tokens");
+        assert_eq!(on_disk, "not-json");
+
+        // The same holds for the agent-token file.
+        let agents_path = agent_tokens_path(dir.path());
+        std::fs::write(&agents_path, "not-json").expect("corrupt agent tokens");
+        assert!(!agent_accepted(&registry, "roko_agent_root-secret").await);
+        let error = registry
+            .revoke_agent_token(&root.token_id)
+            .await
+            .expect_err("revoking in an unreadable file must fail");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let on_disk = std::fs::read_to_string(&agents_path).expect("read agent tokens");
+        assert_eq!(on_disk, "not-json");
     }
 
     #[tokio::test]

@@ -30,7 +30,9 @@ use crate::dispatch_v2::{
 
 use super::plugin_mcp::CliPluginMcpBridge;
 
-use super::{Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, WarmPool};
+use super::{
+    Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, RoutingLadder, WarmPool,
+};
 
 /// Shared, reusable components for agent dispatch.
 ///
@@ -68,6 +70,9 @@ pub struct SharedAgentFactory {
     pub health_registry: Arc<ProviderHealthRegistry>,
     /// Persistent JSONL tool audit adapter shared across all dispatches.
     tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Per-call trace and metrics sinks shared across all dispatches
+    /// (find-f489db).
+    observability: Option<roko_fs::FsObservabilitySinks>,
     /// Runtime-scoped format selection bandit. Shared across all dispatches
     /// so tool-format selection learns from cumulative feedback within a run.
     pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
@@ -226,6 +231,14 @@ impl SharedAgentFactory {
             dispatcher.with_tool_capability_filter(models_without_tools)
         };
 
+        // `[routing.ladder]`: a task's role and tier pick its start rung
+        // unless `--model` or its `model_hint` pins one. Rungs this workspace
+        // cannot dispatch are skipped and logged here, once per factory.
+        let dispatcher = match RoutingLadder::from_config(&config) {
+            Some(ladder) => dispatcher.with_routing_ladder(ladder),
+            None => dispatcher,
+        };
+
         Self {
             config,
             semaphores,
@@ -238,6 +251,7 @@ impl SharedAgentFactory {
             rate_limiter,
             health_registry,
             tool_audit: None,
+            observability: None,
             format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
@@ -277,6 +291,16 @@ impl SharedAgentFactory {
     #[must_use]
     pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
+        self
+    }
+
+    /// Attach per-call trace and metrics sinks.
+    ///
+    /// When set, every tool call dispatched through agents created by this
+    /// factory leaves a closed trace and a metrics record (find-f489db).
+    #[must_use]
+    pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
+        self.observability = Some(sinks);
         self
     }
 
@@ -402,6 +426,11 @@ impl SharedAgentFactory {
         if !models_without_tools.is_empty() {
             dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
         }
+        // Keep the ladder bound at construction rather than logging its
+        // skipped rungs again.
+        if let Some(ladder) = self.dispatcher.routing_ladder() {
+            dispatcher = dispatcher.with_routing_ladder(ladder.clone());
+        }
         self.dispatcher = dispatcher;
     }
 
@@ -484,6 +513,9 @@ impl SharedAgentFactory {
         if let Some(audit) = &self.tool_audit {
             dispatcher = dispatcher.with_tool_audit(Arc::clone(audit));
         }
+        if let Some(sinks) = &self.observability {
+            dispatcher = dispatcher.with_observability_sinks(sinks.clone());
+        }
 
         dispatcher
             .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -523,6 +555,7 @@ impl SharedAgentFactory {
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
+        let observability = self.observability.clone();
 
         tokio::spawn(async move {
             let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
@@ -533,6 +566,9 @@ impl SharedAgentFactory {
             }
             if let Some(audit) = tool_audit {
                 dispatcher = dispatcher.with_tool_audit(audit);
+            }
+            if let Some(sinks) = observability {
+                dispatcher = dispatcher.with_observability_sinks(sinks);
             }
             match dispatcher
                 .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -595,6 +631,7 @@ impl SharedAgentFactory {
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
+        let observability = self.observability.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
 
         let mut handle = tokio::spawn(async move {
@@ -606,6 +643,9 @@ impl SharedAgentFactory {
             }
             if let Some(audit) = tool_audit {
                 dispatcher = dispatcher.with_tool_audit(audit);
+            }
+            if let Some(sinks) = observability {
+                dispatcher = dispatcher.with_observability_sinks(sinks);
             }
             if started_tx.send(()).is_err() {
                 return;

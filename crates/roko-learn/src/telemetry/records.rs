@@ -194,8 +194,9 @@ impl AttemptKey {
     }
 }
 
-/// Carries the ordinal unchanged. Prompt keys minted before S01 count from
-/// 0, so they do not meet the 1-based rule.
+/// Carries the ordinal unchanged. Graph dispatch mints prompt keys from the
+/// attempt key; prompt keys minted before that counted from 0, so they do
+/// not meet the 1-based rule.
 impl From<PromptAttemptKey> for AttemptKey {
     fn from(key: PromptAttemptKey) -> Self {
         Self {
@@ -295,6 +296,12 @@ impl AttemptIdentity {
 pub enum GateVerdictTag {
     /// Every authored verify step passed.
     Passed,
+    /// Every authored verify step passed, or failed only on tests that also
+    /// failed on the plan run's start commit (gap-161be1).
+    PassedWithPreexistingFailures,
+    /// Every authored verify step passed on a tree the attempt left
+    /// unchanged: the task's work was already there.
+    AlreadySatisfied,
     /// The task declares no verify steps.
     Unverified,
     /// A judge accepted a failed verification. Only legacy checkpoints
@@ -308,6 +315,8 @@ impl GateVerdictTag {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::PassedWithPreexistingFailures => "passed_with_preexisting_failures",
+            Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
         }
@@ -318,6 +327,8 @@ impl GateVerdictTag {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "passed_with_preexisting_failures" => Some(Self::PassedWithPreexistingFailures),
+            "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
             _ => None,
@@ -333,6 +344,10 @@ pub enum AttemptOutcome {
     Passed,
     /// A verify rung failed.
     GateFailed,
+    /// The attempt changed nothing, and every verify step passed on the tree
+    /// it left: the task's work was done before it ran (gap-9eb1e1). Neither
+    /// a learning success nor a failure.
+    AlreadySatisfied,
     /// The task has no verify steps, so nothing checked the result.
     Unverified,
     /// A judge accepted a failed verification (legacy checkpoints only).
@@ -353,6 +368,10 @@ pub enum AttemptOutcome {
     WorkspaceError,
     /// The engine terminated the attempt's promise.
     PromiseTerminated,
+    /// The harness failed the attempt outside its provider call and verify
+    /// steps: prompt assembly, or recording its spend in the plan's cost
+    /// ledger.
+    HarnessError,
     /// An attempt-open line with no verdict. It is derived offline; dispatch
     /// never writes it.
     Abandoned,
@@ -365,7 +384,9 @@ impl AttemptOutcome {
     #[must_use]
     pub const fn blame(self, first_token_seen: bool) -> Blame {
         match self {
-            Self::Passed | Self::Unverified | Self::ForcedAccept => Blame::None,
+            Self::Passed | Self::AlreadySatisfied | Self::Unverified | Self::ForcedAccept => {
+                Blame::None
+            }
             Self::GateFailed | Self::TurnCap => Blame::Agent,
             Self::Timeout if first_token_seen => Blame::Agent,
             Self::Timeout | Self::ProviderError | Self::ProviderExhausted => Blame::Infra,
@@ -373,6 +394,7 @@ impl AttemptOutcome {
             | Self::BudgetExhausted
             | Self::WorkspaceError
             | Self::PromiseTerminated
+            | Self::HarnessError
             | Self::Abandoned => Blame::Harness,
         }
     }
@@ -381,7 +403,10 @@ impl AttemptOutcome {
 impl From<GateVerdictTag> for AttemptOutcome {
     fn from(verdict: GateVerdictTag) -> Self {
         match verdict {
-            GateVerdictTag::Passed => Self::Passed,
+            // The agent's work passed: what failed, failed before it ran too.
+            // The record's `gate_verdict` keeps the difference.
+            GateVerdictTag::Passed | GateVerdictTag::PassedWithPreexistingFailures => Self::Passed,
+            GateVerdictTag::AlreadySatisfied => Self::AlreadySatisfied,
             GateVerdictTag::Unverified => Self::Unverified,
             GateVerdictTag::ForcedAccept => Self::ForcedAccept,
         }
@@ -398,7 +423,8 @@ pub enum Blame {
     Agent,
     /// The provider or the network failed. It only affects provider health.
     Infra,
-    /// The harness stopped the attempt (cancel, budget, workspace).
+    /// The harness stopped the attempt (cancel, budget, workspace, or its
+    /// own error).
     Harness,
 }
 
@@ -504,14 +530,76 @@ pub struct AttemptTiming {
 pub struct ExecutedModel {
     /// Provider that served the final turn.
     pub provider: Option<String>,
-    /// Model the dispatcher asked for.
+    /// Model the dispatcher asked for: routing's plan, before any failover.
     pub model_requested: Option<String>,
-    /// Model the provider reported running.
+    /// Model the provider bridge launched: the requested one, or the
+    /// failover candidate that replaced it. Legacy rows name it `model`.
+    pub model_dispatched: Option<String>,
+    /// Model the provider reported serving; `None` when its responses named
+    /// none, never the configured slug.
     pub model_reported: Option<String>,
+    /// Every model the provider named, in order, when its responses
+    /// disagreed; `model_reported` is the last of them.
+    pub models_reported: Vec<String>,
+    /// The provider reported serving another model than the one launched
+    /// (a dated snapshot of it, such as `gpt-4o-2024-08-06`, is the same).
+    pub model_mismatch: bool,
     /// Models tried before the one that ran, in order.
     pub failover_chain: Vec<String>,
-    /// Agent turns taken.
+    /// Why the first model of `failover_chain`, the planned one, did not run.
+    pub failover_reason: Option<String>,
+    /// Each model of `failover_chain`, with why it was refused and whether
+    /// a call reached its provider first (bug-220385).
+    pub failover_refusals: Vec<FailoverRefusal>,
+    /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
+    /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+}
+
+/// One model provider failover passed over before the one that ran
+/// (`executed.failover_refusals`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FailoverRefusal {
+    /// The refused `[models.*]` key.
+    pub model: String,
+    /// The refused model's provider.
+    pub provider: String,
+    /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
+    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured` or
+    /// `not_dispatchable`.
+    pub class: String,
+    /// The provider's own words, or why it could not be called.
+    pub reason: String,
+    /// Whether a call reached the provider before it refused; that call's
+    /// cost and efficiency rows carry the role `failover_refused`.
+    pub called: bool,
+    /// Unix ms of the refusal.
+    pub at: Option<i64>,
+    /// When the provider is expected to take work again (unix ms).
+    pub until: Option<i64>,
+}
+
+/// Helper model calls one attempt made outside its agent run: after a failed
+/// gate, a quality judgement, an error diagnosis and a gate reflection on the
+/// cheap helper model (`helpers`, bug-62e3f4). [`AttemptUsage`] and
+/// [`AttemptCost`] cover the agent run alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HelperCallsUsage {
+    /// Completed helper calls.
+    pub calls: u32,
+    /// Input tokens, as the provider reported them.
+    pub tokens_in: u64,
+    /// Output tokens.
+    pub tokens_out: u64,
+    /// Input read from the prompt cache.
+    pub tokens_cache_read: u64,
+    /// Priced cost of the calls, in USD.
+    pub cost_usd: f64,
+    /// Calls that used tokens but have no price, so `cost_usd` leaves them
+    /// out.
+    pub unpriced_calls: u32,
 }
 
 /// Token usage of one attempt in five disjoint classes (S01 §4.4): no token
@@ -628,6 +716,10 @@ pub struct AttemptOpenRecord {
     /// Unix ms when the attempt started.
     #[serde(default)]
     pub attempt_started_at: Option<i64>,
+    /// The task's tier label (`roko_core::task::TaskTier`), which
+    /// [`crate::tier_limits`] groups attempts by. Older lines lack it.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 impl AttemptOpenRecord {
@@ -640,8 +732,44 @@ impl AttemptOpenRecord {
             role: None,
             max_retries: None,
             attempt_started_at: Some(attempt_started_at),
+            tier: None,
         }
     }
+}
+
+/// Why an attempt ran on its model, with respect to the model ladder
+/// (`[routing.ladder]`, gap-460230).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LadderReason {
+    /// The start rung of the task's role and tier.
+    Start,
+    /// The rung the task's `rung` hint names.
+    Hint,
+    /// A rung above the start, after agent-blamed failures.
+    Escalated,
+    /// `--model` or a `model_hint` pinned the model; the ladder never moves
+    /// it.
+    Pinned,
+}
+
+/// Where an attempt stood on the model ladder (gap-460230).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptLadder {
+    /// Name of the rung that supplied the model; `None` when pinned.
+    #[serde(default)]
+    pub rung: Option<String>,
+    /// Index of that rung among the task's rungs, cheapest first.
+    #[serde(default)]
+    pub index: Option<u32>,
+    /// Rungs the task had climbed above its start rung.
+    pub step: u32,
+    /// Why the attempt ran on its model.
+    pub reason: LadderReason,
+    /// The agent's work failed the task's last attempt on its top rung: the
+    /// ladder is exhausted, and the task needs a split or a replan.
+    #[serde(default)]
+    pub exhausted: bool,
 }
 
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
@@ -685,6 +813,21 @@ pub struct AttemptVerdictRecord {
     /// Cost, with its source.
     #[serde(default)]
     pub cost: AttemptCost,
+    /// Helper model calls the attempt made outside its agent run; `None`
+    /// when it made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<HelperCallsUsage>,
+    /// Where the attempt stood on the model ladder; `None` when the ladder
+    /// is off or did not route the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ladder: Option<AttemptLadder>,
+    /// How the agent run was kept apart from the invoking user's own
+    /// configuration, as the agent reported it: a Claude CLI run's
+    /// isolation tags (`setting_sources`, `mcp_servers`, `auto_memory`,
+    /// `config_dir`, `shell_snapshot`). Empty for an agent that reports
+    /// none (gap-751ac9).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub isolation: BTreeMap<String, String>,
     /// `sha256` of the provider request.
     #[serde(default)]
     pub request_sha256: Option<String>,
@@ -724,6 +867,9 @@ impl AttemptVerdictRecord {
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
             cost: AttemptCost::default(),
+            helpers: None,
+            ladder: None,
+            isolation: BTreeMap::new(),
             request_sha256: None,
             output_sha256: None,
             diff_sha256: None,
@@ -737,6 +883,18 @@ impl AttemptVerdictRecord {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
+    }
+
+    /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
+    /// a pass, `Some(false)` when the agent's work failed, and `None` when
+    /// the attempt teaches nothing, so no learner updates.
+    #[must_use]
+    pub const fn learning_success(&self) -> Option<bool> {
+        match self.learning_label {
+            Some(1) => Some(true),
+            Some(0) => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -786,12 +944,18 @@ pub struct RunProvenanceManifest {
     /// One entry per process that worked on the run; a resume appends one.
     #[serde(default)]
     pub invocations: Vec<RunInvocation>,
-    /// The harness build.
+    /// The harness build of the run's first invocation. Each invocation
+    /// records its own ([`RunInvocation::harness`]).
     #[serde(default)]
     pub harness: HarnessProvenance,
-    /// The configuration fingerprint.
+    /// The configuration fingerprint of the run's first invocation. Each
+    /// invocation records its own ([`RunInvocation::config`]).
     #[serde(default)]
     pub config: ConfigHashProvenance,
+    /// Whether a later invocation ran under another harness build or
+    /// config than the first, so the run's records come from more than one.
+    #[serde(default)]
+    pub mixed_provenance: bool,
     /// The price snapshot.
     #[serde(default)]
     pub prices: PriceProvenance,
@@ -817,6 +981,7 @@ impl RunProvenanceManifest {
             invocations: Vec::new(),
             harness: HarnessProvenance::default(),
             config: ConfigHashProvenance::default(),
+            mixed_provenance: false,
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
@@ -848,6 +1013,12 @@ pub struct RunInvocation {
     pub host: String,
     /// `sha256` of the command-line arguments.
     pub args_sha256: Option<String>,
+    /// The harness build this invocation ran; `None` in manifests written
+    /// before invocations recorded their own.
+    pub harness: Option<HarnessProvenance>,
+    /// The configuration fingerprint this invocation ran with; `None` in
+    /// manifests written before invocations recorded their own.
+    pub config: Option<ConfigHashProvenance>,
 }
 
 /// The harness build behind a run.
@@ -952,6 +1123,20 @@ pub struct Stamped<T> {
     /// The record.
     #[serde(flatten)]
     pub record: T,
+}
+
+/// A pre-S01 learning-log row stamped with its attempt's key (S01 §5).
+///
+/// The legacy logs (`learn/efficiency.jsonl`, `learn/costs.jsonl`) gain
+/// `attempt_key` this way. The row's own fields sit beside the key, so a
+/// reader that parses the row type alone still reads the line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptKeyed<T> {
+    /// [`AttemptKey::attempt_key`] of the attempt the row belongs to.
+    pub attempt_key: String,
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
 }
 
 /// A record type the writer appends to a run file.
@@ -1168,6 +1353,7 @@ mod tests {
         let cases = [
             (O::Passed, false, Blame::None, Some(1)),
             (O::GateFailed, false, Blame::Agent, Some(0)),
+            (O::AlreadySatisfied, false, Blame::None, None),
             (O::Unverified, false, Blame::None, None),
             (O::ForcedAccept, false, Blame::None, None),
             (O::TurnCap, true, Blame::Agent, Some(0)),
@@ -1179,6 +1365,7 @@ mod tests {
             (O::BudgetExhausted, true, Blame::Harness, None),
             (O::WorkspaceError, false, Blame::Harness, None),
             (O::PromiseTerminated, false, Blame::Harness, None),
+            (O::HarnessError, true, Blame::Harness, None),
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {
@@ -1186,6 +1373,8 @@ mod tests {
             let record = AttemptVerdictRecord::settle(id, outcome, first_token_seen);
             let got = (record.blame, record.learning_label);
             assert_eq!(got, (blame, label), "{outcome:?}");
+            let learned = label.map(|label| label == 1);
+            assert_eq!(record.learning_success(), learned, "{outcome:?}");
         }
 
         let verdict = GateVerdictTag::Unverified;
@@ -1199,6 +1388,8 @@ mod tests {
     fn gate_verdict_wire_values_match_the_graph_tag() {
         for verdict in [
             GateVerdictTag::Passed,
+            GateVerdictTag::PassedWithPreexistingFailures,
+            GateVerdictTag::AlreadySatisfied,
             GateVerdictTag::Unverified,
             GateVerdictTag::ForcedAccept,
         ] {
@@ -1295,6 +1486,40 @@ mod tests {
         let back: Stamped<AttemptVerdictRecord> =
             serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, line);
+    }
+
+    #[test]
+    fn keyed_legacy_rows_still_parse_as_the_row_alone() {
+        let cost = crate::costs_db::CostRecord {
+            timestamp: "2026-10-02T14:03:21.950Z".to_string(),
+            model: "gpt-oss-120b".to_string(),
+            provider: "cerebras".to_string(),
+            role: "implementer".to_string(),
+            plan_id: PLAN.to_string(),
+            task_id: "T2".to_string(),
+            complexity_band: "focused".to_string(),
+            input_tokens: 38_211,
+            output_tokens: 2_904,
+            cached_tokens: 0,
+            cost_usd: 0.0156,
+            duration_ms: 9_461,
+            success: false,
+            session_id: String::new(),
+            cost_source: CostSource::CliUsage,
+        };
+        let keyed = AttemptKeyed {
+            attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),
+            row: cost.clone(),
+        };
+        let json = serde_json::to_value(&keyed).expect("serialize");
+        assert_eq!(json["attempt_key"], "gr-7f3c2a91:loop-census:T2:2");
+        assert_eq!(json["model"], "gpt-oss-120b");
+        let row: crate::costs_db::CostRecord =
+            serde_json::from_value(json.clone()).expect("parse the row alone");
+        assert_eq!(row, cost);
+        let back: AttemptKeyed<crate::costs_db::CostRecord> =
+            serde_json::from_value(json).expect("parse the keyed row");
+        assert_eq!(back, keyed);
     }
 
     #[test]

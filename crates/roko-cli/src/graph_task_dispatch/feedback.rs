@@ -51,7 +51,8 @@ pub struct GraphFeedbackContext {
     /// so the EMA pass-rate converges toward the workspace's real gate history.
     /// The file is written atomically after every task's verify sequence
     /// completes (both pass and fail), and a `GateThresholdsUpdated` event is
-    /// published to the TUI bridge.
+    /// published to the TUI bridge. The gate ratchet, `gate-ratchet.json`,
+    /// is kept beside it (find-4b4344).
     pub gate_thresholds_path: Option<PathBuf>,
 
     /// RAG-10: Path to `.roko/learn/retrieval-outcomes.jsonl`.
@@ -62,6 +63,28 @@ pub struct GraphFeedbackContext {
     /// a second settled record once all verify steps complete so the gate-pass
     /// correlation is durably captured.
     pub retrieval_outcomes_path: Option<PathBuf>,
+
+    /// S01: `.roko/runs/`, where each run's `<run_id>/attempts.jsonl` records
+    /// every attempt's open line and settled verdict.
+    ///
+    /// Attempt ordinals continue from that file, so a resumed run never
+    /// reuses an attempt key. When unset, ordinals live in memory and no
+    /// attempt is recorded.
+    pub runs_dir: Option<PathBuf>,
+}
+
+/// A `costs.jsonl` row with its attempt's settled verdict beside it: the
+/// outcome and the learning label, `null` when the attempt teaches nothing
+/// (S01 §4.3). The row's own `success` keeps its meaning, which `roko
+/// status` and `roko show costs` read. `R` is the [`CostRecord`] with the
+/// verdict's executed-model columns ([`roko_learn::efficiency::ExecutedRow`]);
+/// the record's `cost_source` is the verdict's `cost.source`.
+#[derive(serde::Serialize)]
+struct SettledCostRow<R> {
+    outcome: AttemptOutcome,
+    learning_label: Option<u8>,
+    #[serde(flatten)]
+    row: R,
 }
 
 impl std::fmt::Debug for GraphFeedbackContext {
@@ -83,6 +106,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("eval_generation_enabled", &self.eval_generation_enabled)
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
+            .field("runs_dir", &self.runs_dir)
             .finish()
     }
 }
@@ -106,6 +130,7 @@ impl Default for GraphFeedbackContext {
             eval_generation_enabled: false,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
+            runs_dir: None,
         }
     }
 }
@@ -117,27 +142,41 @@ impl GraphTaskDispatcher {
     /// feedback pipeline. Each subsystem is best-effort: failures are logged
     /// but do not block the task result.
     ///
-    /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
-    /// the attempt's bounded class-prefixed reason when `succeeded` is false
-    /// (see [`attempt_failure_reason`]); it lands on the episode together with
-    /// the provider-reported turn count. A success of a task with authored
-    /// verify steps also emits [`FeedbackEvent::TaskVerified`], which grows
-    /// durable knowledge.
+    /// `settled` is the attempt's settlement ([`AttemptContext::settle`]).
+    /// Learners read only its learning label (S01 §4.1): the router, through
+    /// the facade's routing sink, the playbooks, the daimon, the prompt
+    /// experiments and durable knowledge, which only a pass grows
+    /// ([`FeedbackEvent::TaskVerified`]). An attempt without a label
+    /// (unverified, provider or harness failures) updates none of them. The
+    /// analysis rows record every attempt under its attempt key: the
+    /// episode, with the bounded class-prefixed failure reason and the
+    /// provider-reported turn count, and the efficiency and cost rows. Their
+    /// success flag keeps its meaning (the provider call succeeded and no
+    /// verify step failed); the cost row adds the verdict's outcome and
+    /// label. The settlement itself goes out as
+    /// [`FeedbackEvent::AttemptSettled`].
+    ///
+    /// [`AttemptContext::settle`]: super::attempt::AttemptContext::settle
     pub(super) async fn emit_feedback(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
-        attempt_id: &str,
+        settled: &SettledAttempt,
         dispatch: &crate::dispatch_v2::AgentResultDispatch,
-        succeeded: bool,
         wall_duration: std::time::Duration,
         dispatch_plan: &crate::dispatch::RunnerDispatchPlan,
         routing_context: Option<roko_learn::model_router::RoutingContext>,
-        failure_reason: Option<String>,
     ) {
+        let succeeded = settled.succeeded();
+        // What learners record: a pass, a failure, or nothing.
+        let learning = settled.learning_success();
+        let failure_reason = settled.failure_reason.clone();
+        let attempt_key = settled.attempt_key();
         let role = task.role.as_deref().unwrap_or("implementer");
-        // P3-02: Agent turns as reported by the provider (the Claude CLI's
-        // `num_turns`), so episodes and efficiency records carry real counts.
+        // P3-02: Agent turns as the agent reported them (the Claude CLI's
+        // `num_turns`, the model calls of roko's tool loop), so episodes and
+        // efficiency records carry real counts. 0 when it did not say: the
+        // count is unknown, not one turn (bug-55fd84).
         let agent_num_turns = dispatch
             .events
             .iter()
@@ -146,7 +185,7 @@ impl GraphTaskDispatcher {
                 roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
                 _ => None,
             })
-            .unwrap_or(1);
+            .unwrap_or(0);
         let provider_id = &dispatch.target.provider_id;
         let model_slug = &dispatch.target.model_slug;
         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -169,8 +208,7 @@ impl GraphTaskDispatcher {
         } else {
             ModelChoiceSource::Router
         };
-        let experiment_settlement =
-            prompt_experiment::settlement(succeeded, failure_reason.as_deref());
+        let experiment_settlement = prompt_experiment::settlement(learning);
         let diagnostics = &dispatch_plan.prompt.diagnostics;
 
         // ── W04: FeedbackFacade (episodes + routing + knowledge) ─────────
@@ -211,6 +249,7 @@ impl GraphTaskDispatcher {
                 initial_model: model_slug.clone(),
                 turns: u64::from(agent_num_turns),
                 failure_reason,
+                settled: Some(Arc::clone(&settled.verdict)),
             };
             if let Err(error) = facade.on_event(&event).await {
                 tracing::warn!(
@@ -221,15 +260,16 @@ impl GraphTaskDispatcher {
                 );
             }
 
-            // Authored verify steps are deterministic and never
-            // force-accepted, so a success of a task that declares them is a
-            // gate-backed pass (`TaskGateVerdict::Passed`). Only those grow
-            // durable knowledge.
-            if succeeded && !task.verify.is_empty() {
+            // Only a pass carries the learning label 1: every authored
+            // verify step passed (`TaskGateVerdict::Passed`), or failed only
+            // on tests that failed before the run too
+            // (`PassedWithPreexistingFailures`). Only those grow durable
+            // knowledge.
+            if learning == Some(true) {
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),
                     task_id: task.id.clone(),
-                    attempt_id: format!("{}:{attempt_id}", prompt_experiment::run_id()),
+                    attempt_id: attempt_key.to_string(),
                     title: task.title.clone(),
                     task_type: task.tier.clone(),
                     role: role.to_string(),
@@ -265,6 +305,7 @@ impl GraphTaskDispatcher {
                 }
             }
         }
+        self.publish_settlement(spec, task, settled).await;
 
         // ── W05: Efficiency event ────────────────────────────────────────
         if let Some(eff_path) = &self.feedback.efficiency_path {
@@ -310,7 +351,7 @@ impl GraphTaskDispatcher {
                 model: model_slug.clone(),
                 plan_id: spec.plan_id.clone(),
                 task_id: task.id.clone(),
-                attempt_id: attempt_id.to_string(),
+                attempt_id: attempt_key.to_string(),
                 input_tokens: tokens_in,
                 output_tokens: tokens_out,
                 reasoning_tokens: 0,
@@ -345,12 +386,16 @@ impl GraphTaskDispatcher {
                 strategy_attempted: String::new(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
-            match serde_json::to_string(&event) {
+            let row = AttemptKeyed {
+                attempt_key: attempt_key.to_string(),
+                row: roko_learn::efficiency::ExecutedRow::new(&event, &settled.verdict.executed),
+            };
+            match serde_json::to_string(&row) {
                 Ok(line) => {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&eff_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -395,13 +440,28 @@ impl GraphTaskDispatcher {
                 duration_ms,
                 success: succeeded,
                 session_id: String::new(),
+                // `estimated` for usage a call streamed before it was
+                // cancelled or timed out (bug-aa2044), so readers of
+                // `costs.jsonl` show it apart (gap-288e38).
+                cost_source: settled.verdict.cost.source,
             };
-            match serde_json::to_string(&cost_record) {
+            let row = AttemptKeyed {
+                attempt_key: attempt_key.to_string(),
+                row: SettledCostRow {
+                    outcome: settled.verdict.outcome,
+                    learning_label: settled.verdict.learning_label,
+                    row: roko_learn::efficiency::ExecutedRow::new(
+                        &cost_record,
+                        &settled.verdict.executed,
+                    ),
+                },
+            };
+            match serde_json::to_string(&row) {
                 Ok(line) => {
                     let path = costs_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&costs_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -446,11 +506,12 @@ impl GraphTaskDispatcher {
 
         // ── W07: Playbook outcome recording ──────────────────────────────
         //
-        // Credit the playbooks prompt assembly actually injected.
-        if let Some(playbook_dir) = &self.feedback.playbook_dir {
+        // Credit the playbooks prompt assembly actually injected with the
+        // attempt's learning label; an attempt without one credits none.
+        if let (Some(playbook_dir), Some(success)) = (&self.feedback.playbook_dir, learning) {
             let store = roko_learn::playbook::PlaybookStore::new(playbook_dir);
             for playbook_id in &diagnostics.playbook_ids {
-                if let Err(error) = store.record_outcome(playbook_id, succeeded).await {
+                if let Err(error) = store.record_outcome(playbook_id, success).await {
                     tracing::warn!(
                         plan_id = %spec.plan_id,
                         task_id = %task.id,
@@ -463,11 +524,13 @@ impl GraphTaskDispatcher {
         }
 
         // ── W09: DaimonState affect feedback ─────────────────────────────
-        if let Some(daimon) = &self.feedback.daimon_state {
+        //
+        // Only an attempt with a learning label moves affect.
+        if let (Some(daimon), Some(success)) = (&self.feedback.daimon_state, learning) {
             use roko_daimon::AffectEngine;
             let event = roko_daimon::AffectEvent::TaskOutcome {
                 task_id: task.id.clone(),
-                succeeded,
+                succeeded: success,
             };
             if let Ok(mut state) = daimon.lock() {
                 let _ = state.appraise(event);
@@ -477,14 +540,43 @@ impl GraphTaskDispatcher {
         // ── W14: Experiment settlement ───────────────────────────────────
         //
         // Settles this attempt's prompt treatments (prepared at prompt
-        // assembly, bound to the launched prompt) with its outcome.
+        // assembly, bound to the launched prompt) with its learning label;
+        // an attempt without one abandons them.
         if let Some(store_path) = &self.feedback.experiment_store_path {
             prompt_experiment::settle(
                 store_path,
-                prompt_experiment::attempt_key(&spec.plan_id, &task.id, attempt_id),
+                settled.key().to_prompt_attempt_key(),
                 experiment_settlement,
             )
             .await;
+        }
+    }
+
+    /// Publish an attempt's settlement through the feedback facade as
+    /// [`FeedbackEvent::AttemptSettled`]. The facade delivers one settlement
+    /// per attempt. First, the T0 reflex rule that served the attempt, if
+    /// one did, learns from it ([`Self::credit_reflex_rule`]), and the
+    /// settlement counts toward the task's standing on the model ladder
+    /// (gap-460230).
+    pub(super) async fn publish_settlement(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+    ) {
+        self.credit_reflex_rule(spec, task, settled).await;
+        self.note_ladder_outcome(spec, task, settled);
+        let Some(facade) = &self.feedback.feedback_facade else {
+            return;
+        };
+        let event = FeedbackEvent::AttemptSettled(Arc::clone(&settled.verdict));
+        if let Err(error) = facade.on_event(&event).await {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                %error,
+                "graph attempt settlement feedback error (best-effort)"
+            );
         }
     }
 }
@@ -493,21 +585,20 @@ impl GraphTaskDispatcher {
 mod tests {
     use tempfile::tempdir;
 
+    use roko_learn::cascade_router::CascadeRouter;
+    use roko_learn::playbook::PlaybookStore;
+    use roko_learn::prompt_experiment::ExperimentStore;
+
     use super::*;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
     };
 
-    /// Through the batch dispatch path: a verified attempt grows durable
-    /// knowledge and credits its prompt treatment and the playbook its prompt
-    /// used with a success; a verify failure credits both with a failure and
-    /// keeps the failing step and its output on the episode.
-    #[tokio::test]
-    async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
-        use roko_learn::prompt_experiment::{ExperimentStore, PromptExperiment, PromptVariant};
+    /// Save a prompt experiment on the implementer's role section at
+    /// `store_path`, so every implementer prompt gets a treatment.
+    fn save_role_experiment(store_path: &Path) {
+        use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
 
-        let temp = tempdir().expect("tempdir");
-        let store_path = temp.path().join(".roko/learn/experiments.json");
         std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
         let mut experiment = PromptExperiment::new(
             "role-ab",
@@ -527,9 +618,26 @@ mod tests {
         experiment.role = Some("implementer".into());
         let mut store = ExperimentStore::new();
         store.register(experiment);
-        store.save(&store_path).unwrap();
-        let playbook_dir = temp.path().join(".roko/learn/playbooks");
-        let playbooks = roko_learn::playbook::PlaybookStore::new(&playbook_dir);
+        store.save(store_path).unwrap();
+    }
+
+    /// Trials and successes over every treatment of the role experiment.
+    fn experiment_trials(store_path: &Path) -> (u64, u64) {
+        ExperimentStore::load_strict(store_path)
+            .unwrap()
+            .get("role-ab")
+            .unwrap()
+            .stats
+            .values()
+            .fold((0, 0), |(trials, successes), stats| {
+                (trials + stats.trials, successes + stats.successes)
+            })
+    }
+
+    /// Save the playbook that prompt assembly injects into a task titled
+    /// "Render the greeting banner".
+    async fn save_banner_playbook(playbook_dir: &Path) -> PlaybookStore {
+        let playbooks = PlaybookStore::new(playbook_dir);
         playbooks
             .save(&roko_learn::playbook::Playbook::new(
                 "banner-steps",
@@ -537,6 +645,299 @@ mod tests {
             ))
             .await
             .unwrap();
+        playbooks
+    }
+
+    /// The banner playbook's success and failure counts.
+    async fn playbook_counts(playbooks: &PlaybookStore) -> (u64, u64) {
+        let playbook = playbooks.load("banner-steps").await.unwrap().unwrap();
+        (playbook.success_count, playbook.failure_count)
+    }
+
+    /// The router's confidence trials and successes for the dispatched
+    /// model, and its bandit observations.
+    fn router_counts(router: &CascadeRouter) -> ((u64, u64), u64) {
+        let confidence = router
+            .confidence_snapshot()
+            .get("claude-sonnet-4-6")
+            .copied();
+        (confidence.unwrap_or_default(), router.total_observations())
+    }
+
+    /// Provider that answers like [`VERIFY_PROVIDER`], except that a call
+    /// finding `fail-next` beside it fails with a transport error, and one
+    /// finding `exhaust-next` reports exhausted usage. Each marker fails one
+    /// call.
+    const FLAKY_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+if [ -f "$dir/fail-next" ]; then
+  rm -f "$dir/fail-next"
+  echo 'upstream connect error: connection refused' >&2
+  exit 1
+fi
+if [ -f "$dir/exhaust-next" ]; then
+  rm -f "$dir/exhaust-next"
+  echo "You've hit your usage limit" >&2
+  exit 1
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-c34782 through the batch dispatch path: the router learns a
+    /// success from a passing verify step and a failure from a failing one,
+    /// and nothing from an attempt without verify steps, a provider transport
+    /// error or exhausted usage, although the provider call succeeded or the
+    /// model never got to work.
+    #[tokio::test]
+    async fn routing_learns_only_from_gate_verdicts() {
+        let temp = tempdir().expect("tempdir");
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        let facade = FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::RoutingObservationSink::new(Arc::clone(&router)),
+        ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new();
+
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+        assert_eq!(router_counts(&router), ((1, 1), 1), "a pass is a success");
+
+        task.verify = vec![verify_step("check", "false")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the verify step fails");
+        assert_eq!(router_counts(&router), ((2, 1), 2), "a gate failure");
+
+        task.verify.clear();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("an attempt without verify steps completes unverified");
+        std::fs::write(temp.path().join("fail-next"), "").unwrap();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider call fails");
+        std::fs::write(temp.path().join("exhaust-next"), "").unwrap();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider is out of usage");
+        assert_eq!(
+            router_counts(&router),
+            ((2, 1), 2),
+            "unverified, provider-failed and exhausted attempts are not quality evidence"
+        );
+    }
+
+    /// bug-07bc75: a Graph dispatch teaches the router only through its
+    /// settled verdict. The provider bridge still records every call's
+    /// efficiency row and the provider's health, but it no longer observes
+    /// or saves `cascade-router.json` from the provider's own success,
+    /// before any gate ran.
+    #[tokio::test]
+    async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
+        let temp = tempdir().expect("tempdir");
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        let facade = FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::RoutingObservationSink::new(Arc::clone(&router)),
+        ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new();
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("an attempt without verify steps completes unverified");
+        std::fs::write(temp.path().join("fail-next"), "").unwrap();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider call fails");
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+
+        assert_eq!(router_counts(&router), ((1, 1), 1), "only the settled pass");
+        let learn = temp.path().join(".roko/learn");
+        assert!(
+            !learn.join("cascade-router.json").exists(),
+            "the provider bridge trained the router"
+        );
+        let model_calls = std::fs::read_to_string(learn.join("efficiency.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(r#""kind":"model_call""#))
+            .count();
+        assert!(model_calls >= 3, "one efficiency row per provider call");
+        assert!(learn.join("provider-health.json").exists());
+    }
+
+    /// S01 §4.1 through the batch dispatch path: an unverified attempt, a
+    /// provider transport error and a prompt-assembly failure carry no
+    /// learning label, so none of them moves a learner (router, playbooks,
+    /// daimon, prompt experiments, durable knowledge). The first two still
+    /// leave episodes, labelled `null`, and all three leave verdicts, so none
+    /// reads as abandoned. A pass then moves every learner.
+    #[tokio::test]
+    async fn learning_sinks_skip_attempts_without_a_learning_label() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let store_path = roko.join("learn/experiments.json");
+        save_role_experiment(&store_path);
+        let playbooks = save_banner_playbook(&roko.join("learn/playbooks")).await;
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        let daimon = Arc::new(std::sync::Mutex::new(roko_daimon::DaimonState::new()));
+        let episodes_path = roko.join("episodes.jsonl");
+        let facade = FeedbackFacade::new()
+            .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
+                &episodes_path,
+            )))
+            .with_sink(Arc::new(
+                crate::runtime_feedback::RoutingObservationSink::new(Arc::clone(&router)),
+            ))
+            .with_sink(Arc::new(
+                crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(temp.path()),
+            ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            experiment_store_path: Some(store_path.clone()),
+            playbook_dir: Some(roko.join("learn/playbooks")),
+            daimon_state: Some(Arc::clone(&daimon)),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        task.title = "Render the greeting banner".into();
+        let ctx = CellContext::new().with_run_id("run-labels".to_string());
+        let affect_ticks = || daimon.lock().unwrap().state.tick_count;
+        let knowledge = || {
+            roko_neuro::KnowledgeStore::for_workdir(temp.path())
+                .read_all()
+                .unwrap()
+                .len()
+        };
+
+        // No verify steps: the provider call succeeds, and nothing checks it.
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes unverified");
+        // A transport error is the provider's, not the agent's.
+        std::fs::write(temp.path().join("fail-next"), "").unwrap();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider call fails");
+        // A declared context file that does not exist fails prompt assembly.
+        let mut unassembled = task.clone();
+        unassembled.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![crate::task_parser::ReadFile {
+                path: "src/missing.rs".to_string(),
+                lines: None,
+                why: "context".to_string(),
+            }],
+            ..crate::task_parser::TaskContext::default()
+        });
+        dispatcher
+            .dispatch(&make_spec(&unassembled), Vec::new(), &ctx)
+            .await
+            .expect_err("prompt assembly fails");
+
+        assert_eq!(router_counts(&router), ((0, 0), 0), "router");
+        assert_eq!(playbook_counts(&playbooks).await, (0, 0), "playbooks");
+        assert_eq!(affect_ticks(), 0, "daimon");
+        assert_eq!(experiment_trials(&store_path), (0, 0), "experiments");
+        assert_eq!(knowledge(), 0, "durable knowledge");
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
+            .await
+            .unwrap();
+        let labels: Vec<(&str, &serde_json::Value)> = episodes
+            .iter()
+            .map(|episode| {
+                let outcome = episode.extra["outcome"].as_str().unwrap_or_default();
+                (outcome, &episode.extra["learning_label"])
+            })
+            .collect();
+        let null = serde_json::Value::Null;
+        assert_eq!(labels, [("unverified", &null), ("provider_error", &null)]);
+
+        // A pass is evidence for every learner.
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+        assert_eq!(router_counts(&router), ((1, 1), 1), "router");
+        assert_eq!(playbook_counts(&playbooks).await, (1, 0), "playbooks");
+        assert!(affect_ticks() > 0, "daimon");
+        assert_eq!(experiment_trials(&store_path), (1, 1), "experiments");
+        assert!(knowledge() > 0, "durable knowledge");
+
+        // Every attempt settled, so none reads as abandoned. Closing the
+        // run's writer flushes its lines.
+        drop(dispatcher);
+        let attempts = roko.join("runs/run-labels/attempts.jsonl");
+        let mut verdicts = Vec::new();
+        for _ in 0..600 {
+            verdicts = std::fs::read_to_string(&attempts)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|row| row["schema_version"] == "roko.verdict/1")
+                .map(|row| {
+                    (
+                        row["outcome"].to_string(),
+                        row["learning_label"].to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if verdicts.len() >= 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let expected = [
+            ("unverified", "null"),
+            ("provider_error", "null"),
+            ("harness_error", "null"),
+            ("passed", "1"),
+        ]
+        .map(|(outcome, label)| (format!("\"{outcome}\""), label.to_string()));
+        assert_eq!(verdicts, expected);
+    }
+
+    /// Through the batch dispatch path: a verified attempt grows durable
+    /// knowledge and credits its prompt treatment and the playbook its prompt
+    /// used with a success; a verify failure credits both with a failure and
+    /// keeps the failing step and its output on the episode.
+    #[tokio::test]
+    async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join(".roko/learn/experiments.json");
+        save_role_experiment(&store_path);
+        let playbook_dir = temp.path().join(".roko/learn/playbooks");
+        let playbooks = save_banner_playbook(&playbook_dir).await;
         let episodes_path = temp.path().join(".roko/episodes.jsonl");
         let facade = crate::runtime_feedback::FeedbackFacade::new()
             .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
@@ -582,18 +983,12 @@ mod tests {
             "{knowledge:#?}"
         );
 
-        let stats = ExperimentStore::load_strict(&store_path)
-            .unwrap()
-            .get("role-ab")
-            .unwrap()
-            .stats
-            .values()
-            .fold((0, 0), |(trials, successes), stats| {
-                (trials + stats.trials, successes + stats.successes)
-            });
-        assert_eq!(stats, (2, 1), "one observed success and one failure");
-        let playbook = playbooks.load("banner-steps").await.unwrap().unwrap();
-        assert_eq!((playbook.success_count, playbook.failure_count), (1, 1));
+        assert_eq!(
+            experiment_trials(&store_path),
+            (2, 1),
+            "one observed success and one failure"
+        );
+        assert_eq!(playbook_counts(&playbooks).await, (1, 1));
 
         let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
             .await

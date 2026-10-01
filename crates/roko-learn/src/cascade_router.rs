@@ -33,6 +33,7 @@ use roko_core::agent::TaskRequirements;
 use roko_core::agent::{AgentRole, ModelSpec, ModelTier};
 use roko_core::config::schema::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
+use roko_fs::with_locked_json_transaction;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -62,8 +63,8 @@ use crate::cascade::helpers::{
     temperament_tier_shift, thinking_filtered_candidates, thinking_preference,
 };
 use crate::cascade::persistence::{
-    CascadeSnapshot, PersistedModelStats, detect_version_changes, migrated_confidence_stats,
-    remap_role_table_entry,
+    CascadeSnapshot, PersistedModelStats, detect_version_changes, merge_learning,
+    migrated_confidence_stats, remap_role_table_entry,
 };
 use crate::cascade::types::{
     CATEGORY_CONFIDENCE_WEIGHT, CATEGORY_MIN_TRIALS, CategoryModelStats, GeminiObservationTotals,
@@ -76,6 +77,7 @@ use crate::latency::LatencyTracker;
 use crate::model_experiment::ModelExperimentStore;
 use crate::model_router::{
     CONTEXT_DIM, CandidateArmScore, LinUCBRouter, RoutingContext, compute_routing_reward_v2,
+    compute_routing_reward_with_weights,
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
@@ -132,6 +134,12 @@ pub struct CascadeRouter {
     /// appears in this list are filtered out before any health or scoring
     /// pass.  An empty list (the default) disables the filter.
     disabled_providers: Vec<String>,
+    /// The persisted state this router last loaded or saved.
+    ///
+    /// [`Self::save`] writes only what the router learned since, merged into
+    /// the snapshot on disk, so processes sharing the snapshot keep each
+    /// other's observations (bug-9c88ac).
+    baseline: Mutex<CascadeSnapshot>,
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -179,28 +187,43 @@ impl Default for RoutingContext {
 }
 
 impl roko_agent::model_call_service::ForceBackendOverrideRecorder for CascadeRouter {
-    fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
-        // P0-03: Build a routing context that reflects the model tier instead
-        // of a bare default. The trait boundary prevents passing a real
-        // RoutingContext from roko-agent, so we infer complexity from the
-        // model slug so the LinUCB bandit gets a more representative feature
-        // vector. The routing.rs FeedbackSink path already uses the real
-        // dispatch-time RoutingContext; this only covers the ModelCallService
-        // force_backend path.
-        let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
-        let complexity = match tier {
-            roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,
-            roko_core::agent::ModelTier::Premium => roko_core::task::TaskComplexityBand::Complex,
-            _ => roko_core::task::TaskComplexityBand::Standard,
-        };
-        let ctx = RoutingContext {
-            complexity,
-            has_prior_failure: !success,
-            previous_model: Some(model_slug.to_string()),
-            ..RoutingContext::default()
-        };
-        CascadeRouter::record_override_outcome(self, model_slug, &ctx, success, None)
+    fn record_override_outcome(
+        &self,
+        model_slug: &str,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+    ) -> bool {
+        let ctx = Self::forced_override_context(model_slug, success);
+        CascadeRouter::record_override_outcome(
+            self, model_slug, &ctx, success, cost_usd, latency_ms, None,
+        )
     }
+}
+
+/// Cost at which an outcome's normalized cost reaches 1 (P0-05).
+const OUTCOME_COST_CEILING_USD: f64 = 1.0;
+/// Latency at which an outcome's normalized latency reaches 1 (P0-05).
+const OUTCOME_LATENCY_CEILING_MS: f64 = 300_000.0;
+
+/// The `LinUCB` reward an outcome earns: `success_reward` for a success, and
+/// 0 for a failure, whose cost and latency bought nothing (bug-8da8ba).
+///
+/// Every router observation applies it, so no entry point can reward a
+/// failure for being cheap or fast (bug-3ea1f5).
+#[must_use]
+pub fn outcome_reward(success: bool, success_reward: f64) -> f64 {
+    if success { success_reward } else { 0.0 }
+}
+
+/// An outcome's cost and latency on the `[0, 1]` scale of the routing
+/// reward: $1.00 per task and 5 minutes reach 1 (P0-05).
+#[must_use]
+pub fn normalized_cost_and_latency(cost_usd: f64, duration_ms: u64) -> (f64, f64) {
+    (
+        (cost_usd / OUTCOME_COST_CEILING_USD).clamp(0.0, 1.0),
+        (duration_ms as f64 / OUTCOME_LATENCY_CEILING_MS).clamp(0.0, 1.0),
+    )
 }
 
 impl CascadeRouter {
@@ -214,11 +237,18 @@ impl CascadeRouter {
             !model_slugs.is_empty(),
             "CascadeRouter: need at least one model"
         );
+        let role_table = default_role_model_table(&model_slugs);
+        // Nothing is learned yet. The default role table is not a change
+        // to persist over the entries other writers saved.
+        let baseline = CascadeSnapshot {
+            role_table: role_table.clone(),
+            ..CascadeSnapshot::default()
+        };
         Self {
             linucb: LinUCBRouter::new(model_slugs.clone()),
             confidence_stats: Mutex::new(HashMap::new()),
             pareto_frontier: Mutex::new(ParetoFrontierState::default()),
-            role_table: Mutex::new(default_role_model_table(&model_slugs)),
+            role_table: Mutex::new(role_table),
             tier_map: HashMap::new(),
             model_slugs,
             stage_tracking: Mutex::new(StageTracking {
@@ -231,6 +261,7 @@ impl CascadeRouter {
             verdict_blend_weight: 0.2,
             cost_pressure_until: Mutex::new(None),
             disabled_providers: Vec::new(),
+            baseline: Mutex::new(baseline),
         }
     }
 
@@ -1337,7 +1368,15 @@ impl CascadeRouter {
         // apply the per-category pass-rate delta even when the caller doesn't
         // invoke record_category_outcome separately.
         self.record_category_outcome(model_slug, ctx.task_category, success);
-        self.observe_internal(&ctx.to_features(), model_idx, reward, success, None, None);
+        self.observe_internal(
+            &ctx.to_features(),
+            model_idx,
+            reward,
+            success,
+            None,
+            None,
+            1.0,
+        );
     }
 
     /// Apply a WAL-replayed observation. Does NOT write a WAL entry.
@@ -1352,6 +1391,30 @@ impl CascadeRouter {
         model_idx: usize,
         reward: f64,
         success: bool,
+    ) {
+        self.replay_weighted_observation(
+            model_slug,
+            context_features,
+            model_idx,
+            reward,
+            success,
+            1.0,
+        );
+    }
+
+    /// Apply a WAL-replayed observation that carried `weight` (0.0 to 1.0)
+    /// of a full one, as [`Self::observe_weighted_outcome`] applied it. Does
+    /// NOT write a WAL entry.
+    ///
+    /// Validates the slug/index pair as [`Self::replay_observation`] does.
+    pub fn replay_weighted_observation(
+        &self,
+        model_slug: &str,
+        context_features: &[f64],
+        model_idx: usize,
+        reward: f64,
+        success: bool,
+        weight: f64,
     ) {
         // Validate the slug/index pair is still valid after potential config changes.
         let current_idx = self.model_index_for_slug(model_slug);
@@ -1374,7 +1437,15 @@ impl CascadeRouter {
                 "[wal] replay: model index changed -- using current index"
             );
         }
-        self.observe_internal(context_features, effective_idx, reward, success, None, None);
+        self.observe_internal(
+            context_features,
+            effective_idx,
+            reward,
+            success,
+            None,
+            None,
+            weight.clamp(0.0, 1.0),
+        );
     }
 
     /// Record an observation enriched with Perplexity search metadata.
@@ -1409,6 +1480,7 @@ impl CascadeRouter {
             success,
             Some(perplexity),
             None,
+            1.0,
         );
         true
     }
@@ -1444,6 +1516,7 @@ impl CascadeRouter {
             success,
             None,
             Some(gemini),
+            1.0,
         );
         true
     }
@@ -1528,40 +1601,67 @@ impl CascadeRouter {
         );
     }
 
-    /// Record a manual model override outcome for learning (UX34).
+    /// Record the outcome of a manual model override (UX34).
     ///
     /// Called when the operator used `--model` / `--force-model` /
-    /// `--force-backend` to bypass the cascade router. Uses the full
-    /// multi-objective observation path so that LinUCB context is updated
-    /// alongside confidence stats.  The `dampening` factor (0.0--1.0)
-    /// scales the quality signal to prevent a single user override from
-    /// dominating the bandit policy.  Pass `None` to use the built-in
-    /// default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
+    /// `--force-backend` to bypass the cascade router. The outcome counts in
+    /// the confidence stats like any other: a trial, and a success only when
+    /// `success`. Its `LinUCB` update earns the multi-objective reward of a
+    /// success at its cost and latency, or 0 for a failure, whose cost and
+    /// latency bought nothing (bug-8da8ba). The update carries only
+    /// `dampening` (0.0--1.0) of an observation's weight, so an operator's
+    /// choices cannot dominate the bandit policy (bug-f68404). Pass `None` to
+    /// use the built-in default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
     pub fn record_override_outcome(
         &self,
         model_slug: &str,
         ctx: &RoutingContext,
         success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
         dampening: Option<f64>,
     ) -> bool {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
-        let damp = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
-        let raw_quality = if success { 1.0 } else { 0.0 };
-        let dampened_quality = raw_quality * damp;
-        // For overrides we have no cost/latency telemetry, so use neutral
-        // values (0.0) and let only the dampened quality signal drive learning.
-        let weights = RewardWeights::default();
-        self.observe_multi_objective(
-            ctx.to_features(),
+        let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
+        let success_reward =
+            compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
+        let reward = outcome_reward(success, success_reward);
+        let weight = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
+        self.observe_internal(
+            &ctx.to_features(),
             model_idx,
-            dampened_quality,
-            0.0,
-            0.0,
-            &weights,
+            reward,
+            success,
+            None,
+            None,
+            weight,
         );
         true
+    }
+
+    /// The routing context of a forced-model override recorded without one.
+    ///
+    /// P0-03: The context reflects the model tier instead of a bare default.
+    /// The trait boundary prevents passing a real RoutingContext from
+    /// roko-agent, so we infer complexity from the model slug so the LinUCB
+    /// bandit gets a more representative feature vector. The routing.rs
+    /// FeedbackSink path already uses the real dispatch-time RoutingContext;
+    /// this only covers the ModelCallService force_backend path.
+    fn forced_override_context(model_slug: &str, success: bool) -> RoutingContext {
+        let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
+        let complexity = match tier {
+            roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,
+            roko_core::agent::ModelTier::Premium => roko_core::task::TaskComplexityBand::Complex,
+            _ => roko_core::task::TaskComplexityBand::Standard,
+        };
+        RoutingContext {
+            complexity,
+            has_prior_failure: !success,
+            previous_model: Some(model_slug.to_string()),
+            ..RoutingContext::default()
+        }
     }
 
     /// Record a per-category observation for the given model (audit #84).
@@ -1691,6 +1791,7 @@ impl CascadeRouter {
             passed,
             None,
             None,
+            1.0,
         );
     }
 
@@ -1711,7 +1812,27 @@ impl CascadeRouter {
         reward: f64,
         success: bool,
     ) {
-        self.observe_internal(&context_vec, model_idx, reward, success, None, None);
+        self.observe_internal(&context_vec, model_idx, reward, success, None, None, 1.0);
+    }
+
+    /// Record an observation that carries `weight` (0.0 to 1.0) of a full
+    /// one: a full confidence trial, and a `LinUCB` update scaled by
+    /// `weight`, as [`Self::record_override_outcome`] makes for an
+    /// operator's override.
+    ///
+    /// This applies the same update as [`Self::replay_weighted_observation`],
+    /// so an observation journaled in the WAL replays exactly as it was
+    /// applied.
+    pub fn observe_weighted_outcome(
+        &self,
+        context_vec: &[f64],
+        model_idx: usize,
+        reward: f64,
+        success: bool,
+        weight: f64,
+    ) {
+        let weight = weight.clamp(0.0, 1.0);
+        self.observe_internal(context_vec, model_idx, reward, success, None, None, weight);
     }
 
     /// Record a successful multi-objective observation from a raw context vector.
@@ -1742,7 +1863,9 @@ impl CascadeRouter {
     /// `LinUCB` arm for `model_idx`. A success earns the multi-objective
     /// reward for `quality`, cost and latency. A failure earns a reward of 0,
     /// because the cost and latency of a failed attempt bought nothing
-    /// (bug-8da8ba); `quality` applies to successes only.
+    /// (bug-8da8ba); `quality` applies to successes only. Like every other
+    /// observation path, it then refreshes the Pareto frontier and advances
+    /// the cascade stage, so routing follows without a reload (bug-9ab6b8).
     pub fn observe_multi_objective_outcome(
         &self,
         context_vec: Vec<f64>,
@@ -1777,8 +1900,15 @@ impl CascadeRouter {
         } else {
             self.linucb.update_features(&context_vec, model_idx, 0.0);
         }
+
+        self.refresh_pareto_frontier_if_needed();
+        self.check_stage_transition();
     }
 
+    /// Apply one observation: a confidence trial (a success only when
+    /// `success`) and a `LinUCB` update carrying `weight` (0.0 to 1.0) of a
+    /// full observation. A failure's reward is 0 whatever the caller passed
+    /// ([`outcome_reward`]), including a WAL entry journaled before that rule.
     fn observe_internal(
         &self,
         context_vec: &[f64],
@@ -1787,6 +1917,7 @@ impl CascadeRouter {
         success: bool,
         perplexity: Option<PerplexityObservationTotals>,
         gemini: Option<GeminiObservationTotals>,
+        weight: f64,
     ) {
         let Some(slug) = self.model_slugs.get(model_idx) else {
             return;
@@ -1825,7 +1956,9 @@ impl CascadeRouter {
         } // stats lock dropped
 
         // Phase 2: Update LinUCB (internal lock, not nested with ours).
-        self.linucb.update_features(context_vec, model_idx, reward);
+        let reward = outcome_reward(success, reward);
+        self.linucb
+            .update_features_weighted(context_vec, model_idx, reward, weight);
 
         // Refresh Pareto frontier if the observation count crossed a bucket boundary.
         self.refresh_pareto_frontier_if_needed();
@@ -2187,8 +2320,20 @@ impl CascadeRouter {
 
     /// Build a JSON snapshot of the current router state (same format as `save()`).
     pub fn snapshot_json(&self) -> String {
+        let snapshot = self.persisted_snapshot();
+        tracing::debug!(
+            total_observations = snapshot.total_observations,
+            linucb_persisted = snapshot.linucb_state.is_some(),
+            pareto_frontier_len = snapshot.pareto_frontier.len(),
+            "cascade router snapshot built"
+        );
+        serde_json::to_string_pretty(&snapshot).unwrap_or_default()
+    }
+
+    /// The router's state in its persisted form.
+    fn persisted_snapshot(&self) -> CascadeSnapshot {
         let stage_transitions = self.stage_tracking.lock().transitions.clone();
-        let snapshot = CascadeSnapshot {
+        CascadeSnapshot {
             model_slugs: self.model_slugs.clone(),
             role_table: self.role_table.lock().clone(),
             confidence_stats: self
@@ -2223,37 +2368,46 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
             pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
-        };
-        tracing::debug!(
-            total_observations = snapshot.total_observations,
-            linucb_persisted = snapshot.linucb_state.is_some(),
-            pareto_frontier_len = snapshot.pareto_frontier.len(),
-            "cascade router snapshot built"
-        );
-        serde_json::to_string_pretty(&snapshot).unwrap_or_default()
-    }
-
-    /// Save confidence stats, model slugs, and total observation count to a JSON file.
-    pub fn save(&self, path: &Path) -> Result<(), crate::error::LearnError> {
-        let json = self.snapshot_json();
-        if json.is_empty() {
-            return Err(crate::error::LearnError::Io {
-                path: path.display().to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "failed to serialize cascade snapshot",
-                ),
-            });
         }
-        roko_core::io::atomic_write_str(path, &json).map_err(|source| {
-            crate::error::LearnError::Io {
-                path: path.display().to_string(),
-                source,
-            }
-        })
     }
 
-    fn from_snapshot(snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
+    /// Save what this router has learned into the snapshot at `path`.
+    ///
+    /// The save is a locked read-merge-write (bug-9c88ac). Under the
+    /// snapshot's sibling lock it reads the latest file, adds what this
+    /// router learned since it was loaded or last saved, model by model, and
+    /// writes the result. Processes that share the file therefore keep each
+    /// other's observations, and models this router does not track keep
+    /// their persisted state (bug-605a8a).
+    ///
+    /// A file that no longer parses is backed up to `<path>.corrupted` and
+    /// replaced, as [`Self::load_or_new`] resets on one.
+    pub fn save(&self, path: &Path) -> Result<(), crate::error::LearnError> {
+        // Held until the baseline moves on, so two saves of this router never
+        // write the same observations twice.
+        let mut baseline = self.baseline.lock();
+        let current = self.persisted_snapshot();
+        let merge = |latest: &mut CascadeSnapshot| -> std::io::Result<()> {
+            merge_learning(latest, &current, &baseline);
+            Ok(())
+        };
+        let mut saved = with_locked_json_transaction(path, merge);
+        let unreadable = saved
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidData);
+        if unreadable && Self::quarantine_unreadable_snapshot(path) {
+            saved = with_locked_json_transaction(path, merge);
+        }
+        saved.map_err(|source| crate::error::LearnError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        *baseline = current;
+        Ok(())
+    }
+
+    fn from_snapshot(mut snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
+        snapshot.name_legacy_arms();
         let CascadeSnapshot {
             model_slugs: persisted_model_slugs,
             confidence_stats,
@@ -2329,6 +2483,13 @@ impl CascadeRouter {
             frontier_state.frontier = pareto_frontier;
         }
 
+        // The router has learned nothing yet. Its baseline keeps the counters
+        // as persisted, so the ones a version upgrade transferred to a new
+        // slug are the router's to save.
+        let mut baseline = router.persisted_snapshot();
+        baseline.confidence_stats = confidence_stats;
+        *router.baseline.lock() = baseline;
+
         router
     }
 
@@ -2369,6 +2530,29 @@ impl CascadeRouter {
                     );
                 }
                 Self::new(model_slugs)
+            }
+        }
+    }
+
+    /// Move a snapshot that no longer parses to `<path>.corrupted`, so a save
+    /// can write a fresh one. Returns whether it moved the file.
+    fn quarantine_unreadable_snapshot(path: &Path) -> bool {
+        let unreadable = std::fs::read(path)
+            .is_ok_and(|raw| serde_json::from_slice::<CascadeSnapshot>(&raw).is_err());
+        if !unreadable {
+            return false;
+        }
+        let backup = path.with_extension("json.corrupted");
+        tracing::warn!(
+            path = %path.display(),
+            backup = %backup.display(),
+            "cascade router state corrupted — backing up and saving fresh state"
+        );
+        match std::fs::rename(path, &backup) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%error, "failed to back up corrupted cascade router file");
+                false
             }
         }
     }
@@ -3015,6 +3199,7 @@ impl CascadeRouter {
             actual_success,
             None,
             None,
+            1.0,
         );
 
         self.check_stage_transition();

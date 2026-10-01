@@ -12,6 +12,7 @@ use crate::safety::SafetyLayer;
 use crate::streaming::parse_sse_line;
 use crate::tool_loop::{
     LlmBackend, LlmError, StopReason, StreamEvent, StreamEventKind, ToolLoop, TurnConfig,
+    collect_stream_to_response,
 };
 use crate::translate::{
     BackendResponse, OpenAiTranslator, RenderedTools, SessionState, Translator,
@@ -502,7 +503,7 @@ async fn run_llm_streaming(backend: ParityBackend) -> Result<(), String> {
 
     // Reconstruct a BackendResponse from the accumulated stream events so
     // we can reuse extract_text / extract_usage / extract_backend_session.
-    let response = response_from_stream_events(&events);
+    let response = response_from_stream_events(&events).await?;
 
     if response.extract_text() != scenario.scenario.expected_content {
         return Err("streamed final content mismatch".to_string());
@@ -1038,48 +1039,16 @@ fn usage_from_chunks(chunks: &[ExpectedChunk]) -> crate::Usage {
     usage
 }
 
-/// Reconstruct a [`BackendResponse`] from collected stream events by
-/// accumulating text deltas and building a synthetic OpenAI-shaped JSON
-/// response so that `extract_text`, `extract_usage`, and session extraction
-/// all work the same way as the non-streaming happy path.
-fn response_from_stream_events(events: &[StreamEvent]) -> BackendResponse {
-    let mut text = String::new();
-    let mut usage_json = serde_json::json!({});
-    let model = String::new();
-    let response_id = String::new();
-
-    for event in events {
-        match &event.kind {
-            StreamEventKind::TextDelta(delta) => text.push_str(delta),
-            StreamEventKind::Usage(u) => {
-                usage_json = serde_json::json!({
-                    "prompt_tokens": u.input_tokens,
-                    "completion_tokens": u.output_tokens,
-                    "cache_read_input_tokens": u.cache_read_tokens,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // Wrap in an OpenAI chat-completions-shaped envelope so that
-    // `BackendResponse::Json(v).extract_text()` and `extract_usage()`
-    // both work.
-    let envelope = serde_json::json!({
-        "id": response_id,
-        "model": model,
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": text,
-            },
-            "finish_reason": "stop",
-        }],
-        "usage": usage_json,
-    });
-
-    let _ = (model, response_id); // suppress unused warnings
-    BackendResponse::Json(envelope)
+/// The [`BackendResponse`] the tool loop rebuilds from collected stream
+/// events ([`collect_stream_to_response`]), so the parity checks read a
+/// stream's text, usage and session the way a streamed turn is read.
+async fn response_from_stream_events(events: &[StreamEvent]) -> Result<BackendResponse, String> {
+    // The collector takes a `'static` stream, so it owns its events.
+    let owned: Vec<StreamEvent> = events.to_vec();
+    let stream = futures::stream::iter(owned.into_iter().map(Ok));
+    collect_stream_to_response(Box::pin(stream), std::time::Instant::now())
+        .await
+        .map_err(|err| format!("collect stream events: {err}"))
 }
 
 fn make_tool_loop<B>(backend: B) -> ToolLoop
@@ -1346,4 +1315,63 @@ fn read_http_request(stream: &mut TcpStream) -> Result<RecordedRequest, String> 
     let body = serde_json::from_slice(&buf[header_end..header_end + content_length])
         .map_err(|err| format!("decode request body json: {err}"))?;
     Ok(RecordedRequest { body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The batch response rebuilt from a stream reads back the usage the
+    /// stream reported, cache reads included (bug-25d24e), and the session
+    /// its chunks named.
+    #[tokio::test]
+    async fn streamed_and_batch_usage_agree_on_cache_reads() {
+        let streamed = crate::Usage {
+            input_tokens: 8,
+            output_tokens: 3,
+            cache_read_tokens: 1,
+            ..crate::Usage::default()
+        };
+        let named = SessionState {
+            session_id: Some("sess-1".to_string()),
+            thread_id: None,
+            conversation_id: Some("chatcmpl-1".to_string()),
+        };
+        let threaded = SessionState {
+            thread_id: Some("thread-1".to_string()),
+            ..SessionState::default()
+        };
+        let events = [
+            StreamEvent::now(StreamEventKind::TextDelta(
+                "OpenAI streams well.".to_string(),
+            ))
+            .with_session(Some(named)),
+            StreamEvent::now(StreamEventKind::Usage(streamed)).with_session(Some(threaded)),
+            StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            }),
+        ];
+
+        let response = response_from_stream_events(&events)
+            .await
+            .expect("collect the stream");
+        let batch = response.extract_usage();
+
+        assert_eq!(
+            (
+                batch.input_tokens,
+                batch.output_tokens,
+                batch.cache_read_tokens
+            ),
+            (8, 3, 1)
+        );
+        assert_eq!(
+            extract_backend_session(&ParityBackend::OpenAi, &response),
+            SessionState {
+                session_id: Some("sess-1".to_string()),
+                thread_id: Some("thread-1".to_string()),
+                conversation_id: Some("chatcmpl-1".to_string()),
+            }
+        );
+    }
 }

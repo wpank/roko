@@ -49,7 +49,8 @@ Read the sections in this order; the PDF joins them the same way.
 - **Budgets** are in words and total 6,500 for §0–§10 (dec-2cd76a). `paperlint --budget F` reads the `File` and
   `Budget` columns of this table, and each file's status header repeats its budget. The generated appendix has none.
 - **Other files:** `references.bib` (the bibliography), `evidence/` (frozen inputs, with `SHA256SUMS` and a
-  provenance table), `figures/` (the three figures), `data/mechanisms.toml` (the status matrix's data),
+  provenance table), `figures/` (the three figures), `data/mechanisms.toml` (the status matrix's data), `data/citation-content-audit.json` (what
+  each cited work was checked against, and the verdict),
   [`REVIEW.md`](REVIEW.md) (the review record) and `build.sh` (the PDF build, gap-8117a8).
 - **Writers' working notes** (each section's claims ledger, the shared numbers and the gitignored sources they came
   from) are kept outside the repository. The published text cites only tracked files, commits and frozen evidence.
@@ -85,7 +86,7 @@ Line 1 of every section file (`NN-*.md` and `appendix-*.md`) is its status heade
 
 ### Status tags
 
-- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@a17d4dadd`: the tag in capitals, `@`, and a short sha of at least 7 hex
+- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@41228d7b2`: the tag in capitals, `@`, and a short sha of at least 7 hex
   digits (use the 9 that `git log --oneline` prints). The commit must be an ancestor of HEAD.
 - Take tags from the status matrix (the appendix, rendered from `data/mechanisms.toml`) at its pinned commit, never
   from older notes: several mechanisms moved in the merges of 2026-09-29.
@@ -139,8 +140,8 @@ TOML table names such as `[[task.verify]]` inside code spans are not markers.
   `[@key]`, or a rollup or snapshot with its id (e.g. "rollup 2026-09-29T14:37:51") together with the frozen file
   in `evidence/` that holds it. An inline `[@key]` also counts. The footnote also gives the window or scope.
 - Footnote labels start with the section number, because `build.sh` joins the files: `[^7-portal]`.
-- `paperlint` counts a footnote as a source only when it names a commit, a work item, a `[@key]` or a rollup or
-  snapshot id. A frozen file cited by its sha256 alone does not count, so name the item that froze it as well.
+- `paperlint` counts a footnote as a source when it names a commit, a work item, a `[@key]`, a rollup or snapshot
+  id, or a frozen file in `evidence/`. The sha256 given with a frozen file must match its line in `SHA256SUMS`.
 - For example:
 
 ```markdown

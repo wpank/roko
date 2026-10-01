@@ -592,39 +592,32 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
         }
     };
 
-    // Generate TOML snippet
-    let kind = entry.kind.label();
-    let env_var = if entry.api_key_env.is_empty() {
+    let config_path = workdir.join("roko.toml");
+    let existing = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?
+    } else if dry_run {
         String::new()
     } else {
-        format!("api_key = \"${{{}}}\"", entry.api_key_env)
+        tracing::error!("no roko.toml found; run `roko init` first");
+        return Ok(());
     };
 
-    let models_toml: Vec<String> = entry
+    // TOML defines a table once, so the stanza leaves out every table the
+    // file already has: the provider, and each model under its key or slug
+    // (`roko init` writes `[models.claude-sonnet-4-6]`).
+    let config: toml::Table =
+        toml::from_str(&existing).with_context(|| format!("parse {}", config_path.display()))?;
+    let section = |key: &str| config.get(key).and_then(toml::Value::as_table);
+    if section("providers").is_some_and(|providers| providers.contains_key(name)) {
+        println!("Provider '{}' is already configured in roko.toml", name);
+        return Ok(());
+    }
+    let models_table = section("models");
+    let (models, kept): (Vec<_>, Vec<_>) = entry
         .models
         .iter()
-        .map(|m| {
-            format!(
-                "[models.{slug}]\nprovider = \"{name}\"\nmodel = \"{slug}\"\ncontext_window = {ctx}\nmax_output = {max_out}\nsupports_tools = {tools}\ncost_input_per_m = {ci}\ncost_output_per_m = {co}",
-                slug = m.slug.replace('/', "_"),
-                name = name,
-                ctx = m.context_window,
-                max_out = m.max_output,
-                tools = m.supports_tools,
-                ci = m.cost_input_per_m,
-                co = m.cost_output_per_m,
-            )
-        })
-        .collect();
-
-    let toml_snippet = format!(
-        "[providers.{name}]\nkind = \"{kind}\"\nbase_url = \"{base_url}\"\n{env_var}\n\n{models}",
-        name = name,
-        kind = kind,
-        base_url = entry.base_url,
-        env_var = env_var,
-        models = models_toml.join("\n\n"),
-    );
+        .partition(|model| !models_table.is_some_and(|table| defines_model(table, model)));
+    let toml_snippet = provider_add_snippet(name, entry, &models);
 
     if dry_run {
         println!("# Add this to your roko.toml:\n");
@@ -632,23 +625,12 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
         return Ok(());
     }
 
-    // Append to roko.toml
-    let config_path = workdir.join("roko.toml");
-    if !config_path.exists() {
-        tracing::error!("no roko.toml found; run `roko init` first");
-        return Ok(());
-    }
-
-    let existing = std::fs::read_to_string(&config_path)?;
-    let provider_key = format!("[providers.{}]", name);
-    if existing.contains(&provider_key) {
-        println!("Provider '{}' is already configured in roko.toml", name);
-        return Ok(());
-    }
-
     let updated = format!("{}\n\n{}\n", existing.trim_end(), toml_snippet);
     std::fs::write(&config_path, updated)?;
     println!("Added provider '{}' to {}", name, config_path.display());
+    for model in kept {
+        println!("Kept the model '{}' roko.toml already defines", model.slug);
+    }
 
     if !entry.api_key_env.is_empty() {
         println!(
@@ -658,6 +640,60 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
     }
 
     Ok(())
+}
+
+/// The `roko.toml` stanza `roko config providers add <name>` appends for
+/// catalog `entry`: `[providers.<name>]`, then a `[models.*]` table for each
+/// of `models`, in the keys `ProviderConfig` and `ModelProfile` read
+/// (`api_key_env`, `slug`). A model's table is named after its slug, with
+/// `/` turned into `_`; its `slug` stays the one the API expects.
+fn provider_add_snippet(
+    name: &str,
+    entry: &roko_core::provider_catalog::ProviderCatalogEntry,
+    models: &[&roko_core::provider_catalog::CatalogModel],
+) -> String {
+    let mut lines = vec![
+        format!("[providers.{name}]"),
+        format!("kind = {}", toml_string(entry.kind.label())),
+        format!("base_url = {}", toml_string(entry.base_url)),
+    ];
+    if !entry.api_key_env.is_empty() {
+        lines.push(format!("api_key_env = {}", toml_string(entry.api_key_env)));
+    }
+    for model in models {
+        let key = toml_string(&model_table_key(model.slug));
+        // `{:?}` keeps a whole cost a float (`3.0`, not `3`).
+        let (input, output) = (model.cost_input_per_m, model.cost_output_per_m);
+        lines.push(String::new());
+        lines.push(format!("[models.{key}]"));
+        lines.push(format!("provider = {}", toml_string(name)));
+        lines.push(format!("slug = {}", toml_string(model.slug)));
+        lines.push(format!("context_window = {}", model.context_window));
+        lines.push(format!("max_output = {}", model.max_output));
+        lines.push(format!("supports_tools = {}", model.supports_tools));
+        lines.push(format!("cost_input_per_m = {input:?}"));
+        lines.push(format!("cost_output_per_m = {output:?}"));
+    }
+    lines.join("\n")
+}
+
+/// Whether `models`, the `[models.*]` tables of a `roko.toml`, already hold
+/// catalog `model`: under its table key, or as another table's slug.
+fn defines_model(models: &toml::Table, model: &roko_core::provider_catalog::CatalogModel) -> bool {
+    models.contains_key(&model_table_key(model.slug))
+        || models
+            .values()
+            .any(|table| table.get("slug").and_then(toml::Value::as_str) == Some(model.slug))
+}
+
+/// The `[models.*]` key `roko config providers add` gives a catalog model.
+fn model_table_key(slug: &str) -> String {
+    slug.replace('/', "_")
+}
+
+/// `text` as a quoted, escaped TOML string, usable as a value or a key.
+fn toml_string(text: &str) -> String {
+    toml::Value::String(text.to_string()).to_string()
 }
 
 pub(crate) async fn cmd_provider_list(workdir: &Path) -> Result<()> {
@@ -2805,8 +2841,8 @@ pub(crate) async fn run_claude_cli_provider_test(
     }
 
     let started = Instant::now();
-    let output = tokio::process::Command::new(cmd)
-        .arg("--version")
+    let scrub = roko_core::child_env::CredentialScrub::for_kind(provider.kind);
+    let output = tokio::process::Command::from(roko_cli::auth_detect::version_probe(cmd, &scrub))
         .output()
         .await
         .with_context(|| format!("spawn '{cmd} --version'"))?;
@@ -3749,26 +3785,39 @@ mod config_scope_tests {
         let dir = tempfile::tempdir().unwrap();
         let global_path = dir.path().join("config.toml");
         std::fs::write(&global_path, "").unwrap();
-        // Write via cmd_set with Global target.
-        config_cmd::cmd_set(dir.path(), EditTarget::Global, "agent.model", "test-model")
-            .unwrap_or_else(|_| {
-                // If there is no global path, the function will error.
-                // That is expected behavior — global path resolution
-                // depends on HOME. The test verifies the target selection,
-                // not the full I/O path.
-            });
+        // `cmd_set` resolves the global file from HOME, and a test must not
+        // edit the user's real config, so write the temp file directly.
+        config_cmd::set_config_key(
+            &global_path,
+            EditTarget::Global,
+            "agent.model",
+            "test-model",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&global_path).unwrap();
+        assert!(
+            content.contains("default_model = \"test-model\""),
+            "the v1 key is written under its v2 name: {content}"
+        );
     }
 
     #[test]
     fn config_set_project_writes_project_file() {
         let dir = tempfile::tempdir().unwrap();
-        // No roko.toml exists yet — cmd_set with Project creates it.
-        config_cmd::cmd_set(dir.path(), EditTarget::Project, "agent.model", "test-model").unwrap();
+        // No roko.toml exists yet — cmd_set with Project creates it. The
+        // model must resolve, or validation refuses the file.
+        config_cmd::cmd_set(
+            dir.path(),
+            EditTarget::Project,
+            "agent.model",
+            "claude-haiku-4-5",
+        )
+        .unwrap();
         let project_path = dir.path().join("roko.toml");
         assert!(project_path.exists(), "project roko.toml should be created");
         let content = std::fs::read_to_string(&project_path).unwrap();
         assert!(
-            content.contains("test-model"),
+            content.contains("claude-haiku-4-5"),
             "written value should appear in project config"
         );
     }
@@ -3829,4 +3878,61 @@ mod config_scope_tests {
     // now destructure all fields explicitly. If a field were added to
     // ConfigCmd::Export/Set/Discover and not consumed, rustc would warn
     // about unused variables.
+
+    // ── providers add ──────────────────────────────────────────────
+
+    /// bug-e2cfdf: the stanza `roko config providers add` writes loads with
+    /// the real config types, for every catalog provider.
+    #[test]
+    fn providers_add_snippet_parses_for_every_catalog_provider() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stanza {
+            providers: IndexMap<String, ProviderConfig>,
+            models: IndexMap<String, ModelProfile>,
+        }
+
+        for entry in roko_core::provider_catalog::catalog() {
+            let models: Vec<_> = entry.models.iter().collect();
+            let snippet = provider_add_snippet(entry.id, entry, &models);
+            let stanza: Stanza = toml::from_str(&snippet)
+                .unwrap_or_else(|error| panic!("{}: {error}\n{snippet}", entry.id));
+            let provider = &stanza.providers[entry.id];
+            assert_eq!(provider.kind, entry.kind, "{}", entry.id);
+            let key_env = Some(entry.api_key_env).filter(|env| !env.is_empty());
+            assert_eq!(provider.api_key_env.as_deref(), key_env, "{}", entry.id);
+            assert_eq!(stanza.models.len(), entry.models.len(), "{}", entry.id);
+            for model in entry.models {
+                let profile = &stanza.models[&model_table_key(model.slug)];
+                assert_eq!(profile.slug, model.slug, "{}", entry.id);
+                assert_eq!(profile.provider, entry.id, "{}", entry.id);
+            }
+        }
+    }
+
+    /// bug-02e264: after `roko init`, whose config already defines
+    /// `[models.claude-sonnet-4-6]`, `providers add anthropic` adds only the
+    /// tables the file lacks, so the config still parses.
+    #[test]
+    fn providers_add_after_init_keeps_the_config_parseable() {
+        use roko_cli::init::{InitProvider, write_init_config};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("roko.toml");
+        write_init_config(dir.path(), false, InitProvider::ClaudeCli).expect("roko init");
+
+        cmd_provider_add(dir.path(), "anthropic", false).expect("providers add");
+
+        let text = std::fs::read_to_string(&config_path).expect("read roko.toml");
+        let config = RokoConfig::from_toml(&text).expect("the config still parses");
+        assert!(config.providers.contains_key("anthropic"));
+        // The model init wrote keeps its provider; the others are added.
+        assert_eq!(config.models["claude-sonnet-4-6"].provider, "claude_cli");
+        assert_eq!(config.models["claude-opus-4-6"].provider, "anthropic");
+
+        // Adding it again changes nothing.
+        cmd_provider_add(dir.path(), "anthropic", false).expect("providers add again");
+        let again = std::fs::read_to_string(&config_path).expect("read roko.toml again");
+        assert_eq!(again, text);
+    }
 }

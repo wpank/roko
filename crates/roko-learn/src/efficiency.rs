@@ -270,6 +270,18 @@ impl AgentEfficiencyEvent {
         f64::from(self.tools_used) / f64::from(self.tools_available)
     }
 
+    /// Whether `cost_usd` was measured, with the semantics of
+    /// `roko_core::Usage::has_known_cost`: it is known when non-zero, or when
+    /// no tokens were consumed (a confirmed free turn). A token-consuming
+    /// event recorded at `0.0` (a bench run of an external agent, say) has
+    /// an unknown cost that must never be averaged in as $0.
+    #[must_use]
+    pub fn has_known_cost(&self) -> bool {
+        self.cost_usd.abs() > f64::EPSILON
+            || (self.input_tokens + self.output_tokens + self.cache_write_tokens == 0
+                && self.cache_read_tokens == 0)
+    }
+
     /// Compute cost savings from caching.
     pub fn cache_savings_usd(&self) -> f64 {
         self.cost_usd_without_cache - self.cost_usd
@@ -415,6 +427,73 @@ impl Default for AgentEfficiencyEvent {
     }
 }
 
+// ─── ExecutedRow ────────────────────────────────────────────────────────────
+
+/// A Graph attempt's efficiency or cost row, with the columns of its
+/// `roko.verdict/1` `executed` block that the row type lacks, beside the
+/// row's own fields. The row's `model` names the model the provider bridge
+/// launched; these name the model the provider reported serving
+/// (bug-31438d) and the planned model a failover replaced (bug-35379d), and
+/// mark a turn count the agent never reported (bug-55fd84). Like
+/// [`crate::telemetry::AttemptKeyed`], a reader that parses the row type
+/// alone still reads the line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutedRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// The model the provider reported serving; `None` when it named none.
+    #[serde(default)]
+    pub model_reported: Option<String>,
+    /// The provider reported serving another model than the one launched.
+    #[serde(default)]
+    pub model_mismatch: bool,
+    /// Every model the provider named, when its responses disagreed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models_reported: Vec<String>,
+    /// The planned model a failover replaced; absent when the planned model
+    /// ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substituted_from: Option<String>,
+    /// Why the planned model did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution_reason: Option<String>,
+    /// The agent reported no turn count, so the row's turn fields are 0 for
+    /// unknown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
+}
+
+impl<T> ExecutedRow<T> {
+    /// `row` with the columns of `executed`, its attempt's verdict block.
+    #[must_use]
+    pub fn new(row: T, executed: &crate::telemetry::ExecutedModel) -> Self {
+        Self {
+            row,
+            model_reported: executed.model_reported.clone(),
+            model_mismatch: executed.model_mismatch,
+            models_reported: executed.models_reported.clone(),
+            substituted_from: executed.failover_chain.first().cloned(),
+            substitution_reason: executed.failover_reason.clone(),
+            turns_unknown: executed.turns.is_none(),
+        }
+    }
+}
+
+/// An efficiency row whose turn fields may be unknown. `turns_unknown`
+/// marks a row whose `iteration` and `turn_number` are 0 because the agent
+/// reported no count (bug-ad5487); [`ExecutedRow`] carries the same marker
+/// on an attempt's dispatch row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnsRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// The agent reported no turn count.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
+}
+
 // ─── Grade ──────────────────────────────────────────────────────────────────
 
 /// Letter grade for prompt efficiency.
@@ -548,12 +627,23 @@ pub struct RoleCostProfile {
     pub avg_cache_hit_rate: f64,
 
     // ── Cost averages ───────────────────────────────────────────────
-    /// Average cost in USD per turn.
-    pub avg_cost_usd: f64,
-    /// 95th percentile cost in USD.
-    pub p95_cost_usd: f64,
-    /// Total cost / gate passes — true cost of one success.
-    pub cost_per_pass: f64,
+    //
+    // The cost figures cover only turns whose cost was measured
+    // (`AgentEfficiencyEvent::has_known_cost`). A token-consuming turn
+    // recorded at $0 has an unknown cost, and averaging it in as free would
+    // understate what the role costs.
+    /// Average cost in USD per measured turn; `None` when no turn's cost was
+    /// measured.
+    pub avg_cost_usd: Option<f64>,
+    /// 95th percentile cost in USD over the measured turns; `None` when no
+    /// turn's cost was measured.
+    pub p95_cost_usd: Option<f64>,
+    /// Measured cost / gate passes among the measured turns — the true cost
+    /// of one success; `None` when no measured turn passed.
+    pub cost_per_pass: Option<f64>,
+    /// Turns whose cost nobody measured, left out of the figures above.
+    #[serde(default)]
+    pub cost_unknown: u64,
 
     // ── Efficiency ──────────────────────────────────────────────────
     /// Average tool utilization (`tools_used` / `tools_available`).
@@ -567,13 +657,16 @@ pub struct RoleCostProfile {
 }
 
 impl RoleCostProfile {
-    /// Cost of one successful task for this role.
+    /// Cost of one successful task for this role: the average measured cost
+    /// over the pass rate. `None` when no turn's cost was measured; infinite
+    /// when the role never passed.
     #[must_use]
-    pub fn cost_per_successful_task(&self) -> f64 {
+    pub fn cost_per_successful_task(&self) -> Option<f64> {
+        let avg_cost = self.avg_cost_usd?;
         if self.pass_rate <= 0.0 {
-            return f64::INFINITY;
+            return Some(f64::INFINITY);
         }
-        self.avg_cost_usd / self.pass_rate
+        Some(avg_cost / self.pass_rate)
     }
 }
 
@@ -584,14 +677,20 @@ pub struct FrequencyCostProfile {
     pub frequency: OperatingFrequency,
     /// Number of efficiency events contributing.
     pub observations: u64,
-    /// Average cost in USD per turn.
-    pub avg_cost_usd: f64,
-    /// Total cost in USD across all turns.
-    pub total_cost_usd: f64,
+    /// Average cost in USD per measured turn; `None` when no turn's cost was
+    /// measured. Cost figures leave out turns with an unknown cost, as in
+    /// [`RoleCostProfile`].
+    pub avg_cost_usd: Option<f64>,
+    /// Total measured cost in USD; `None` when no turn's cost was measured.
+    pub total_cost_usd: Option<f64>,
     /// Overall gate pass rate for this frequency.
     pub pass_rate: f64,
-    /// Total cost / gate passes — true cost of one success.
-    pub cost_per_pass: f64,
+    /// Measured cost / gate passes among the measured turns — the true cost
+    /// of one success; `None` when no measured turn passed.
+    pub cost_per_pass: Option<f64>,
+    /// Turns whose cost nobody measured, left out of the cost figures.
+    #[serde(default)]
+    pub cost_unknown: u64,
 }
 
 /// Composite C-Factor snapshot for a single `roko plan run` session.
@@ -653,6 +752,9 @@ impl Default for FleetCFactor {
 }
 
 /// Compute a [`RoleCostProfile`] for each distinct role in the given events.
+///
+/// Cost figures come only from events whose cost was measured; the rest are
+/// counted in [`RoleCostProfile::cost_unknown`], never averaged in as $0.
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostProfile> {
     let mut groups: HashMap<String, Vec<&AgentEfficiencyEvent>> = HashMap::new();
@@ -669,7 +771,6 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
             let avg_input = evts.iter().map(|e| e.input_tokens as f64).sum::<f64>() / n;
             let avg_output = evts.iter().map(|e| e.output_tokens as f64).sum::<f64>() / n;
             let avg_cache = evts.iter().map(|e| e.cache_hit_rate()).sum::<f64>() / n;
-            let avg_cost = evts.iter().map(|e| e.cost_usd).sum::<f64>() / n;
             let avg_wall = evts.iter().map(|e| e.wall_time_ms as f64).sum::<f64>() / n;
             let avg_tool = evts.iter().map(|e| e.tool_utilization()).sum::<f64>() / n;
 
@@ -679,19 +780,35 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
             let pass_count = evts.iter().filter(|e| e.gate_passed == Some(true)).count();
             let pass_rate = pass_count as f64 / n;
 
-            let total_cost: f64 = evts.iter().map(|e| e.cost_usd).sum();
-            let cost_per_pass = if pass_count > 0 {
-                total_cost / pass_count as f64
+            // Cost figures come only from turns whose cost was measured.
+            let costed: Vec<&AgentEfficiencyEvent> = evts
+                .iter()
+                .copied()
+                .filter(|e| e.has_known_cost())
+                .collect();
+            let cost_unknown = n_u64.saturating_sub(costed.len() as u64);
+            let total_cost: f64 = costed.iter().map(|e| e.cost_usd).sum();
+            let avg_cost = if costed.is_empty() {
+                None
             } else {
-                0.0
+                Some(total_cost / costed.len() as f64)
+            };
+            let costed_passes = costed
+                .iter()
+                .filter(|e| e.gate_passed == Some(true))
+                .count();
+            let cost_per_pass = if costed_passes > 0 {
+                Some(total_cost / costed_passes as f64)
+            } else {
+                None
             };
 
-            // P95 cost: sort costs and take the 95th percentile.
-            let mut costs: Vec<f64> = evts.iter().map(|e| e.cost_usd).collect();
-            costs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // P95 cost: sort the measured costs and take the 95th percentile.
+            let mut costs: Vec<f64> = costed.iter().map(|e| e.cost_usd).collect();
+            costs.sort_by(f64::total_cmp);
             // P95 index: 95% of the way through the sorted cost list.
             let p95_idx = (costs.len() * 95 / 100).min(costs.len().saturating_sub(1));
-            let p95_cost = costs.get(p95_idx).copied().unwrap_or(0.0);
+            let p95_cost = costs.get(p95_idx).copied();
 
             RoleCostProfile {
                 role,
@@ -702,6 +819,7 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
                 avg_cost_usd: avg_cost,
                 p95_cost_usd: p95_cost,
                 cost_per_pass,
+                cost_unknown,
                 avg_tool_utilization: avg_tool,
                 avg_wall_time_ms: avg_wall,
                 warm_start_pct: warm_pct,
@@ -715,6 +833,10 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
 }
 
 /// Compute a [`FrequencyCostProfile`] for each distinct operating frequency.
+///
+/// Like [`compute_role_profiles`], cost figures come only from events whose
+/// cost was measured; the rest are counted in
+/// [`FrequencyCostProfile::cost_unknown`], never averaged in as $0.
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<FrequencyCostProfile> {
     let mut groups: HashMap<OperatingFrequency, Vec<&AgentEfficiencyEvent>> = HashMap::new();
@@ -727,14 +849,29 @@ pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<Freque
         .map(|(frequency, evts)| {
             let n = evts.len() as f64;
             let n_u64 = evts.len() as u64;
-            let total_cost = evts.iter().map(|e| e.cost_usd).sum::<f64>();
-            let avg_cost_usd = if n == 0.0 { 0.0 } else { total_cost / n };
             let pass_count = evts.iter().filter(|e| e.gate_passed == Some(true)).count();
             let pass_rate = if n == 0.0 { 0.0 } else { pass_count as f64 / n };
-            let cost_per_pass = if pass_count > 0 {
-                total_cost / pass_count as f64
+
+            // Cost figures come only from turns whose cost was measured.
+            let costed: Vec<&AgentEfficiencyEvent> = evts
+                .iter()
+                .copied()
+                .filter(|e| e.has_known_cost())
+                .collect();
+            let total_cost = if costed.is_empty() {
+                None
             } else {
-                0.0
+                Some(costed.iter().map(|e| e.cost_usd).sum::<f64>())
+            };
+            let avg_cost_usd = total_cost.map(|total| total / costed.len() as f64);
+            let costed_passes = costed
+                .iter()
+                .filter(|e| e.gate_passed == Some(true))
+                .count();
+            let cost_per_pass = if costed_passes > 0 {
+                total_cost.map(|total| total / costed_passes as f64)
+            } else {
+                None
             };
 
             FrequencyCostProfile {
@@ -744,6 +881,7 @@ pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<Freque
                 total_cost_usd: total_cost,
                 pass_rate,
                 cost_per_pass,
+                cost_unknown: n_u64.saturating_sub(costed.len() as u64),
             }
         })
         .collect();
@@ -1200,6 +1338,45 @@ mod tests {
     }
 
     #[test]
+    fn executed_row_sits_beside_the_row_it_extends() {
+        let event = AgentEfficiencyEvent {
+            model: "gpt-oss-120b".to_string(),
+            ..Default::default()
+        };
+        let executed = crate::telemetry::ExecutedModel {
+            model_reported: Some("glm-4.7".to_string()),
+            model_mismatch: true,
+            failover_chain: vec!["claude-sonnet".to_string()],
+            failover_reason: Some("`claude-sonnet` on `claude_cli`: out of usage".to_string()),
+            turns: Some(3),
+            ..Default::default()
+        };
+        let row = ExecutedRow::new(&event, &executed);
+
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert_eq!(json["schema"], AGENT_EFFICIENCY_EVENT_SCHEMA);
+        assert_eq!(json["model"], "gpt-oss-120b");
+        assert_eq!(json["model_reported"], "glm-4.7");
+        assert_eq!(json["model_mismatch"], true);
+        assert_eq!(json["substituted_from"], "claude-sonnet");
+        assert!(json.get("models_reported").is_none());
+        assert!(json.get("turns_unknown").is_none());
+        let alone: AgentEfficiencyEvent =
+            serde_json::from_value(json.clone()).expect("parse the row alone");
+        assert_eq!(alone, event);
+        let back: ExecutedRow<AgentEfficiencyEvent> =
+            serde_json::from_value(json).expect("parse the served row");
+        assert_eq!(back.model_reported.as_deref(), Some("glm-4.7"));
+        assert_eq!(back.row, event);
+
+        let unreported = ExecutedRow::new(&event, &crate::telemetry::ExecutedModel::default());
+        let json = serde_json::to_value(&unreported).expect("serialize");
+        assert!(json["model_reported"].is_null(), "unknown is null: {json}");
+        assert!(json.get("substituted_from").is_none());
+        assert_eq!(json["turns_unknown"], true);
+    }
+
+    #[test]
     fn efficiency_event_serializes_resolved_model() {
         let event = AgentEfficiencyEvent {
             model_used: "claude-sonnet-4-6".to_string(),
@@ -1339,7 +1516,7 @@ mod tests {
         let p = &profiles[0];
         assert_eq!(p.role, "Implementer");
         assert_eq!(p.observations, 3);
-        assert!((p.avg_cost_usd - 0.5).abs() < 1e-9);
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.5).abs() < 1e-9);
         assert!((p.pass_rate - 2.0 / 3.0).abs() < 1e-9);
         assert!((p.warm_start_pct - 2.0 / 3.0).abs() < 1e-9);
     }
@@ -1368,7 +1545,7 @@ mod tests {
         ];
 
         let profiles = compute_role_profiles(&events);
-        assert!((profiles[0].cost_per_pass - 0.75).abs() < 1e-9);
+        assert!((profiles[0].cost_per_pass.expect("measured passes") - 0.75).abs() < 1e-9);
     }
 
     #[test]
@@ -1377,8 +1554,9 @@ mod tests {
             "Impl", 0.50, 1000, 200, 0, 10000, 10, 5, false, false,
         )];
 
+        // No pass to divide by: the cost per pass is undefined, not $0.
         let profiles = compute_role_profiles(&events);
-        assert!((profiles[0].cost_per_pass).abs() < 1e-9);
+        assert_eq!(profiles[0].cost_per_pass, None);
     }
 
     #[test]
@@ -1395,9 +1573,10 @@ mod tests {
         assert_eq!(profiles.len(), 1);
 
         let p = &profiles[0];
-        assert!((p.avg_cost_usd - 0.50).abs() < 1e-9);
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.50).abs() < 1e-9);
         assert!((p.pass_rate - 0.80).abs() < 1e-9);
-        assert!((p.cost_per_successful_task() - 0.625).abs() < 1e-9);
+        let per_success = p.cost_per_successful_task().expect("measured cost");
+        assert!((per_success - 0.625).abs() < 1e-9);
     }
 
     #[test]
@@ -1524,7 +1703,7 @@ mod tests {
         let profiles = compute_role_profiles(&events);
         assert_eq!(profiles.len(), 1);
         // P95 index for 20 elements: 20 * 95 / 100 = 19 → costs[19] = 0.20
-        assert!((profiles[0].p95_cost_usd - 0.20).abs() < 1e-9);
+        assert!((profiles[0].p95_cost_usd.expect("measured cost") - 0.20).abs() < 1e-9);
     }
 
     // ── Score construction and field access ─────────────────────────
@@ -1742,9 +1921,10 @@ mod tests {
             avg_input_tokens: 1500.5,
             avg_output_tokens: 300.2,
             avg_cache_hit_rate: 0.35,
-            avg_cost_usd: 0.55,
-            p95_cost_usd: 1.20,
-            cost_per_pass: 0.75,
+            avg_cost_usd: Some(0.55),
+            p95_cost_usd: Some(1.20),
+            cost_per_pass: Some(0.75),
+            cost_unknown: 0,
             avg_tool_utilization: 0.6,
             avg_wall_time_ms: 12000.0,
             warm_start_pct: 0.4,
@@ -1780,10 +1960,11 @@ mod tests {
         let profile = FrequencyCostProfile {
             frequency: OperatingFrequency::Gamma,
             observations: 10,
-            avg_cost_usd: 0.42,
-            total_cost_usd: 4.20,
+            avg_cost_usd: Some(0.42),
+            total_cost_usd: Some(4.20),
             pass_rate: 0.7,
-            cost_per_pass: 0.60,
+            cost_per_pass: Some(0.60),
+            cost_unknown: 0,
         };
         let json = serde_json::to_string(&profile).expect("serialize");
         let p2: FrequencyCostProfile = serde_json::from_str(&json).expect("deserialize");
@@ -1817,15 +1998,16 @@ mod tests {
             avg_input_tokens: 1000.0,
             avg_output_tokens: 200.0,
             avg_cache_hit_rate: 0.0,
-            avg_cost_usd: 1.0,
-            p95_cost_usd: 1.5,
-            cost_per_pass: 0.0,
+            avg_cost_usd: Some(1.0),
+            p95_cost_usd: Some(1.5),
+            cost_per_pass: None,
+            cost_unknown: 0,
             avg_tool_utilization: 0.5,
             avg_wall_time_ms: 10000.0,
             warm_start_pct: 0.0,
             pass_rate: 0.0,
         };
-        assert_eq!(profile.cost_per_successful_task(), f64::INFINITY);
+        assert_eq!(profile.cost_per_successful_task(), Some(f64::INFINITY));
     }
 
     #[test]
@@ -1837,15 +2019,16 @@ mod tests {
             avg_input_tokens: 0.0,
             avg_output_tokens: 0.0,
             avg_cache_hit_rate: 0.0,
-            avg_cost_usd: 1.0,
-            p95_cost_usd: 0.0,
-            cost_per_pass: 0.0,
+            avg_cost_usd: Some(1.0),
+            p95_cost_usd: Some(0.0),
+            cost_per_pass: None,
+            cost_unknown: 0,
             avg_tool_utilization: 0.0,
             avg_wall_time_ms: 0.0,
             warm_start_pct: 0.0,
             pass_rate: -0.1,
         };
-        assert_eq!(profile.cost_per_successful_task(), f64::INFINITY);
+        assert_eq!(profile.cost_per_successful_task(), Some(f64::INFINITY));
     }
 
     // ── Fleet C-Factor edge cases ───────────────────────────────────
@@ -1883,9 +2066,79 @@ mod tests {
     // ── Compute helpers ─────────────────────────────────────────────
 
     #[test]
+    fn has_known_cost_reads_a_zero_after_tokens_as_unknown() {
+        let mut event = AgentEfficiencyEvent::default_event();
+        assert!(
+            event.has_known_cost(),
+            "no tokens at $0 is a confirmed free turn"
+        );
+        event.input_tokens = 10;
+        assert!(!event.has_known_cost(), "tokens at $0 were never priced");
+        event.cost_usd = 0.01;
+        assert!(event.has_known_cost());
+    }
+
+    #[test]
+    fn role_profiles_skip_unknown_costs() {
+        // Two priced turns and one that consumed tokens but recorded $0.
+        let events = vec![
+            make_test_event("Impl", 0.50, 1000, 200, 0, 10000, 10, 5, false, true),
+            make_test_event("Impl", 0.30, 1000, 200, 0, 10000, 10, 5, false, false),
+            make_test_event("Impl", 0.0, 1000, 200, 0, 10000, 10, 5, false, true),
+        ];
+        let p = &compute_role_profiles(&events)[0];
+        assert_eq!(p.observations, 3);
+        assert_eq!(p.cost_unknown, 1);
+        // $0.40, not the $0.2667 that averaging the unmeasured turn as free gives.
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.40).abs() < 1e-9);
+        // One measured turn passed: $0.80 per pass.
+        assert!((p.cost_per_pass.expect("a measured turn passed") - 0.80).abs() < 1e-9);
+        // The pass rate still covers every turn.
+        assert!((p.pass_rate - 2.0 / 3.0).abs() < 1e-9);
+
+        // A role whose costs were never measured has no cost figures at all.
+        let unmeasured = vec![make_test_event(
+            "Bench", 0.0, 100, 20, 0, 1000, 0, 0, false, true,
+        )];
+        let p = &compute_role_profiles(&unmeasured)[0];
+        assert_eq!(p.cost_unknown, 1);
+        assert_eq!(p.avg_cost_usd, None);
+        assert_eq!(p.p95_cost_usd, None);
+        assert_eq!(p.cost_per_pass, None);
+        assert_eq!(p.cost_per_successful_task(), None);
+    }
+
+    #[test]
     fn efficiency_role_profiles_empty_input() {
         let profiles = compute_role_profiles(&[]);
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn frequency_profiles_skip_unknown_costs() {
+        // Two priced turns and one that consumed tokens but recorded $0.
+        let events = vec![
+            make_test_event("Impl", 0.50, 1000, 200, 0, 10000, 10, 5, false, true),
+            make_test_event("Impl", 0.30, 1000, 200, 0, 10000, 10, 5, false, false),
+            make_test_event("Impl", 0.0, 1000, 200, 0, 10000, 10, 5, false, true),
+        ];
+        let p = &compute_frequency_profiles(&events)[0];
+        assert_eq!(p.observations, 3);
+        assert_eq!(p.cost_unknown, 1);
+        assert!((p.total_cost_usd.expect("measured cost") - 0.80).abs() < 1e-9);
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.40).abs() < 1e-9);
+        assert!((p.cost_per_pass.expect("a measured turn passed") - 0.80).abs() < 1e-9);
+        assert!((p.pass_rate - 2.0 / 3.0).abs() < 1e-9);
+
+        // No measured turn: no cost figures, never $0.
+        let unmeasured = vec![make_test_event(
+            "Bench", 0.0, 100, 20, 0, 1000, 0, 0, false, true,
+        )];
+        let p = &compute_frequency_profiles(&unmeasured)[0];
+        assert_eq!(p.cost_unknown, 1);
+        assert_eq!(p.total_cost_usd, None);
+        assert_eq!(p.avg_cost_usd, None);
+        assert_eq!(p.cost_per_pass, None);
     }
 
     #[test]
@@ -1904,13 +2157,13 @@ mod tests {
         let p = &profiles[0];
         assert_eq!(p.role, "Solo");
         assert_eq!(p.observations, 1);
-        assert!((p.avg_cost_usd - 0.42).abs() < 1e-9);
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.42).abs() < 1e-9);
         assert!((p.avg_input_tokens - 900.0).abs() < 1e-9);
         assert!((p.avg_output_tokens - 180.0).abs() < 1e-9);
         assert!((p.avg_cache_hit_rate - 0.5).abs() < 1e-9); // 450/900
         assert!((p.pass_rate - 1.0).abs() < 1e-9);
         assert!((p.warm_start_pct - 1.0).abs() < 1e-9);
-        assert!((p.cost_per_pass - 0.42).abs() < 1e-9);
+        assert!((p.cost_per_pass.expect("measured pass") - 0.42).abs() < 1e-9);
     }
 
     // ── Default event helper ────────────────────────────────────────

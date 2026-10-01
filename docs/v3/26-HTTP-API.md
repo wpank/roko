@@ -92,8 +92,10 @@ roko serve
 # Custom bind and port
 roko serve --bind 0.0.0.0 --port 8080
 
-# Enable API key authentication
-roko serve --api-key sk-my-secret-key
+# API key authentication is on by default. Set a key, stored as
+# ROKO__SERVE__AUTH__API_KEY in .roko/.env, or use the launch token
+# roko serve prints when it binds a loopback address without one.
+roko config set serve.auth.api_key sk-my-secret-key
 
 # Enable PTY terminal (disabled by default for security)
 roko serve --enable-terminal
@@ -139,11 +141,16 @@ unsafe_public_cors = false
 
 [serve]
 terminal_enabled = false
+terminal_commands = []            # command lines a session may run instead of the login shell
+terminal_max_sessions = 8         # open PTY sessions; 0 lifts the cap
+terminal_session_ttl_secs = 28800 # PTY lifetime (8 h); 0 lifts it
 cors_origins = []
 
 [serve.auth]
-enabled = false
-api_key = ""
+enabled = true            # the default; false turns auth off for local use
+# The legacy single key never goes here: roko.toml is readable by agents, and
+# roko refuses to load it with a secret. Set ROKO__SERVE__AUTH__API_KEY in
+# .roko/.env (`roko config set serve.auth.api_key <key>` does).
 privy_app_id = ""
 
 [[serve.auth.api_keys]]
@@ -157,8 +164,12 @@ expires_at = "2027-01-01T00:00:00Z"  # optional
 
 ## 3. Authentication
 
-Authentication is **opt-in**. When `serve.auth.enabled = false` (the default),
-all routes are open. Enable it when you expose the server beyond localhost.
+Authentication is **on by default**: `serve.auth.enabled` defaults to `true`.
+With no key configured, `roko serve` on a loopback address mints a per-run
+launch token and prints a sign-in link, and
+`roko config set serve.auth.api_key <key>` sets a lasting key. For local use
+you can turn auth off with `serve.auth.enabled = false`, and then all routes are
+open; a bind beyond localhost also needs `serve.acknowledge_public_risk = true`.
 
 When enabled, all `/api/*` routes require a credential. The `/health`,
 `/ready`, `/metrics`, `/webhooks/*`, and `/runs/{id}` routes are always public.
@@ -259,7 +270,7 @@ block-beta
     D["4. Global Rate Limit\n(100 req/s backstop)"]
     E["5. Body Limit\n(4 MiB cap)"]
     F["6. Secret Scrubber\n(redact API key patterns)"]
-    G["7. Auth (opt-in)\nAPI Key → Scope → RBAC"]
+    G["7. Auth (on by default)\nAPI Key → Scope → RBAC"]
     H["Route Handler"]
   end
   A --> B --> C --> D --> E --> F --> G --> H
@@ -839,8 +850,8 @@ Supervised HTTP JSON connectors.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/safety/quarantine` | Quarantine vault entries |
-| GET | `/api/safety/incidents` | Incident log from immune system |
+| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout; each entry names its `vault` |
+| GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
 
 ### 8.28 Affect (Daimon)
 
@@ -975,16 +986,33 @@ Always public (no `/api/` prefix, no auth).
 
 ### 8.39 Terminal
 
-Disabled by default (`serve.terminal_enabled = false`). When enabled on
-non-loopback, requires auth.
+Disabled by default (`serve.terminal_enabled = false`). When enabled, the
+routes require auth even on a loopback bind. Creating, deleting or writing to a
+session, and opening `/ws/terminal/{id}`, also need the `terminal:write` scope
+and the `agent:spawn` permission: the WebSocket upgrade is a GET, but it starts
+a shell, so it is not treated as a read.
+
+The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
+
+- A session runs the login shell. `POST /api/terminal/sessions` refuses a
+  `command` (403) unless `terminal_commands` lists that exact command line.
+- A request's `workdir` must resolve, symlinks included, inside the workspace
+  root; a relative path is taken from the root (400 otherwise).
+- At most `terminal_max_sessions` (8) PTYs are open at once; one more is
+  refused (429 over REST, a closed socket over WebSocket). `0` lifts the cap.
+- A session is closed `terminal_session_ttl_secs` (8 hours) after it started,
+  attached or not; a background reaper checks every minute. `0` lifts it.
+- A session id is 1-128 ASCII letters, digits, `-` or `_`, because it names a
+  directory under `.roko/workspaces/`. Every route that takes an id answers any
+  other id (for example one with an encoded `/`) with 400.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/terminal/sessions` | List PTY sessions |
-| POST | `/api/terminal/sessions` | Create PTY session |
-| GET | `/api/terminal/sessions/{id}` | Session details |
-| DELETE | `/api/terminal/sessions/{id}` | Kill session |
-| GET | `/api/terminal/sessions/{id}/stream` | WebSocket PTY stream |
+| POST | `/api/terminal/sessions` | Create a PTY session (`cols`, `rows`, optional `command` and `workdir`) |
+| DELETE | `/api/terminal/sessions/{id}` | Kill a session |
+| POST | `/api/terminal/sessions/{id}/input` | Write input to a session (256 KiB body cap) |
+| GET | `/ws/terminal/{id}` | WebSocket PTY stream; reattaches to `{id}` or starts a login-shell session |
 
 ### 8.40 Miscellaneous
 

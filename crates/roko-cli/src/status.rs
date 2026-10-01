@@ -41,6 +41,9 @@ pub struct SessionStatus {
     pub cfactor: Option<CFactor>,
     /// Total recorded cost in USD.
     pub total_cost_usd: Option<f64>,
+    /// The part of `total_cost_usd` priced from estimated usage, which no
+    /// provider reported (gap-288e38).
+    pub estimated_cost_usd: Option<f64>,
     /// Recorded cost for the current UTC day in USD.
     pub today_cost_usd: Option<f64>,
     /// Remaining ETA minutes from the critical-path computation.
@@ -71,6 +74,7 @@ impl SessionStatus {
             last_episode_passed: None,
             cfactor: None,
             total_cost_usd: None,
+            estimated_cost_usd: None,
             today_cost_usd: None,
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -100,11 +104,10 @@ impl SessionStatus {
             }
         ));
 
+        // A stale runner's phase already reads `stale/offline (was: ...)`,
+        // and a finished run's is its terminal phase.
         if let Some(phase) = &self.runner_phase {
-            lines.push(format!(
-                "runner : {phase}{}",
-                if self.runner_active { "" } else { " (stale)" }
-            ));
+            lines.push(format!("runner : {phase}"));
         }
 
         if let Some(n) = self.signal_count {
@@ -121,6 +124,9 @@ impl SessionStatus {
         }
         if let Some(cost) = self.total_cost_usd {
             lines.push(format!("total cost: ${:.4}", cost.max(0.0)));
+        }
+        if let Some(cost) = self.estimated_cost_usd.filter(|cost| *cost > 0.0) {
+            lines.push(format!("  of which estimated: ${cost:.4}"));
         }
         if let Some(cost) = self.today_cost_usd {
             lines.push(format!("today cost: ${:.4}", cost.max(0.0)));
@@ -192,6 +198,7 @@ impl SessionStatus {
             "last_episode_passed": self.last_episode_passed,
             "cfactor": &self.cfactor,
             "total_cost_usd": self.total_cost_usd,
+            "estimated_cost_usd": self.estimated_cost_usd,
             "today_cost_usd": self.today_cost_usd,
             "critical_path_eta_minutes": self.critical_path_eta_minutes,
             "runner_phase": &self.runner_phase,
@@ -244,6 +251,8 @@ pub fn collect_session_status_with_process_ledger(
             };
             Some(phase.clone())
         }
+        // The run ended; its phase says how (bug-f7f3bb).
+        crate::runner::status_file::RunnerStatusRead::Finished(s) => Some(s.phase.clone()),
         crate::runner::status_file::RunnerStatusRead::Stale(s) => {
             Some(format!("stale/offline (was: {})", s.phase))
         }
@@ -261,6 +270,7 @@ pub fn collect_session_status_with_process_ledger(
         last_episode_passed,
         cfactor: None,
         total_cost_usd: None,
+        estimated_cost_usd: None,
         today_cost_usd: None,
         critical_path_eta_minutes: None,
         runner_phase,
@@ -358,6 +368,7 @@ mod tests {
             last_episode_passed: Some(true),
             cfactor: None,
             total_cost_usd: Some(12.5),
+            estimated_cost_usd: None,
             today_cost_usd: Some(1.25),
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -395,6 +406,7 @@ mod tests {
             last_episode_passed: Some(false),
             cfactor: None,
             total_cost_usd: Some(4.2),
+            estimated_cost_usd: None,
             today_cost_usd: Some(0.7),
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -470,5 +482,39 @@ mod tests {
         assert_eq!(summary.timed_out, 1);
         assert_eq!(summary.resumable, 1);
         assert_eq!(summary.stale, 1);
+    }
+
+    /// bug-f7f3bb: `roko serve` outlives its runs, so the process that wrote a
+    /// finished run's status.json is still alive. The run's terminal phase
+    /// decides: `roko status` shows the run finished, not active.
+    #[tokio::test]
+    async fn a_finished_run_is_not_active_under_serve() {
+        use crate::runner::status_file::{GraphStatusWriter, read_runner_status};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".roko").join("state");
+        let hub = crate::state_hub::shared_state_hub();
+        // This process plays the server: it writes the run's status and
+        // keeps running after the run.
+        let writer = GraphStatusWriter::spawn(&hub, state_dir.clone(), "serve-run".to_string());
+        let running = collect_session_status(tmp.path());
+        assert!(running.runner_active);
+        assert_eq!(running.runner_phase.as_deref(), Some("idle"));
+
+        writer.finish("succeeded").await;
+
+        let read = read_runner_status(&state_dir);
+        assert!(read.is_finished(), "{read:?}");
+        assert!(!read.is_live());
+        assert_eq!(
+            read.status().map(|status| status.pid),
+            Some(std::process::id())
+        );
+        let finished = collect_session_status(tmp.path());
+        assert!(!finished.runner_active);
+        assert_eq!(finished.runner_phase.as_deref(), Some("completed"));
+        let text = finished.display_text();
+        let runner_line = text.lines().find(|line| line.starts_with("runner"));
+        assert_eq!(runner_line, Some("runner : completed"), "{text}");
     }
 }

@@ -1,0 +1,133 @@
+# ViabilityBench budget lines and caps: S09 v1.2 §4.6 (2026-09-29), enforced by driver/ledger.py (S08 §4.10, S09 E2).
+#
+# Before every dispatch the ledger reserves the dispatch's worst case against its budget line, and it refuses one
+# that would take spent + reserved + worst case past the line's cap, its experiment's cap or the programme stop.
+# Amounts are billed USD (`billed_usd` in ledger.jsonl). A subscription run bills $0 and counts against no cap; its
+# API-equivalent cost is still logged. `vb ledger report` shows each line's spend against these caps.
+#
+# Change a cap only with the author's agreement, and amend S09 §4.6 in the same change.
+schema_version = "vb.budget/1"
+source = "S09 v1.2 §4.6 (2026-09-29)"
+
+[programme]
+total_usd = 500                 # S09 §4.6: at most $500 in all, Fly.io excluded
+never_allocated_min_usd = 100   # S09 SC3: at least $100 is never allocated (these caps leave $110)
+stop_usd = 400                  # the programme stop (S08 §4.10): no dispatch past $400 billed over all lines
+
+# One table per line, in S09's order, with its planned amount and cap.
+# `confirm = "lock"` marks a v1.2 default that the author confirms at the pre-registration lock (S09 §9 decision 11;
+# dec-39c781). v1.2 funds BL13 ($5 planned, $6 cap) for the plan-level slice by lowering BL1, BL6 and BL7, so the
+# caps still sum to $390. `was_cap_usd` is the v1.1 cap it lowered.
+[[line]]
+id = "BL0"
+gate = "G0"
+content = "Pilot: verifiers and cost accounting (F1, F4); ≈ 105 billed and 20 subscription runs"
+planned_usd = 6
+cap_usd = 10
+# W10 rec 7 proposes $14, to pay for Pilot B's seeds 2–3 (+$3 planned) from the unallocated reserve. It is not in
+# force until the author agrees (gap-327242). With it the caps sum to $394, still within the stop, and S09 §7.3's
+# "Σ caps = $390" needs a one-line amendment.
+proposed_cap_usd = 14
+
+[[line]]
+id = "BL1"
+gate = "G2"
+content = "LOG1 blocks A–F: 2,156 billed and 612 (+ 210 optional) subscription runs"
+planned_usd = 152               # rounds LOG1's $152.3 (S09 §4.3)
+cap_usd = 160
+was_cap_usd = 162
+confirm = "lock"
+
+[[line]]
+id = "BL2"
+gate = "G3"
+content = "Replays: no billed runs"
+planned_usd = 0
+cap_usd = 0
+
+[[line]]
+id = "BL3"
+gate = "G4"
+content = "H6 Stage B live (9 × 40)"
+planned_usd = 27
+cap_usd = 30
+
+[[line]]
+id = "BL4"
+gate = "G4"
+content = "H5 live: H5-A1 and H5-A3 (2 × 160), concurrent H5-A0 (120) and ≈ 70 reviews"
+planned_usd = 36
+cap_usd = 40
+
+[[line]]
+id = "BL5"
+gate = "G4"
+content = "H7 E3: the S1 stream and the harmful stream"
+planned_usd = 23
+cap_usd = 26
+
+[[line]]
+id = "BL6"
+gate = "G5"
+content = "P1 live roko_full: 360 + 60, plus audit spend ≤ 12% (S05 SC6)"
+planned_usd = 42
+cap_usd = 44
+was_cap_usd = 46
+confirm = "lock"
+
+[[line]]
+id = "BL7"
+gate = "G5"
+content = "P1-ext SWE-bench Verified 60: cheap_direct and roko_full; 60 subscription runs"
+planned_usd = 24
+cap_usd = 26
+was_cap_usd = 28
+confirm = "lock"
+
+[[line]]
+id = "BL8"
+gate = "G0, G5"
+content = "Billed frontier check, fd_api gpt-5.4: 5 pilot runs and a 15-run billed-accounting check"
+planned_usd = 6
+cap_usd = 8
+
+[[line]]
+id = "BL9"
+gate = "G6"
+content = "Demo live sessions (S11 server-side caps)"
+planned_usd = 15
+cap_usd = 20
+
+[[line]]
+id = "BL10"
+gate = "G5"
+content = "Drift anchor: 20 P1-core tasks × 1 seed on cheap_direct (billed) and fd_claude (subscription)"
+planned_usd = 1.2
+cap_usd = 2
+
+[[line]]
+id = "BL11"
+gate = "G5"
+content = "T5 leave-one-mechanism-out ablation: roko_full minus S04 routing, the S07 gate or S05 feedback; 60 tasks"
+planned_usd = 16.2
+cap_usd = 18
+
+[[line]]
+id = "BL13"
+gate = "after G0"
+content = "Plan-level slice, exploratory (S09 §4.9): roko_plan's executors on 6–10 features × 1 seed"
+planned_usd = 5
+cap_usd = 6
+confirm = "lock"
+
+# Line ids held back: they fund nothing, so a dispatch on one is refused.
+[reserved]
+BL12 = "D43's proposed line for S05's first slice, still open"
+
+# An experiment cap binds every run whose `vb run --experiment` id it lists, on any line, and those runs may book
+# only to its lines.
+[[experiment]]
+id = "pilot"
+experiment_ids = ["PILOT-A", "PILOT-B"]   # S09 E1a (gap-c33709) and E1b (gap-327242)
+lines = ["BL0", "BL8"]                    # BL0, plus fd_api's five BL8 runs in Pilot A
+cap_usd = 15                              # W10 stage 1: the whole pilot stays within $15 billed

@@ -406,12 +406,142 @@ struct Cli {
     #[arg(long, global = true)]
     no_serve: bool,
 
-    /// One-shot mode: execute this prompt and exit.
-    #[arg(global = false)]
+    /// One-shot mode: execute this prompt and exit. Quote a prompt of
+    /// several words; a single word is read as a subcommand.
+    #[arg(global = false, value_parser = OneShotPromptParser)]
     prompt: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// Parses the one-shot prompt (`roko "fix the bug"`). A single word is
+/// refused as an unrecognized subcommand, so a typo or a stale command
+/// (`roko dreem`, `roko dream --help`) fails instead of starting an agent
+/// run. A one-word prompt goes through `roko run <word>`.
+#[derive(Clone, Debug)]
+struct OneShotPromptParser;
+
+impl clap::builder::TypedValueParser for OneShotPromptParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+
+        let prompt = value.to_string_lossy();
+        if prompt.split_whitespace().nth(1).is_some() {
+            return Ok(prompt.into_owned());
+        }
+        let word = prompt.trim();
+        if word.is_empty() {
+            let error = clap::Error::raw(ErrorKind::InvalidValue, "the prompt is empty\n");
+            return Err(error.with_cmd(cmd));
+        }
+        Err(unknown_command_error(cmd, word))
+    }
+}
+
+/// The error for `roko <word>` when `word` names no subcommand, with the
+/// command it most likely meant.
+fn unknown_command_error(cmd: &clap::Command, word: &str) -> clap::Error {
+    use clap::error::ErrorKind;
+
+    let similar = match suggested_command(cmd, word) {
+        Some(command) => format!("  tip: a similar subcommand exists: 'roko {command}'\n"),
+        None => String::new(),
+    };
+    let message = format!(
+        "unrecognized subcommand '{word}'\n\n{similar}  tip: to send a one-word prompt, use \
+         'roko run {word}'\n\nFor more information, try '--help'.\n"
+    );
+    clap::Error::raw(ErrorKind::InvalidSubcommand, message).with_cmd(cmd)
+}
+
+/// The command a mistyped `roko <word>` most likely meant: a nested
+/// subcommand named `word` (`roko dream` is `roko knowledge dream`), or the
+/// top-level subcommand within two edits of it.
+fn suggested_command(cmd: &clap::Command, word: &str) -> Option<String> {
+    let nested = cmd.get_subcommands().find_map(|group| {
+        group
+            .get_subcommands()
+            .find(|sub| sub.get_name() == word || sub.get_all_aliases().any(|a| a == word))
+            .map(|sub| format!("{} {}", group.get_name(), sub.get_name()))
+    });
+    nested.or_else(|| {
+        let names: Vec<&str> = cmd.get_subcommands().map(|sub| sub.get_name()).collect();
+        roko_core::config::loader::find_nearest_key(word, &names).map(str::to_string)
+    })
+}
+
+/// Parse `args` (the program name first) into a [`Cli`].
+///
+/// clap parses a subcommand that follows a bare word before it checks the
+/// word, so `roko dream run` would fail with `run`'s missing-prompt error.
+/// When parsing fails and the first word names no subcommand, the error is
+/// the unknown-command one instead, with its suggestion.
+fn try_parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    Cli::try_parse_from(&args).map_err(|error| {
+        let mut cmd = Cli::command();
+        cmd.build();
+        match leading_unknown_word(&cmd, &args) {
+            Some(word) if error.use_stderr() => unknown_command_error(&cmd, &word),
+            _ => error,
+        }
+    })
+}
+
+/// The first bare word of `args`, past the program name, options and their
+/// values, when it names no subcommand and is not a prompt of several words.
+fn leading_unknown_word(cmd: &clap::Command, args: &[std::ffi::OsString]) -> Option<String> {
+    let mut words = args.iter().skip(1).map(|arg| arg.to_string_lossy());
+    while let Some(word) = words.next() {
+        if word == "--" {
+            return None;
+        }
+        let takes_value = if let Some(long) = word.strip_prefix("--") {
+            !long.contains('=') && option_takes_value(cmd, |arg| is_long_option(arg, long))
+        } else if let Some(short) = word.strip_prefix('-') {
+            let short = short.chars().last();
+            short.is_some() && option_takes_value(cmd, |arg| arg.get_short() == short)
+        } else {
+            let word = word.trim();
+            let prompt = word.split_whitespace().nth(1).is_some();
+            let known = is_subcommand(cmd, word);
+            return (!word.is_empty() && !prompt && !known).then(|| word.to_string());
+        };
+        if takes_value {
+            words.next();
+        }
+    }
+    None
+}
+
+/// Whether `cmd` has an option `is_option` picks that takes a value.
+fn option_takes_value(cmd: &clap::Command, is_option: impl Fn(&clap::Arg) -> bool) -> bool {
+    cmd.get_arguments()
+        .any(|arg| is_option(arg) && arg.get_action().takes_values())
+}
+
+/// Whether `arg` is the option `--long`, by name or alias.
+fn is_long_option(arg: &clap::Arg, long: &str) -> bool {
+    let aliases = arg.get_all_aliases().unwrap_or_default();
+    arg.get_long() == Some(long) || aliases.contains(&long)
+}
+
+/// Whether `word` names one of `cmd`'s subcommands, or an alias of one.
+fn is_subcommand(cmd: &clap::Command, word: &str) -> bool {
+    cmd.get_subcommands()
+        .any(|sub| sub.get_name() == word || sub.get_all_aliases().any(|alias| alias == word))
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1555,6 +1685,11 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -1678,7 +1813,7 @@ Examples:
     /// Run a native SWE-bench-style proxy batch.
     #[command(after_help = "\
 Examples:
-  roko bench swe --batch-size 2 --agent-mode gold
+  roko bench swe --batch-size 2 --agent-mode gold      (control: checks the harness)
   roko bench swe --dataset ./swe-smoke.jsonl --predictions ./predictions.jsonl --agent-mode prediction-file
   roko bench swe --agent-mode command --agent-command './my-agent.sh'")]
     Swe {
@@ -1691,8 +1826,9 @@ Examples:
         /// Offset into the dataset.
         #[arg(long, default_value_t = 0)]
         offset: usize,
-        /// Agent adapter to use.
-        #[arg(long, value_enum, default_value_t = roko_cli::bench::SweAgentMode::Gold)]
+        /// Agent adapter to use (required). `gold` and `empty` are controls: they check the
+        /// harness, not a model, and are never recorded as learning.
+        #[arg(long, value_enum)]
         agent_mode: roko_cli::bench::SweAgentMode,
         /// Predictions JSONL path for --agent-mode prediction-file.
         #[arg(long)]
@@ -1999,6 +2135,11 @@ enum PlanCmd {
         /// critical path, and dangling dependency references.
         #[arg(long)]
         dag: bool,
+        /// Score each task's spec with the speclint rules (`sq-2`): score,
+        /// band, rule scores and hard fails. With `--strict`, a hard fail
+        /// exits 1.
+        #[arg(long)]
+        spec_quality: bool,
     },
     /// Rebuild or verify the deterministic plans index.
     Index {
@@ -2145,12 +2286,23 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         ///   playbook, modulation, safety, experiment) -> [Compose] ->
         ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
         ///
+        /// Each task's [Gate] runs the compile, lint and test rungs in the
+        /// worktree its attempt ran in, and accepts the attempt onto the plan
+        /// branch when they pass, so this needs `--worktree-per-task`.
+        ///
         /// Note: enricher cells are currently passthrough stubs. The richer
         /// topology does not yet add runtime value over the simple converter,
         /// but makes the structure available for incremental implementation of
         /// each enricher cell type. Only applies to the Graph engine.
         #[arg(long)]
         rich_topology: bool,
+        /// After every plan is delivered into the run's batch branch
+        /// (`roko/batch/<run-id>`), promote the batch into BRANCH and tag it
+        /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
+        /// such as your own checkout's, is not moved: the promotion is parked
+        /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.
+        #[arg(long, value_name = "BRANCH", requires = "worktree_per_task")]
+        promote: Option<String>,
         /// Run up to N plans of a plan set at the same time.
         ///
         /// Plans start in execution order once their `depends_on_plan`
@@ -2220,6 +2372,28 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Plan ID containing the task. If omitted, targets the active plan.
         #[arg(long)]
         plan_id: Option<String>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Approve or reject a task held for review (`[meta] approval =
+    /// "per_task"`). The plan run holding it merges the task on approval; a
+    /// rejection fails the attempt, and the note is the next attempt's
+    /// feedback.
+    Review {
+        /// Plan id.
+        plan_id: String,
+        /// Task id.
+        task_id: String,
+        /// Approve the task's held attempt.
+        #[arg(long, conflicts_with = "reject", required_unless_present = "reject")]
+        approve: bool,
+        /// Reject the task's held attempt.
+        #[arg(long)]
+        reject: bool,
+        /// The reviewer's note, which a rejected task's next attempt gets.
+        #[arg(long, default_value = "")]
+        note: String,
         /// Working directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2311,6 +2485,7 @@ impl PlanCmd {
             | Self::Resume { .. }
             | Self::Cancel { .. }
             | Self::Retry { .. }
+            | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
@@ -2374,6 +2549,10 @@ enum PrdCmd {
         /// Preview generation without writing tasks.toml files.
         #[arg(long)]
         dry_run: bool,
+        /// Also regenerate every plan in plans/ whose tasks.toml lacks modern
+        /// fields: one planner call per plan.
+        #[arg(long)]
+        regenerate_old: bool,
     },
     /// Scan all PRDs for duplicates, gaps, and inconsistencies.
     Consolidate,
@@ -2874,7 +3053,13 @@ enum ConfigCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Set a dotted key (e.g. `agent.command = ollama`) in the chosen layer.
+    /// Set a dotted key (e.g. `agent.command = ollama`) in the global or
+    /// project config.
+    ///
+    /// A secret key such as `serve.auth.api_key` goes to the project's
+    /// `.roko/.env` instead, as its `ROKO__` variable
+    /// (`ROKO__SERVE__AUTH__API_KEY`), whatever the flags, and is removed
+    /// from the config files agents can read.
     Set {
         /// Dotted key path.
         key: String,
@@ -3298,9 +3483,21 @@ fn main() {
             std::process::exit(EXIT_SYSTEM_ERROR);
         }
     };
+    // One scrubber for the process: the log layers scrub with it, and the
+    // persistence writers redact its secrets (the `.env` values and provider
+    // keys) from what they write.
+    let scrubber = roko_fs::observability::RunScrubber::install(&startup_env_redactions);
 
-    let mut cli = Cli::parse();
+    let mut cli = try_parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
     apply_env_overrides(&mut cli);
+    // `--config <file>` is the config of every load in this process, as
+    // `ROKO_CONFIG` would be, without reaching child processes (bug-4ed3c2).
+    // A file that does not exist is left to the command: `setup` creates it,
+    // and `plan run` refuses it.
+    if let Some(path) = &cli.config {
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+        let _ = roko_core::config::loader::set_config_path_override(path);
+    }
 
     // ── ACP early exit ───────────────────────────────────────────────
     // ACP mode uses stdio for JSON-RPC, so we MUST NOT install any
@@ -3412,8 +3609,11 @@ fn main() {
     let (non_blocking_writer, _log_guard) = tracing_appender::non_blocking(rolling_appender);
     let file_layer = Some(
         tracing_subscriber::fmt::layer()
-            .with_target(true)
             .with_ansi(false)
+            .event_format(RedactingFormat::new(
+                tracing_subscriber::fmt::format().with_target(true),
+                scrubber.clone(),
+            ))
             .with_writer(non_blocking_writer),
     );
 
@@ -3427,7 +3627,6 @@ fn main() {
             || std::env::var("RUST_LOG").is_ok()
             || raw_logs);
     let stderr_layer = if show_stderr {
-        let scrubber = build_log_scrubber(&startup_env_redactions);
         Some(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
@@ -3576,21 +3775,13 @@ fn error_hint(msg: &str) -> Option<&'static str> {
 #[derive(Debug)]
 struct RedactingFormat<E> {
     inner: E,
-    scrubber: roko_core::obs::LogScrubber,
+    scrubber: std::sync::Arc<roko_core::obs::LogScrubber>,
 }
 
 impl<E> RedactingFormat<E> {
-    fn new(inner: E, scrubber: roko_core::obs::LogScrubber) -> Self {
+    fn new(inner: E, scrubber: std::sync::Arc<roko_core::obs::LogScrubber>) -> Self {
         Self { inner, scrubber }
     }
-}
-
-fn build_log_scrubber(env_redactions: &[(String, String)]) -> roko_core::obs::LogScrubber {
-    let scrubber = roko_core::obs::LogScrubber::new();
-    for (name, value) in env_redactions {
-        let _ = scrubber.add_literal_value(value, name);
-    }
-    scrubber
 }
 
 impl<S, N, E> FormatEvent<S, N> for RedactingFormat<E>
@@ -4276,13 +4467,19 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
         // [providers.*] table) rather than the legacy agent.command field.  When
         // providers are configured the command field remains "cat" (its sentinel
         // default) even though a real backend is wired, so the original check
-        // would incorrectly gate those workspaces.
-        let has_providers = !resolved.config.providers.is_empty();
+        // would incorrectly gate those workspaces. A provider key exported in
+        // the environment is a provider too: `effective_providers` adds one
+        // for each well-known key variable, as dispatch does.
+        let mut registry = RokoConfig::default();
+        registry.providers.clone_from(&resolved.config.providers);
+        let has_providers = !registry.effective_providers().is_empty();
         if fully_default && resolved.config.agent.command == "cat" && !has_providers {
             eprintln!("error: no LLM provider configured.\n");
             eprintln!("To get started, either:");
             eprintln!("  1. Run `roko init` to create a workspace with default config");
-            eprintln!("  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY");
+            eprintln!(
+                "  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or PERPLEXITY_API_KEY"
+            );
             eprintln!("  3. Edit roko.toml to configure a provider");
             eprintln!("\n  hint: run `roko doctor` to diagnose your setup");
             std::process::exit(EXIT_FAILURE);
@@ -4491,9 +4688,10 @@ fn dashboard_page_slugs() -> Vec<&'static str> {
 
 /// Load `~/.roko/.env` and `./.roko/.env` into the process environment.
 ///
-/// Returns the loaded entries for log redaction, and records the loaded
-/// names (never values) in [`roko_core::child_env`] so gate commands and
-/// provider CLIs treat them as secrets instead of inheriting them.
+/// Returns the loaded entries, the secrets the process's scrubber redacts
+/// from its logs and persisted records, and records the loaded names (never
+/// values) in [`roko_core::child_env`] so gate commands and provider CLIs
+/// treat them as secrets instead of inheriting them.
 fn load_startup_env_files() -> Result<Vec<(String, String)>> {
     let mut redactions = Vec::new();
     let mut dotenv_names = roko_core::child_env::DotenvNames::new();
@@ -4688,6 +4886,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_bench_swe_requires_agent_mode() {
+        // A forgotten flag must not silently run the gold control.
+        let err = Cli::try_parse_from(["roko", "bench", "swe"])
+            .expect_err("bench swe without --agent-mode should not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(["roko", "bench", "swe", "--agent-mode", "command"])
+            .expect("parse bench swe --agent-mode command");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Bench {
+                cmd: BenchCmd::Swe {
+                    agent_mode: roko_cli::bench::SweAgentMode::Command,
+                    ..
+                },
+            })
+        ));
+    }
+
+    #[test]
     fn cli_parses_learn_tune_deprecated_alias() {
         let cli = Cli::try_parse_from(["roko", "learn", "tune", "routing"])
             .expect("parse learn tune routing");
@@ -4811,6 +5029,72 @@ mod tests {
         let cli = Cli::try_parse_from(["roko", "fix the bug"]).unwrap();
         assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
         assert!(cli.command.is_none());
+    }
+
+    /// bug-17f0e4: a bare word that names no subcommand is an unknown
+    /// command, not a one-shot prompt, with `--help` or another subcommand
+    /// after it too.
+    #[test]
+    fn cli_rejects_unknown_single_word_command() {
+        use clap::error::ErrorKind;
+
+        for args in [
+            &["roko", "dreem"][..],
+            &["roko", "dream", "--help"],
+            &["roko", "stauts", "--json"],
+            &["roko", "fix", "status"],
+        ] {
+            let err = Cli::try_parse_from(args).expect_err("a bare word is not a prompt");
+            assert_eq!(err.kind(), ErrorKind::InvalidSubcommand, "{args:?}");
+        }
+        let message = Cli::try_parse_from(["roko", "stauts"])
+            .expect_err("a typo")
+            .to_string();
+        assert!(
+            message.contains("unrecognized subcommand 'stauts'"),
+            "{message}"
+        );
+        assert!(message.contains("'roko status'"), "{message}");
+        assert!(message.contains("'roko run stauts'"), "{message}");
+        let message = Cli::try_parse_from(["roko", "dream"])
+            .expect_err("a nested command")
+            .to_string();
+        assert!(message.contains("'roko knowledge dream'"), "{message}");
+        // A stale `roko dream run` fails too, before any agent runs.
+        assert!(Cli::try_parse_from(["roko", "dream", "run"]).is_err());
+
+        // Prompts of several words and `roko run <word>` still parse.
+        let cli = Cli::try_parse_from(["roko", "fix the bug"]).expect("a quoted prompt");
+        assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
+        let cli = Cli::try_parse_from(["roko", "run", "fix"]).expect("a one-word run");
+        assert!(matches!(cli.command, Some(Command::Run { .. })));
+    }
+
+    /// bug-8589fc: an unknown first word is the error whatever follows it,
+    /// not the missing prompt of the `run` clap parses after it.
+    #[test]
+    fn dream_run_reports_an_unknown_command() {
+        use clap::error::ErrorKind;
+
+        for args in [
+            &["roko", "dream", "run"][..],
+            &["roko", "--json", "dream", "run"],
+            &["roko", "--config", "roko.toml", "dream", "run"],
+            &["roko", "--force-model=m", "dream", "run"],
+        ] {
+            let error = try_parse_cli(args).expect_err("dream is not a command");
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{args:?}");
+            let message = error.to_string();
+            assert!(message.contains("subcommand 'dream'"), "{message}");
+            assert!(message.contains("'roko knowledge dream'"), "{message}");
+        }
+        // An error about a real command stays that command's error.
+        for args in [&["roko", "run"][..], &["roko", "--model", "dream", "run"]] {
+            let error = try_parse_cli(args).expect_err("run needs a prompt");
+            let kind = error.kind();
+            assert_eq!(kind, ErrorKind::MissingRequiredArgument, "{args:?}");
+        }
+        assert!(try_parse_cli(["roko", "status"]).is_ok());
     }
 
     #[test]
@@ -7439,7 +7723,7 @@ mod tests {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let writer = BufWriter(Arc::clone(&buffer));
 
-        let scrubber = build_log_scrubber(&[]);
+        let scrubber = roko_fs::observability::RunScrubber::build(&[]);
         let fmt_layer = tracing_subscriber::fmt::layer()
             .event_format(RedactingFormat::new(
                 tracing_subscriber::fmt::format(),
@@ -7529,9 +7813,9 @@ mod tests {
     }
 
     #[test]
-    fn build_log_scrubber_adds_env_redactions() {
+    fn log_scrubber_adds_env_redactions() {
         let scrubber =
-            build_log_scrubber(&[("MY_TOKEN".to_string(), "super-secret-42".to_string())]);
+            roko_fs::observability::RunScrubber::build(&[("MY_TOKEN", "super-secret-42")]);
         let output = scrubber.scrub("leaked super-secret-42 in logs");
         assert!(
             !output.contains("super-secret-42"),

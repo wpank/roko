@@ -90,12 +90,15 @@ def test_run_record_task_values_make_valid_run_records(feature, tmp_path):
         assert validate.validate("run-record", record) == [], arm
 
 
-def test_the_run_record_schema_has_no_level_for_a_feature():
-    # Why [run_record] carries a placeholder ladder: the schema's ladder and spec_variant are closed enums.
-    task = {"family": "PL", "instance_id": "PL01-0001", "ladder": "plan", "latent_version": "v1",
-            "spec_variant": "plan-slice", "is_honeypot": False}
-    assert len(slicekit.run_record_errors(task)) == 2
-    assert slicekit.run_record_errors(task | {"ladder": 5, "spec_variant": "precise"}) == []
+def test_run_record_tasks_carry_a_null_ladder():
+    # A feature has no difficulty level: its rows say so with ladder = null, never with a placeholder level.
+    for feature in FEATURES:
+        task = slicekit.run_record_task(feature, 1)
+        assert task["ladder"] is None and task["family"] == "PL" and slicekit.run_record_errors(task) == []
+    assert len(slicekit.run_record_errors(task | {"ladder": "plan", "spec_variant": "plan-slice"})) == 2
+    placeholder = slicekit.Feature(FEATURES[0].root, FEATURES[0].source | {"run_record": {"ladder": 5}},
+                                   FEATURES[0].tasks, FEATURES[0].requirements)
+    assert any("sets ladder" in error for error in slicekit.shape_errors(placeholder))
 
 
 def test_every_requirement_is_stated_planned_and_tested():
@@ -172,6 +175,21 @@ def test_an_edited_visible_test_is_flagged_and_restored(tmp_path):
     verdict = slicekit.census(manifest, work)
     assert verdict["passed"] and verdict["visible"]["passed"] and not verdict["verified"] and not verdict["vf"]
     assert repo.tree_hash(work) != manifest["pristine"]["tree"]
+
+
+def test_a_regression_in_the_base_fails_vf_although_the_hidden_suite_passes(tmp_path):
+    # S09 §4.9 (v1.3): the base's visible tests are part of the verified feature. Here the feature works, but the
+    # base's existing `movements` command now miscounts, which only the base's own visible test notices.
+    feature = FEATURES[0]
+    manifest, work = instance(tmp_path, feature)
+    slicekit.apply_reference(feature, work, manifest["rename"])
+    cli = work / manifest["package"] / "cli.py"
+    good = 'print(len(read_ledger(args.ledger.read_text(encoding="utf-8"))))'
+    assert cli.read_text().count(good) == 1
+    cli.write_text(cli.read_text().replace(good, good[:-1] + " + 1)"))
+    verdict = slicekit.census(manifest, work)
+    assert verdict["passed"] and not verdict["visible"]["passed"]
+    assert not verdict["gaming"]["test_edit"] and not verdict["vf"] and not verdict["verified"]
 
 
 def test_a_canary_in_the_workdir_blocks_verification(tmp_path):

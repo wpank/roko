@@ -398,9 +398,6 @@ pub(crate) fn emit_acp_efficiency_event(workdir: &Path, event: AgentEfficiencyEv
     let path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
 
     task::spawn_blocking(move || {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let line = match serde_json::to_string(&event) {
             Ok(json) => json,
             Err(err) => {
@@ -408,20 +405,8 @@ pub(crate) fn emit_acp_efficiency_event(workdir: &Path, event: AgentEfficiencyEv
                 return;
             }
         };
-        use std::io::Write;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path);
-        match file {
-            Ok(mut f) => {
-                if let Err(err) = writeln!(f, "{line}") {
-                    tracing::warn!(error = %err, "failed to write efficiency event");
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to open efficiency.jsonl");
-            }
+        if let Err(err) = roko_core::io::append_jsonl_line(&path, &line) {
+            tracing::warn!(error = %err, "failed to write efficiency event");
         }
     });
 }

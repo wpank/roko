@@ -167,6 +167,8 @@ impl VisionEvaluator {
                 success: learning_success,
                 provider_success: Some(result.success),
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
         {
@@ -454,6 +456,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"notes\":\"ok\",\"improved_code\":\"<div>better</div>\"}"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 

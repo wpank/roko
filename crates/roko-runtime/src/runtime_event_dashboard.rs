@@ -285,15 +285,18 @@ impl RuntimeEventDashboardProjector {
                 plan_id,
                 task_id,
                 passed,
+                outcome,
                 ..
             } => vec![DashboardEvent::TaskCompleted {
                 plan_id: plan_id.clone(),
                 task_id: task_id.clone(),
-                outcome: if *passed {
-                    "passed".to_string()
-                } else {
-                    "failed".to_string()
-                },
+                outcome: outcome.clone().unwrap_or_else(|| {
+                    if *passed {
+                        "passed".to_string()
+                    } else {
+                        "failed".to_string()
+                    }
+                }),
             }],
             RuntimeEvent::TaskFailed {
                 plan_id,
@@ -680,6 +683,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 passed: true,
                 duration_ms: 500,
+                outcome: None,
             },
         );
         let second = test_envelope(
@@ -690,6 +694,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 passed: false,
                 duration_ms: 600,
+                outcome: None,
             },
         );
 
@@ -714,6 +719,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 passed: true,
                 duration_ms: 500,
+                outcome: None,
             },
         );
         let mut second = test_envelope(
@@ -724,6 +730,7 @@ mod tests {
                 task_id: "task-2".to_string(),
                 passed: true,
                 duration_ms: 500,
+                outcome: None,
             },
         );
         second.task_id = Some("task-2".to_string());

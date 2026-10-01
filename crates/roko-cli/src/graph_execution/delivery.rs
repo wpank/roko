@@ -1,9 +1,9 @@
 //! CLI adapter implementing [`CompletionDeliveryService`] for graph-executed plans.
 //!
 //! This module bridges the graph-layer delivery port to git: a plumbing merge
-//! into the target branch, a post-merge regression check in a temporary
-//! checkout, and a `git push` for publication. None of them touches the
-//! user's checkout (see [`GitDeliveryBackend`]).
+//! into the target branch, a post-merge regression check in the repository's
+//! regression checkout, and a `git push` for publication. None of them
+//! touches the user's checkout (see [`GitDeliveryBackend`]).
 //!
 //! The service advances through the fixed state sequence:
 //!   `Prepared -> Queued -> Merged -> RegressionPassed -> Published -> Delivered`
@@ -29,7 +29,6 @@ use roko_graph::delivery::{
 use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
-use crate::runner::gate_dispatch::RegisteredBaselineWorktree;
 use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
 
 // ---------------------------------------------------------------------------
@@ -74,7 +73,8 @@ pub struct DeliveryPublicationOutcome {
 /// This lets tests inject fakes without depending on git or GitHub.
 #[async_trait::async_trait]
 pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
-    /// Apply the merge: merge the branch into the target branch.
+    /// Apply the merge: merge the request's verified commit (`commit_oid`)
+    /// into the target branch.
     async fn merge(&self, request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome;
 
     /// Run the post-merge regression gate against `merge_commit`.
@@ -97,7 +97,8 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 // ---------------------------------------------------------------------------
 
 /// Production backend: merges with git plumbing, runs the regression check in
-/// a temporary detached worktree, and publishes with `git push`.
+/// the repository's detached regression checkout, and publishes with
+/// `git push`.
 ///
 /// It never runs `checkout`, `switch`, `merge` or `reset` in `workdir`, and
 /// never changes the files, index or HEAD of any existing worktree:
@@ -115,31 +116,73 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 #[derive(Debug)]
 pub struct GitDeliveryBackend {
     workdir: PathBuf,
-    regression_command: Vec<String>,
+    /// The regression check: commands (program and arguments) run in order.
+    /// Empty when no check is configured.
+    regression: Vec<Vec<String>>,
+    /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
+    /// checkout, and shared with the gates, so the next delivery starts
+    /// warm.
+    regression_target_dir: PathBuf,
 }
 
 impl GitDeliveryBackend {
     /// Create a git-backed delivery backend for the repository at `workdir`.
+    ///
+    /// The regression builds into the target dir gates use: the process's
+    /// `CARGO_TARGET_DIR` when set, else `workdir`'s own `target/`.
     #[must_use]
     pub fn new(workdir: PathBuf) -> Self {
+        let regression_target_dir =
+            shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
         Self {
             workdir,
-            regression_command: ["cargo", "check", "--workspace", "--quiet"]
-                .map(String::from)
-                .into(),
+            regression: vec![
+                ["cargo", "check", "--workspace", "--quiet"]
+                    .map(String::from)
+                    .into(),
+            ],
+            regression_target_dir,
         }
     }
 
-    /// Replace the post-merge regression command (by default
-    /// `cargo check --workspace --quiet`). It runs in a temporary checkout of
-    /// the merge commit.
+    /// Replace the post-merge regression with one command (by default
+    /// `cargo check --workspace --quiet`). It runs in the regression checkout,
+    /// at the merge commit.
     #[must_use]
     pub fn with_regression_command(mut self, command: Vec<String>) -> Self {
-        self.regression_command = command;
+        self.regression = vec![command];
         self
     }
 
-    /// Merge the request's branch into its target with git plumbing only.
+    /// Replace the post-merge regression with shell commands (`sh -c`) run in
+    /// order in the regression checkout, at the merge commit, such as a plan's
+    /// `[meta] verify` steps. With none, the delivery runs no regression
+    /// check, and its summary says so.
+    #[must_use]
+    pub fn with_regression_steps(mut self, steps: Vec<String>) -> Self {
+        self.regression = steps
+            .into_iter()
+            .map(|step| vec!["sh".to_string(), "-c".to_string(), step])
+            .collect();
+        self
+    }
+
+    /// Replace the regression's target dir. A relative dir is taken from
+    /// `workdir`, never from the regression checkout.
+    #[must_use]
+    pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
+        self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
+        self
+    }
+
+    /// Merge the request's verified commit into its target with git plumbing
+    /// only.
+    ///
+    /// The merged commit is `request.commit_oid`, the one the plan's gates
+    /// verified, never whatever the branch holds now: commits added to the
+    /// branch after verification wait for a delivery of their own. The
+    /// verified commit must be on the branch; a branch rewritten since
+    /// verification fails closed.
     ///
     /// `Err` carries the summary of a merge that did not happen. Apart from
     /// the parked result for a checked-out target, no ref has changed.
@@ -153,19 +196,30 @@ impl GitDeliveryBackend {
         let old = resolve_commit(workdir, &target_ref)
             .await
             .map_err(|e| format!("target branch '{target}' does not resolve to a commit: {e}"))?;
-        let theirs = resolve_commit(workdir, branch)
+        let head = resolve_commit(workdir, branch)
             .await
             .map_err(|e| format!("branch '{branch}' does not resolve to a commit: {e}"))?;
+        let theirs = verified_commit(workdir, request, &head).await?;
+        let later = if theirs == head {
+            String::new()
+        } else {
+            format!(
+                "; branch '{branch}' has moved on to {head}, and its later commits wait for a \
+                 verified delivery of their own"
+            )
+        };
 
         if is_ancestor(workdir, &theirs, &old).await? {
             return Ok(DeliveryMergeOutcome {
                 merged: true,
                 merge_commit: Some(old),
-                summary: format!("'{target}' already contains branch '{branch}'"),
+                summary: format!(
+                    "'{target}' already contains {theirs} of branch '{branch}'{later}"
+                ),
             });
         }
         let merge = if is_ancestor(workdir, &old, &theirs).await? {
-            theirs
+            theirs.clone()
         } else {
             let tree = match git_merge_tree(workdir, &old, &theirs).await {
                 Ok(MergeTree::Clean { tree }) => tree,
@@ -177,7 +231,7 @@ impl GitDeliveryBackend {
                 }
                 Err(e) => return Err(format!("git merge-tree failed (needs git 2.38+): {e}")),
             };
-            let message = format!("Merge branch '{branch}' into {target}");
+            let message = format!("Merge {theirs} of branch '{branch}' into {target}");
             git_output(
                 workdir,
                 &[
@@ -211,54 +265,144 @@ impl GitDeliveryBackend {
         Ok(DeliveryMergeOutcome {
             merged: true,
             merge_commit: Some(merge),
-            summary: format!("merged branch '{branch}' into '{target}'"),
+            summary: format!("merged {theirs} of branch '{branch}' into '{target}'{later}"),
         })
     }
 
-    /// Run the regression command in a temporary detached checkout of
-    /// `commit`, never in `workdir`, and remove that checkout afterwards.
-    async fn regression_output(&self, commit: &str) -> Result<std::process::Output, String> {
-        let (program, args) = self
-            .regression_command
-            .split_first()
-            .ok_or("the regression command is empty")?;
-        let parent = tempfile::Builder::new()
-            .prefix("roko-delivery-regression-")
-            .tempdir()
-            .map_err(|e| format!("failed to create a regression checkout: {e}"))?;
-        let mut scratch = RegisteredBaselineWorktree::new(&self.workdir, parent);
+    /// Run the regression commands, in order, in the repository's
+    /// regression checkout ([`regression_checkout_path`]) reset to `commit`,
+    /// never in `workdir`. Stops at the first command that fails and returns
+    /// it, as a command line, with its output; `None` when every command
+    /// passed.
+    ///
+    /// The checkout stays for the next delivery (bug-8cf581): Cargo keys
+    /// workspace crates by path, so at a stable path the next build reuses
+    /// this one's output for every crate the commits share, and the target
+    /// dir holds one set of artifacts instead of one per delivery. One
+    /// delivery at a time uses it, across processes.
+    async fn regression_output(
+        &self,
+        commit: &str,
+    ) -> Result<Option<(String, std::process::Output)>, String> {
+        let checkout = regression_checkout_path(&self.workdir);
+        let _held = lock_regression_checkout(&checkout).await?;
+        self.reset_regression_checkout(&checkout, commit).await?;
+
+        let mut failed = Ok(None);
+        for command in &self.regression {
+            let Some((program, args)) = command.split_first() else {
+                failed = Err("the regression command is empty".to_string());
+                break;
+            };
+            // Only the build output is shared: the sources are the checkout's.
+            let output = tokio::process::Command::new(program)
+                .args(args)
+                .current_dir(&checkout)
+                .env("CARGO_TARGET_DIR", &self.regression_target_dir)
+                .kill_on_drop(true)
+                .output()
+                .await;
+            match output {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    failed = Ok(Some((command.join(" "), output)));
+                    break;
+                }
+                Err(e) => {
+                    failed = Err(format!("failed to spawn regression gate: {e}"));
+                    break;
+                }
+            }
+        }
+        failed
+    }
+
+    /// Point the regression checkout at `commit`, with none of an earlier
+    /// delivery's untracked files: reuse it when it is a checkout of this
+    /// repository, else add it. Something else at its path is left alone,
+    /// and the delivery fails saying so.
+    async fn reset_regression_checkout(&self, checkout: &Path, commit: &str) -> Result<(), String> {
+        let reset_failed =
+            |e: String| format!("failed to check out {commit} for the regression: {e}");
+        if checkout.join(".git").is_file() {
+            let ours = git_common_dir(&self.workdir).await.map_err(reset_failed)?;
+            if git_common_dir(checkout).await.ok() != Some(ours) {
+                return Err(format!(
+                    "{} is not a regression checkout of this repository; remove it",
+                    checkout.display()
+                ));
+            }
+            for args in [
+                &["checkout", "--quiet", "--detach", "--force", commit][..],
+                &["clean", "-ffdq"][..],
+            ] {
+                git_output(checkout, args).await.map_err(reset_failed)?;
+            }
+            return Ok(());
+        }
+        if checkout.exists() {
+            return Err(format!(
+                "{} is not a regression checkout of this repository; remove it",
+                checkout.display()
+            ));
+        }
+        // `--force` re-registers a checkout that was deleted but not pruned.
         let added = git_command(&self.workdir)
-            .args(["worktree", "add", "--detach"])
-            .arg(&scratch.checkout)
+            .args(["worktree", "add", "--force", "--detach"])
+            .arg(checkout)
             .arg(commit)
             .output()
             .await
-            .map_err(|e| format!("failed to spawn git worktree add: {e}"))?;
+            .map_err(|e| reset_failed(format!("failed to spawn git worktree add: {e}")))?;
         if !added.status.success() {
-            return Err(format!(
-                "failed to check out {commit} for the regression: {}",
-                String::from_utf8_lossy(&added.stderr).trim()
+            return Err(reset_failed(
+                String::from_utf8_lossy(&added.stderr).trim().to_string(),
             ));
         }
-        scratch.cleanup_required = true;
-
-        let output = tokio::process::Command::new(program)
-            .args(args)
-            .current_dir(&scratch.checkout)
-            .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|e| format!("failed to spawn regression gate: {e}"));
-        let removed = git_command(&self.workdir)
-            .args(["worktree", "remove", "--force"])
-            .arg(&scratch.checkout)
-            .output()
-            .await;
-        if removed.is_ok_and(|out| out.status.success()) {
-            scratch.cleanup_required = false;
-        }
-        output
+        Ok(())
     }
+}
+
+/// The detached checkout the regression checks of `workdir`'s deliveries
+/// run in (bug-8cf581).
+#[must_use]
+pub fn regression_checkout_path(workdir: &Path) -> PathBuf {
+    workdir
+        .join(".roko")
+        .join("state")
+        .join("regression-checkout")
+}
+
+/// Hold `checkout` for one delivery: an exclusive lock on its `.lock` file,
+/// released when the returned file drops. It serializes deliveries within a
+/// process and across processes.
+async fn lock_regression_checkout(checkout: &Path) -> Result<std::fs::File, String> {
+    use fs2::FileExt as _;
+    let lock = checkout.with_extension("lock");
+    let failed = |e: std::io::Error| format!("failed to lock the regression checkout: {e}");
+    if let Some(parent) = lock.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock)
+        .map_err(failed)?;
+    tokio::task::spawn_blocking(move || file.lock_exclusive().map(|()| file))
+        .await
+        .map_err(|e| format!("failed to lock the regression checkout: {e}"))?
+        .map_err(failed)
+}
+
+/// The canonical common git directory of the repository `dir` belongs to.
+async fn git_common_dir(dir: &Path) -> Result<PathBuf, String> {
+    let common = git_output(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await?;
+    std::fs::canonicalize(common.trim()).map_err(|e| e.to_string())
 }
 
 /// The commit that `rev` names.
@@ -270,6 +414,59 @@ async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
     )
     .await
     .map(|oid| oid.trim().to_string())
+}
+
+/// The last lines a failed command wrote: its stderr, else its stdout.
+fn output_tail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(5)..].join(" | ")
+}
+
+/// The target dir a build of `workdir` shares with gates and earlier
+/// deliveries: `configured` (a `CARGO_TARGET_DIR` value) when set, relative
+/// to `workdir` if it is relative, else `workdir`'s own `target/`.
+fn shared_target_dir(workdir: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
+    match configured.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        Some(dir) => workdir.join(dir),
+        None => workdir.join("target"),
+    }
+}
+
+/// The commit `request` verified, resolved in `workdir`: `request.commit_oid`
+/// must name a commit, by its id, that is on the request's branch, whose head
+/// is `head`.
+async fn verified_commit(
+    workdir: &Path,
+    request: &CompletionDeliveryRequest,
+    head: &str,
+) -> Result<String, String> {
+    let (oid, branch) = (&request.commit_oid, &request.branch);
+    if oid.is_empty() || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "the verified commit '{oid}' is not a commit id, so nothing was merged"
+        ));
+    }
+    let verified = resolve_commit(workdir, oid).await.map_err(|e| {
+        format!("the verified commit '{oid}' does not resolve, so nothing was merged: {e}")
+    })?;
+    if !is_ancestor(workdir, &verified, head).await? {
+        return Err(format!(
+            "the verified commit {verified} is not on branch '{branch}' (its head is {head}): \
+             the branch was rewritten after verification, so nothing was merged"
+        ));
+    }
+    Ok(verified)
 }
 
 /// Whether `ancestor` is `descendant` or one of its ancestors.
@@ -365,23 +562,27 @@ impl DeliveryBackend for GitDeliveryBackend {
         merge_commit: &str,
     ) -> DeliveryRegressionOutcome {
         let plan_id = &request.plan_id;
+        if self.regression.is_empty() {
+            return DeliveryRegressionOutcome {
+                passed: true,
+                summary: format!("no post-merge regression check is configured for {plan_id}"),
+                evidence_ref: None,
+            };
+        }
         match self.regression_output(merge_commit).await {
-            Ok(output) if output.status.success() => DeliveryRegressionOutcome {
+            Ok(None) => DeliveryRegressionOutcome {
                 passed: true,
                 summary: format!("post-merge regression passed for {plan_id}"),
                 evidence_ref: None,
             },
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                DeliveryRegressionOutcome {
-                    passed: false,
-                    summary: format!(
-                        "post-merge regression failed for {plan_id}: {}",
-                        stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
-                    ),
-                    evidence_ref: None,
-                }
-            }
+            Ok(Some((command, output))) => DeliveryRegressionOutcome {
+                passed: false,
+                summary: format!(
+                    "post-merge regression failed for {plan_id}: `{command}`: {}",
+                    output_tail(&output)
+                ),
+                evidence_ref: None,
+            },
             Err(summary) => DeliveryRegressionOutcome {
                 passed: false,
                 summary,
@@ -1198,6 +1399,15 @@ mod tests {
         git(repo, &["commit", "--quiet", "-m", message]);
     }
 
+    /// A request delivering `roko/plan-a` of `repo` as verified at its
+    /// current head.
+    fn git_request(id: &str, repo: &Path) -> CompletionDeliveryRequest {
+        CompletionDeliveryRequest {
+            commit_oid: git(repo, &["rev-parse", "roko/plan-a"]),
+            ..test_request(id)
+        }
+    }
+
     /// A repository where `main` and `roko/plan-a` each added their own file
     /// on top of `shared.txt`, so they merge cleanly. `main` is checked out.
     fn diverged_repo() -> tempfile::TempDir {
@@ -1207,6 +1417,8 @@ mod tests {
         git(path, &["config", "user.name", "roko"]);
         git(path, &["config", "user.email", "roko@nunchi.dev"]);
         git(path, &["config", "commit.gpgsign", "false"]);
+        // Roko's state, the regression checkout included, stays out of git.
+        std::fs::write(path.join(".git/info/exclude"), ".roko/\n").unwrap();
         std::fs::write(path.join("shared.txt"), "base\n").unwrap();
         commit_all(path, "base");
         git(path, &["checkout", "--quiet", "-b", "roko/plan-a"]);
@@ -1231,7 +1443,7 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-merge")).await;
+        let outcome = backend.merge(&git_request("d-git-merge", path)).await;
 
         assert!(outcome.merged, "{}", outcome.summary);
         assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
@@ -1260,7 +1472,7 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-checked-out")).await;
+        let outcome = backend.merge(&git_request("d-git-checked-out", path)).await;
 
         let summary = &outcome.summary;
         assert!(!outcome.merged, "{summary}");
@@ -1297,7 +1509,7 @@ mod tests {
         let head = git(path, &["rev-parse", "HEAD"]);
 
         let backend = GitDeliveryBackend::new(path.to_path_buf());
-        let outcome = backend.merge(&test_request("d-git-conflict")).await;
+        let outcome = backend.merge(&git_request("d-git-conflict", path)).await;
 
         let summary = &outcome.summary;
         assert!(!outcome.merged, "{summary}");
@@ -1319,14 +1531,14 @@ mod tests {
         let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
         let backend = GitDeliveryBackend::new(path.to_path_buf());
 
-        let outcome = backend.merge(&test_request("d-git-ff")).await;
+        let outcome = backend.merge(&git_request("d-git-ff", path)).await;
 
         assert!(outcome.merged, "{}", outcome.summary);
         assert_eq!(outcome.merge_commit.as_deref(), Some(plan_head.as_str()));
         assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
 
         // Delivering the branch again finds nothing left to merge.
-        let again = backend.merge(&test_request("d-git-ff-again")).await;
+        let again = backend.merge(&git_request("d-git-ff-again", path)).await;
 
         assert!(again.merged, "{}", again.summary);
         assert_eq!(again.merge_commit.as_deref(), Some(plan_head.as_str()));
@@ -1334,12 +1546,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn regression_runs_in_a_temporary_checkout_of_the_merge() {
+    async fn regression_runs_in_a_separate_checkout_of_the_merge() {
         let repo = diverged_repo();
         let path = repo.path();
         git(path, &["checkout", "--quiet", "-b", "work"]);
         let status = git(path, &["status", "--porcelain"]);
-        let worktrees = git(path, &["worktree", "list", "--porcelain"]);
         let record = tempfile::tempdir().unwrap();
         let ran_in = record.path().join("ran-in");
         // The check records where it ran, and passes only on the merge commit.
@@ -1354,10 +1565,11 @@ mod tests {
         ]);
         let service = CliCompletionDeliveryService::new(Arc::new(backend));
 
-        let receipt = service
-            .deliver(test_request_no_publish("d-git-regression"))
-            .await
-            .unwrap();
+        let request = CompletionDeliveryRequest {
+            publish: false,
+            ..git_request("d-git-regression", path)
+        };
+        let receipt = service.deliver(request).await.unwrap();
 
         assert_eq!(
             receipt.state,
@@ -1368,13 +1580,184 @@ mod tests {
         let main = git(path, &["rev-parse", "main"]);
         assert_eq!(receipt.merge_commit.as_deref(), Some(main.as_str()));
         let ran_in = PathBuf::from(std::fs::read_to_string(&ran_in).unwrap().trim());
+        assert_eq!(
+            ran_in,
+            regression_checkout_path(path).canonicalize().unwrap(),
+            "the regression ran outside its checkout"
+        );
+        assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
+        assert_eq!(git(path, &["status", "--porcelain"]), status);
+    }
+
+    /// bug-8cf581: consecutive deliveries run their regression in one
+    /// checkout, reset to each merge commit with no earlier delivery's
+    /// untracked files, so Cargo reuses the build of every crate the
+    /// commits share.
+    #[tokio::test]
+    async fn regression_checkouts_reuse_a_stable_path() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let log = record.path().join("runs");
+        // Each run records where it ran and at which commit, and fails on
+        // an earlier run's leftovers.
+        let script = format!(
+            "pwd -P >> '{log}' && git rev-parse HEAD >> '{log}' && test ! -e leftover.txt \
+             && touch leftover.txt",
+            log = log.display()
+        );
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![script])
+            .with_regression_target_dir(record.path().join("target"));
+        let request = git_request("d-git-stable", path);
+        let commits = [
+            git(path, &["rev-parse", "roko/plan-a"]),
+            git(path, &["rev-parse", "main"]),
+        ];
+
+        for commit in &commits {
+            let outcome = backend.run_regression(&request, commit).await;
+            assert!(outcome.passed, "{}", outcome.summary);
+        }
+
+        let checkout = regression_checkout_path(path).canonicalize().unwrap();
+        let expected = commits
+            .iter()
+            .map(|commit| format!("{}\n{commit}\n", checkout.display()))
+            .collect::<String>();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);
+        assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
+        assert_eq!(git(path, &["status", "--porcelain"]), "");
+    }
+
+    /// bug-453481: delivery merges the commit the plan's gates verified.
+    /// A commit added to the branch afterwards stays off the target, and the
+    /// summary says it waits for a delivery of its own.
+    #[tokio::test]
+    async fn merge_takes_the_verified_commit_not_the_branch_head() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        let request = git_request("d-git-verified", path);
+        let verified = request.commit_oid.clone();
+        // After verification, a late write lands on the plan branch.
+        git(path, &["checkout", "--quiet", "roko/plan-a"]);
+        std::fs::write(path.join("late.txt"), "not verified\n").unwrap();
+        commit_all(path, "late, unverified commit");
+        let late = git(path, &["rev-parse", "roko/plan-a"]);
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let main_before = git(path, &["rev-parse", "main"]);
+
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let outcome = backend.merge(&request).await;
+
+        let summary = &outcome.summary;
+        assert!(outcome.merged, "{summary}");
+        let main_after = git(path, &["rev-parse", "main"]);
+        assert_eq!(outcome.merge_commit.as_deref(), Some(main_after.as_str()));
+        assert_eq!(git(path, &["rev-parse", "main^1"]), main_before);
+        assert_eq!(git(path, &["rev-parse", "main^2"]), verified);
+        let late_reached = std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", &late, "main"])
+            .current_dir(path)
+            .status()
+            .unwrap();
         assert!(
-            !ran_in.starts_with(path.canonicalize().unwrap()),
-            "the regression ran in the user's checkout: {}",
+            !late_reached.success(),
+            "the unverified commit reached main"
+        );
+        assert!(summary.contains(&late), "{summary}");
+        assert_eq!(git(path, &["rev-parse", "roko/plan-a"]), late);
+    }
+
+    /// bug-453481: without its verified commit on the branch, delivery merges
+    /// nothing and moves no ref: the commit id is missing, names no commit,
+    /// or is not on the branch any more.
+    #[tokio::test]
+    async fn merge_fails_closed_without_the_verified_commit_on_the_branch() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let refs = git(path, &["for-each-ref"]);
+        let off_branch = git(path, &["rev-parse", "main"]);
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+
+        for (commit_oid, reason) in [
+            ("", "not a commit id"),
+            ("roko/plan-a", "not a commit id"),
+            (
+                "0123456789abcdef0123456789abcdef01234567",
+                "does not resolve",
+            ),
+            (off_branch.as_str(), "not on branch"),
+        ] {
+            let request = CompletionDeliveryRequest {
+                commit_oid: commit_oid.to_string(),
+                ..test_request("d-git-unverified")
+            };
+            let outcome = backend.merge(&request).await;
+            let summary = &outcome.summary;
+            assert!(!outcome.merged, "{commit_oid}: {summary}");
+            assert!(outcome.merge_commit.is_none(), "{commit_oid}");
+            assert!(summary.contains(reason), "{commit_oid}: {summary}");
+            assert_eq!(git(path, &["for-each-ref"]), refs, "{commit_oid}");
+        }
+    }
+
+    /// bug-aaa924: the regression builds into a target dir that is outside
+    /// its temporary checkout and outlives it, so later deliveries start
+    /// warm; by default the one gates use.
+    #[tokio::test]
+    async fn regression_checkout_reuses_a_warm_target_dir() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let (seen, ran_in) = (record.path().join("seen"), record.path().join("ran-in"));
+        let script = format!(
+            "printf '%s\\n' \"$CARGO_TARGET_DIR\" >> '{}' && pwd -P > '{}'",
+            seen.display(),
             ran_in.display()
         );
-        assert!(!ran_in.exists(), "the regression checkout was not removed");
-        assert_eq!(git(path, &["worktree", "list", "--porcelain"]), worktrees);
-        assert_eq!(git(path, &["status", "--porcelain"]), status);
+        let shared = record.path().join("shared-target");
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_command(vec!["sh".into(), "-c".into(), script])
+            .with_regression_target_dir(shared.clone());
+        let merge = git(path, &["rev-parse", "roko/plan-a"]);
+        let request = git_request("d-git-warm", path);
+
+        for _ in 0..2 {
+            let outcome = backend.run_regression(&request, &merge).await;
+            assert!(outcome.passed, "{}", outcome.summary);
+        }
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let expected = format!("{}\n", shared.display());
+        assert_eq!(
+            seen,
+            expected.repeat(2),
+            "each delivery shares one target dir"
+        );
+        let ran_in = PathBuf::from(std::fs::read_to_string(&ran_in).unwrap().trim());
+        assert!(
+            !shared.starts_with(&ran_in),
+            "the target dir is inside the checkout"
+        );
+
+        // By default: the configured CARGO_TARGET_DIR, else the checkout's own.
+        let workdir = Path::new("/repo");
+        assert_eq!(shared_target_dir(workdir, None), workdir.join("target"));
+        assert_eq!(
+            shared_target_dir(workdir, Some("".into())),
+            workdir.join("target")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("/t".into())),
+            PathBuf::from("/t")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("out".into())),
+            workdir.join("out")
+        );
     }
 }

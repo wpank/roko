@@ -8,10 +8,12 @@ one dated price snapshot.
 The design is spec S08 (`tmp/cybernetic-harness/specs/S08-benchmark-suite.md` in the author's workspace; the
 `§` references below point into it). Suite id `vb`; schemas `vb.*/1`.
 
-**Status (2026-09-29).** Built: `schema/` and the price snapshot (gap-0580f7), the common library
-`families/common/` (gap-2790c5), `speclint/` (S07.1), and the direct-arm driver `driver/` with `arms/cheap_direct.toml`,
-`arms/fd_api.toml` and `streams/pilot.toml` (gap-28ebea). Not built yet: the families F1 and F4 that the pilot stream
-names, verifier CI, analysis and reports, and the other arms. Epic `spec-567e52` in `work/items/` tracks them.
+**What is here.** The schemas and the price snapshot; the common library and the two families the pilot stream
+names, F1 (`f1_pyconv`) and F4 (`f4_kvtool`); the plan-level slice's fixtures (`families/plan_slice/`, S09 §4.9);
+`speclint/` (S07.1); verifier CI (`ci/`); the driver, with three runners (the direct loop, the Roko arm and the
+Claude Code arm), the run ledger with its budget-line caps, the metering and fault proxy and the driver-only secret
+file; and the analysis behind `vb report` (`analysis/`). This README describes what exists. What is still open, and
+what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 ## Rules
 
@@ -25,34 +27,49 @@ names, verifier CI, analysis and reports, and the other arms. Epic `spec-567e52`
   (its gpt-oss-120b rates are wrong) and never from a fallback rate.
 - **No provider calls in tests.** Tests run offline against fixtures and stub servers.
 
-## Layout (S08 §5.1)
+## Layout
 
 ```
 benchmarks/viabilitybench/
-  families/common/{repo.py, knobs.py, hmac_seed.py, astcheck.py, mutate.py, canary.py}
-  families/f1_pyconv/{gen.py, template/, hidden.py, gaming.py, ladder.toml, spec/precise.md.j2,
-                      reference/{solution, stub, gaming}/}          # same shape for f2…f7; f8 wraps f1–f5
-  external/swebench/{select.py, probe.py, slice-v1.jsonl, run_official.py}
-  streams/{s1_learncurve, s3_disturbance, s5_holdout, p1_core, p1_h3, p1_ext, log1, pilot}.toml
-  arms/{cheap_direct, roko_fixed, roko_full, fd_claude, fd_claude_lite, fd_codex, fd_api, fr_claude}.toml
-  driver/{vb.py, materialize.py, planemit.py, run_roko.py, mini_loop.py, run_cli.py, ledger.py, caps.py,
-          archive.py, census.py, faultproxy.py, records.py}
-  schema/{task, run-record, metric-record, price-snapshot, ledger}.schema.json   # prices: config/prices/2026-09-28.toml (§5.6)
-  analysis/{metrics.py, passk.py, bootstrap.py, cs.py, cuped.py, irt.py, replay.py, report.py}   # shared with S09
-  ci/{verify_verifiers.py, determinism.py, leak_check.py}
+  schema/{task, feature, run-record, metric-record, ledger, price-snapshot}.schema.json  validate.py  examples/
+  families/common/{repo, knobs, hmac_seed, astcheck, mutate, canary}.py
+  families/f1_pyconv/{gen, hidden, gaming}.py  ladder.toml  template/  spec/  reference/{solution, stub, gaming}/
+  families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
+  families/plan_slice/{slicekit, runner}.py  features/{pl01_stockroom … pl06_csvclean}/   # PL fixtures (S09 §4.9)
+  speclint/{speclint, dynamic}.py  fixtures/
+  streams/pilot.toml
+  arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
+  experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
+  driver/vb.py                                              # vb run | estimate | materialize | ledger | report
+  driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
+  driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
+  driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
+  analysis/{metrics, passk, report}.py                      # vb report
+  ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
-  manifest.json  records.jsonl  metrics.json  ledger.jsonl  proxy.jsonl  s01/  archives/  transcripts/ (opt-in)
+  manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
+  proxy.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
 ```
 
-Beyond S08's block, the tree also holds `experiments/` (S09 §6: manifests, budget lines, the pre-registration
-lock), `reports/` (committed pilot summaries), `schema/validate.py`, `schema/test_schemas.py`, `schema/examples/`,
-`requirements.in`, `requirements.lock` and a `.gitignore` for the venv. `driver/` adds `layout.py`, `provider.py`,
-`stub_provider.py`, `harness.py`, `agent_env.py`, `test_driver.py` and a toy family in `testdata/`.
+Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
+toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
+families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and
+`analysis/{bootstrap, cs, cuped, irt, replay}.py`.
 
-## The driver (direct arm)
+## The driver
 
-`driver/vb.py` runs a stream of tasks on one arm and one model (S08 §4.9–4.10, §5.7). The direct loop
-(`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash tool, no Roko prompt.
+`driver/vb.py` runs a stream of tasks on one arm and one model (S08 §4.9–4.10, §5.7), through the arm's runner:
+
+- the direct loop (`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash
+  tool, no Roko prompt;
+- the Roko arm (`run_roko.py`, harness `roko`) serves `roko_fixed`: a one-task plan (`planemit.py`) through
+  `roko plan run` on one pinned model, checked on every attempt;
+- the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
+  on the subscription.
+
+Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
+most hold for every arm.
 
 ```bash
 PY=benchmarks/viabilitybench/.venv/bin/python
@@ -72,34 +89,75 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 - **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
   manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
   workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME.
+  per-task HOME. The truth suites and the census's visible re-run run the agent's code through
+  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file and the task's private
+  directory. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can
+  read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
+  `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
+  your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
   checks, and counts canary hits; any hit makes the run `leak_suspected`.
 - **Outputs** in `$VB_RESULTS/<experiment>/<run_id>/`: `manifest.json`, `order-<seed>.json`, `records.jsonl`
   (`vb.run_record/1`, validated before each write, `simulated: false`), `ledger.jsonl` (one validated row per
-  attempt, priced from the snapshot; an unknown cost is null), `archives/`, `private/`, `errors.jsonl`, and
-  `transcripts/` with `--transcripts`.
-- **The secret** is a file (`--secret-file`, `$VB_SECRET_FILE`, default `~/.config/viabilitybench/secret`, mode 0600),
-  read only by the census. Proving that it never reaches an agent is gap-a8a160.
+  attempt, priced from the snapshot; an unknown cost is null) and `reservations.jsonl`, `archives/`, `private/`,
+  `errors.jsonl`, `s01/` (the Roko arm's copy of Roko's own records), and `transcripts/` with `--transcripts`.
+- **Budget lines** (`ledger.py`, `experiments/budget.toml`). Each attempt reserves its worst case against the run's
+  budget line before its first model call, and a dispatch that could pass the line's cap, its experiment's cap or
+  the programme stop is refused. `vb ledger report` shows spend against every cap.
+- **The secret** is a driver-only file (`secret.py`): `--secret-file`, `$VB_SECRET_FILE`, default
+  `~/.config/viabilitybench/secret`, mode 0600 in a 0700 directory, outside the repository, `~/.roko`, the workdirs
+  and the results; `secret.py init` makes one. It reaches only `hidden.py`, as a file path, after the agent's
+  processes have ended: never in an environment variable or on a command line. `vb run` refuses to start when the
+  driver's environment, or a `.roko/.env` that roko would load, holds the secret or its canary, and it checks every
+  agent environment against both. Mode 0600 cannot stop an agent running as the driver's user from opening the file
+  by its path, so while the tasks run, the tripwire holds it at mode 000 (`secret.tripwire`). A read then needs a
+  chmod, the chmod changes the file's ctime, and the census marks the run `leak_suspected`. A container per task (S08
+  decision 4) would prevent the read rather than detect it.
+- **Provider keys** live in a key file under the secret file's rules: `--key-file`, `$VB_KEY_FILE`, default
+  `~/.config/viabilitybench/keys`, one `NAME=value` line per arm `api_key_env`. `secret.py keys` checks it. Only the
+  metering proxy, inside the driver, sends a key. `vb run` refuses to start while its environment holds one, and the
+  tripwire holds the key file at mode 000 for the whole run.
+- **One `vb run` at a time per secret file and per key file.** The tripwire takes an exclusive lock next to each file
+  (`<file>.lock`), so a second run on it stops at start. Run the arms one after another.
+  - **Parallel runs.** Give each run its own secret file (`secret.py init --secret-file PATH`, then `vb run
+    --secret-file PATH`), its own copy of the key file (`--key-file`), and its own share of the instances (a stream of
+    its own).
+  - **Keep that assignment for every arm and seed.** The hidden cases are HMAC(secret, instance), so an instance
+    audited under two secrets would face two different truth suites. `secret.py check` prints each file's
+    fingerprint for the record, and S09 §4.1 has the campaign rule.
 - **A new arm** adds `arms/<id>.toml` and, for a new harness, one `driver/<runner>.py` with `run_task(ctx)`
   (`harness.py` has the protocol); `vb.py` does not change.
-- **Not yet built:** budget-line caps in the ledger (gap-33d54b), the metering and fault proxy (gap-e003ec), the
-  Claude Code and Roko arms (gap-c4f364, gap-b7ab99), `vb census`/`vb report`, and S01's BLAKE3 `config_hash`:
-  records carry `sha256:` digests until `driver/fingerprint.py` and its golden vectors exist.
+- **Digests.** `config_hash` and `record_id` are `sha256:` digests of canonical JSON. S01's BLAKE3 `b3:` digests
+  need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
+- **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
+  client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+- **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
+  `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
+  some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
+  another model than the pin, and the model checks accept that one model as a declared swap (`model_swapped`).
+- **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
+  greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
+  excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
+  and the budget (`analysis/report.py` has the rules).
 
 ## Schemas
 
 | File | Validates | Example |
 |---|---|---|
-| `schema/task.schema.json` | `vb.task/1`, a task manifest `DIR/.vb/task.json` (§5.2) | `examples/task.json` (§5.2, verbatim) |
+| `schema/task.schema.json` | `vb.task/1`, a task manifest: `task.json` in the generator's private `--out` directory, never in the agent's workdir (§5.2 put it in `DIR/.vb/`) | `examples/task.json` (§5.2, verbatim) |
+| `schema/feature.schema.json` | `vb.feature/1`, a plan-slice instance's manifest, used in place of `vb.task/1` (S09 §4.9; `families/plan_slice/`) | `examples/feature.json` |
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |
 | `schema/ledger.schema.json` | a row of `ledger.jsonl` (§4.10, §5.6) | `examples/ledger.json` |
 | `schema/price-snapshot.schema.json` | `roko.price_snapshot/1`, a parsed `config/prices/<date>.toml` (§5.6) | `config/prices/2026-09-28.toml` |
 
-The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists.
+The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists. The
+feature example comes from `slicekit.py materialize` for PL03 at seed 1, with its paths and canary shortened.
+
+A run record's `task.ladder` is `null` exactly when the task has no difficulty level: a plan-slice feature (family
+`PL`). That widening of `vb.run_record/1` came before any record was written, so the version stays `/1`.
 
 `schema/validate.py` implements exactly the JSON Schema subset these files use (`type`, `required`, `enum`,
 `const`, `properties`, `items`, `minItems`, `additionalProperties`) and refuses a schema with any other keyword.
@@ -109,7 +167,11 @@ Together, the schemas and the validator enforce S08's honesty invariants (§4.12
 - `simulated` is always `false`;
 - an unknown cost is `null`, never 0: used tokens never cost $0, a `null` cost goes with cost source `unknown`
   and the other way round, missing usage makes the cost unknown, and a billed API row that used tokens cannot
-  bill $0;
+  bill $0 (a subscription CLI session killed before its `result` event is priced from its stream, and its record
+  and its ledger row say `estimated`, with $0 billed; a ledger row says whether it was billed, `billed`);
+- `costs.by_class` (S09 §4.9's cost classes) splits `api_equiv_usd` without changing it, and a queue wait
+  (`execution.queue_wait_s`, the sum of the attempts') is never below 0; both are `null` when the arm cannot
+  observe them;
 - `mock` usage never becomes a run record or a ledger row;
 - every MetricRecord lists at least one run id, and names its `label_source`, `cost_basis` and
   `price_snapshot_id`;
@@ -125,8 +187,8 @@ python3 benchmarks/viabilitybench/schema/validate.py run-record "$VB_RESULTS/<ex
 python3 benchmarks/viabilitybench/schema/validate.py price-snapshot config/prices/2026-09-28.toml
 ```
 
-The kinds are `task`, `run-record`, `metric-record`, `price-snapshot` and `ledger`. A `.json` file holds one
-document, a `.jsonl` file one per line. The exit status is 1 when any document is invalid.
+The kinds are `task`, `feature`, `run-record`, `metric-record`, `price-snapshot` and `ledger`. A `.json` file
+holds one document, a `.jsonl` file one per line. The exit status is 1 when any document is invalid.
 
 ## The price snapshot
 
@@ -153,8 +215,13 @@ Every benchmark check runs with the project venv's Python, from the repository r
 ```bash
 python3 -m venv benchmarks/viabilitybench/.venv          # Python 3.11 or newer
 benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes -r benchmarks/viabilitybench/requirements.lock
-benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench -q
+benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench -q -rs
 ```
+
+`-rs` prints each skipped test with its reason. The three `real_roko` tests in `driver/test_run_roko.py` run the Roko
+arm against a built binary (`target/debug/roko`, or `$VB_TEST_ROKO_BIN`) and skip without one, so a green run that
+skipped them never met real Roko. `vb run` itself refuses to start the Roko arm when its binary rejects the plan the
+arm emits (`run_roko.preflight`).
 
 The venv is ignored by `benchmarks/viabilitybench/.gitignore`. `requirements.lock` pins pytest and its
 dependencies with hashes. To change them, edit `requirements.in` and regenerate the lock from this directory:

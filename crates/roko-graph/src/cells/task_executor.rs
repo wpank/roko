@@ -22,6 +22,7 @@ use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, CellContext, CellVersion};
+use crate::workspace::{WorkspaceAcceptance, WorkspaceLease};
 
 /// Provider-neutral task metadata preserved by plan-to-Graph conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,6 +49,11 @@ pub struct TaskExecutionSpec {
     pub max_retries: u32,
     /// Full serialized runner task definition.
     pub task_def_json: String,
+    /// Hand a successful attempt's isolated checkout on instead of releasing
+    /// it: a later cell of the task (the rich topology's `plan.gate`) judges
+    /// that checkout, so it must outlive the dispatch. The attempt's output
+    /// carries the lease (see [`TaskAttempt::lease`]).
+    pub keep_workspace: bool,
 }
 
 impl TaskExecutionSpec {
@@ -94,6 +100,10 @@ impl TaskExecutionSpec {
                 .and_then(|value| u32::try_from(value).ok())
                 .unwrap_or_default(),
             task_def_json: string("task_def_json").unwrap_or_default(),
+            keep_workspace: table
+                .and_then(|value| value.get("keep_workspace"))
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -114,6 +124,16 @@ pub const TASK_GATE_VERDICT_TAG: &str = "roko.gate.verdict";
 pub enum TaskGateVerdict {
     /// Every authored `[[task.verify]]` step passed.
     Passed,
+    /// Every authored verify step passed, or failed only on tests that also
+    /// failed on the plan run's start commit, which the attempt neither
+    /// caused nor was asked to fix. Replayed like a pass, but its own
+    /// outcome, so it never looks like a clean pass.
+    PassedWithPreexistingFailures,
+    /// Every authored verify step passed on a tree the attempt left
+    /// unchanged: the task's work was already there, as on a `--fresh`
+    /// rerun of a finished task. Replayed like a pass, but its own outcome,
+    /// since no change of the agent earned it.
+    AlreadySatisfied,
     /// The task declares no verify steps; only the provider result is known.
     Unverified,
     /// Verification failed but a non-deterministic judge/review cap accepted
@@ -129,6 +149,8 @@ impl TaskGateVerdict {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::PassedWithPreexistingFailures => "passed_with_preexisting_failures",
+            Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
         }
@@ -139,6 +161,8 @@ impl TaskGateVerdict {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "passed_with_preexisting_failures" => Some(Self::PassedWithPreexistingFailures),
+            "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
             _ => None,
@@ -163,8 +187,10 @@ impl TaskGateVerdict {
             .filter_map(|signal| signal.tag(TASK_GATE_VERDICT_TAG).and_then(Self::parse))
             .max_by_key(|verdict| match verdict {
                 Self::Passed => 0,
-                Self::Unverified => 1,
-                Self::ForcedAccept => 2,
+                Self::PassedWithPreexistingFailures => 1,
+                Self::AlreadySatisfied => 2,
+                Self::Unverified => 3,
+                Self::ForcedAccept => 4,
             })
     }
 
@@ -176,6 +202,146 @@ impl TaskGateVerdict {
                 .insert(TASK_GATE_VERDICT_TAG.to_string(), self.as_str().to_string());
             signal.id = signal.content_hash();
         }
+    }
+}
+
+/// Signal tags of a [`TaskAttempt`].
+const TASK_PLAN_ID_TAG: &str = "plan_id";
+const TASK_ID_TAG: &str = "task_id";
+const TASK_RUN_ID_TAG: &str = "run_id";
+const TASK_ATTEMPT_KEY_TAG: &str = "attempt.key";
+const TASK_ATTEMPT_TAG: &str = "workspace.attempt";
+const TASK_WORKSPACE_TAG: &str = "workspace.path";
+const TASK_WORKSPACE_LEASE_TAG: &str = "workspace.lease";
+const TASK_ATTEMPT_COMMIT_TAG: &str = "workspace.attempt_commit";
+const TASK_PLAN_BRANCH_TAG: &str = "workspace.plan_branch";
+const TASK_ACCEPTED_COMMIT_TAG: &str = "workspace.accepted_commit";
+
+/// The attempt that produced a plan task's output, stamped on its signals
+/// ([`Self::stamp`]).
+///
+/// The task's later cells read it back ([`Self::from_signals`]) to act on that
+/// exact attempt: the rich topology's `plan.gate` gates the checkout named
+/// here, never the process's working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TaskAttempt {
+    /// Owning plan.
+    pub plan_id: String,
+    /// Task within the plan.
+    pub task_id: String,
+    /// Graph run the attempt belongs to.
+    pub run_id: Option<String>,
+    /// Durable attempt key (`run:plan:task:ordinal`).
+    pub attempt_key: Option<String>,
+    /// 1-based ordinal of the attempt within its run.
+    pub attempt: u32,
+    /// Isolated checkout the attempt ran in. `None` when it ran in the shared
+    /// working tree, which is the operator's own checkout.
+    pub workspace: Option<PathBuf>,
+    /// Lease of that checkout, when the executor handed it on unreleased
+    /// ([`TaskExecutionSpec::keep_workspace`]) for a later cell to settle.
+    pub lease: Option<WorkspaceLease>,
+    /// Where the attempt's work landed, once it was accepted onto its plan's
+    /// branch.
+    pub accepted: Option<WorkspaceAcceptance>,
+}
+
+impl TaskAttempt {
+    /// Stamp this attempt on every signal and refresh their content ids. A
+    /// field that is `None` clears its tag, so a cell that settled the
+    /// attempt's lease can stamp that over the tags it passes on.
+    pub fn stamp(&self, signals: &mut [Signal]) {
+        let lease = self
+            .lease
+            .as_ref()
+            .and_then(|lease| serde_json::to_string(lease).ok());
+        let accepted = self.accepted.as_ref();
+        let tags = [
+            (TASK_PLAN_ID_TAG, Some(self.plan_id.clone())),
+            (TASK_ID_TAG, Some(self.task_id.clone())),
+            (TASK_RUN_ID_TAG, self.run_id.clone()),
+            (TASK_ATTEMPT_KEY_TAG, self.attempt_key.clone()),
+            (TASK_ATTEMPT_TAG, Some(self.attempt.to_string())),
+            (
+                TASK_WORKSPACE_TAG,
+                self.workspace
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            ),
+            (TASK_WORKSPACE_LEASE_TAG, lease),
+            (
+                TASK_ATTEMPT_COMMIT_TAG,
+                accepted.map(|accepted| accepted.attempt_commit.clone()),
+            ),
+            (
+                TASK_PLAN_BRANCH_TAG,
+                accepted.map(|accepted| accepted.plan_branch.clone()),
+            ),
+            (
+                TASK_ACCEPTED_COMMIT_TAG,
+                accepted.map(|accepted| accepted.accepted_commit.clone()),
+            ),
+        ];
+        for signal in signals {
+            for (tag, value) in &tags {
+                match value {
+                    Some(value) => signal.tags.insert((*tag).to_string(), value.clone()),
+                    None => signal.tags.remove(*tag),
+                };
+            }
+            signal.id = signal.content_hash();
+        }
+    }
+
+    /// Read back the attempt stamped on a task's output: the first signal
+    /// that names one. `Err` says why no usable attempt is named, so callers
+    /// can fail closed instead of guessing.
+    pub fn from_signals(signals: &[Signal]) -> std::result::Result<Self, String> {
+        let signal = signals
+            .iter()
+            .find(|signal| signal.tag(TASK_ATTEMPT_TAG).is_some())
+            .ok_or_else(|| {
+                format!("no input names the attempt that produced it (`{TASK_ATTEMPT_TAG}` tag)")
+            })?;
+        let tag = |key: &str| signal.tag(key).map(ToOwned::to_owned);
+        let ordinal = tag(TASK_ATTEMPT_TAG).unwrap_or_default();
+        let attempt = ordinal
+            .parse::<u32>()
+            .ok()
+            .filter(|attempt| *attempt > 0)
+            .ok_or_else(|| {
+                format!("`{TASK_ATTEMPT_TAG}` is `{ordinal}`, not a 1-based attempt ordinal")
+            })?;
+        let lease = tag(TASK_WORKSPACE_LEASE_TAG)
+            .map(|lease| serde_json::from_str::<WorkspaceLease>(&lease))
+            .transpose()
+            .map_err(|error| {
+                format!("`{TASK_WORKSPACE_LEASE_TAG}` is not a workspace lease: {error}")
+            })?;
+        let accepted = match (
+            tag(TASK_ATTEMPT_COMMIT_TAG),
+            tag(TASK_PLAN_BRANCH_TAG),
+            tag(TASK_ACCEPTED_COMMIT_TAG),
+        ) {
+            (Some(attempt_commit), Some(plan_branch), Some(accepted_commit)) => {
+                Some(WorkspaceAcceptance {
+                    attempt_commit,
+                    plan_branch,
+                    accepted_commit,
+                })
+            }
+            _ => None,
+        };
+        Ok(Self {
+            plan_id: tag(TASK_PLAN_ID_TAG).unwrap_or_default(),
+            task_id: tag(TASK_ID_TAG).unwrap_or_default(),
+            run_id: tag(TASK_RUN_ID_TAG),
+            attempt_key: tag(TASK_ATTEMPT_KEY_TAG),
+            attempt,
+            workspace: tag(TASK_WORKSPACE_TAG).map(PathBuf::from),
+            lease,
+            accepted,
+        })
     }
 }
 
@@ -662,7 +828,11 @@ impl Cell for TaskExecutorCell {
                         Ok(output) => return Ok(output),
                         // A non-retryable gateway error (e.g. every candidate
                         // provider is out of usage) fails identically on an
-                        // immediate retry, so surface it at once.
+                        // immediate retry, and so does a gate's rejection
+                        // (e.g. a plan branch that refused the attempt's
+                        // work), so surface them at once. A cancellation
+                        // means the run is stopping, which a retry would
+                        // only delay.
                         Err(error)
                             if retry < self.spec.max_retries
                                 && !matches!(
@@ -670,7 +840,8 @@ impl Cell for TaskExecutorCell {
                                     roko_core::error::RokoError::Gateway {
                                         retryable: false,
                                         ..
-                                    }
+                                    } | roko_core::error::RokoError::Rejected(_)
+                                        | roko_core::error::RokoError::Cancelled(_)
                                 ) =>
                         {
                             retry = retry.saturating_add(1);
@@ -865,6 +1036,40 @@ task_def_json = "{}"
                 ..
             }
         ));
+    }
+
+    #[derive(Default)]
+    struct StoppedDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for StoppedDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::cancelled(
+                "its plan run is stopping",
+            ))
+        }
+    }
+
+    /// An attempt its stopping run cancelled is not retried (bug-2b1ddc).
+    #[tokio::test]
+    async fn a_cancelled_dispatch_is_not_retried() {
+        let dispatcher = Arc::new(StoppedDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("a stopped attempt fails the task");
+
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(error, roko_core::error::RokoError::Cancelled(_)));
     }
 
     #[tokio::test]
@@ -1117,5 +1322,175 @@ task_def_json = "{}"
         assert_eq!(TaskGateVerdict::from_signals(&unknown), None);
         assert!(TaskGateVerdict::Passed.is_replayable());
         assert!(TaskGateVerdict::Unverified.is_replayable());
+    }
+
+    #[test]
+    fn already_satisfied_is_replayable_and_ranks_below_passed() {
+        let verdict = TaskGateVerdict::AlreadySatisfied;
+        assert_eq!(TaskGateVerdict::parse(verdict.as_str()), Some(verdict));
+        assert!(verdict.is_replayable());
+
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut satisfied = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("already done"))
+                .build(),
+        ];
+        verdict.stamp(&mut satisfied);
+        let mixed: Vec<Signal> = passed.into_iter().chain(satisfied).collect();
+        assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
+    }
+
+    /// gap-161be1: a pass over pre-existing failures replays like a pass but
+    /// never hides behind a clean one.
+    #[test]
+    fn passed_with_preexisting_failures_is_replayable_and_ranks_below_passed() {
+        let verdict = TaskGateVerdict::PassedWithPreexistingFailures;
+        assert_eq!(verdict.as_str(), "passed_with_preexisting_failures");
+        assert_eq!(TaskGateVerdict::parse(verdict.as_str()), Some(verdict));
+        assert!(verdict.is_replayable());
+
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut filtered = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("old failures only"))
+                .build(),
+        ];
+        verdict.stamp(&mut filtered);
+        let mixed: Vec<Signal> = passed.into_iter().chain(filtered).collect();
+        assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
+    }
+
+    fn handed_on_attempt() -> TaskAttempt {
+        let attempt_id = crate::workspace::WorkspaceAttemptId {
+            plan_id: "plan-a".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 0,
+        };
+        TaskAttempt {
+            plan_id: "plan-a".to_string(),
+            task_id: "T1".to_string(),
+            run_id: Some("run-7".to_string()),
+            attempt_key: Some("run-7:plan-a:T1:2".to_string()),
+            attempt: 2,
+            workspace: Some(PathBuf::from("/wt/attempt-1")),
+            lease: Some(WorkspaceLease {
+                lease_id: "attempt-1".to_string(),
+                lease_fingerprint: attempt_id.fingerprint(),
+                attempt_id,
+                path: PathBuf::from("/wt/attempt-1"),
+                branch: "roko/attempt/attempt-1".to_string(),
+                base_revision: "HEAD".to_string(),
+            }),
+            accepted: None,
+        }
+    }
+
+    /// gap-3b5361: an accepted attempt names where its work landed, and a
+    /// cell that settled a handed-on lease stamps it away.
+    #[test]
+    fn task_attempt_records_acceptance_and_clears_a_settled_lease() {
+        let handed_on = handed_on_attempt();
+        let mut signals = vec![Signal::builder(Kind::AgentOutput).build()];
+        handed_on.stamp(&mut signals);
+
+        let settled = TaskAttempt {
+            lease: None,
+            accepted: Some(WorkspaceAcceptance {
+                attempt_commit: "a".repeat(40),
+                plan_branch: "roko/plan/plan-a".to_string(),
+                accepted_commit: "b".repeat(40),
+            }),
+            ..handed_on
+        };
+        settled.stamp(&mut signals);
+        assert_eq!(signals[0].tag("workspace.lease"), None);
+        assert_eq!(TaskAttempt::from_signals(&signals), Ok(settled));
+    }
+
+    #[derive(Default)]
+    struct RejectsDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for RejectsDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Rejected(
+                "the plan branch refused the work".to_string(),
+            ))
+        }
+    }
+
+    /// gap-3b5361: a gate's rejection fails the same way on a retry, so it
+    /// is surfaced at once.
+    #[tokio::test]
+    async fn a_rejection_is_not_retried() {
+        let dispatcher = Arc::new(RejectsDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the rejection fails the task");
+        assert!(matches!(error, roko_core::error::RokoError::Rejected(_)));
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// bug-50caf2: the attempt, its checkout and its lease survive the trip
+    /// through the output tags, and stamping refreshes the content ids.
+    #[test]
+    fn task_attempt_stamp_round_trips_and_refreshes_ids() {
+        let attempt = handed_on_attempt();
+        let mut signals = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        ];
+        let before = signals[0].id;
+        attempt.stamp(&mut signals);
+        assert_ne!(signals[0].id, before);
+        assert_eq!(signals[0].id, signals[0].content_hash());
+        assert_eq!(signals[0].tag("task_id"), Some("T1"));
+        assert_eq!(TaskAttempt::from_signals(&signals), Ok(attempt));
+    }
+
+    /// An output that names no attempt, or no usable one, is refused with a
+    /// reason rather than read as some default attempt.
+    #[test]
+    fn task_attempt_refuses_missing_or_malformed_tags() {
+        let untagged = vec![Signal::builder(Kind::AgentOutput).build()];
+        let error = TaskAttempt::from_signals(&untagged).unwrap_err();
+        assert!(error.contains("workspace.attempt"), "{error}");
+
+        for (tag, value) in [
+            ("workspace.attempt", "0"),
+            ("workspace.attempt", "two"),
+            ("workspace.lease", "{not a lease"),
+        ] {
+            let mut signal = Signal::builder(Kind::AgentOutput).build();
+            signal
+                .tags
+                .insert("workspace.attempt".to_string(), "1".to_string());
+            signal.tags.insert(tag.to_string(), value.to_string());
+            let error = TaskAttempt::from_signals(&[signal]).unwrap_err();
+            assert!(error.contains(tag), "{tag}={value}: {error}");
+        }
+    }
+
+    #[test]
+    fn keep_workspace_is_read_from_the_node_config() {
+        assert!(!TaskExecutionSpec::from_config(&config()).keep_workspace);
+        let mut table = config().as_table().cloned().expect("table");
+        table.insert("keep_workspace".to_string(), toml::Value::Boolean(true));
+        let spec = TaskExecutionSpec::from_config(&toml::Value::Table(table));
+        assert!(spec.keep_workspace);
     }
 }

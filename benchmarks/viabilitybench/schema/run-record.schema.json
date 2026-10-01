@@ -42,7 +42,7 @@
       "properties": {
         "family": {"type": "string"},
         "instance_id": {"type": "string"},
-        "ladder": {"enum": [1, 2, 3, 4, 5]},
+        "ladder": {"enum": [1, 2, 3, 4, 5, null], "description": "difficulty level ℓ1–ℓ5 (S08 §4.4); null for a row that has no level: a plan-level slice feature (family PL, S09 §4.9)"},
         "latent_version": {"type": "string"},
         "spec_variant": {"enum": ["precise", "vague", "refined"]},
         "is_honeypot": {"type": "boolean"},
@@ -58,6 +58,7 @@
         "status": {"enum": ["completed", "failed", "timeout", "aborted_cap", "infra_error", "leak_suspected"], "description": "infra_error and leak_suspected runs are excluded from results and counted"},
         "started_at": {"type": "string"},
         "finished_at": {"type": "string"},
+        "queue_wait_s": {"type": ["number", "null"], "description": "S09 §4.9: the seconds ready work spent waiting for a dispatch slot or a provider rate limit, summed over the run's attempts (each attempt's queue_wait_s) and reported beside the makespan, never subtracted from it. null when the arm cannot observe it, as for a runner that does not record it; never 0 for unknown"},
         "attempts": {
           "type": "array",
           "items": {
@@ -86,7 +87,12 @@
                 }
               },
               "fault_injected": {"type": ["string", "null"]},
-              "gate_verdict": {"enum": ["passed", "unverified", "forced_accept", null]}
+              "gate_verdict": {"enum": ["passed", "already_satisfied", "unverified", "forced_accept", null], "description": "S01's verdict tag of the attempt (roko.verdict/1): passed; already_satisfied, when the attempt changed nothing and its verify steps passed on the tree as it was (gap-9eb1e1); unverified; forced_accept (legacy checkpoints). null when its gate failed or the arm has no Roko gate"},
+              "task_id": {"type": ["string", "null"], "description": "the plan task the attempt worked on (a Roko plan's task id); absent or null for a single-task arm without a plan"},
+              "cost_class": {"enum": ["plan", "execute", "retry", "escalate", "integrate", null], "description": "what the attempt's spend was for (S09 §4.9): plan (the planner), execute (a task's first attempt), retry (a later attempt on the model before it), escalate (a later attempt on another model, a rung up the ladder), integrate (merges, conflict repairs and whole-plan gate runs). Absent or null when the runner does not class its attempts; costs.by_class sums it"},
+              "started_at": {"type": ["string", "null"], "description": "when the attempt's task started working on it: with finished_at, the attempt's busy time"},
+              "finished_at": {"type": ["string", "null"]},
+              "queue_wait_s": {"type": ["number", "null"], "description": "the seconds the attempt's work waited for a dispatch slot or a provider rate limit; null when unknown, never 0"}
             }
           }
         }
@@ -98,9 +104,20 @@
       "properties": {
         "passed": {"type": "boolean"},
         "clean_rerun": {"type": "boolean"},
-        "flake_injected": {"type": "boolean"},
+        "flake_injected": {"type": "boolean", "description": "S08 §4.6 flaky_verify: the visible-verify wrapper failed at least one of the arm's own visible check runs on purpose. passed and clean_rerun are the census's rerun, which no flake reaches"},
         "commands": {"type": "array", "items": {"type": "string"}},
-        "exit_codes": {"type": "array", "items": {"type": "integer"}}
+        "exit_codes": {"type": "array", "items": {"type": "integer"}},
+        "verify_runs": {"type": ["integer", "null"], "description": "how many times the arm ran a visible check through the visible-verify wrapper; null when the run had none (no flaky_verify)"},
+        "flakes": {
+          "type": "array",
+          "description": "every failure the wrapper injected, by the number of the visible check run it failed",
+          "items": {
+            "type": "object",
+            "required": ["run"],
+            "additionalProperties": false,
+            "properties": {"run": {"type": "integer"}, "at": {"type": ["string", "null"]}}
+          }
+        }
       }
     },
     "vs": {
@@ -136,7 +153,20 @@
         "without_cache_usd": {"type": ["number", "null"], "description": "the same tokens with cache reads priced as input"},
         "vendor_usd": {"type": ["number", "null"], "description": "the vendor's own figure: a provider-billed charge or the CLI's reported cost"},
         "source": {"enum": ["provider_usage", "cli_usage", "estimated", "unknown"], "description": "S01's cost.source; mock usage never becomes a run record"},
-        "meter_cross_check_usd": {"type": ["number", "null"], "description": "the metering proxy's independent figure"}
+        "meter_cross_check_usd": {"type": ["number", "null"], "description": "the metering proxy's independent figure"},
+        "by_class": {
+          "type": ["object", "null"],
+          "description": "api_equiv_usd split by the attempts' cost_class (S09 §4.9: the planner's share of the cost, and the retries, escalations and integration beside the first attempts). null when the runner does not class its attempts. A class with no attempt is 0; a class with an attempt whose cost is unknown is null, never 0. When every class is known they sum to api_equiv_usd",
+          "required": ["plan", "execute", "retry", "escalate", "integrate"],
+          "additionalProperties": false,
+          "properties": {
+            "plan": {"type": ["number", "null"]},
+            "execute": {"type": ["number", "null"]},
+            "retry": {"type": ["number", "null"]},
+            "escalate": {"type": ["number", "null"]},
+            "integrate": {"type": ["number", "null"]}
+          }
+        }
       }
     },
     "provenance": {

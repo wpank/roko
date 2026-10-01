@@ -23,6 +23,7 @@ use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRec
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
+use roko_learn::telemetry::CostSource;
 use roko_runtime::{
     DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
 };
@@ -282,7 +283,12 @@ pub struct AttemptInfo {
     pub success: bool,
     pub duration_ms: u64,
     pub cost_usd: f64,
-    /// The attempt's failure reason says it timed out.
+    /// Where the usage behind `cost_usd` came from: `estimated` for usage the
+    /// attempt streamed before it was cut off, which no provider reported
+    /// (gap-288e38); `unknown` for a row written before the field.
+    pub cost_source: CostSource,
+    /// The attempt timed out: its failure reason says so, or one of its
+    /// verify steps is recorded as a timeout.
     pub timed_out: bool,
     /// Failure reason recorded on the attempt's episode.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -727,19 +733,30 @@ fn diagnose_tasks(
 }
 
 /// `task_id`'s provider attempts, oldest first, each with the failure reason
-/// of its episode.
+/// of its episode. An attempt timed out when that reason says so, or when one
+/// of its verify steps is recorded as a timeout: a step's authored `fail_msg`
+/// keeps its timeout out of the reason.
 fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
     let mut episodes: Vec<&Episode> = records
         .episodes
         .iter()
         .filter(|episode| episode.task_id == task_id)
         .collect();
+    let mut step_timeouts: Vec<i64> = records
+        .gate_failures
+        .iter()
+        .filter(|record| {
+            record.task_id == task_id && record.failure_kind == GateFailureKind::Timeout
+        })
+        .map(|record| record.timestamp.timestamp_millis())
+        .collect();
     records
         .attempts
         .iter()
         .filter(|record| record.task_id == task_id)
         .map(|record| {
-            let episode = rfc3339_ms(&record.timestamp).and_then(|ended_ms| {
+            let ended_ms = rfc3339_ms(&record.timestamp);
+            let episode = ended_ms.and_then(|ended_ms| {
                 let index = episodes.iter().position(|episode| {
                     episode.success == record.success
                         && (episode.timestamp.timestamp_millis() - ended_ms).abs()
@@ -747,6 +764,9 @@ fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
                 })?;
                 Some(episodes.remove(index))
             });
+            let step_timeout = ended_ms
+                .filter(|_| !record.success)
+                .and_then(|ended_ms| take_step_timeout(&mut step_timeouts, ended_ms));
             let failure_reason = episode
                 .and_then(|episode| episode.failure_reason.clone())
                 .filter(|reason| !reason.trim().is_empty());
@@ -757,12 +777,25 @@ fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
                 success: record.success,
                 duration_ms: record.duration_ms,
                 cost_usd: record.cost_usd,
-                timed_out: failure_reason.as_deref().is_some_and(mentions_timeout),
+                cost_source: record.cost_source,
+                timed_out: step_timeout.is_some()
+                    || failure_reason.as_deref().is_some_and(mentions_timeout),
                 failure_reason,
                 episode_id: episode.map(episode_id),
             }
         })
         .collect()
+}
+
+/// Take from `step_timeouts` the verify step timeout of the failed attempt
+/// that ended at `ended_ms`: the first recorded within
+/// [`EPISODE_MATCH_WINDOW_MS`] before it. Graph task dispatch records a
+/// timed-out step just before its attempt ends.
+fn take_step_timeout(step_timeouts: &mut Vec<i64>, ended_ms: i64) -> Option<i64> {
+    let index = step_timeouts
+        .iter()
+        .position(|&at_ms| at_ms <= ended_ms && ended_ms - at_ms <= EPISODE_MATCH_WINDOW_MS)?;
+    Some(step_timeouts.remove(index))
 }
 
 /// `task_id`'s most recent failure. A verify step failure is preferred over
@@ -864,6 +897,12 @@ fn describe_task(
             };
             let verdict = match task.gate_verdict {
                 Some(TaskGateVerdict::Passed) => "; its verify steps passed",
+                Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
+                    "; its verify steps passed, apart from tests that failed before the run"
+                }
+                Some(TaskGateVerdict::AlreadySatisfied) => {
+                    "; it changed nothing, and its verify steps passed on the tree as it was"
+                }
                 Some(TaskGateVerdict::Unverified) => "; it has no verify steps",
                 Some(TaskGateVerdict::ForcedAccept) => {
                     "; its verify steps failed and it was force-accepted, so a resume runs it again"
@@ -935,6 +974,7 @@ fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError>
         | FailureClass::MissingDependencyOrFeature
         | FailureClass::BorrowOrLifetime => ErrorClass::CompileError,
         FailureClass::TestExpectationFailure => ErrorClass::TestFailure,
+        _ if record.failure_kind == GateFailureKind::Timeout => ErrorClass::Timeout,
         _ if mentions_timeout(&record.summary) => ErrorClass::Timeout,
         _ => ErrorClass::Unknown,
     };
@@ -962,8 +1002,18 @@ fn graph_recovery_suggestions(
     for task in &unfinished {
         let task_id = &task.task_id;
         if task.timed_out_attempts > 0 {
+            // A verify step that ran out of time has a limit of its own.
+            let verify_step_timed_out = task
+                .gate_failures
+                .iter()
+                .any(|failure| failure.failure_kind == GateFailureKind::Timeout);
+            let limit = if verify_step_timed_out {
+                "the task's `timeout_secs` or its verify step's `timeout_ms`,"
+            } else {
+                "the task's `timeout_secs`"
+            };
             suggestions.push(format!(
-                "{task_id}: {} attempt{} timed out; raise the task's `timeout_secs` or split the task.",
+                "{task_id}: {} attempt{} timed out; raise {limit} or split the task.",
                 task.timed_out_attempts,
                 plural(task.timed_out_attempts)
             ));
@@ -2149,6 +2199,7 @@ title = "Tidy the changelog"
             duration_ms: 600_500,
             success,
             session_id: String::new(),
+            cost_source: CostSource::CliUsage,
         }
     }
 
@@ -2446,6 +2497,73 @@ title = "Tidy the changelog"
         let t2 = task(&verbose, "T2");
         assert_eq!(t2.attempts.len(), 2);
         assert_eq!(t2.episode_ids, ["ep-1"]);
+    }
+
+    /// A verify step that ran out of time leaves an attempt reason that only
+    /// counts failed steps, since its authored `fail_msg` stands in for "timed
+    /// out"; its gate-failure record is what says it timed out. The dispatch
+    /// side has a test of the same name.
+    #[test]
+    fn a_verify_step_timeout_is_recorded_as_a_timeout() {
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(root, &["T1"], 100_000, GraphCheckpointStatus::Failed);
+        let learn = root.join(".roko/learn");
+        write_jsonl(
+            &learn.join("costs.jsonl"),
+            &[
+                attempt("T2", "2026-09-29T07:20:00.100+00:00", false, 0.05),
+                attempt("T2", "2026-09-29T07:30:00.100+00:00", false, 0.05),
+            ],
+        );
+        let summary = "verify[0:structural] (`test -f src/parser.rs`): the check failed";
+        let mut timed_out = gate_failure("T2", "2026-09-29T07:30:00.090Z", summary);
+        timed_out.failure_kind = GateFailureKind::Timeout;
+        timed_out.primary_class = FailureClass::Unknown;
+        timed_out.recommended_action = GateFailureAction::Retry;
+        write_jsonl(&learn.join("gate-failures.jsonl"), &[timed_out]);
+        let reason = format!("verify: 1/2 verify step(s) failed:\n\n{summary}");
+        write_jsonl(
+            &root.join(".roko/episodes.jsonl"),
+            &[
+                episode(
+                    "ep-1",
+                    PLAN_ID,
+                    "T2",
+                    "2026-09-29T07:20:00.095Z",
+                    Some("provider: exit 1"),
+                ),
+                episode(
+                    "ep-2",
+                    PLAN_ID,
+                    "T2",
+                    "2026-09-29T07:30:00.095Z",
+                    Some(reason.as_str()),
+                ),
+            ],
+        );
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        let t2 = task(&report, "T2");
+        // Only the second attempt ended after the timed-out step.
+        assert_eq!((t2.failed_attempts, t2.timed_out_attempts), (2, 1));
+        assert!(!t2.attempts[0].timed_out);
+        assert!(t2.attempts[1].timed_out);
+        assert_eq!(t2.gate_failures[0].failure_kind, GateFailureKind::Timeout);
+        assert_eq!(
+            t2.reason,
+            format!("failed after 2 attempts (1 timed out); last error: {summary}")
+        );
+        assert_eq!(
+            report.gate_results[0].classified_errors[0].error_class,
+            ErrorClass::Timeout
+        );
+        let suggestions = report.suggested_recovery.join("\n");
+        assert!(suggestions.contains("T2: 1 attempt timed out"));
+        assert!(
+            suggestions.contains("or its verify step's `timeout_ms`, or split the task."),
+            "{suggestions}"
+        );
     }
 
     #[test]

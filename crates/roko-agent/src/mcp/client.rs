@@ -6,11 +6,13 @@
 //! mock transport via the [`Transport`] trait.
 
 use async_trait::async_trait;
+use roko_core::child_env::{self, CredentialScrub};
 use roko_core::defaults::{
     DEFAULT_MCP_RESPONSE_TIMEOUT_SECS, DEFAULT_MCP_STDIN_WRITE_TIMEOUT_SECS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -224,19 +226,31 @@ impl StdioTransport {
     /// Spawn a child MCP server process with additional environment variables.
     ///
     /// The provided environment is layered on top of the current process
-    /// environment before the child process is started. Stderr is piped and
-    /// forwarded to the tracing subscriber (one `debug!` line per stderr line)
-    /// so MCP server diagnostics appear in structured logs rather than leaking
-    /// directly to the parent's stderr.
+    /// environment before the child process is started. The server does not
+    /// inherit provider keys, names roko loaded from its `.env` files, or
+    /// roko's own credentials ([`CredentialScrub`]); one that needs a key
+    /// names it in its `env` overlay (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`),
+    /// which always reaches it. Stderr is piped and forwarded to the tracing
+    /// subscriber (one `debug!` line per stderr line) so MCP server
+    /// diagnostics appear in structured logs rather than leaking directly to
+    /// the parent's stderr.
     pub fn spawn_with_env(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        let resolved_env = resolve_env(env);
-        let mut child = tokio::process::Command::new(command)
-            .args(args)
-            .envs(resolved_env)
+        Self::spawn_with_parent_env(command, args, env, None)
+    }
+
+    /// [`spawn_with_env`](Self::spawn_with_env), with `parent_env` standing in
+    /// for roko's own environment when given.
+    fn spawn_with_parent_env(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        parent_env: Option<Vec<(String, OsString)>>,
+    ) -> Result<Self, McpError> {
+        let mut child = server_command(command, args, env, parent_env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -296,10 +310,7 @@ impl StdioTransport {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        let resolved_env = resolve_env(env);
-        let mut child = tokio::process::Command::new(command)
-            .args(args)
-            .envs(resolved_env)
+        let mut child = server_command(command, args, env, None)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -595,6 +606,29 @@ fn redact_stderr(raw: &str, env_values: &[String]) -> String {
     result
 }
 
+/// The command that starts MCP server `command` with `args`.
+///
+/// The server inherits roko's environment (`parent_env` in its place when
+/// given) minus what [`CredentialScrub`] strips: provider keys, names roko
+/// loaded from its `.env` files, and roko's own credentials. Its configured
+/// `env` overlay is set on top and always reaches it, so a server that needs
+/// a key names it there (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`).
+fn server_command(
+    command: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+    parent_env: Option<Vec<(String, OsString)>>,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(command);
+    cmd.args(args).envs(resolve_env(env));
+    child_env::apply_credential_scrub_from(
+        cmd.as_std_mut(),
+        &CredentialScrub::default(),
+        parent_env.unwrap_or_else(child_env::process_env),
+    );
+    cmd
+}
+
 fn resolve_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
         .map(|(key, value)| (key.clone(), resolve_env_value(value)))
@@ -671,6 +705,59 @@ mod tests {
                 data: None,
             }),
             id,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mcp_server_env_excludes_provider_keys() {
+        use tokio::io::AsyncReadExt;
+
+        let path = std::env::var_os("PATH")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let mut parent = vec![("PATH".to_string(), path)];
+        for (name, value) in [
+            ("GITHUB_TOKEN", "ghp-shell-test"),
+            ("OPENAI_API_KEY", "sk-test-not-real"),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-not-real"),
+            ("ROKO_SERVE_AUTH_API_KEY", "serve-test-not-real"),
+        ] {
+            parent.push((name.to_string(), OsString::from(value)));
+        }
+        let overlay: HashMap<String, String> = [
+            ("MCP_SERVER_SETTING", "from-config"),
+            ("PERPLEXITY_API_KEY", "named-in-config"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let args = vec!["-c".to_string(), "env".to_string()];
+
+        let transport = StdioTransport::spawn_with_parent_env("sh", &args, &overlay, Some(parent))
+            .expect("spawn sh");
+        let mut env = String::new();
+        transport
+            .stdout
+            .lock()
+            .await
+            .read_to_string(&mut env)
+            .await
+            .expect("read the server's env");
+
+        for leaked in [
+            "sk-test-not-real",
+            "sk-ant-test-not-real",
+            "serve-test-not-real",
+        ] {
+            assert!(!env.contains(leaked), "{leaked} leaked:\n{env}");
+        }
+        for kept in [
+            "MCP_SERVER_SETTING=from-config",
+            "PERPLEXITY_API_KEY=named-in-config",
+            "GITHUB_TOKEN=ghp-shell-test",
+        ] {
+            assert!(env.contains(kept), "{kept} missing:\n{env}");
         }
     }
 

@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod scripted_provider;
+
+use scripted_provider::{Script, ScriptedProvider};
+
 pub const MOCK_FIXTURE: &str = "mock-self-host-fixture";
 pub const SAMPLE_PLAN_ID: &str = "test-wire-xyz";
 
@@ -306,6 +310,217 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
             String::from_utf8_lossy(&output.stderr)
         )
     })
+}
+
+/// A throwaway Graph plan workspace whose agent is a scripted fake Claude
+/// CLI, isolated from the invoking user. Under one canonical temp root it
+/// holds `repo` (the git repository roko runs in), `home` (roko's `HOME`,
+/// so no `~/.roko/.env` or global config of the user's is read) and
+/// `fixtures` (the agent script and whatever it or the test records there),
+/// so what lives outside the repository never shows up in a scan of it.
+pub struct ScriptedPlanWorkspace {
+    _temp: tempfile::TempDir,
+    pub root: PathBuf,
+    pub repo: PathBuf,
+    pub home: PathBuf,
+    pub fixtures: PathBuf,
+}
+
+impl ScriptedPlanWorkspace {
+    /// A repository holding a minimal crate and the plan `plan`, whose
+    /// `tasks.toml` is `tasks_toml` with `{fixtures}` standing for the
+    /// fixtures directory, committed with `.roko/` ignored. `roko.toml`
+    /// routes every task to `fixtures/fake-claude.sh`, which runs
+    /// `agent_script`, through a `claude_cli` provider on model `scripted`.
+    /// It is written as root-level dotted keys, so `extra_config`, appended
+    /// to it, can add keys such as `agent.env_passthrough = [...]`.
+    /// `roko init` is not used: its template depends on this machine's PATH
+    /// and keys.
+    pub fn new(plan: &str, tasks_toml: &str, agent_script: &str, extra_config: &str) -> Self {
+        Self::create(plan, tasks_toml, extra_config, |root| {
+            let agent = root.join("fixtures").join("fake-claude.sh");
+            write_executable(&agent, agent_script);
+            agent
+        })
+    }
+
+    /// [`Self::new`] with the shared [`ScriptedProvider`] playing `script` as
+    /// the agent. It lives in `root/provider`, outside the repository and the
+    /// fixtures, so its turns, which may print a canary, are not scanned with
+    /// them.
+    pub fn with_provider(
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
+        let mut provider = None;
+        let workspace = Self::create(plan, tasks_toml, extra_config, |root| {
+            let installed = ScriptedProvider::install(&root.join("provider"), script);
+            let command = installed.command();
+            provider = Some(installed);
+            command
+        });
+        (workspace, provider.expect("the provider is installed"))
+    }
+
+    /// The workspace, with `install_agent(root)` putting the agent in place
+    /// and returning its command.
+    fn create(
+        plan: &str,
+        tasks_toml: &str,
+        extra_config: &str,
+        install_agent: impl FnOnce(&Path) -> PathBuf,
+    ) -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Canonical, so paths roko prints and paths the test builds agree.
+        let root = temp.path().canonicalize().expect("canonical tempdir");
+        let repo = root.join("repo");
+        let home = root.join("home");
+        let fixtures = root.join("fixtures");
+        for dir in [&repo, &home, &fixtures] {
+            fs::create_dir_all(dir).expect("create workspace directory");
+        }
+        let agent = install_agent(&root);
+
+        seed_minimal_rust_project(&repo);
+        fs::write(repo.join(".gitignore"), ".roko/\ntarget/\n").expect("write .gitignore");
+        fs::write(
+            repo.join("roko.toml"),
+            format!(
+                r#"agent.default_model = "scripted"
+agent.command = {agent:?}
+agent.bare_mode = false
+providers.scripted-cli.kind = "claude_cli"
+providers.scripted-cli.command = {agent:?}
+models.scripted.provider = "scripted-cli"
+models.scripted.slug = "claude-sonnet-4-6"
+models.scripted.context_window = 200000
+gates.cargo_fix_enabled = false
+{extra_config}"#,
+                agent = agent.display().to_string()
+            ),
+        )
+        .expect("write roko.toml");
+        let plan_dir = repo.join("plans").join(plan);
+        fs::create_dir_all(&plan_dir).expect("create plan directory");
+        fs::write(plan_dir.join("plan.md"), format!("# Plan: {plan}\n")).expect("write plan.md");
+        fs::write(
+            plan_dir.join("tasks.toml"),
+            tasks_toml.replace("{fixtures}", &fixtures.display().to_string()),
+        )
+        .expect("write tasks.toml");
+
+        let workspace = Self {
+            _temp: temp,
+            root,
+            repo,
+            home,
+            fixtures,
+        };
+        workspace.git(&["init", "--quiet"]);
+        workspace.git(&["config", "user.name", "Scripted Plan"]);
+        workspace.git(&["config", "user.email", "scripted-plan@example.invalid"]);
+        workspace.git(&["add", "--all"]);
+        workspace.git(&["commit", "--quiet", "-m", "seed"]);
+        workspace
+    }
+
+    /// Run git in the repository with the workspace's home, so the user's
+    /// global git configuration (signing, hooks) stays out.
+    pub fn git(&self, args: &[&str]) {
+        let status = ProcessCommand::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&self.repo)
+            .env("HOME", &self.home)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// `roko --json plan run plans/<plan>` in the repository, as a user whose
+    /// home is the workspace's: provider keys, `ROKO_*` variables and the
+    /// log and config variables of the invoking environment are removed,
+    /// then `env` is added. The exit status is not checked.
+    pub fn run_plan(&self, plan: &str, env: &[(&str, &str)]) -> Output {
+        let mut command = ProcessCommand::new(cargo_bin("roko"));
+        command
+            .current_dir(&self.repo)
+            .arg("--json")
+            .args(["plan", "run", &format!("plans/{plan}"), "--workdir"])
+            .arg(&self.repo)
+            .env("HOME", &self.home);
+        for name in roko_core::child_env::PROVIDER_KEY_VARS {
+            command.env_remove(name);
+        }
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("ROKO_") {
+                command.env_remove(name);
+            }
+        }
+        for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
+            command.env_remove(name);
+        }
+        command.envs(env.iter().copied());
+        command.output().expect("run roko plan run")
+    }
+}
+
+/// The files under `root` whose bytes contain `needle`, except `skip`,
+/// sorted. Symlinks are not followed.
+pub fn files_containing(root: &Path, needle: &str, skip: &[PathBuf]) -> Vec<PathBuf> {
+    let needle = needle.as_bytes();
+    let mut found = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                dirs.push(path);
+            } else if file_type.is_file()
+                && !skip.contains(&path)
+                && fs::read(&path)
+                    .is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `text` with every `secret` replaced by `<SECRET>`, for failure messages
+/// that must not repeat a secret.
+pub fn mask_secret(text: &str, secret: &str) -> String {
+    text.replace(secret, "<SECRET>")
+}
+
+/// Each line of `path` that contains `secret`, masked, under the path: what a
+/// failure message shows about a file a secret leaked into.
+pub fn describe_leak(path: &Path, secret: &str) -> String {
+    let text = String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned();
+    let lines: Vec<String> = text
+        .lines()
+        .filter(|line| line.contains(secret))
+        .take(3)
+        .map(|line| {
+            let line = mask_secret(line, secret);
+            let shown: String = line.chars().take(300).collect();
+            format!("    {shown}")
+        })
+        .collect();
+    format!("  {}\n{}", path.display(), lines.join("\n"))
 }
 
 pub fn run_roko(workdir: &Path, args: &[&str]) -> Assert {

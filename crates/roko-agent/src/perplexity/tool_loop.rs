@@ -9,10 +9,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::tool_loop::max_iter::exhausted_message;
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
-use roko_core::tool::{CancelToken, NeverCancel, ToolContext, ToolDef};
+use roko_core::tool::{
+    CancelToken, CorrelationEnvelope, MetricsSink, NeverCancel, NoopMetricsSink, NoopTraceSink,
+    ToolContext, ToolDef, TraceSink,
+};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use roko_fs::RokoLayout;
 use serde_json::Value;
@@ -149,9 +153,17 @@ pub struct PerplexityToolLoopAgent {
     model_slug: String,
     worktree_path: PathBuf,
     immune_root_path: Option<PathBuf>,
+    /// Caller's turn cap: a stop at it reads as a turn-cap hit.
+    turn_cap: Option<u32>,
     /// Run-scoped cancellation token (T027). Wired from `AgentOptions::cancel_token`
     /// so that a runner-level task cancellation stops tool execution promptly.
     cancel_token: Arc<dyn CancelToken>,
+    /// Per-call trace sink for the loop's tool calls (find-f489db).
+    trace_sink: Arc<dyn TraceSink>,
+    /// Per-call metrics sink for the loop's tool calls (find-f489db).
+    metrics_sink: Arc<dyn MetricsSink>,
+    /// The run, task, attempt and agent the loop's tool calls belong to.
+    correlation: CorrelationEnvelope,
 }
 
 impl PerplexityToolLoopAgent {
@@ -170,7 +182,11 @@ impl PerplexityToolLoopAgent {
             model_slug: model_slug.into(),
             worktree_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             immune_root_path: None,
+            turn_cap: None,
             cancel_token: Arc::new(NeverCancel),
+            trace_sink: Arc::new(NoopTraceSink),
+            metrics_sink: Arc::new(NoopMetricsSink),
+            correlation: CorrelationEnvelope::empty(),
         }
     }
 
@@ -181,6 +197,36 @@ impl PerplexityToolLoopAgent {
     #[must_use]
     pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach a per-call trace sink for the loop's tool calls.
+    #[must_use]
+    pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
+        self.trace_sink = sink;
+        self
+    }
+
+    /// Attach a per-call metrics sink for the loop's tool calls.
+    #[must_use]
+    pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = sink;
+        self
+    }
+
+    /// Attach the run, task, attempt and agent the loop's tool calls belong
+    /// to, for their audit, trace and metrics records.
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: CorrelationEnvelope) -> Self {
+        self.correlation = correlation;
+        self
+    }
+
+    /// Record the caller's turn cap, which the loop's iteration cap
+    /// enforces; a run that stops at it fails with turn-cap-hit text.
+    #[must_use]
+    pub const fn with_turn_cap(mut self, max_turns: u32) -> Self {
+        self.turn_cap = Some(max_turns);
         self
     }
 
@@ -263,7 +309,10 @@ impl Agent for PerplexityToolLoopAgent {
                     .as_deref()
                     .unwrap_or(&self.worktree_path),
             )
-            .with_cancel_token(Arc::clone(&self.cancel_token));
+            .with_cancel_token(Arc::clone(&self.cancel_token))
+            .with_trace_sink(Arc::clone(&self.trace_sink))
+            .with_metrics_sink(Arc::clone(&self.metrics_sink))
+            .with_correlation(self.correlation.clone());
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),
@@ -289,7 +338,7 @@ impl Agent for PerplexityToolLoopAgent {
             .with_usage(output.total_usage),
             StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
-                &format!("Max iterations ({}) reached", output.iterations),
+                &exhausted_message(output.iterations, self.turn_cap),
                 "max_iterations",
                 output.iterations,
                 metadata,

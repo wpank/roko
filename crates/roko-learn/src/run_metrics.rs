@@ -1,13 +1,14 @@
 //! Structured run-metrics persistence for plan runs.
 
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 
 /// A structured record of a completed plan run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMetricsRecord {
-    /// Unique identifier for this run.
+    /// Unique identifier for this run. For a single plan it is the plan's
+    /// Graph checkpoint run, which its attempt keys carry; a run of several
+    /// plans names each plan's run in [`PlanMetrics::run_id`].
     pub run_id: String,
     /// ISO 8601 timestamp of when the record was captured.
     pub timestamp: String,
@@ -17,6 +18,10 @@ pub struct RunMetricsRecord {
     pub total_tasks: usize,
     /// Number of tasks that passed every verify step.
     pub tasks_completed: usize,
+    /// Number of tasks whose work was already there: the attempt changed
+    /// nothing and every verify step passed on the tree as it was.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Number of tasks that failed.
     pub tasks_failed: usize,
     /// Number of tasks that completed without running a verify step.
@@ -48,6 +53,11 @@ pub struct PlanMetrics {
     pub completed: bool,
     /// Number of tasks in this plan that passed every verify step.
     pub tasks_completed: usize,
+    /// Number of tasks in this plan whose work was already there: the
+    /// attempt changed nothing and every verify step passed on the tree as it
+    /// was.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Number of tasks that failed in this plan.
     pub tasks_failed: usize,
     /// Number of tasks in this plan that completed without running a verify
@@ -58,20 +68,14 @@ pub struct PlanMetrics {
     /// or not started.
     #[serde(default)]
     pub tasks_skipped: usize,
+    /// The plan's Graph checkpoint run, which its attempt keys carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// Append a single JSON line to the given path (creates file if not exists).
 pub fn append_run_metrics(path: &Path, record: &RunMetricsRecord) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-    writeln!(file, "{line}")?;
-    Ok(())
+    roko_core::io::append_jsonl(path, record)
 }
 
 #[cfg(test)]
@@ -86,6 +90,7 @@ mod tests {
             duration_ms: 45_000,
             total_tasks: 5,
             tasks_completed: 4,
+            tasks_already_satisfied: 0,
             tasks_failed: 1,
             tasks_unverified: 0,
             tasks_skipped: 0,
@@ -98,9 +103,11 @@ mod tests {
                 plan_id: "plan-1".into(),
                 completed: true,
                 tasks_completed: 4,
+                tasks_already_satisfied: 0,
                 tasks_failed: 1,
                 tasks_unverified: 0,
                 tasks_skipped: 0,
+                run_id: Some("graph-plan-1-run".into()),
             }],
         };
 
@@ -115,6 +122,7 @@ mod tests {
         assert_eq!(deser.total_cost_usd, 0.35);
         assert_eq!(deser.plans.len(), 1);
         assert!(deser.plans[0].completed);
+        assert_eq!(deser.plans[0].run_id.as_deref(), Some("graph-plan-1-run"));
     }
 
     #[test]
@@ -128,6 +136,7 @@ mod tests {
             duration_ms: 1_000,
             total_tasks: 1,
             tasks_completed: 1,
+            tasks_already_satisfied: 0,
             tasks_failed: 0,
             tasks_unverified: 0,
             tasks_skipped: 0,
@@ -163,5 +172,7 @@ mod tests {
         assert_eq!(parsed.tasks_skipped, 0);
         assert_eq!(parsed.plans[0].tasks_unverified, 0);
         assert_eq!(parsed.plans[0].tasks_skipped, 0);
+        assert_eq!(parsed.tasks_already_satisfied, 0);
+        assert_eq!(parsed.plans[0].tasks_already_satisfied, 0);
     }
 }

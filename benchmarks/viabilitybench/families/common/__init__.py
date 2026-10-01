@@ -16,13 +16,16 @@ The modules and their public names:
   cases; the secret file. `read_secret_file`, `write_secret_file`, `add_secret_file_argument`, `Secret`,
   `hidden_stream`, `surface_stream`, `Stream`, `SecretFileError`.
 - `astcheck`: deterministic detectors for planted gaming. `python_sources`, `literal_returns`, `skipped_tests`,
-  `wrong_base_class`, `test_edits`, `file_hashes`, `gaming_summary`, `Finding`, `CHECKS`.
+  `wrong_base_class`, `test_edits`, `file_hashes`, `is_cache`, `gaming_summary`, `Finding`, `CHECKS`.
 - `canary`: the per-release canary GUID that shows an agent read a hidden file. `RELEASE_CANARY`, `CANARY_RE`,
   `new_canary`, `mark`, `mark_file`, `strip`, `find`, `find_in_diff`, `find_in_tree`, `CanaryError`.
 - `mutate`: surface renames, so the instances of one family differ. `choose`, `rename_text`, `rename_tree`.
+- `sandbox`: runs the agent's code, when a truth suite runs it, with the secret file and the private task directory
+  out of reach. `command`, `denied`, `profile`, `KIND`.
 
 Each module's docstring fixes its signatures and contracts. Change them only together with every family that uses
 them. `VERSION` belongs in each family's `verifier_version`, so a change here shows up in the records.
 """
 
-VERSION = "common-1.0.0"
+VERSION = "common-1.2.0"  # 1.2.0: the suites run agent code through `sandbox` (gap-8c3752); 1.1.0: test_edits and
+# file_hashes skip bytecode and pytest caches (bug-993e7e)

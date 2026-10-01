@@ -2,8 +2,8 @@ use crate::Agent;
 use crate::hermes::{HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesHttpAgent};
 use crate::hermes::{HermesFlavor, HermesOneShotAgent, HermesOneShotConfig};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
@@ -105,6 +105,7 @@ impl ProviderAdapter for HermesProviderAdapter {
                     } else {
                         Some(model.slug.clone())
                     },
+                    max_turns: options.max_turns,
                     timeout,
                     resource_limits,
                     system_prompt: options.system_prompt.clone(),
@@ -119,6 +120,17 @@ impl ProviderAdapter for HermesProviderAdapter {
 
     fn supports_per_call_local_mcp(&self, provider: &ProviderConfig) -> bool {
         matches!(provider.transport(), ProviderTransport::Acp { .. })
+    }
+
+    /// The one-shot CLI takes `--max-turns`. The HTTP gateway and the ACP
+    /// session run Hermes' own loop and take no turn limit from roko.
+    fn turn_cap_enforcement(&self, provider: &ProviderConfig) -> TurnCapEnforcement {
+        match provider.transport() {
+            ProviderTransport::Cli { .. } | ProviderTransport::Local => TurnCapEnforcement::Native,
+            ProviderTransport::Http { .. } | ProviderTransport::Acp { .. } => {
+                TurnCapEnforcement::Advisory
+            }
+        }
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

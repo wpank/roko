@@ -300,6 +300,7 @@ mod contract_guards {
                 task_id: "task-1".into(),
                 passed: true,
                 duration_ms: 47200,
+                outcome: None,
             },
             RuntimeEvent::PipelinePhase {
                 run_id: "run-1".into(),

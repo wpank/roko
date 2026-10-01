@@ -11,8 +11,8 @@ use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
 use crate::exec::CodexOperationPolicy;
 use crate::provider::current_safety_layer;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
@@ -20,6 +20,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
+use roko_std::roles::CHAIN_TOOL_PREFIX;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -115,6 +116,10 @@ impl ProviderAdapter for ClaudeCliAdapter {
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         super::error_classify::classify_cli_error(status, body, "CLI")
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Native
     }
 }
 
@@ -266,6 +271,13 @@ impl ProviderAdapter for CodexCliAdapter {
         // Reuse the same classification logic.
         ClaudeCliAdapter.classify_error(status, body)
     }
+
+    /// `codex exec` has no turn-count flag or setting, and roko reads its
+    /// JSONL only after the process exits, so nothing stops it at the cap:
+    /// the cap is advisory, and only the attempt timeout bounds a long run.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
+    }
 }
 
 fn render_claude_tool_policy(tools: &[String]) -> String {
@@ -274,8 +286,11 @@ fn render_claude_tool_policy(tools: &[String]) -> String {
         .filter_map(|name| {
             if let Some(alias) = claude_of_canonical(name) {
                 Some(alias.to_string())
-            } else if canonical_names().any(|canonical| canonical == name) {
-                // Roko-only canonical tools cannot be executed by Claude CLI.
+            } else if canonical_names().any(|canonical| canonical == name)
+                || name.starts_with(CHAIN_TOOL_PREFIX)
+            {
+                // Roko-only tools, the canonical builtins and the chain
+                // tools, cannot be executed by Claude CLI.
                 None
             } else {
                 // Preserve MCP/plugin names and already-native Claude names.
@@ -295,6 +310,19 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    #[test]
+    fn chain_tools_never_reach_the_claude_tool_flags() {
+        let tools = [
+            "bash".to_string(),
+            "chain.transfer".to_string(),
+            "mcp__github__create_pr".to_string(),
+        ];
+        assert_eq!(
+            render_claude_tool_policy(&tools),
+            "Bash,mcp__github__create_pr"
+        );
     }
 
     fn write_script(path: &std::path::Path, body: &str) {
@@ -359,6 +387,7 @@ printf '%s\n' "$@" > "$args_file"
 printf '%s\n' "${{CLAUDE_TEST_ENV-}}" > "$env_file"
 cat > "$prompt_file"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = args_file.display(),
             prompt_file = prompt_file.display(),
@@ -423,8 +452,12 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            trace_sink: None,
+            metrics_sink: None,
+            tool_correlation: None,
             max_turns: None,
             live_output: None,
+            thinking: None,
         };
         let model = claude_model();
 
@@ -464,7 +497,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
         assert!(args_text.contains("--mcp-config"));
         assert!(args_text.contains(mcp_config.to_str().expect("mcp path")));
         assert!(args_text.contains("--strict-mcp-config"));
-        assert!(!args_text.contains("--bare"));
+        // Match whole arguments: the guard script inside --settings names git's `--bare` option.
+        assert!(!args_text.lines().any(|arg| arg == "--bare"));
         assert!(!args_text.contains("--dangerously-skip-permissions"));
 
         let provider_pos = args_text.find("--provider-flag").expect("provider args");
@@ -494,6 +528,7 @@ printf '%s\n' "$@" > "$args_file"
 pwd > "$cwd_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"worktree-ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = args_file.display(),
             cwd_file = cwd_file.display(),

@@ -1,0 +1,99 @@
+{
+  "focus": {
+    "rule": "HF1",
+    "expect": {
+      "T1": true,
+      "T2": false,
+      "T3": true,
+      "T4": false
+    }
+  },
+  "tasks": {
+    "T1": {
+      "score": 17,
+      "band": "D",
+      "hard_fail": [
+        "HF1"
+      ],
+      "verify_classes": [],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 0,
+        "SQ05": 0,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T2": {
+      "score": 17,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 0,
+        "SQ05": 0,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T3": {
+      "score": 17,
+      "band": "D",
+      "hard_fail": [
+        "HF1"
+      ],
+      "verify_classes": [],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 0,
+        "SQ05": 0,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T4": {
+      "score": 37,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "test"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 1,
+        "SQ05": 1,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    }
+  }
+}

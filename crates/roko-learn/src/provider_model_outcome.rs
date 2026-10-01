@@ -146,9 +146,12 @@ impl ProviderModelOutcomeRecord {
         )
     }
 
-    /// Build an outcome record from a completed episode.
+    /// Build an outcome record from a completed episode, or `None` when the
+    /// attempt carried no learning label (S01 §4.1): an unverified success
+    /// is no pass, and a provider failure says nothing about the model.
     #[must_use]
     pub fn from_episode(episode: &Episode, provider_override: Option<&str>) -> Option<Self> {
+        let learned = episode.learning_success()?;
         let model = first_non_empty_owned([
             Some(episode.model.clone()),
             extra_string_ref(episode, "model"),
@@ -173,7 +176,7 @@ impl ProviderModelOutcomeRecord {
             extra_string_ref(episode, "role"),
             Some(episode.agent_template.clone()),
         ]);
-        let status = status_from_episode(episode);
+        let status = status_from_episode(episode, learned);
         let retry_count = retry_count_from_episode(episode);
         let usage = ProviderModelUsageTelemetry {
             input_tokens: nonzero_u64(episode.usage.input_tokens),
@@ -212,9 +215,18 @@ impl ProviderModelOutcomeRecord {
         })
     }
 
-    /// Build an outcome record from a persisted efficiency event.
+    /// Build an outcome record from a persisted efficiency event, or `None`
+    /// when the row carries no gate verdict (S01 §4.1).
+    ///
+    /// A row holds its own gate's verdict (`gate_passed`), never the attempt's
+    /// settled learning label. The Graph dispatch row of every attempt has no
+    /// verdict, whether the attempt went unverified, failed at the provider,
+    /// or has its verify result on a gate row of its own, so it is no
+    /// evidence. Counting it as a failure would teach from nothing.
+    /// [`Self::from_episode`] carries the settled label.
     #[must_use]
     pub fn from_efficiency_event(event: &AgentEfficiencyEvent) -> Option<Self> {
+        let passed = event.gate_passed?;
         let model = first_non_empty([Some(event.model.as_str()), Some(event.model_used.as_str())])?;
         let provider =
             first_non_empty([Some(event.backend.as_str())]).unwrap_or("unknown-provider");
@@ -243,14 +255,14 @@ impl ProviderModelOutcomeRecord {
             task_id: event.task_id.clone(),
             task_type,
             role_id: non_empty(event.role.as_str()).map(ToString::to_string),
-            status: if event.gate_passed == Some(true) {
+            status: if passed {
                 ProviderModelOutcomeStatus::Passed
             } else {
                 ProviderModelOutcomeStatus::Failed
             },
             gate_outcomes: vec![ProviderModelGateOutcome {
                 gate_name: "terminal".to_string(),
-                passed: event.gate_passed == Some(true),
+                passed,
                 score: None,
                 duration_ms: None,
             }],
@@ -520,14 +532,14 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
     }
 }
 
-fn status_from_episode(episode: &Episode) -> ProviderModelOutcomeStatus {
+fn status_from_episode(episode: &Episode, learned: bool) -> ProviderModelOutcomeStatus {
     if let Some(status) = extra_string_ref(episode, "provider_model_outcome_status")
         .as_deref()
         .and_then(parse_status)
     {
         return status;
     }
-    if episode.success {
+    if learned {
         ProviderModelOutcomeStatus::Passed
     } else {
         ProviderModelOutcomeStatus::Failed
@@ -727,5 +739,45 @@ mod tests {
         let all = store.read_all().await.expect("read");
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].action_id, "provider:zai|model:glm-5.1");
+    }
+
+    /// bug-f81e9b: outcome records learn only from settled evidence. An
+    /// efficiency row counts through its own gate verdict: a Graph dispatch
+    /// row, which has none, records no outcome, where it used to count as a
+    /// failure. An episode counts through its settled learning label.
+    #[test]
+    fn outcome_records_carry_the_settled_learning_label() {
+        use crate::episode_logger::LEARNING_LABEL_KEY;
+
+        let row = |gate_passed: Option<bool>| {
+            let mut event = AgentEfficiencyEvent::default_event();
+            event.model = "glm-5.1".to_string();
+            event.backend = "zai".to_string();
+            event.outcome = "success".to_string();
+            event.gate_passed = gate_passed;
+            ProviderModelOutcomeRecord::from_efficiency_event(&event).map(|record| record.status)
+        };
+        assert_eq!(row(None), None, "a dispatch row is no evidence");
+        assert_eq!(row(Some(true)), Some(ProviderModelOutcomeStatus::Passed));
+        assert_eq!(row(Some(false)), Some(ProviderModelOutcomeStatus::Failed));
+
+        let settled = |success: bool, label: serde_json::Value| {
+            let mut settled = episode(success, "glm-5.1", "zai");
+            settled.extra.insert(LEARNING_LABEL_KEY.to_string(), label);
+            ProviderModelOutcomeRecord::from_episode(&settled, None).map(|record| record.status)
+        };
+        assert_eq!(
+            settled(true, serde_json::Value::Null),
+            None,
+            "an unverified success teaches nothing"
+        );
+        assert_eq!(
+            settled(true, serde_json::json!(1)),
+            Some(ProviderModelOutcomeStatus::Passed)
+        );
+        assert_eq!(
+            settled(false, serde_json::json!(0)),
+            Some(ProviderModelOutcomeStatus::Failed)
+        );
     }
 }

@@ -1309,7 +1309,7 @@ impl SessionManager {
     ///
     /// Checks (in order):
     /// 1. `roko.toml` `[agent].mcp_config` explicit path
-    /// 2. Auto-discovery: walks up from the workdir looking for `.mcp.json`
+    /// 2. The workdir's own `.mcp.json`, never a file above it or in `$HOME`
     ///
     /// Returns `None` if no config is found. Errors during discovery are logged
     /// and treated as "not found" so session creation is never blocked.
@@ -1318,8 +1318,8 @@ impl SessionManager {
         if let Some(explicit) = &self.roko_config.agent.mcp_config {
             return Some(explicit.clone());
         }
-        // 2. Auto-discover by walking parent directories.
-        match roko_agent::mcp::find_mcp_config(&self.workdir) {
+        // 2. The workspace's own config.
+        match roko_agent::mcp::workspace_mcp_config(&self.workdir) {
             Some(Ok((path, _config))) => Some(path),
             Some(Err(err)) => {
                 tracing::debug!("MCP config discovery failed: {err}");

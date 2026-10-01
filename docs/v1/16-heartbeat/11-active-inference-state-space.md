@@ -10,13 +10,13 @@
 
 **Topic**: [16-heartbeat](./INDEX.md)
 **Prerequisites**: [10-active-inference-compute-allocation.md](./10-active-inference-compute-allocation.md)
-**Key sources**: `refactoring-prd/09-innovations.md` §XIX-A, Koudahl et al. 2024 (arXiv:2412.10425), VERSES AI Genius platform
+**Key sources**: `refactoring-prd/09-innovations.md` §XIX-A, Prakki 2024 (arXiv:2412.10425), VERSES AI Genius platform
 
 ---
 
 ## Abstract
 
-Active inference promises principled, zero-hyperparameter compute allocation, but naive implementation is intractable. A real-world agent state space (all possible configurations of tasks, knowledge, predictions, affect) is effectively infinite. The key insight from Koudahl et al. (2024, arXiv:2412.10425) and VERSES AI's Genius platform is: **don't model the world - model the agent's epistemic situation.**
+Active inference promises principled, zero-hyperparameter compute allocation, but naive implementation is intractable. A real-world agent state space (all possible configurations of tasks, knowledge, predictions, affect) is effectively infinite. The key insight from Prakki (2024, arXiv:2412.10425) and VERSES AI's Genius platform is: **don't model the world - model the agent's epistemic situation.**
 
 Instead of tracking the full state of the environment (impossible), track three dimensions that fully characterize what the agent needs to know to make good decisions:
 1. **Where am I in the task lifecycle?** (TaskPhase)
@@ -309,7 +309,7 @@ Active inference's zero-hyperparameter property is its distinguishing feature. A
 
 - **Friston 2010** — "The free-energy principle: a unified brain theory?" (Nature Reviews Neuroscience 11(2)). Free energy minimization as a unified brain theory.
 - **Friston et al. 2015** — "Active inference and epistemic value" (Cognitive Neuroscience 6(4)). Expected free energy for policy selection.
-- **Koudahl et al. 2024** — "Factorized discrete POMDP for active inference" (arXiv:2412.10425). Factorized state spaces making active inference tractable.
+- **Prakki 2024** — "Factorized discrete POMDP for active inference" (arXiv:2412.10425). Factorized state spaces making active inference tractable.
 - **Heins et al. 2022** — "pymdp: A Python library for active inference in discrete state spaces" (JOSS). Reference implementation of active inference POMDP.
 - **VERSES AI** — Genius platform. Industrial deployment of active inference for AI agent cognition.
 - **Parr & Friston 2017** — "Working memory, attention, and salience in active inference" (Scientific Reports 7). Attention allocation via precision weighting.

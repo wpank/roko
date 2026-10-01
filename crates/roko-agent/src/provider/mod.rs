@@ -40,7 +40,7 @@
 //! the call sites and centralize it in this module.
 
 use crate::SafetyLayer;
-use crate::dispatcher::{HandlerResolver, ToolDispatcher};
+use crate::dispatcher::{HandlerResolver, ToolCallIdentity, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
 use crate::immune_boundary::{safe_provider_agent_identity, wrap_provider_agent};
 use crate::live_output::LiveOutput;
@@ -58,7 +58,9 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
-use roko_core::tool::{ToolDef, ToolRegistry};
+use roko_core::tool::{
+    CorrelationEnvelope, MetricsSink, ToolDef, ToolFormat, ToolRegistry, TraceSink,
+};
 use roko_core::{ModelInputMessage, Temperament};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -343,6 +345,33 @@ pub fn create_agent_for_model(
 
     let adapter = adapter_for_kind(provider_config.kind);
 
+    // Every Graph task carries its tier's turn cap. Say so when this
+    // provider cannot bound its own loop, instead of dropping the cap.
+    if let Some(max_turns) = options.max_turns
+        && !adapter.turn_cap_enforcement(&provider_config).is_binding()
+    {
+        tracing::warn!(
+            agent = %options.name,
+            model_key = model_key,
+            provider = %provider_config.kind,
+            max_turns,
+            "provider cannot enforce the turn cap: it is advisory, and only the attempt timeout bounds this run"
+        );
+    }
+    // A request's thinking setting overrides the profile only where the
+    // adapter applies it (bug-b9cb83); elsewhere the profile decides.
+    if let Some(thinking) = &options.thinking
+        && !adapter.honours_thinking_config(&profile)
+    {
+        tracing::debug!(
+            agent = %options.name,
+            model_key = model_key,
+            provider = %provider_config.kind,
+            ?thinking,
+            "provider ignores the request's thinking setting"
+        );
+    }
+
     if options
         .pre_discovered_local_tools
         .as_ref()
@@ -477,6 +506,65 @@ pub fn build_tool_dispatcher_with_audit(
     resolver: Arc<dyn HandlerResolver>,
     file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
 ) -> Arc<ToolDispatcher> {
+    Arc::new(scoped_tool_dispatcher(registry, resolver, file_audit))
+}
+
+/// Build a provider tool loop's dispatcher: [`build_tool_dispatcher_with_audit`]
+/// with `options`' tool audit, keyed for per-call traces and metrics on
+/// `model`'s slug, the role of `options`' contract and `format`, the tool
+/// format of the loop's translator (find-f489db). Without a contract, or with
+/// a role roko does not know, the role stays the default implementer.
+#[must_use]
+pub fn build_provider_tool_dispatcher(
+    registry: Arc<dyn ToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    options: &AgentOptions,
+    model: &ModelProfile,
+    format: ToolFormat,
+) -> Arc<ToolDispatcher> {
+    let mut identity = ToolCallIdentity {
+        model: model.slug.clone(),
+        format,
+        ..ToolCallIdentity::default()
+    };
+    if let Some(role) = options.agent_contract.as_ref().and_then(|contract| {
+        serde_json::from_value::<roko_core::AgentRole>(Value::String(contract.role.clone())).ok()
+    }) {
+        identity.role = role;
+    }
+    Arc::new(
+        scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
+            .with_call_identity(identity),
+    )
+}
+
+/// Attach `options`' per-call trace and metrics sinks and its tool
+/// correlation to a tool-loop agent, so each of its tool calls leaves a
+/// trace, a metrics record and audit lines that join back to the run
+/// (find-f489db).
+#[must_use]
+pub(crate) fn with_tool_observability(
+    mut agent: crate::tool_loop::ToolLoopAgent,
+    options: &AgentOptions,
+) -> crate::tool_loop::ToolLoopAgent {
+    if let Some(sink) = &options.trace_sink {
+        agent = agent.with_trace_sink(Arc::clone(sink));
+    }
+    if let Some(sink) = &options.metrics_sink {
+        agent = agent.with_metrics_sink(Arc::clone(sink));
+    }
+    if let Some(correlation) = &options.tool_correlation {
+        agent = agent.with_correlation(correlation.clone());
+    }
+    agent
+}
+
+/// A dispatcher under the active safety layer, with `file_audit` attached.
+fn scoped_tool_dispatcher(
+    registry: Arc<dyn ToolRegistry>,
+    resolver: Arc<dyn HandlerResolver>,
+    file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+) -> ToolDispatcher {
     let layer = current_safety_layer().unwrap_or_else(|| {
         // No scoped safety layer was set by the caller. This typically means the
         // dispatcher is being built outside a `with_safety_layer` context, which
@@ -493,7 +581,7 @@ pub fn build_tool_dispatcher_with_audit(
     if let Some(audit) = file_audit {
         dispatcher = dispatcher.with_file_audit(audit);
     }
-    Arc::new(dispatcher)
+    dispatcher
 }
 
 /// Return the safety layer currently scoped to provider-backed construction, if any.
@@ -591,6 +679,27 @@ pub(crate) fn tool_loop_max_iterations_for_profile(profile: Option<&ModelProfile
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS);
     apply_temperament_to_iteration_cap(base)
+}
+
+/// Iteration cap of a provider tool loop built for `options`.
+///
+/// A caller's turn cap ([`AgentOptions::max_turns`], such as a Graph task's
+/// `[pipeline.<tier>] max_turns`) replaces the temperament-adjusted default,
+/// the way `--max-turns` replaces the Claude CLI's own default. A model's
+/// configured `max_tool_iterations` stays a ceiling. Without a turn cap
+/// this is [`tool_loop_max_iterations_for_profile`].
+#[must_use]
+pub(crate) fn tool_loop_max_iterations_for_options(
+    model: &ModelProfile,
+    options: &AgentOptions,
+) -> usize {
+    let Some(max_turns) = options.max_turns else {
+        return tool_loop_max_iterations_for_profile(Some(model));
+    };
+    let cap = model
+        .max_tool_iterations
+        .map_or(max_turns, |model_cap| model_cap.min(max_turns));
+    (cap as usize).max(1)
 }
 
 #[must_use]
@@ -699,6 +808,46 @@ pub trait ProviderAdapter: Send + Sync {
     fn supports_per_call_local_mcp(&self, _provider: &ProviderConfig) -> bool {
         false
     }
+
+    /// How agents from this adapter enforce [`AgentOptions::max_turns`].
+    ///
+    /// Defaults to [`TurnCapEnforcement::Advisory`] so that a newly added
+    /// adapter reports an unenforced cap instead of claiming one it ignores.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
+    }
+
+    /// Whether agents from this adapter for `model` apply
+    /// [`AgentOptions::thinking`]. Defaults to `false`, so that
+    /// [`create_agent_for_model`] reports a setting the adapter ignores.
+    fn honours_thinking_config(&self, _model: &ModelProfile) -> bool {
+        false
+    }
+}
+
+/// How a provider adapter bounds a run to [`AgentOptions::max_turns`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnCapEnforcement {
+    /// The provider's own flag stops the run at the cap (`--max-turns`).
+    Native,
+    /// Roko's tool loop runs the turns and stops at the cap.
+    ToolLoop,
+    /// The provider runs its own loop but reports each tool call; roko stops
+    /// the run once the calls exceed the cap, so each call counts as a turn.
+    ToolCalls,
+    /// A run is a single model call, so any cap of at least one holds.
+    SingleTurn,
+    /// Nothing bounds the provider's own loop: the cap is advisory, and only
+    /// the attempt timeout ends a long run.
+    Advisory,
+}
+
+impl TurnCapEnforcement {
+    /// Whether a requested cap actually bounds the run.
+    #[must_use]
+    pub const fn is_binding(self) -> bool {
+        !matches!(self, Self::Advisory)
+    }
 }
 
 pub(crate) fn configured_resource_limits(
@@ -798,8 +947,11 @@ pub struct AgentOptions {
     pub command: Option<String>,
     pub timeout_ms: Option<u64>,
     /// Maximum number of agent turns. When `Some`, overrides the provider's
-    /// built-in default. Currently wired for Claude CLI (`--max-turns`).
-    /// `None` means use the provider default (Theta = 10).
+    /// built-in default: the Claude and Hermes CLIs get `--max-turns`, roko's
+    /// tool loops stop at it, and the Cursor CLI stops after that many tool
+    /// calls. [`ProviderAdapter::turn_cap_enforcement`] says how each adapter
+    /// enforces it, and [`create_agent_for_model`] warns when it is only
+    /// advisory. `None` means use the provider default (Theta = 10).
     pub max_turns: Option<u32>,
     pub system_prompt: Option<String>,
     /// Validated provider-neutral structured messages for a multimodal turn.
@@ -829,6 +981,11 @@ pub struct AgentOptions {
     pub env_passthrough: Vec<String>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
+    /// The request's extended-thinking setting, which overrides the model
+    /// profile's default where the adapter honours one
+    /// ([`ProviderAdapter::honours_thinking_config`]). `None` leaves thinking
+    /// to the profile.
+    pub thinking: Option<roko_core::foundation::ThinkingConfig>,
     pub bare_mode: bool,
     /// Whether to skip Claude's permission system for this agent.
     ///
@@ -902,6 +1059,17 @@ pub struct AgentOptions {
     /// When set, the tool dispatcher records scrubbed admit/result lines
     /// to `.roko/tool_audit.jsonl` for every executed tool call.
     pub tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Per-call trace sink for the tool loop's tool calls (find-f489db).
+    ///
+    /// When set, provider adapters that construct a tool-loop agent hand it
+    /// to every tool call's context, and each call leaves a closed trace.
+    pub trace_sink: Option<Arc<dyn TraceSink>>,
+    /// Per-call metrics sink for the tool loop's tool calls (find-f489db).
+    pub metrics_sink: Option<Arc<dyn MetricsSink>>,
+    /// The run, task, attempt and agent the tool loop's tool calls belong
+    /// to, carried into their audit, trace and metrics records
+    /// (find-f489db).
+    pub tool_correlation: Option<CorrelationEnvelope>,
     /// Live output channel for forwarding provider events before screening.
     ///
     /// When set and the provider supports streaming, the immune boundary taps
@@ -927,6 +1095,7 @@ impl std::fmt::Debug for AgentOptions {
                     .map(|s| format!("{}...", &s[..s.len().min(40)])),
             )
             .field("input_messages", &self.input_messages.len())
+            .field("thinking", &self.thinking)
             .field("bare_mode", &self.bare_mode)
             .field(
                 "dangerously_skip_permissions",
@@ -935,6 +1104,9 @@ impl std::fmt::Debug for AgentOptions {
             .field("name", &self.name)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit.is_some())
+            .field("trace_sink", &self.trace_sink.is_some())
+            .field("metrics_sink", &self.metrics_sink.is_some())
+            .field("tool_correlation", &self.tool_correlation)
             .finish_non_exhaustive()
     }
 }
@@ -1613,6 +1785,128 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_cap_sets_the_tool_loop_iteration_cap() {
+        let capped = |max_turns| AgentOptions {
+            max_turns,
+            ..AgentOptions::default()
+        };
+        let default_model = ModelProfile {
+            max_tool_iterations: None,
+            ..Default::default()
+        };
+        let limited_model = ModelProfile {
+            max_tool_iterations: Some(20),
+            ..Default::default()
+        };
+
+        // Without a turn cap the per-model cap applies, as before.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(None)),
+            DEFAULT_MAX_TOOL_ITERATIONS
+        );
+        // The turn cap replaces the default, above or below it, and
+        // temperament does not move it.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(Some(7))),
+            7
+        );
+        assert_eq!(
+            with_temperament(Some(Temperament::Exploratory), || {
+                tool_loop_max_iterations_for_options(&default_model, &capped(Some(90)))
+            }),
+            90
+        );
+        // A configured per-model cap stays a ceiling.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&limited_model, &capped(Some(90))),
+            20
+        );
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&limited_model, &capped(Some(5))),
+            5
+        );
+        // A zero cap still allows one model call.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(Some(0))),
+            1
+        );
+    }
+
+    #[test]
+    fn every_adapter_says_how_it_enforces_the_turn_cap() {
+        let provider = |kind| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let enforcement =
+            |config: &ProviderConfig| adapter_for_kind(config.kind).turn_cap_enforcement(config);
+
+        for (kind, expected) in [
+            (ProviderKind::ClaudeCli, TurnCapEnforcement::Native),
+            (ProviderKind::OpenAiCompat, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::AnthropicApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::GeminiApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::CerebrasApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::PerplexityApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::CursorCli, TurnCapEnforcement::ToolCalls),
+            (ProviderKind::CodexCli, TurnCapEnforcement::Advisory),
+            (ProviderKind::CursorAcp, TurnCapEnforcement::Advisory),
+            (ProviderKind::GeminiCli, TurnCapEnforcement::Advisory),
+        ] {
+            assert_eq!(enforcement(&provider(kind)), expected, "{kind:?}");
+        }
+
+        // Hermes and OpenClaw enforce the cap on some transports only.
+        let with_command = |kind, args: &[&str]| ProviderConfig {
+            command: Some("harness".to_string()),
+            args: Some(args.iter().map(ToString::to_string).collect()),
+            ..provider(kind)
+        };
+        let http = |kind| ProviderConfig {
+            base_url: Some("http://127.0.0.1:8642".to_string()),
+            ..provider(kind)
+        };
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::Hermes, &[])),
+            TurnCapEnforcement::Native
+        );
+        assert_eq!(
+            enforcement(&provider(ProviderKind::Hermes)),
+            TurnCapEnforcement::Native
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::Hermes, &["acp"])),
+            TurnCapEnforcement::Advisory
+        );
+        assert_eq!(
+            enforcement(&http(ProviderKind::Hermes)),
+            TurnCapEnforcement::Advisory
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::OpenClaw, &[])),
+            TurnCapEnforcement::SingleTurn
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::OpenClaw, &["acp"])),
+            TurnCapEnforcement::Advisory
+        );
+
+        assert!(TurnCapEnforcement::Native.is_binding());
+        assert!(TurnCapEnforcement::ToolCalls.is_binding());
+        assert!(!TurnCapEnforcement::Advisory.is_binding());
+    }
+
+    #[test]
     fn adapter_for_kind_returns_expected_adapter() {
         assert_eq!(
             adapter_for_kind(ProviderKind::OpenAiCompat).kind(),
@@ -2042,10 +2336,12 @@ mod tests {
         let script = tmp.path().join("claude");
         let prompt_file = tmp.path().join("prompt.txt");
         let response = r#"{"type":"content_block_delta","delta":{"text":"factory-claude-ok"}}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}"#;
         let script_body = format!(
-            "#!/bin/sh\nset -eu\ncat > \"{}\"\nprintf '%s\\n' '{}'\n",
+            "#!/bin/sh\nset -eu\ncat > \"{}\"\nprintf '%s\\n' '{}'\nprintf '%s\\n' '{}'\n",
             prompt_file.display(),
             response,
+            result,
         );
         write_script(&script, &script_body);
         let mut config = RokoConfig::default();

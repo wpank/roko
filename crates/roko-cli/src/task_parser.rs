@@ -13,9 +13,10 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
+use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
-use roko_core::{OperatingFrequency, TaskDomain};
+use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -34,8 +35,12 @@ pub struct TaskMeta {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
-    #[serde(default = "default_max_parallel")]
-    pub max_parallel: u32,
+    /// Tasks of this plan that may run at the same time. Omitted, the plan
+    /// runs as wide as its DAG allows when every task that can write
+    /// declares its `files`, and one task at a time otherwise
+    /// ([`crate::plan_policy::plan_max_parallel`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u32>,
     #[serde(default)]
     pub estimated_total_minutes: u32,
     /// When `true`, skip the enrichment pipeline and transition directly to
@@ -52,10 +57,54 @@ pub struct TaskMeta {
     /// `[conductor] plan_failure_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_policy: Option<roko_core::config::PlanFailurePolicy>,
+    /// Whether this plan's tasks run the workspace's required
+    /// `[[gates.rungs]]` after their own verify steps. `false` opts the plan
+    /// out; unset runs them ([`Self::runs_workspace_rungs`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_rungs: Option<bool>,
+    /// The whole-plan gate (gap-60233f): steps that check the plan's
+    /// integrated result once every task has passed, in the same shape as a
+    /// task's `[[task.verify]]`. Unset, a Cargo workspace checks formatting,
+    /// lints and tests over the crates the plan affects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify: Vec<VerifyStep>,
+    /// Whether a person approves each verified task before its work merges
+    /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalMode>,
+    /// Whether the plan's implementer tasks may have no verify step. Such a
+    /// task runs and ends unverified, and its plan does not succeed. `roko
+    /// run` sets it in a workspace that no gate can check (bug-1410e8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unverified: bool,
 }
 
-fn default_max_parallel() -> u32 {
-    1
+/// When a plan's verified tasks wait for a person's approval before their
+/// work merges into the plan branch (`[meta] approval`, gap-0d64d5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Nothing waits: verified work merges at once.
+    None,
+    /// Each verified task waits, with its diff, until someone approves or
+    /// rejects it.
+    PerTask,
+}
+
+impl TaskMeta {
+    /// Whether each verified task of this plan waits for a person's
+    /// approval before its work merges.
+    #[must_use]
+    pub fn holds_each_task_for_approval(&self) -> bool {
+        self.approval == Some(ApprovalMode::PerTask)
+    }
+
+    /// Whether this plan's tasks run the workspace's required
+    /// `[[gates.rungs]]`: yes unless `[meta] workspace_rungs = false`.
+    #[must_use]
+    pub fn runs_workspace_rungs(&self) -> bool {
+        self.workspace_rungs != Some(false)
+    }
 }
 
 /// A single task definition.
@@ -110,6 +159,11 @@ pub struct TaskDef {
     /// Typed done-gate contract for self-hosting tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance_contract: Option<AcceptanceContract>,
+    /// Planner-written acceptance tests (`[task.accept]`). A run pins them
+    /// outside the working tree and runs them before `verify`
+    /// ([`crate::task_accept`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept: Option<TaskAccept>,
     /// Work domain — controls gate selection and git policy.
     pub domain: Option<TaskDomain>,
     /// Estimated wall-clock minutes for this task. Used by the critical-path
@@ -125,6 +179,10 @@ pub struct TaskDef {
     /// execute in the order they were authored, not alphabetically.
     #[serde(default)]
     pub sequence: usize,
+    /// Optional routing, gate, prompt and scheduling hints, each a top-level
+    /// `[[task]]` key (`category`, `complexity_band`, `rung`, ...).
+    #[serde(flatten)]
+    pub hints: TaskHints,
 }
 
 impl TaskDef {
@@ -132,6 +190,60 @@ impl TaskDef {
     #[must_use]
     pub fn effective_domain(&self, config_default: Option<&TaskDomain>) -> Option<TaskDomain> {
         self.domain.clone().or_else(|| config_default.cloned())
+    }
+
+    /// Whether the task declares planner-written acceptance tests
+    /// (`[task.accept]`), which verify it like `verify` steps do.
+    #[must_use]
+    pub fn has_accept_tests(&self) -> bool {
+        self.accept
+            .as_ref()
+            .is_some_and(|accept| !accept.files.is_empty())
+    }
+
+    /// The task's `types_to_define`, `formulas`, `imports`,
+    /// `example_pattern` and `test_invariants` as a `## Specification`
+    /// prompt section, or an empty string when it sets none of them.
+    #[must_use]
+    pub fn specification_section(&self) -> String {
+        let hints = &self.hints;
+        let body = roko_compose::templates::format_enhancements(
+            &roko_compose::templates::TaskEnhancements {
+                types_to_define: hints.types_to_define.clone().unwrap_or_default(),
+                formulas: hints.formulas.clone().unwrap_or_default(),
+                imports: hints.imports.clone().unwrap_or_default(),
+                example_pattern: hints.example_pattern.clone(),
+                test_invariants: hints.test_invariants.clone().unwrap_or_default(),
+            },
+        );
+        if body.is_empty() {
+            return String::new();
+        }
+        format!("\n## Specification\n{}\n", body.trim_end())
+    }
+
+    /// The hints this task sets that `plan run` parses but does not act on
+    /// yet, by `tasks.toml` key.
+    #[must_use]
+    pub fn unused_hints(&self) -> Vec<&'static str> {
+        let hints = &self.hints;
+        [
+            ("quality_profile", hints.quality_profile.is_some()),
+            ("context_weight", hints.context_weight.is_some()),
+            ("skills", hints.skills.is_some()),
+            ("plan_section", hints.plan_section.is_some()),
+            ("research_before_edit", hints.research_before_edit.is_some()),
+            ("parallel_group", hints.parallel_group.is_some()),
+            ("exclusive_files", hints.exclusive_files.is_some()),
+            ("tags", hints.tags.is_some()),
+            ("dependency_tags", hints.dependency_tags.is_some()),
+            ("fixture_keys", hints.fixture_keys.is_some()),
+            ("sidecar_requirements", hints.sidecar_requirements.is_some()),
+            ("integration_surfaces", hints.integration_surfaces.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
     }
 }
 
@@ -182,15 +294,20 @@ struct TaskDefSerde {
     #[serde(default)]
     pub acceptance_contract: Option<AcceptanceContract>,
     #[serde(default)]
+    pub accept: Option<TaskAccept>,
+    #[serde(default)]
     pub domain: Option<TaskDomain>,
     #[serde(default)]
     pub estimated_minutes: Option<u32>,
     #[serde(default)]
     pub crates_touched: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub hints: TaskHints,
 }
 
 impl From<TaskDefSerde> for TaskDef {
     fn from(raw: TaskDefSerde) -> Self {
+        let context = with_context_files(raw.context, raw.hints.context_files.as_deref());
         let mut task = Self {
             id: raw.id,
             title: raw.title,
@@ -209,20 +326,46 @@ impl From<TaskDefSerde> for TaskDef {
             depends_on: raw.depends_on,
             depends_on_plan: raw.depends_on_plan,
             split_into: raw.split_into,
-            context: raw.context,
+            context,
             verify: raw.verify,
             timeout_secs: raw.timeout_secs.unwrap_or(0),
             max_retries: raw.max_retries,
             acceptance: raw.acceptance,
             acceptance_contract: raw.acceptance_contract,
+            accept: raw.accept,
             domain: raw.domain,
             estimated_minutes: raw.estimated_minutes,
             crates_touched: raw.crates_touched,
             sequence: 0, // stamped by TasksFile::parse_str after deserialization
+            hints: raw.hints,
         };
         task.apply_role_tool_defaults();
         task
     }
+}
+
+/// `context` with each of a task's `context_files` added to its `read_files`
+/// (`why = "context"`), unless it is listed there already. Re-reading a
+/// serialized task adds nothing.
+fn with_context_files(
+    context: Option<TaskContext>,
+    context_files: Option<&[String]>,
+) -> Option<TaskContext> {
+    let paths = context_files.unwrap_or_default();
+    if paths.is_empty() {
+        return context;
+    }
+    let mut context = context.unwrap_or_default();
+    for path in paths {
+        if !context.read_files.iter().any(|file| file.path == *path) {
+            context.read_files.push(ReadFile {
+                path: path.clone(),
+                lines: None,
+                why: default_why(),
+            });
+        }
+    }
+    Some(context)
 }
 
 /// Structural validation issue detected in a `tasks.toml` file.
@@ -279,6 +422,14 @@ pub enum TaskQualityWarning {
     TooManyTasks {
         /// Total task count in the plan.
         task_count: usize,
+    },
+    /// Task sets hints that `plan run` parses but does not act on yet
+    /// ([`TaskDef::unused_hints`]).
+    UnusedHints {
+        /// Task identifier being checked.
+        task_id: String,
+        /// The hints' `tasks.toml` keys.
+        fields: Vec<&'static str>,
     },
 }
 
@@ -347,6 +498,11 @@ impl std::fmt::Display for TaskQualityWarning {
                     "plan has {task_count} tasks (>20); consider splitting it"
                 )
             }
+            Self::UnusedHints { task_id, fields } => write!(
+                f,
+                "{task_id}: sets {}, which plan run parses but does not act on yet",
+                fields.join(", ")
+            ),
         }
     }
 }
@@ -436,6 +592,13 @@ fn infer_operating_frequency(description: Option<&str>) -> OperatingFrequency {
 }
 
 impl TaskDef {
+    /// This task's tier, read by [`TaskTier::parse`]. A missing or unknown
+    /// tier reads as focused.
+    #[must_use]
+    pub fn tier_class(&self) -> TaskTier {
+        TaskTier::parse(&self.tier).unwrap_or_default()
+    }
+
     /// Whether this task may benefit from pre-dispatch search context enrichment.
     ///
     /// Returns `true` for complex tiers (`architectural`, `integrative`) that
@@ -443,7 +606,10 @@ impl TaskDef {
     /// found via the Perplexity Sonar search API.
     #[must_use]
     pub fn needs_external_context(&self) -> bool {
-        matches!(self.tier.as_str(), "architectural" | "integrative")
+        matches!(
+            self.tier_class(),
+            TaskTier::Integrative | TaskTier::Architectural
+        )
     }
 
     /// Map the task to an operating frequency.
@@ -472,19 +638,18 @@ impl TaskDef {
         if let Some(ref hint) = self.model_hint {
             return normalize_model_alias(hint).to_owned();
         }
+        let Some(tier) = TaskTier::parse(&self.tier) else {
+            return fallback.into();
+        };
         // Check config tier_models first
-        if let Some(models) = tier_models {
-            if let Some(model) = models.get(&self.tier) {
-                return model.clone();
-            }
+        if let Some(model) = tier_models.and_then(|models| models.get(tier.label())) {
+            return model.clone();
         }
         // Built-in defaults
-        match self.tier.as_str() {
-            "mechanical" => "claude-haiku-4-5".into(),
-            "focused" => "claude-sonnet-4-6".into(),
-            "integrative" => "claude-sonnet-4-6".into(),
-            "architectural" => "claude-opus-4-6".into(),
-            _ => fallback.into(),
+        match tier {
+            TaskTier::Mechanical => "claude-haiku-4-5".into(),
+            TaskTier::Focused | TaskTier::Integrative => "claude-sonnet-4-6".into(),
+            TaskTier::Architectural => "claude-opus-4-6".into(),
         }
     }
 
@@ -504,109 +669,6 @@ impl TaskDef {
                 .depends_on_plan
                 .iter()
                 .all(|dep| completed_plans.contains(dep))
-    }
-
-    /// Build the agent prompt from task title + surgical context.
-    pub fn build_prompt(&self, plan_id: &str, workdir: &Path) -> String {
-        let mut prompt = String::new();
-        prompt.push_str(&format!("# Task: {}\n\n", self.title));
-        prompt.push_str(&format!("Plan: {plan_id}\nTask ID: {}\n", self.id));
-
-        if let Some(max) = self.max_loc {
-            prompt.push_str(&format!("Maximum lines of change: {max}\n"));
-        }
-
-        // Inject PRD excerpt when available so agents see the high-level
-        // requirements without having to locate the PRD file themselves.
-        let prd_base = workdir.join(".roko").join("prd");
-        let prd_candidates = [
-            prd_base.join("published").join(format!("{plan_id}.md")),
-            prd_base.join("draft").join(format!("{plan_id}.md")),
-        ];
-        for prd_path in &prd_candidates {
-            if prd_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(prd_path) {
-                    const PRD_BUILD_PROMPT_LIMIT: usize = 2_000;
-                    let excerpt = if content.len() > PRD_BUILD_PROMPT_LIMIT {
-                        let mut s = content
-                            .chars()
-                            .take(PRD_BUILD_PROMPT_LIMIT)
-                            .collect::<String>();
-                        s.push_str("\n[truncated]");
-                        s
-                    } else {
-                        content
-                    };
-                    prompt.push_str("\n## PRD Requirements\n");
-                    prompt.push_str(&excerpt);
-                    prompt.push('\n');
-                }
-                break;
-            }
-        }
-
-        if !self.files.is_empty() {
-            prompt.push_str("\n## Files to modify\n");
-            for f in &self.files {
-                prompt.push_str(&format!("- `{f}`\n"));
-            }
-        }
-
-        // Surgical context
-        if let Some(ref ctx) = self.context {
-            prompt.push_str("\n## Context (read these BEFORE making changes)\n");
-            for rf in &ctx.read_files {
-                prompt.push_str(&format!("\n### `{}`", rf.path));
-                if let Some(ref lines) = rf.lines {
-                    prompt.push_str(&format!(" (lines {lines})"));
-                }
-                prompt.push_str(&format!("\nWhy: {}\n", rf.why));
-                // Try to inline the file content
-                let full_path = workdir.join(&rf.path);
-                if full_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        let lines_to_show = if let Some(ref range) = rf.lines {
-                            extract_line_range(&content, range)
-                        } else {
-                            // Show first 100 lines max
-                            content.lines().take(100).collect::<Vec<_>>().join("\n")
-                        };
-                        prompt.push_str(&format!("```\n{lines_to_show}\n```\n"));
-                    }
-                }
-            }
-            if !ctx.symbols.is_empty() {
-                prompt.push_str("\n## Key symbols\n");
-                for sym in &ctx.symbols {
-                    prompt.push_str(&format!("- `{sym}`\n"));
-                }
-            }
-            if !ctx.anti_patterns.is_empty() {
-                prompt.push_str("\n## ⛔ Do NOT\n");
-                for ap in &ctx.anti_patterns {
-                    prompt.push_str(&format!("- {ap}\n"));
-                }
-            }
-        }
-
-        // Verification info for the agent
-        if !self.verify.is_empty() {
-            prompt.push_str("\n## Verification (these commands must pass after your changes)\n");
-            for v in &self.verify {
-                prompt.push_str(&format!(
-                    "- `{}` — {}\n",
-                    v.command,
-                    v.fail_msg.as_deref().unwrap_or("must succeed")
-                ));
-            }
-        } else if !self.acceptance.is_empty() {
-            prompt.push_str("\n## Acceptance criteria\n");
-            for a in &self.acceptance {
-                prompt.push_str(&format!("- {a}\n"));
-            }
-        }
-
-        prompt
     }
 
     /// Build a focused prompt asking the agent to fix a specific verify failure.
@@ -785,13 +847,34 @@ pub struct VerifyStep {
     /// Timeout in milliseconds.
     #[serde(default = "default_verify_timeout")]
     pub timeout_ms: u64,
+    /// Paths this step reads, relative to the working tree; a directory
+    /// covers what it holds. Tasks that share the tree and write elsewhere
+    /// may edit while the step runs. Omitted, the scope is inferred from
+    /// `command`, and a command whose reads are unknown reads the whole
+    /// project, so it waits for every sibling that is mid-edit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
 }
 
-fn default_verify_timeout() -> u64 {
+pub(crate) fn default_verify_timeout() -> u64 {
     roko_core::config::TimeoutConfig::default()
         .gate_test()
         .as_secs()
         .saturating_mul(1000)
+}
+
+/// A workspace gate rung (`[[gates.rungs]]`) as a verify step whose phase is
+/// the rung's name.
+impl From<&roko_core::config::GateRungConfig> for VerifyStep {
+    fn from(rung: &roko_core::config::GateRungConfig) -> Self {
+        Self {
+            phase: rung.name.clone(),
+            command: rung.command.clone(),
+            fail_msg: None,
+            timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+            scope: Vec::new(),
+        }
+    }
 }
 
 /// The full parsed tasks.toml.
@@ -892,10 +975,10 @@ impl TasksFile {
         let mut issues = Vec::new();
         for task in &self.tasks {
             let tid = &task.id;
-            if task.tier.is_empty() || task.tier == "unknown" {
+            if TaskTier::parse(&task.tier).is_none() {
                 issues.push(format!("{tid}: missing or unknown tier"));
             }
-            if task.verify.is_empty() {
+            if task.verify.is_empty() && !task.has_accept_tests() {
                 issues.push(format!("{tid}: missing verify steps"));
             }
             if task
@@ -945,9 +1028,17 @@ impl TasksFile {
                 });
             }
 
-            if task.verify.is_empty() {
+            if task.verify.is_empty() && !task.has_accept_tests() {
                 warnings.push(TaskQualityWarning::MissingVerify {
                     task_id: task.id.clone(),
+                });
+            }
+
+            let fields = task.unused_hints();
+            if !fields.is_empty() {
+                warnings.push(TaskQualityWarning::UnusedHints {
+                    task_id: task.id.clone(),
+                    fields,
                 });
             }
         }
@@ -958,11 +1049,12 @@ impl TasksFile {
     /// Validate task definitions against the field schema.
     ///
     /// Checks that role, tier, and status values are from the known set,
-    /// and that role-specific required fields are present.
+    /// and that role-specific required fields are present. A tier is known
+    /// when [`TaskTier::parse`] reads it (a label or an alias); an empty or
+    /// `"unknown"` tier is left to [`Self::validate`].
     /// Returns a list of issues (empty = valid).
     pub fn validate_against_schema(&self) -> Vec<String> {
         const VALID_ROLES: &[&str] = PLAN_TASK_ROLES;
-        const VALID_TIERS: &[&str] = &["mechanical", "focused", "integrative", "architectural"];
         const VALID_STATUSES: &[&str] =
             &["pending", "ready", "active", "done", "blocked", "skipped"];
         // Role -> required fields
@@ -998,7 +1090,11 @@ impl TasksFile {
             if role == "implementer" {
                 for &field in IMPLEMENTER_REQUIRED {
                     let missing = match field {
-                        "verify" => task.verify.is_empty(),
+                        "verify" => {
+                            task.verify.is_empty()
+                                && !task.has_accept_tests()
+                                && !self.meta.allow_unverified
+                        }
                         "files" => task.files.is_empty(),
                         _ => false,
                     };
@@ -1013,12 +1109,13 @@ impl TasksFile {
             // Check tier is valid.
             if !task.tier.is_empty()
                 && task.tier != "unknown"
-                && !VALID_TIERS.contains(&task.tier.as_str())
+                && TaskTier::parse(&task.tier).is_none()
             {
+                let valid = TaskTier::ALL.map(TaskTier::label);
                 issues.push(format!(
                     "{task_label}: unknown tier '{}' (valid: {})",
                     task.tier,
-                    VALID_TIERS.join(", ")
+                    valid.join(", ")
                 ));
             }
 
@@ -1032,6 +1129,13 @@ impl TasksFile {
             }
 
             // Check numeric bounds.
+        }
+
+        // The whole-plan gate's steps need a command, like a task's.
+        for (index, step) in self.meta.verify.iter().enumerate() {
+            if step.command.trim().is_empty() {
+                issues.push(format!("meta: verify step #{} has no 'command'", index + 1));
+            }
         }
 
         issues
@@ -1059,7 +1163,9 @@ impl TasksFile {
             .collect()
     }
 
-    /// Validate that the raw `tasks.toml` still carries the modern task fields.
+    /// Validate that the raw `tasks.toml` still carries the modern task
+    /// fields: `tier`, `context.read_files`, `verify` and `depends_on`. A
+    /// `model_hint` is not one: role and tier route a task.
     pub fn validate_modern_fields(path: &Path) -> Result<Vec<ModernFieldIssue>> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1354,7 +1460,7 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
         let Some(table) = task_table else {
             issues.push(ModernFieldIssue {
                 task_id,
-                missing_fields: vec!["tier", "model_hint", "read_files", "verify", "depends_on"],
+                missing_fields: vec!["tier", "read_files", "verify", "depends_on"],
             });
             continue;
         };
@@ -1367,14 +1473,6 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
             .is_none_or(|tier| tier.trim().is_empty());
         if tier_missing {
             missing_fields.push("tier");
-        }
-
-        let model_hint_missing = table
-            .get("model_hint")
-            .and_then(toml::Value::as_str)
-            .is_none_or(|hint| hint.trim().is_empty());
-        if model_hint_missing {
-            missing_fields.push("model_hint");
         }
 
         let read_files_missing = table
@@ -1403,29 +1501,6 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
     }
 
     Ok(issues)
-}
-
-/// Extract lines from content given a range like "40-80" or "10-".
-fn extract_line_range(content: &str, range: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let parts: Vec<&str> = range.split('-').collect();
-    let start = parts
-        .first()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .saturating_sub(1);
-    let end = parts
-        .get(1)
-        .and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                s.parse::<usize>().ok()
-            }
-        })
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    lines[start..end].join("\n")
 }
 
 fn extract_toml_payload(content: &str) -> String {
@@ -1888,6 +1963,150 @@ command = "cargo check -p roko-cli"
         assert!(rendered.contains("replan_strategy = \"decompose\""));
     }
 
+    /// gap-0f3980: every field of `roko_core::Task` parses from `tasks.toml`
+    /// into `TaskDef`, as its own field or a hint, and survives the JSON a
+    /// Graph node carries. The `Task` literal lists every field, so a field
+    /// added to `Task` breaks this test until it is set here, and then fails
+    /// it until `TaskDef` or `TaskHints` reads it.
+    #[test]
+    fn parses_every_task_routing_field() {
+        use roko_core::task::{
+            Task, TaskCategory, TaskComplexityBand, TaskContextWeight, TaskQualityProfile,
+            TaskReasoningLevel, TaskSpeedPriority, TaskStatus,
+        };
+
+        let strings = |values: &[&str]| -> Option<Vec<String>> {
+            Some(values.iter().map(|value| (*value).to_string()).collect())
+        };
+        let authored = Task {
+            id: "T01".into(),
+            title: "Check the parser".into(),
+            status: TaskStatus::Pending,
+            files: vec!["crates/roko-cli/src/task_parser.rs".into()],
+            role: Some("implementer".into()),
+            acceptance: vec!["every hint parses".into()],
+            depends_on: vec![],
+            parallel_group: Some("parsers".into()),
+            exclusive_files: false,
+            estimated_minutes: Some(15),
+            types_to_define: strings(&["pub struct TaskHints"]),
+            formulas: strings(&["retries = 2 * (k + 1) - 1"]),
+            test_invariants: strings(&["INV-7"]),
+            imports: strings(&["roko_core::TaskHints"]),
+            example_pattern: Some("crates/roko-core/src/task.rs".into()),
+            context_files: strings(&["crates/roko-core/src/task.rs"]),
+            plan_section: Some("## Parsing".into()),
+            skills: strings(&["serde"]),
+            category: Some(TaskCategory::Verification),
+            reasoning_level: Some(TaskReasoningLevel::High),
+            speed_priority: Some(TaskSpeedPriority::Accuracy),
+            quality_profile: Some(TaskQualityProfile::Hardened),
+            context_weight: Some(TaskContextWeight::Deep),
+            research_before_edit: Some(true),
+            tags: strings(&["parser"]),
+            dependency_tags: strings(&["serde"]),
+            fixture_keys: strings(&["plans"]),
+            sidecar_requirements: strings(&["none"]),
+            integration_surfaces: strings(&["plan run"]),
+            complexity_band: Some(TaskComplexityBand::Complex),
+            preferred_model: Some("claude-opus-4-1".into()),
+            preferred_provider: Some("anthropic".into()),
+            escalate_on_retry: Some(true),
+            domain: Some(TaskDomain::Code),
+        };
+        let authored_json = serde_json::to_value(&authored).expect("serialize Task");
+        let authored_fields = authored_json.as_object().expect("a Task is an object");
+        assert!(
+            authored_fields.values().all(|value| !value.is_null()),
+            "set every Task field: {authored_json}"
+        );
+
+        let task_table = toml::to_string(&authored).expect("Task as TOML");
+        let content = format!("[meta]\nplan = \"hints\"\n\n[[task]]\n{task_table}");
+        let file = TasksFile::parse_str(&content).expect("parse every Task field");
+        let parsed = file.tasks[0].clone();
+        let parsed_json = serde_json::to_value(&parsed).expect("serialize TaskDef");
+        for (key, value) in authored_fields {
+            assert_eq!(parsed_json.get(key), Some(value), "Task field `{key}`");
+        }
+        assert_eq!(parsed.hints.category, Some(TaskCategory::Verification));
+        assert_eq!(parsed.hints.exclusive_files, Some(false));
+        // A rewritten tasks.toml (plan regeneration) keeps them too.
+        let rewritten = toml::to_string(&file).expect("write tasks.toml");
+        let from_toml = TasksFile::parse_str(&rewritten).expect("read the rewrite");
+        assert_eq!(from_toml.tasks[0].hints, parsed.hints);
+
+        // `context_files` join the files to read, once, however often the
+        // task is serialized and read back.
+        let read_files = |task: &TaskDef| -> Vec<(String, String)> {
+            let context = task.context.as_ref().expect("context");
+            context
+                .read_files
+                .iter()
+                .map(|file| (file.path.clone(), file.why.clone()))
+                .collect()
+        };
+        let expected = vec![(
+            "crates/roko-core/src/task.rs".to_string(),
+            "context".to_string(),
+        )];
+        assert_eq!(read_files(&parsed), expected);
+        let reread: TaskDef = serde_json::from_value(parsed_json.clone()).expect("read back");
+        assert_eq!(read_files(&reread), expected);
+        assert_eq!(serde_json::to_value(&reread).unwrap(), parsed_json);
+
+        // A task without hints parses as before and serializes no hint keys.
+        let plain = TasksFile::parse_str(
+            "[meta]\nplan = \"hints\"\n\n[[task]]\nid = \"T02\"\ntitle = \"Plain\"\n",
+        )
+        .expect("parse a plain task")
+        .tasks
+        .remove(0);
+        assert_eq!(plain.hints, TaskHints::default());
+        assert!(plain.context.is_none());
+        assert_eq!(
+            serde_json::to_value(TaskHints::default()).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    /// gap-0f3980: the specification hints become a prompt section, and a
+    /// task without them gets none.
+    #[test]
+    fn specification_hints_reach_the_task_prompt() {
+        let task = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "hints"
+
+[[task]]
+id = "T1"
+title = "Add the hint struct"
+types_to_define = ["pub struct TaskHints"]
+example_pattern = "crates/roko-core/src/task.rs"
+test_invariants = ["an empty task sets no hint"]
+"#,
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        // The prompt builder appends this section to the task's prompt.
+        let section = task.specification_section();
+        assert!(
+            section.contains(
+                "\n## Specification\n### Types to Define\n- pub struct TaskHints\n\n\
+                 ### Example Pattern\ncrates/roko-core/src/task.rs\n\n\
+                 ### Test Invariants\n- an empty task sets no hint\n"
+            ),
+            "{section}"
+        );
+        assert!(!section.contains("### Formulas"), "{section}");
+
+        let mut plain = task.clone();
+        plain.hints = TaskHints::default();
+        assert!(plain.specification_section().is_empty());
+    }
+
     #[test]
     fn effective_model_by_tier() {
         let task = TaskDef {
@@ -1914,10 +2133,12 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(task.effective_model("fallback", None), "claude-haiku-4-5");
 
@@ -1931,9 +2152,23 @@ command = "cargo check -p roko-cli"
             tier: "focused".into(),
             model_hint: Some("custom-model".into()),
             replan_strategy: None,
-            ..task
+            ..task.clone()
         };
         assert_eq!(t3.effective_model("fallback", None), "custom-model");
+
+        // Aliases read through `TaskTier::parse`; an unknown tier falls back.
+        let t4 = TaskDef {
+            tier: "Fast".into(),
+            ..task.clone()
+        };
+        assert_eq!(t4.effective_model("fallback", None), "claude-haiku-4-5");
+        assert!(!t4.needs_external_context());
+        let t5 = TaskDef {
+            tier: "mechancial".into(),
+            ..task
+        };
+        assert_eq!(t5.effective_model("fallback", None), "fallback");
+        assert!(t2.needs_external_context());
     }
 
     #[test]
@@ -1962,10 +2197,12 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(task.operating_frequency(), OperatingFrequency::Gamma);
     }
@@ -1996,10 +2233,12 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(reactive.operating_frequency(), OperatingFrequency::Gamma);
 
@@ -2027,10 +2266,12 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(reflective.operating_frequency(), OperatingFrequency::Delta);
 
@@ -2058,10 +2299,12 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(
             deliberative.operating_frequency(),
@@ -2368,11 +2611,15 @@ depends_on = []
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
                 source_prd: None,
                 failure_policy: None,
+                workspace_rungs: None,
+                verify: Vec::new(),
+                approval: None,
+                allow_unverified: false,
             },
             tasks: Vec::new(),
         };
@@ -2416,15 +2663,18 @@ depends_on = []
                     command: "cargo check".into(),
                     fail_msg: None,
                     timeout_ms: 60_000,
+                    scope: Vec::new(),
                 }],
                 timeout_secs: 600,
                 max_retries: 3,
                 acceptance: vec![],
                 acceptance_contract: None,
+                accept: None,
                 domain: None,
                 estimated_minutes: None,
                 crates_touched: None,
                 sequence: 0,
+                hints: TaskHints::default(),
             });
         }
 
@@ -2438,13 +2688,6 @@ depends_on = []
             TaskQualityWarning::LongDescription { task_id, word_count }
                 if task_id == "T1" && *word_count == 501
         )));
-    }
-
-    #[test]
-    fn extract_line_range_works() {
-        let content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
-        assert_eq!(extract_line_range(content, "2-4"), "line 2\nline 3\nline 4");
-        assert_eq!(extract_line_range(content, "3-"), "line 3\nline 4\nline 5");
     }
 
     #[test]
@@ -2492,10 +2735,12 @@ depends_on = ["other-plan:T3"]
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         let original = "Original task prompt";
         let error_msg = "compilation failed: undefined symbol";
@@ -2533,10 +2778,12 @@ depends_on = ["other-plan:T3"]
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         let original = "Original prompt";
         let long_error = "x".repeat(5000);
@@ -2590,10 +2837,11 @@ depends_on = []
         assert_eq!(issues.len(), 1);
         assert_eq!(
             issues[0].missing_fields,
-            vec!["tier", "model_hint", "read_files", "verify"]
+            vec!["tier", "read_files", "verify"]
         );
     }
 
+    /// A modern task names no model: role and tier route it (bug-a5cd6b).
     #[test]
     fn validate_modern_fields_accepts_full_metadata() {
         let content = r#"
@@ -2609,7 +2857,6 @@ id = "T1"
 title = "Modern task"
 status = "ready"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 depends_on = []
 verify = [{ phase = "compile", command = "cargo check" }]
 
@@ -2819,6 +3066,58 @@ max_loc = 0
     }
 
     #[test]
+    fn schema_validation_reads_tiers_through_task_tier() {
+        let toml = r#"
+[meta]
+plan = "test"
+
+[[task]]
+id = "T1"
+title = "an alias with padding"
+role = "researcher"
+tier = " T0 "
+
+[[task]]
+id = "T2"
+title = "an alias in capitals"
+role = "researcher"
+tier = "Premium"
+
+[[task]]
+id = "T3"
+title = "a typo"
+role = "researcher"
+tier = "mechancial"
+"#;
+        let parsed: TasksFile = toml::from_str(toml).unwrap();
+        let tier_issues: Vec<String> = parsed
+            .validate_against_schema()
+            .into_iter()
+            .filter(|issue| issue.contains("tier"))
+            .collect();
+        assert_eq!(
+            tier_issues,
+            [
+                "T3: unknown tier 'mechancial' (valid: mechanical, focused, integrative, architectural)"
+            ]
+        );
+        let tiers: Vec<TaskTier> = parsed.tasks.iter().map(TaskDef::tier_class).collect();
+        assert_eq!(
+            tiers,
+            [
+                TaskTier::Mechanical,
+                TaskTier::Architectural,
+                TaskTier::Focused
+            ]
+        );
+        assert!(
+            parsed
+                .validate()
+                .contains(&"T3: missing or unknown tier".to_string())
+        );
+    }
+
+    #[test]
     fn strip_embedded_code_removes_rust() {
         let input = r#"[meta]
 plan = "test"
@@ -2920,6 +3219,35 @@ And that's the plan.
         let tasks = parsed.unwrap();
         assert_eq!(tasks.meta.plan, "wire-prompt");
         assert_eq!(tasks.tasks[0].id, "T1");
+    }
+
+    #[test]
+    fn a_plan_runs_the_workspace_rungs_unless_it_opts_out() {
+        let parse = |meta: &str| {
+            let text = format!(
+                r#"
+[meta]
+plan = "p"
+{meta}
+
+[[task]]
+id = "T1"
+title = "One task"
+"#
+            );
+            TasksFile::parse_str(&text).expect("tasks.toml").meta
+        };
+        let unset = parse("");
+        assert!(unset.runs_workspace_rungs());
+        assert!(parse("workspace_rungs = true").runs_workspace_rungs());
+        let opted_out = parse("workspace_rungs = false");
+        assert!(!opted_out.runs_workspace_rungs());
+
+        // A written plan keeps an explicit choice and adds none.
+        let written = toml::to_string(&unset).expect("serialize meta");
+        assert!(!written.contains("workspace_rungs"), "{written}");
+        let written = toml::to_string(&opted_out).expect("serialize meta");
+        assert!(written.contains("workspace_rungs = false"), "{written}");
     }
 
     // ─── fix_meta_name_field tests ────────────────────────────────────────

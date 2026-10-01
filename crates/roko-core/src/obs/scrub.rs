@@ -13,11 +13,27 @@
 //! - `ANTHROPIC_API_KEY=...` / `OPENAI_API_KEY=...` (env-var leaks)
 //!
 //! Custom patterns can be added at runtime via [`LogScrubber::add_pattern`].
+//!
+//! The process also keeps one scrubber holding its known secrets, the values
+//! roko loaded from `.env` files and provider keys: see
+//! [`install_secret_scrubber`]. Persistence writers pass what they write
+//! through [`scrub_secrets`], [`scrub_secrets_in_json`] or
+//! [`scrub_secrets_in_jsonl`], which remove those exact values and never
+//! apply the heuristic patterns: a heuristic such as `sk-...` also matches
+//! ordinary text (the task id `mask-the-...`), and a record's ids must
+//! survive being written.
+
+use std::borrow::Cow;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
 /// Replacement text inserted in place of scrubbed secrets.
 pub const REDACTED: &str = "[REDACTED]";
+
+/// Shortest value treated as a secret. Shorter values (`true`, `8080`,
+/// `debug`) also occur in ordinary text, so redacting them would mangle it.
+pub const MIN_SECRET_LEN: usize = 8;
 
 /// A compiled regex pattern used by the scrubber.
 struct ScrubPattern {
@@ -152,15 +168,21 @@ impl LogScrubber {
     /// Literal values are exact known secrets, so they run before the
     /// heuristic patterns, longest first: a pattern matching only part of the
     /// value would otherwise leave the rest of the secret in the output and
-    /// hide its name.
+    /// hide its name. Adding a value already present does nothing, so the
+    /// first name given for a value is the one shown.
     pub fn add_literal_value(&self, value: &str, name: &str) -> Result<(), regex::Error> {
         if value.is_empty() {
             return Ok(());
         }
-        let mut literal =
-            ScrubPattern::with_replacement(&regex::escape(value), format!("[REDACTED:{name}]"))?;
+        let escaped = regex::escape(value);
+        let mut literal = ScrubPattern::with_replacement(&escaped, format!("[REDACTED:{name}]"))?;
         literal.literal_len = Some(value.len());
         let mut patterns = self.patterns.write();
+        if patterns.iter().any(|pattern| {
+            pattern.literal_len == Some(value.len()) && pattern.regex.as_str() == escaped
+        }) {
+            return Ok(());
+        }
         let position = patterns
             .iter()
             .position(|pattern| pattern.literal_len.is_none_or(|len| len < value.len()))
@@ -185,6 +207,32 @@ impl LogScrubber {
         result
     }
 
+    /// Scrub only the literal values added with
+    /// [`LogScrubber::add_literal_value`], leaving the heuristic patterns
+    /// out. Borrows `text` when no literal occurs in it.
+    #[must_use]
+    pub fn scrub_literals<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        let patterns = self.patterns.read();
+        let mut result = Cow::Borrowed(text);
+        for pattern in patterns.iter().filter(|p| p.literal_len.is_some()) {
+            let scrubbed = pattern.scrub(&result);
+            if let Cow::Owned(s) = scrubbed {
+                result = Cow::Owned(s);
+            }
+        }
+        drop(patterns);
+        result
+    }
+
+    /// Whether any literal value occurs in `text`.
+    #[must_use]
+    pub fn contains_literal(&self, text: &str) -> bool {
+        self.patterns
+            .read()
+            .iter()
+            .any(|pattern| pattern.literal_len.is_some() && pattern.regex.is_match(text))
+    }
+
     /// Number of patterns currently registered.
     #[must_use]
     pub fn pattern_count(&self) -> usize {
@@ -195,6 +243,176 @@ impl LogScrubber {
 impl Default for LogScrubber {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ─── The process's secret scrubber (T036) ────────────────────────────────────
+
+static SECRET_SCRUBBER: RwLock<Option<Arc<LogScrubber>>> = RwLock::new(None);
+
+/// Serializes the tests that swap the process's secret scrubber.
+#[cfg(test)]
+pub(crate) static PROCESS_SCRUBBER_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Install `scrubber` as the process's secret scrubber and return the one it
+/// replaces. roko installs one at startup
+/// (`roko_fs::observability::RunScrubber::install`); a test that installs
+/// its own should put the previous one back.
+pub fn install_secret_scrubber(scrubber: Option<Arc<LogScrubber>>) -> Option<Arc<LogScrubber>> {
+    std::mem::replace(&mut *SECRET_SCRUBBER.write(), scrubber)
+}
+
+/// The process's secret scrubber, when one is installed.
+#[must_use]
+pub fn secret_scrubber() -> Option<Arc<LogScrubber>> {
+    SECRET_SCRUBBER.read().clone()
+}
+
+/// Add the values of the environment variables `names` to the process's
+/// secret scrubber, each redacted under its name. Unset variables and values
+/// shorter than [`MIN_SECRET_LEN`] are skipped, and so is everything when no
+/// scrubber is installed.
+pub fn add_secret_env_values<'a>(names: impl IntoIterator<Item = &'a str>) {
+    let Some(scrubber) = secret_scrubber() else {
+        return;
+    };
+    for name in names {
+        if let Ok(value) = std::env::var(name)
+            && value.len() >= MIN_SECRET_LEN
+            && let Err(error) = scrubber.add_literal_value(&value, name)
+        {
+            tracing::warn!(name, %error, "secret scrubber: failed to add a secret value");
+        }
+    }
+}
+
+/// Add `secrets`, `(name, value)` pairs such as the secrets a config holds,
+/// to the process's secret scrubber, each value redacted under its name.
+/// Values shorter than [`MIN_SECRET_LEN`] are skipped, and so is everything
+/// when no scrubber is installed.
+pub fn add_secret_values<'a>(secrets: impl IntoIterator<Item = (&'a str, &'a str)>) {
+    let Some(scrubber) = secret_scrubber() else {
+        return;
+    };
+    for (name, value) in secrets {
+        if value.len() >= MIN_SECRET_LEN
+            && let Err(error) = scrubber.add_literal_value(value, name)
+        {
+            tracing::warn!(name, %error, "secret scrubber: failed to add a secret value");
+        }
+    }
+}
+
+/// `text` with the process's secrets redacted, borrowed when it holds none.
+/// For plain text; JSON goes through [`scrub_secrets_in_json`] or
+/// [`scrub_secrets_in_jsonl`].
+#[must_use]
+pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
+    secret_scrubber().map_or(Cow::Borrowed(text), |scrubber| {
+        scrubber.scrub_literals(text)
+    })
+}
+
+/// One JSON document with the process's secrets redacted from its strings
+/// (values and object keys) and nowhere else, so it still parses: replacing
+/// a numeric secret inside a number, or a secret that holds a quote, would
+/// break it. A rewritten document is pretty-printed when `json` spans
+/// several lines and compact otherwise, and keeps a trailing newline. Text
+/// that is not JSON is scrubbed as plain text. Borrowed when unchanged.
+#[must_use]
+pub fn scrub_secrets_in_json(json: &str) -> Cow<'_, str> {
+    let Some(scrubber) = secret_scrubber() else {
+        return Cow::Borrowed(json);
+    };
+    scrub_json_document(&scrubber, json)
+}
+
+/// JSONL text (one or more lines) with each line scrubbed as by
+/// [`scrub_secrets_in_json`]. Borrowed when unchanged.
+#[must_use]
+pub fn scrub_secrets_in_jsonl(jsonl: &str) -> Cow<'_, str> {
+    let Some(scrubber) = secret_scrubber() else {
+        return Cow::Borrowed(jsonl);
+    };
+    let mut changed = false;
+    let mut result = String::with_capacity(jsonl.len());
+    for line in jsonl.split_inclusive('\n') {
+        let (record, ending) = line
+            .strip_suffix('\n')
+            .map_or((line, ""), |record| (record, "\n"));
+        let scrubbed = scrub_json_document(&scrubber, record);
+        changed |= matches!(scrubbed, Cow::Owned(_));
+        result.push_str(&scrubbed);
+        result.push_str(ending);
+    }
+    if changed {
+        Cow::Owned(result)
+    } else {
+        Cow::Borrowed(jsonl)
+    }
+}
+
+fn scrub_json_document<'a>(scrubber: &LogScrubber, json: &'a str) -> Cow<'a, str> {
+    let has_literals = scrubber
+        .patterns
+        .read()
+        .iter()
+        .any(|pattern| pattern.literal_len.is_some());
+    // A secret holding a quote, a backslash or a control character is
+    // escaped in JSON text, so text with escapes is checked value by value.
+    if !has_literals || (!json.contains('\\') && !scrubber.contains_literal(json)) {
+        return Cow::Borrowed(json);
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return scrubber.scrub_literals(json);
+    };
+    if !scrub_json_strings(scrubber, &mut value) {
+        return Cow::Borrowed(json);
+    }
+    let rewritten = if json.trim_end().contains('\n') {
+        serde_json::to_string_pretty(&value)
+    } else {
+        serde_json::to_string(&value)
+    };
+    match rewritten {
+        Ok(mut text) => {
+            if json.ends_with('\n') {
+                text.push('\n');
+            }
+            Cow::Owned(text)
+        }
+        Err(_) => scrubber.scrub_literals(json),
+    }
+}
+
+/// Redact the literal secrets in every string of `value`; true when any
+/// string changed.
+fn scrub_json_strings(scrubber: &LogScrubber, value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let Cow::Owned(scrubbed) = scrubber.scrub_literals(text) else {
+                return false;
+            };
+            *text = scrubbed;
+            true
+        }
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            scrub_json_strings(scrubber, item) | changed
+        }),
+        serde_json::Value::Object(map) => {
+            let mut changed = map.values_mut().fold(false, |changed, item| {
+                scrub_json_strings(scrubber, item) | changed
+            });
+            if map.keys().any(|key| scrubber.contains_literal(key)) {
+                *map = std::mem::take(map)
+                    .into_iter()
+                    .map(|(key, item)| (scrubber.scrub_literals(&key).into_owned(), item))
+                    .collect();
+                changed = true;
+            }
+            changed
+        }
+        _ => false,
     }
 }
 
@@ -423,5 +641,140 @@ mod tests {
             .unwrap();
         let output = scrubber.scrub("config: my-api-key-12345678901234567890");
         assert_eq!(output, "config: [REDACTED:CUSTOM_KEY]");
+    }
+
+    #[test]
+    fn literal_value_added_twice_is_kept_once() {
+        let scrubber = LogScrubber::empty();
+        scrubber
+            .add_literal_value("repeated-secret", "FIRST")
+            .unwrap();
+        scrubber
+            .add_literal_value("repeated-secret", "SECOND")
+            .unwrap();
+        assert_eq!(scrubber.pattern_count(), 1);
+        assert_eq!(scrubber.scrub("x repeated-secret"), "x [REDACTED:FIRST]");
+    }
+
+    #[test]
+    fn scrub_literals_leaves_heuristic_patterns_out() {
+        let scrubber = LogScrubber::new();
+        scrubber
+            .add_literal_value("canary-literal-9f3e", "CANARY")
+            .unwrap();
+        // `sk-...` inside a task id matches a heuristic, not a literal.
+        let text = "task mask-the-secret-values-in-logs saw canary-literal-9f3e";
+        assert_eq!(
+            scrubber.scrub_literals(text),
+            "task mask-the-secret-values-in-logs saw [REDACTED:CANARY]"
+        );
+        assert!(scrubber.scrub(text).contains("[REDACTED:API_KEY]"));
+        assert!(matches!(
+            scrubber.scrub_literals("nothing secret"),
+            Cow::Borrowed(_)
+        ));
+        assert!(scrubber.contains_literal(text));
+        assert!(!scrubber.contains_literal("mask-the-secret-values-in-logs"));
+    }
+
+    fn literal_scrubber(secrets: &[(&str, &str)]) -> LogScrubber {
+        let scrubber = LogScrubber::new();
+        for (name, value) in secrets {
+            scrubber.add_literal_value(value, name).unwrap();
+        }
+        scrubber
+    }
+
+    #[test]
+    fn json_scrub_changes_only_strings() {
+        // A numeric secret must not be cut out of a number.
+        let scrubber = literal_scrubber(&[("TIMEOUT", "30000000"), ("TOKEN", "json-secret-1")]);
+        let json = r#"{"created_at_ms":1727730000000,"note":"saw json-secret-1 and 30000000","json-secret-1":[1,"json-secret-1"]}"#;
+        let scrubbed = scrub_json_document(&scrubber, json);
+        let value: serde_json::Value = serde_json::from_str(&scrubbed).expect("still JSON");
+        assert_eq!(value["created_at_ms"], 1_727_730_000_000_u64);
+        assert_eq!(value["note"], "saw [REDACTED:TOKEN] and [REDACTED:TIMEOUT]");
+        assert_eq!(value["[REDACTED:TOKEN]"][1], "[REDACTED:TOKEN]");
+        assert!(!scrubbed.contains("json-secret-1"));
+    }
+
+    #[test]
+    fn json_scrub_finds_secrets_json_escapes() {
+        let secret = "pa\"ss\\word-with-quote";
+        let scrubber = literal_scrubber(&[("QUOTED", secret)]);
+        let json = serde_json::json!({ "output": format!("leaked {secret}") }).to_string();
+        assert!(!json.contains(secret), "the secret is escaped in JSON text");
+        let scrubbed = scrub_json_document(&scrubber, &json);
+        let value: serde_json::Value = serde_json::from_str(&scrubbed).expect("still JSON");
+        assert_eq!(value["output"], "leaked [REDACTED:QUOTED]");
+    }
+
+    #[test]
+    fn json_scrub_keeps_layout_and_borrows_when_clean() {
+        let scrubber = literal_scrubber(&[("TOKEN", "layout-secret")]);
+        let pretty = "{\n  \"a\": \"layout-secret\"\n}\n";
+        assert_eq!(
+            scrub_json_document(&scrubber, pretty),
+            "{\n  \"a\": \"[REDACTED:TOKEN]\"\n}\n"
+        );
+        assert_eq!(
+            scrub_json_document(&scrubber, r#"{"a":"layout-secret"}"#),
+            r#"{"a":"[REDACTED:TOKEN]"}"#
+        );
+        for clean in [r#"{"a":"clean\ntext"}"#, r#"{"a":1}"#, "not json"] {
+            assert!(matches!(
+                scrub_json_document(&scrubber, clean),
+                Cow::Borrowed(_)
+            ));
+        }
+        // Text that is not JSON is scrubbed as text.
+        assert_eq!(
+            scrub_json_document(&scrubber, "plain layout-secret"),
+            "plain [REDACTED:TOKEN]"
+        );
+    }
+
+    #[test]
+    fn process_scrubber_scrubs_records_and_restores() {
+        let _guard = PROCESS_SCRUBBER_LOCK.lock();
+        let scrubber = Arc::new(literal_scrubber(&[("TOKEN", "process-secret-7")]));
+        let previous = install_secret_scrubber(Some(Arc::clone(&scrubber)));
+
+        assert_eq!(
+            scrub_secrets("saw process-secret-7"),
+            "saw [REDACTED:TOKEN]"
+        );
+        assert_eq!(
+            scrub_secrets_in_json("{\"a\":\"process-secret-7\"}"),
+            "{\"a\":\"[REDACTED:TOKEN]\"}"
+        );
+        let jsonl = "{\"a\":\"clean\"}\n{\"b\":\"process-secret-7\"}\n";
+        assert_eq!(
+            scrub_secrets_in_jsonl(jsonl),
+            "{\"a\":\"clean\"}\n{\"b\":\"[REDACTED:TOKEN]\"}\n"
+        );
+        // An environment value joins the installed scrubber under its name.
+        let path = std::env::var("PATH").expect("PATH is set");
+        if path.len() >= MIN_SECRET_LEN {
+            add_secret_env_values(["PATH"]);
+            assert_eq!(scrub_secrets(&path), "[REDACTED:PATH]");
+        }
+        // So does a config's secret, under its field; a short value does not.
+        add_secret_values([
+            ("serve.auth.api_key", "config-secret-5a6636"),
+            ("x", "tiny"),
+        ]);
+        assert_eq!(
+            scrub_secrets("config-secret-5a6636 tiny"),
+            "[REDACTED:serve.auth.api_key] tiny"
+        );
+
+        install_secret_scrubber(previous);
+        if secret_scrubber().is_none() {
+            assert!(matches!(
+                scrub_secrets("saw process-secret-7"),
+                Cow::Borrowed(_)
+            ));
+        }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
 use axum::http::{HeaderMap, Method, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -21,6 +21,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::error::ApiError;
 use crate::rbac::{Permission, Role, enforce_permission};
 use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339};
+use crate::routes::route_permissions::{opens_interactive_session, path_has_segment_prefix};
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
@@ -154,7 +155,7 @@ pub fn register_extension_route_scopes(entries: impl IntoIterator<Item = (String
 fn extension_scope_for(path: &str) -> Option<&str> {
     let entries = EXTENSION_ROUTE_SCOPES.get()?;
     for (prefix, scope) in entries {
-        if path.starts_with(prefix.as_str()) {
+        if path_has_segment_prefix(path, prefix) {
             return Some(scope.as_str());
         }
     }
@@ -622,17 +623,24 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
 /// Verify that a cookie-authenticated state-changing request satisfies the
 /// same-origin constraint.
 ///
-/// Safe methods (GET, HEAD, OPTIONS) always pass. For mutations the check
-/// fails with 403 when an `Origin` header is present but its host:port does
-/// not equal the request's `Host` header (or is the special value `"null"`
-/// produced by sandboxed iframes).
+/// Safe methods (GET, HEAD, OPTIONS) pass, except a WebSocket upgrade: it is
+/// a GET, but it opens a live session (a terminal shell, an event stream)
+/// that carries the cookie's authority, so a page on another origin must not
+/// open one (cross-site WebSocket hijacking). For mutations and upgrades the
+/// check fails with 403 when an `Origin` header is present but its host:port
+/// does not equal the request's `Host` header (or is the special value
+/// `"null"` produced by sandboxed iframes). Browsers always send `Origin` on
+/// a WebSocket handshake.
 ///
 /// `SameSite=Strict` prevents cookies from being sent on cross-site
 /// navigation, but a *different page on the same local host* is still
-/// same-site, so an explicit `Origin` comparison is the defense here.
+/// same-site, and the attribute could be relaxed later, so an explicit
+/// `Origin` comparison is the defense here.
 #[allow(clippy::result_large_err)]
 fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
-    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+        && !is_websocket_upgrade(req.headers())
+    {
         return Ok(());
     }
 
@@ -683,10 +691,24 @@ fn cookie_cross_origin_response() -> Response {
         StatusCode::FORBIDDEN,
         axum::Json(serde_json::json!({
             "code": "forbidden",
-            "message": "cross-origin cookie authentication is not permitted for state-changing requests"
+            "message": "cross-origin cookie authentication is not permitted for state-changing requests or WebSocket upgrades"
         })),
     )
         .into_response()
+}
+
+/// Whether the request asks to switch to the WebSocket protocol
+/// (`Upgrade: websocket`, matched case-insensitively among any listed
+/// protocols).
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|protocol| protocol.trim().eq_ignore_ascii_case("websocket"))
+        })
 }
 
 /// Require a matching API credential for the request to continue.
@@ -1071,7 +1093,9 @@ pub async fn require_api_key(
 /// fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RouteScopeEntry {
-    /// Path prefix matched via `starts_with`. Order matters: first match wins.
+    /// Path prefix, matched only at a path-segment boundary: the path equals
+    /// it or continues with `/`, so `/api/run` covers `/api/run/x` but not
+    /// `/api/runs`. Order matters: first match wins.
     pub prefix: &'static str,
     /// Required scope for mutating requests (POST/PUT/DELETE/PATCH).
     pub scope: &'static str,
@@ -1091,6 +1115,11 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     },
     RouteScopeEntry {
         prefix: "/api/agent-tokens",
+        scope: "admin",
+    },
+    // Issuing a relay token needs `token:issue`, which only admins hold.
+    RouteScopeEntry {
+        prefix: "/api/relay-tokens",
         scope: "admin",
     },
     RouteScopeEntry {
@@ -1127,6 +1156,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/prd",
         scope: "plan:write",
     },
+    RouteScopeEntry {
+        prefix: "/api/prds",
+        scope: "plan:write",
+    },
     // --- terminal:write ------------------------------------------------------
     RouteScopeEntry {
         prefix: "/api/terminal",
@@ -1155,6 +1188,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     },
     RouteScopeEntry {
         prefix: "/api/run",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/runs",
         scope: "write",
     },
     RouteScopeEntry {
@@ -1270,8 +1307,11 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 
 /// Determine the required scope for a given HTTP method and path.
 ///
-/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) always return `"read"`.
-/// Mutating methods are classified in priority order:
+/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) return `"read"`, except on a
+/// route whose GET opens an interactive session (a WebSocket shell, see
+/// `route_permissions::opens_interactive_session`): that GET is classified
+/// like a mutation, so `/ws/terminal` needs `terminal:write`. Mutating
+/// methods are classified in priority order:
 ///
 /// 1. [`ROUTE_SCOPE_MANIFEST`] — static first-party route prefixes.
 /// 2. Extension route registry populated by [`register_extension_route_scopes`]
@@ -1282,8 +1322,8 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 /// The static manifest takes precedence over extension routes so that a
 /// misconfigured plugin cannot downgrade scope requirements for core routes.
 pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
-    // Read-only methods always pass.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods pass, unless the GET opens an interactive session.
+    if is_read_only_method(method) && !opens_interactive_session(path) {
         return "read";
     }
     // Middleware on the nested API router can observe `/registries/...`
@@ -1291,12 +1331,13 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // forms so an admin route never falls back to the weaker generic write
     // scope merely because Axum stripped the nest prefix.
     let nested_path = (!path.starts_with("/api/")).then(|| format!("/api{path}"));
-    // 1. Static first-party manifest (O(n), n ≤ ~30 entries).
+    // 1. Static first-party manifest (O(n), n ≤ ~45 entries), matched at
+    //    segment boundaries so `/relay` does not claim `/relay-tokens`.
     for entry in ROUTE_SCOPE_MANIFEST {
-        if path.starts_with(entry.prefix)
+        if path_has_segment_prefix(path, entry.prefix)
             || nested_path
                 .as_deref()
-                .is_some_and(|path| path.starts_with(entry.prefix))
+                .is_some_and(|path| path_has_segment_prefix(path, entry.prefix))
         {
             return entry.scope;
         }
@@ -1310,6 +1351,11 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // 3. Fail-closed: any unclassified mutating route gets the sentinel scope
     //    which behaves as "write" at runtime but is detectable by the CI guard.
     SCOPE_WRITE_UNCLASSIFIED
+}
+
+/// `GET`, `HEAD` and `OPTIONS`: methods that read rather than change state.
+fn is_read_only_method(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
@@ -1383,8 +1429,9 @@ pub async fn require_scope(
         return Ok(next.run(req).await);
     }
 
-    // Read-only methods bypass scope checks.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods bypass scope checks, except a GET that opens an
+    // interactive session: `required_scope_for` classifies it like a mutation.
+    if is_read_only_method(&method) && !opens_interactive_session(&path) {
         return Ok(next.run(req).await);
     }
 
@@ -2945,6 +2992,32 @@ mod tests {
         assert_eq!(required_scope_for(&Method::GET, "/api/secrets"), "read");
     }
 
+    /// A table prefix covers its own path and the paths below it, never a
+    /// longer route name that merely starts with the same letters, so
+    /// `POST /api/relay-tokens` no longer gets the `/relay` scope
+    /// (bug-44320f).
+    #[test]
+    fn scope_prefixes_match_whole_path_segments() {
+        for (method, path, expected) in [
+            (Method::POST, "/relay/agents", "agent:write"),
+            (Method::POST, "/api/relay-tokens", "admin"),
+            (Method::POST, "/relay-tokens", "admin"),
+            (Method::DELETE, "/relay-tokens/tok-1", "admin"),
+            (Method::POST, "/api/prd/consolidate", "plan:write"),
+            (Method::POST, "/prds/ideas", "plan:write"),
+            (Method::POST, "/api/run", "write"),
+            (Method::POST, "/runs/abc/share", "write"),
+            (Method::POST, "/api/secretsx", SCOPE_WRITE_UNCLASSIFIED),
+            (Method::POST, "/api/configure", SCOPE_WRITE_UNCLASSIFIED),
+        ] {
+            assert_eq!(
+                required_scope_for(&method, path),
+                expected,
+                "{method} {path}"
+            );
+        }
+    }
+
     #[test]
     fn registry_reads_require_read_and_mutations_require_admin() {
         assert_eq!(
@@ -3557,6 +3630,9 @@ mod tests {
         // --- /relay (agent:write) ---
         (Method::POST, "/relay/agents"),
         (Method::DELETE, "/relay/agents/123"),
+        // --- /api/relay-tokens (admin) ---
+        (Method::POST, "/api/relay-tokens"),
+        (Method::DELETE, "/api/relay-tokens/tok-1"),
     ];
 
     /// CI guard: every mutating route registered in the router must have an
@@ -4684,6 +4760,56 @@ mod tests {
             .unwrap();
         // Must be 403 (cross-origin), not 401 (missing credentials).
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A WebSocket upgrade is a GET, but it opens a live session with the
+    /// cookie's authority, so a cookie-authenticated upgrade from another
+    /// origin is refused whatever the cookie's SameSite setting (bug-d6b0d9).
+    #[tokio::test]
+    async fn cookie_websocket_upgrades_are_origin_checked() {
+        const EVIL: &str = "http://evil.example.com";
+        const SAME: &str = "http://localhost:6677";
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+        let send = |upgrade: Option<&str>, origin: Option<&str>| {
+            let mut request = Request::builder()
+                .method(Method::GET)
+                .uri("/test")
+                .header("Host", "localhost:6677")
+                .header("Cookie", format!("roko_session={session_id}"));
+            if let Some(upgrade) = upgrade {
+                request = request
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", upgrade);
+            }
+            if let Some(origin) = origin {
+                request = request.header("Origin", origin);
+            }
+            app.clone()
+                .oneshot(request.body(Body::empty()).expect("build request"))
+        };
+
+        let (refused, allowed) = (StatusCode::FORBIDDEN, StatusCode::NO_CONTENT);
+        for (upgrade, origin, expected) in [
+            // Cross-origin upgrades are refused, however the header is spelled.
+            (Some("websocket"), Some(EVIL), refused),
+            (Some("WebSocket"), Some(EVIL), refused),
+            (Some("h2c, websocket"), Some(EVIL), refused),
+            (Some("websocket"), Some("null"), refused),
+            // Same-origin upgrades, and clients that send no Origin, pass.
+            (Some("websocket"), Some(SAME), allowed),
+            (Some("websocket"), None, allowed),
+            // A plain GET stays a read, whatever its Origin.
+            (None, Some(EVIL), allowed),
+        ] {
+            let response = send(upgrade, origin).await.expect("response");
+            assert_eq!(
+                response.status(),
+                expected,
+                "Upgrade: {upgrade:?}, Origin: {origin:?}"
+            );
+        }
     }
 
     #[tokio::test]

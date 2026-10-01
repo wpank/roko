@@ -3,7 +3,11 @@
 //! Parses `cargo check --message-format=json` output and classifies errors
 //! into categories that agents can act on programmatically.
 
+use roko_core::Verdict;
 use serde::{Deserialize, Serialize};
+
+use crate::registry::rung_for_gate_name;
+use crate::rung_selector::Rung;
 
 /// Category of compile error.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -90,20 +94,27 @@ pub enum GateFailureKind {
     Resource,
     /// The verification contract/script/plan shape needs repair before retrying.
     Structural,
+    /// The gate ran out of time before its check finished.
+    ///
+    /// A re-run with more time, or a faster check, may pass.
+    Timeout,
 }
 
 impl GateFailureKind {
     /// Whether this failure kind can be retried automatically.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Transient | Self::Permanent | Self::Structural)
+        matches!(
+            self,
+            Self::Transient | Self::Permanent | Self::Structural | Self::Timeout
+        )
     }
 
     /// Cooldown before retry, in seconds.
     #[must_use]
     pub const fn retry_cooldown_secs(&self) -> u64 {
         match self {
-            Self::Transient => 2,
+            Self::Transient | Self::Timeout => 2,
             Self::Permanent | Self::Resource => 0,
             Self::Structural => 5,
         }
@@ -175,6 +186,16 @@ pub struct CompileError {
     pub suggestion: Option<String>,
 }
 
+impl CompileError {
+    /// Whether the compiler itself reported this error: it has an error code
+    /// or a recognised category. Cargo's own lines, such as `could not
+    /// compile` and `test failed`, have neither.
+    #[must_use]
+    pub fn is_compiler_error(&self) -> bool {
+        self.code.is_some() || self.category != ErrorCategory::Other
+    }
+}
+
 /// Structured failure classification for compile/test/lint gate output.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateFailureClassification {
@@ -233,6 +254,31 @@ impl GateFailureClassification {
         self.duration_ms = Some(duration_ms);
         self
     }
+
+    /// Record that the gate ran out of time.
+    ///
+    /// The failure is a [`GateFailureKind::Timeout`], whatever its output says.
+    #[must_use]
+    pub fn timed_out(mut self) -> Self {
+        self.failure_kind = GateFailureKind::Timeout;
+        self.retry_policy = GateRetryPolicy::from(&self.failure_kind);
+        self
+    }
+}
+
+/// Whether `verdict` failed because its gate ran out of time.
+///
+/// Its error digest is a failure classification of kind
+/// [`GateFailureKind::Timeout`], as [`crate::ShellGate`] records a command it
+/// stopped at its timeout.
+#[must_use]
+pub fn verdict_timed_out(verdict: &Verdict) -> bool {
+    !verdict.passed
+        && verdict
+            .error_digest
+            .as_deref()
+            .and_then(|digest| serde_json::from_str::<GateFailureClassification>(digest).ok())
+            .is_some_and(|classification| classification.failure_kind == GateFailureKind::Timeout)
 }
 
 /// Summary of all compile errors from a build.
@@ -489,6 +535,23 @@ pub fn parse_plain_stderr(stderr: &str) -> CompileErrorSummary {
 /// Classify raw gate output into a stable failure class.
 #[must_use]
 pub fn classify_gate_failure(gate: &str, output: &str) -> GateFailureClassification {
+    classify_step_failure(gate, None, output)
+}
+
+/// [`classify_gate_failure`] for a verify step of `phase`, such as `test`
+/// or `compile`, when the caller knows it.
+///
+/// A step runs tests when its phase is the test rung's, or when its gate is
+/// named for tests (`test:cargo`). Graph steps are named `verify[i:test]` or
+/// `rung[test]`, and their failures are recorded under `graph-verify`, so
+/// only the phase tells. A test step whose output holds a compiler error
+/// never got to run its tests: that is a compile failure.
+#[must_use]
+pub fn classify_step_failure(
+    gate: &str,
+    phase: Option<&str>,
+    output: &str,
+) -> GateFailureClassification {
     let mut summary = parse_cargo_json(output);
     if summary.error_count == 0 && summary.warning_count == 0 {
         summary = parse_plain_stderr(output);
@@ -497,7 +560,11 @@ pub fn classify_gate_failure(gate: &str, output: &str) -> GateFailureClassificat
     let mut classes = Vec::new();
     let lower = output.to_ascii_lowercase();
 
-    if gate.starts_with("test")
+    let runs_tests = gate.starts_with("test")
+        || phase.is_some_and(|phase| matches!(rung_for_gate_name(phase.trim()), Some(Rung::Test)));
+    let built = !summary.errors.iter().any(CompileError::is_compiler_error);
+    if runs_tests
+        && built
         && (lower.contains("test result: failed")
             || lower.contains("assertion failed")
             || lower.contains("panicked at")
@@ -1017,6 +1084,48 @@ error[E0308]: mismatched types
         assert!(!failure.replan_candidate);
     }
 
+    /// A Graph verify step of the test phase classifies its failing tests
+    /// whatever its gate is named, and a compile failure as one (bug-386c9b).
+    #[test]
+    fn graph_step_names_classify_test_failures() {
+        let failing_tests = "running 2 tests\n\
+             test tests::adds ... FAILED\n\
+             test tests::parses ... ok\n\n\
+             ---- tests::adds stdout ----\n\
+             thread 'tests::adds' panicked at src/lib.rs:9:9:\n\
+             assertion `left == right` failed\n\n\
+             test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\n\
+             error: test failed, to rerun pass `--lib`";
+        let compile_failure = "error[E0308]: mismatched types\n\
+             --> src/lib.rs:3:5\n\
+             |     ^^^^^^ expected `u32`, found `&str`\n\n\
+             error: could not compile `demo` (lib test) due to 1 previous error";
+        for gate in ["test", "verify[0:test]", "rung[test]", "graph-verify"] {
+            let tests = classify_step_failure(gate, Some("test"), failing_tests);
+            assert_eq!(
+                tests.primary,
+                FailureClass::TestExpectationFailure,
+                "{gate}"
+            );
+            let compile = classify_step_failure(gate, Some("test"), compile_failure);
+            assert_eq!(compile.primary, FailureClass::TypeError, "{gate}");
+            assert!(
+                !compile
+                    .classes
+                    .contains(&FailureClass::TestExpectationFailure),
+                "{gate}: {:?}",
+                compile.classes
+            );
+        }
+
+        // Without the test phase, a Graph step's name does not say it ran
+        // tests.
+        let unphased = classify_gate_failure("verify[0:test]", failing_tests);
+        assert_ne!(unphased.primary, FailureClass::TestExpectationFailure);
+        let compile_phase = classify_step_failure("rung[compile]", Some("compile"), failing_tests);
+        assert_ne!(compile_phase.primary, FailureClass::TestExpectationFailure);
+    }
+
     #[test]
     fn failure_kind_drives_retry_policy() {
         let transient = classify_gate_failure("shell:flake", "timed out after 100 ms");
@@ -1035,6 +1144,36 @@ error[E0308]: mismatched types
         );
         assert_eq!(structural.failure_kind, GateFailureKind::Structural);
         assert!(structural.retry_policy.regenerate_verify);
+    }
+
+    #[test]
+    fn a_gate_that_ran_out_of_time_is_a_timeout_whatever_its_output_says() {
+        // An authored `fail_msg` can stand in for the gate's own reason.
+        let timed_out = classify_gate_failure("graph-verify", "verify failed").timed_out();
+        assert_eq!(timed_out.failure_kind, GateFailureKind::Timeout);
+        assert!(timed_out.retry_policy.retryable);
+        assert!(!timed_out.retry_policy.generate_reflection);
+        let record =
+            GateFailureRecord::from_classification("plan", "T1", "graph-verify", 5, &timed_out);
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["failure_kind"], "timeout");
+
+        let timed_out_digest = render_failure_classification(&timed_out);
+        let failed = |digest: String| {
+            Verdict::fail("verify[0]", "timed out after 1500 ms").with_error_digest(digest)
+        };
+        assert!(verdict_timed_out(&failed(timed_out_digest.clone())));
+        // A timeout the output only mentions is not the gate's own.
+        let mentioned = classify_gate_failure("graph-verify", "timed out after 1500 ms");
+        assert_eq!(mentioned.failure_kind, GateFailureKind::Transient);
+        assert!(!verdict_timed_out(&failed(render_failure_classification(
+            &mentioned
+        ))));
+        assert!(!verdict_timed_out(&failed(
+            "not a classification".to_string()
+        )));
+        let passed = Verdict::pass("verify[0]").with_error_digest(timed_out_digest);
+        assert!(!verdict_timed_out(&passed));
     }
 
     #[test]

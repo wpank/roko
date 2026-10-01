@@ -61,7 +61,7 @@ map covers all pairwise relationships between these 22 sections.
 | 13 | Coordination | (trait impls) | Stigmergy, pheromones, Agent Mesh | Cross-cut |
 | 14 | Identity/Economy | `roko-chain` ext | ERC-8004, KORAI, reputation, marketplace | Domain plugin |
 | 15 | Code Intelligence | `roko-index` | Parser, symbol graph, HDC fingerprints | L2 |
-| 16 | Heartbeat | (orchestrate.rs) | CoALA 9-step pipeline, three speeds | L0/L1 |
+| 16 | Heartbeat | (orchestrate.rs) | CoALA-inspired 9-step pipeline, three speeds | L0/L1 |
 | 17 | Lifecycle | (CLI subcommands) | Create, configure, backup, restore, delete | L4 |
 | 18 | Tools | `roko-std` | Built-in tools, plugins, MCP servers | L1 |
 | 19 | Deployment | (build/ops) | Packaging, Docker, WASM, daemon | Infrastructure |

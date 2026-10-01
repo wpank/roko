@@ -17,7 +17,8 @@ use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores,
-    build_tool_dispatcher_with_audit, map_provider_error, tool_loop_max_iterations_for_profile,
+    build_provider_tool_dispatcher, map_provider_error, tool_loop_max_iterations_for_options,
+    with_tool_observability,
 };
 use crate::rate_limit::ProviderRateLimiter;
 use crate::tool_loop::{
@@ -46,9 +47,9 @@ pub(super) fn create_tool_loop_agent(
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-    let dispatcher =
-        build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
     let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
+    let dispatcher =
+        build_provider_tool_dispatcher(registry, resolver, options, model, translator.format());
     let backend = create_tool_loop_backend_with_api_key(
         api_key,
         provider,
@@ -58,7 +59,7 @@ pub(super) fn create_tool_loop_agent(
     )?;
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -71,6 +72,7 @@ pub(super) fn create_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::Anthropic);
     if let Some(prompt) = &options.system_prompt {
@@ -84,6 +86,10 @@ pub(super) fn create_tool_loop_agent(
     }
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    agent = with_tool_observability(agent, options);
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
     }
 
     Ok(Box::new(agent))
@@ -145,22 +151,21 @@ fn create_tool_loop_backend_with_api_key(
     poster: Box<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
     let timeout_ms = options.effective_timeout_ms(provider.timeout_ms);
+    let max_tokens = model
+        .max_output
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
     let mut backend = AnthropicMessagesBackend::new(api_key, model.slug.clone())
         .with_provider_id(model.provider.clone())
         .with_base_url(super::AnthropicApiAdapter::base_url(provider))
         .with_timeout_ms(timeout_ms)
-        .with_max_tokens(
-            model
-                .max_output
-                .and_then(|value| u32::try_from(value).ok())
-                .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
-        )
+        .with_max_tokens(max_tokens)
         .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
         .with_poster(poster);
 
-    if model.supports_thinking {
-        backend = backend.with_thinking_budget(default_thinking_budget(&model.slug));
+    if let Some(budget) = thinking_budget(model, options.thinking.as_ref(), max_tokens) {
+        backend = backend.with_thinking_budget(budget);
     }
     if let Some(ref env_var) = provider.api_key_env {
         backend = backend.with_api_key_env(env_var.clone());
@@ -932,16 +937,68 @@ fn normalize_usage(usage: &Value) -> Value {
         .get("cache_creation_input_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    // Anthropic's `input_tokens` leave out cache reads; the OpenAI-shaped
+    // `prompt_tokens` include them, and the usage parser takes the cached
+    // tokens back out (bug-b72a37).
+    let prompt_tokens = input_tokens + cached_tokens;
 
     json!({
-        "prompt_tokens": input_tokens,
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
+        "total_tokens": prompt_tokens + output_tokens,
         "prompt_tokens_details": {
             "cached_tokens": cached_tokens,
         },
         "cache_creation_tokens": cache_creation_tokens,
     })
+}
+
+/// The smallest thinking budget the Messages API accepts.
+const MIN_THINKING_BUDGET: u32 = 1_024;
+
+/// The thinking budget of a call to `model` with `max_tokens` of output, or
+/// `None` for no thinking block. Without a request setting the profile
+/// decides, as before; a request can turn thinking off or on, at its own
+/// budget or the family default (bug-b9cb83). A requested budget is clamped
+/// to what the API accepts, at least [`MIN_THINKING_BUDGET`] and below
+/// `max_tokens`; when even that does not fit, the call runs without thinking.
+fn thinking_budget(
+    model: &ModelProfile,
+    thinking: Option<&roko_core::foundation::ThinkingConfig>,
+    max_tokens: u32,
+) -> Option<u32> {
+    let Some(thinking) = thinking else {
+        return model
+            .supports_thinking
+            .then(|| default_thinking_budget(&model.slug));
+    };
+    if thinking.kind == roko_core::foundation::ThinkingMode::Disabled {
+        return None;
+    }
+    let requested = thinking
+        .budget_tokens
+        .unwrap_or_else(|| default_thinking_budget(&model.slug));
+    let ceiling = max_tokens.saturating_sub(1);
+    if ceiling < MIN_THINKING_BUDGET {
+        tracing::debug!(
+            model = %model.slug,
+            max_tokens,
+            requested,
+            "no room for the requested thinking below max_tokens; the call runs without it"
+        );
+        return None;
+    }
+    let budget = requested.clamp(MIN_THINKING_BUDGET, ceiling);
+    if budget != requested {
+        tracing::debug!(
+            model = %model.slug,
+            max_tokens,
+            requested,
+            budget,
+            "clamped the requested thinking budget to what the API accepts"
+        );
+    }
+    Some(budget)
 }
 
 /// Default thinking budget by model-family substring.
@@ -1854,5 +1911,164 @@ data: {}\n\
             })
             .collect();
         assert_eq!(text, vec!["The answer."]);
+    }
+
+    /// Records each request, which the test keeps reading after the backend
+    /// took the poster, and answers it with a finished turn.
+    struct RecordingPoster {
+        requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    }
+
+    #[async_trait]
+    impl HttpPoster for RecordingPoster {
+        async fn post_json(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+            timeout_ms: u64,
+        ) -> Result<String, HttpPostError> {
+            let body = serde_json::from_slice(body).expect("request body must be json");
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push(RecordedRequest {
+                    url: url.to_string(),
+                    headers: headers.to_vec(),
+                    body,
+                    timeout_ms,
+                });
+            Ok(json!({
+                "id": "msg_1",
+                "model": "claude-opus-4-1",
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "done" }],
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })
+            .to_string())
+        }
+    }
+
+    fn thinking_opus() -> ModelProfile {
+        ModelProfile {
+            provider: "anthropic".to_string(),
+            slug: "claude-opus-4-1".to_string(),
+            context_window: 200_000,
+            max_output: Some(64_000),
+            supports_tools: true,
+            supports_thinking: true,
+            tool_format: "anthropic_blocks".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The `thinking` block and `anthropic-beta` header of one turn sent
+    /// with `thinking` as the request's setting.
+    async fn sent_thinking(
+        thinking: Option<roko_core::foundation::ThinkingConfig>,
+    ) -> (Option<Value>, Option<String>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let backend = create_tool_loop_backend_with_api_key(
+            "test-key".to_string(),
+            &ProviderConfig::default(),
+            &thinking_opus(),
+            &AgentOptions {
+                thinking,
+                ..Default::default()
+            },
+            Box::new(RecordingPoster {
+                requests: Arc::clone(&requests),
+            }),
+        )
+        .expect("backend");
+        backend
+            .send_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .expect("turn");
+        let request = requests.lock().expect("requests lock").remove(0);
+        let beta = request
+            .headers
+            .into_iter()
+            .find(|(name, _)| name == "anthropic-beta")
+            .map(|(_, value)| value);
+        (request.body.get("thinking").cloned(), beta)
+    }
+
+    /// bug-b9cb83: a request's thinking setting overrides the profile's.
+    #[tokio::test]
+    async fn a_request_can_turn_off_the_profiles_thinking() {
+        let (profile_default, beta) = sent_thinking(None).await;
+        assert_eq!(
+            profile_default,
+            Some(json!({"type": "enabled", "budget_tokens": 32_768}))
+        );
+        assert_eq!(beta.as_deref(), Some(THINKING_BETA_HEADER));
+
+        let (thinking, beta) = sent_thinking(Some(roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Disabled,
+            budget_tokens: None,
+        }))
+        .await;
+        assert_eq!(thinking, None);
+        assert_eq!(beta, None);
+    }
+
+    #[tokio::test]
+    async fn a_requested_thinking_budget_overrides_the_default() {
+        let (thinking, beta) = sent_thinking(Some(roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        }))
+        .await;
+        assert_eq!(
+            thinking,
+            Some(json!({"type": "enabled", "budget_tokens": 2_048}))
+        );
+        assert_eq!(beta.as_deref(), Some(THINKING_BETA_HEADER));
+    }
+
+    #[test]
+    fn a_requested_thinking_budget_is_clamped_to_what_the_api_accepts() {
+        use roko_core::foundation::{ThinkingConfig, ThinkingMode};
+
+        let enabled = |budget_tokens| ThinkingConfig {
+            kind: ThinkingMode::Enabled,
+            budget_tokens,
+        };
+        let opus = thinking_opus();
+        let plain = ModelProfile {
+            supports_thinking: false,
+            ..thinking_opus()
+        };
+
+        assert_eq!(thinking_budget(&plain, None, 16_384), None);
+        assert_eq!(
+            thinking_budget(&plain, Some(&enabled(Some(4_096))), 16_384),
+            Some(4_096),
+            "a request turns thinking on"
+        );
+        assert_eq!(
+            thinking_budget(&opus, Some(&enabled(None)), 64_000),
+            Some(32_768),
+            "the family default"
+        );
+        assert_eq!(
+            thinking_budget(&opus, Some(&enabled(Some(100))), 16_384),
+            Some(MIN_THINKING_BUDGET)
+        );
+        assert_eq!(
+            thinking_budget(&opus, Some(&enabled(None)), 16_384),
+            Some(16_383),
+            "below max_tokens"
+        );
+        assert_eq!(
+            thinking_budget(&opus, Some(&enabled(Some(2_048))), 1_024),
+            None,
+            "no room below max_tokens"
+        );
     }
 }

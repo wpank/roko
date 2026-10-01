@@ -654,6 +654,7 @@ fn adapter_stored_in_cell_resources() {
         roko_cli::runner::gate_dispatch::RunnerProductionGateAdapter::new(Arc::new(runner));
     let resources = CellResources {
         gates: Some(Arc::new(adapter) as Arc<dyn SharedGateEvaluator>),
+        workspaces: None,
     };
     assert!(resources.gates.is_some());
 }

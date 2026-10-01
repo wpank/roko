@@ -1042,7 +1042,14 @@ impl LinUCBRouter {
     /// saved to disk after each update. Save errors are silently ignored so
     /// that a filesystem hiccup never breaks the update flow.
     pub fn update_features(&self, x: &[f64], model_idx: usize, reward: f64) {
-        self.update_features_internal(x, model_idx, reward, None);
+        self.update_features_internal(x, model_idx, reward, None, 1.0);
+    }
+
+    /// Update an arm with an observation that carries only `weight` (0.0 to
+    /// 1.0) of a full one: its outer product enters `A`, and its reward `b`,
+    /// scaled by `weight`, as in importance-weighted least squares.
+    pub fn update_features_weighted(&self, x: &[f64], model_idx: usize, reward: f64, weight: f64) {
+        self.update_features_internal(x, model_idx, reward, None, weight.clamp(0.0, 1.0));
     }
 
     /// Update the router and track the underlying reward vector.
@@ -1066,6 +1073,7 @@ impl LinUCBRouter {
             model_idx,
             reward,
             Some((quality, normalized_cost, normalized_latency)),
+            1.0,
         );
     }
 
@@ -1075,6 +1083,7 @@ impl LinUCBRouter {
         model_idx: usize,
         reward: f64,
         reward_vector: Option<(f64, f64, f64)>,
+        weight: f64,
     ) {
         if x.len() != CONTEXT_DIM {
             return;
@@ -1106,15 +1115,15 @@ impl LinUCBRouter {
                 reward.clamp(0.0, 1.0)
             };
 
-            // A = A + x * x^T
+            // A = A + weight * x * x^T
             for (i, row) in arm.a_matrix.iter_mut().enumerate() {
                 for (j, cell) in row.iter_mut().enumerate() {
-                    *cell += x[i] * x[j];
+                    *cell += weight * x[i] * x[j];
                 }
             }
-            // b = b + reward * x
+            // b = b + weight * reward * x
             for (bi, xi) in arm.b_vector.iter_mut().zip(x) {
-                *bi += reward * xi;
+                *bi += weight * reward * xi;
             }
             if let Some((quality, cost, latency)) = reward_vector {
                 arm.reward_stats.observe(quality, cost, latency);
@@ -1403,12 +1412,13 @@ impl LinUCBRouter {
     /// Export the current LinUCB arm parameters as a [`LinUCBSnapshot`].
     ///
     /// Each arm's `a_matrix` (dim x dim) is flattened row-major into a single
-    /// `Vec<f64>`. The snapshot can later be restored via
-    /// [`import_linucb_snapshot`](Self::import_linucb_snapshot).
+    /// `Vec<f64>`, and its slug is recorded beside it. The snapshot can later
+    /// be restored via [`import_linucb_snapshot`](Self::import_linucb_snapshot).
     pub fn export_linucb_snapshot(&self) -> LinUCBSnapshot {
         let state = self.state.read();
         let mut a_matrices = Vec::with_capacity(state.arms.len());
         let mut b_vectors = Vec::with_capacity(state.arms.len());
+        let mut slugs = Vec::with_capacity(state.arms.len());
         let mut total_obs: usize = 0;
 
         for arm in &state.arms {
@@ -1420,6 +1430,7 @@ impl LinUCBRouter {
                 .collect();
             a_matrices.push(flat);
             b_vectors.push(arm.b_vector.clone());
+            slugs.push(arm.slug.clone());
             total_obs = total_obs.saturating_add(arm.observations as usize);
         }
 
@@ -1428,47 +1439,51 @@ impl LinUCBRouter {
             b_vectors,
             dim: CONTEXT_DIM,
             observations: total_obs,
+            slugs,
         }
     }
 
     /// Import a previously exported [`LinUCBSnapshot`], restoring arm A/b
     /// parameters in place.
     ///
-    /// Arms are matched by index. If the snapshot has fewer arms, a different
-    /// dimensionality, or a mismatched row length, the affected arm is left
-    /// at its constructed default (identity A, zero b).
+    /// Arms are matched by slug, never by position, so a router that tracks a
+    /// narrower or reordered model list gets each model's own arm
+    /// (bug-605a8a). An arm without a well-formed persisted counterpart keeps
+    /// its constructed default (identity A, zero b). A snapshot of another
+    /// dimensionality, or one whose arms are not named, restores no arm.
     pub fn import_linucb_snapshot(&self, snap: &LinUCBSnapshot) {
         if snap.dim != CONTEXT_DIM {
-            // Dimensionality mismatch — leave all arms at their defaults.
+            tracing::warn!(
+                dim = snap.dim,
+                expected = CONTEXT_DIM,
+                "LinUCB snapshot has another context dimension -- every arm starts fresh"
+            );
+            return;
+        }
+        if !snap.names_every_arm() {
+            tracing::warn!(
+                arms = snap.a_matrices.len(),
+                slugs = snap.slugs.len(),
+                "LinUCB snapshot does not name its arms -- every arm starts fresh"
+            );
             return;
         }
 
         let mut state = self.state.write();
-        let expected_flat_len = CONTEXT_DIM * CONTEXT_DIM;
-
-        for (i, arm) in state.arms.iter_mut().enumerate() {
-            let Some(flat_a) = snap.a_matrices.get(i) else {
-                // Snapshot has fewer arms than the current router — skip.
+        for arm in &mut state.arms {
+            let Some((flat_a, b)) = snap.arm(&arm.slug) else {
+                if snap.slugs.contains(&arm.slug) {
+                    tracing::warn!(
+                        slug = %arm.slug,
+                        "persisted LinUCB arm is malformed -- it starts fresh"
+                    );
+                }
                 continue;
             };
-            let Some(b) = snap.b_vectors.get(i) else {
-                continue;
-            };
-
-            // Validate lengths before un-flattening.
-            if flat_a.len() != expected_flat_len || b.len() != CONTEXT_DIM {
-                continue;
-            }
 
             // Un-flatten row-major into dim x dim matrix.
-            let mut matrix = vec![vec![0.0; CONTEXT_DIM]; CONTEXT_DIM];
-            for (row_idx, row) in matrix.iter_mut().enumerate() {
-                let start = row_idx * CONTEXT_DIM;
-                row.copy_from_slice(&flat_a[start..start + CONTEXT_DIM]);
-            }
-
-            arm.a_matrix = matrix;
-            arm.b_vector = b.clone();
+            arm.a_matrix = flat_a.chunks(CONTEXT_DIM).map(<[f64]>::to_vec).collect();
+            arm.b_vector = b.to_vec();
         }
     }
 }

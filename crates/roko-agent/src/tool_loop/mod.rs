@@ -68,6 +68,12 @@ pub struct ToolLoopTurnTrace {
     pub reasoning: Option<String>,
     /// Token usage reported for this backend turn.
     pub usage: Usage,
+    /// Model the provider reported serving this turn, when the response
+    /// named one ([`BackendResponse::extract_model`]).
+    pub model: Option<String>,
+    /// Whether the provider reported this turn's usage
+    /// ([`BackendResponse::usage_source`]).
+    pub usage_source: crate::usage::UsageSource,
 }
 
 pub mod agent_wrapper;
@@ -190,6 +196,15 @@ pub struct StreamEvent {
     pub kind: StreamEventKind,
     /// Monotonic timestamp -- used to measure TTFT from first `TextDelta`.
     pub timestamp: std::time::Instant,
+    /// The model the provider named in the chunk or response this event
+    /// came from, when it named one. [`collect_stream_to_response`] keeps
+    /// the last one as the response's `model` (bug-bfd241).
+    pub model: Option<String>,
+    /// The response, session and thread ids the chunk or response this event
+    /// came from named ([`session_ids`]). [`collect_stream_to_response`]
+    /// keeps the last of each, so a streamed turn continues the provider's
+    /// session as an answered one does.
+    pub session: Option<SessionState>,
 }
 
 impl StreamEvent {
@@ -199,8 +214,43 @@ impl StreamEvent {
         Self {
             kind,
             timestamp: std::time::Instant::now(),
+            model: None,
+            session: None,
         }
     }
+
+    /// This event, from a chunk or response that named `model`.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// This event, from a chunk or response that named `session`'s ids.
+    #[must_use]
+    pub fn with_session(mut self, session: Option<SessionState>) -> Self {
+        self.session = session;
+        self
+    }
+}
+
+/// The ids `chunk` names, from the fields backends read a turn's session
+/// from: `id` (the conversation), `session_id` and `thread_id`. `None` when
+/// it names none.
+pub(crate) fn session_ids(chunk: &serde_json::Value) -> Option<SessionState> {
+    let named = |key: &str| {
+        chunk
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    };
+    let session = SessionState {
+        session_id: named("session_id"),
+        thread_id: named("thread_id"),
+        conversation_id: named("id"),
+    };
+    (session != SessionState::default()).then_some(session)
 }
 
 /// The kind of a [`StreamEvent`].
@@ -328,8 +378,15 @@ pub async fn collect_stream_to_response(
     let mut reasoning = String::new();
     let mut tool_calls: Vec<roko_core::tool::ToolCall> = vec![];
     let mut usage = Usage::default();
+    // Only a stream that reported usage gets a `usage` block, so the
+    // response's usage source stays honest (bug-c65bfe).
+    let mut usage_reported = false;
     let mut finish_reason = "stop".to_string();
     let mut ttft_ms: Option<u64> = None;
+    // The model the stream's chunks last named (bug-bfd241).
+    let mut model: Option<String> = None;
+    // The session ids they last named, each on its own.
+    let mut session = SessionState::default();
     // Track in-progress tool calls: key -> (real_id, name, accumulated_args).
     //
     // The key is whatever `id` the stream events carry. For OpenAI SSE
@@ -341,6 +398,14 @@ pub async fn collect_stream_to_response(
 
     while let Some(event) = stream.next().await {
         let event = event?;
+        if event.model.is_some() {
+            model = event.model;
+        }
+        if let Some(named) = event.session {
+            session.session_id = named.session_id.or(session.session_id);
+            session.thread_id = named.thread_id.or(session.thread_id);
+            session.conversation_id = named.conversation_id.or(session.conversation_id);
+        }
         match event.kind {
             StreamEventKind::TextDelta(delta) => {
                 if ttft_ms.is_none() {
@@ -388,7 +453,10 @@ pub async fn collect_stream_to_response(
                 // results are injected into the conversation by the ToolLoop
                 // dispatcher, not synthesised from stream events.
             }
-            StreamEventKind::Usage(u) => usage = u,
+            StreamEventKind::Usage(u) => {
+                usage = u;
+                usage_reported = true;
+            }
             StreamEventKind::Done { finish_reason: fr } => {
                 finish_reason = fr;
             }
@@ -438,15 +506,27 @@ pub async fn collect_stream_to_response(
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": usage.input_tokens,
-            "completion_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens + usage.output_tokens,
-            "prompt_tokens_details": {
-                "cached_tokens": usage.cache_read_tokens,
-            },
-        },
     });
+    // The usage block reads back through `extract_usage` unchanged: the
+    // wire's `prompt_tokens` include the cached tokens (bug-b72a37).
+    if usage_reported {
+        json["usage"] = crate::translate::openai::usage_to_wire(&usage);
+    }
+    // `extract_model` reads it back as the model that served the turn.
+    if let Some(model) = model {
+        json["model"] = serde_json::Value::String(model);
+    }
+    // A backend's `extract_session` reads them back, so a streamed turn
+    // continues the provider's session as an answered one does.
+    for (key, id) in [
+        ("id", session.conversation_id),
+        ("session_id", session.session_id),
+        ("thread_id", session.thread_id),
+    ] {
+        if let Some(id) = id {
+            json[key] = serde_json::Value::String(id);
+        }
+    }
 
     // Mirror tool calls at the top level for translators that read
     // `v.get("tool_calls")` rather than `choices[0].message.tool_calls`.
@@ -483,6 +563,12 @@ pub fn response_to_synthetic_stream(
 
     let text = response.extract_text();
     let usage = response.extract_usage();
+    let usage_reported = response.usage_source() == crate::usage::UsageSource::ProviderReported;
+    let model = response.extract_model();
+    let session = match &response {
+        BackendResponse::Json(json) => session_ids(json),
+        BackendResponse::StreamJson(_) | BackendResponse::Text(_) => None,
+    };
     let finish_reason = response
         .extract_finish_reason_raw()
         .unwrap_or_else(|| "stop".to_string());
@@ -532,10 +618,16 @@ pub fn response_to_synthetic_stream(
         }
     }
 
-    events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+    // A response that reported no usage passes none on (bug-c65bfe).
+    if usage_reported {
+        events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+    }
+    // So are the model and the session ids the response named (bug-bfd241).
     events.push(Ok(StreamEvent::now(StreamEventKind::Done {
         finish_reason,
-    })));
+    })
+    .with_model(model)
+    .with_session(session)));
 
     Box::pin(stream::iter(events))
 }
@@ -1104,6 +1196,8 @@ impl ToolLoop {
             };
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
+            let turn_model = response.extract_model();
+            let turn_usage_source = response.usage_source();
             let mut turn_usage = response.extract_usage();
 
             // Compute cost from model profile pricing when the provider did not
@@ -1216,6 +1310,8 @@ impl ToolLoop {
                     tool_results: Vec::new(),
                     reasoning: turn_reasoning,
                     usage: turn_usage,
+                    model: turn_model,
+                    usage_source: turn_usage_source,
                 });
                 let finish_reason_raw = response.extract_finish_reason_raw();
                 let hit_length_limit = finish_reason_raw
@@ -1295,6 +1391,8 @@ impl ToolLoop {
                 tool_results: tool_results.clone(),
                 reasoning: turn_reasoning.clone(),
                 usage: turn_usage,
+                model: turn_model,
+                usage_source: turn_usage_source,
             });
 
             // Fire on_turn callback with a snapshot of this iteration.
@@ -2917,6 +3015,98 @@ mod tests {
         assert_eq!(text, "Hello, world!");
     }
 
+    /// A collected stream names the model its chunks last named, and a
+    /// response turned into a stream and back keeps its model (bug-bfd241).
+    #[tokio::test]
+    async fn a_collected_stream_keeps_the_model_its_chunks_name() {
+        use futures::stream;
+        let named = |kind: StreamEventKind, model: &str| {
+            Ok(StreamEvent::now(kind).with_model(Some(model.to_string())))
+        };
+        let events = vec![
+            named(StreamEventKind::TextDelta("hi".to_string()), "glm-4.6"),
+            named(StreamEventKind::TextDelta("!".to_string()), "glm-4.7"),
+            Ok(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            })),
+        ];
+        let start = std::time::Instant::now();
+        let response = collect_stream_to_response(Box::pin(stream::iter(events)), start)
+            .await
+            .unwrap();
+        assert_eq!(response.extract_model().as_deref(), Some("glm-4.7"));
+
+        let answered = BackendResponse::Json(serde_json::json!({
+            "model": "glm-4.7",
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        }));
+        let round_trip = collect_stream_to_response(response_to_synthetic_stream(answered), start)
+            .await
+            .unwrap();
+        assert_eq!(round_trip.extract_model().as_deref(), Some("glm-4.7"));
+
+        let unnamed = BackendResponse::Json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        }));
+        let round_trip = collect_stream_to_response(response_to_synthetic_stream(unnamed), start)
+            .await
+            .unwrap();
+        assert_eq!(round_trip.extract_model(), None, "nobody named a model");
+    }
+
+    /// A collected stream keeps the last response, session and thread id
+    /// its chunks named, each on its own, and a response turned into a
+    /// stream and back keeps its ids.
+    #[tokio::test]
+    async fn a_collected_stream_keeps_the_session_its_chunks_name() {
+        use futures::stream;
+        let session = |id: &str, session_id: Option<&str>, thread_id: Option<&str>| SessionState {
+            session_id: session_id.map(str::to_string),
+            thread_id: thread_id.map(str::to_string),
+            conversation_id: Some(id.to_string()),
+        };
+        let events = vec![
+            Ok(
+                StreamEvent::now(StreamEventKind::TextDelta("hi".to_string()))
+                    .with_session(Some(session("chatcmpl-1", Some("sess-1"), None))),
+            ),
+            Ok(
+                StreamEvent::now(StreamEventKind::TextDelta("!".to_string()))
+                    .with_session(Some(session("chatcmpl-2", None, Some("thread-1")))),
+            ),
+            Ok(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            })),
+        ];
+        let start = std::time::Instant::now();
+        let response = collect_stream_to_response(Box::pin(stream::iter(events)), start)
+            .await
+            .unwrap();
+        let BackendResponse::Json(json) = &response else {
+            panic!("a collected stream is JSON");
+        };
+        assert_eq!(
+            session_ids(json),
+            Some(session("chatcmpl-2", Some("sess-1"), Some("thread-1")))
+        );
+
+        let answered = BackendResponse::Json(serde_json::json!({
+            "id": "chatcmpl-3",
+            "session_id": "sess-3",
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        }));
+        let round_trip = collect_stream_to_response(response_to_synthetic_stream(answered), start)
+            .await
+            .unwrap();
+        let BackendResponse::Json(json) = &round_trip else {
+            panic!("a collected stream is JSON");
+        };
+        assert_eq!(
+            session_ids(json),
+            Some(session("chatcmpl-3", Some("sess-3"), None))
+        );
+    }
+
     #[tokio::test]
     async fn collect_stream_tool_calls_assemble() {
         use futures::stream;
@@ -3058,16 +3248,19 @@ mod tests {
         let BackendResponse::Json(ref json) = response else {
             panic!("expected Json response");
         };
+        // The wire's prompt tokens include the cached ones (bug-b72a37).
         assert_eq!(
             json.pointer("/usage/prompt_tokens")
                 .and_then(|v| v.as_u64()),
-            Some(100)
+            Some(110)
         );
         assert_eq!(
             json.pointer("/usage/completion_tokens")
                 .and_then(|v| v.as_u64()),
             Some(50)
         );
+        // The tool loop prices what reads back: the usage the stream reported.
+        assert_eq!(response.extract_usage(), usage);
     }
 
     #[tokio::test]

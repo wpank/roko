@@ -30,10 +30,12 @@ estimated_total_minutes = 110
 # absorbs its step's row and shows the step's target — the file an edit
 # touched, which screened records never carried.
 #
-# Same gate style as 08b: acceptance tests in accept/ are copied into
-# apps/portal/src by each gate and must pass with their exact count; each fails
-# on the tree its task starts from and passed against a reference
-# implementation (2026-09-28). One production build, in T05.
+# Same gate style as 08b: acceptance tests in accept/ are pinned acceptance
+# tests ([task.accept], gap-d14a43, migrated by gap-ba4d01): a run pins each one
+# outside the working tree, and a generated gate that runs before the task's own
+# copies the pinned test into apps/portal/src and requires its exact passing
+# count. Each fails on the tree its task starts from and passed against a
+# reference implementation (2026-09-28). One production build, in T05.
 
 [[task]]
 id = "T01"
@@ -88,15 +90,22 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/liveDecode.accept.test.ts"
+dest = "apps/portal/src/lib/liveDecode.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveDecode.accept.test.ts {count}'
+count = 8
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveDecode.accept.test.ts src/lib/liveDecode.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveDecode.accept.test.ts 8 && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
-fail_msg = "the live decode acceptance test (8) or the existing stream-record suite (19) does not pass"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
+fail_msg = "the existing stream-record suite (19) does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveDecode.accept.test.ts src/lib/liveDecode.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -147,15 +156,22 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/liveBlocks.accept.test.ts"
+dest = "apps/portal/src/lib/liveBlocks.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveBlocks.accept.test.ts {count}'
+count = 10
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveBlocks.accept.test.ts src/lib/liveBlocks.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveBlocks.accept.test.ts 10 && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
-fail_msg = "the live blocks acceptance test (10) or the existing stream-record suite (19) does not pass"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
+fail_msg = "the existing stream-record suite (19) does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveBlocks.accept.test.ts src/lib/liveBlocks.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -210,15 +226,22 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/liveFold.accept.test.ts"
+dest = "apps/portal/src/lib/liveFold.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveFold.accept.test.ts {count}'
+count = 11
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveFold.accept.test.ts src/lib/liveFold.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveFold.accept.test.ts 11 && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
-fail_msg = "the live fold acceptance test (11) or an existing run-state suite (56, 15) does not pass"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
+fail_msg = "an existing run-state suite (56, 15) does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveFold.accept.test.ts src/lib/liveFold.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -267,10 +290,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveTranscript.accept.test.tsx src/components/stream/liveTranscript.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx 6'
-fail_msg = "the live transcript acceptance test does not pass all 6 tests"
+[[task.accept.files]]
+src = "accept/liveTranscript.accept.test.tsx"
+dest = "apps/portal/src/components/stream/liveTranscript.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx {count}'
+count = 6
 timeout_ms = 600000
 
 [[task.verify]]
@@ -281,7 +305,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveTranscript.accept.test.tsx src/components/stream/liveTranscript.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -291,11 +315,10 @@ title = "Prove live steps with everything else and build once"
 description = '''
 Run everything together and build the export once.
 
-The gates re-copy this plan's four acceptance tests from
-plans/portal-programme/08c-portal-live-steps/accept/ (they must be unchanged),
-then require: the full suite with at least 536 passing tests (08b's 501 plus
-this plan's 35) and none failing; the orphan check; tsc; and the one
-production build.
+Its pinned acceptance tests put this plan's four acceptance tests back in the
+tree, each with its exact count; then the gates require: the full suite with at
+least 536 passing tests (08b's 501 plus this plan's 35) and none failing; the
+orphan check; tsc; and the one production build.
 
 Fix only what a gate reports, in the module the failing test exercises. Do not
 edit the acceptance copies.
@@ -318,9 +341,37 @@ anti_patterns = [
     "Do not leave apps/portal/out behind.",
 ]
 
+[[task.accept.files]]
+src = "accept/liveDecode.accept.test.ts"
+dest = "apps/portal/src/lib/liveDecode.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveDecode.accept.test.ts {count}'
+count = 8
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/liveBlocks.accept.test.ts"
+dest = "apps/portal/src/lib/liveBlocks.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveBlocks.accept.test.ts {count}'
+count = 10
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/liveFold.accept.test.ts"
+dest = "apps/portal/src/lib/liveFold.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/liveFold.accept.test.ts {count}'
+count = 11
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/liveTranscript.accept.test.tsx"
+dest = "apps/portal/src/components/stream/liveTranscript.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx {count}'
+count = 6
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08c-portal-live-steps/accept && for p in lib/liveDecode.accept.test.ts lib/liveBlocks.accept.test.ts lib/liveFold.accept.test.ts components/stream/liveTranscript.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 536'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src 536'
 fail_msg = "the full suite, with every acceptance test, lacks 536 passing tests or has a failure"
 timeout_ms = 900000
 

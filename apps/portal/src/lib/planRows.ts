@@ -127,15 +127,17 @@ function diskGlyphState(disk: WirePlanSummary): GlyphState {
 
 /**
  * A running plan's state. Green means verified (design §6 rule 1), so it turns
- * amber once a task was accepted despite failing checks, or once no task waits
- * to be dispatched and only checks remain (mori, `plan_tree.rs:572`).
+ * amber once a task was accepted despite failing checks or finished unchecked,
+ * or once no task waits to be dispatched and only checks remain (mori,
+ * `plan_tree.rs:572`).
  */
 export function runningState(run: RunState, plan: PlanRun): 'active' | 'unverified' {
   const active = Object.values(run.tasks).filter(
     (t) => t.planId === plan.planId && t.status === 'active',
   ).length;
   const waiting = plan.tasksTotal - plan.tasksDone - plan.tasksFailed - active;
-  return plan.tasksAccepted > 0 || (plan.tasksTotal > 0 && waiting <= 0) ? 'unverified' : 'active';
+  const amber = plan.tasksAccepted + (plan.tasksUnverified ?? 0) > 0;
+  return amber || (plan.tasksTotal > 0 && waiting <= 0) ? 'unverified' : 'active';
 }
 
 // ── buildPlanRows ──────────────────────────────────────────────────────────────
@@ -190,8 +192,8 @@ export function buildPlanRows(
         }
 
         case 'completed':
-          // accepted_with_failures is amber and NEVER green.
-          state = live.tasksAccepted > 0 ? 'accepted' : 'done';
+          // accepted_with_failures and unverified tasks are amber and NEVER green.
+          state = live.tasksAccepted + (live.tasksUnverified ?? 0) > 0 ? 'accepted' : 'done';
           break;
 
         case 'failed':
@@ -231,7 +233,8 @@ export function buildPlanRows(
     const barToken = planBarToken(state);
 
     // ── segments ───────────────────────────────────────────────────────────
-    const segAccepted = live?.tasksAccepted ?? 0;
+    // Unverified tasks share the amber segment: only verified passes are green.
+    const segAccepted = (live?.tasksAccepted ?? 0) + (live?.tasksUnverified ?? 0);
     const segFailed = live ? live.tasksFailed : (disk.tasks_failed ?? 0);
     const segActive = running
       ? Object.values(run.tasks).filter(

@@ -22,21 +22,22 @@ sequential or integrative work.
 
 A frontier model writes the plan: small tasks, each with the commands that prove it done. The Graph engine
 (`crates/roko-graph/src/engine.rs`) runs it as a dependency graph with durable checkpoints and resume
-(WIRED@a17d4dadd), and each task's verify commands decide its verdict (WIRED@a17d4dadd), though a task without any
-still counts as passed (PARTIAL@a17d4dadd, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
+(WIRED@41228d7b2), and each task's verify commands decide its verdict (WIRED@41228d7b2), though the dashboard
+still counts a task without any as passed (PARTIAL@41228d7b2, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
 the cheapest model that passes, escalate on failure, merge and check the whole plan, and regulate itself: keep cost
-per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, tasks run one at a
-time by default (PARTIAL@a17d4dadd, spec-a78d57); the tier ladder is MISSING@a17d4dadd and escalation
-ORPHANED@a17d4dadd (spec-98f76d); merging is ORPHANED@a17d4dadd and the whole-plan check MISSING@a17d4dadd
-(spec-a0e40a); and the regulators and audits are MISSING@a17d4dadd, while the learning loops that run
-(PARTIAL@a17d4dadd) have no measured benefit (spec-6ac537).
+per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, independent
+tasks run in parallel when they declare their files, a role and tier ladder places each task and escalates it after
+two failures, and per-task worktrees merge through a whole-plan check (WIRED@41228d7b2; spec-a78d57, spec-98f76d,
+spec-a0e40a), though no real run has used the cheap rungs yet and the shared checkout stays the default; the regulators
+and audits are MISSING@41228d7b2, while the learning loops that run
+(PARTIAL@41228d7b2) have no measured benefit (spec-6ac537).
 
 ## 1.3 The evidence so far
 
 Roko ran most of the build of its own web portal: 16 plans and 173 tasks, 168 gate-verified, for $174.87 of
 recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 recorded passes had a failing gate, against
 101 of 373 before it.[^1-verdicts] Two facts limit what this shows. All 210 attempts pinned one mid-tier model,
-`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@a17d4dadd (spec-567e52). And supervising
+`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@41228d7b2 (spec-567e52). And supervising
 frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
 hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
 days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and people stepped in

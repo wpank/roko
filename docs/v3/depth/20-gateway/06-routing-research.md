@@ -29,28 +29,32 @@ work.
 
 ---
 
-## 2. Router-R1 (Chen et al. 2025)
+## 2. Router-R1 (Zhang et al. 2025)
 
-**"Router-R1: Teaching LLMs Multi-Round LLM Routing"**
-Zijun Chen, Mao Zheng, Wanjun Zhong, Jiahai Wang. arXiv:2507.02849, 2025.
+**"Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning"**
+Haozhen Zhang, Tao Feng, Jiaxuan You. arXiv:2506.09033, 2025.
 
 ### Key Insight
 
-Router-R1 trains a small LLM to serve as the router itself, using reinforcement
-learning to produce chain-of-thought reasoning traces before making routing decisions.
-The router observes the query, reasons about its difficulty and structure, and then
-selects a target model.
+Router-R1 makes the router itself an LLM and trains it with reinforcement learning to
+treat routing as a sequential decision process. The router interleaves "think" steps
+(internal deliberation) with "route" steps that call other models, folds each answer
+back into its context, and can consult several models before it responds: it both
+routes and aggregates. Its reward combines format, final-outcome and cost terms, and it
+sees each candidate model only through simple descriptors (price, latency, example
+performance).
 
 ### Results
 
-Outperforms hand-crafted routing heuristics and supervised classification routers on
-Arena-Hard benchmarks. The reasoning trace provides interpretability -- operators can
-inspect why a particular model was chosen.
+On seven general and multi-hop question-answering benchmarks it outperforms several
+strong baselines while managing cost, and because it conditions only on model
+descriptors it generalizes to models it has not seen. Code, models and datasets are
+public.
 
 ### Relevance to Roko
 
-Demonstrates that routing decisions benefit from explicit reasoning, not just feature
-vectors. Roko's current CascadeRouter uses statistical features (task category,
+Demonstrates that routing decisions can benefit from explicit reasoning and from
+consulting more than one model, not just from feature vectors. Roko's current CascadeRouter uses statistical features (task category,
 complexity band, iteration count) rather than reasoning traces. The RoutingContext
 metadata could be enriched with a lightweight reasoning step in future work.
 
@@ -58,49 +62,52 @@ metadata could be enriched with a lightweight reasoning step in future work.
 
 ## 3. xRouter (Qian et al. 2025)
 
-**"xRouter: Routing LLMs for Multi-Turn Conversations"**
-Yaxin Qian, Shuai Zhang, Yang Liu. arXiv:2505.24093, 2025.
+**"xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning"**
+Cheng Qian, Zuxin Liu, Shirley Kokane, et al. arXiv:2510.08439, 2025.
 
 ### Key Insight
 
-Most routing research evaluates single-turn queries. xRouter extends routing to
-multi-turn conversations by using holistic trajectory evaluation rather than per-turn
-classification. A conversation that starts simple may become complex mid-stream;
-per-turn routing misses this.
+xRouter is a tool-calling router: a learned router model either answers a query
+itself or invokes one or more external models. It is trained end to end with
+reinforcement learning against an explicit, cost-aware reward that encodes the
+cost-performance trade-off, in place of hand-written escalation rules and keyword
+heuristics.
 
 ### Results
 
-Shows that naive turn-by-turn routing underperforms trajectory-aware routing by
-5-15% on multi-turn benchmarks. The router considers the full conversation history,
-not just the latest message.
+Across diverse benchmarks it reaches strong cost-performance trade-offs: substantial
+cost reductions at comparable task completion rates. The authors also report what did
+and did not help learned routing, including how hard it is to elicit sophisticated
+orchestration from small open models. The implementation is open.
 
 ### Relevance to Roko
 
-Roko's gateway already receives per-request metadata including `iteration` count
-and `progress_marker`, which provide weak trajectory signals. The `InferenceMeta`
-struct carries task category and complexity hints that could evolve toward full
-trajectory awareness. The loop detector and convergence detector provide additional
-cross-turn signals that a trajectory-aware router could consume.
+In Roko, cost enters routing through configuration: the model ladder's rungs run
+cheapest first (`[routing.ladder]`) and `[budget]` sets ceilings, while the
+CascadeRouter's bandit learns from task outcomes.
+xRouter shows the alternative: put cost into the router's reward, so that the
+cost-quality trade-off is learned. Its finding about small open models is a caution
+for any plan to make a cheap model the router.
 
 ---
 
 ## 4. IRT-Router (Song et al. 2025)
 
-**"IRT-Router: Routing LLMs Using Item Response Theory"**
-Zhiyuan Song, Rui Wang, Qi Zhang, Xuanjing Huang. arXiv:2506.18809, 2025.
+**"IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory"**
+Wei Song, Zhenya Huang, Cheng Cheng, et al. arXiv:2506.01048, 2025.
 
 ### Key Insight
 
-IRT-Router applies Item Response Theory (IRT) -- a psychometric framework for
-standardized testing -- to jointly estimate model capability ("ability") and query
-difficulty on a shared latent scale. This avoids the calibration problem where a
-router trained on one task distribution fails on another.
+IRT-Router borrows Item Response Theory (IRT), a psychometric method, to model the
+relationship between each LLM's capabilities and the attributes of a query. The model
+predicts how well each LLM will answer and yields interpretable estimates of LLM
+ability and query difficulty. An online warm-up step based on semantic similarity
+helps it generalize to new queries.
 
 ### Results
 
-Outperforms similarity-based routers (MoA, RouteLLM) by 4-12% on MMLU, BBH, and
-heterogeneous task distributions. The shared latent scale enables zero-shot transfer
-to unseen task types.
+Across 20 LLMs and 12 datasets it outperforms most baseline methods in effectiveness
+and interpretability, and it does especially well in cold-start scenarios.
 
 ### Relevance to Roko
 
@@ -115,63 +122,64 @@ jointly estimated with model capability.
 
 ## 5. BEST-Route (Ding et al. 2025)
 
-**"BEST-Route: Bayesian Estimation via Subspace Testing for LLM Routing"**
-Shuowei Ding, Yilin Feng, Daniel Fu. arXiv:2506.09781, 2025.
+**"BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute"**
+Dujian Ding, Ankur Mallick, Shaokun Zhang, et al. arXiv:2506.22716, 2025.
 
 ### Key Insight
 
-BEST-Route characterizes model strengths through probabilistic subspace profiles
-rather than single quality scores. Each model is described by a distribution over
-capability subspaces (e.g., "strong at math reasoning, weak at creative writing").
-Routing becomes a Bayesian matching problem between query subspace and model profiles.
+Earlier routers draw one response from the chosen model, and one response from a small
+model is often not good enough to beat one from a large model, so they overuse the
+large model. Sampling several responses from a small model and keeping the best can
+raise quality while still costing less than one large-model response. BEST-Route
+builds on this: for each query it chooses a model and how many responses to sample
+from it, based on the query's difficulty and a quality threshold.
 
 ### Results
 
-Achieves better calibration than point-estimate routers on heterogeneous task
-distributions. The posterior uncertainty naturally handles exploration -- uncertain
-subspaces are explored before being exploited.
+On real-world datasets it cuts cost by up to 60% with less than a 1% drop in
+performance (ICML 2025).
 
 ### Relevance to Roko
 
-The CascadeRouter's three-stage architecture already separates static routing
-(operator preferences), confidence-based routing (learned reliability), and UCB1
-exploration (bandit). BEST-Route's subspace profiles could replace or augment
-the single-dimensional confidence scores with multi-dimensional capability
-distributions. The `TaskCategory` enum (Scaffolding, Integration, Verification,
-Research, Refactor, Infra, Docs, Implementation) provides a natural subspace
-decomposition.
+Roko's model ladder retries a failed task and moves it up a rung after two failures.
+BEST-Route suggests spending part of that budget up front: sample several responses on
+the cheap rung and keep the best, for example the first that passes its gates, before
+escalating. The
+CascadeRouter's per-category statistics could inform how many samples a query needs.
 
 ---
 
-## 6. Unified Routing/Cascading Framework (Dekoninck & Everts 2025)
+## 6. Unified Routing/Cascading Framework (Dekoninck et al. 2025)
 
-**"LLM Routing and Cascading: A Unified Framework"**
-Jasper Dekoninck, Florian Everts. arXiv:2503.04655, 2025.
+**"A Unified Approach to Routing and Cascading for LLMs"**
+Jasper Dekoninck, Maximilian Baader, Martin Vechev. arXiv:2410.10347, 2025.
 
 ### Key Insight
 
-Proves that routing (choose one model) and cascading (try cheap model first, escalate
-on failure) are special cases of a single decision framework. The optimal strategy is
-a hybrid: route when the router is confident, cascade when uncertain. Neither pure
-routing nor pure cascading dominates on cost-quality Pareto frontiers.
+Routing picks one model per query; cascading runs increasingly larger models until an
+answer is good enough. The paper derives an optimal cascading strategy, proves that an
+existing routing strategy is optimal, and combines the two into cascade routing, a
+unified framework that is optimal in its analysis. It identifies good quality
+estimators as the critical factor in whether either paradigm pays off.
 
 ### Results
 
-Shows that hybrid strategies achieve 10-25% better cost-quality tradeoffs than either
-pure routing or pure cascading across multiple benchmarks. The framework provides a
-principled way to combine routing confidence with cascading fallback.
+In its experiments cascade routing consistently outperforms routing and cascading
+alone by a large margin, and an analysis of quality estimators shows when routing,
+cascading or both are useful.
 
 ### Relevance to Roko
 
-Roko's gateway already implements this hybrid naturally:
+Roko's gateway already combines the two in a simple form:
 - **Routing:** The CascadeRouter selects a primary model based on task context.
 - **Cascading:** The `call_with_fallbacks` method tries fallback models on retryable
   failures (429/503/timeout).
 
-The unified framework's insight is that the confidence threshold for routing vs.
-cascading should be adaptive. Currently, Roko always routes first and only cascades
-on failure. A more sophisticated strategy would cascade preemptively when the router's
-confidence is below a learned threshold.
+Cascade routing makes the move to the next model a decision driven by estimated
+answer quality, not by provider errors. Roko's plan runs have one such cascade: on the
+model ladder (`[routing.ladder]`, on by default), a task whose attempts fail their
+gates twice moves one rung up. The gate verdict is its quality estimate, and cascade
+routing's analysis says the payoff depends on how good that estimate is.
 
 ---
 
@@ -179,7 +187,7 @@ confidence is below a learned threshold.
 
 | Citation | Contribution |
 |---|---|
-| **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176) | Demonstrated that cascade routing can match GPT-4 quality at 2% cost. Established the empirical case for learned routing. |
+| **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176) | Demonstrated that cascade routing can match the best single LLM at 50-98% lower cost (§4, Table 3). Established the empirical case for learned routing. |
 | **Friston 2006** | Free Energy Principle. Provides the theoretical basis for EFE-based routing: high-certainty queries route to cheap models (low epistemic value), high-uncertainty queries route to strong models (high epistemic value). |
 | **Kanerva 2009** | Hyperdimensional computing. SimHash as used in the gateway's semantic cache and convergence detector is a derivative of Kanerva's binary HD vectors. |
 
@@ -193,26 +201,26 @@ Roko's `CascadeRouter` (in `roko-learn`) implements a three-stage cascade:
 |-------|-----------|-------------------|
 | **Static** | Operator-configured model preferences | Baseline routing rules |
 | **Confidence** | Bayesian reliability tracking per model | IRT-Router ability estimation |
-| **UCB1** | Upper Confidence Bound exploration-exploitation | BEST-Route uncertainty-driven exploration |
+| **UCB1** | Upper Confidence Bound exploration-exploitation | Multi-armed bandits (none of the papers above) |
 
 The routing context carries signals that map to the research:
 
 | RoutingContext Field | Research Parallel |
 |---------------------|-------------------|
-| `task_category` | IRT-Router item type; BEST-Route subspace |
-| `complexity` | IRT-Router difficulty parameter |
-| `iteration` | xRouter trajectory position |
-| `role` | BEST-Route model-task affinity |
+| `task_category` | IRT-Router query attributes |
+| `complexity` | IRT-Router query difficulty; BEST-Route's difficulty-based sample count |
 
 ### Where the Research Points Next
 
-1. **Reasoning-augmented routing** (Router-R1): Use a small LLM to reason about
-   routing decisions rather than relying on feature vectors.
-2. **Trajectory-aware routing** (xRouter): Extend `InferenceMeta` to carry full
-   conversation trajectory summaries.
+1. **Reasoning-augmented routing** (Router-R1): An LLM router that reasons, and may
+   consult several models, rather than relying on feature vectors.
+2. **Cost in the reward** (xRouter): Learn the cost-quality trade-off by putting cost
+   into the router's reward.
 3. **Continuous difficulty estimation** (IRT-Router): Replace discrete
    Fast/Standard/Complex with a continuous latent variable.
-4. **Subspace profiles** (BEST-Route): Multi-dimensional capability distributions
-   per model, not single reliability scores.
-5. **Adaptive cascade thresholds** (Unified Framework): Learn when to route vs.
-   cascade rather than always routing first.
+4. **Best-of-n on the cheap tier** (BEST-Route): Choose how many responses to sample
+   from a cheap model, by query difficulty, before escalating.
+5. **Better quality estimates** (cascade routing): The model ladder already escalates
+   on failed gate verdicts; since the payoff depends on the quality estimator, a
+   calibrated estimate of answer quality could decide escalation sooner than two
+   failures.

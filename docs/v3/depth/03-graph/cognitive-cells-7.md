@@ -244,9 +244,8 @@ let hot_policy = HotPolicy {
 ## CoALA Connection
 
 The 7 cognitive cells are informed by the CoALA (Cognitive Architectures
-for Language Agents) 9-step cognitive cycle from Sumers et al. (2023,
-arXiv:2309.02427). The Roko implementation collapses the 9 CoALA steps
-into 7 cells, combining some phases:
+for Language Agents) decision cycle from Sumers et al. (2023,
+arXiv:2309.02427). The Roko implementation collapses its earlier 9-step elaboration of the CoALA cycle (Roko's own list; CoALA defines planning, then execution, §4.6) into 7 cells, combining some phases:
 
 | CoALA Step | Roko Cell |
 |---|---|

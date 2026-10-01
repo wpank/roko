@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::config_cmd::EditTarget;
 use crate::tui::state::model_context_limit;
 
 /// What kind of value a config field holds, and how to edit it.
@@ -717,24 +718,41 @@ pub fn format_toml_value(value: &toml::Value) -> String {
     }
 }
 
-/// Save pending edits into roko.toml.
+/// Save pending edits into the roko.toml in `root`.
+///
+/// The result must pass the checks of `roko config validate`, or the file
+/// is left unchanged and the error says why (see [`save_pending_edits_to`]).
+#[allow(clippy::implicit_hasher)]
+pub fn save_pending_edits(root: &Path, pending: &HashMap<String, String>) -> Result<(), String> {
+    save_pending_edits_to(&root.join("roko.toml"), EditTarget::Project, pending)
+}
+
+/// Save pending edits into the config file at `config_path`, the `target`
+/// layer.
 ///
 /// Reads the existing file as a TOML value tree, patches the changed keys,
 /// and writes the result back. Uses the `toml` crate (already a dependency)
-/// rather than `toml_edit` to avoid adding a new dep.
+/// rather than `toml_edit` to avoid adding a new dep. A project roko.toml
+/// must pass the checks of `roko config validate`, or it is left unchanged
+/// and the error says why. The global config is merged under every project
+/// and may hold keys a project file must not, so it is written as
+/// `roko config set --global` writes it.
 #[allow(clippy::implicit_hasher)]
-pub fn save_pending_edits(root: &Path, pending: &HashMap<String, String>) -> Result<(), String> {
+pub fn save_pending_edits_to(
+    config_path: &Path,
+    target: EditTarget,
+    pending: &HashMap<String, String>,
+) -> Result<(), String> {
     if pending.is_empty() {
         return Ok(());
     }
 
-    let config_path = root.join("roko.toml");
-    let content =
-        std::fs::read_to_string(&config_path).map_err(|e| format!("read roko.toml: {e}"))?;
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("read {}: {e}", config_path.display()))?;
 
-    let mut root_val: toml::Value = content
-        .parse()
-        .map_err(|e| format!("parse roko.toml: {e}"))?;
+    let mut root_val = content
+        .parse::<toml::Value>()
+        .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
 
     let fields = all_fields();
 
@@ -745,10 +763,18 @@ pub fn save_pending_edits(root: &Path, pending: &HashMap<String, String>) -> Res
     }
 
     // Re-serialize via RokoConfig for consistent formatting
-    let toml_str =
-        toml::to_string_pretty(&root_val).map_err(|e| format!("serialize roko.toml: {e}"))?;
+    let toml_str = toml::to_string_pretty(&root_val)
+        .map_err(|e| format!("serialize {}: {e}", config_path.display()))?;
 
-    std::fs::write(&config_path, toml_str).map_err(|e| format!("write roko.toml: {e}"))?;
+    if target == EditTarget::Project {
+        // Refuse edits that `roko config validate` would reject; the file
+        // then keeps its previous contents.
+        crate::config_cmd::write_checked_config(config_path, &toml_str)
+            .map_err(|e| format!("{e:#}"))?;
+    } else {
+        roko_fs::atomic_write_bytes(config_path, toml_str.as_bytes())
+            .map_err(|e| format!("write {}: {e}", config_path.display()))?;
+    }
 
     Ok(())
 }

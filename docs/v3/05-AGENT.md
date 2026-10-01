@@ -278,6 +278,7 @@ graph LR
 | **Models** | All Anthropic models via `--model` flag |
 | **Config** | `command` (default: `"claude"`), `args`, `timeout_ms` |
 | **Limitations** | Drives its own internal tool loop; Roko's ToolDispatcher/SafetyLayer are bypassed (Claude CLI has its own safety). Cost reported natively. `bare_mode = true` replaces built-in prompt via `--system-prompt` |
+| **Isolation** | Every Claude Code run Roko starts, plan tasks and `roko chat` included, passes `--add-dir <workdir>`, `--setting-sources ""` and `--strict-mcp-config` and sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` (`ClaudeIsolation` in `claude_cli_agent.rs`). The user's own `~/.claude` settings, hooks, plugins, permission rules, CLAUDE.md files, auto-memory and MCP servers do not apply. The workdir's own `CLAUDE.md`, `.claude/CLAUDE.md` and `.claude/rules` do, and so does Roko's `--settings` (the guard hooks and key-file deny rules). On a machine with a managed `managed-mcp.json`, which already keeps exclusive control of MCP servers, `--strict-mcp-config` is left off, because Claude Code refuses it there. A run that would pass an MCP config is refused before it starts, since Claude Code refuses `--mcp-config` too. Not isolated: the Bash tool's snapshot of the user's shell (`~/.claude/shell-snapshots/`, from `~/.zshrc` or `~/.bashrc`), for which Claude Code has no switch. Each `ClaudeCliAgent` output carries `setting_sources`, `mcp_servers` (`roko` or `managed`) and `shell_snapshot=user` tags |
 
 ### 3.3 CodexCli
 
@@ -589,7 +590,7 @@ roles into behavioral families.
 
 ### Graduated autonomy by role
 
-Roles implement graduated autonomy (Meta-Harness principle #5):
+Roles implement graduated autonomy (Roko's harness principle #5):
 
 - **Read-only roles** (Conductor, QuickReviewer, Auditor family): can inspect
   and report but not modify.
@@ -653,9 +654,14 @@ MCP (Model Context Protocol) integration operates at two levels:
 ### CLI passthrough
 
 For CLI-based providers (ClaudeCli, CodexCli, GeminiCli), MCP config is passed
-directly via `--mcp-config` flag. The config file at `.roko/mcp-config.json` is
-authored solely by `PlanRunner::resolve_mcp_config_path` in
-`roko-cli/src/runner/event_loop.rs`.
+directly via the `--mcp-config` flag. Plan tasks pass only `[agent] mcp_config`
+from `roko.toml`. Other Claude runs (`ClaudeCliAgent`, ACP sessions, serve
+templates) pass it, or else the workspace's own `.mcp.json`
+(`workspace_mcp_config`). A `.mcp.json` in a directory above the workspace or in
+`$HOME` never reaches a run. `find_mcp_config` still finds one for
+`roko config mcp` and `roko doctor`, which report where a config is. `roko chat`
+has its own order: `[agent] mcp_config`, then `.roko/mcp.json`, then
+`~/.claude/mcp-config.json`.
 
 ```rust
 // crates/roko-agent/src/process/mcp.rs
@@ -818,12 +824,14 @@ every tool call through a 7-step pipeline:
 
 ## 10. Harness Engineering
 
-The central finding of harness engineering research is that the **harness** --
-the scaffolding around an LLM (prompts, tools, context management, retry
-logic) -- contributes more to agent performance than the model itself (Lee
-et al., 2026; arXiv:2603.28052; HarnessX arXiv:2606.14249).
+The **harness** -- the scaffolding around an LLM (prompts, tools, context
+management, retry logic) -- can matter as much as the model itself (Lee et al.,
+2026, §1; arXiv:2603.28052).
 
-### Six harness principles and Roko's implementation
+### Roko's harness-design principles
+
+These are Roko's own synthesis; the Meta-Harness paper does not state them (see
+[harness-engineering](depth/05-agent/harness-engineering.md) §2).
 
 | Principle | Roko implementation |
 |-----------|-------------------|
@@ -834,23 +842,26 @@ et al., 2026; arXiv:2603.28052; HarnessX arXiv:2606.14249).
 | **5. Graduate autonomy** | Role-based permissions (read-only to read-write-exec), SafetyLayer floor |
 | **6. Close the feedback loop** | EpisodeLogger, efficiency events, CascadeRouter persistence, adaptive gate thresholds |
 
-### Benchmark evidence
+### Benchmark evidence (Lee et al., 2026, §4)
 
-| Benchmark | Harness impact | Source |
+| Task | Discovered harness vs. baseline | Section |
 |-----------|---------------|--------|
-| Text classification | +7.7 accuracy points (same model, better harness) | Lee et al., 2026 |
-| IMO math | +4.7 points with structured tool access | Lee et al., 2026 |
-| Token efficiency | 4x fewer tokens via context pruning | Lee et al., 2026 |
-| SWE-bench mobile | 6x gap (harness vs. no harness, ref [46]) | Lee et al., 2026 |
+| Online text classification | +7.7 points over ACE, with 4x fewer context tokens | §4.1 |
+| Retrieval-augmented math (200 IMO-level problems) | +4.7 points on average across five held-out models | §4.2 |
+| Agentic coding (TerminalBench-2) | #1 among Claude Haiku 4.5 agents | §4.3 |
 
-The Harness-Bench benchmark (arXiv:2605.27922) provides standardized evaluation
-of harness quality across agent systems. Belief Divergence (arXiv:2607.04528)
-quantifies the gap between an agent's internal model and its expressed behavior,
-providing a diagnostic for harness-model misalignment.
+The paper's "6x gap" from changing the harness around a fixed model is a result
+it cites (SWE-bench Mobile), not one it measures.
 
-The Mechanism-Level Review of Language Agent Systems (arXiv:2607.23942) provides
-the most comprehensive survey of agent architectures, cataloguing the specific
-mechanisms that distinguish high-performing harnesses.
+Harness-Bench (Yao et al., 2026, arXiv:2605.27922) fixes the task and varies the
+harness around eight model backends, scoring completion, security and process
+quality (§3–§4). The Belief Divergence paper (Yi & Song, 2026, arXiv:2607.04528)
+measures how a harness changes an agent's beliefs about a task by comparing
+belief rollouts across harnesses (§1, §4).
+
+The mechanism-level review by Fan & Lan (2026, arXiv:2607.23942) traces
+mechanisms from cognitive architectures into modern agent runtimes and names
+five couplings that runtimes still lack (§VI).
 
 ---
 
@@ -1181,7 +1192,7 @@ cargo run -p roko-cli -- doctor
 | `depth/05-05-agent-pools.md` | AgentPool, MultiAgentPool, warm pre-spawning |
 | `depth/05-06-mcp-integration.md` | MCP config, CLI passthrough, HTTP clients/resolvers |
 | `depth/05-07-tool-loop.md` | ToolLoop internals, LlmBackend trait, checkpoint/resume |
-| `depth/05-08-harness-engineering.md` | Meta-Harness principles, HarnessX, Harness-Bench, Belief Divergence |
+| `depth/05-08-harness-engineering.md` | Meta-Harness results, Roko's harness principles, HarnessX, Harness-Bench, Belief Divergence |
 | `depth/05-09-format-translation.md` | Translator trait, tool_format wire formats |
 | `depth/05-10-temperament-profiling.md` | Temperament (Conservative/Balanced/Exploratory) |
 | `depth/05-11-dual-process-routing.md` | T0/T1/T2, CascadeRouter, LinUCB, Thompson sampling |
@@ -1199,30 +1210,25 @@ cargo run -p roko-cli -- doctor
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
    arXiv:2309.02427. -- CoALA: theoretical basis for separating
    perception/reasoning from action execution.
-2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
-   Language Models." ICLR 2023. arXiv:2210.03629. -- ReAct pattern
-   implemented by the ToolLoop.
-3. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Harness quality as dominant performance
-   factor.
-4. Lee, S. Y. et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
-   harness engineering framework.
-5. arXiv:2605.27922. "Harness-Bench." -- Standardized harness quality
-   evaluation.
-6. arXiv:2607.04528. "Belief Divergence in Language Agent Systems." --
-   Agent internal model vs. expressed behavior.
-7. arXiv:2607.23942. "A Mechanism-Level Review of Language Agent Systems."
-   -- Comprehensive survey of agent mechanisms.
-8. Kahneman, D. (2011). *Thinking, Fast and Slow.* -- Dual-process theory
-   grounding T0/T1/T2 routing.
-9. Friston, K. (2006). "A free energy principle for the brain." Journal of
-   Physiology - Paris. -- Free Energy Principle grounding EFE routing and
-   active inference connection.
-10. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.* --
-    Developmental maturation model informing BehavioralPhase progression.
-11. Li, L. et al. (2010). "A contextual-bandit approach to personalized
-    news article recommendation." WWW 2010. -- LinUCB algorithm used by
-    CascadeRouter.
+2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
+3. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- The harness can matter as much as the
+   model (§1); automated harness search (§3).
+4. Chen, T. et al. (2026). "HarnessX: A Composable, Adaptive, and Evolvable
+   Agent Harness Foundry." arXiv:2606.14249. -- Composable, evolvable harnesses.
+5. Yao, Y. et al. (2026). "Harness-Bench: Measuring Harness Effects across
+   Models in Realistic Agent Workflows." arXiv:2605.27922. -- Harness effects
+   across models.
+6. Yi, H. & Song, X. (2026). "Measuring Harness-Induced Belief Divergence in
+   Multi-Step LLM Agents." arXiv:2607.04528. -- How a harness changes an agent's
+   beliefs (§1, §4).
+7. Fan, H. & Lan, Z. (2026). "From Cognitive Architectures to Language Agents: A
+   Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
+   arXiv:2607.23942. -- Survey of agent mechanisms.
+8. Kahneman, D. (2011). *Thinking, Fast and Slow.*
+9. Friston, K. (2006). "A free energy principle for the brain." Journal of Physiology - Paris.
+10. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.*
+11. Li, L. et al. (2010). "A contextual-bandit approach to personalized news article recommendation." WWW 2010.
 12. `crates/roko-agent/src/agent.rs` -- Agent trait and AgentResult source.
 13. `crates/roko-agent/src/provider/mod.rs` -- Provider factory and adapter
     dispatch.

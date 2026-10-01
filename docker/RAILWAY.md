@@ -28,7 +28,10 @@ demo.
 - **Dockerfile:** root `Dockerfile`
 - **Railway config:** root `railway.toml`
 - **Runtime app config:** project `roko.toml`, copied into the image;
-  Railway-specific overrides via `ROKO_*` env vars (see `roko config export --env railway`)
+  Railway-specific overrides via `ROKO_*` env vars (see `roko config export --env railway`).
+  Secrets never go in that `roko.toml`: roko refuses to load a readable config
+  file that holds one. Set them as Railway variables instead, such as
+  `ROKO__SERVE__AUTH__API_KEY` for serve's API key.
 - **Healthcheck:** `/health`
 - **Public port:** Railway `$PORT`
 - **Internal chain URL:** `http://127.0.0.1:8545`
@@ -62,8 +65,8 @@ All services are deployed from Dockerfiles in this repo via Railway's GitHub int
 ## Quick Start
 
 ```bash
-# Set your Railway API token
-export RAILWAY_API_TOKEN="your-token-here"
+# Store your Railway API token in .roko/.env as ROKO__DEPLOY__RAILWAY_API_TOKEN
+roko config set deploy.railway_api_token your-token-here
 
 # Deploy just the control plane
 roko deploy railway
@@ -82,7 +85,8 @@ roko deploy railway --workers code-implementer,pr-review,gate-fixer
 ```toml
 [deploy]
 backend = "railway-api"
-railway_api_token = "..."          # or use RAILWAY_API_TOKEN env var
+# railway_api_token: never here. Set ROKO__DEPLOY__RAILWAY_API_TOKEN in
+# .roko/.env (`roko config set deploy.railway_api_token <token>` does).
 worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
 # project_id = "..."              # optional: reuse existing project
 # environment_id = "..."          # optional: reuse existing environment
@@ -157,7 +161,7 @@ Workers receive their configuration as a base64-encoded `ROKO_TEMPLATE_JSON` env
 |---|---|
 | `ANTHROPIC_API_KEY` | LLM provider key (passed through to agents) |
 | `GITHUB_TOKEN` | For GitHub integrations |
-| `ROKO_SERVER_AUTH_TOKEN` | API authentication token |
+| `ROKO__SERVE__AUTH__API_KEY` | serve's API key (`serve.auth.api_key`); set it here, never in `roko.toml` |
 
 ### Workers
 

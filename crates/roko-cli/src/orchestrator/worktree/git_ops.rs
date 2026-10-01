@@ -12,10 +12,107 @@ use tokio::process::Command;
 use tokio::sync::{OwnedMutexGuard, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::creation_journal::RepositoryMutationLock;
 use super::{
     OperationLifecycle, RuntimeShutdownOwner, WorktreeConfig, WorktreeError, WorktreeManager,
     WorktreeOperationError,
 };
+
+/// What the manager's operation reservation guards (bug-53475e): the
+/// ownership an earlier operation retained when it could not prove its git
+/// processes stopped.
+#[derive(Debug, Default)]
+pub(in crate::orchestrator) struct OperationState {
+    pub(super) retained: Option<RetainedOwnership>,
+}
+
+/// Ownership an operation whose cleanup was unproved keeps: the repository
+/// mutation lock, so that no other process mutates the repository while one
+/// of those git processes may still run, and the processes themselves.
+pub(in crate::orchestrator) struct RetainedOwnership {
+    /// Git processes that may still run; empty when none could be named.
+    pub(super) pids: Vec<u32>,
+    pub(super) since: std::time::SystemTime,
+    pub(super) repository_lock: Option<RepositoryMutationLock>,
+}
+
+impl std::fmt::Debug for RetainedOwnership {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedOwnership")
+            .field("pids", &self.pids)
+            .field("since", &self.since)
+            .field("holds_repository_lock", &self.repository_lock.is_some())
+            .finish()
+    }
+}
+
+/// Before an operation starts: release the ownership an earlier one retained
+/// once every git process it named is gone, else refuse at once with
+/// [`WorktreeError::OwnershipRetained`] rather than leave the operation
+/// waiting forever (bug-53475e). Ownership retained without a named process
+/// can never be proved free, so it holds until the process restarts.
+fn release_retained_ownership(state: &mut OperationState) -> Result<(), WorktreeError> {
+    let Some(retained) = &state.retained else {
+        return Ok(());
+    };
+    if retained.pids.is_empty() {
+        return Err(WorktreeError::OwnershipRetained {
+            pids: Vec::new(),
+            reason: "an earlier worktree operation could not prove its git process stopped, and \
+                     no process id is known; restart roko to release the repository"
+                .to_string(),
+        });
+    }
+    let alive: Vec<u32> = retained
+        .pids
+        .iter()
+        .copied()
+        .filter(|pid| process_alive(*pid))
+        .collect();
+    if !alive.is_empty() {
+        let listed = alive
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(WorktreeError::OwnershipRetained {
+            reason: format!(
+                "git process {listed} from an earlier worktree operation could not be stopped; \
+                 kill it or restart roko to release the repository"
+            ),
+            pids: alive,
+        });
+    }
+    tracing::info!(
+        pids = ?retained.pids,
+        "the git processes of an unproved cleanup are gone; releasing the retained worktree \
+         ownership"
+    );
+    state.retained = None;
+    Ok(())
+}
+
+/// Whether process `pid` still exists. One this process may not signal
+/// exists too.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn process_alive(pid: u32) -> bool {
+    let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return false;
+    };
+    !matches!(
+        rustix::process::test_kill_process(pid),
+        Err(rustix::io::Errno::SRCH)
+    )
+}
+
+/// Unsupported-platform stub: a process cannot be proved gone.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
 
 // ── Git command methods on WorktreeManager ──
 
@@ -349,7 +446,7 @@ impl WorktreeManager {
             if observe_cancellation && lifecycle.is_cancel_requested() {
                 let cleanup = terminate_direct_child(&mut child).await;
                 if let Err(error) = cleanup {
-                    lifecycle.mark_cleanup_unproved();
+                    lifecycle.mark_cleanup_unproved_for(child.id());
                     return Err(error);
                 }
                 return Err(std::io::Error::new(
@@ -362,7 +459,7 @@ impl WorktreeManager {
                 Ok(status) => status,
                 Err(wait_error) => {
                     if let Err(cleanup_error) = terminate_direct_child(&mut child).await {
-                        lifecycle.mark_cleanup_unproved();
+                        lifecycle.mark_cleanup_unproved_for(child.id());
                         return Err(std::io::Error::new(
                             cleanup_error.kind(),
                             format!(
@@ -640,7 +737,7 @@ pub(super) fn reattach_rejected(id: &str, reason: impl Into<String>) -> Worktree
 }
 
 pub(super) async fn await_owned_operation<T, F, Fut>(
-    operation: OwnedMutexGuard<()>,
+    operation: OwnedMutexGuard<OperationState>,
     operation_fn: F,
 ) -> Result<T, WorktreeError>
 where
@@ -653,7 +750,7 @@ where
 }
 
 pub(super) async fn await_owned_operation_controlled<T, F, Fut>(
-    operation: OwnedMutexGuard<()>,
+    operation: OwnedMutexGuard<OperationState>,
     operation_fn: F,
     cancel: &CancellationToken,
     deadline: Option<tokio::time::Instant>,
@@ -686,7 +783,7 @@ pub(super) async fn await_optional_deadline(deadline: Option<tokio::time::Instan
 }
 
 fn start_owned_operation<T, F, Fut>(
-    operation: OwnedMutexGuard<()>,
+    mut operation: OwnedMutexGuard<OperationState>,
     operation_fn: F,
 ) -> Result<
     (
@@ -700,6 +797,7 @@ where
     F: FnOnce(Arc<OperationLifecycle>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<T, WorktreeError>> + Send + 'static,
 {
+    release_retained_ownership(&mut operation)?;
     let lifecycle = Arc::new(OperationLifecycle::default());
     let worker_lifecycle = Arc::clone(&lifecycle);
     let (result_tx, result_rx) = oneshot::channel();
@@ -723,13 +821,17 @@ where
             });
 
             if worker_lifecycle.cleanup_was_unproved() {
-                // The process tree could not be proved absent. Permanently
-                // retain manager ownership rather than permitting a later Git
-                // mutation to overlap an unowned descendant.
-                std::mem::forget(operation);
-            } else {
-                drop(operation);
+                // The process tree could not be proved absent. Retain
+                // ownership rather than permit a later Git mutation to
+                // overlap an unowned descendant: later operations are
+                // refused until those processes are gone (bug-53475e).
+                operation.retained = Some(RetainedOwnership {
+                    pids: worker_lifecycle.take_unproved_pids(),
+                    since: std::time::SystemTime::now(),
+                    repository_lock: worker_lifecycle.take_retained_lock(),
+                });
             }
+            drop(operation);
             worker_lifecycle.mark_complete();
             let _ = done_tx.send(());
             let _ = result_tx.send(result);
@@ -848,6 +950,11 @@ pub(super) fn is_stale_lock(path: &Path) -> bool {
         .is_ok_and(|age| age.as_secs() >= super::STALE_LOCK_SECS)
 }
 
+/// Config directories [`isolate_worktree_config`] copies into a new worktree.
+/// Accepting an attempt leaves them out of its commit, unless the repository
+/// tracks them.
+pub(super) const ISOLATION_DIRS: &[&str] = &[".cursor"];
+
 /// G08: Copy isolated config directories from the main repo into a new worktree
 /// so concurrent agents do not contend on shared config files.
 ///
@@ -855,9 +962,6 @@ pub(super) fn is_stale_lock(path: &Path) -> bool {
 /// configuration. Failure is non-fatal -- the agent can still run without
 /// isolated config; we just log a debug warning.
 pub(super) fn isolate_worktree_config(repo_root: &Path, worktree_path: &Path) {
-    // Directories to copy for config isolation.
-    const ISOLATION_DIRS: &[&str] = &[".cursor"];
-
     for dir_name in ISOLATION_DIRS {
         let source = repo_root.join(dir_name);
         let target = worktree_path.join(dir_name);

@@ -125,9 +125,7 @@ traditional RAG, with 17-18% net efficiency gain. Roko's mapping:
 retrieval step, no gating mechanism, and no cognitive tiering. It is a prompting strategy,
 not a cognitive architecture.
 
-**Reflexion** (Shinn et al. 2023) adds verbal self-reflection but uses self-assessment
-(LLM judges its own output) rather than external verification (compiler, tests,
-blockchain).
+**Reflexion** (Shinn et al. 2023) adds verbal self-reflection on feedback from a task-specific evaluator: exact-match grading, heuristics, or self-written unit tests run by an interpreter (§3).
 
 **AutoGPT / BabyAGI**: Purely loop-based without cognitive tiering or verification. Every
 iteration invokes the LLM, making them expensive and lacking the T0/T1/T2 cost
@@ -143,7 +141,7 @@ T0/T1/T2 gating system that provides ~80% cost reduction.
 
 ## 3. The Canonical Seven-Step Universal Loop
 
-Each heartbeat tick executes the universal loop. The older CoALA 9-step framing is
+Each heartbeat tick executes the universal loop. The older 9-step framing (Roko's own elaboration of CoALA's decision cycle) is
 retained as lineage; the canonical loop has seven steps, with PERSIST and BROADCAST
 co-equal at step 6.
 
@@ -230,7 +228,7 @@ calibration. Synapse trait: `Policy.decide()`. Layer: L3-L4.
 
 ### 3.2 CoALA-to-Synapse mapping
 
-| Historical CoALA framing | Canonical loop | Synapse trait(s) | Layer |
+| Historical 9-step framing (Roko's) | Canonical loop | Synapse trait(s) | Layer |
 |---|---|---|---|
 | OBSERVE + RETRIEVE | **SENSE** | `Substrate.query()`, `Bus.subscribe()` | L0 |
 | ANALYZE + GATE | **ASSESS** | `Scorer.score()`, `Router.select()` | L1/L2 |
@@ -1051,8 +1049,8 @@ heuristic threshold with EFE tiebreaker. Ticks 200+ use the full ActiveInference
 
 ## 13. Active Inference State Space
 
-The factorized discrete POMDP that makes active inference tractable. Following Koudahl
-et al. (2024, arXiv:2412.10425): **do not model the world -- model the agent's epistemic
+The factorized discrete POMDP that makes active inference tractable. Following Prakki
+(2024, arXiv:2412.10425): **do not model the world -- model the agent's epistemic
 situation.**
 
 ```
@@ -1677,7 +1675,7 @@ invoke_agent {roko-agent}                          [CLIENT span]
   architectures for cost-optimal routing.
 - **Zhang et al. 2025** -- DPT-Agent (arXiv:2502.11882). Dual-process theory for LLM
   agents.
-- **Cognitive Workspace 2025** -- arXiv:2508.13171. Active memory management validation.
+- **Cognitive Workspace (An 2025)** -- arXiv:2508.13171. Active memory management validation.
 - **Lee et al. 2026** -- Meta-Harness (arXiv:2603.28052). Scaffold optimization.
 
 ### Active inference and attention
@@ -1686,7 +1684,7 @@ invoke_agent {roko-agent}                          [CLIENT span]
   Inference" (Scientific Reports 7).
 - **Sims 2003** -- "Implications of Rational Inattention" (Journal of Monetary
   Economics 50(3)).
-- **Koudahl et al. 2024** -- Factorized Discrete POMDP (arXiv:2412.10425).
+- **Prakki 2024** -- Factorized Discrete POMDP (arXiv:2412.10425).
 - **Heins et al. 2022** -- pymdp (Journal of Open Source Software).
 - **Li et al. 2010** -- LinUCB (WWW 2010).
 

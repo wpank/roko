@@ -5,18 +5,34 @@ Usage:
   work.py id --kind gap --title "…" --created 2026-09-28 --source "…"   # print a hash ID
   work.py new --kind gap --title "…" --source "…" [--root work|local] [--subsystem a,b] [--severity p2] [--triage verified]
   work.py check [--strict]                                               # validate both roots (+ verify-command lint)
-  work.py render                                                         # regenerate views, including DRIFT.md
+  work.py render                                                         # regenerate views, including DRIFT.md and EPICS.md
+  work.py list [--goal G] [--lane L] [--kind K] [--status open|all|<status>] [--parent ID] [--json]   # one line per item
+  work.py show <id> [--json]                                             # an item with its children, dependents and claim
+  work.py status [--json]                                                # open, claimed and done counts by goal, lane and epic
   work.py park <id>… --reason "…"                                        # not planned: move to parked/
   work.py unpark <id>…                                                   # restore status, move back to items/
+  work.py tidy                                                           # move each item to its status's folder
 
 Picking up work (work/README.md, "For agents"):
-  work.py next [--n 4] [--goal G] [--max-size M] [--json]   # top unclaimed items that don't touch the same files
-  work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH]   # shared claim in the main tree's .roko/work-claims/
-  work.py release <id>…                      # drop a claim (the item stays open)
-  work.py claims                             # list live and stale claims
+  work.py next [--n 4] [--goal G] [--max-size M] [--json] [--ignore-worktrees]   # top unclaimed items that don't touch
+        # the same files as each other, a live claim, or what any other worktree is changing
+  work.py next --lane L [--n 2]              # only lane L, within its cap (work/lanes.toml)
+  work.py next --mix "rust-hot=1,rust-cold=2,paper=2"   # fill each lane's quota, within lane caps and pools
+  work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH] [--session S]   # shared claim in the main tree's .roko/work-claims/
+        [--executor claude-agent|claude-session|roko-plan|human] [--via work-batch|work-next|manual|roko-plan] [--size S|M|L]
+        # refuses an item whose files overlap a live claim or another worktree's changes, or whose depends_on are open
+  work.py claim <id>… --renew --by "<who>"   # the claimant extends its claim: S 8 h, M 24 h, L 72 h from now
+  work.py release <id>… [--session S] [--reason verify-fail|blocked|decision-needed|conflict|timeout|session-limit]
+  work.py claims [--prune]                   # list live and stale claims; --prune drops the claims of closed items
+
+The development record (work/telemetry/README.md; not for workers): claim and release, run in the main checkout, append
+an event to work/telemetry/events/<session>.jsonl (session: --session, else $WORK_SESSION, else --by). The orchestrator
+logs what happens after the work:
+  work.py event merged|post-verify|escape|intervention <id> [--merge-sha REV] [--conflicts N] [--fixups N] [--rc N] [--caused-by ID]
 
 Keeping the graph current (work/README.md, "Keeping the graph current"):
   work.py close <id> --evidence "…" [--commit REV] [--run-id RUN] [--status done|wontfix|superseded] [--duplicate-of ID]
+        [--model M] [--assist EXECUTOR]   # [closed] also gets the claim's executor, via, size and claimed_at
   work.py sync [--dry-run]                   # close items from `Closes: <id>` commit trailers and passed plan tasks with closes=[…]
   work.py drift [--json]                     # open items whose evidence may be out of date
   work.py touched [--rev REV|A..B]           # open items a commit (or range) touched or mentioned
@@ -26,7 +42,7 @@ Keeping the graph current (work/README.md, "Keeping the graph current"):
 """
 from __future__ import annotations
 
-import argparse, datetime as dt, hashlib, json, os, re, subprocess, sys, time, tomllib
+import argparse, contextlib, datetime as dt, fcntl, fnmatch, hashlib, json, os, re, subprocess, sys, time, tomllib
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -35,6 +51,14 @@ ROOTS = {"work": REPO / "work", "local": REPO / ".roko" / "work-local"}
 PREFIX = {"gap": "gap", "bug": "bug", "regression": "reg", "finding": "find", "decision": "dec", "spec": "spec", "question": "q"}
 STATUSES = {"open", "in_progress", "blocked", "done", "wontfix", "superseded", "parked"}
 OPEN = {"open", "in_progress", "blocked"}
+# Where an item's file lives, by status: open work in items/, finished work in done/, won't-fix and superseded items in
+# closed/, parked items in parked/. `close`, `park`, `unpark` and `apply-verdicts` move the file; `tidy` fixes strays.
+ITEM_DIRS = ("items", "done", "closed", "parked")
+
+
+def home_dir(status) -> str:
+    return {"done": "done", "wontfix": "closed", "superseded": "closed", "parked": "parked"}.get(status, "items")
+
 TRIAGE = {"verified", "unverified"}
 SEV = ["p0", "p1", "p2", "p3"]
 REQUIRED = ["id", "kind", "title", "status", "triage", "severity", "subsystem", "created", "source"]
@@ -44,20 +68,58 @@ ID_ANY = re.compile(r"\b(?:gap|bug|reg|find|dec|spec|q)-[0-9a-f]{6,8}\b")
 CLOSE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+((?:(?:gap|bug|reg|find|dec|spec|q)-[0-9a-f]{6,8}(?:\s*(?:,|and)\s*)?)+)", re.I)
 GEN_NOTE = "<!-- GENERATED by work tooling from work/items — do not edit by hand -->"
 GOALS_FILE = ROOTS["work"] / "goals.toml"
+LANES_FILE = ROOTS["work"] / "lanes.toml"
 STALE_DAYS = 21
 HEAVY = re.compile(r"^\s*(?:\(?\s*cd [^&]*&&\s*)?(?:cargo|npx|npm|pnpm|node|roko|target/|\./target|curl|gh )")
+# A heavy command anywhere a shell runs one: after `;`, `|`, `&`, `(`, `$(`, a backtick or `{`, after a keyword such
+# as `do` or `then`, or behind `VAR=value` assignments.
+HEAVY_ANYWHERE = re.compile(r"(?:^|[;&|(`{]|\$\(|\b(?:do|then|else|xargs|time|env|nice|exec|timeout\s+\S+)\s)\s*"
+                            r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:cargo|npx|npm|pnpm|node|roko|target/|\./target|curl|gh )")
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+SHELL_C = re.compile(r"\b(?:ba|z)?sh\s+-c\s+('[^']*'|\"(?:[^\"\\]|\\.)*\")")
 
 
 def set_repo(path) -> None:
     """Point the tool at another checkout (tests; the hook acts on the checkout a commit happened in)."""
-    global REPO, ROOTS, GOALS_FILE
+    global REPO, ROOTS, GOALS_FILE, LANES_FILE
     REPO = Path(path).resolve()
     ROOTS = {"work": REPO / "work", "local": REPO / ".roko" / "work-local"}
     GOALS_FILE = ROOTS["work"] / "goals.toml"
+    LANES_FILE = ROOTS["work"] / "lanes.toml"
 
 
 def load_goals():
     return tomllib.loads(GOALS_FILE.read_text()).get("goal", []) if GOALS_FILE.exists() else []
+
+
+def load_lanes() -> dict:
+    """work/lanes.toml: {"lane": {key: {"paths", "max", "pool"}}, "pools": {name: cap}, "milestones": [...]}; {} when
+    the file is missing, and then lanes and milestones are not checked."""
+    return tomllib.loads(LANES_FILE.read_text()) if LANES_FILE.exists() else {}
+
+
+def item_lane(it) -> str:
+    """An item's lane; items without one are in the uncapped lane `none`."""
+    return it.get("lane") or "none"
+
+
+def in_paths(path: str, globs) -> bool:
+    """Whether `path` falls under one of `globs`: `dir/**` covers the directory, other globs match by fnmatch."""
+    for g in globs or []:
+        if g.endswith("/**") and (path == g[:-3] or path.startswith(g[:-3] + "/")):
+            return True
+        if fnmatch.fnmatch(path, g):
+            return True
+    return False
+
+
+def lane_lint(it, lanes: dict) -> list[str]:
+    """Path anchors of an item that fall outside its lane's paths (check --lint)."""
+    lane = (lanes.get("lane") or {}).get(it.get("lane") or "")
+    if not lane or not lane.get("paths"):
+        return []
+    outside = [p for p, _ in (anchor_parts(a) for a in it.get("anchors") or []) if p and not in_paths(p, lane["paths"])]
+    return [f"anchors outside lane {it['lane']}'s paths: {', '.join(outside)}"] if outside else []
 
 
 def make_id(kind: str, title: str, created: str, source: str, n: int = 6) -> str:
@@ -81,7 +143,7 @@ def parse(path: Path):
 
 def load(root_key: str):
     items, errors = [], []
-    for sub in ("items", "parked"):
+    for sub in ITEM_DIRS:
         d = ROOTS[root_key] / sub
         if not d.exists():
             continue
@@ -104,7 +166,19 @@ def load(root_key: str):
 def validate(items):
     errs, seen = [], {}
     goal_keys = {g["key"] for g in load_goals()}
+    lanes = load_lanes()
+    lane_keys, milestones = set((lanes.get("lane") or {})), lanes.get("milestones")
+    kinds = {i.get("id"): i.get("kind") for i in items}
     for it in items:
+        rel = it["_path"].relative_to(REPO)
+        if lanes and "lane" in it and it["lane"] not in lane_keys:
+            errs.append(f"{rel}: lane {it['lane']!r} is not in work/lanes.toml")
+        if "milestone" in it and milestones is not None and it["milestone"] not in milestones:
+            errs.append(f"{rel}: milestone {it['milestone']!r} is not one of work/lanes.toml's milestones")
+        if "parent" in it:
+            kind = kinds.get(it["parent"]) if it["parent"] in kinds else index().get(it["parent"], {}).get("kind")
+            if kind != "spec":
+                errs.append(f"{rel}: parent {it['parent']!r} is not a spec item")
         if "goal" in it and it["goal"] not in goal_keys:
             errs.append(f"{it['_path'].relative_to(REPO)}: goal {it['goal']!r} is not in work/goals.toml")
         if "hold" in it and not (isinstance(it["hold"], str) and it["hold"].strip()):
@@ -142,10 +216,13 @@ def validate(items):
                 errs.append(f"{p}: status=done needs [closed] evidence/run_id/commit")
         if it.get("status") in ("wontfix", "superseded") and not (it.get("closed") or {}).get("evidence"):
             errs.append(f"{p}: status={it.get('status')} needs [closed].evidence")
+        errs += [f"{p}: {e}" for e in check_closed(it.get("closed") or {})]
         if it.get("triage") == "verified" and not it.get("last_verified"):
             errs.append(f"{p}: triage=verified needs last_verified")
-        if (it.get("status") == "parked") != (it.get("_dir") == "parked"):
-            errs.append(f"{p}: parked items live in parked/, all other items in items/")
+        if it.get("_dir") != home_dir(it.get("status")):
+            errs.append(f"{p}: a {it.get('status')} item lives in {home_dir(it.get('status'))}/ "
+                        "(open items in items/, done in done/, won't-fix and superseded in closed/, parked in parked/); "
+                        "run `work.py tidy`")
         if it.get("status") == "parked" and not ((it.get("parked") or {}).get("at") and (it.get("parked") or {}).get("reason")):
             errs.append(f"{p}: status=parked needs [parked] at and reason")
     ids = {it.get("id") for it in items}
@@ -189,11 +266,22 @@ def split_and(cmd: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def is_heavy(part: str) -> bool:
+    """Whether a verify part runs a cargo/npm/network command anywhere, not just at its start: in a loop, a subshell, a
+    command substitution or `sh -c '…'` (bug-1440cd). Quoted text, such as a grep pattern, does not count."""
+    if HEAVY.match(part) or HEAVY_ANYWHERE.search(QUOTED.sub("Q", part)):
+        return True
+    double_quoted = (q.group(0)[1:-1] for q in QUOTED.finditer(part) if q.group(0)[0] == '"')
+    if any(("$(" in q or "`" in q) and is_heavy(q) for q in double_quoted):
+        return True
+    return any(is_heavy(m.group(1)[1:-1]) for m in SHELL_C.finditer(part))
+
+
 def static_prefix(cmd: str) -> str:
     """The part of a verify command before its first cargo/npm/network step: cheap to run at any time."""
     out = []
     for part in split_and(cmd):
-        if HEAVY.match(part) or re.match(r"^\(?\s*cd\s", part):
+        if is_heavy(part) or re.match(r"^\(?\s*cd\s", part):
             break
         out.append(part)
     return " && ".join(out)
@@ -398,7 +486,7 @@ def compute_drift(items, stale_days: int = STALE_DAYS, today: dt.date | None = N
                     d["gone"].append(a)
             hits = by_file.get(path, []) if p.is_file() else [c for f, cs in by_file.items() if f.startswith(path + "/") for c in cs]
             for c in hits:
-                if not after_check(c) or (c[0], c[2]) in {(t[0], t[2]) for t in d["touched"]}:
+                if not after_check(c) or own in c[4] or (c[0], c[2]) in {(t[0], t[2]) for t in d["touched"]}:
                     continue
                 if path not in whole and symbols.get(path) and not patch_mentions(c[0], path, symbols[path]):
                     continue
@@ -495,7 +583,8 @@ def drift_summary(drift) -> str:
 
 # ---------------------------------------------------------------- claims + picking work
 
-CLAIM_TTL_HOURS = 24
+CLAIM_TTL_HOURS = 24  # an unsized claim's TTL
+SIZE_TTL_HOURS = {"S": 8, "M": 24, "L": 72}
 SIZES = ["S", "M", "L"]
 
 
@@ -510,20 +599,71 @@ def claims_dir() -> Path:
     return main_root() / ".roko" / "work-claims"
 
 
-def load_claims(ttl_hours: int = CLAIM_TTL_HOURS):
-    """{id: claim dict with 'age_h' and 'stale'} from .roko/work-claims/*.json."""
+def claim_ttl_hours(c) -> int:
+    """How long a claim lives after it was made or last renewed: by the size it was claimed at (gap-823dce)."""
+    return SIZE_TTL_HOURS.get(c.get("size"), CLAIM_TTL_HOURS)
+
+
+def load_claims(ttl_hours: int | None = None):
+    """{id: claim dict with 'age_h', 'ttl_h' and 'stale'} from .roko/work-claims/*.json. Age counts from the last
+    renewal (`renewed_at`, else `at`). A claim is stale once older than its size's TTL, or than `ttl_hours` when
+    given. Claim files written before sizes and renewals existed load as unsized, unrenewed claims."""
     out = {}
     d = claims_dir()
     for f in sorted(d.glob("*.json")) if d.exists() else []:
         try:
             c = json.loads(f.read_text())
-            age = (time.time() - dt.datetime.fromisoformat(c["at"]).timestamp()) / 3600
+            since = c.get("renewed_at") or c["at"]
+            age = (time.time() - dt.datetime.fromisoformat(since).timestamp()) / 3600
         except Exception:  # noqa: BLE001
             continue
         c["age_h"] = round(age, 1)
-        c["stale"] = age > ttl_hours
+        c["ttl_h"] = ttl_hours if ttl_hours is not None else claim_ttl_hours(c)
+        c["stale"] = age > c["ttl_h"]
         out[c["id"]] = c
     return out
+
+
+@contextlib.contextmanager
+def claims_lock():
+    """Hold the exclusive lock on the claims directory (.roko/work-claims/.lock): claim, release and close take it,
+    so two sessions cannot claim overlapping items in the same moment."""
+    d = claims_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def write_claim(path: Path, rec: dict) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(rec, indent=1) + "\n")
+    os.replace(tmp, path)
+
+
+def claim_conflicts(it, items_by_id, live, branch, worktrees) -> list[str]:
+    """Why `it` cannot be claimed now: its files overlap a live claim or a file another worktree is changing, or a
+    dependency is still open. A claim on the same branch is no conflict (one worker does them in turn), and neither
+    is that branch's own worktree or a dependency claimed on it."""
+    why = []
+    fp = footprint(it)
+    for iid, c in sorted(live.items()):
+        other = items_by_id.get(iid)
+        if (iid != it["id"] and other and other.get("status") in OPEN and not (branch and c.get("branch") == branch)
+                and fp and overlaps(fp, footprint(other))):
+            why.append(f"its files overlap {iid}, claimed by {c.get('by')}")
+    for f, label in sorted(worktrees.items()):
+        if fp and overlaps(fp, {f}) and not (branch and label.endswith(f"({branch})")):
+            why.append(f"{f} is being changed in worktree {label}")
+            break
+    for dep in (it.get("links") or {}).get("depends_on", []) or []:
+        d = items_by_id.get(dep)
+        if d and d.get("status") in OPEN and not (branch and live.get(dep, {}).get("branch") == branch):
+            why.append(f"it depends on {dep}, which is still open")
+    return why
 
 
 def prune_claims():
@@ -535,7 +675,7 @@ def prune_claims():
     gone = []
     for f in d.glob("*.json"):
         iid = f.stem
-        hits = [p for sub in ("work/items", "work/parked", ".roko/work-local/items") for p in (main / sub).glob(f"{iid}-*.md")]
+        hits = [p for root in ("work", ".roko/work-local") for sub in ITEM_DIRS for p in (main / root / sub).glob(f"{iid}-*.md")]
         try:
             status = tomllib.loads(re.match(r"\+\+\+\n(.*?)\n\+\+\+", hits[0].read_text(), re.S).group(1)).get("status") if hits else None
         except Exception:  # noqa: BLE001
@@ -559,28 +699,111 @@ def goal_order():
     return {g["key"]: n for n, g in enumerate(load_goals())}
 
 
-def pick_key(it, order):
-    return (order.get(it.get("goal"), len(order)),) + now_key(it)
+def pick_key(it, order, milestones=()):
+    """Goal, then milestone (in work/lanes.toml's order; none last), then rank and severity."""
+    ms = it.get("milestone")
+    return (order.get(it.get("goal"), len(order)), milestones.index(ms) if ms in milestones else len(milestones)) + now_key(it)
 
 
-def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None = None, claims=None):
+def parse_mix(text: str) -> dict[str, int]:
+    """"rust-hot=1,rust-cold=2" → {"rust-hot": 1, "rust-cold": 2}."""
+    mix = {}
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        lane, _, n = part.partition("=")
+        if not n.strip().isdigit():
+            raise ValueError(f"bad --mix entry {part!r}: use lane=count")
+        mix[lane.strip()] = int(n)
+    return mix
+
+
+WORKTREE_SKIP = re.compile(r"^work/|(?:^|/)(?:target|node_modules)(?:/|$)")
+
+
+def worktree_changes() -> dict[str, str]:
+    """{path: "<worktree> (<branch>)"} for the files the repo's other worktrees are changing (gap-d1f787): each
+    worktree's commits since its merge-base with this checkout's HEAD, plus its uncommitted and untracked files. The
+    main checkout's commits are the trunk, so only its uncommitted files count. Files under work/ (items and views)
+    and build output are left out. Read-only: it runs git diff and status in each worktree, several at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    me, main, head = REPO.resolve(), main_root().resolve(), git("rev-parse", "HEAD").strip()
+    # One call finds the branches with commits this checkout lacks; only their worktrees need a diff.
+    unmerged = set(git("for-each-ref", f"--no-merged={head}", "--format=%(refname)", "refs/heads").split()) if head else set()
+    entries = []
+    for block in git("worktree", "list", "--porcelain").strip().split("\n\n"):
+        w = dict(ln.partition(" ")[::2] for ln in block.splitlines())
+        if w.get("worktree"):
+            entries.append(w)
+
+    def scan(w):
+        path = Path(w["worktree"])
+        if not path.is_dir() or path.resolve() == me:
+            return w, set()
+        files = set()
+        if path.resolve() != main and head and w.get("HEAD") and (w.get("branch") in unmerged or "detached" in w):
+            files.update(git("diff", "--name-only", f"{head}...{w['HEAD']}").splitlines())  # since the merge-base
+        status = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "-z", "--no-renames"],
+                                capture_output=True, text=True).stdout
+        files.update(e[3:].rstrip("/") for e in status.split("\0") if len(e) > 3)
+        return w, {f for f in files if f and not WORKTREE_SKIP.search(f)}
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        scanned = list(pool.map(scan, entries))
+    busy = {}
+    for w, files in scanned:
+        label = f"{Path(w['worktree']).name} ({w.get('branch', '').removeprefix('refs/heads/') or 'detached'})"
+        for f in sorted(files):
+            busy.setdefault(f, label)
+    return busy
+
+
+def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None = None, claims=None, worktrees=None,
+              details: list | None = None, lane: str | None = None, mix: dict | None = None, among=None):
     """Top-priority open items that a worker can start now, pairwise free of file conflicts.
 
     Skips: claimed items (live claims), items on hold, unverified items, decisions/questions (they need a human), items whose
-    depends_on are still open, items larger than max_size, and items whose footprint overlaps a claimed item or an
-    item already picked. Returns (picked, skipped_reasons)."""
+    depends_on are still open, items larger than max_size, items whose footprint overlaps a claimed item or an
+    item already picked, and items anchored on a file another worktree is changing (`worktrees`, from
+    worktree_changes() unless given; {} turns it off). Returns (picked, skipped_reasons); `details`, when given,
+    receives one dict per item skipped for a worktree.
+
+    `lane` picks only that lane, and `mix` ({lane: quota}) fills each lane's quota in priority order. In both, a lane
+    takes no more than its `max` in work/lanes.toml, nor its pool more than the pool's cap, counting live claims.
+    `among` (a set of ids) limits the candidates; dependencies are still judged on all of `items`."""
     claims = load_claims() if claims is None else claims
-    live = {k: c for k, c in claims.items() if not c["stale"]}
+    worktrees = worktree_changes() if worktrees is None else worktrees
     by_id = {i["id"]: i for i in items}
+    # A claim on an item that has since closed holds nothing back (next no longer prunes it; `claims --prune` does).
+    live = {k: c for k, c in claims.items() if not c["stale"] and by_id.get(k, {}).get("status") in OPEN}
     busy = set().union(*(footprint(by_id[k]) for k in live if k in by_id)) if live else set()
     order = goal_order()
+    lanes = load_lanes()
+    quota = mix or ({lane: n} if lane else None)
+    if quota:
+        n = sum(quota.values())
+        conf, pools = lanes.get("lane") or {}, lanes.get("pools") or {}
+        pool_of = lambda key: (conf.get(key) or {}).get("pool")  # noqa: E731
+        taken = Counter(item_lane(by_id[k]) for k in live if k in by_id)  # live claims count against the caps
+        taken_pool = Counter(pool_of(item_lane(by_id[k])) for k in live if k in by_id)
     cands = [i for i in items if i.get("status") == "open" and i.get("triage") == "verified" and not i.get("hold")
              and i.get("kind") not in ("decision", "question") and i["id"] not in live
-             and (goal is None or i.get("goal") == goal)]
+             and (goal is None or i.get("goal") == goal) and (quota is None or item_lane(i) in quota)
+             and (among is None or i["id"] in among)]
     picked, skipped = [], Counter()
-    for it in sorted(cands, key=lambda i: pick_key(i, order)):
+    for it in sorted(cands, key=lambda i: pick_key(i, order, tuple(lanes.get("milestones") or ()))):
         if len(picked) >= n:
             break
+        if quota:
+            key = item_lane(it)
+            cap, pool = (conf.get(key) or {}).get("max"), pool_of(key)
+            if sum(1 for p in picked if item_lane(p) == key) >= quota[key]:
+                continue  # this lane's quota is filled; keep looking for the others
+            if cap is not None and taken[key] >= cap:
+                skipped[f"lane {key} is at its cap of {cap}"] += 1
+                continue
+            if pool and taken_pool[pool] >= pools.get(pool, 10**6):
+                skipped[f"pool {pool} is at its cap of {pools.get(pool)}"] += 1
+                continue
         deps = [d for d in (it.get("links") or {}).get("depends_on", []) or [] if by_id.get(d, {}).get("status") in OPEN]
         if deps:
             skipped["waits on an open dependency"] += 1
@@ -592,22 +815,38 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
         if fp and overlaps(fp, busy):
             skipped["touches files of a claimed or already-picked item"] += 1
             continue
+        hit = next((f for f in worktrees if overlaps(fp, {f})), None) if fp else None
+        if hit:
+            skipped[f"touches files changed in worktree {worktrees[hit]}"] += 1
+            if details is not None:
+                wt, _, branch = worktrees[hit].partition(" (")
+                details.append({"id": it["id"], "file": hit, "worktree": wt, "branch": branch.rstrip(")")})
+            continue
         picked.append(it)
         busy |= fp
+        if quota:
+            taken[item_lane(it)] += 1
+            taken_pool[pool_of(item_lane(it))] += 1
     return picked, skipped
 
 
 def cmd_next(a):
-    prune_claims()
-    items = [i for i in load("work")[0]]
-    picked, skipped = pick_next(items, a.n, a.goal, a.max_size)
-    order = goal_order()
+    items = [i for i in load("work")[0]]  # read-only: `claims --prune` is the one place that drops claims
+    details = []
+    try:
+        mix = parse_mix(a.mix) if a.mix else None
+    except ValueError as e:
+        sys.exit(str(e))
+    picked, skipped = pick_next(items, a.n, a.goal, a.max_size, worktrees={} if a.ignore_worktrees else None,
+                                details=details, lane=a.lane, mix=mix)
     if a.json:
-        rows = [{"id": i["id"], "title": i["title"], "goal": i.get("goal"), "severity": i["severity"], "size": i.get("size"),
+        rows = [{"id": i["id"], "title": i["title"], "goal": i.get("goal"), "lane": i.get("lane"), "severity": i["severity"], "size": i.get("size"),
                  "path": str(i["_path"].relative_to(REPO)), "anchors": i.get("anchors") or [],
                  "verify": [v.get("command") for v in i.get("verify") or []]} for i in picked]
         json.dump(rows, sys.stdout, indent=1)
         print()
+        if details:  # stdout stays the list of picks; why items were held back goes to stderr
+            print(json.dumps({"skipped_for_worktrees": details}), file=sys.stderr)
         return
     goals = {g["key"]: g["title"] for g in load_goals()}
     for i in picked:
@@ -624,46 +863,237 @@ def cmd_next(a):
 def cmd_claim(a):
     idx = index()
     d = claims_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    live = {k for k, c in load_claims().items() if not c["stale"]}
+    session = session_name(a.session, a.by)
+    with claims_lock():
+        claims = load_claims()
+        if a.renew:
+            renew_claims(a, claims, session)
+            return
+        live = {k: c for k, c in claims.items() if not c["stale"]}
+        worktrees = {} if a.ignore_worktrees else worktree_changes()
+        refused = []  # every claimable item is claimed; the refused ones are listed at the end
+        for iid in a.ids:
+            it = idx.get(iid)
+            if it is None or it.get("status") not in OPEN:
+                refused.append(f"{iid}: not found or not open")
+                continue
+            if iid in live and not a.force:
+                c = live[iid]
+                refused.append(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
+                continue
+            why = claim_conflicts(it, idx, live, a.branch, worktrees)
+            if why and not a.force:
+                refused.append(f"{iid}: not claimed: {'; '.join(why)} (use --force to claim it anyway)")
+                continue
+            overrode = why + ([f"the live claim of {live[iid].get('by')}"] if iid in live else [])
+            if overrode:
+                print(f"{iid}: --force overrides: {'; '.join(overrode)}", file=sys.stderr)
+            now = dt.datetime.now().astimezone()
+            size = a.size or it.get("size")
+            rec = {"id": iid, "by": a.by, "at": now.isoformat(timespec="seconds"), "claimed_at": utc_ts(now),
+                   "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session,
+                   "executor": a.executor, "via": a.via, "size": size}
+            f = d / f"{iid}.json"
+            try:
+                fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
+            except FileExistsError:
+                refused.append(f"{iid}: claimed by someone else a moment ago")
+                continue
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(rec, indent=1) + "\n")
+            live[iid] = rec  # the rest of this command's items see it
+            log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
+                      size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
+            print(f"claimed {iid} for {a.by} ({size or 'unsized'}: live for {claim_ttl_hours(rec)} h unless renewed)")
+    if refused:
+        sys.exit("\n".join(refused))
+
+
+def renew_claims(a, claims, session):
+    """`claim --renew`: the claimant restarts its claims' clocks. A renewal is not a new attempt."""
     for iid in a.ids:
-        it = idx.get(iid)
-        if it is None or it.get("status") not in OPEN:
-            sys.exit(f"{iid}: not found or not open")
-        if iid in live and not a.force:
-            c = load_claims()[iid]
-            sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
-        rec = {"id": iid, "by": a.by, "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-               "branch": a.branch, "worktree": a.worktree, "title": it["title"]}
-        f = d / f"{iid}.json"
-        try:
-            fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
-        except FileExistsError:
-            sys.exit(f"{iid}: claimed by someone else a moment ago")
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(rec, indent=1) + "\n")
-        print(f"claimed {iid} for {a.by}")
+        c = claims.get(iid)
+        if c is None:
+            sys.exit(f"{iid}: no claim to renew")
+        if c.get("by") != a.by:
+            sys.exit(f"{iid}: claimed by {c.get('by')}; only the claimant renews a claim")
+        rec = {k: v for k, v in c.items() if k not in ("age_h", "ttl_h", "stale")}
+        rec["renewed_at"] = utc_ts()
+        write_claim(claims_dir() / f"{iid}.json", rec)
+        log_event("claim", iid, session=session, executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"),
+                  by=a.by, size=c.get("size"), claimed_at=c.get("claimed_at"), renew=True)
+        print(f"renewed {iid}: live for {claim_ttl_hours(rec)} h")
 
 
 def cmd_release(a):
-    for iid in a.ids:
-        f = claims_dir() / f"{iid}.json"
-        if f.exists():
-            f.unlink()
-            print(f"released {iid}")
-        else:
-            print(f"{iid}: no claim")
+    with claims_lock():
+        claims = load_claims()
+        for iid in a.ids:
+            f = claims_dir() / f"{iid}.json"
+            if f.exists():
+                c = claims.get(iid) or {}
+                # Logged before the claim goes: the event keeps what the claim knew.
+                log_event("release", iid, session=session_name(a.session, c.get("session"), c.get("by")),
+                          executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"), by=c.get("by"),
+                          reason=a.reason, size=c.get("size"), claimed_at=c.get("claimed_at"))
+                f.unlink()
+                print(f"released {iid}")
+            else:
+                print(f"{iid}: no claim")
 
 
 def cmd_claims(a):
-    for iid in prune_claims():
-        print(f"pruned {iid} (closed)")
+    if a.prune:
+        with claims_lock():
+            for iid in prune_claims():
+                print(f"pruned {iid} (closed)")
     claims = load_claims()
     if not claims:
         print("no claims")
     for iid, c in sorted(claims.items(), key=lambda kv: kv[1]["at"]):
         where = " · ".join(x for x in (c.get("branch"), c.get("worktree")) if x)
-        print(f"{'STALE ' if c['stale'] else ''}{iid} by {c.get('by')} {c['age_h']}h ago{(' · ' + where) if where else ''} — {c.get('title', '')}")
+        clock = f"{c['age_h']}h since {'renewed' if c.get('renewed_at') else 'claimed'}"
+        left = c["ttl_h"] - c["age_h"]
+        life = f"expired {-left:.1f}h ago" if c["stale"] else f"{left:.1f}h left"
+        print(f"{'STALE ' if c['stale'] else ''}{iid} by {c.get('by')} · {c.get('size') or 'unsized'}, {clock}, {life}"
+              f"{(' · ' + where) if where else ''} — {c.get('title', '')}")
+
+
+# ---------------------------------------------------------------- event log (work/telemetry/; not for workers)
+#
+# One append-only file per session, work/telemetry/events/<session>.jsonl in the main checkout, one
+# roko.work_event/1 object per line. Only that session writes its file, so sessions never conflict. A worker in a
+# linked worktree logs nothing (W12: workers never write events or see metrics), and no view reads the log.
+
+EVENT_SCHEMA = "roko.work_event/1"
+EVENTS = ("claim", "release", "closed", "merged", "post-verify", "escape", "intervention", "lane-start")
+EVENT_SOURCES = ("live", "harvest", "reconciled", "backfill")
+EVENT_FIELDS = ("schema", "ts", "event", "item", "executor", "via", "session", "branch", "concurrency", "source")
+EXECUTORS = ("claude-agent", "claude-session", "roko-plan", "human")
+VIAS = ("work-batch", "work-next", "manual", "roko-plan")
+RELEASE_REASONS = ("verify-fail", "blocked", "decision-needed", "conflict", "timeout", "session-limit")
+# Closures that sync reconciles from a commit with no claim have no known executor; a backfilled sweep or triage
+# closure checked an item rather than implementing it.
+CLOSED_EXECUTORS = EXECUTORS + ("unknown", "verification-only")
+TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def utc_ts(when: dt.datetime | None = None) -> str:
+    """An ISO 8601 UTC timestamp to the second, such as 2026-09-30T08:15:00Z."""
+    when = when or dt.datetime.now(dt.timezone.utc)
+    return when.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def events_dir() -> Path:
+    return main_root() / "work" / "telemetry" / "events"
+
+
+def in_main_checkout() -> bool:
+    return REPO.resolve() == main_root().resolve()
+
+
+def session_name(explicit=None, *fallbacks) -> str:
+    """The session a command logs under: --session, else $WORK_SESSION, else the first fallback given (such as
+    --by), as a slug. It names the session's events file."""
+    raw = explicit or os.environ.get("WORK_SESSION") or next((f for f in fallbacks if f), None) or "unnamed"
+    return re.sub(r"[^a-z0-9]+", "-", str(raw).lower()).strip("-")[:60] or "unnamed"
+
+
+def event_row(event: str, item, *, session: str, ts=None, executor=None, via=None, branch=None, concurrency=None,
+              source="live", **fields) -> dict:
+    """One roko.work_event/1 row: the common fields, always present (null when unknown), then the event's own."""
+    row = {"schema": EVENT_SCHEMA, "ts": ts or utc_ts(), "event": event, "item": item, "executor": executor,
+           "via": via, "session": session, "branch": branch, "concurrency": concurrency, "source": source}
+    row.update({k: v for k, v in fields.items() if v is not None})
+    return row
+
+
+def check_event(row) -> list[str]:
+    """Why `row` is not a valid roko.work_event/1 event; empty when it is."""
+    errs = [f"missing {k}" for k in EVENT_FIELDS if k not in row]
+    if row.get("schema") != EVENT_SCHEMA:
+        errs.append(f"schema is not {EVENT_SCHEMA}")
+    if row.get("event") not in EVENTS:
+        errs.append(f"unknown event {row.get('event')!r}")
+    if row.get("source") not in EVENT_SOURCES:
+        errs.append(f"unknown source {row.get('source')!r}")
+    if row.get("executor") is not None and row["executor"] not in CLOSED_EXECUTORS:
+        errs.append(f"unknown executor {row.get('executor')!r}")
+    if row.get("via") is not None and row["via"] not in VIAS:
+        errs.append(f"unknown via {row.get('via')!r}")
+    if not TS_RE.match(str(row.get("ts"))):
+        errs.append(f"ts {row.get('ts')!r} is not a UTC timestamp")
+    if row.get("item") is not None and not ID_RE.match(str(row["item"])):
+        errs.append(f"bad item {row.get('item')!r}")
+    if row.get("item") is None and row.get("event") != "lane-start":
+        errs.append("no item")
+    if not (isinstance(row.get("session"), str) and row["session"]):
+        errs.append("no session")
+    c = row.get("concurrency")
+    if c is not None and not (isinstance(c, int) and not isinstance(c, bool) and c >= 0):
+        errs.append(f"bad concurrency {c!r}")
+    return errs
+
+
+def log_event(event: str, item, **kw) -> dict | None:
+    """Append one event to the session's file in the main checkout. Records how many claims are live as
+    `concurrency`. Returns the row, or None in a linked worktree, where nothing is logged."""
+    if not in_main_checkout():
+        return None
+    live = sum(1 for c in load_claims().values() if not c["stale"])
+    row = event_row(event, item, concurrency=live, **kw)
+    d = events_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / f"{row['session']}.jsonl", "a") as fh:
+        fh.write(json.dumps(row) + "\n")
+    return row
+
+
+def item_claim(iid: str) -> dict:
+    """The claim on `iid` in the main checkout's claims directory, live or stale; {} when there is none."""
+    try:
+        return json.loads((claims_dir() / f"{iid}.json").read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def check_closed(closed: dict) -> list[str]:
+    """Why a [closed] block's executor fields (gap-0b9056) are malformed; every one of them is optional."""
+    errs = []
+    if closed.get("executor") is not None and closed["executor"] not in CLOSED_EXECUTORS:
+        errs.append(f"[closed].executor must be one of {CLOSED_EXECUTORS}")
+    if closed.get("via") is not None and closed["via"] not in VIAS:
+        errs.append(f"[closed].via must be one of {VIAS}")
+    if closed.get("size") is not None and closed["size"] not in SIZES:
+        errs.append(f"[closed].size must be one of {SIZES}")
+    if closed.get("forced") is not None and not isinstance(closed["forced"], bool):
+        errs.append("[closed].forced must be true or false")
+    for k in ("at_ts", "claimed_at"):
+        if closed.get(k) is not None and not TS_RE.match(str(closed[k])):
+            errs.append(f"[closed].{k} must be a UTC timestamp such as 2026-09-30T08:15:00Z")
+    return errs
+
+
+def cmd_event(a):
+    """Log what happened to an item after its work: its merge, the post-merge verify, an escape, an intervention."""
+    if not ID_RE.match(a.id):
+        sys.exit(f"{a.id}: not an item id")
+    if a.caused_by and not ID_RE.match(a.caused_by):
+        sys.exit(f"{a.caused_by}: not an item id")
+    if a.kind == "merged" and not a.merge_sha:
+        sys.exit("event merged needs --merge-sha")
+    if a.kind == "post-verify" and a.rc is None:
+        sys.exit("event post-verify needs --rc")
+    c = load_claims().get(a.id) or {}
+    fields = {"merged": {"merge_sha": resolve_rev(a.merge_sha), "conflicts": a.conflicts, "fixups": a.fixups},
+              "post-verify": {"rc": a.rc}, "escape": {"caused_by": a.caused_by}, "intervention": {}}[a.kind]
+    session = session_name(a.session, a.by, c.get("session"), c.get("by"))
+    row = log_event(a.kind, a.id, session=session, executor=c.get("executor"), via=c.get("via"),
+                    branch=a.branch or c.get("branch"), **fields)
+    if row is None:
+        print("not logged: a worker in a linked worktree logs no events")
+    else:
+        print(f"logged {a.kind} {a.id} to work/telemetry/events/{session}.jsonl")
 
 
 # ---------------------------------------------------------------- views
@@ -694,7 +1124,8 @@ def render_root(root_key: str, items):
     for it in verified:
         by_sub[it["subsystem"][0]].append(it)
     out = [f"# roko work status{' (local)' if root_key == 'local' else ''}", "", GEN_NOTE, "",
-           f"As of {today} (newest item update), from `{root.relative_to(REPO)}/items/`. "
+           f"As of {today} (newest item update), from `{root.relative_to(REPO)}/` (open items in `items/`, done in "
+           "`done/`, won't-fix and superseded in `closed/`). "
            f"{len(opened)} open ({len(verified)} verified, {len(unverified)} unverified imports) · {len(closed)} closed · "
            f"{len(parked)} parked (not planned; in `parked/`, revive with `work.py unpark <id>`). "
            "Format and rules: `work/README.md`.", "",
@@ -744,7 +1175,168 @@ def render_root(root_key: str, items):
     (root / "DRIFT.md").write_text("\n".join(render_drift(root, items, drift, head_rev())) + "\n")
     if root_key == "work":
         render_now(root, opened, drift)
+        render_epics(root, items)
     return len(opened), len(verified), len(unverified), len(closed), len(parked)
+
+
+# ---------------------------------------------------------------- epics, list, show, status (read-only)
+
+CLOSED = {"done", "wontfix", "superseded"}
+
+
+def epics(items) -> list:
+    """The epics: spec items titled "Epic: …" (work/README.md, PLAN.md section 2)."""
+    return [i for i in items if i.get("kind") == "spec" and str(i.get("title", "")).startswith("Epic:")]
+
+
+def children(it, items) -> list:
+    """An item's children: the items whose `parent` is it, plus (for an epic) its depends_on; parked items excluded."""
+    by_id = {i["id"]: i for i in items}
+    ids = [i["id"] for i in items if i.get("parent") == it["id"]]
+    ids += [d for d in (it.get("links") or {}).get("depends_on", []) or [] if d in by_id and d not in ids]
+    return [by_id[i] for i in ids if i != it["id"] and by_id[i].get("status") != "parked"]
+
+
+def dependents(it, items) -> list:
+    """The items whose depends_on names `it`."""
+    return [i for i in items if it["id"] in ((i.get("links") or {}).get("depends_on", []) or [])]
+
+
+def lane_counts(items) -> str:
+    c = Counter(item_lane(i) for i in items)
+    return ", ".join(f"{k} {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))) or "none"
+
+
+def render_epics(root: Path, items):
+    """EPICS.md: per epic, its children closed out of total, its open children by lane, and the child to take next;
+    then the same counts per lane. It reads only the items (no claims), so the view changes only when they do."""
+    order = goal_order()
+    out = ["# Epics", "", GEN_NOTE, "",
+           "Progress per epic: its children (items whose `parent` is the epic, plus its `depends_on`) closed out of total, "
+           "its open children by lane, and the child `next` takes first when nothing is claimed. Then per lane. A closed "
+           "child is done, won't-fix or superseded; parked children are left out. Lanes: `lanes.toml`.", ""]
+    rows = sorted(epics(items), key=lambda e: (e.get("status") not in OPEN, order.get(e.get("goal"), len(order)), sev_key(e)))
+    for e in rows:
+        kids = children(e, items)
+        closed = [k for k in kids if k.get("status") in CLOSED]
+        open_kids = [k for k in kids if k.get("status") in OPEN]
+        state = "" if e.get("status") in OPEN else f" ({e['status']})"
+        out += [f"## [{e['id']}]({e['_path'].relative_to(root)}) {e['title'].removeprefix('Epic: ')}{state}", "",
+                f"- **{len(closed)}/{len(kids)} closed** · goal `{e.get('goal') or 'none'}` · severity {e.get('severity')}"]
+        if open_kids:
+            out.append(f"- open by lane: {lane_counts(open_kids)}")
+            first, _ = pick_next(items, n=1, claims={}, worktrees={}, among={k["id"] for k in kids})
+            if first:
+                out.append(f"- next: [{first[0]['id']}]({first[0]['_path'].relative_to(root)}) {first[0]['title']}")
+            else:
+                waiting = Counter("unverified" if k.get("triage") != "verified" else "on hold" if k.get("hold")
+                                  else "waiting on a dependency" for k in open_kids)
+                out.append("- next: none ready (" + ", ".join(f"{v} {k}" for k, v in sorted(waiting.items())) + ")")
+        out.append("")
+    if not rows:
+        out += ["No epics yet.", ""]
+    laned = [i for i in items if i.get("status") != "parked"]
+    out += ["## Lanes", "", "| Lane | Closed | Total | Open (verified) |", "|---|---|---|---|"]
+    for lane in sorted({item_lane(i) for i in laned}):
+        mine = [i for i in laned if item_lane(i) == lane]
+        opened = [i for i in mine if i.get("status") in OPEN]
+        out.append(f"| {lane} | {sum(i.get('status') in CLOSED for i in mine)} | {len(mine)} | "
+                   f"{len(opened)} ({sum(i.get('triage') == 'verified' for i in opened)}) |")
+    (root / "EPICS.md").write_text("\n".join(out) + "\n")
+
+
+def item_row(it) -> dict:
+    return {"id": it["id"], "kind": it.get("kind"), "status": it.get("status"), "triage": it.get("triage"),
+            "severity": it.get("severity"), "size": it.get("size"), "goal": it.get("goal"), "lane": it.get("lane"),
+            "parent": it.get("parent"), "title": it.get("title"), "path": str(it["_path"].relative_to(REPO))}
+
+
+def cmd_list(a):
+    items = [i for k in ROOTS for i in load(k)[0]]
+    want = OPEN if a.status == "open" else None if a.status == "all" else {a.status}
+    rows = [i for i in items if (want is None or i.get("status") in want) and (a.goal is None or i.get("goal") == a.goal)
+            and (a.lane is None or item_lane(i) == a.lane) and (a.kind is None or i.get("kind") == a.kind)
+            and (a.parent is None or i.get("parent") == a.parent)]
+    rows.sort(key=lambda i: (sev_key(i), i["id"]))
+    if a.json:
+        json.dump([item_row(i) for i in rows], sys.stdout, indent=1)
+        print()
+        return
+    for i in rows:
+        size = f"/{i['size']}" if i.get("size") else ""
+        print(f"{i['id']}  {i.get('status')} {i.get('severity')}{size} {item_lane(i)}  {i.get('title')}")
+    print(f"{len(rows)} items")
+
+
+def cmd_show(a):
+    items = [i for k in ROOTS for i in load(k)[0]]
+    it = next((i for i in items if i["id"] == a.id), None)
+    if it is None:
+        sys.exit(f"{a.id}: no such item")
+    kids, deps = children(it, items), dependents(it, items)
+    claim = load_claims().get(a.id)
+    if a.json:
+        out = {**item_row(it), "anchors": it.get("anchors") or [], "links": it.get("links") or {},
+               "milestone": it.get("milestone"), "closed": it.get("closed"),
+               "verify": [v.get("command") for v in it.get("verify") or []],
+               "children": [item_row(k) for k in kids], "dependents": [item_row(d) for d in deps],
+               "claim": {k: v for k, v in claim.items() if k != "title"} if claim else None}
+        json.dump(out, sys.stdout, indent=1, default=str)
+        print()
+        return
+    print(f"{it['id']}  {it.get('title')}")
+    for k in ("kind", "status", "triage", "severity", "size", "goal", "lane", "parent", "milestone", "created", "updated",
+              "last_verified"):
+        if it.get(k) is not None:
+            print(f"  {k}: {it[k]}")
+    print(f"  file: {it['_path'].relative_to(REPO)}")
+    for a_ in it.get("anchors") or []:
+        print(f"  anchor: {a_}")
+    if claim:
+        life = f"stale {claim['age_h']}h" if claim["stale"] else f"{claim['ttl_h'] - claim['age_h']:.1f}h left"
+        print(f"  claim: {claim.get('by')} · {claim.get('branch') or 'no branch'} · {life}")
+    for v in it.get("verify") or []:
+        print(f"  verify: {v.get('command')}")
+    if it.get("closed"):
+        print(f"  closed: {json.dumps(it['closed'], default=str)}")
+    print(f"children ({len(kids)}):" if kids else "children: none")
+    for k in kids:
+        print(f"  {k['id']}  {k.get('status')} {item_lane(k)}  {k.get('title')}")
+    print(f"dependents ({len(deps)}):" if deps else "dependents: none")
+    for d in deps:
+        print(f"  {d['id']}  {d.get('status')}  {d.get('title')}")
+
+
+def cmd_status(a):
+    items = load("work")[0]
+    claims = load_claims()
+    live = {k for k, c in claims.items() if not c["stale"]}
+
+    def counts(group):
+        return {"open": sum(i.get("status") in OPEN for i in group),
+                "claimed": sum(i.get("status") in OPEN and i["id"] in live for i in group),
+                "done": sum(i.get("status") == "done" for i in group)}
+
+    by_goal, by_lane = defaultdict(list), defaultdict(list)
+    for i in items:
+        by_goal[i.get("goal") or "none"].append(i)
+        by_lane[item_lane(i)].append(i)
+    out = {"all": counts(items),
+           "goal": {g: counts(v) for g, v in sorted(by_goal.items(), key=lambda kv: goal_order().get(kv[0], 10**6))},
+           "lane": {l_: counts(v) for l_, v in sorted(by_lane.items())},
+           "epic": {e["id"]: {"title": e["title"], **counts(children(e, items))} for e in epics(items)}}
+    if a.json:
+        json.dump(out, sys.stdout, indent=1)
+        print()
+        return
+    print(f"{out['all']['open']} open ({out['all']['claimed']} claimed) · {out['all']['done']} done")
+    for section in ("goal", "lane"):
+        print(f"by {section}:")
+        for k, c in out[section].items():
+            print(f"  {k}: {c['open']} open ({c['claimed']} claimed), {c['done']} done")
+    print("by epic:")
+    for k, c in out["epic"].items():
+        print(f"  {k}: {c['open']} open ({c['claimed']} claimed), {c['done']} done — {c['title']}")
 
 
 def now_key(it):
@@ -803,6 +1395,7 @@ def move(it, text: str, sub: str):
     dest.write_text(text)
     if dest != it["_path"]:
         it["_path"].unlink()
+    it["_path"], it["_dir"] = dest, sub
 
 
 def split_front(fm: str):
@@ -849,6 +1442,15 @@ def set_key(top, key: str, value: str, after: str | None = None):
     top.insert(idx, f"{key} = {value}")
 
 
+def closed_value(key: str, v) -> str:
+    """A [closed] value in TOML: `at` is a date, `forced` a boolean, everything else a string."""
+    if key == "at":
+        return str(v)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return tomlstr(str(v))
+
+
 def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, duplicate_of=None,
                  verified=False, rev=None, note=None, today=None):
     """Apply field changes to one item file; validates the result parses. Returns the new text."""
@@ -876,8 +1478,9 @@ def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, dup
         other = [b for b in rest if b[0].strip() != "[[repro]]"]
         blocks = repro + [["[[verify]]", f"command = {tomlstr(c)}"] for c in verify] + other
     if closed:
+        top = [ln for ln in top if not ln.startswith("hold = ")]  # a closed item is no longer on hold
         blocks = [b for b in blocks if b[0].strip() != "[closed]"]
-        blocks.append(["[closed]"] + [f"{k} = {v if k == 'at' else tomlstr(str(v))}" for k, v in closed.items() if v])
+        blocks.append(["[closed]"] + [f"{k} = {closed_value(k, v)}" for k, v in closed.items() if v is not None and v != ""])
     if note:
         body = body.rstrip("\n") + "\n\n" + note.strip() + "\n"
     fm = join_front(top, blocks)
@@ -885,15 +1488,27 @@ def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, dup
     return m.group(1) + fm + m.group(3) + body
 
 
-def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=None, duplicate_of=None, note=None):
+def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=None, duplicate_of=None, note=None,
+               executor=None, via=None, model=None, assist=None, forced=None, source="live", session=None):
+    """Close `it`. [closed] gets the claim's executor, via, size and claimed_at (read from the main checkout, so this
+    works in a worktree too); an `executor` or `via` given here wins over the claim's. In the main checkout the
+    closure is logged as a `closed` event and the claim is deleted."""
     today = dt.date.today().isoformat()
-    closed = {"at": today, "commit": commit, "run_id": run_id, "by": by, "evidence": evidence}
+    claim = item_claim(it["id"])
+    executor, via = executor or claim.get("executor"), via or claim.get("via")
+    closed = {"at": today, "at_ts": utc_ts(), "commit": commit, "run_id": run_id, "by": by, "executor": executor,
+              "via": via, "size": claim.get("size"), "claimed_at": claim.get("claimed_at"), "model": model,
+              "assist": assist, "forced": forced, "evidence": evidence}
     text = rewrite_item(it, status=status, closed=closed, duplicate_of=duplicate_of, verified=True,
                         rev=head_rev() or None, note=note, today=today)
-    it["_path"].write_text(text)
-    claim = claims_dir() / f"{it['id']}.json"
-    if claim.exists() and REPO.resolve() == main_root().resolve():
-        claim.unlink()
+    move(it, text, home_dir(status))
+    log_event("closed", it["id"], session=session or session_name(None, claim.get("session"), claim.get("by")),
+              executor=executor, via=via, branch=claim.get("branch"), source=source, status=status, commit=commit,
+              run_id=run_id, forced=forced)
+    f = claims_dir() / f"{it['id']}.json"
+    if f.exists() and in_main_checkout():
+        with claims_lock():
+            f.unlink(missing_ok=True)
 
 
 def resolve_rev(rev: str | None) -> str | None:
@@ -913,8 +1528,10 @@ def cmd_close(a):
             sys.exit(f"{a.id}: the static part of its [[verify]] fails; fix it or pass --force with a reason in --evidence")
     if a.status == "superseded" and not (a.duplicate_of or a.evidence):
         sys.exit("superseded needs --duplicate-of or --evidence")
+    claim = item_claim(a.id)
     close_item(it, status=a.status, evidence=a.evidence, commit=resolve_rev(a.commit), run_id=a.run_id,
-               by=a.by, duplicate_of=a.duplicate_of)
+               by=a.by, duplicate_of=a.duplicate_of, executor=a.executor, via=a.via, model=a.model, assist=a.assist,
+               forced=bool(a.force), session=session_name(a.session, a.by, claim.get("session"), claim.get("by")))
     print(f"{a.id}: {a.status}")
 
 
@@ -944,7 +1561,10 @@ def sync_candidates(items):
 def cmd_sync(a, quiet=False):
     items = [i for k in ROOTS for i in load(k)[0]]
     if not a.dry_run:
-        prune_claims()
+        with claims_lock():
+            prune_claims()
+    # Its closures are logged as `reconciled`, under the syncing session (the commit hook passes its session id).
+    session = session_name(getattr(a, "session", None), getattr(a, "hook_session", None), "sync")
     closed, conflicts = [], []
     for it, kind, det in sync_candidates(items):
         state = static_verify_state(it)
@@ -954,10 +1574,14 @@ def cmd_sync(a, quiet=False):
             continue
         if not a.dry_run:
             if kind == "commit":
-                close_item(it, commit=det[0], by="commit trailer", evidence=f"Closed by {det[0]}: {det[1]}")
+                # A commit closure keeps its claim's executor; without a claim, nobody knows who did the work.
+                close_item(it, commit=det[0], by="commit trailer", evidence=f"Closed by {det[0]}: {det[1]}",
+                           executor=item_claim(it["id"]).get("executor") or "unknown", forced=False,
+                           source="reconciled", session=session)
             else:
                 close_item(it, run_id=det[2], by=f"plan:{det[0]}#{det[1]}",
-                           evidence=f"Plan task {det[0]}#{det[1]} declares closes = [\"{it['id']}\"] and passed its gates (Graph checkpoint verdict: passed).")
+                           evidence=f"Plan task {det[0]}#{det[1]} declares closes = [\"{it['id']}\"] and passed its gates (Graph checkpoint verdict: passed).",
+                           executor="roko-plan", via="roko-plan", forced=False, source="reconciled", session=session)
         closed.append(f"{it['id']}: {'would close' if a.dry_run else 'closed'} ({where})")
     if not quiet or closed or conflicts:
         for s in closed + conflicts:
@@ -998,10 +1622,11 @@ def touched_report(rev: str, items) -> list[str]:
     files = set(git("diff", "--name-only", base, tip).split()) if git_ok("rev-parse", "--verify", "-q", base) else \
         set(git("show", "--format=", "--name-only", tip).split())
     opened = [i for i in items if i.get("status") in OPEN]
+    edited = {i["id"] for i in items if str(i["_path"].relative_to(REPO)) in files}  # the commit updated the item itself
     hit, lines = [], []
     for it in opened:
         paths = [p for p, _ in (anchor_parts(a) for a in it.get("anchors") or []) if p]
-        if any(f == p or f.startswith(p + "/") for p in paths for f in files):
+        if it["id"] not in edited and any(f == p or f.startswith(p + "/") for p in paths for f in files):
             hit.append(it)
     claimed = {iid for m in CLOSE_RE.finditer(msgs) for iid in ID_ANY.findall(m.group(1))}
     mentioned = set(ID_ANY.findall(msgs)) - claimed
@@ -1013,7 +1638,7 @@ def touched_report(rev: str, items) -> list[str]:
     for it in sorted(hit, key=sev_key):
         if it["id"] not in claimed:
             lines.append(f"touched {it['id']} [{it['severity']}] {it['title']} — {it['_path'].relative_to(REPO)}")
-    for iid in sorted(mentioned):
+    for iid in sorted(mentioned - edited):
         it = by_id.get(iid)
         if it and it["id"] not in {h["id"] for h in hit}:
             lines.append(f"mentions {iid} ({it['status']}): {it['title']}")
@@ -1061,11 +1686,20 @@ def cmd_hook(a):
         if not top or not (Path(top) / "work" / "items").is_dir():
             return
         set_repo(top)
-        ts = git("log", "-1", "--format=%ct").strip()
-        if not ts or time.time() - int(ts) > 300:
-            return  # the commit did not happen (or is old): say nothing
-        closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False), quiet=True)
-        report = touched_report("HEAD", [i for k in ROOTS for i in load(k)[0]])
+        resp = payload.get("tool_response")
+        out = resp if isinstance(resp, str) else "\n".join(str((resp or {}).get(k) or "") for k in ("stdout", "output", "stderr"))
+        made = re.search(r"^\[[^\]\n]*?\s([0-9a-f]{7,40})\]", out, re.M)  # git commit prints "[branch abc1234] subject"
+        if made:
+            rev = made.group(1)
+        elif re.search(r"\s(?:-q|--quiet)\b", cmd) and time.time() - int(git("log", "-1", "--format=%ct").strip() or 0) < 120:
+            rev = head_rev()  # a quiet commit prints nothing; accept a HEAD made in the last two minutes
+        else:
+            return  # no commit was made by this command: say nothing
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False, hook_session=payload.get("session_id")),
+                                         quiet=True)
+        report = touched_report(rev, [i for k in ROOTS for i in load(k)[0]])
         if not (closed or conflicts or report):
             return
         msg = ["Work graph check for this commit (tools/work.py):"]
@@ -1075,6 +1709,7 @@ def cmd_hook(a):
                    "--evidence \"…\" (or add `Closes: <id>` to the next commit message). If it only changed the code an item "
                    "describes, re-check the item. Closures made here are uncommitted edits under work/; commit them with your "
                    "next commit, then run tools/work.py render.")
+        msg[0] = f"Work graph check for commit {rev} (tools/work.py):"
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n".join(msg)}}))
     except Exception:  # noqa: BLE001 - a hook must never break the session
         return
@@ -1212,7 +1847,7 @@ def cmd_apply_verdicts(a):
                             verified=v != "unclear", rev=seen.get("head"), note="\n\n".join(notes) or None)
         stats[v] += 1
         if not a.dry_run:
-            it["_path"].write_text(text)
+            move(it, text, home_dir(status or it["status"]))
     print(("would apply " if a.dry_run else "applied ") + json.dumps(stats))
 
 
@@ -1251,7 +1886,7 @@ Constraints (files not to touch, decisions already made, risky areas), and anyth
 def cmd_new(a):
     created = a.created or dt.date.today().isoformat()
     iid = make_id(a.kind, a.title, created, a.source)
-    root = ROOTS[a.root] / "items"
+    root = ROOTS[a.root] / home_dir(a.status)
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{iid}-{slug(a.title)}.md"
     if path.exists():
@@ -1302,8 +1937,21 @@ def cmd_unpark(a):
             fm = re.sub(r"^updated = .*$", f"updated = {today}", fm, count=1, flags=re.M)
             return re.sub(r"\n{3,}", "\n\n", fm).rstrip("\n")
 
-        move(it, edit_front(it["_path"], edit), "items")
+        move(it, edit_front(it["_path"], edit), home_dir(prev))
     print(f"unparked {len(a.ids)}")
+
+
+def cmd_tidy(a):
+    """Move every item whose file is not in its status's folder (for example an item closed by an older work.py, or on
+    a branch merged from before the folders existed)."""
+    moved = []
+    for key in ROOTS:
+        for it in load(key)[0]:
+            home = home_dir(it.get("status"))
+            if it["_dir"] != home:
+                move(it, it["_path"].read_text(), home)
+                moved.append(f"{it['id']} → {key}/{home}/")
+    print("\n".join(moved + [f"tidy: moved {len(moved)}"]))
 
 
 def main():
@@ -1317,9 +1965,14 @@ def main():
     p.add_argument("--status", default="open", choices=sorted(STATUSES - {"parked"})); p.add_argument("--triage", default="unverified", choices=sorted(TRIAGE))
     p = sp.add_parser("park"); p.add_argument("ids", nargs="+"); p.add_argument("--reason", required=True)
     p = sp.add_parser("unpark"); p.add_argument("ids", nargs="+")
+    sp.add_parser("tidy")
     p = sp.add_parser("close"); p.add_argument("id"); p.add_argument("--evidence", required=True)
     p.add_argument("--status", default="done", choices=["done", "wontfix", "superseded"]); p.add_argument("--commit")
     p.add_argument("--run-id"); p.add_argument("--by"); p.add_argument("--duplicate-of"); p.add_argument("--force", action="store_true")
+    p.add_argument("--model", help="the model that did the work"); p.add_argument("--assist", help="a second executor that helped")
+    p.add_argument("--executor", choices=EXECUTORS, help="who executed it, when its claim does not say")
+    p.add_argument("--via", choices=VIAS, help="how it was picked up, when its claim does not say")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")
     p = sp.add_parser("sync"); p.add_argument("--dry-run", action="store_true")
     p = sp.add_parser("drift"); p.add_argument("--json", action="store_true"); p.add_argument("--stale-days", type=int, default=STALE_DAYS)
     p = sp.add_parser("touched"); p.add_argument("--rev", default="HEAD")
@@ -1329,22 +1982,47 @@ def main():
     sp.add_parser("hook")
     p = sp.add_parser("next"); p.add_argument("--n", type=int, default=1); p.add_argument("--goal"); p.add_argument("--max-size", choices=SIZES)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--ignore-worktrees", action="store_true", help="do not treat files other worktrees are changing as busy")
+    p.add_argument("--lane", help="pick only this lane (none: items without a lane), within its cap")
+    p.add_argument("--mix", help='quotas per lane, such as "rust-hot=1,rust-cold=2,paper=2", within lane caps and pools')
     p = sp.add_parser("claim"); p.add_argument("ids", nargs="+"); p.add_argument("--by", required=True); p.add_argument("--branch")
     p.add_argument("--worktree"); p.add_argument("--force", action="store_true")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")
+    p.add_argument("--executor", choices=EXECUTORS, help="who executes the item")
+    p.add_argument("--via", choices=VIAS, help="how it was picked up")
+    p.add_argument("--size", choices=SIZES, help="the size judged before work starts (default: the item's size)")
+    p.add_argument("--renew", action="store_true", help="restart the clock of a claim you hold (S 8 h, M 24 h, L 72 h)")
+    p.add_argument("--ignore-worktrees", action="store_true", help="do not refuse files other worktrees are changing")
     p = sp.add_parser("release"); p.add_argument("ids", nargs="+")
-    sp.add_parser("claims")
+    p.add_argument("--reason", choices=RELEASE_REASONS, help="why the item goes back unfinished")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else the claim's session)")
+    p = sp.add_parser("claims"); p.add_argument("--prune", action="store_true", help="drop the claims of closed items")
+    p = sp.add_parser("event", help="log a merge, post-merge verify, escape or intervention (main checkout only)")
+    p.add_argument("kind", choices=["merged", "post-verify", "escape", "intervention"]); p.add_argument("id")
+    p.add_argument("--merge-sha"); p.add_argument("--conflicts", type=int); p.add_argument("--fixups", type=int)
+    p.add_argument("--rc", type=int); p.add_argument("--caused-by"); p.add_argument("--branch")
+    p.add_argument("--session"); p.add_argument("--by")
     p = sp.add_parser("check"); p.add_argument("--strict", action="store_true", help="treat verify-command lint warnings as errors")
     p.add_argument("--lint", action="store_true", help="list verify-command lint warnings")
     sp.add_parser("render")
+    p = sp.add_parser("list", help="one line per item (read-only)"); p.add_argument("--goal"); p.add_argument("--lane")
+    p.add_argument("--kind", choices=sorted(PREFIX)); p.add_argument("--parent"); p.add_argument("--json", action="store_true")
+    p.add_argument("--status", default="open", help="open (the default: open, in_progress or blocked), all, or one status")
+    p = sp.add_parser("show", help="an item with its children, dependents and claim (read-only)"); p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p = sp.add_parser("status", help="open, claimed and done counts by goal, lane and epic (read-only)")
+    p.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
+    simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "tidy": cmd_tidy, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
               "touched": cmd_touched, "verify": cmd_verify, "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
-              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims}
+              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event,
+              "list": cmd_list, "show": cmd_show, "status": cmd_status}
     if a.cmd == "id":
         print(make_id(a.kind, a.title, a.created, a.source)); return
     if a.cmd in simple:
         simple[a.cmd](a); return
-    all_errs, warns, total = [], [], 0
+    all_errs, warns, lane_warns, total = [], [], [], 0
+    lanes = load_lanes()
     for key in ROOTS:
         items, errs = load(key)
         errs += validate(items)
@@ -1354,6 +2032,7 @@ def main():
             if it.get("status") in OPEN:
                 for v in it.get("verify") or []:
                     warns += [f"{it['_path'].relative_to(REPO)}: [[verify]] {w}" for w in lint_verify(v.get("command", ""))]
+                lane_warns += [f"{it['_path'].relative_to(REPO)}: {w}" for w in lane_lint(it, lanes)]
         if a.cmd == "render" and ROOTS[key].exists():
             print(key, "open/verified/unverified/closed/parked =", render_root(key, items))
     if a.cmd == "check" and getattr(a, "strict", False):
@@ -1366,6 +2045,10 @@ def main():
     if lint:
         for w in warns:
             print("   warning:", w)
+        if lane_warns:
+            print(f"{len(lane_warns)} items have anchors outside their lane's paths (work/lanes.toml):")
+            for w in lane_warns:
+                print("   lane:", w)
     sys.exit(1 if all_errs else 0)
 
 

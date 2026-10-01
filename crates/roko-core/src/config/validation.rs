@@ -54,19 +54,18 @@ fn invariant(
 pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
     let mut results = Vec::new();
 
-    // A zero plan ceiling means unlimited. A zero turn ceiling is unlimited,
-    // so it cannot be nested beneath a finite plan ceiling.
-    if config.budget.max_plan_usd > 0.0
-        && (config.budget.max_turn_usd == 0.0
-            || config.budget.max_turn_usd > config.budget.max_plan_usd)
-    {
+    // A zero ceiling means no cap, for the plan and the turn alike. Only a
+    // finite turn ceiling above a finite plan ceiling contradicts it; a turn
+    // with no cap of its own is still bounded by the plan ceiling.
+    let budget = &config.budget;
+    if budget.max_plan_usd > 0.0 && budget.max_turn_usd > budget.max_plan_usd {
         results.push(invariant(
             1,
             InvariantSeverity::Error,
             "budget.max_turn_usd",
             format!(
                 "budget.max_turn_usd ({}) must not exceed budget.max_plan_usd ({})",
-                config.budget.max_turn_usd, config.budget.max_plan_usd
+                budget.max_turn_usd, budget.max_plan_usd
             ),
         ));
     }
@@ -1033,6 +1032,20 @@ mod tests {
         assert!(results.iter().any(|result| {
             result.invariant_id == 1 && result.severity == InvariantSeverity::Error
         }));
+    }
+
+    #[test]
+    fn validate_invariants_treats_a_zero_turn_cap_as_no_cap() {
+        // bug-8465a2: a budget with plan and task caps but no turn cap.
+        let mut config = RokoConfig::default();
+        config.budget.max_plan_usd = 10.0;
+        config.budget.max_task_usd = 1.0;
+
+        let results = validate_invariants(&config);
+        assert!(
+            !results.iter().any(|result| result.invariant_id == 1),
+            "{results:?}"
+        );
     }
 
     #[test]

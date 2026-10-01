@@ -1,7 +1,7 @@
 # 31-01 -- RSI Taxonomy and Loop Closure Spectrum
 
 > **Parent:** [31-SELF-HOSTING.md](../../31-SELF-HOSTING.md) section 2
-> **Primary source:** RSI Survey (Teixeira et al. 2025, arXiv:2607.07663)
+> **Primary source:** RSI Survey (Chen et al. 2026, arXiv:2607.07663)
 > **Additional sources:** Schmidhuber 2003 (Godel Machine), Nivel et al. 2013
 > (AERA), Argyris & Schon 1978 (double/triple-loop learning)
 
@@ -16,16 +16,14 @@ distinguishes RSI from simple learning: a system that improves its weights via
 gradient descent is learning; a system that improves its *learning algorithm*
 is recursively self-improving.
 
-The RSI Survey (arXiv:2607.07663) provides the first comprehensive taxonomy of
-RSI in AI systems, identifying two orthogonal classification axes: **what is
+The RSI Survey (arXiv:2607.07663) surveys 1,250 arXiv papers (2024-2026) and organizes them on two axes (§2.2): **what is
 improved** and **degree of loop closure**.
 
 ---
 
 ## 2. What Is Improved: Four Targets
 
-The survey identifies four targets of self-improvement, ordered by increasing
-scope, risk, and difficulty:
+The survey identifies four targets of self-improvement (§2.2): deployment-time self-evolution, training-time self-iteration, self-evaluation and auto research. The ordering by scope, risk and difficulty below is Roko's reading:
 
 ### 2.1 Deployment Behavior
 
@@ -176,8 +174,8 @@ development tool modifying production codebases.
 
 ## References
 
-- Teixeira, Pinto, et al. "A Survey on Recursive Self-Improvement in Large
-  Language Models." arXiv:2607.07663, July 2025.
+- Chen, M., Wang, L. & Qu, B. "Recursive Self-Improvement in AI: From Bounded
+  Self-Refinement to Autonomous Research Loops." arXiv:2607.07663, July 2026.
 - Schmidhuber, J. "Godel Machines: Fully Self-Referential Optimal Universal
   Self-Improvers." 2003.
 - Argyris, C. & Schon, D.A. "Organizational Learning: A Theory of Action

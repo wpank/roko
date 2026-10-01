@@ -1,0 +1,69 @@
++++
+id = "bug-aaa924"
+kind = "bug"
+title = "The delivery regression check builds the workspace from a cold target dir on every delivery"
+status = "done"
+triage = "verified"
+severity = "p2"
+goal = "golden-path"
+size = "S"
+subsystem = ["roko-cli/graph-execution"]
+created = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
+source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
+discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
+anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::regression_output", "crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal"]
+lane = "rust-cold"
+parent = "spec-a0e40a"
+links = { depends_on = ["bug-a3760a"], blocks = [], related = ["spec-f830c4", "gap-c89b40"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn regression_checkout_reuses_a_warm_target_dir' crates/roko-cli/src/ && cargo test -p roko-cli --lib regression_checkout_reuses_a_warm_target_dir"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in d5192d4f0. The regression check builds into the gates' target dir outside the temporary checkout. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
++++
+
+## Problem
+
+After a plan merges, `GitDeliveryBackend::run_regression` runs the regression command (by default `cargo check --workspace --quiet`) in a temporary detached worktree of the merge commit. bug-a3760a (`809ae920d`) moved it there. The command gets no `CARGO_TARGET_DIR`, so cargo builds into that worktree's own empty `target/`. Every delivery compiles the whole workspace from nothing, and the build output is deleted with the worktree.
+
+## Why it matters
+
+Delivery is the integration step of the golden path (epic spec-a0e40a), and spec-f830c4 will run it once per plan. A cold build of the workspace (36 members, about 1M LOC) takes many minutes and gigabytes of disk for each plan, and it competes with running agents for the machine (gap-c89b40).
+
+## Where
+
+- `crates/roko-cli/src/graph_execution/delivery.rs`:
+  - `GitDeliveryBackend::regression_output` adds the worktree and spawns the command in it.
+  - `GitDeliveryBackend::new` sets the default command, and `with_regression_command` replaces it.
+- `crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal`: gates already point cargo at the main checkout's target dir (`main_target_dir`, then `payload.with_target_dir`). Reuse that pattern.
+
+## Current state
+
+On `work/bug-a3760a` (`809ae920d`, part of Rust batch 2), `regression_output` spawns `program` with `current_dir(&scratch.checkout)` and no target-dir setting. At BASE the regression ran in `workdir` itself, so it reused that checkout's `target/`. Moving it into a temporary worktree was the right call for safety, but it made the build cold.
+
+## Plan
+
+1. Give the regression command a warm target dir. Set `CARGO_TARGET_DIR` to the main checkout's target dir, the one gates use, unless the environment already sets it. If sharing that dir causes lock contention with the operator's own builds, use a dedicated dir that persists between deliveries (for example `target/delivery-regression`) instead. It is warm from the second delivery on.
+2. Keep the temporary worktree: only the build output is shared.
+3. Add `regression_checkout_reuses_a_warm_target_dir`. Use a regression command that records `$CARGO_TARGET_DIR`, and check that the value is the configured shared dir, not a path inside the temporary checkout.
+
+## Done when
+
+- [ ] The regression command builds into a target dir that is outside the temporary checkout and persists between deliveries.
+- [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Depends on bug-a3760a, which adds this code. It is not on BASE yet.
+- Concurrent cargo builds on one target dir queue on cargo's lock (gap-c89b40).
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-453481` at `883de180f`; cargo verification deferred to the batch check.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-execution --no-deps -D warnings` clean; nightly rustfmt clean. `cargo test -p roko-cli --lib graph_execution::delivery`: 27 passed.
+  - The regression command gets `CARGO_TARGET_DIR` = the dir gates use: the process's `CARGO_TARGET_DIR` when set (a relative value is resolved from the repository, not the temporary checkout), else `<workdir>/target`. `with_regression_target_dir` replaces it. The temporary checkout stays; only the build output is shared.
+  - Left for later: each delivery's checkout has a new path, and cargo keys workspace members by source path, so the workspace's own crates still rebuild each delivery (dependencies are reused) and leave a set of stale artifacts in the shared dir each time. A stable per-repository checkout path would reuse them too.
+  - Test: `regression_checkout_reuses_a_warm_target_dir`.

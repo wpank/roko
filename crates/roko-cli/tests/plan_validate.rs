@@ -233,6 +233,9 @@ fn plan_validate_warns_on_known_model_aliases() {
         r#"
 [meta]
 plan = "aliases"
+# One task at a time: the three tasks share a file, and this test is about
+# model aliases, not about tasks that could run together.
+max_parallel = 1
 
 [[task]]
 id = "T1"
@@ -779,4 +782,110 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
         stdout.contains("0 diagnostics in 2 plans"),
         "unexpected stdout: {stdout}"
     );
+}
+
+#[test]
+fn spec_quality_flag_reports_scores_and_hard_fails() {
+    let temp = TempDir::new().unwrap();
+    // T1's verify step can never fail (HF2); T2 runs a scoped test. Both pass plain validation.
+    write_plan(
+        temp.path(),
+        "spec",
+        r#"
+[meta]
+plan = "spec"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = "Add the retry limit to `parse_config`."
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+depends_on = []
+verify = [{ phase = "test", command = "echo ok" }]
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = "Add the retry limit to `parse_config`."
+role = "implementer"
+files = ["src/retry.rs"]
+max_loc = 40
+depends_on = []
+verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
+"#,
+    );
+
+    // Without the flag nothing changes, and --strict still passes.
+    let plain = run_validate(&temp, &["plans", "--strict"]).success();
+    let plain_stdout = String::from_utf8_lossy(&plain.get_output().stdout).into_owned();
+    assert!(
+        plain_stdout.contains("0 diagnostics in 1 plan"),
+        "{plain_stdout}"
+    );
+    assert!(!plain_stdout.contains("spec quality"), "{plain_stdout}");
+    let plain_json = run_validate(&temp, &["plans", "--json"]).success();
+    let plain_json: serde_json::Value =
+        serde_json::from_slice(&plain_json.get_output().stdout).unwrap();
+    assert!(plain_json.get("spec_quality").is_none(), "{plain_json}");
+
+    // With it, the text gains a section: per task the score, band, rules and hard fails.
+    let scored = run_validate(&temp, &["plans", "--spec-quality"]).success();
+    let stdout = String::from_utf8_lossy(&scored.get_output().stdout);
+    assert!(stdout.starts_with(&plain_stdout), "{stdout}");
+    assert!(
+        stdout.contains("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\nplans/spec/tasks.toml\n"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "  T1  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1 SQ09=0 SQ10=1 \
+             SQ11=1 SQ12=0  hard=HF2\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("HF2: step 1: the step only runs `echo ok`"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  T2  37.00 D  SQ01=0"), "{stdout}");
+    assert!(
+        stdout.contains("2 tasks: 0 A, 0 B, 0 C, 2 D; 1 with hard fails"),
+        "{stdout}"
+    );
+
+    // A hard fail exits 1 only under --strict.
+    let strict = run_validate(&temp, &["plans", "--spec-quality", "--strict"]).failure();
+    assert_eq!(strict.get_output().status.code(), Some(1));
+
+    // JSON keeps the validation report and adds the per-task records.
+    let json = run_validate(&temp, &["plans", "--spec-quality", "--json"]).success();
+    let json: serde_json::Value = serde_json::from_slice(&json.get_output().stdout).unwrap();
+    assert_eq!(json["plans"], plain_json["plans"]);
+    assert_eq!(json["totals"], plain_json["totals"]);
+    let spec = &json["spec_quality"];
+    assert_eq!(spec["linter"], "sq-2");
+    let tasks = spec["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    let t1 = &tasks[0];
+    assert_eq!(t1["task_id"], "T1");
+    assert_eq!(t1["plan_path"], "plans/spec/tasks.toml");
+    assert_eq!(t1["score"], 17.0);
+    assert_eq!(t1["band"], "D");
+    assert_eq!(t1["hard_fail"], serde_json::json!(["HF2"]));
+    assert_eq!(
+        t1["hard_fail_detail"]["HF2"],
+        serde_json::json!(["step 1: the step only runs `echo ok`"])
+    );
+    assert_eq!(t1["unknown"], serde_json::json!(["HF3", "SQ06"]));
+    assert_eq!(t1["rules"].as_object().unwrap().len(), 12);
+    assert_eq!(t1["rules"]["SQ04"], 0.0);
+    assert_eq!(t1["verify_classes"], serde_json::json!(["vacuous"]));
+    let t2 = &tasks[1];
+    assert_eq!(t2["score"], 37.0);
+    assert_eq!(t2["hard_fail"], serde_json::json!([]));
+    assert_eq!(t2["rules"]["SQ05"], 1.0);
+    assert_eq!(t2["verify_classes"], serde_json::json!(["test"]));
 }

@@ -408,6 +408,58 @@ impl BackendResponse {
         }
     }
 
+    /// Whether the provider reported this response's usage: an OpenAI-style
+    /// `usage` block ([`Self::extract_usage`] reads it), or a stream-json
+    /// `result` or `assistant` event carrying usage. `Unknown` otherwise:
+    /// its [`Self::extract_usage`] zeros are no measurement (bug-c65bfe).
+    #[must_use]
+    pub fn usage_source(&self) -> crate::usage::UsageSource {
+        let reported = match self {
+            Self::Json(v) => v.get("usage").is_some_and(|usage| !usage.is_null()),
+            Self::StreamJson(events) => events.iter().any(|event| {
+                event.get("usage").is_some_and(|usage| !usage.is_null())
+                    || event
+                        .pointer("/message/usage")
+                        .is_some_and(|usage| !usage.is_null())
+            }),
+            Self::Text(_) => false,
+        };
+        if reported {
+            crate::usage::UsageSource::ProviderReported
+        } else {
+            crate::usage::UsageSource::Unknown
+        }
+    }
+
+    /// The model the provider reported serving this response, when it named
+    /// one: the top-level `model` of an OpenAI-style, Anthropic or Ollama
+    /// response (Gemini's `modelVersion`), or the last model a stream-json
+    /// event named. Never the configured slug: a response that names no
+    /// model has no reported model.
+    #[must_use]
+    pub fn extract_model(&self) -> Option<String> {
+        let named = |value: &serde_json::Value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        };
+        match self {
+            Self::Json(v) => v
+                .get("model")
+                .and_then(named)
+                .or_else(|| v.get("modelVersion").and_then(named)),
+            Self::StreamJson(events) => events.iter().rev().find_map(|event| {
+                event
+                    .get("model")
+                    .and_then(named)
+                    .or_else(|| event.pointer("/message/model").and_then(named))
+            }),
+            Self::Text(_) => None,
+        }
+    }
+
     /// Extract the raw finish reason string from this response.
     ///
     /// For `StreamJson` (Claude CLI), scans the events in reverse for the
@@ -720,6 +772,30 @@ mod tests {
     }
 
     #[test]
+    fn backend_response_extract_model_names_only_what_the_provider_reported() {
+        let openai = BackendResponse::Json(serde_json::json!({
+            "model": "glm-4.7", "choices": [{"message": {"content": "done"}}]
+        }));
+        assert_eq!(openai.extract_model().as_deref(), Some("glm-4.7"));
+        let gemini = BackendResponse::Json(serde_json::json!({
+            "modelVersion": "gemini-2.5-flash", "candidates": []
+        }));
+        assert_eq!(gemini.extract_model().as_deref(), Some("gemini-2.5-flash"));
+        let stream = BackendResponse::StreamJson(vec![
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-sonnet-4-6"}}),
+            serde_json::json!({"type": "result", "is_error": false}),
+        ]);
+        assert_eq!(stream.extract_model().as_deref(), Some("claude-sonnet-4-6"));
+        for silent in [
+            BackendResponse::Json(serde_json::json!({"model": " "})),
+            BackendResponse::Json(serde_json::json!({"choices": []})),
+            BackendResponse::Text("done".into()),
+        ] {
+            assert_eq!(silent.extract_model(), None);
+        }
+    }
+
+    #[test]
     fn backend_response_extract_reasoning_from_openai_json() {
         let r = BackendResponse::Json(serde_json::json!({
             "choices": [{
@@ -769,10 +845,11 @@ mod tests {
                 }
             }
         }));
+        // 3 of the 12 prompt tokens were cached (bug-b72a37).
         assert_eq!(
             r.extract_usage(),
             Usage {
-                input_tokens: 12,
+                input_tokens: 9,
                 output_tokens: 5,
                 cache_read_tokens: 3,
                 ..Default::default()

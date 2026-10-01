@@ -41,10 +41,12 @@ fn td(id: &str, deps: &[&str]) -> TaskDef {
         max_retries: 2,
         acceptance: vec![],
         acceptance_contract: None,
+        accept: None,
         domain: None,
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        hints: Default::default(),
     }
 }
 fn aref(plan: &str, task: &str, n: u32) -> TaskAttemptRef {

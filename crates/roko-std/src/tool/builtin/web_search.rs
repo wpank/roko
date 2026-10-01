@@ -257,6 +257,7 @@ async fn call_gateway(model_caller: Arc<dyn ModelCaller>, query: &str) -> ToolRe
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         })
         .await;
 

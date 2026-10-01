@@ -38,8 +38,15 @@ use roko_core::foundation::KnowledgeQuery;
 
 /// Records explicit model override outcomes when no routing context is available.
 pub trait ForceBackendOverrideRecorder: Send + Sync {
-    /// Record a confidence-only outcome for a forced model slug.
-    fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool;
+    /// Record the outcome of a call to a forced model slug, with what it cost
+    /// and how long it took.
+    fn record_override_outcome(
+        &self,
+        model_slug: &str,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+    ) -> bool;
 }
 
 /// Records real LLM provider outcomes (success / failure) into the shared
@@ -322,6 +329,12 @@ impl ModelCallService {
             .map_or_else(Vec::new, |limiter| limiter.snapshot())
     }
 
+    /// The sink model-call outcomes are recorded into, if one is attached.
+    #[must_use]
+    pub fn feedback_sink(&self) -> Option<&Arc<dyn FeedbackSink>> {
+        self.feedback_sink.as_ref()
+    }
+
     /// Provide an Anthropic API key for service-created agents.
     #[must_use]
     pub fn with_anthropic_api_key(mut self, key: String) -> Self {
@@ -507,6 +520,7 @@ impl ModelCallService {
             env: self.env.clone(),
             effort: Some(self.config.agent.default_effort.clone())
                 .filter(|effort| !effort.trim().is_empty()),
+            thinking: req.thinking.clone(),
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             ..AgentOptions::default()
         };
@@ -692,6 +706,7 @@ impl ModelCallService {
         latency_ms: u64,
         success: bool,
         error_class: Option<&str>,
+        model_reported: Option<&str>,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -714,6 +729,10 @@ impl ModelCallService {
             latency_ms,
             success,
             error_class: error_class.map(ToOwned::to_owned),
+            model_reported: model_reported.map(ToOwned::to_owned),
+            // The service serves callers outside Graph attempts (serve,
+            // chat, CLI), so no call it makes belongs to one.
+            attempt_key: None,
         })
         .await
     }
@@ -851,6 +870,8 @@ impl ModelCallService {
         requested_model: &str,
         model_used: &str,
         success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
     ) {
         if requested_model.is_empty() {
             return;
@@ -860,7 +881,7 @@ impl ModelCallService {
             return;
         };
 
-        if !router.record_override_outcome(model_used, success) {
+        if !router.record_override_outcome(model_used, success, cost_usd, latency_ms) {
             tracing::debug!(
                 requested_model,
                 model_used,
@@ -1578,7 +1599,8 @@ impl CacheCell {
     }
 
     /// Compute a cache key from request fields.
-    /// Hash of: model + system prompt + ordered messages + relevant generation parameters.
+    /// Hash of: model + system prompt + ordered messages + relevant generation
+    /// parameters, the thinking setting among them (bug-b9cb83).
     fn cache_key(
         model: &str,
         system: Option<&str>,
@@ -1586,6 +1608,7 @@ impl CacheCell {
         input_messages: &[ModelInputMessage],
         temperature: Option<f32>,
         max_tokens: Option<u32>,
+        thinking: Option<&roko_core::foundation::ThinkingConfig>,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         model.hash(&mut hasher);
@@ -1603,6 +1626,7 @@ impl CacheCell {
 
         temperature.map(f32::to_bits).hash(&mut hasher);
         max_tokens.hash(&mut hasher);
+        thinking.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2072,6 +2096,10 @@ impl ProviderCallCell {
                 return Ok(CellOutput {
                     content: output_text(&result.output),
                     model_used: attempt_model.to_string(),
+                    model_reported: result
+                        .usage_obs
+                        .as_ref()
+                        .and_then(|usage| usage.model.clone()),
                     usage: result.usage,
                     cost_usd,
                     latency_ms: (total_start.elapsed().as_millis() as u64).max(1),
@@ -2174,6 +2202,8 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
 struct CellOutput {
     content: String,
     model_used: String,
+    /// Model the provider reported serving, when its response named one.
+    model_reported: Option<String>,
     usage: Usage,
     cost_usd: f64,
     latency_ms: u64,
@@ -2285,6 +2315,7 @@ impl ModelCaller for ModelCallService {
             &req.input_messages,
             req.temperature,
             req.max_tokens,
+            req.thinking.as_ref(),
         );
         let request_id = self.next_request_id(&run_id, cache_key);
         let provider = self.provider_for_model(&model);
@@ -2311,6 +2342,7 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms,
                         true,
+                        None,
                         None,
                     )
                     .await?;
@@ -2516,7 +2548,13 @@ impl ModelCaller for ModelCallService {
                     false,
                     Some(message.clone()),
                 )?;
-                self.record_force_backend_override(&req.model, &model, false);
+                self.record_force_backend_override(
+                    &req.model,
+                    &model,
+                    false,
+                    usage.cost_usd,
+                    latency_ms,
+                );
                 self.record_feedback(
                     &req,
                     &request_id,
@@ -2526,6 +2564,7 @@ impl ModelCaller for ModelCallService {
                     latency_ms,
                     false,
                     Some(provider_error_kind(&message)),
+                    None,
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2562,7 +2601,13 @@ impl ModelCaller for ModelCallService {
                     error: error.to_string(),
                 });
             }
-            self.record_force_backend_override(&req.model, &output.model_used, false);
+            self.record_force_backend_override(
+                &req.model,
+                &output.model_used,
+                false,
+                usage.cost_usd,
+                latency_ms,
+            );
             let output_provider = self.provider_for_model(&output.model_used);
             self.write_gateway_event(
                 &req,
@@ -2582,6 +2627,7 @@ impl ModelCaller for ModelCallService {
                 latency_ms,
                 false,
                 Some("convergence_failure"),
+                output.model_reported.as_deref(),
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2623,7 +2669,13 @@ impl ModelCaller for ModelCallService {
                 cost_usd: usage.cost_usd,
             });
         }
-        self.record_force_backend_override(&req.model, &output.model_used, true);
+        self.record_force_backend_override(
+            &req.model,
+            &output.model_used,
+            true,
+            usage.cost_usd,
+            output.latency_ms,
+        );
         let output_provider = self.provider_for_model(&output.model_used);
         self.write_gateway_event(
             &req,
@@ -2643,6 +2695,7 @@ impl ModelCaller for ModelCallService {
             output.latency_ms,
             true,
             None,
+            output.model_reported.as_deref(),
         )
         .await?;
         self.emit_call_metrics(
@@ -2684,7 +2737,13 @@ mod tests {
     }
 
     impl ForceBackendOverrideRecorder for TestCascadeRecorder {
-        fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
+        fn record_override_outcome(
+            &self,
+            model_slug: &str,
+            success: bool,
+            _cost_usd: f64,
+            _latency_ms: u64,
+        ) -> bool {
             let mut stats = self.confidence_stats.lock();
             let entry = stats.entry(model_slug.to_string()).or_default();
             entry.0 += 1;
@@ -2726,6 +2785,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 
@@ -2992,6 +3052,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -3018,6 +3079,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -3047,9 +3109,106 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
+    }
+
+    /// A feedback sink that keeps every event it is given.
+    #[derive(Default)]
+    struct RecordingFeedbackSink {
+        events: Mutex<Vec<FeedbackEvent>>,
+    }
+
+    #[async_trait]
+    impl FeedbackSink for RecordingFeedbackSink {
+        async fn record(&self, event: FeedbackEvent) -> Result<()> {
+            self.events.lock().push(event);
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The service's `model_call` row names the model the provider reported
+    /// serving beside the one the call asked for (bug-92f655). The service
+    /// serves no Graph attempt, so the row's attempt key stays unset; the
+    /// Graph bridge's rows carry theirs.
+    #[tokio::test]
+    async fn model_call_rows_carry_the_reported_model_and_the_attempt_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("claude-fake.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"hello"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'
+"#,
+        )
+        .expect("write script");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("chmod");
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "fake_cli".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(10_000),
+                ttft_timeout_ms: Some(10_000),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "pinned".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "fake_cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        let sink = Arc::new(RecordingFeedbackSink::default());
+        let svc = ModelCallService::new("pinned".into())
+            .with_config(config)
+            .with_working_dir(tmp.path())
+            .with_feedback_sink(Arc::clone(&sink) as Arc<dyn FeedbackSink>);
+
+        svc.call(user_request("pinned", "hello"))
+            .await
+            .expect("the fake CLI answers");
+
+        let events = sink.events.lock();
+        let Some(FeedbackEvent::ModelCall {
+            model_reported,
+            attempt_key,
+            success,
+            ..
+        }) = events.first()
+        else {
+            panic!("expected a model_call event, got {events:?}");
+        };
+        assert!(*success);
+        assert_eq!(model_reported.as_deref(), Some("glm-4.7"));
+        assert_eq!(attempt_key, &None, "the service serves no attempt");
     }
 
     #[tokio::test]
@@ -3124,6 +3283,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -3162,6 +3322,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
@@ -3190,6 +3351,23 @@ mod tests {
         let options = svc.build_agent_options(&req, None);
         let tools = options.pre_discovered_mcp_tools.expect("tools threaded");
         assert_eq!(tools.as_ref(), &vec![tool]);
+    }
+
+    /// bug-b9cb83: the request's thinking setting reaches the provider.
+    #[test]
+    fn request_thinking_is_threaded_to_agent_options() {
+        let svc = ModelCallService::new("claude".into());
+        let thinking = roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+        let req = ModelCallRequest {
+            thinking: Some(thinking.clone()),
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+        assert_eq!(options.thinking, Some(thinking));
     }
 
     /// MCP config precedence: explicit `with_mcp_config` > `AgentConfig.mcp_config` > None.
@@ -3342,6 +3520,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3387,6 +3566,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3404,8 +3584,10 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
+        let first =
+            CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024), None);
+        let second =
+            CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024), None);
 
         assert_eq!(first, second);
     }
@@ -3417,8 +3599,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None);
-        let second = CacheCell::cache_key("model-b", None, &messages, &[], None, None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None, None);
+        let second = CacheCell::cache_key("model-b", None, &messages, &[], None, None, None);
 
         assert_ne!(first, second);
     }
@@ -3430,8 +3612,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.1), None);
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.9), None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.1), None, None);
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.9), None, None);
 
         assert_ne!(first, second);
     }
@@ -3443,8 +3625,27 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(2048));
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(1024), None);
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(2048), None);
+
+        assert_ne!(first, second);
+    }
+
+    /// bug-b9cb83: a cached answer is not reused for another thinking setting.
+    #[test]
+    fn cache_key_differs_on_thinking() {
+        let messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hello".into(),
+        }];
+        let thinking = roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None, None);
+        let second =
+            CacheCell::cache_key("model-a", None, &messages, &[], None, None, Some(&thinking));
 
         assert_ne!(first, second);
     }
@@ -3472,8 +3673,15 @@ mod tests {
             },
         ];
 
-        let first =
-            CacheCell::cache_key("model-a", None, &first_messages, &[], Some(0.2), Some(1024));
+        let first = CacheCell::cache_key(
+            "model-a",
+            None,
+            &first_messages,
+            &[],
+            Some(0.2),
+            Some(1024),
+            None,
+        );
         let second = CacheCell::cache_key(
             "model-a",
             None,
@@ -3481,6 +3689,7 @@ mod tests {
             &[],
             Some(0.2),
             Some(1024),
+            None,
         );
 
         assert_ne!(first, second);
@@ -3515,7 +3724,7 @@ mod tests {
         )];
 
         let key = |input: &[ModelInputMessage]| {
-            CacheCell::cache_key("model-a", None, &messages, input, None, None)
+            CacheCell::cache_key("model-a", None, &messages, input, None, None, None)
         };
         assert_ne!(key(&first_input), key(&bytes_changed));
         assert_ne!(key(&first_input), key(&mime_changed));
@@ -4008,6 +4217,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);

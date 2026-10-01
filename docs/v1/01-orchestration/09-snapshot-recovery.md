@@ -656,16 +656,8 @@ for large plan sets.
 - Atomic file writes via rename: POSIX guarantees that `rename(2)` is atomic
   within a single filesystem, preventing partial-write corruption.
 - Shapiro, M. et al. (2011). Conflict-free replicated data types. *SSS 2011*.
-  (CRDTs: state-based, operation-based, delta-state.)
-- Kleppmann, M. & Beresford, A. R. (2017). A conflict-free replicated JSON
-  datatype. *IEEE TPDS*, 28(10), 2733–2746. (Automerge foundation.)
-- Kulkarni, S. S. et al. (2014). Logical physical clocks and consistent
-  snapshots in globally distributed databases. *OPODIS 2014*. (Hybrid
-  Logical Clocks.)
-- Hinto, P. et al. (2024). Loro: Reimagining state synchronization for local-
-  first software. *loro.dev*. (Replayable Event Graph CRDTs in Rust.)
+- Kleppmann, M. & Beresford, A. R. (2017). A conflict-free replicated JSON datatype. *IEEE TPDS*, 28(10), 2733–2746.
+- Kulkarni, S. S. et al. (2014). Logical physical clocks and consistent snapshots in globally distributed databases. *OPODIS 2014*.
+- Hinto, P. et al. (2024). Loro: Reimagining state synchronization for local- first software. *loro.dev*.
 - Percival, C. (2003). Naive differences of executable code. *bsdiff*.
-  (Delta encoding for binary snapshots.)
-- O'Connor, J. et al. (2020). BLAKE3: One function, fast everywhere.
-  *blake3.io*. (8.4 GB/s single-thread, 92 GB/s 16-core; Merkle tree
-  structure enables incremental verification.)
+- O'Connor, J. et al. (2020). BLAKE3: One function, fast everywhere. *blake3.io*.

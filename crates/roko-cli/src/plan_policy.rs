@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use crate::task_parser::{TaskDef, TasksFile};
+use roko_core::task::TaskTier;
+
+use crate::task_parser::{ReadFile, TaskDef, TasksFile};
 
 /// Conservative absolute limits for ordinary plans. These are safety bounds,
 /// not generation targets; FAST and generated-plan policies are much tighter.
@@ -147,6 +149,135 @@ pub fn effective_generated_task_limit(max_tasks: usize) -> usize {
     }
 }
 
+// ---- Size limits per executor tier ---------------------------------------
+
+/// How big a task of one tier may be: the work a model on that tier's rung
+/// can be expected to finish. `plan validate` warns about a task over them
+/// (`PLAN_TIER_SIZE`); `plan run` does not check them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierSizeLimits {
+    /// Output `files` a task may declare.
+    pub max_files: usize,
+    /// Largest `max_loc` a task may declare: the tier's line budget.
+    pub max_loc: u32,
+    /// Words in the task's `description`.
+    pub max_description_words: usize,
+    /// Authored `verify` steps.
+    pub max_verify_steps: usize,
+}
+
+impl TierSizeLimits {
+    /// Default limits for `tier`. The line budget is [`TaskTier::max_loc`];
+    /// files, description words and verify steps sit at or above what the
+    /// tier's tasks in `plans/` used at p95 on 2026-09-30 (mechanical: 3
+    /// files, 3 verify steps), and the top tier gets the normal policy's
+    /// bounds.
+    #[must_use]
+    pub const fn for_tier(tier: TaskTier) -> Self {
+        let (max_files, max_description_words, max_verify_steps) = match tier {
+            TaskTier::Mechanical => (3, 300, 3),
+            TaskTier::Focused => (5, 350, 4),
+            TaskTier::Integrative => (10, 500, 6),
+            TaskTier::Architectural => (NORMAL_MAX_FILES_PER_TASK, 800, NORMAL_MAX_VERIFY_STEPS),
+        };
+        Self {
+            max_files,
+            max_loc: tier.max_loc(),
+            max_description_words,
+            max_verify_steps,
+        }
+    }
+
+    /// Each limit `task` exceeds, as `"6 files (limit 3)"`.
+    fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+        let mut over = Vec::new();
+        if task.files.len() > self.max_files {
+            over.push(format!(
+                "{} files (limit {})",
+                task.files.len(),
+                self.max_files
+            ));
+        }
+        if let Some(max_loc) = task.max_loc.filter(|&max_loc| max_loc > self.max_loc) {
+            over.push(format!("max_loc = {max_loc} (limit {})", self.max_loc));
+        }
+        let words = task
+            .description
+            .as_deref()
+            .map_or(0, |description| description.split_whitespace().count());
+        if words > self.max_description_words {
+            over.push(format!(
+                "{words}-word description (limit {})",
+                self.max_description_words
+            ));
+        }
+        if task.verify.len() > self.max_verify_steps {
+            over.push(format!(
+                "{} verify steps (limit {})",
+                task.verify.len(),
+                self.max_verify_steps
+            ));
+        }
+        over
+    }
+}
+
+impl PlanExecutionPolicy {
+    /// Size limits for `tier` in this lane: the tier's defaults, never above
+    /// the lane's own per-task bounds.
+    #[must_use]
+    pub fn tier_size_limits(&self, tier: TaskTier) -> TierSizeLimits {
+        let limits = TierSizeLimits::for_tier(tier);
+        TierSizeLimits {
+            max_files: limits.max_files.min(self.max_files_per_task),
+            max_verify_steps: limits.max_verify_steps.min(self.max_verify_steps_per_task),
+            ..limits
+        }
+    }
+}
+
+/// Tasks over their tier's size limits (`PLAN_TIER_SIZE`), one violation per
+/// task naming each limit it exceeds and the smallest higher tier it fits, if
+/// any. The tier is read by [`TaskDef::tier_class`].
+#[must_use]
+pub fn validate_tier_sizes(
+    tasks: &TasksFile,
+    policy: PlanExecutionPolicy,
+) -> Vec<PlanPolicyViolation> {
+    tasks
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let tier = task.tier_class();
+            let over = policy.tier_size_limits(tier).exceeded_by(task);
+            if over.is_empty() {
+                return None;
+            }
+            let hint = TaskTier::ALL
+                .into_iter()
+                .filter(|candidate| *candidate > tier)
+                .find(|candidate| {
+                    policy
+                        .tier_size_limits(*candidate)
+                        .exceeded_by(task)
+                        .is_empty()
+                })
+                .map_or_else(
+                    || "split it into smaller tasks".to_string(),
+                    |fits| format!("split it into smaller tasks, or raise its tier to {fits}"),
+                );
+            Some(PlanPolicyViolation::task(
+                task,
+                "PLAN_TIER_SIZE",
+                format!(
+                    "{tier} task is over its tier's size limits: {}; {hint}",
+                    over.join(", ")
+                ),
+            ))
+        })
+        .collect()
+}
+
 /// One actionable contract failure. These failures are deterministic and do
 /// not require an agent call to diagnose.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +303,22 @@ impl PlanPolicyViolation {
             message: message.into(),
         }
     }
+
+    /// Whether the plan may still run with this finding; see
+    /// [`is_advisory_code`].
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        is_advisory_code(self.code)
+    }
+}
+
+/// Whether a finding with this code leaves the plan runnable. Tasks that
+/// could run together but write overlapping files (`PLAN_CONCURRENT_OVERLAP`)
+/// run safely one after the other, so that finding is for the plan's author,
+/// not a reason to refuse the run.
+#[must_use]
+pub fn is_advisory_code(code: &str) -> bool {
+    code == "PLAN_CONCURRENT_OVERLAP"
 }
 
 impl fmt::Display for PlanPolicyViolation {
@@ -213,18 +360,19 @@ pub fn validate_plan_budgets(
             ),
         ));
     }
-    if tasks.meta.max_parallel == 0 {
+    if tasks.meta.max_parallel == Some(0) {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             "meta.max_parallel must be at least 1",
         ));
     }
-    if tasks.meta.max_parallel as usize > tasks.tasks.len().max(1) {
+    if let Some(max_parallel) = tasks.meta.max_parallel
+        && max_parallel as usize > tasks.tasks.len().max(1)
+    {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             format!(
-                "meta.max_parallel is {} but only {} tasks exist",
-                tasks.meta.max_parallel,
+                "meta.max_parallel is {max_parallel} but only {} tasks exist",
                 tasks.tasks.len()
             ),
         ));
@@ -387,7 +535,81 @@ pub fn validate_plan_budgets(
         }
     }
 
+    // With one task at a time no two tasks run together, whatever they write.
+    if plan_max_parallel(tasks) > 1 {
+        issues.extend(concurrent_overlaps(tasks));
+    }
+
     issues
+}
+
+/// `PLAN_CONCURRENT_OVERLAP`: two tasks that can run at the same time, because
+/// neither depends on the other, declare overlapping `files`.
+///
+/// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
+/// path, or a directory and a path inside it. The engine runs such tasks one
+/// after the other, so the plan gives up parallelism its author meant to have.
+/// A task without `files` declares nothing and is never flagged.
+fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
+    let dependency_map = tasks
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task.depends_on.as_slice()))
+        .collect::<HashMap<_, _>>();
+    let mut issues = Vec::new();
+    for (index, first) in tasks.tasks.iter().enumerate() {
+        for second in &tasks.tasks[index + 1..] {
+            let overlap = roko_graph::exclusion::first_overlap(&first.files, &second.files);
+            let Some((first_path, second_path)) = overlap else {
+                continue;
+            };
+            if depends_on_transitively(&dependency_map, &first.id, &second.id)
+                || depends_on_transitively(&dependency_map, &second.id, &first.id)
+            {
+                continue;
+            }
+            let (first_id, second_id) = (&first.id, &second.id);
+            let paths = if first_path == second_path {
+                format!("both write `{first_path}`")
+            } else {
+                format!("write the overlapping paths `{first_path}` and `{second_path}`")
+            };
+            issues.push(PlanPolicyViolation::plan(
+                "PLAN_CONCURRENT_OVERLAP",
+                format!(
+                    "tasks {first_id} and {second_id} can run at the same time and {paths}; \
+                     make one depend on the other, or give them disjoint files"
+                ),
+            ));
+        }
+    }
+    issues
+}
+
+/// How many of a plan's tasks may run at the same time.
+///
+/// `[meta] max_parallel` when the plan sets it. Omitted, as many as the plan
+/// has tasks when every task that can write declares its `files`: the Graph
+/// engine keeps tasks whose files overlap apart, and the DAG and
+/// `[conductor] max_agents` bound the rest. Otherwise one, since what the
+/// task [`task_with_unknown_writes`] names writes is unknown.
+#[must_use]
+pub fn plan_max_parallel(tasks: &TasksFile) -> u32 {
+    match tasks.meta.max_parallel {
+        Some(max_parallel) => max_parallel,
+        None if task_with_unknown_writes(tasks).is_some() => 1,
+        None => u32::try_from(tasks.tasks.len().max(1)).unwrap_or(u32::MAX),
+    }
+}
+
+/// The first task whose role can write files but that declares none. No
+/// other task may run beside it, since what it writes is unknown.
+#[must_use]
+pub fn task_with_unknown_writes(tasks: &TasksFile) -> Option<&TaskDef> {
+    tasks.tasks.iter().find(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.files.is_empty() && crate::task_parser::role_capabilities(role).write
+    })
 }
 
 fn check_count(
@@ -623,6 +845,12 @@ pub fn render_declared_context(
          stop and request plan repair instead of exploring.\n",
     );
 
+    // Explicit ranges and symbol anchors render first, so their size is known:
+    // they fail the task when they overrun the budget. Each file declared
+    // without a range then gets a fair share of what is left, and is cut to
+    // fit, with a marker, rather than fail the task (bug-7c8a57).
+    let mut blocks = Vec::with_capacity(context.read_files.len());
+    let mut unranged = Vec::new();
     for read_file in &context.read_files {
         let relative = validate_repo_relative_path(&read_file.path)
             .map_err(|reason| format!("unsafe context path `{}`: {reason}", read_file.path))?;
@@ -660,30 +888,22 @@ pub fn render_declared_context(
             }
         }
         if ranges.is_empty() {
-            ranges.push((1, lines.len().min(80)));
+            unranged.push((blocks.len(), read_file, content));
+            blocks.push(String::new());
+            continue;
         }
-        let ranges = merge_ranges(ranges);
-        for (start, end) in ranges {
-            output.push_str(&format!(
-                "\n<declared-file path=\"{}\" lines=\"{}-{}\" why=\"{}\">\n",
-                read_file.path,
-                start,
-                end,
-                read_file.why.replace('"', "'")
-            ));
-            for line_number in start..=end {
-                if let Some(line) = lines.get(line_number.saturating_sub(1)) {
-                    output.push_str(&format!("{line_number:>6} | {line}\n"));
-                }
-            }
-            output.push_str("</declared-file>\n");
-        }
-        if output.len() > policy.max_declared_context_bytes {
-            return Err(format!(
-                "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
-                task.id, policy.max_declared_context_bytes
-            ));
-        }
+        let block = merge_ranges(ranges)
+            .into_iter()
+            .map(|(start, end)| declared_block(read_file, &lines, start, end))
+            .collect::<String>();
+        blocks.push(block);
+    }
+    let fixed = output.len() + blocks.iter().map(String::len).sum::<usize>();
+    if fixed > policy.max_declared_context_bytes {
+        return Err(format!(
+            "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
+            task.id, policy.max_declared_context_bytes
+        ));
     }
 
     let missing = anchors
@@ -697,7 +917,102 @@ pub fn render_declared_context(
             missing.join(", ")
         ));
     }
+
+    let mut remaining = policy.max_declared_context_bytes - fixed;
+    let mut left = unranged.len();
+    for (index, read_file, content) in unranged {
+        let block = unranged_block(
+            read_file,
+            &content,
+            policy.max_range_lines,
+            remaining / left,
+        );
+        remaining = remaining.saturating_sub(block.len());
+        left -= 1;
+        blocks[index] = block;
+    }
+    output.extend(blocks);
     Ok(output)
+}
+
+/// The closing tag of a declared file block.
+const DECLARED_FILE_END: &str = "</declared-file>\n";
+
+/// The opening tag of a declared file block showing lines `start..=end` of a
+/// file `total` lines long.
+fn declared_file_tag(read_file: &ReadFile, start: usize, end: usize, total: usize) -> String {
+    format!(
+        "\n<declared-file path=\"{}\" lines=\"{start}-{end}\" total=\"{total}\" why=\"{}\">\n",
+        read_file.path,
+        read_file.why.replace('"', "'")
+    )
+}
+
+/// Line `line_number` of a declared file, numbered.
+fn numbered_line(line_number: usize, line: &str) -> String {
+    format!("{line_number:>6} | {line}\n")
+}
+
+/// Lines `start..=end` of the declared file `lines` as a block.
+fn declared_block(read_file: &ReadFile, lines: &[&str], start: usize, end: usize) -> String {
+    let mut block = declared_file_tag(read_file, start, end, lines.len());
+    for line_number in start..=end {
+        if let Some(line) = lines.get(line_number.saturating_sub(1)) {
+            block.push_str(&numbered_line(line_number, line));
+        }
+    }
+    block.push_str(DECLARED_FILE_END);
+    block
+}
+
+/// The line that ends a declared file cut short after its first `shown` of
+/// `total` lines.
+fn truncation_marker(shown: usize, total: usize) -> String {
+    if shown == 0 {
+        format!(
+            "[... truncated: showed none of its {total} lines; add a lines range to read_files]\n"
+        )
+    } else {
+        format!(
+            "[... truncated: showed lines 1-{shown} of {total}; add a lines range to read_files]\n"
+        )
+    }
+}
+
+/// A `read_files` entry declared without a range: the whole file when it has
+/// at most `max_lines` lines and its block fits in `share` bytes; else its
+/// first lines that do, and a marker saying the rest was cut. Only a share
+/// too small for the tag and the marker overruns it.
+fn unranged_block(read_file: &ReadFile, content: &str, max_lines: usize, share: usize) -> String {
+    let lines = content.lines().collect::<Vec<_>>();
+    let total = lines.len();
+    if total <= max_lines {
+        let whole = declared_block(read_file, &lines, 1, total);
+        if whole.len() <= share {
+            return whole;
+        }
+    }
+    let end = total.min(max_lines);
+    let frame = declared_file_tag(read_file, 1, end, total).len()
+        + truncation_marker(end, total).len()
+        + DECLARED_FILE_END.len();
+    let mut room = share.saturating_sub(frame);
+    let mut body = String::new();
+    let mut shown = 0;
+    for (line_number, line) in (1..=end).zip(&lines) {
+        let numbered = numbered_line(line_number, line);
+        if numbered.len() > room {
+            break;
+        }
+        room -= numbered.len();
+        body.push_str(&numbered);
+        shown = line_number;
+    }
+    let mut block = declared_file_tag(read_file, 1, shown, total);
+    block.push_str(&body);
+    block.push_str(&truncation_marker(shown, total));
+    block.push_str(DECLARED_FILE_END);
+    block
 }
 
 /// Return a normalized repository-relative path or a precise rejection.
@@ -973,15 +1288,18 @@ mod tests {
                 command: "grep -q Widget src/lib.rs".into(),
                 fail_msg: None,
                 timeout_ms: 1_000,
+                scope: Vec::new(),
             }],
             timeout_secs: 60,
             max_retries: 0,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -994,11 +1312,15 @@ mod tests {
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
                 source_prd: None,
                 failure_policy: None,
+                workspace_rungs: None,
+                verify: Vec::new(),
+                approval: None,
+                allow_unverified: false,
             },
             tasks: vec![task],
         }
@@ -1053,6 +1375,191 @@ mod tests {
         assert!(rendered.contains("Do not search home directories"));
     }
 
+    /// [`task`] with `paths` declared as read files without ranges, and no
+    /// symbol anchors.
+    fn unranged_task(paths: &[&str]) -> TaskDef {
+        let mut plan_task = task();
+        let context = plan_task.context.as_mut().expect("context");
+        context.read_files = paths
+            .iter()
+            .map(|path| ReadFile {
+                path: (*path).to_string(),
+                lines: None,
+                why: "whole file".into(),
+            })
+            .collect();
+        context.symbols.clear();
+        plan_task
+    }
+
+    /// Writes `count` lines, each `width` characters long, to `path`.
+    fn write_lines(root: &Path, path: &str, count: usize, width: usize) {
+        let content = (1..=count)
+            .map(|n| format!("{:<width$}\n", format!("// line {n}")))
+            .collect::<String>();
+        std::fs::write(root.join(path), content).expect("write source");
+    }
+
+    /// bug-7c8a57: a file declared without a range is injected whole, not
+    /// just its first 80 lines, and its tag says how long it is.
+    #[test]
+    fn renderer_injects_unranged_file_past_line_80() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        write_lines(root.path(), "src/lib.rs", 300, 12);
+        let rendered = render_declared_context(
+            &unranged_task(&["src/lib.rs"]),
+            root.path(),
+            PlanExecutionPolicy::normal(),
+        )
+        .expect("render context");
+        assert!(
+            rendered.contains("lines=\"1-300\" total=\"300\""),
+            "{rendered}"
+        );
+        assert!(rendered.contains("    81 | // line 81"), "{rendered}");
+        assert!(rendered.contains("   300 | // line 300"), "{rendered}");
+        assert!(!rendered.contains("truncated"), "{rendered}");
+    }
+
+    /// A file declared without a range that is longer than the policy's
+    /// range limit is cut there, with a marker saying what was shown, and
+    /// the task is not failed for it.
+    #[test]
+    fn renderer_marks_an_unranged_file_cut_at_the_line_limit() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        write_lines(root.path(), "src/lib.rs", 300, 12);
+        let policy = PlanExecutionPolicy::fast();
+        let limit = policy.max_range_lines;
+        let rendered =
+            render_declared_context(&unranged_task(&["src/lib.rs"]), root.path(), policy)
+                .expect("a file without a range never fails the task");
+        assert!(
+            rendered.contains(&format!("lines=\"1-{limit}\" total=\"300\"")),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!(
+                "[... truncated: showed lines 1-{limit} of 300; add a lines range to \
+                 read_files]\n</declared-file>"
+            )),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("{:>6} | ", limit + 1)),
+            "{rendered}"
+        );
+    }
+
+    /// Files declared without a range share what the prompt budget leaves
+    /// and are cut to fit it, each with a marker; an explicit range that
+    /// overruns the budget still fails the task.
+    #[test]
+    fn unranged_files_share_the_budget_and_explicit_ranges_still_fail() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        // 200 lines of 200 characters: about 40 KiB each, past FAST's budget.
+        write_lines(root.path(), "src/a.rs", 200, 200);
+        write_lines(root.path(), "src/b.rs", 200, 200);
+        let policy = PlanExecutionPolicy::fast();
+        let rendered = render_declared_context(
+            &unranged_task(&["src/a.rs", "src/b.rs"]),
+            root.path(),
+            policy,
+        )
+        .expect("files without a range never fail the task");
+        assert!(
+            rendered.len() <= policy.max_declared_context_bytes,
+            "{} bytes",
+            rendered.len()
+        );
+        assert_eq!(
+            rendered.matches("[... truncated: showed lines 1-").count(),
+            2,
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("path=\"src/b.rs\" lines=\"1-"),
+            "{rendered}"
+        );
+
+        let mut ranged = unranged_task(&["src/a.rs"]);
+        ranged.context.as_mut().expect("context").read_files[0].lines = Some("1-200".into());
+        let error = render_declared_context(&ranged, root.path(), policy)
+            .expect_err("an explicit range over the budget fails the task");
+        assert!(error.contains("byte prompt budget"), "{error}");
+    }
+
+    /// gap-1d1fa6: a task bigger than its tier allows is flagged, with the
+    /// smallest tier it fits; the same task one tier up is not.
+    #[test]
+    fn task_over_its_tier_limits_is_flagged() {
+        let policy = PlanExecutionPolicy::normal();
+        let flagged = |task: &TaskDef| {
+            validate_tier_sizes(&tasks(task.clone()), policy)
+                .into_iter()
+                .map(|issue| {
+                    assert_eq!(issue.code, "PLAN_TIER_SIZE");
+                    assert_eq!(issue.task_id.as_deref(), Some("T1"));
+                    issue.message
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(flagged(&task()).is_empty(), "a small focused task fits");
+
+        // The item's example task declares max_loc = 200, above even
+        // integrative's 150-line budget, so this one declares 150.
+        let mut wide = task();
+        wide.tier = "mechanical".into();
+        wide.files = (1..=6).map(|n| format!("src/part_{n}.rs")).collect();
+        wide.max_loc = Some(150);
+        assert_eq!(
+            flagged(&wide),
+            [
+                "mechanical task is over its tier's size limits: 6 files (limit 3), \
+                 max_loc = 150 (limit 20); split it into smaller tasks, or raise its tier \
+                 to integrative"
+            ]
+        );
+        wide.tier = "integrative".into();
+        assert!(flagged(&wide).is_empty(), "the same task fits integrative");
+        wide.max_loc = Some(200);
+        assert_eq!(
+            flagged(&wide),
+            [
+                "integrative task is over its tier's size limits: max_loc = 200 (limit 150); \
+                 split it into smaller tasks, or raise its tier to architectural"
+            ]
+        );
+
+        // Description words and verify steps count too, and a top-tier task
+        // can only be split.
+        let mut sprawling = task();
+        sprawling.tier = "Architectural".into();
+        sprawling.description = Some("word ".repeat(801));
+        sprawling.verify = vec![sprawling.verify[0].clone(); 9];
+        assert_eq!(
+            flagged(&sprawling),
+            [
+                "architectural task is over its tier's size limits: 801-word description \
+                 (limit 800), 9 verify steps (limit 8); split it into smaller tasks"
+            ]
+        );
+
+        // The line budgets are the generator's, and a lane's own per-task
+        // bounds cap every tier.
+        for tier in TaskTier::ALL {
+            assert_eq!(TierSizeLimits::for_tier(tier).max_loc, tier.max_loc());
+        }
+        let fast = PlanExecutionPolicy::fast();
+        let architectural = fast.tier_size_limits(TaskTier::Architectural);
+        assert_eq!(
+            (architectural.max_files, architectural.max_verify_steps),
+            (8, 1)
+        );
+    }
+
     #[test]
     fn generated_budget_rejects_duplicate_verify_and_serial_fragmentation() {
         let first = task();
@@ -1076,5 +1583,95 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "PLAN_FRAGMENTED_OWNERSHIP")
         );
+    }
+
+    /// Two tasks, T1 and T2, that both write `src/lib.rs`, in a plan that
+    /// runs two tasks at a time.
+    fn two_writers_of_one_file() -> TasksFile {
+        let mut second = task();
+        second.id = "T2".into();
+        let mut plan = tasks(task());
+        plan.meta.total = 2;
+        plan.meta.max_parallel = Some(2);
+        plan.tasks.push(second);
+        plan
+    }
+
+    fn flags_concurrent_overlap(plan: &TasksFile) -> bool {
+        validate_plan_budgets(plan, PlanExecutionPolicy::normal())
+            .iter()
+            .any(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+    }
+
+    /// gap-a8d786: tasks that neither depends on can run at the same time.
+    /// When their files overlap, the finding names both tasks and the path,
+    /// and it leaves the plan runnable.
+    #[test]
+    fn concurrent_tasks_sharing_a_file_are_flagged() {
+        let mut plan = two_writers_of_one_file();
+        let issues = validate_plan_budgets(&plan, PlanExecutionPolicy::normal());
+        let overlaps = issues
+            .iter()
+            .filter(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+            .collect::<Vec<_>>();
+        assert_eq!(overlaps.len(), 1, "{issues:?}");
+        let message = &overlaps[0].message;
+        assert!(message.contains("T1 and T2"), "{message}");
+        assert!(message.contains("`src/lib.rs`"), "{message}");
+        assert!(overlaps[0].is_advisory());
+
+        // A directory covers the files below it, as in the Graph engine.
+        plan.tasks[1].files = vec!["src".into()];
+        assert!(flags_concurrent_overlap(&plan));
+        plan.tasks[1].files = vec!["src/lib".into()];
+        assert!(!flags_concurrent_overlap(&plan));
+    }
+
+    /// The same two tasks are not flagged once one depends on the other, or
+    /// when the plan runs one task at a time.
+    #[test]
+    fn serial_tasks_sharing_a_file_are_not_flagged() {
+        let mut plan = two_writers_of_one_file();
+        assert!(flags_concurrent_overlap(&plan));
+
+        plan.tasks[1].depends_on = vec!["T1".into()];
+        assert!(!flags_concurrent_overlap(&plan), "T2 runs after T1");
+
+        plan.tasks[1].depends_on.clear();
+        plan.meta.max_parallel = Some(1);
+        assert!(!flags_concurrent_overlap(&plan), "one task at a time");
+    }
+
+    /// gap-272448: an omitted `max_parallel` lets as many tasks run at once
+    /// as the plan has, when every task that can write declares its files,
+    /// and one otherwise. An authored value wins.
+    #[test]
+    fn omitted_max_parallel_resolves_from_declared_files() {
+        let mut plan = two_writers_of_one_file();
+        plan.meta.max_parallel = None;
+        assert_eq!(plan_max_parallel(&plan), 2);
+        // Now the two tasks can run together, so their shared file counts.
+        assert!(flags_concurrent_overlap(&plan));
+
+        // A researcher cannot write, so it declares no files and changes
+        // nothing.
+        let mut researcher = task();
+        researcher.id = "T3".into();
+        researcher.role = Some("researcher".into());
+        researcher.files.clear();
+        plan.tasks.push(researcher);
+        assert_eq!(task_with_unknown_writes(&plan).map(|task| &task.id), None);
+        assert_eq!(plan_max_parallel(&plan), 3);
+
+        // An implementer that declares no files writes something unknown.
+        plan.tasks[1].files.clear();
+        assert_eq!(
+            task_with_unknown_writes(&plan).map(|task| task.id.as_str()),
+            Some("T2")
+        );
+        assert_eq!(plan_max_parallel(&plan), 1);
+
+        plan.meta.max_parallel = Some(2);
+        assert_eq!(plan_max_parallel(&plan), 2);
     }
 }

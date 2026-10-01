@@ -52,15 +52,18 @@ fn task(id: &str, title: &str) -> TaskDef {
             command: "cargo check".into(),
             fail_msg: None,
             timeout_ms: 60_000,
+            scope: Vec::new(),
         }],
         timeout_secs: 60,
         max_retries: 1,
         acceptance: vec!["compiles".into()],
         acceptance_contract: None,
+        accept: None,
         domain: None,
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        hints: Default::default(),
     }
 }
 

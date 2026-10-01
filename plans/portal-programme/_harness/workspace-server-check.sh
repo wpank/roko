@@ -90,6 +90,7 @@ check "a resumed run of a plan the CLI completed succeeds (one shared checkpoint
 check "a resumed run of an unchanged plan dispatches no agent" resume_skipped_agents
 start_capture events-fresh.sse
 CALLS_BEFORE_FRESH="$(fake_calls)"
+clear_artifacts out/live-a-t01.txt out/live-a-t02.txt
 FRESH_CODE="$(api POST /api/plans/live-a/execute)"
 wait_idle live-a 90 || true
 stop_capture
@@ -120,6 +121,8 @@ check "an unknown plan id is a 404" [ "$(api POST /api/plans/execute '{"plans":[
 
 # ── Run all: every plan under plans/, in plan-set order ────────────────────
 start_capture events-all.sse
+# Run-all runs live-a fresh a third time.
+clear_artifacts out/live-a-t01.txt out/live-a-t02.txt
 code="$(api POST /api/plans/execute '{}')"
 ALL_RUN="$(jget "$WS/last.json" 'd["id"]')"
 check "run-all is accepted" [ "$code" = 202 -a -n "$ALL_RUN" ]
@@ -153,6 +156,7 @@ check "a zero plan limit is rejected (422)" \
 
 # ── A plan inside a plan set executes by id ────────────────────────────────
 start_capture events-nested.sse
+clear_artifacts out/live-nested.txt
 check "a plan inside a plan set is accepted for execution" [ "$(api POST /api/plans/live-nested/execute)" = 202 ]
 wait_idle live-nested 60 || true
 stop_capture

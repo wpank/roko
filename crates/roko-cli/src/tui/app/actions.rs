@@ -355,12 +355,13 @@ impl App {
                 ] {
                     let _ = std::fs::create_dir_all(roko_dir.join(sub));
                 }
-                // Create default roko.toml if absent
+                // Create roko.toml if absent: the `roko init` template, which
+                // is checked like `roko config validate` before it is written.
                 if !roko_toml.exists() {
-                    let default_toml =
-                        "[agent]\neffort = \"standard\"\n\n[learning]\nenabled = true\n";
-                    if let Err(err) = std::fs::write(&roko_toml, default_toml) {
-                        tracing::warn!(error = %err, "failed to write roko.toml");
+                    let provider = crate::init::InitProvider::detect();
+                    let written = crate::init::write_init_config(&self.workdir, false, provider);
+                    if let Err(err) = written {
+                        tracing::warn!("failed to write roko.toml: {err:#}");
                     }
                 }
                 // Update workspace state
@@ -688,8 +689,7 @@ impl App {
                         })
                         .ok()
                         .and_then(|mut f| {
-                            use std::io::Write;
-                            writeln!(f, "{}", entry)
+                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
                                 .inspect_err(|err| {
                                     tracing::warn!(
                                         error = %err,
@@ -813,8 +813,7 @@ impl App {
                         })
                         .ok()
                         .and_then(|mut f| {
-                            use std::io::Write;
-                            writeln!(f, "{}", entry)
+                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
                                 .inspect_err(|err| {
                                     tracing::warn!(
                                         error = %err,

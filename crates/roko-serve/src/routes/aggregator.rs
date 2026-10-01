@@ -33,6 +33,8 @@ const AGENT_LIST_TTL: Duration = Duration::from_secs(30);
 const AGENT_STATS_TTL: Duration = Duration::from_secs(5);
 const PREDICTIONS_TTL: Duration = Duration::from_secs(10);
 const KNOWLEDGE_TTL: Duration = Duration::from_secs(30);
+/// Most hits `GET /api/knowledge/search` returns, whatever `k` asks for.
+const KNOWLEDGE_SEARCH_MAX_K: usize = 100;
 const TASKS_TTL: Duration = Duration::from_secs(30);
 const STREAM_DISCOVERY_REFRESH: Duration = Duration::from_secs(10);
 const STREAM_RECONNECT_DELAY: Duration = Duration::from_secs(2);
@@ -114,6 +116,9 @@ struct TaskListQuery {
 #[derive(Debug, Deserialize)]
 struct SearchQuery {
     q: String,
+    /// Maximum number of results, capped at [`KNOWLEDGE_SEARCH_MAX_K`].
+    #[serde(default = "default_search_k")]
+    k: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +147,10 @@ fn default_limit() -> usize {
 }
 
 fn default_trace_limit() -> usize {
+    10
+}
+
+fn default_search_k() -> usize {
     10
 }
 
@@ -586,15 +595,41 @@ fn domain_from_entry(e: &roko_neuro::KnowledgeEntry) -> &'static str {
     }
 }
 
+/// `GET /api/knowledge/search?q=<text>&k=N`: rank knowledge entries against
+/// `q` with the knowledge store's query scoring, the same as
+/// `POST /api/neuro/query`. Read-only, and returns at most
+/// [`KNOWLEDGE_SEARCH_MAX_K`] hits.
 async fn search_knowledge(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(query): Query<SearchQuery>,
-) -> Json<Value> {
-    Json(json!({
-        "results": [],
+) -> Result<Json<Value>, ApiError> {
+    let hits = if query.q.trim().is_empty() {
+        Vec::new()
+    } else {
+        roko_neuro::knowledge_store::KnowledgeStore::for_layout(&state.layout)
+            .query_hits(&query.q, query.k.min(KNOWLEDGE_SEARCH_MAX_K))
+            .map_err(|e| ApiError::internal(format!("knowledge search failed: {e}")))?
+    };
+    let results: Vec<Value> = hits
+        .into_iter()
+        .map(|hit| {
+            json!({
+                "id": hit.entry.id,
+                "kind": hit.entry.kind,
+                "tier": hit.entry.tier,
+                "score": hit.total_score,
+                "confidence": hit.entry.confidence,
+                "content": hit.entry.content,
+                "created_at": hit.entry.created_at.timestamp(),
+                "confirmations": hit.entry.confirmation_count,
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "results": results,
         "query": query.q,
         "timestamp": now_secs(),
-    }))
+    })))
 }
 
 async fn list_knowledge_kinds(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
@@ -1486,6 +1521,44 @@ mod tests {
         assert_eq!(listed["total"], 1);
         assert_eq!(listed["items"][0]["id"], "k-multibyte");
         assert_eq!(listed["items"][0]["label"], format!("{}é…", "a".repeat(79)));
+    }
+
+    #[tokio::test]
+    async fn knowledge_search_returns_matching_entries() {
+        let dir = tempdir().expect("tempdir");
+        let state = test_state_at(dir.path());
+        write_knowledge_entries(
+            &state,
+            &[
+                json!({
+                    "id": "k-gate",
+                    "kind": "warning",
+                    "content": "clippy gate fails when a crate adds an unused import",
+                    "tags": ["gate"],
+                }),
+                json!({
+                    "id": "k-unrelated",
+                    "content": "portal theme tokens live in globals.css",
+                }),
+            ],
+        );
+
+        let router = Router::new()
+            .nest("/api", routes())
+            .with_state(Arc::clone(&state));
+        let found = call_json(&router, "/api/knowledge/search?q=clippy+gate&k=5").await;
+
+        assert_eq!(found["query"], "clippy gate");
+        let results = found["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1, "only the matching entry: {results:?}");
+        assert_eq!(results[0]["id"], "k-gate");
+        assert_eq!(results[0]["kind"], "warning");
+        assert!(results[0]["score"].as_f64().is_some_and(|score| score > 0.0));
+
+        let missed = call_json(&router, "/api/knowledge/search?q=zebra").await;
+        assert_eq!(missed["results"].as_array().map(Vec::len), Some(0));
+        let none_wanted = call_json(&router, "/api/knowledge/search?q=clippy&k=0").await;
+        assert_eq!(none_wanted["results"].as_array().map(Vec::len), Some(0));
     }
 
     fn test_state() -> Arc<AppState> {

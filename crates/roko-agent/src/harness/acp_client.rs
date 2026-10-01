@@ -51,9 +51,8 @@ use tokio::time::Duration;
 /// Configuration for an ACP stdio client connection.
 ///
 /// Each ACP-speaking harness provides its own constructor that fills in
-/// the binary, args, and session prefix. The protocol version is
-/// `"2024-11-05"` (the ACP spec's date-string convention); Cursor uses
-/// integer `1` which is passed as `"1"`.
+/// the binary, args, and session prefix. ACP's protocol version is an
+/// integer; every constructor sets `"1"`, which `connect` sends as `1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpStdioConfig {
     /// Path or name of the binary to spawn (e.g. `"cursor"`, `"hermes"`,
@@ -72,9 +71,9 @@ pub struct AcpStdioConfig {
     /// Additional env vars to set on the child process.
     pub env: HashMap<String, String>,
 
-    /// Protocol version to send in the `initialize` request.
-    /// ACP spec uses date strings like `"2024-11-05"`.
-    /// Cursor uses `"1"`. Always a `String`.
+    /// Protocol version to send in the `initialize` request. ACP versions
+    /// are integers, so a numeric value goes out as a JSON number; anything
+    /// else is sent as a string. Always a `String`.
     pub protocol_version: String,
 
     /// Timeout for the `initialize` handshake and `session/new`.
@@ -541,7 +540,7 @@ impl AcpStdioClient {
             args: vec!["acp".into()],
             cwd: Some(cwd),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         })
         .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::Hermes))
@@ -562,7 +561,7 @@ impl AcpStdioClient {
             args,
             cwd: Some(cwd),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         })
         .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::OpenClaw))
@@ -670,22 +669,7 @@ impl AcpStdioClient {
         self.response_rx = Some(resp_rx);
 
         // --- 9. Send `initialize` request ---
-        let protocol_version: serde_json::Value =
-            if let Ok(n) = self.config.protocol_version.parse::<u64>() {
-                serde_json::json!(n)
-            } else {
-                serde_json::json!(self.config.protocol_version)
-            };
-
-        let init_params = serde_json::json!({
-            "protocolVersion": protocol_version,
-            "clientInfo": {
-                "name": "roko",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "clientCapabilities": {}
-        });
-
+        let init_params = self.initialize_params();
         let id = self.send_request("initialize", Some(init_params)).await?;
 
         // --- 10. Await response ---
@@ -712,6 +696,20 @@ impl AcpStdioClient {
         };
 
         Ok(init_response)
+    }
+
+    /// Params of the `initialize` request. ACP's `protocolVersion` is an
+    /// integer, so a numeric `protocol_version` goes out as a JSON number.
+    fn initialize_params(&self) -> serde_json::Value {
+        let protocol_version = protocol_version_json(&self.config.protocol_version);
+        serde_json::json!({
+            "protocolVersion": protocol_version,
+            "clientInfo": {
+                "name": "roko",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "clientCapabilities": {}
+        })
     }
 
     // ---- Request/response primitives ----------------------------------------
@@ -1052,6 +1050,15 @@ impl Drop for AcpStdioClient {
         if let Some(pid) = self.child.as_ref().and_then(|c| c.id()) {
             process::unregister_pid(pid);
         }
+    }
+}
+
+/// `version` as the `initialize` request sends it: a JSON number when it is
+/// numeric, as ACP versions are, and a string otherwise.
+fn protocol_version_json(version: &str) -> serde_json::Value {
+    match version.parse::<u64>() {
+        Ok(number) => serde_json::json!(number),
+        Err(_) => serde_json::json!(version),
     }
 }
 
@@ -1538,7 +1545,7 @@ done
         let client = AcpStdioClient::hermes("hermes", PathBuf::from("/workspace"));
         let cfg = client.config();
         assert_eq!(cfg.command, "hermes");
-        assert_eq!(cfg.protocol_version, "2024-11-05");
+        assert_eq!(cfg.protocol_version, "1");
         assert_eq!(cfg.args, vec!["acp"]);
         assert!(cfg.env.is_empty());
     }
@@ -1552,7 +1559,7 @@ done
         );
         let cfg = client.config();
         assert_eq!(cfg.command, "openclaw");
-        assert_eq!(cfg.protocol_version, "2024-11-05");
+        assert_eq!(cfg.protocol_version, "1");
         assert!(cfg.args.contains(&"--url".to_string()));
         assert!(cfg.args.contains(&"ws://localhost:18789".to_string()));
     }
@@ -2007,7 +2014,7 @@ done
             args: vec![],
             cwd: Some(tmp.path().to_path_buf()),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: std::time::Duration::from_secs(10),
         });
 
@@ -2636,7 +2643,7 @@ done
                 m.insert("KEY".into(), "VALUE".into());
                 m
             },
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         };
 
@@ -2649,7 +2656,7 @@ done
             deserialized.env.get("KEY").map(|s| s.as_str()),
             Some("VALUE")
         );
-        assert_eq!(deserialized.protocol_version, "2024-11-05");
+        assert_eq!(deserialized.protocol_version, "1");
         assert_eq!(deserialized.timeout, Duration::from_secs(30));
     }
 
@@ -2749,24 +2756,31 @@ done
 
     #[test]
     fn protocol_version_numeric_string_parses_to_integer_json() {
-        let version_str = "1";
-        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
-            serde_json::json!(n)
-        } else {
-            serde_json::json!(version_str)
-        };
-        assert_eq!(protocol_version, serde_json::json!(1));
+        assert_eq!(protocol_version_json("1"), serde_json::json!(1));
     }
 
     #[test]
     fn protocol_version_date_string_stays_string() {
-        let version_str = "2024-11-05";
-        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
-            serde_json::json!(n)
-        } else {
-            serde_json::json!(version_str)
-        };
-        assert_eq!(protocol_version, serde_json::json!("2024-11-05"));
+        let version = "2024-11-05";
+        assert_eq!(protocol_version_json(version), serde_json::json!(version));
+    }
+
+    /// bug-f6e6ae: ACP's `initialize.protocolVersion` is an integer, and a
+    /// spec-validating agent rejects a date string. Every built-in client
+    /// sends the integer.
+    #[test]
+    fn acp_clients_initialize_with_an_integer_protocol_version() {
+        let cwd = PathBuf::from("/workspace");
+        for client in [
+            AcpStdioClient::cursor("cursor", cwd.clone(), None),
+            AcpStdioClient::hermes("hermes", cwd.clone()),
+            AcpStdioClient::openclaw("openclaw", cwd.clone(), None),
+        ] {
+            let params = client.initialize_params();
+            let command = &client.config().command;
+            assert_eq!(params["protocolVersion"], serde_json::json!(1), "{command}");
+            assert_eq!(params["clientInfo"]["name"], "roko", "{command}");
+        }
     }
 
     // -- AtomicU64 ID generation ---------------------------------------------

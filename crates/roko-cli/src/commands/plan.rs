@@ -1579,11 +1579,13 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
 }
 
 /// Handle `roko resume [run-id]` by locating the snapshot and delegating
-/// to `cmd_plan` with a synthesized `PlanCmd::Run`.
+/// to `cmd_plan` with a synthesized `PlanCmd::Run`. `max_tasks` is the run's
+/// `--max-tasks`, which never stops a checkpoint from resuming.
 pub(crate) async fn cmd_resume(
     cli: &Cli,
     run_id: Option<String>,
     workdir: Option<std::path::PathBuf>,
+    max_tasks: usize,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let snapshot = if let Some(ref id) = run_id {
@@ -1650,7 +1652,7 @@ pub(crate) async fn cmd_resume(
         approval: false,
         no_tui: false,
         max_retries: None,
-        max_tasks: 0,
+        max_tasks,
         dry_run: false,
         fresh: false,
         force_resume: false,

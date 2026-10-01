@@ -2478,7 +2478,6 @@ async fn run_one_plan(
     control: &PlanControl,
 ) -> anyhow::Result<PlanRunResult> {
     use roko_graph::cells::TaskExecutorCell;
-    use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
 
     let graph_tui_bridge = ctx.graph_tui_bridge;
@@ -2490,45 +2489,22 @@ async fn run_one_plan(
         );
     }
 
-    // Convert Runner v2 tasks into PlanTaskInfo for the converter. Each
-    // task's retry budget is `--max-retries`, else what it authors, else set
-    // by the adaptive gate thresholds.
+    // Convert Runner v2 tasks into PlanTaskInfo for the converter, with the
+    // mapping the resume preview uses (gap-be7368). Each task's retry budget
+    // is `--max-retries`, else what it authors, else set by the adaptive gate
+    // thresholds.
     let retry_budgets = ctx.graph_task_dispatcher.task_retry_budgets(&plan.dir);
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
-        .tasks
-        .iter()
-        .map(|t| {
-            let info = PlanTaskInfo {
-                title: t.title.clone(),
-                description: t.description.clone(),
-                role: t.role.clone(),
-                tier: t.tier.clone(),
-                model_hint: t.model_hint.clone(),
-                files: t.files.clone(),
-                depends_on: t.depends_on.clone(),
-                depends_on_plan: t.depends_on_plan.clone(),
-                timeout_secs: t.timeout_secs,
-                max_retries: ctx
-                    .max_retries
-                    .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t)),
-                domain: t.domain.as_ref().map(|d| format!("{d:?}")),
-                sequence: t.sequence,
-                full_config_json: serde_json::to_value(t).unwrap_or_default(),
-            };
-            (t.id.clone(), info)
-        })
-        .collect();
+    let tasks = crate::graph_checkpoint::plan_task_infos(plan, |t| {
+        ctx.max_retries
+            .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t))
+    });
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
-    // the converted concurrency. The width is applied once the identity is
-    // taken, below.
-    let max_parallel = if ctx.max_tasks > 0 {
-        u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+    // the converted concurrency. `--max-tasks` and the width are applied once
+    // the identity is taken, below, so a run resumes whatever `--max-tasks`
+    // it is given (gap-7147bb).
+    let max_parallel = crate::graph_checkpoint::converted_max_parallel(plan);
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
 
@@ -2590,7 +2566,7 @@ async fn run_one_plan(
         }
     } else {
         // ── Simple single-Activity-per-task converter (default) ─────────
-        match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
+        match crate::graph_checkpoint::convert_plan(plan, &tasks) {
             Ok(g) => {
                 let mut reg = roko_graph::default_registry();
                 let plan_dispatcher = Arc::clone(ctx.task_dispatcher);
@@ -2600,6 +2576,7 @@ async fn run_one_plan(
                 (g, reg)
             }
             Err(e) => {
+                let e = e.root_cause();
                 graph_tui_bridge.error(&format!(
                     "failed to convert plan '{}' to graph: {e}",
                     plan.id
@@ -2667,11 +2644,14 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
-    // A plan that omits `max_parallel` runs as wide as its DAG allows when
-    // every task that can write declares its files: the engine keeps tasks
-    // whose files overlap apart. Set after the identity is taken, like the
-    // failure strategy, so checkpoints of such plans keep resuming.
-    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+    // `--max-tasks` caps the run. Otherwise a plan that omits `max_parallel`
+    // runs as wide as its DAG allows when every task that can write declares
+    // its files: the engine keeps tasks whose files overlap apart. Both are
+    // set after the identity is taken, like the failure strategy, so
+    // checkpoints keep resuming.
+    if ctx.max_tasks > 0 {
+        graph.policy.max_concurrent_nodes = ctx.max_tasks;
+    } else if plan.tasks.meta.max_parallel.is_none() {
         let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
         if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
             tracing::info!(

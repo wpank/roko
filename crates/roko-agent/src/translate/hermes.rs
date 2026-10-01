@@ -34,7 +34,8 @@
 //! - `<think>`, `<thinking>` and `<reasoning>` blocks are skipped, closed or
 //!   not, so a `<tool_call>` the model only drafted while reasoning is not run
 //! - Missing `"arguments"` key defaults to `{}`
-//! - Single-block `"tool_calls": [...]` arrays are unpacked
+//! - Single-block `"tool_calls": [...]` arrays are unpacked into one call
+//!   per entry
 //! - Trailing commas and minor JSON malformations are repaired
 //! - Both `BackendResponse::Text` and `BackendResponse::Json` (with
 //!   content in `/message/content` or `/choices/0/message/content`) are accepted
@@ -219,7 +220,8 @@ fn next_opener(text: &str, from: usize) -> Option<(usize, &'static str, &'static
         .min_by_key(|(at, _, _)| *at)
 }
 
-/// Parse the JSON body inside a `<tool_call>` block into a `ToolCall`.
+/// Parse the JSON body inside a `<tool_call>` block into its tool calls,
+/// numbered from `index`.
 ///
 /// Handles:
 /// - Standard `{"name": "...", "arguments": {...}}`
@@ -227,7 +229,7 @@ fn next_opener(text: &str, from: usize) -> Option<(usize, &'static str, &'static
 /// - `"arguments"` before `"name"` key ordering (JSON is order-independent)
 /// - Single-block `{"tool_calls": [...]}` array -> unpacks each entry
 /// - Trailing commas and minor JSON malformations -> attempted repair
-fn parse_tool_call_body(body: &str, index: usize) -> Option<ToolCall> {
+fn parse_tool_call_body(body: &str, index: usize) -> Vec<ToolCall> {
     // Try parsing the body as-is first.
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
         return tool_call_from_value(&parsed, index);
@@ -239,25 +241,26 @@ fn parse_tool_call_body(body: &str, index: usize) -> Option<ToolCall> {
         return tool_call_from_value(&parsed, index);
     }
 
-    None
+    Vec::new()
 }
 
-/// Construct a `ToolCall` from a parsed JSON value.
+/// The tool calls in a parsed JSON value, numbered from `index`.
 ///
-/// If the value contains a `"tool_calls"` array, returns only the first
-/// entry (additional entries from that array should be handled by the
-/// caller, but in practice single-block arrays are the common case).
-fn tool_call_from_value(value: &serde_json::Value, index: usize) -> Option<ToolCall> {
+/// A `{"tool_calls": [...]}` wrapper gives one call per entry, in order
+/// (bug-b14145); an entry without a `"name"` is skipped.
+fn tool_call_from_value(value: &serde_json::Value, index: usize) -> Vec<ToolCall> {
     // Check for `{"tool_calls": [...]}` wrapper (some models do this).
     if let Some(arr) = value.get("tool_calls").and_then(|v| v.as_array()) {
-        // Take the first entry; multi-entry arrays inside a single
-        // <tool_call> block are rare but handled.
-        return arr
-            .first()
-            .and_then(|entry| extract_single_call(entry, index));
+        let mut calls = Vec::with_capacity(arr.len());
+        for entry in arr {
+            if let Some(call) = extract_single_call(entry, index + calls.len()) {
+                calls.push(call);
+            }
+        }
+        return calls;
     }
 
-    extract_single_call(value, index)
+    extract_single_call(value, index).into_iter().collect()
 }
 
 /// Extract a single tool call from a JSON object with `"name"` and
@@ -579,6 +582,27 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "read_file");
         assert_eq!(calls[0].arguments["path"], "a.rs");
+    }
+
+    /// bug-b14145: every entry of a `tool_calls` wrapper is a call, in
+    /// order, with sequential ids that continue across blocks.
+    #[test]
+    fn parse_handles_tool_calls_array_wrapper_with_two_entries() {
+        let text = "<tool_call>\n\
+                    {\"tool_calls\": [\
+                    {\"name\": \"read_file\", \"arguments\": {\"path\": \"a.rs\"}}, \
+                    {\"name\": \"read_file\", \"arguments\": {\"path\": \"b.rs\"}}]}\n\
+                    </tool_call>\n\
+                    <tool_call>{\"name\": \"bash\", \"arguments\": {\"cmd\": \"ls\"}}</tool_call>";
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(text.into()))
+            .expect("parse should succeed");
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0].arguments["path"], "a.rs");
+        assert_eq!(calls[1].arguments["path"], "b.rs");
+        assert_eq!(calls[2].name, "bash");
+        let ids: Vec<&str> = calls.iter().map(|call| call.id.as_str()).collect();
+        assert_eq!(ids, ["hermes-tc-0", "hermes-tc-1", "hermes-tc-2"]);
     }
 
     #[test]

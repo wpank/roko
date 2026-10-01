@@ -467,13 +467,25 @@ impl AuthoringSpend {
     /// Spend of generating the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn generation(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, GENERATION_SPEND_TASK_ID, AUTHORING_ROLE, live)
+        Self::new(
+            workdir,
+            plan_id,
+            GENERATION_SPEND_TASK_ID,
+            AUTHORING_ROLE,
+            live,
+        )
     }
 
     /// Spend of revising the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn revision(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, REVISION_SPEND_TASK_ID, AUTHORING_ROLE, live)
+        Self::new(
+            workdir,
+            plan_id,
+            REVISION_SPEND_TASK_ID,
+            AUTHORING_ROLE,
+            live,
+        )
     }
 
     /// Spend of a one-off agent operation in `workdir` outside any plan, such

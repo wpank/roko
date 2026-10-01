@@ -711,9 +711,7 @@ impl GovernanceRule {
     ) -> Result<(), ContractViolation> {
         match self {
             Self::MaxToolCallsPerTurn(max) => {
-                let observed_calls = u32::try_from(orchestrator_actions(ctx).len())
-                    .unwrap_or(u32::MAX)
-                    .saturating_add(1);
+                let observed_calls = place_in_turn(ctx, call);
                 if observed_calls > *max {
                     return Err(ContractViolation::new(
                         role,
@@ -743,7 +741,7 @@ impl GovernanceRule {
                 }
             }
             Self::MaxConsecutiveFailures(max) => {
-                let consecutive = count_trailing_failures(&orchestrator_actions(ctx));
+                let consecutive = count_trailing_failures(&outcome_actions(ctx));
                 if consecutive >= *max {
                     return Err(ContractViolation::new(
                         role,
@@ -968,12 +966,68 @@ fn is_failure_action(action: &ExternalAction) -> bool {
 }
 
 /// `ExternalAction::service` of the per-run tool history the tool dispatcher
-/// records after each successful call.
+/// records: the start of each model turn and the calls admitted in it
+/// ([`begin_tool_turn`]), and each call's result ([`record_tool_result`]).
 ///
-/// Only history rules (`RequireToolBeforeEdit`) read it; count-, cost-, and
-/// gate-based rules see [`orchestrator_actions`] so ordinary tool use never
-/// counts as — or forges — an orchestrator-recorded action.
+/// `MaxToolCallsPerTurn` counts the calls admitted in the current turn,
+/// `MaxConsecutiveFailures` the trailing failed results, and
+/// `RequireToolBeforeEdit` looks for a successful one. Cost- and gate-based
+/// rules see only [`orchestrator_actions`], so ordinary tool use never counts
+/// as — or forges — an orchestrator-recorded action.
 pub const TOOL_HISTORY_SERVICE: &str = "roko.tool_history";
+
+/// The `kind` of a tool-history entry: a model turn's start, a call admitted
+/// in it, or a call's result.
+const TURN_ENTRY: &str = "turn";
+const ADMITTED_ENTRY: &str = "admitted";
+const RESULT_ENTRY: &str = "result";
+
+/// Record the start of a model turn and the calls admitted in it, in the
+/// order the model gave them, before any of them runs, so that
+/// `MaxToolCallsPerTurn` counts a call by its place in the turn even when
+/// calls run in parallel.
+pub fn begin_tool_turn(ctx: &ToolContext, calls: &[ToolCall]) {
+    let now = chrono::Utc::now();
+    let entry = |action_type: &str, metadata: serde_json::Value| ExternalAction {
+        service: TOOL_HISTORY_SERVICE.to_string(),
+        action_type: action_type.to_string(),
+        resource_id: String::new(),
+        metadata,
+        performed_at: now,
+    };
+    let mut actions = ctx.external_actions.write();
+    actions.push(entry(TURN_ENTRY, serde_json::json!({ "kind": TURN_ENTRY })));
+    actions.extend(calls.iter().map(|call| {
+        let metadata =
+            serde_json::json!({ "kind": ADMITTED_ENTRY, "call_id": call.id, "name": call.name });
+        entry(ADMITTED_ENTRY, metadata)
+    }));
+}
+
+/// Record the result of a dispatched call: whether it succeeded.
+pub fn record_tool_result(ctx: &ToolContext, call: &ToolCall, succeeded: bool) {
+    ctx.record_external_action(ExternalAction {
+        service: TOOL_HISTORY_SERVICE.to_string(),
+        action_type: call.name.clone(),
+        resource_id: String::new(),
+        metadata: serde_json::json!({
+            "kind": RESULT_ENTRY,
+            "tool": call.name,
+            "success": succeeded,
+        }),
+        performed_at: chrono::Utc::now(),
+    });
+}
+
+/// Whether `action` is a tool-history entry of `kind`.
+fn is_history(action: &ExternalAction, kind: &str) -> bool {
+    action.service == TOOL_HISTORY_SERVICE
+        && action
+            .metadata
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some(kind)
+}
 
 /// External actions recorded by the orchestrator, excluding tool history.
 fn orchestrator_actions(ctx: &ToolContext) -> Vec<ExternalAction> {
@@ -985,11 +1039,53 @@ fn orchestrator_actions(ctx: &ToolContext) -> Vec<ExternalAction> {
         .collect()
 }
 
+/// The actions whose outcome `MaxConsecutiveFailures` counts, in the order
+/// they were recorded: the orchestrator's and the results of tool calls.
+fn outcome_actions(ctx: &ToolContext) -> Vec<ExternalAction> {
+    ctx.external_actions
+        .read()
+        .iter()
+        .filter(|action| action.service != TOOL_HISTORY_SERVICE || is_history(action, RESULT_ENTRY))
+        .cloned()
+        .collect()
+}
+
+/// Where `call` stands among the calls admitted in the current model turn,
+/// the one the last [`begin_tool_turn`] started: 1 for the first. A call
+/// checked outside such a turn counts as one more call in it.
+fn place_in_turn(ctx: &ToolContext, call: &ToolCall) -> u32 {
+    let actions = ctx.external_actions.read();
+    let turn_start = actions
+        .iter()
+        .rposition(|action| is_history(action, TURN_ENTRY))
+        .map_or(0, |index| index + 1);
+    let mut place = 0_u32;
+    for action in &actions[turn_start..] {
+        if is_history(action, ADMITTED_ENTRY) {
+            place = place.saturating_add(1);
+            let call_id = action
+                .metadata
+                .get("call_id")
+                .and_then(serde_json::Value::as_str);
+            if call_id == Some(call.id.as_str()) {
+                return place;
+            }
+        }
+    }
+    place.saturating_add(1)
+}
+
+/// Whether `required_tool` has run: an orchestrator action or a tool result
+/// names it, and it did not fail. A call only admitted has not run yet.
 fn has_prior_tool(ctx: &ToolContext, required_tool: &str) -> bool {
     ctx.external_actions.read().iter().any(|action| {
-        action.action_type == required_tool
-            || action.service == required_tool
-            || action.metadata.get("tool").and_then(|value| value.as_str()) == Some(required_tool)
+        let bookkeeping = is_history(action, TURN_ENTRY) || is_history(action, ADMITTED_ENTRY);
+        !bookkeeping
+            && !is_failure_action(action)
+            && (action.action_type == required_tool
+                || action.service == required_tool
+                || action.metadata.get("tool").and_then(|value| value.as_str())
+                    == Some(required_tool))
     })
 }
 
@@ -1397,11 +1493,13 @@ mod tests {
             allowed_tools: None,
             max_taint_level: default_max_taint_level(),
         };
+        // Results of earlier calls: they satisfy the read-before-edit rule,
+        // and they are no calls of the turn this edit starts.
         let history = |tool: &str| ExternalAction {
             service: TOOL_HISTORY_SERVICE.into(),
             action_type: tool.into(),
             resource_id: String::new(),
-            metadata: serde_json::json!({ "tool": tool }),
+            metadata: serde_json::json!({ "kind": RESULT_ENTRY, "tool": tool, "success": true }),
             performed_at: chrono::Utc::now(),
         };
         let ctx = ToolContext::testing("/tmp/contract-tests").with_external_actions(Arc::new(
@@ -1831,4 +1929,145 @@ mod tests {
             .expect_err("untrusted write must fail closed");
         assert_eq!(violation.rule, "MaxTaintLevel");
     }
+
+    /// bug-1948c9: the dispatcher records each turn's calls and each call's
+    /// result, so `MaxToolCallsPerTurn` and `MaxConsecutiveFailures` count
+    /// real tool use instead of seeing none.
+    #[tokio::test]
+    async fn max_tool_calls_per_turn_counts_dispatched_tools() {
+        use crate::dispatcher::{HandlerResolver, ToolDispatcher};
+        use crate::safety::SafetyLayer;
+        use roko_core::tool::{
+            ToolCategory, ToolConcurrency, ToolDef, ToolHandler, ToolRegistry, VecToolRegistry,
+        };
+
+        struct Fixed {
+            name: &'static str,
+            succeeds: bool,
+        }
+        #[async_trait::async_trait]
+        impl ToolHandler for Fixed {
+            fn name(&self) -> &str {
+                self.name
+            }
+            async fn execute(&self, _call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+                if self.succeeds {
+                    ToolResult::text("ok")
+                } else {
+                    ToolResult::err(ToolError::Other("failed".into()))
+                }
+            }
+        }
+        let definition = |name: &str| {
+            ToolDef::new(name, "x", ToolCategory::Meta, ToolPermission::read_only())
+                .with_concurrency(ToolConcurrency::Parallel)
+        };
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![
+            definition("ok_tool"),
+            definition("bad_tool"),
+        ]));
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(|name: &str| -> Option<Arc<dyn ToolHandler>> {
+                match name {
+                    "ok_tool" => Some(Arc::new(Fixed {
+                        name: "ok_tool",
+                        succeeds: true,
+                    })),
+                    "bad_tool" => Some(Arc::new(Fixed {
+                        name: "bad_tool",
+                        succeeds: false,
+                    })),
+                    _ => None,
+                }
+            });
+        let contract = AgentContract {
+            governance: vec![
+                GovernanceRule::MaxToolCallsPerTurn(2),
+                GovernanceRule::MaxConsecutiveFailures(2),
+            ],
+            ..AgentContract::permissive("implementer")
+        };
+        let dispatcher = ToolDispatcher::new_unguarded(registry, resolver)
+            .with_safety(SafetyLayer::permissive().with_contract(contract));
+        let ctx = ToolContext::testing("/tmp/contract-tests");
+        let call = |id: &str, name: &str| ToolCall::new(id, name, serde_json::json!({}));
+        let refusal = |result: &ToolResult, rule: &str| {
+            matches!(result, ToolResult::Err(ToolError::PermissionDenied(message))
+                if message.contains(rule))
+        };
+
+        // Three calls in one turn: the third, by the model's order, is over
+        // the limit, whichever of them runs first.
+        let results = dispatcher
+            .dispatch_batch(
+                vec![
+                    call("a", "ok_tool"),
+                    call("b", "ok_tool"),
+                    call("c", "ok_tool"),
+                ],
+                &ctx,
+            )
+            .await;
+        let refused: Vec<&str> = results
+            .iter()
+            .filter(|(_, result)| refusal(result, "MaxToolCallsPerTurn"))
+            .map(|(call, _)| call.id.as_str())
+            .collect();
+        assert_eq!(refused, ["c"], "{results:?}");
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            2
+        );
+
+        // A new turn counts afresh, and a success ends the failed streak.
+        let results = dispatcher
+            .dispatch_batch(vec![call("d", "ok_tool"), call("e", "ok_tool")], &ctx)
+            .await;
+        assert!(
+            results.iter().all(|(_, result)| result.is_ok()),
+            "{results:?}"
+        );
+
+        // Two failed calls in a row, and the next call is refused.
+        assert!(
+            !dispatcher
+                .dispatch(call("f", "bad_tool"), &ctx)
+                .await
+                .is_ok()
+        );
+        assert!(
+            !dispatcher
+                .dispatch(call("g", "bad_tool"), &ctx)
+                .await
+                .is_ok()
+        );
+        let result = dispatcher.dispatch(call("h", "ok_tool"), &ctx).await;
+        assert!(refusal(&result, "MaxConsecutiveFailures"), "{result:?}");
+    }
+
+    /// Only a call that ran and succeeded satisfies `RequireToolBeforeEdit`:
+    /// not one merely admitted in the turn, nor one that failed.
+    #[test]
+    fn read_before_edit_needs_a_successful_read() {
+        let contract = AgentContract {
+            governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
+            ..AgentContract::permissive("implementer")
+        };
+        let ctx = ToolContext::testing("/tmp/contract-tests");
+        let read = ToolCall::new(
+            "read",
+            "read_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
+        // No path: the rule holds whether or not the file exists.
+        let edit = ToolCall::new("edit", "edit_file", serde_json::json!({}));
+
+        begin_tool_turn(&ctx, &[read.clone(), edit.clone()]);
+        assert!(contract.check_pre_execution(&edit, &ctx).is_err());
+        record_tool_result(&ctx, &read, false);
+        assert!(contract.check_pre_execution(&edit, &ctx).is_err());
+        record_tool_result(&ctx, &read, true);
+        assert!(contract.check_pre_execution(&edit, &ctx).is_ok());
+    }
+
 }

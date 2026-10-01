@@ -527,8 +527,9 @@ impl ToolDispatcher {
         &self.registry
     }
 
-    /// Dispatch a single tool call end-to-end.
+    /// Dispatch a single tool call end-to-end, as a turn of its own.
     pub async fn dispatch(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
+        crate::safety::contract::begin_tool_turn(ctx, std::slice::from_ref(&call));
         self.dispatch_with_result_limit(call, ctx, self.max_result_bytes)
             .await
     }
@@ -561,17 +562,8 @@ impl ToolDispatcher {
             .await;
         let result = self.finalize_result_with_limit(result, result_limit);
         self.emit_terminal_audit(ctx, &call, &result, timeout_ms);
-        if result.is_ok() {
-            // Per-run tool history: lets `RequireToolBeforeEdit` see that
-            // `read_file` succeeded earlier in this agent run.
-            ctx.record_external_action(roko_core::tool::ExternalAction {
-                service: crate::safety::contract::TOOL_HISTORY_SERVICE.to_string(),
-                action_type: call.name.clone(),
-                resource_id: String::new(),
-                metadata: serde_json::json!({ "tool": call.name }),
-                performed_at: chrono::Utc::now(),
-            });
-        }
+        // Per-run tool history, for the contract's count and history rules.
+        crate::safety::contract::record_tool_result(ctx, &call, result.is_ok());
         // Persistent file audit: record the terminal result after execution.
         if let Some(fa) = &self.file_audit
             && let Err(e) = fa.record_result(&call, &result).await
@@ -949,6 +941,8 @@ impl ToolDispatcher {
             return vec![(synthetic, result)];
         }
 
+        // One batch is one model turn.
+        crate::safety::contract::begin_tool_turn(ctx, &calls);
         let (parallel, serial) = partition_by_concurrency(calls, self.registry.as_ref());
 
         // Parallel bucket: bounded concurrency to avoid spawning hundreds

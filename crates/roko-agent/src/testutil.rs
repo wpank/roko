@@ -1051,13 +1051,9 @@ fn response_from_stream_events(events: &[StreamEvent]) -> BackendResponse {
     for event in events {
         match &event.kind {
             StreamEventKind::TextDelta(delta) => text.push_str(delta),
-            StreamEventKind::Usage(u) => {
-                usage_json = serde_json::json!({
-                    "prompt_tokens": u.input_tokens,
-                    "completion_tokens": u.output_tokens,
-                    "cache_read_input_tokens": u.cache_read_tokens,
-                });
-            }
+            // The wire shape the usage parser reads back, cache reads
+            // included (bug-25d24e).
+            StreamEventKind::Usage(u) => usage_json = crate::translate::openai::usage_to_wire(u),
             _ => {}
         }
     }
@@ -1346,4 +1342,41 @@ fn read_http_request(stream: &mut TcpStream) -> Result<RecordedRequest, String> 
     let body = serde_json::from_slice(&buf[header_end..header_end + content_length])
         .map_err(|err| format!("decode request body json: {err}"))?;
     Ok(RecordedRequest { body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The batch response rebuilt from a stream reads back the usage the
+    /// stream reported, cache reads included (bug-25d24e).
+    #[test]
+    fn streamed_and_batch_usage_agree_on_cache_reads() {
+        let streamed = crate::Usage {
+            input_tokens: 8,
+            output_tokens: 3,
+            cache_read_tokens: 1,
+            ..crate::Usage::default()
+        };
+        let events = [
+            StreamEvent::now(StreamEventKind::TextDelta(
+                "OpenAI streams well.".to_string(),
+            )),
+            StreamEvent::now(StreamEventKind::Usage(streamed)),
+            StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            }),
+        ];
+
+        let batch = response_from_stream_events(&events).extract_usage();
+
+        assert_eq!(
+            (
+                batch.input_tokens,
+                batch.output_tokens,
+                batch.cache_read_tokens
+            ),
+            (8, 3, 1)
+        );
+    }
 }

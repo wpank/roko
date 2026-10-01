@@ -864,7 +864,7 @@ fn sigmoid(x: f64) -> f64 {
 
 ### Targeted Dream Incubation (TDI) at Sleep Onset
 
-**Reference**: Adam Haar Horowitz et al., "Targeted dream incubation at sleep onset increases post-sleep creative performance," *Scientific Reports* 13, 2023. DOI: 10.1038/s41598-023-31361-w.
+**Reference**: Adam Horowitz et al., "Targeted dream incubation at sleep onset increases post-sleep creative performance," *Scientific Reports* 13, 2023. DOI: 10.1038/s41598-023-31361-w.
 
 N = 50 participants. TDI group used "tree" cue; control used neutral cue. Key quantitative results:
 - TDI increased post-nap creativity by **43%** compared to no-cue nap group

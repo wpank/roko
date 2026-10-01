@@ -1393,7 +1393,7 @@
   },
   {
     "id": "sakana-2025",
-    "authors": ["Sakana AI"],
+    "authors": ["Zhang, J.", "Hu, S.", "Lu, C.", "Lange, R.", "Clune, J."],
     "year": 2025,
     "title": "Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents",
     "venue": "arXiv",

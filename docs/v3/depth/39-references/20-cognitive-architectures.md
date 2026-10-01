@@ -92,7 +92,7 @@ Episodic memory enabling infinite effective context through retrieval. Provides 
 
 ## Agentic AI Surveys
 
-**[Anonymous, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
+**[Abou Ali & Dornaika, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
 Six-module taxonomy validates Roko's modular architecture. Identifies paradigm shift from symbolic to neural orchestration post-2022.
 
 **[Wu et al., 2025]** *Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models for Manufacturing Decision-Making.* Neurosymbolic Artificial Intelligence (SAGE Publications).

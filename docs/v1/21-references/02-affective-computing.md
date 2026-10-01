@@ -40,8 +40,6 @@ The Daimon is not cosmetic. Five independent research lines — somatic markers,
 - Bechara, A. & Damasio, A.R. (2005). The Somatic Marker Hypothesis: A Neural Theory of Economic Decision. _Games and Economic Behavior_, 52, 336-372.
   *Grounds: Economic decision-making — formal integration of somatic marker theory with economic decision theory. Validates PAD-modulated tier routing for cost-sensitive agent decisions.*
 
-- Cabrera-Paniagua, D. & Rubilar-Torrealba, R. (2023). Autonomous Stock Market Agents with Somatic Markers. _Journal of Ambient Intelligence and Humanized Computing_.
-  *Grounds: Empirical validation — agents with somatic markers achieve higher Sharpe ratios on S&P 500 and Dow Jones benchmarks. Punishment signals triggered by drawdowns adaptively reduced position sizes. Directly validates somatic markers for autonomous agents.*
 
 ---
 
@@ -83,19 +81,19 @@ The Daimon is not cosmetic. Five independent research lines — somatic markers,
 
 ## Affect in Agent Systems
 
-- Zhang, Y. et al. (2024). Self-Emotion Changes ~50% of Agent Decisions in Social Simulation. _SIGDIAL_, 2024.
+- Zhang, Y. et al. (2024). Self-Emotion Blended Dialogue Generation in Social Simulation Agents. _SIGDIAL_, 2024.
   *Grounds: Daimon is architectural, not decorative — self-emotion changes approximately 50% of agent decisions in social simulation. Demonstrates that affect is a primary driver of agent behavior, not a secondary display layer.*
 
 - Gadanho, S.C. (2003). Learning Behavior-Selection by Emotions and Cognition in a Multi-Goal Robot Task. _Journal of Machine Learning Research_, 4, 385-412.
   *Grounds: Combined affect-cognition architecture — ALEC (emotion + cognition) architecture: 40% fewer collisions vs cognition alone. Validates the combined Daimon + cognitive loop architecture.*
 
-- Barthet, M. et al. (2022). Go-Blend: Affect-Driven Reinforcement Learning. _IEEE Transactions on Affective Computing_.
+- Barthet, M. et al. (2022). Play with Emotion: Affect-Driven Reinforcement Learning. _2022 10th International Conference on Affective Computing and Intelligent Interaction (ACII)_.
   *Grounds: Exploration temperature modulation — affect-driven RL improves exploration efficiency and agent performance. Arousal modulates exploration temperature in Roko's tier routing.*
 
 - Seligman, M.E.P. (1972). Learned Helplessness. _Annual Review of Medicine_, 23, 407-412.
   *Grounds: Dominance alert — learned helplessness from uncontrollable negative outcomes. Dominance < -0.3 for 200+ ticks triggers an alert in the Daimon behavioral state machine.*
 
-- Van den Broek, E. (2023). Emotion Contagion in Multi-Agent Systems. _Autonomous Agents and Multi-Agent Systems_.
+- van Haeringen et al. (2023). Emotion contagion in agent-based simulations of crowds: a systematic review. _Autonomous Agents and Multi-Agent Systems_.
   *Grounds: Arousal contagion dampening — anger spreads more competitively than other emotions. Contagion dampening required to prevent panic cascades. Arousal contagion is capped at +0.3 per sync cycle in Roko collectives.*
 
 ---
@@ -109,15 +107,13 @@ The Daimon is not cosmetic. Five independent research lines — somatic markers,
 
 ## Emotional RAG
 
-- Zhang, Y. et al. (2024). Emotional RAG. arXiv:2410.23041.
+- Huang et al. (2024). Emotional RAG. arXiv:2410.23041.
   *Grounds: PAD vectors on knowledge entries — emotion-tagged retrieval significantly outperforms non-emotional retrieval across three datasets. Validates attaching PAD vectors to every NeuroStore entry.*
 
 ---
 
 ## Affective Computing Surveys and Frameworks (2025)
 
-- Yin, Y. et al. (2025). Emotions in Artificial Intelligence. arXiv:2505.01462.
-  *Grounds: Teleology-driven affect — proposes a teleology-driven affective computing framework unifying major emotion theories under the premise that affect is adaptive and goal-directed. Emphasizes aligning agent responses with both individual and collective well-being over extended timescales. Validates the Daimon as a goal-directed computational system, not a cosmetic overlay.*
 
 - Intelligent Agents with Emotional Intelligence (2025). Current Trends, Challenges, and Future Prospects. arXiv:2511.20657.
   *Grounds: Emotionally intelligent agents — survey of agents with emotional intelligence identifying key challenges in development. Validates the architectural necessity of emotional intelligence in agent systems, supporting Roko's Daimon as an integral subsystem.*

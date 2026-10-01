@@ -2687,6 +2687,39 @@ fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Remove the unknown keys inside the `[providers.*]` and `[models.*]`
+/// entries of `value`, a parsed config, and return a diagnostic for each
+/// (naming the nearest known key).
+///
+/// Loading strips unknown keys from every section. roko-cli's `--config`
+/// path parses into its own type, which ignores unknown keys everywhere but
+/// in these entries: their types deny them, so a typo there would fail the
+/// whole parse.
+pub fn strip_unknown_entry_fields(value: &mut toml::Value) -> Vec<ConfigDiagnostic> {
+    let diagnostics: Vec<ConfigDiagnostic> = validate_known_config_paths(value)
+        .into_iter()
+        .filter(|diagnostic| in_strict_entry(&diagnostic.key))
+        .collect();
+    let schema = build_schema_tree();
+    let Some(table) = value.as_table_mut() else {
+        return diagnostics;
+    };
+    for section in STRICT_ENTRY_SECTIONS {
+        let template = schema.get(*section);
+        if let (Some(entries), Some(template)) = (table.get_mut(*section), template) {
+            strip_unknown_fields(entries, template, section);
+        }
+    }
+    diagnostics
+}
+
+/// Whether the dotted `key` lies inside an entry of a
+/// [`STRICT_ENTRY_SECTIONS`] section (`providers.<name>.<field>`).
+fn in_strict_entry(key: &str) -> bool {
+    key.split_once('.')
+        .is_some_and(|(section, _)| STRICT_ENTRY_SECTIONS.contains(&section))
+}
+
 /// Recursively remove keys from `input` that are absent in `schema`.
 ///
 /// Dynamic map sections (providers, models, etc.) are walked using the

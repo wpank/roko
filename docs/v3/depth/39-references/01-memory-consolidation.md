@@ -105,22 +105,22 @@ Naive add-all memory degrades performance. Grounds the `mark_verified` quality g
 
 ## Surveys and Taxonomies (2025--2026)
 
-**[Liu et al., 2025]** *Memory in the Age of AI Agents: A Survey.* arXiv:2512.13564.
+**[Hu et al., 2025]** *Memory in the Age of AI Agents: A Survey.* arXiv:2512.13564.
 Factual, experiential, and working memory taxonomy. Validates NeuroStore's multi-type architecture.
 
-**[Wang et al., 2025]** *Rethinking Memory in LLM-based Agents.* arXiv:2505.00675.
+**[Du et al., 2025]** *Rethinking Memory in LLM-based Agents.* arXiv:2505.00675.
 Six memory operations: Consolidation, Updating, Indexing, Forgetting, Retrieval, Condensation. Maps to Curator cycle.
 
-**[Anonymous, 2026]** *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers.* arXiv:2603.07670.
+**[Du, 2026]** *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers.* arXiv:2603.07670.
 Write-manage-read formalization with five mechanism families. Validates separation of memory management from inference.
 
 **[Honda et al., 2025]** *Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture.* HAI 2025.
 ACT-R-inspired decay validates Ebbinghaus-based knowledge half-lives.
 
-**[Anonymous, 2025]** *Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents.* arXiv:2502.06975.
+**[Pink et al., 2025]** *Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents.* arXiv:2502.06975.
 Episodic memory required for long-horizon agents. Validates the Episode knowledge type.
 
-**[Anonymous, 2026]** *Continuum Memory Architectures for Long-Horizon Agents.* arXiv:2601.09913.
+**[Logan, 2026]** *Continuum Memory Architectures for Long-Horizon Agents.* arXiv:2601.09913.
 Memory architecture for extended execution. Validates tiered persistence.
 
 ---

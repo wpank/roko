@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 2 likely done · 19 anchor gone · 185 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 18 anchor gone · 188 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_3 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_3 more open · on hold: gap-8f8544 · 9 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -26,25 +26,25 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 13 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 10 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- **P2** [gap-51deff](items/gap-51deff-in-the-rich-topology-a-task-s.md) In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between · size M · verified 2026-09-30
+- nothing checked and open
 
-_0 more open · 15 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - nothing checked and open
 
-_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -76,7 +76,7 @@ _14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_38 more open · 20 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 23 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

@@ -21,7 +21,7 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 ## Agent Security Frameworks
 
-- Debenedetti, E. et al. (2025). CaMeL: Capability-Based Machine Learning. arXiv, 2025.
+- Debenedetti, E. et al. (2025). Defeating Prompt Injections by Design. arXiv, 2025.
   *Grounds: Capability-based authorization — separates control flow from data flow. Capability tokens prevent a compromised LLM from forging authorization. Grounds Roko's permission model where tool access requires explicit capability grants.*
 
 - OWASP (2025). Top 10 for LLM Applications. 2025.
@@ -37,7 +37,7 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 ## Safe Interruptibility
 
-- Orseau, L. & Armstrong, S. (2016). Safely Interruptible Agents. arXiv:1606.00813.
+- Orseau, L. & Armstrong, S. (2016). Safely Interruptible Agents.
   *Grounds: Kill-switch design — agents must not learn to avoid interruption. Off-policy learning ensures agents remain safely interruptible. Grounds Roko's agent lifecycle management where users can delete agents without the agent resisting.*
 
 - Omohundro, S.M. (2008). The Basic AI Drives. _Proceedings of AGI_, 2008.
@@ -54,17 +54,15 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 ## Adversarial Robustness
 
-- Zhang, Q. et al. (2025). CVaR-CPO: Constrained Policy Optimization with CVaR Constraints. 2025.
+- Zhang, Q. et al. (2025). CVaR-Constrained Policy Optimization for Safe Reinforcement Learning with CVaR Constraints. 2025.
   *Grounds: Tail risk management — CVaR constraints guard against tail risks. Grounds Roko's risk-aware Policy implementations that manage worst-case scenarios, not just expected values.*
 
-- Kaspersky (2026). OpenClaw: 512 Vulnerabilities in Competing Agent Framework. 2026.
-  *Grounds: Competitive security analysis — 512 vulnerabilities including 8 critical in a competing framework. Validates the importance of security-first agent architecture.*
 
 ---
 
 ## TEE and Hardware Security
 
-- Van Bulck, J. et al. (2024). TEE.Fail. 2024.
+- Chuang et al. (2024). TEE.Fail. 2024.
   *Grounds: Defense in depth — SGX/TDX attestation broken for under $1,000 via physical side-channel. TEE is one layer of defense, not sole defense. Grounds Roko's multi-layer security approach: TEE + content addressing + provenance + decay.*
 
 ---
@@ -88,13 +86,13 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 ## Agent-Specific Security Benchmarks
 
-- Chen, J. et al. (2025). AgentGuard: Repurposing Agentic Orchestrator for Safety Evaluation. arXiv:2502.xxxxx.
+- Chen, J. et al. (2025). AgentGuard: Runtime Verification of AI Agents. arXiv:2509.23864.xxxxx.
   *Grounds: Safety evaluation — repurposing orchestration for systematic safety testing of agent tool use.*
 
-- Liu, Z. et al. (2025). AgentBound: Secure and Verifiable MCP Tool Binding for AI Agents. arXiv:2503.xxxxx.
+- Bühler et al. (2025). AgentBound: Securing Execution Boundaries of AI Agents for AI Agents. arXiv:2510.21236.xxxxx.
   *Grounds: Secure tool binding — verifiable binding between agents and MCP tools prevents tool substitution attacks.*
 
-- Rodriguez, A. et al. (2025). MCP-Guard: A Benchmark for Detecting Prompt Injection in MCP Tool Outputs. arXiv:2503.xxxxx.
+- Rodriguez, A. et al. (2025). MCP-Guard: A Multi-Stage Defense-in-Depth Framework for Securing Model Context Protocol in Agentic AI. arXiv:2508.10991.xxxxx.
   *Grounds: MCP prompt injection — benchmark for detecting prompt injection specifically in MCP tool outputs. Validates the need for output sanitization in Roko's MCP client.*
 
 ---
@@ -114,8 +112,6 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 ## Formal Verification for AI Safety (2024-2025)
 
-- Position: Formal Methods are the Principled Foundation of Safe AI (2025). _ICML_, 2025.
-  *Grounds: Formal safety mandate — position paper establishing that formal methods (model checking, theorem proving, abstract interpretation) provide rigorous mathematical frameworks to analyze, specify, and verify AI systems. Validates Roko's structural safety approach: the Gate pipeline implements formal verification principles (compile-pass, test-pass, lint-pass) rather than relying on LLM self-assessment.*
 
 - Towards Guaranteed Safe AI (2024). A Framework for Ensuring Robust and Reliable AI Systems. arXiv:2405.06624.
   *Grounds: Safety guarantees framework — framework combining world models, safety specifications, and verifiers to provide quantitative safety guarantees for AI systems. Maps directly to Roko's Gate pipeline: the world model (NeuroStore), safety specifications (Policy trait), and verifiers (Gate pipeline) form the three components required for guaranteed safety.*

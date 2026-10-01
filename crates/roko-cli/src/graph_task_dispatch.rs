@@ -1258,6 +1258,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         attempt.dispatch_started();
         let started_at = Instant::now();
+        let progress = stall_watch.as_ref().map(StallWatch::progress);
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
         // While it runs, heartbeats keep the TUI's elapsed-time counter live.
@@ -1266,7 +1267,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // and retries under `max_retries`.
         let dispatch_result = self
             .run_watched(
-                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request),
+                self.run_bridge_with_failover(
+                    spec,
+                    &task.id,
+                    attempt.key.attempt_key(),
+                    request,
+                    progress.as_ref(),
+                ),
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -1300,6 +1307,44 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // never leaves an agent stuck in the "running" state.
                 if let Some(tui) = &self.tui_bridge {
                     tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+                }
+                // A call the stall watchdog or the conductor cancelled is
+                // accounted like any failed call, with the usage it streamed
+                // (bug-aa2044).
+                if let Some(interrupted) = progress
+                    .as_ref()
+                    .and_then(|progress| progress.interrupted_call())
+                {
+                    let wall_duration = started_at.elapsed();
+                    let (dispatch, failover) = interrupted.into_dispatch(
+                        &error.to_string(),
+                        u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                    );
+                    let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+                    self.task_spend.record(&task_spend_key, cost_usd);
+                    if let Err(budget_error) = budget_reservation.settle(cost_usd) {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            %budget_error,
+                            "could not settle a cancelled call's spend"
+                        );
+                    }
+                    attempt.record_failover(failover);
+                    let settlement = Settlement::provider_failure(&error.to_string(), false);
+                    let settled =
+                        attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+                    self.emit_feedback(
+                        spec,
+                        &task,
+                        &settled,
+                        &dispatch,
+                        wall_duration,
+                        &dispatch_plan,
+                        Some(routing_ctx_for_feedback),
+                    )
+                    .await;
+                    return Err(error);
                 }
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.
@@ -2261,7 +2306,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
     pub(super) fn spawn_openai_mock(
         responses: Vec<serde_json::Value>,
     ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
-        use std::io::{Read, Write};
+        use std::io::Write;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
         let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
@@ -2272,37 +2317,10 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                let mut buf = Vec::new();
-                let mut chunk = [0_u8; 8192];
-                let body_start = loop {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
+                let Some(request) = read_mock_request(&mut stream) else {
+                    return;
                 };
-                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
-                let length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                while buf.len() < body_start + length {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                }
-                let end = buf.len().min(body_start + length);
-                requests.lock().push(
-                    serde_json::from_slice(&buf[body_start..end])
-                        .unwrap_or(serde_json::Value::Null),
-                );
+                requests.lock().push(request);
                 let body = response.to_string();
                 let wire = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -2312,6 +2330,75 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
             }
         });
         (base_url, captured)
+    }
+
+    /// [`spawn_openai_mock`] answering over SSE: each request gets the next
+    /// of `streams`, one `data:` line per chunk and then `[DONE]`.
+    pub(super) fn spawn_openai_stream_mock(
+        streams: Vec<Vec<serde_json::Value>>,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = Arc::clone(&captured);
+        std::thread::spawn(move || {
+            for chunks in streams {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let Some(request) = read_mock_request(&mut stream) else {
+                    return;
+                };
+                requests.lock().push(request);
+                let mut body = String::new();
+                for chunk in chunks {
+                    body.push_str(&format!("data: {chunk}\n\n"));
+                }
+                body.push_str("data: [DONE]\n\n");
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = stream.write_all(wire.as_bytes());
+            }
+        });
+        (base_url, captured)
+    }
+
+    /// The JSON body of the HTTP request on `stream`; `None` when the
+    /// client hung up before its headers.
+    fn read_mock_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
+        use std::io::Read;
+
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        let body_start = loop {
+            let n = stream.read(&mut chunk).unwrap_or(0);
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
+        let length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while buf.len() < body_start + length {
+            let n = stream.read(&mut chunk).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let end = buf.len().min(body_start + length);
+        Some(serde_json::from_slice(&buf[body_start..end]).unwrap_or(serde_json::Value::Null))
     }
 
     pub(super) fn tool_call_turn(

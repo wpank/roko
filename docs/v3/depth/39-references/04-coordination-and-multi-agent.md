@@ -61,28 +61,28 @@ Immunity as community protection. Grounds the immune Graph concept and permissio
 
 ## Emergent Coordination in LLM Agents (2025--2026)
 
-**[Anonymous, 2025]** *Emergence in Multi-Agent Language Models.* arXiv:2510.05174.
+**[Riedl, 2025]** *Emergence in Multi-Agent Language Models.* arXiv:2510.05174.
 Information-theoretic framework for dynamical emergence. Validates Collective architecture.
 
-**[Anonymous, 2025]** *Multi-Agent Collaboration Mechanisms: A Survey.* arXiv:2501.06322.
+**[Tran et al., 2025]** *Multi-Agent Collaboration Mechanisms: A Survey.* arXiv:2501.06322.
 Taxonomizes role-based division, debate-style refinement, and stigmergic coordination.
 
-**[Anonymous, 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
+**[Boldini et al., 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
 PDE-based framework treating swarms as fluids. Rigorous foundation for Pheromone Field dynamics.
 
-**[Anonymous, 2024]** *Automatic Design of Stigmergy-Based Behaviours.* Communications Engineering, Nature.
+**[Salman et al., 2024]** *Automatic Design of Stigmergy-Based Behaviours.* Communications Engineering, Nature.
 Automatic design validated in simulation and hardware. Validates automatic pheromone-type design.
 
 **[Starominski-Uehara, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
 Human citation patterns follow stigmergic dynamics. Validates digital stigmergy beyond biology.
 
-**[Anonymous, 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
+**[Parfenova et al., 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
 LLM groups develop asymmetric influence patterns without explicit role prompting.
 
 **[Sudhakar, 2025]** *Multi-Agent Language Models: Advancing Cooperation.* arXiv:2506.09331.
 Comprehensive multi-agent LLM cooperation survey.
 
-**[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
+**[La Malfa et al., 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 Systematic failures in implicit LLM coordination. Motivates explicit Pheromone Field and Agent Mesh.
 
 **[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning.* arXiv:2507.08616.

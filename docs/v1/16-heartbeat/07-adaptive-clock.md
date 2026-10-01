@@ -306,7 +306,7 @@ The existing runtime support crate provides the infrastructure (process supervis
 - **Friston 2010** — "The Free-Energy Principle" (Nature Reviews Neuroscience 11(2)). Adaptive sampling based on prediction error.
 - **Clark 2013** — "Whatever Next?" (Behavioral and Brain Sciences 36(3)). Nested prediction loops at multiple timescales.
 - **Sims 2003** — "Implications of rational inattention" (Journal of Monetary Economics 50(3)). Cost of attention determines optimal sampling rate.
-- **Koudahl et al. 2024** — (arXiv:2412.10425). Factorized discrete POMDP for tractable active inference state spaces.
+- **Prakki 2024** — (arXiv:2412.10425). Factorized discrete POMDP for tractable active inference state spaces.
 
 ---
 

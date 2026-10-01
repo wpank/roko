@@ -56,6 +56,13 @@ small `roko.toml` configured for Ollama, runs `roko run`, then emits `git diff`
 to stdout. `roko bench swe --agent-mode command` scores that diff by checking
 format, `git apply --check`, patch application, and the task test command.
 
+The benchmark keeps its test command and grading tests from agents. The
+adapter's `roko.toml` gate and prompt therefore use `--validate-cmd` (or
+`ROKO_BENCH_VALIDATE_CMD`) when given. Otherwise they use the repo's visible
+`test*.py` files through `python -m unittest discover`. With neither, the
+adapter exits with an error rather than self-check against a command that
+cannot fail.
+
 ## Controls
 
 `run-controls.sh` executes:

@@ -24,9 +24,12 @@
 //! a secret ([`roko_core::child_env::is_config_with_secrets`]), are refused
 //! with [`ToolError::KeyFileBlocked`], inside the worktree too, by the path
 //! as given and with symlinks resolved, and the `bash` tool refuses a
-//! command that names one ([`refuse_key_file_in_command`]). The tools check
+//! command that names one, or searches a tree or reads a list that holds a
+//! config with a secret ([`refuse_key_file_in_command`]). The tools check
 //! this themselves, so the block holds whichever dispatcher runs them, with
 //! or without roko-agent's `SafetyLayer`.
+
+mod reads;
 
 use std::path::{Component, Path, PathBuf};
 
@@ -81,18 +84,25 @@ pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
 ///
 /// The rules are the Claude CLI command guard's (`claude_cli_guard.py` in
 /// roko-agent), applied to the command's text and to its words with quotes
-/// and escapes removed, those of `sh -c '…'` strings included:
+/// and escapes removed and braces expanded (`roko.{toml,lock}`), those of
+/// `sh -c '…'` strings included:
 ///
 /// - a path to a key file appears (`.roko/.env`, `~/.roko/config.toml`), or
 ///   a glob directly in a `.roko` directory (`.roko/*`);
 /// - a word names a `.roko` directory itself (`cd ~/.roko`) and another
 ///   ends in a key file's name (`.env`) or is a bare glob (`*`);
-/// - a word, or an option's value (`--env-file=…`), resolved against `cwd`
-///   is a key file, as [`refuse_key_file`] decides (a symlink to one too).
+/// - a word, with a glob expanded (`cat *`), or an option's value
+///   (`--env-file=…`), resolved against `cwd` or a `cd` target in the
+///   command, is a key file or a roko config file that holds a secret, as
+///   [`refuse_key_file`] decides (a symlink to one too);
+/// - a recursive search (`grep -r`, `rg`, `git grep`, `ag`, `ack`) of a tree
+///   that holds such a config, or a read (`cat`, `grep`) of a list the check
+///   cannot see (`find -exec`, `xargs`) that may name one (the `reads`
+///   module).
 ///
 /// # Errors
 ///
-/// Returns [`ToolError::KeyFileBlocked`] naming the word.
+/// Returns [`ToolError::KeyFileBlocked`] naming the word or the config.
 pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolError> {
     let mut words = Vec::new();
     command_words(command, 0, &mut words);
@@ -109,22 +119,27 @@ pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolE
     {
         return Err(ToolError::KeyFileBlocked(word.into()));
     }
+    let directories = reads::call_directories(command, cwd);
     for word in &words {
         let value = word.split_once('=').map(|(_, value)| value);
-        for candidate in [Some(word.as_str()), value].into_iter().flatten() {
-            if let Some(path) = word_path(candidate, cwd) {
+        for directory in &directories {
+            for path in reads::expand(word, directory) {
+                refuse_key_file(&path)?;
+            }
+            if let Some(path) = value.and_then(|value| word_path(value, directory)) {
                 refuse_key_file(&path)?;
             }
         }
     }
-    Ok(())
+    reads::refuse_secret_reads(command, cwd)
 }
 
 /// How deep [`command_words`] reads quoted strings as command lines.
 const MAX_COMMAND_NESTING: usize = 8;
 
-/// The words of `text`, and those of each word that is itself a command
-/// line (`sh -c '…'`), with quotes and escapes removed.
+/// The words of `text`, each brace expansion's words as well, and those of
+/// each word that is itself a command line (`sh -c '…'`), with quotes and
+/// escapes removed.
 fn command_words(text: &str, depth: usize, words: &mut Vec<String>) {
     for word in shell_words(text) {
         if depth < MAX_COMMAND_NESTING
@@ -132,6 +147,11 @@ fn command_words(text: &str, depth: usize, words: &mut Vec<String>) {
         {
             command_words(&word, depth + 1, words);
         }
+        words.extend(
+            reads::expand_braces(&word)
+                .into_iter()
+                .filter(|variant| *variant != word),
+        );
         words.push(word);
     }
 }
@@ -156,61 +176,12 @@ fn shell_words(text: &str) -> Vec<String> {
 
 /// The words of `text`, or `None` when a quote is left open.
 fn parse_shell_words(text: &str) -> Option<Vec<String>> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                in_word = true;
-                loop {
-                    match chars.next()? {
-                        '\'' => break,
-                        c => word.push(c),
-                    }
-                }
-            }
-            '"' => {
-                in_word = true;
-                loop {
-                    match chars.next()? {
-                        '"' => break,
-                        '\\' => match chars.next()? {
-                            '\n' => {}
-                            c @ ('$' | '`' | '"' | '\\') => word.push(c),
-                            c => {
-                                word.push('\\');
-                                word.push(c);
-                            }
-                        },
-                        c => word.push(c),
-                    }
-                }
-            }
-            '\\' => match chars.next() {
-                Some('\n') | None => {}
-                Some(c) => {
-                    in_word = true;
-                    word.push(c);
-                }
-            },
-            c if ends_word(c) => {
-                if in_word {
-                    words.push(std::mem::take(&mut word));
-                    in_word = false;
-                }
-            }
-            c => {
-                in_word = true;
-                word.push(c);
-            }
-        }
-    }
-    if in_word {
-        words.push(word);
-    }
-    Some(words)
+    Some(
+        reads::shell_tokens(text)?
+            .into_iter()
+            .filter_map(reads::Token::into_word)
+            .collect(),
+    )
 }
 
 /// Whether `c` can be part of a file name next to `.roko` or a key file's
@@ -458,6 +429,55 @@ mod tests {
             shell_words("a 'b c' \"d\\\"e\" f\\ g h;i"),
             ["a", "b c", "d\"e", "f g", "h", "i"]
         );
+    }
+
+    /// bug-77413c: the bash tool had none of the Claude CLI guard's search
+    /// rules. Both check the commands in `sandbox/secret_read_cases.txt`.
+    #[test]
+    fn bash_refuses_every_search_that_reaches_a_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        let src = root.join("src");
+        std::fs::create_dir(&src).expect("mkdir src");
+        std::fs::write(src.join("a.rs"), "fn main() {}\n").expect("write a.rs");
+        std::fs::write(root.join("roko.lock"), "lock\n").expect("write roko.lock");
+        let config = root.join("roko.toml");
+        std::fs::write(
+            &config,
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .expect("write roko.toml");
+        let cases: Vec<(bool, &Path, &str)> = include_str!("sandbox/secret_read_cases.txt")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (verdict, rest) = line.split_once(' ').expect("a verdict and a command");
+                let (cwd, command) = rest
+                    .strip_prefix("in src: ")
+                    .map_or((root.as_path(), rest), |command| (src.as_path(), command));
+                (verdict == "deny", cwd, command)
+            })
+            .collect();
+
+        for &(deny, cwd, command) in &cases {
+            let result = refuse_key_file_in_command(command, cwd);
+            assert_eq!(
+                result.is_err(),
+                deny,
+                "`{command}` in {}: {result:?}",
+                cwd.display()
+            );
+        }
+        // Without the secret, every command runs.
+        std::fs::write(&config, "[serve.auth]\nenabled = true\n").expect("rewrite roko.toml");
+        for &(_, cwd, command) in &cases {
+            let result = refuse_key_file_in_command(command, cwd);
+            assert!(
+                result.is_ok(),
+                "`{command}` in {}: {result:?}",
+                cwd.display()
+            );
+        }
     }
 
     #[tokio::test]

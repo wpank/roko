@@ -2275,11 +2275,27 @@ mod tests {
         }
     }
 
-    /// bug-6af02b: Claude Code runs Grep as `rg --hidden`, so a Grep of a
-    /// tree that holds a key file reads it, unless its path, glob or type
-    /// leaves the file out or git ignores the file. Glob lists names only.
+    /// bug-6af02b: Claude Code runs Grep as `rg --hidden`. The Read deny
+    /// rules in the settings keep the key files out of it (Claude Code turns
+    /// them into `--iglob` exclusions for its Grep and Glob), so the guard
+    /// lets such a Grep run. It refuses a Grep that would read a roko.toml
+    /// holding a secret, unless the Grep's path, glob or type leaves the file
+    /// out or git ignores it.
     #[test]
     fn grep_tool_at_a_workspace_root_cannot_read_a_key_file() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
         let workdir = tempdir().unwrap();
         let root = workdir.path();
         fs::create_dir_all(root.join(".roko")).unwrap();
@@ -2294,41 +2310,54 @@ mod tests {
                 .status
                 .code()
         };
+        let grep = |extra: Value| {
+            let mut tool_input = serde_json::json!({ "pattern": "OPENAI" });
+            tool_input
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            code("Grep", tool_input)
+        };
 
-        for tool_input in [
-            serde_json::json!({ "pattern": "OPENAI" }),
-            serde_json::json!({ "pattern": "OPENAI", "path": "." }),
-            serde_json::json!({ "pattern": "OPENAI", "glob": "*.env" }),
-            serde_json::json!({ "pattern": "OPENAI", "type": "sh" }),
-        ] {
-            let shown = tool_input.to_string();
-            assert_eq!(
-                code("Grep", tool_input),
-                Some(2),
-                "Grep {shown} should be denied"
-            );
-        }
-        for tool_input in [
-            serde_json::json!({ "pattern": "OPENAI", "path": "src" }),
-            serde_json::json!({ "pattern": "OPENAI", "glob": "*.rs" }),
-            serde_json::json!({ "pattern": "OPENAI", "glob": "!.roko" }),
-        ] {
-            let shown = tool_input.to_string();
-            assert_eq!(
-                code("Grep", tool_input),
-                Some(0),
-                "Grep {shown} should be allowed"
-            );
-        }
-        // Glob lists names, and a Read of a key file it lists is denied.
-        assert_eq!(
-            code("Glob", serde_json::json!({ "pattern": "**/.env" })),
-            Some(0)
-        );
+        // The deny rules keep the key files out of a Grep at the root, so it
+        // runs; a Grep rooted at .roko, and a Read of a key file, do not.
+        assert_eq!(grep(serde_json::json!({})), Some(0));
+        assert_eq!(grep(serde_json::json!({ "path": ".roko" })), Some(2));
         assert_eq!(
             code("Read", serde_json::json!({ "file_path": ".roko/.env" })),
             Some(2)
         );
+
+        // No deny rule covers a roko.toml that holds a secret.
+        fs::write(
+            root.join("roko.toml"),
+            "[serve.auth]\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "glob": "*.toml" }),
+            serde_json::json!({ "glob": "*.rs *.toml" }),
+            serde_json::json!({ "type": "toml" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(2),
+                "Grep {extra} should be denied"
+            );
+        }
+        for extra in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "glob": "*.rs" }),
+            serde_json::json!({ "glob": "!roko.toml" }),
+            serde_json::json!({ "type": "rust" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(0),
+                "Grep {extra} should be allowed"
+            );
+        }
 
         // rg skips what git ignores.
         let git = |args: &[&str]| {
@@ -2339,14 +2368,13 @@ mod tests {
                 .is_ok_and(|status| status.success())
         };
         assert!(git(&["init", "-q"]), "git init");
-        let grep = serde_json::json!({ "pattern": "OPENAI" });
         assert_eq!(
-            code("Grep", grep.clone()),
+            grep(serde_json::json!({})),
             Some(2),
-            "a key file git does not ignore"
+            "a config git does not ignore"
         );
-        fs::write(root.join(".gitignore"), ".roko/\n").unwrap();
-        assert_eq!(code("Grep", grep), Some(0), "a key file git ignores");
+        fs::write(root.join(".gitignore"), "roko.toml\n").unwrap();
+        assert_eq!(grep(serde_json::json!({})), Some(0), "a config git ignores");
     }
 
     #[test]

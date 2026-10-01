@@ -60,10 +60,11 @@
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
 # such as serve.auth.api_key. roko itself refuses to load such a file (the
 # secret belongs in .roko/.env), so this matters for a secret added while
-# roko runs. A Grep of a tree that holds such a config or a key file (see
-# below) is denied too: Claude Code runs it as rg --hidden, which reads the
-# file unless the Grep's glob or type leaves it out or git ignores it.
-# Glob only lists names, and a Read of a key file it lists is denied.
+# roko runs. A Grep of a tree that holds such a config is denied too:
+# Claude Code runs it as rg --hidden, which reads the file unless the
+# Grep's glob or type leaves it out or git ignores it. The key files need
+# no such rule: the Read deny rules roko's settings give Claude Code
+# (claude_cli_agent.rs) become exclusions in its own Grep and Glob.
 #
 # A Bash command that reads a whole tree is denied when the tree holds a key
 # file or such a config and the read reaches it: a recursive search (grep
@@ -1264,11 +1265,6 @@ KEY_TREE_REASON = (
 # KEY_SEARCH_DIRS directories a level.
 KEY_SEARCH_DIRS = 4096
 KEY_SMALL_TREE = 256
-GREP_KEY_REASON = (
-    "this Grep would read a provider key file (.env, secrets.toml, credentials.json or"
-    " config.toml in a .roko directory): Grep searches hidden files in the tree it is given;"
-    " give it a narrower path, or a glob that leaves .roko out (!.roko)"
-)
 # A key file's name, ending there (.env, not .envrc).
 KEY_NAME = r"(?:\.env|secrets\.toml|credentials\.json|config\.toml)(?![\w-])"
 # In a command's text: a path to a key file, or a glob directly in a .roko
@@ -1411,25 +1407,11 @@ def is_secret_config_path(path, cwd):
 def sensitive_files(top, cwd):
     """The files in the tree at `top`, a real directory, that agents must
     not read, as (path, reason) pairs, of those the guard can find without
-    walking the whole tree:
-    - the roko config files that hold a secret, of those roko reads: the
-      roko.toml in top, the workspace's (in cwd or above it, as roko finds
-      it), the file ROKO_CONFIG names and the legacy
-      ~/.config/roko/config.toml;
-    - the key files in the .roko directories of key_directories."""
+    walking the whole tree: the roko config files that hold a secret
+    (secret_configs) and the key files in the .roko directories of
+    key_directories."""
+    found = [(config, CONFIG_SECRET_REASON) for config in secret_configs(top, cwd)]
     inside = top.rstrip("/") + "/"
-    found = []
-    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    configs = [
-        os.path.join(top, "roko.toml"), workspace_config(cwd), os.environ.get("ROKO_CONFIG"),
-        os.path.join(xdg, "roko", "config.toml"),
-    ]
-    for config in configs:
-        if config:
-            directory, name = os.path.split(config)
-            config = os.path.join(os.path.realpath(directory), name)
-            if config.startswith(inside) and config_holds_secret(config):
-                found.append((config, CONFIG_SECRET_REASON))
     for directory in key_directories(top, cwd):
         is_roko = os.path.basename(directory) == ".roko"
         roko = directory if is_roko else os.path.join(directory, ".roko")
@@ -1439,6 +1421,27 @@ def sensitive_files(top, cwd):
                 for name in KEY_FILE_NAMES
                 if os.path.lexists(os.path.join(roko, name))
             ]
+    return found
+
+
+def secret_configs(top, cwd):
+    """The roko config files in the tree at `top`, a real directory, that
+    hold a secret, of those roko reads: the roko.toml in top, the
+    workspace's (in cwd or above it, as roko finds it), the file ROKO_CONFIG
+    names and the legacy ~/.config/roko/config.toml."""
+    inside = top.rstrip("/") + "/"
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    configs = [
+        os.path.join(top, "roko.toml"), workspace_config(cwd), os.environ.get("ROKO_CONFIG"),
+        os.path.join(xdg, "roko", "config.toml"),
+    ]
+    found = []
+    for config in configs:
+        if config:
+            directory, name = os.path.split(config)
+            config = os.path.join(os.path.realpath(directory), name)
+            if config.startswith(inside) and config_holds_secret(config):
+                found.append(config)
     return found
 
 
@@ -1558,24 +1561,25 @@ def literal_secret(value):
     return bool(value) and "${" not in value
 
 
-def greps_sensitive(tool_input, cwd):
-    """Why a Grep may not run, if it would read a file agents must not read
-    in the tree it searches (sensitive_files), else None. Claude Code runs
-    rg --hidden with the Grep's type and globs (grep_globs), and rg skips
-    what git ignores."""
+def greps_secret_config(tool_input, cwd):
+    """Whether a Grep would read a roko config file that holds a secret in
+    the tree it searches (secret_configs). Claude Code runs rg --hidden with
+    the Grep's type and globs (grep_globs), and rg skips what git ignores.
+    The key files are left to the Read deny rules roko's settings give
+    Claude Code, which it turns into exclusions for its Grep and Glob."""
     root = os.path.join(cwd, os.path.expanduser(tool_input.get("path") or "."))
     if not os.path.isdir(root):
-        return None
+        return False
     options = [("--hidden", "")]
     if isinstance(tool_input.get("type"), str) and tool_input["type"]:
         options.append(("--type", tool_input["type"]))
     if isinstance(tool_input.get("glob"), str):
         options += [("--glob", pattern) for pattern in grep_globs(tool_input["glob"])]
     top = os.path.realpath(root)
-    for found, reason in sensitive_files(top, cwd):
-        if search_reads(options, "rg", os.path.relpath(found, top)) and not git_ignores(found):
-            return GREP_KEY_REASON if reason == KEY_TREE_REASON else reason
-    return None
+    return any(
+        search_reads(options, "rg", os.path.relpath(config, top)) and not git_ignores(config)
+        for config in secret_configs(top, cwd)
+    )
 
 
 def grep_globs(text):
@@ -1636,10 +1640,8 @@ def check_file(tool_input, data):
             block(KEY_FILE_REASON)
         if value and is_secret_config_path(value, cwd):
             block(CONFIG_SECRET_REASON)
-    if data.get("tool_name") == "Grep":
-        reason = greps_sensitive(tool_input, cwd)
-        if reason:
-            block(reason)
+    if data.get("tool_name") == "Grep" and greps_secret_config(tool_input, cwd):
+        block(CONFIG_SECRET_REASON)
 
 
 def main():

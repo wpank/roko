@@ -55,6 +55,27 @@ turn_budget_usd = 0.5
 Override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`,
 `tools`, `budget`, `thresholds`, `routing_overrides`, `turn_budget_usd`.
 
+### `[agent.data_llm]` -- DataLlmConfig
+
+The CaMeL data-LLM boundary: untrusted tool output (MCP, plugin, web-search and network tool
+results) goes to this separate, tool-less model, and the main model sees only its validated output.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
+| `max_tokens` | u64 | 4096 | Output token limit |
+| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. It can only cover the tool loops roko drives
+itself (API providers): CLI providers run their own tool loops. No dispatch path builds the
+boundary from this section yet (gap-b0d514), so `roko config doctor` and `plan run` report the
+key as having no effect.
+
 ---
 
 ## `[authoring]` -- AuthoringConfig
@@ -309,7 +330,6 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `gates.domain_gates` | No gate ran its commands. Give the plan tasks of that domain their own verify commands (gap-7a3527) |
 | `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
-| `agent.data_llm` | No dispatch path routed untrusted content to a separate data LLM, so setting it isolated nothing. `DataLlmConfig` and `DataLlmRouter` remain for future CaMeL work (gap-7a3527) |
 
 ---
 

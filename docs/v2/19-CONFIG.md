@@ -529,8 +529,23 @@ Available override fields: `model`, `backend`, `effort`, `temperament`, `context
 |---|---|---|---|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live Runner/ACP enforcement level: `none`, `observe`, `restrict`, `isolate`, or `quarantine`; unknown values fail config parsing |
 
-`[agent.data_llm]` was removed (gap-7a3527): no dispatch path routed untrusted content to a separate data
-LLM, so the section isolated nothing. Loading drops it with a warning.
+#### `[agent.data_llm]` -- DataLlmConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
+| `max_tokens` | u64 | 4096 | Output token limit |
+| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. It can only cover the tool loops roko drives
+itself (API providers): CLI providers run their own tool loops. No dispatch path builds the
+boundary from this section yet (gap-b0d514), so `roko config doctor` and `plan run` report the
+key as having no effect.
 
 ### 8.5 `[[agents]]` -- agent definitions
 

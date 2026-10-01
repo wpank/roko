@@ -1518,11 +1518,6 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
         "learning.replan_gate_attempts was removed because no plan run \
          revises a plan on gate failure, so it limited nothing",
     ),
-    (
-        "agent.data_llm",
-        "agent.data_llm was removed because no dispatch path routed \
-         untrusted content to a separate data LLM; setting it isolated nothing",
-    ),
 ];
 
 /// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
@@ -1752,6 +1747,12 @@ fn build_schema_tree() -> toml::Value {
     config.agent.timeout_ms = Some(0);
     config.agent.env = Some(Vec::new());
     config.agent.env_passthrough = vec![String::new()];
+    config.agent.data_llm = Some(super::agent::DataLlmConfig {
+        // `output_schema` is free-form JSON. A scalar placeholder keeps any
+        // value a file sets, because loading never descends into it.
+        output_schema: Some(serde_json::Value::String(String::new())),
+        ..Default::default()
+    });
     config.agent.defaults.generic_agent_model = Some(String::new());
     config.agent.defaults.gate_judge_model = Some(String::new());
     config.agent.extensions = vec![String::new()];
@@ -4392,6 +4393,9 @@ disabled_providers = ["gemini"]
 mechanical = "claude-haiku-4-5"
 architectural = "claude-opus-4-6"
 
+[agent.data_llm]
+model = "data-model"
+
 [routing]
 disabled_providers = ["openai"]
 fallback_models = ["claude-haiku-4-5"]
@@ -4445,6 +4449,8 @@ port = 7788
         assert_eq!(mcp_config, Some(std::path::Path::new(".mcp.json")));
         assert_eq!(agent.default_agent_id.as_deref(), Some("agent-a"));
         assert_eq!(agent.disabled_providers, vec!["gemini".to_string()]);
+        let data_model = agent.data_llm.as_ref().map(|llm| llm.model.as_str());
+        assert_eq!(data_model, Some("data-model"));
         let routing = &config.routing;
         assert_eq!(routing.disabled_providers, vec!["openai".to_string()]);
         let fallbacks = vec!["claude-haiku-4-5".to_string()];
@@ -4575,9 +4581,6 @@ override_learning_dampening = 0.5
     #[test]
     fn dead_config_keys_are_removed_and_old_files_still_load() {
         let text = r#"
-[agent.data_llm]
-model = "data-model"
-
 [gates]
 max_rung = 2
 
@@ -4600,7 +4603,6 @@ dream_on_completion = true
         assert_eq!(
             keys,
             [
-                "agent.data_llm",
                 "gates.domain_gates",
                 "learning.replan_gate_attempts",
                 "learning.replan_max_per_plan",

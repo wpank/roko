@@ -545,12 +545,13 @@ force_tier = "focused"         # pin to a complexity tier
 </details>
 
 <details>
-<summary>CaMeL dual-LLM isolation (SAFE-07): not available</summary>
+<summary>CaMeL dual-LLM isolation (SAFE-07): not wired yet</summary>
 
-`[agent.data_llm]` was removed (gap-7a3527). No dispatch path routed untrusted content to a
-separate data LLM, so the section suggested an isolation that roko never applied. Loading an
-old config drops it with a warning. The `DataLlmRouter` type remains in `roko-agent` for
-future CaMeL work.
+`[agent.data_llm]` configures a separate, tool-less model that would read untrusted tool output
+(MCP, plugin, web-search and network tool results) so the main model sees only its validated
+output. No dispatch path builds that boundary from the section yet (gap-b0d514), so setting it
+protects nothing today, and `roko config doctor` says so. It can only ever cover the tool loops
+roko drives itself (API providers), not CLI providers.
 
 </details>
 

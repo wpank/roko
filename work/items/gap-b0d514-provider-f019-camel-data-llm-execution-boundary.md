@@ -9,9 +9,9 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "52f00fb94"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
 anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop", "crates/roko-agent/src/dispatcher/mod.rs::tool_result_taint", "crates/roko-core/src/config/agent.rs::DataLlmConfig", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings"]
@@ -148,6 +148,15 @@ LLM failure blocks the content instead of passing it through.
   be read and a behaviour test.
 - Touches `crates/roko-agent/src/tool_loop/mod.rs`, which many providers share. Do not run in parallel with other
   tool-loop work.
+- 2026-10-01 (wk-childenv): Plan step 1 (config) on work/gap-1555ac; cargo verification deferred to the batch
+  check. `[agent.data_llm]` is back as `AgentConfig::data_llm: Option<DataLlmConfig>` (`None`, the default, turns
+  it off), and `DataLlmConfig` gains `timeout_ms` (30 s) and `max_input_bytes` (32 KiB). gap-7a3527 had removed the
+  key, so its `REMOVED_CONFIG_KEYS` entry is gone and its schema sentinel is back in `build_schema_tree`. Loading
+  fails (invariant 8) when `strip_tool_calls` is false or either bound is 0, and `validate_references` warns when
+  `model` is neither a `[models.*]` key nor a builtin. Until step 6 builds the boundary from config,
+  `graph_engine_inert_settings` reports the key, and the config docs say it protects nothing yet. Tests:
+  `validate_invariants_rejects_a_data_llm_with_tools_or_no_bounds`, `validate_references_warns_on_unknown_data_llm_model`,
+  the data_llm rows of `every_optional_config_key_survives_a_load` and `inert_settings_list_only_changed_keys_the_graph_engine_ignores`.
 
 ## Original notes
 

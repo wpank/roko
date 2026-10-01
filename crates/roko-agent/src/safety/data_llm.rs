@@ -414,6 +414,7 @@ mod tests {
             strip_tool_calls: true,
             output_schema: Some(serde_json::json!({"required": ["summary"]})),
             sanitize_input: true,
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let decoded: DataLlmConfig = serde_json::from_str(&json).unwrap();

@@ -64,7 +64,8 @@ pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32>
 pub struct DiagnoseReport {
     pub plan_id: String,
     /// `completed`, `failed`, `running`, `cancelled` or `interrupted` for a
-    /// Graph run; derived from the plan phase for a Runner-v2 snapshot.
+    /// Graph run; derived from the plan phase and its paused flag for a
+    /// Runner-v2 snapshot.
     pub status: String,
     /// Where the run state came from.
     pub source: ReportSource,
@@ -1135,10 +1136,12 @@ fn build_legacy_report(
     };
 
     // ── Phase / status ──────────────────────────────────────────────────
-    let phase = plan_state
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .map(String::from);
+    let phase = plan_state.get("current_phase").and_then(phase_name);
+    // Pausing is a flag on the plan state, not a phase.
+    let paused = plan_state
+        .get("paused")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let iteration = plan_state
         .get("iteration")
@@ -1161,7 +1164,10 @@ fn build_legacy_report(
         })
         .unwrap_or_default();
 
-    let status = derive_status(phase.as_ref(), last_error.as_ref());
+    let mut status = derive_status(phase.as_ref(), last_error.as_ref());
+    if paused && matches!(status.as_str(), "running" | "gating" | "pending") {
+        status = "paused".to_string();
+    }
 
     // ── Gate results ────────────────────────────────────────────────────
     let gate_results: Vec<GateResultInfo> = plan_state
@@ -1282,8 +1288,7 @@ fn build_legacy_report(
     let total_cost_usd = collect_total_cost_usd(workdir, plan_id);
 
     // ── Recovery suggestions ────────────────────────────────────────────
-    let suggested_recovery =
-        build_recovery_suggestions(&status, phase.as_ref(), &gate_results, git_state.as_ref());
+    let suggested_recovery = build_recovery_suggestions(&status, &gate_results, git_state.as_ref());
 
     Ok(DiagnoseReport {
         plan_id: plan_id.to_string(),
@@ -1305,15 +1310,30 @@ fn build_legacy_report(
     })
 }
 
+/// A Runner-v2 phase's name. `PlanState.current_phase` is a `PlanPhase`,
+/// which serializes as an object tagged by `kind` (`{"kind": "implementing"}`);
+/// older snapshots wrote a plain string.
+fn phase_name(phase: &Value) -> Option<String> {
+    phase
+        .as_str()
+        .or_else(|| phase.get("kind").and_then(Value::as_str))
+        .map(String::from)
+}
+
+/// A Runner-v2 plan's status from its phase name (a kebab-case `PlanPhase`
+/// kind, or an older snapshot's name), else from whether it recorded an error.
 fn derive_status(phase: Option<&String>, last_error: Option<&String>) -> String {
     if let Some(phase) = phase {
         match phase.as_str() {
-            "done" | "merged" | "accepted" => "completed".to_string(),
+            "done" | "complete" | "merged" | "accepted" => "completed".to_string(),
             "failed" | "error" => "failed".to_string(),
-            "gating" | "gate" | "verifying" => "gating".to_string(),
+            "gating" | "gate" | "verifying" | "regenerating-verify" => "gating".to_string(),
             "implementing" | "implement" | "agent" | "coding" => "running".to_string(),
+            "enriching" | "reviewing" | "doc-revision" | "auto-fixing" => "running".to_string(),
+            "merging" => "running".to_string(),
             "queued" | "pending" | "ready" => "pending".to_string(),
             "paused" => "paused".to_string(),
+            "skipped" => "skipped".to_string(),
             _ => {
                 if last_error.is_some() {
                     "failed".to_string()
@@ -1671,7 +1691,6 @@ fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
 
 fn build_recovery_suggestions(
     status: &str,
-    phase: Option<&String>,
     gate_results: &[GateResultInfo],
     git_state: Option<&GitStateInfo>,
 ) -> Vec<String> {
@@ -1719,9 +1738,7 @@ fn build_recovery_suggestions(
         );
     }
 
-    if let Some(phase) = phase
-        && phase == "paused"
-    {
+    if status == "paused" {
         suggestions.push("Plan is paused. Resume with `roko plan run`.".to_string());
     }
 
@@ -1771,14 +1788,14 @@ mod tests {
             duration_ms: 5000,
             classified_errors: Vec::new(),
         }];
-        let suggestions = build_recovery_suggestions("failed", None, &gates, None);
+        let suggestions = build_recovery_suggestions("failed", &gates, None);
         assert!(suggestions.iter().any(|s| s.contains("cargo build")));
         assert!(suggestions.iter().any(|s| s.contains("resume-plan")));
     }
 
     #[test]
     fn recovery_suggestions_completed() {
-        let suggestions = build_recovery_suggestions("completed", None, &[], None);
+        let suggestions = build_recovery_suggestions("completed", &[], None);
         assert!(suggestions.iter().any(|s| s.contains("successfully")));
     }
 
@@ -1789,7 +1806,7 @@ mod tests {
             has_uncommitted_changes: true,
             plan_branch_exists: false,
         };
-        let suggestions = build_recovery_suggestions("failed", None, &[], Some(&git));
+        let suggestions = build_recovery_suggestions("failed", &[], Some(&git));
         assert!(suggestions.iter().any(|s| s.contains("Uncommitted")));
     }
 
@@ -2664,7 +2681,9 @@ title = "Tidy the changelog"
 
         let report = build_report(workspace.path(), "legacy-plan", false).expect("report");
         assert_eq!(report.source, ReportSource::RunnerSnapshot);
-        assert_eq!(report.status, "failed");
+        // The phase, not the last error, says the plan is still being worked on.
+        assert_eq!(report.phase.as_deref(), Some("implementing"));
+        assert_eq!(report.status, "running");
         assert_eq!(report.iteration, Some(2));
         let failed = report.failed_task.as_ref().expect("failed task");
         assert_eq!(
@@ -2675,6 +2694,62 @@ title = "Tidy the changelog"
         assert_eq!(report.gate_results[0].gate_name, "compile:cargo");
         assert!(report.graph_run.is_none());
         assert!(report.tasks.is_empty());
+    }
+
+    /// The report for `legacy-plan` from a Runner-v2 executor snapshot whose
+    /// state for the plan is `plan_state`.
+    fn runner_snapshot_report(plan_state: Value) -> DiagnoseReport {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let state = workspace.path().join(".roko/state");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": { "legacy-plan": plan_state }
+        });
+        std::fs::write(
+            state.join("executor.json"),
+            serde_json::to_vec(&executor).expect("serialize"),
+        )
+        .expect("executor.json");
+        build_report(workspace.path(), "legacy-plan", false).expect("report")
+    }
+
+    #[test]
+    fn a_runner_snapshot_reports_its_phase() {
+        let running = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "implementing" },
+            "iteration": 1,
+            "paused": false
+        });
+        let report = runner_snapshot_report(running);
+        assert_eq!(report.phase.as_deref(), Some("implementing"));
+        assert_eq!(report.status, "running");
+        assert!(report.failed_task.is_none());
+
+        let paused = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "auto-fixing" },
+            "paused": true
+        });
+        let report = runner_snapshot_report(paused);
+        assert_eq!(report.phase.as_deref(), Some("auto-fixing"));
+        assert_eq!(report.status, "paused");
+        let suggestions = report.suggested_recovery.join("\n");
+        assert!(suggestions.contains("Plan is paused"), "{suggestions}");
+
+        let failed = serde_json::json!({
+            "plan_id": "legacy-plan",
+            "current_phase": { "kind": "failed", "reason": "AllTasksFailed" }
+        });
+        let report = runner_snapshot_report(failed);
+        assert_eq!(report.phase.as_deref(), Some("failed"));
+        assert_eq!(report.status, "failed");
+
+        // Older snapshots wrote the phase as a plain name.
+        let complete = phase_name(&serde_json::json!("complete"));
+        assert_eq!(complete.as_deref(), Some("complete"));
+        assert_eq!(derive_status(complete.as_ref(), None), "completed");
     }
 
     #[test]

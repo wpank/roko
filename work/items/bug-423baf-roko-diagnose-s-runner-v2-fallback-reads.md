@@ -10,8 +10,8 @@ size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-29
 updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/diagnose-graph-runs 05f8854ce"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::build_legacy_report", "crates/roko-cli/src/commands/diagnose.rs::derive_status", "crates/roko-core/src/phase.rs::PlanPhase"]
@@ -64,3 +64,13 @@ comes from `last_error`, and never checks `phase`.
 
 - The fallback reports the snapshot's phase and a status derived from it.
 - The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-climain): implemented on work/bug-28c193; cargo verification deferred to the batch check.
+  `build_legacy_report` reads the phase through `phase_name` (a string, or the object's `kind`), `derive_status` maps
+  the kebab-case kinds (`complete`, `enriching`, `reviewing`, `doc-revision`, `auto-fixing`, `regenerating-verify`,
+  `merging`, `skipped`), and the snapshot's `paused` flag turns a running, gating or pending status into `paused`.
+  `build_recovery_suggestions` lost its `phase` parameter and keys the paused suggestion on that status. The existing
+  fallback test now expects `running` for its `implementing` fixture (its old `failed` came from the unread phase).
+  New test: `a_runner_snapshot_reports_its_phase`. The Runner-v2 fallback was kept rather than deleted (Plan step 4).

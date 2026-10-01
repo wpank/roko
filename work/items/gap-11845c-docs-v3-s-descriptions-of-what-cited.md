@@ -2,7 +2,7 @@
 id = "gap-11845c"
 kind = "gap"
 title = "docs/v3's descriptions of what cited papers say are unchecked; two harness-engineering sections checked so far were mostly invented"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["docs/v3", "tools/docs_integrity"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "97e716546"
+last_verified_rev = "6a59fd0bd"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's reports on gap-785a4f and gap-0d996a)"
 anchors = ["docs/v3/", "tools/docs_integrity/citation_errata.json"]
@@ -20,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-785a4f", "gap-0d996a", "
 
 [[verify]]
 command = "test -f tools/docs_integrity/content_audit.json && python3 -c \"import json;d=json.load(open('tools/docs_integrity/content_audit.json'));assert len(d['works'])>=30\" && python3 tools/docs_integrity/check_citation_errata.py --prose"
+
+[closed]
+at = 2026-10-01
+commit = "6a59fd0bd"
+evidence = "tools/docs_integrity/content_audit.json: 45 works read in full (17 supported, 28 corrected; error rate 62.2%, major 35.6%); check_citation_errata.py --prose clean (905 files, 302 works); 13 checker tests pass"
 +++
 
 ## Problem

@@ -739,10 +739,12 @@ impl Agent for ExecAgent {
                     %violation,
                     "Codex operation denied by policy broker; process stopped"
                 );
-                return self.failure_signal(
+                // What the stopped run consumed is still spent (bug-dc4d63).
+                let raw_stdout = drain_killed_output(stdout_handle).await;
+                return self.failure_with_usage(
                     input,
                     &format!("Codex operation policy violation: {violation}"),
-                    started,
+                    self.run_usage(&full_stdin, &raw_stdout, started),
                 );
             }
         };
@@ -1436,6 +1438,35 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
             ),
             (Some(800), Some(200), Some(50), Some(10))
         );
+    }
+
+    /// bug-dc4d63: a Codex run the policy broker stops reports the usage it
+    /// consumed, estimated, as a timed-out run does.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_run_the_policy_broker_stops_reports_estimated_usage() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let started = concat!(
+            r#"{"type":"item.started","item":{"id":"item_0","type":"command_execution","#,
+            r#""command":"ls","status":"in_progress"}}"#,
+        );
+        let script = format!("cat >/dev/null; printf '%s\\n' '{started}'; exec sleep 30");
+        let contract = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+            ..AgentContract::default()
+        };
+        let agent = exec_agent("sh", vec!["-c".into(), script])
+            .with_timeout_ms(10_000)
+            .with_extract_codex_jsonl(true)
+            .with_codex_operation_policy(CodexOperationPolicy::from_contract(&contract));
+
+        let result = agent.run(&prompt(&"x".repeat(400)), &Context::now()).await;
+
+        assert!(!result.success);
+        let usage = result.usage_obs.expect("the stopped run's usage");
+        assert_eq!(usage.source, UsageSource::Estimated);
+        assert_eq!(usage.input_tokens, Some(100));
     }
 
     #[test]

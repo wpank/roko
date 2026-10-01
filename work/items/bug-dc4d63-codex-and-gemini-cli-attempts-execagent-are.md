@@ -109,3 +109,6 @@ Checked statically at `33e107da1`.
   unmarked chars/4 guess became the same observation. Cost is left to dispatch's pricing (profile or registry), as
   for other estimated usage. Tests: `a_timed_out_exec_run_reports_estimated_usage`,
   `codex_exec_reports_turn_completed_usage`.
+- 2026-10-01 (wk-model-truth): after gate 6b brought in the Codex policy broker's live stop (gap-baab0a), a run
+  it stops reports its usage the same way (`run_usage` after draining stdout) instead of none. Test:
+  `a_run_the_policy_broker_stops_reports_estimated_usage`.

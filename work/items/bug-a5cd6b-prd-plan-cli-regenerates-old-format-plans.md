@@ -37,14 +37,16 @@ Rechecked 2026-09-29 at d9e79e9d8: still open. The call is now gated by a regene
 
 ## Notes
 
-- Implemented on `work/gap-2623b2` at `5fe2b64a5`; cargo verification deferred to the batch check.
+- Implemented on `work/gap-2623b2` at `5fe2b64a5`, test fixed at `16a17b139`. Checked in this worker's own target at
+  `7865621db`: check, clippy and the verify test pass, and so do 232 lib tests under `prd::`, `task_parser::` and
+  `plan_*::`. The batch check re-runs them.
 - Root cause: `TasksFile::validate_modern_fields` required a `model_hint`, and the generator strips every
   `model_hint`, so each generated plan counted as old-format. Every `roko prd plan` regenerated all of them, the plan
   it had just written included. A modern task no longer needs a `model_hint` (role and tier route it); the modern
   fields are `tier`, `context.read_files`, `verify` and `depends_on`.
 - The refresh is opt-in: `roko prd plan <slug> --regenerate-old` runs `regenerate_old_format_plans` after the requested
-  plan (not under `--dry-run`). No generate path runs it on its own: the PRD wrappers, promote's auto-plan and serve.
-  gap-2623b2 had already removed the `regenerate_old_plans` parameter.
+  plan (not under `--dry-run`). No generate path runs it on its own: the wrapper's `regenerate_old_plans` parameter,
+  which every CLI entry point and promote's auto-plan set to true, is gone.
 - `prd::tests::test_prd_plan_does_not_regenerate_other_plans` runs the generator with a fake `claude_cli` planner over
   an old-format plan and a generated plan without a `model_hint`. Both keep their tasks.toml byte for byte, the planner
   is called once, and only the old-format plan counts as old.

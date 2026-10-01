@@ -545,7 +545,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         .state_hub
         .unwrap_or_else(crate::state_hub::shared_state_hub);
 
-    // SIGINT/SIGTERM stop the run gracefully for as long as the guard lives.
+    // SIGINT, SIGTERM and SIGHUP stop the run gracefully for as long as the
+    // guard lives.
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
     let started = std::time::Instant::now();

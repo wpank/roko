@@ -218,6 +218,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
         };
+        // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
+        let request = self.fast_bounded(request);
         let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
             prompt_experiment,
             &dispatch_plan.prompt.diagnostics.experiment_assignments,

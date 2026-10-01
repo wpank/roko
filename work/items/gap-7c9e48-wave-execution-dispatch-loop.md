@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/396-wave-execution-dispatch.md#396 — Wave Execution Dispatch Loop"
 discovered_from = "audit:tmp/backlog/archive/396-wave-execution-dispatch.md#396 — Wave Execution Dispatch Loop"
 anchors = ["crates/roko-cli/src/graph_execution/plan_set.rs::PlanSetScheduler", "crates/roko-cli/src/graph_execution/plan_set.rs::PlanFootprint::of", "crates/roko-cli/src/graph_execution/plan_set.rs::CargoWorkspace::load", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-core/src/config/schema.rs::default_max_parallel_plans", "roko.toml:343", "crates/roko-cli/tests/graph_plan_callers.rs"]
@@ -167,3 +167,9 @@ The [[verify]] command is unsound (see the check notes). Proposed replacement, n
 Removed [[verify]] `grep -q 'CrossPlanDag' crates/roko-cli/src/graph_execution/plan_runner.rs` on 2026-09-29: it passes while the problem still exists.
 
 Checked 2026-09-29: Checked against the ready-queue scheduler (bbf6517fc): it changes scheduling inside a plan (ready tasks no longer wait for their whole wave, and a failure skips only its dependants), not across plans. max_parallel_plans still defaults to 1 and no integration test shows two plans overlapping, so all three points above still stand.
+
+2026-10-01 (wk-planrun): partial on work/gap-dd4826; cargo verification deferred to the batch check. The item stays open for the default decision (Plan step 1).
+- Step 2 was already done at BASE, and this item's Current state misses it. `independent_plans_run_side_by_side` and `one_plan_at_a_time_keeps_the_execution_order` (`graph_execution/plan_runner.rs`, since `725f21e05`) run `run_graph_plan` with two independent plans at `max_parallel_plans` 2 and 1. They assert that both plans start before either ends, and that one slot keeps the execution order. `main.rs` tests the `--max-parallel-plans` parsing. The `[[verify]]`'s test names resolve at BASE.
+- Step 3, new: `diamond_plan_set_runs_middle_plans_together` (`graph_execution/plan_set.rs`, next to `independent_plans_share_the_slots`). In A → {B, C} → D with four slots, B and C start together once A succeeds, and D starts only when both have.
+- Step 4 is fine as it is: a waiting plan logs `plan waits: it cannot share the working tree with a running plan` (with `waits_for` and `reason`) at `info`. The CLI's default directive `roko=info` shows it on stderr without `--tui`.
+- Still open: step 1, whether plan-set parallelism stays opt-in (`default_max_parallel_plans` = 1, `roko.toml` `max_parallel_plans = 1`) or is on by default. That is Will's call, and needs a decision item for `work/DECISIONS.md`; the Plan recommends staying opt-in until gap-c09fc7 lands. Step 5 (a live run of 3 or more independent plans) needs a provider.

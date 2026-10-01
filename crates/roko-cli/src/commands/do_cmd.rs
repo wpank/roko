@@ -787,9 +787,10 @@ pub(crate) async fn run_plan_execution(
         );
     }
 
-    // SIGINT/SIGTERM stop the run gracefully (cancel, finalize checkpoints,
-    // exit 130/143) for as long as the guard lives. The Graph engine prints
-    // the run summary itself: one JSON document with --json, else a line.
+    // SIGINT, SIGTERM and SIGHUP stop the run gracefully (cancel, finalize
+    // checkpoints, exit 130, 143 or 129) for as long as the guard lives. The
+    // Graph engine prints the run summary itself: one JSON document with
+    // --json, else a line.
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
     run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {

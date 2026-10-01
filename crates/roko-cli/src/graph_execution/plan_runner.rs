@@ -167,15 +167,19 @@ pub enum PlanRunInterrupt {
     /// The FAST run deadline (`ROKO_FAST_PLAN_DEADLINE_SECS`) elapsed
     /// (gap-9efe8e). It exits as SIGTERM does, which `./dev.sh fast` expects.
     Deadline,
+    /// A conductor watcher failed the run (gap-fab2cc); the run ends with
+    /// the watcher's error.
+    Conductor,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Interrupt,
         Self::Terminate,
         Self::Hangup,
         Self::Deadline,
+        Self::Conductor,
     ];
 
     /// Conventional shell status for the signal: 128 + signal number.
@@ -183,12 +187,13 @@ impl PlanRunInterrupt {
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
-            Self::Terminate | Self::Deadline => 143,
+            Self::Terminate | Self::Deadline | Self::Conductor => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name, or `deadline`, for logs and summaries.
+    /// Signal name, `deadline` or `conductor`, for logs, summaries and the
+    /// checkpoint's stop cause.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -196,6 +201,7 @@ impl PlanRunInterrupt {
             Self::Terminate => "SIGTERM",
             Self::Hangup => "SIGHUP",
             Self::Deadline => "deadline",
+            Self::Conductor => "conductor",
         }
     }
 
@@ -205,6 +211,7 @@ impl PlanRunInterrupt {
             Self::Terminate => 2,
             Self::Hangup => 3,
             Self::Deadline => 4,
+            Self::Conductor => 5,
         }
     }
 
@@ -214,6 +221,7 @@ impl PlanRunInterrupt {
             2 => Some(Self::Terminate),
             3 => Some(Self::Hangup),
             4 => Some(Self::Deadline),
+            5 => Some(Self::Conductor),
             _ => None,
         }
     }
@@ -416,7 +424,8 @@ fn force_exit(interrupt: PlanRunInterrupt, reason: &str) -> ! {
         libc::SIGKILL,
     );
     let running: Vec<PathBuf> = running_plan_checkpoints().iter().cloned().collect();
-    let interrupted = mark_checkpoints_interrupted(running, FORCED_EXIT_CHECKPOINT_TIMEOUT);
+    let by = interrupt.label();
+    let interrupted = mark_checkpoints_interrupted(running, by, FORCED_EXIT_CHECKPOINT_TIMEOUT);
     tracing::error!(
         signal = interrupt.label(),
         reason,
@@ -458,9 +467,16 @@ impl Drop for RunningPlanCheckpoint {
 }
 
 /// Mark each checkpoint in `manifests` that still reads `running` as
-/// `interrupted`, on a thread of its own so a stuck disk cannot hold a forced
-/// exit past `timeout`. Returns how many were marked in time.
-fn mark_checkpoints_interrupted(manifests: Vec<PathBuf>, timeout: Duration) -> usize {
+/// `interrupted` by the stop request `by`, on a thread of its own so a stuck
+/// disk cannot hold a forced exit past `timeout`. Returns how many were
+/// marked in time.
+fn mark_checkpoints_interrupted(
+    manifests: Vec<PathBuf>,
+    by: &'static str,
+    timeout: Duration,
+) -> usize {
+    use crate::graph_checkpoint::mark_running_checkpoint_interrupted;
+
     if manifests.is_empty() {
         return 0;
     }
@@ -469,7 +485,7 @@ fn mark_checkpoints_interrupted(manifests: Vec<PathBuf>, timeout: Duration) -> u
         .name("roko-plan-run-exit-checkpoints".to_string())
         .spawn(move || {
             for manifest in manifests {
-                match crate::graph_checkpoint::mark_running_checkpoint_interrupted(&manifest) {
+                match mark_running_checkpoint_interrupted(&manifest, by) {
                     Ok(marked) => {
                         let _ = marked_tx.send(marked);
                     }
@@ -658,6 +674,17 @@ fn pending_interrupt(
         interrupt.request(PlanRunInterrupt::Interrupt);
     }
     interrupt.requested()
+}
+
+/// What a plan's checkpoint names as the stop of its run (gap-fab2cc): the
+/// stop request, when the plan ended interrupted by it.
+fn stop_cause(
+    outcome: PlanOutcome,
+    interrupted_by: Option<PlanRunInterrupt>,
+) -> Option<&'static str> {
+    interrupted_by
+        .filter(|_| outcome == PlanOutcome::Interrupted)
+        .map(PlanRunInterrupt::label)
 }
 
 /// Terminal checkpoint status of a plan that ran and ended with `outcome`.
@@ -1312,6 +1339,8 @@ async fn run_graph_plan_body(
     )
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
+    // FAST lane (`./dev.sh fast`): bound each attempt (gap-4a6dcb).
+    .with_fast_bounds(super::fast_lane::FastAttemptBounds::from_env(workdir))
     .with_feedback(graph_feedback)
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)
@@ -1441,7 +1470,7 @@ async fn run_graph_plan_body(
             move |stop| {
                 tracing::error!(%stop, "the conductor is stopping the plan run");
                 *conductor_stop.lock() = Some(stop);
-                interrupt.request(PlanRunInterrupt::Terminate);
+                interrupt.request(PlanRunInterrupt::Conductor);
             }
         },
     );
@@ -1592,8 +1621,8 @@ async fn run_graph_plan_body(
     let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
     // How the tasks of each plan that ran settled, for the run metrics.
     let mut plan_task_verdicts = std::collections::BTreeMap::<String, TaskVerdictCounts>::new();
-    // Set once SIGINT/SIGTERM (or closing the TUI) stops the run; later
-    // plans are left unstarted.
+    // Set once a stop request (a signal, closing the TUI, the FAST deadline
+    // or the conductor) stops the run; later plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
 
     let failure_issues = graph_run_config.github_ops.clone().map(|ops| {
@@ -3122,6 +3151,7 @@ async fn run_one_plan(
             was_cancelled_by_tui,
         );
         checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
+        checkpoint.record_stop_cause(stop_cause(outcome, interrupted_by))?;
         close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
         checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
         return Ok(PlanRunResult {
@@ -3229,6 +3259,7 @@ async fn run_one_plan(
         graph_tui_bridge.task_blocked(&plan.id, task_id, title, None, reason);
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
+    checkpoint.record_stop_cause(stop_cause(outcome, interrupted_by))?;
     // Each task the run left failed gets a GitHub issue when `[github]
     // auto_pr` is on (gap-cd51b7). A run that was interrupted or cancelled
     // files none.
@@ -4913,6 +4944,7 @@ exec sleep 60
         // A FAST deadline exits as SIGTERM does, under its own label.
         assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
+        assert_eq!(PlanRunInterrupt::Conductor.label(), "conductor");
         for interrupt in PlanRunInterrupt::ALL {
             assert_eq!(
                 PlanRunInterrupt::from_code(interrupt.code()),
@@ -4926,7 +4958,9 @@ exec sleep 60
     /// checkpoint is listed for it only while the plan runs.
     #[test]
     fn a_forced_exit_marks_running_checkpoints_interrupted() {
-        use crate::graph_checkpoint::{canonical_checkpoint_status, start_plan_checkpoint};
+        use crate::graph_checkpoint::{
+            canonical_checkpoint_status, canonical_stop_cause, start_plan_checkpoint,
+        };
 
         let dir = tempfile::tempdir().expect("tempdir");
         let running = start_plan_checkpoint(dir.path(), &test_plan("running", "Running", 1))
@@ -4945,7 +4979,7 @@ exec sleep 60
 
         let manifests = vec![manifest, finished.paths().manifest.clone()];
         assert_eq!(
-            mark_checkpoints_interrupted(manifests, Duration::from_secs(5)),
+            mark_checkpoints_interrupted(manifests, "SIGTERM", Duration::from_secs(5)),
             1
         );
         assert_eq!(
@@ -4953,10 +4987,31 @@ exec sleep 60
             Some(GraphCheckpointStatus::Interrupted)
         );
         assert_eq!(
+            canonical_stop_cause(dir.path(), "running").as_deref(),
+            Some("SIGTERM")
+        );
+        assert_eq!(
             canonical_checkpoint_status(dir.path(), "finished"),
             Some(GraphCheckpointStatus::Succeeded)
         );
-        assert_eq!(mark_checkpoints_interrupted(Vec::new(), Duration::ZERO), 0);
+        assert_eq!(canonical_stop_cause(dir.path(), "finished"), None);
+        assert_eq!(
+            mark_checkpoints_interrupted(Vec::new(), "SIGTERM", Duration::ZERO),
+            0
+        );
+    }
+
+    /// gap-fab2cc: a plan's checkpoint names the stop request that
+    /// interrupted it, and nothing when the plan ended any other way.
+    #[test]
+    fn an_interrupted_plan_names_its_stop() {
+        let interrupted = |by| stop_cause(PlanOutcome::Interrupted, by);
+        let deadline = Some(PlanRunInterrupt::Deadline);
+        let conductor = Some(PlanRunInterrupt::Conductor);
+        assert_eq!(interrupted(deadline), Some("deadline"));
+        assert_eq!(interrupted(conductor), Some("conductor"));
+        assert_eq!(interrupted(None), None);
+        assert_eq!(stop_cause(PlanOutcome::Succeeded, deadline), None);
     }
 
     /// Set by [`a_hangup_stops_the_plan_run`] for its child test process.

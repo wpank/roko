@@ -59,6 +59,7 @@ mod bench_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;
+mod fast;
 mod feedback;
 mod gate_learning;
 mod helper_calls;
@@ -154,6 +155,9 @@ pub struct GraphTaskDispatcher {
     cli_model_override: Option<String>,
     /// Whether to skip agent permission prompts (from `--dangerously-skip-permissions`).
     dangerously_skip_permissions: bool,
+    /// FAST mode's bounds on each attempt (`./dev.sh fast`, gap-4a6dcb); `None`
+    /// outside FAST mode.
+    fast: Option<crate::graph_execution::fast_lane::FastAttemptBounds>,
     /// Learning/feedback subsystems wired into the Graph engine.
     feedback: GraphFeedbackContext,
     /// Optional per-task worktree isolation provider. When `Some`, each task
@@ -292,6 +296,7 @@ impl GraphTaskDispatcher {
             budget_ledger: GraphPlanBudgetLedger::default(),
             cli_model_override: None,
             dangerously_skip_permissions: false,
+            fast: None,
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
             disk_admission: None,
@@ -1331,6 +1336,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
         };
+        // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
+        self.fast_bound(&mut request);
 
         // Bind the prompt treatments to the exact final prompt before launch;
         // an attempt that ends before `emit_feedback` abandons them on drop.

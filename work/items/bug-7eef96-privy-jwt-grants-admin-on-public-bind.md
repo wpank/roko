@@ -5,7 +5,6 @@ title = "Privy JWT grants admin to any Nunchi Privy user on a publicly bound rok
 status = "done"
 triage = "verified"
 severity = "p0"
-hold = "Deferred by Will on 2026-09-28 (\"file it for later\"); do not pick until he lifts the hold"
 goal = "release"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-28

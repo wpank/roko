@@ -770,7 +770,7 @@ Douglas Hofstadter's Copycat model (1995) emphasizes that analogy-making is not 
 
 ### LLMs and Analogical Reasoning (2024-2025)
 
-Recent research (Webb et al., 2024; arXiv:2406.13803) shows that LLMs achieve human-level performance on **near analogies** (high surface similarity) but fall to below-random on **far analogies** (cross-domain, low surface similarity). This is precisely where HDC excels — structural similarity detection across distant domains.
+Recent research (Musker et al.; arXiv:2406.13803) shows that LLMs achieve human-level performance on **near analogies** (high surface similarity) but fall to below-random on **far analogies** (cross-domain, low surface similarity). This is precisely where HDC excels — structural similarity detection across distant domains.
 
 The emerging hybrid approach (arXiv:2603.29997, 2025) uses LLMs to generate structured representations and a classical mapping engine (like SME or HDC) to perform the structural alignment. Neuro's architecture naturally supports this: the LLM-based distillation pipeline (D1) generates structured entries, and the HDC resonance detector finds cross-domain alignments.
 

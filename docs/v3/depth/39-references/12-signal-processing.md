@@ -70,7 +70,7 @@ Enhanced GAT with persistent homology for inter-feature dependencies.
 **[Yao et al., 2025]** *Change Point Detection in Financial Market Using Topological Data Analysis.* Systems, 13(10), 875.
 Takens embedding + sliding window for topological change detection.
 
-**[Anonymous, 2025]** *Machine Learning of Time Series Using Persistent Homology.* Scientific Reports, Nature.
+**[Ichinomiya, 2025]** *Machine Learning of Time Series Using Persistent Homology.* Scientific Reports, Nature.
 ML directly on persistent homology representations.
 
 ---

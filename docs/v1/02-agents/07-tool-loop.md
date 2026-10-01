@@ -632,9 +632,9 @@ impl SpeculativeExecutor {
 > durable immune controls, screening, finalization, and terminal audit state. The types and
 > policies below remain a research sketch for a future explicitly owned cache layer.
 
-Research (ToolCacheAgent, ICLR 2026 submission; arXiv:2601.15335) shows that
-intelligent tool result caching achieves 1.69× latency speedup without
-accuracy loss.
+Research (ToolCaching, Zhai et al. 2026, arXiv:2601.15335) shows that
+feature-driven, adaptive caching of tool results reaches up to 11% higher
+cache hit ratios and 34% lower latency than standard cache policies.
 
 ### Cacheability Classification
 
@@ -771,11 +771,8 @@ the harness matters more than the model.
    Acting, and Planning." ICML 2024. arXiv:2310.04406. — LATS/MCTS.
 4. Yao, S. et al. (2023). "Tree of Thoughts: Deliberate Problem Solving with
    Large Language Models." NeurIPS 2023. arXiv:2305.10601. — ToT.
-5. arXiv:2511.14650 (2025). "AutoTool: Efficient Tool Selection for LLM
-   Agents." AAAI 2026. — Graph-based tool prediction.
-6. arXiv:2603.18897 (2025). Microsoft Research. "PASTE: Pattern-Aware
-   Speculative Tool Execution." — 48.5% latency reduction.
-7. ToolCacheAgent (2025). ICLR 2026 submission. — 1.69× speedup via caching.
+5. arXiv:2511.14650 (2025). "AutoTool: Efficient Tool Selection for Large Language Model Agents." AAAI 2026. — Graph-based tool prediction.
+6. arXiv:2603.18897 (2025). Microsoft Research. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." — 48.5% latency reduction.
 8. arXiv:2506.14852 (2025). "Agentic Plan Caching." — 50.31% cost reduction.
 9. Red Hat (2025). "Tool RAG: Next Breakthrough in Scalable AI Agents."
    — 99.6% token reduction.

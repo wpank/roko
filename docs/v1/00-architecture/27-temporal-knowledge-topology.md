@@ -24,8 +24,8 @@
 - Allen 1983, CACM — Maintaining Knowledge about Temporal Intervals
 - Kowalski & Sergot 1986, New Gen. Computing — A Logic-based Calculus of Events
 - Rasmussen et al. 2025, arXiv:2501.13956 — Zep/Graphiti: Temporal KG Architecture for Agent Memory
-- arXiv:2509.15464 (2025) — Temporal Reasoning with LLMs over Evolving Knowledge Graphs
-- arXiv:2401.06072 (2024) — Chain of History: TKG Completion with LLMs
+- arXiv:2509.15464 (2025) — Temporal Reasoning with Large Language Models Augmented by Evolving Knowledge Graphs
+- arXiv:2401.06072 (2024) — Chain of History: Learning and Forecasting with LLMs for Temporal Knowledge Graph Completion
 - Lacroix et al. 2020 — Tensor Decomposition for Temporal Knowledge Graph Completion
 
 ---

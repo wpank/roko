@@ -646,8 +646,8 @@ against the field.
 ### 10.1 SWE-bench
 
 SWE-bench (Jimenez et al., 2024) measures resolution of real GitHub issues.
-Harness quality accounts for most performance variance between agent systems --
-the same model can score 25% or 85% depending on the harness. Roko's
+The harness around a fixed model can matter as much as the model (Lee et al.
+2026, §1, citing a 6× gap on SWE-bench Mobile). Roko's
 architecture is designed with this finding in mind: the six crate layers
 (core, agent, orchestrator, gate, compose, learn) provide harness
 infrastructure while the model is a pluggable component.
@@ -668,10 +668,10 @@ Relevance to roko: moderate. Useful for baseline model comparison but not for
 evaluating orchestration, context management, or iterative refinement -- the
 capabilities that differentiate roko from a bare model.
 
-### 10.3 GT-Score composite
+### 10.3 A composite score
 
-For cross-system comparison, the GT-Score (Sheppert, 2026) provides a
-standardized composite:
+For cross-system comparison, this document proposes a composite. (Earlier
+versions attributed it to "Sheppert, 2026", a source no registry lists.)
 
 ```
 GT = 0.40 * resolve_rate
@@ -934,7 +934,7 @@ lens on the data these subsystems already produce.
 
 1. Kapoor et al. (2026). "HAL: A Benchmark for Evaluating LLM Agents." ICLR.
    -- Scaffold-aware evaluation, 21,730 agent rollouts.
-2. Lee et al. (2026). "Meta-Harness: Harness Engineering for LLM Agents."
+2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
    arXiv:2603.28052. -- +7.7 accuracy, 4x token reduction.
 3. Jimenez et al. (2024). "SWE-bench: Can Language Models Resolve Real-World
    GitHub Issues?" -- External benchmark context.
@@ -948,7 +948,6 @@ lens on the data these subsystems already produce.
    models for step-level evaluation.
 8. Singh et al. (2025). "The Leaderboard Illusion." NeurIPS. -- Overfitting
    detection in agent evaluation.
-9. Sheppert (2026). GT-Score composite. -- Standardized agent quality metric.
 10. Bailey et al. (2015). PBO: Probability of Backtest Overfitting. --
     Combinatorial cross-validation for configuration selection.
 11. Gibson (1979). The Ecological Approach to Visual Perception. --

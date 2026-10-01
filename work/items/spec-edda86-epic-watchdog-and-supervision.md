@@ -86,7 +86,7 @@ This is the implementation plan.
       item)
 - [x] gap-5a6e01: Turn caps and timeouts set from each tier's p95 over successful tasks
 - [ ] gap-9eebcb: Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start
-- [ ] bug-739dcc: The Claude CLI adapter has no cancel path: dropping a run kills only the CLI process, and its tool subprocesses keep running
+- [x] bug-739dcc: The Claude CLI adapter has no cancel path: dropping a run kills only the CLI process, and its tool subprocesses keep running
 - [ ] bug-2a2f63: A dropped run's heartbeat task in graph_task_dispatch/watchdog.rs is never aborted
 - [ ] The epic's `[[verify]]` command (test C7) passes on the merged branch.
 

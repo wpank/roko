@@ -108,17 +108,17 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] bug-ad5487: Gate rows in verification.rs still record turn 1 when the attempt's turn count is unknown
 - [x] bug-b2dd44: The streaming dispatch path ignores a substituted pinned model, which the batch path fails as model_substituted
 - [x] bug-c65bfe: The tool loop leaves usage_obs.source as Unknown
-- [ ] gap-751ac9: Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged
+- [x] gap-751ac9: Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged
 - [x] bug-0ba3d9: Attempt records leave inv null: with_inv is called only in tests
 - [x] bug-d5fb74: A run resumed under a different build keeps the first invocation's harness and config in its manifest
-- [ ] bug-aa2044: Stalled attempts record no cost: the watchdog drops the provider before it reports usage
-- [ ] bug-25d24e: testutil::response_from_stream_events encodes cache reads under a key the parser never reads, so three streaming parity tests are ignored
-- [ ] bug-9a6799: EfficiencySummaryRecord::from_episode copies an unknown cost into efficiency-summaries.jsonl as 0
-- [ ] bug-a5f181: Native Gemini records its configured slug as the model, because it doesn't parse modelVersion
-- [ ] bug-afcf63: Native Gemini counts cached tokens twice: promptTokenCount (which includes them) becomes input, and cachedContentTokenCount becomes cache reads
-- [ ] bug-bfd241: The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it
+- [x] bug-aa2044: Stalled attempts record no cost: the watchdog drops the provider before it reports usage
+- [x] bug-25d24e: testutil::response_from_stream_events encodes cache reads under a key the parser never reads, so three streaming parity tests are ignored
+- [x] bug-9a6799: EfficiencySummaryRecord::from_episode copies an unknown cost into efficiency-summaries.jsonl as 0
+- [x] bug-a5f181: Native Gemini records its configured slug as the model, because it doesn't parse modelVersion
+- [x] bug-afcf63: Native Gemini counts cached tokens twice: promptTokenCount (which includes them) becomes input, and cachedContentTokenCount becomes cache reads
+- [x] bug-bfd241: The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it
 - [ ] bug-8417d9: Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows
-- [ ] bug-9bffe2: roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown
+- [x] bug-9bffe2: roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown
 - [ ] bug-ea7723: The codex, cursor and openai_parity streaming tests stay ignored until testutil's stream events carry session ids
 - [ ] bug-e35fdb: roko learn role-costs averages unknown costs as $0 through compute_role_profiles
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row

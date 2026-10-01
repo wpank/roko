@@ -85,7 +85,7 @@ Prediction error learning: learning occurs proportionally to surprise. The simpl
 
 ## Scalable Implementations
 
-**[Anonymous, 2024]** *Synthetic Active Inference Agents, Part II: Variational Message Updates.* arXiv:2306.02733.
+**[van de Laar et al., 2024]** *Synthetic Active Inference Agents, Part II: Variational Message Updates.* arXiv:2306.02733.
 Message passing on Forney-style Factor Graphs for generalized free energy minimization. Scalable path for Roko's EFE tier routing beyond discrete state spaces.
 
 **[Raffa & Acciai, 2024]** *Free Energy Principle and Active Inference in Neural Language Models.* CEUR-WS Vol-3923.

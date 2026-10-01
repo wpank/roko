@@ -33,11 +33,9 @@ Agents do not operate in isolation. A group of agents owned by one user is a Col
 - Dorigo, M. & Gambardella, L.M. (1997). Ant Colony System: A Cooperative Learning Approach to the Traveling Salesman Problem. _IEEE Transactions on Evolutionary Computation_, 1(1), 53-66.
   *Grounds: Pheromone reinforcement — ant colony optimization formalizes pheromone deposit/evaporation. Confirmed knowledge entries gain weight (reinforcement); unconfirmed entries decay (evaporation). Grounds the confirmation-based half-life extension in NeuroStore.*
 
-- Xuan, L. et al. (2026). Dual-Trail Stigmergic Coordination for Multi-Agent Systems. _Journal of Marine Science and Engineering_, 14(2).
+- Xuan, L. et al. (2026). Dual-Trail Stigmergic Coordination Enables Robust Three-Dimensional Underwater Swarm Coverage. _Journal of Marine Science and Engineering_, 14(2).
   *Grounds: Multi-trail stigmergy — dual-trail pheromone systems for coordinating multiple agent groups. Validates separate pheromone types (Threat/Opportunity/Wisdom) with distinct decay profiles.*
 
-- Xu, Z. et al. (2024). Stigmergy + Independent RL + Conflict-Avoidance Achieves Emergent Coordination. 2024.
-  *Grounds: Pheromone Field design principles — combining stigmergic signals with independent learning and conflict avoidance produces emergent coordination without central control.*
 
 ---
 
@@ -66,9 +64,9 @@ Agents do not operate in isolation. A group of agents owned by one user is a Col
 
 ---
 
-## Emotion Contagion in Multi-Agent Systems
+## Emotion contagion in agent-based simulations of crowds: a systematic review
 
-- Van den Broek, E. (2023). Emotion Contagion in Multi-Agent Systems. _Autonomous Agents and Multi-Agent Systems_.
+- van Haeringen et al. (2023). Emotion contagion in agent-based simulations of crowds: a systematic review. _Autonomous Agents and Multi-Agent Systems_.
   *Grounds: Arousal contagion dampening — anger spreads more competitively than other emotions. Arousal contagion is capped at +0.3 per sync cycle in Roko Collectives to prevent panic cascades. Cross-referenced in [02-affective-computing.md](./02-affective-computing.md).*
 
 ---

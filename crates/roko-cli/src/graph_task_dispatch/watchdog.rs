@@ -35,6 +35,7 @@ use roko_agent::live_output::{LiveAgentEvent, LiveOutput};
 use roko_core::config::schema::ConductorConfig;
 use roko_core::{DiagnosisSeverity, DiagnosisSummary};
 
+use super::failover::FailoverChain;
 use super::supervision::{AttemptFeed, ConductorRestart, SupervisedAttempt};
 use super::*;
 
@@ -87,6 +88,94 @@ struct ProgressState {
     last_event: Option<Instant>,
     /// Tool calls the agent made whose results have not arrived yet.
     open_tool_calls: HashSet<String>,
+    /// The provider call the attempt waits on, once one started.
+    call: Option<CallInFlight>,
+    /// What that call streamed of its token usage.
+    usage: StreamedUsage,
+    /// The watchdog or the conductor cancelled the call.
+    interrupted: bool,
+}
+
+/// A provider call in flight: its target, and the models failover passed
+/// over before it.
+#[derive(Debug, Clone)]
+struct CallInFlight {
+    target: crate::dispatch_v2::ProviderDispatchSpec,
+    failover: FailoverChain,
+}
+
+/// A provider call's usage as it streams. Within one model call each
+/// `Usage` event is its usage so far, and `Done` ends the model call, so the
+/// total is the sum of each model call's last `Usage`. A CLI agent's run is
+/// one model call to the stream.
+#[derive(Debug, Default)]
+struct StreamedUsage {
+    /// The model calls that ended.
+    ended: Option<roko_core::Usage>,
+    /// The model call still streaming.
+    open: Option<roko_core::Usage>,
+}
+
+impl StreamedUsage {
+    fn total(&self) -> Option<roko_core::Usage> {
+        match (self.ended, self.open) {
+            (Some(mut ended), Some(open)) => {
+                ended.add(&open);
+                Some(ended)
+            }
+            (ended, open) => ended.or(open),
+        }
+    }
+}
+
+/// A provider call the watchdog or the conductor cancelled, with what it
+/// streamed of its usage (bug-aa2044).
+#[derive(Debug)]
+pub(super) struct InterruptedCall {
+    call: CallInFlight,
+    usage: Option<roko_core::Usage>,
+}
+
+impl InterruptedCall {
+    /// The call as an unsuccessful dispatch that failed with `message`, so
+    /// the attempt's records account it like any failed call: its streamed
+    /// usage, estimated since the provider never reported a total, or
+    /// unknown when it streamed none.
+    pub(super) fn into_dispatch(
+        self,
+        message: &str,
+        wall_ms: u64,
+    ) -> (crate::dispatch_v2::AgentResultDispatch, FailoverChain) {
+        let target = self.call.target;
+        let usage_obs = match self.usage {
+            Some(mut usage) => {
+                crate::dispatch_v2::fill_usage_cost_from_pricing(
+                    &mut usage,
+                    target.model_profile.as_ref(),
+                    &target.model_slug,
+                );
+                roko_core::UsageObservation {
+                    source: roko_core::UsageSource::Estimated,
+                    wall_ms,
+                    ..usage.into()
+                }
+            }
+            None => roko_core::UsageObservation {
+                wall_ms,
+                ..roko_core::UsageObservation::default()
+            },
+        };
+        let output = Signal::builder(roko_core::Kind::AgentOutput)
+            .body(roko_core::Body::text(message))
+            .tag("failed", "true")
+            .build();
+        let dispatch = crate::dispatch_v2::AgentResultDispatch {
+            target,
+            result: roko_agent::AgentResult::fail(output).with_usage_obs(usage_obs),
+            events: Vec::new(),
+        };
+        (dispatch, self.call.failover)
+    }
 }
 
 impl AttemptProgress {
@@ -106,8 +195,45 @@ impl AttemptProgress {
             LiveAgentEvent::Unscreened(StreamEventKind::ToolResult { id, .. }) => {
                 state.open_tool_calls.remove(id);
             }
+            LiveAgentEvent::Unscreened(StreamEventKind::Usage(usage)) => {
+                state.usage.open = Some(*usage);
+            }
+            LiveAgentEvent::Unscreened(StreamEventKind::Done { .. }) => {
+                if let Some(open) = state.usage.open.take() {
+                    let ended = state.usage.ended.get_or_insert_with(Default::default);
+                    ended.add(&open);
+                }
+            }
             LiveAgentEvent::Unscreened(_) => {}
         }
+    }
+
+    /// The attempt's provider call to `target` starts, after failover passed
+    /// over `failover`'s models: the usage that streams from now on is its.
+    pub(super) fn call_started(
+        &self,
+        target: crate::dispatch_v2::ProviderDispatchSpec,
+        failover: FailoverChain,
+    ) {
+        let mut state = self.inner.lock();
+        state.call = Some(CallInFlight { target, failover });
+        state.usage = StreamedUsage::default();
+    }
+
+    /// The watchdog or the conductor cancelled the call in flight.
+    fn interrupted(&self) {
+        self.inner.lock().interrupted = true;
+    }
+
+    /// The call the watchdog or the conductor cancelled, with the usage it
+    /// streamed; `None` when none was cancelled.
+    pub(super) fn interrupted_call(&self) -> Option<InterruptedCall> {
+        let state = self.inner.lock();
+        let call = state.call.clone().filter(|_| state.interrupted)?;
+        Some(InterruptedCall {
+            call,
+            usage: state.usage.total(),
+        })
     }
 
     /// How long, at `now`, the attempt has been waiting on its model without
@@ -349,7 +475,8 @@ impl GraphTaskDispatcher {
     /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, or that the
     /// conductor restarts through `supervised`, returns
     /// [`AttemptInterrupted`]; `dispatch` is dropped with it, which cancels
-    /// the provider call.
+    /// the provider call, and `watch`'s progress then gives the call and what
+    /// it streamed ([`AttemptProgress::interrupted_call`]).
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
@@ -375,7 +502,12 @@ impl GraphTaskDispatcher {
         loop {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
-                restart = &mut restarted => return Err(AttemptInterrupted::Restarted(restart)),
+                restart = &mut restarted => {
+                    if let Some(watch) = &watch {
+                        watch.progress.interrupted();
+                    }
+                    return Err(AttemptInterrupted::Restarted(restart));
+                }
                 _ = heartbeat.tick() => {
                     if let Some(tui) = &self.tui_bridge {
                         tui.agent_heartbeat(
@@ -390,6 +522,7 @@ impl GraphTaskDispatcher {
                     if let Some(watch) = watch.as_mut()
                         && let Some(stalled) = self.check_stall(watch, attempt)
                     {
+                        watch.progress.interrupted();
                         return Err(stalled);
                     }
                 }
@@ -960,5 +1093,121 @@ exec sleep 60
             progress.open_tool_calls.contains("toolu_1"),
             "the tool call is still running"
         );
+    }
+
+    fn usage(input_tokens: u32, output_tokens: u32) -> LiveAgentEvent {
+        LiveAgentEvent::Unscreened(StreamEventKind::Usage(roko_core::Usage {
+            input_tokens,
+            output_tokens,
+            ..roko_core::Usage::default()
+        }))
+    }
+
+    /// Within a model call each `Usage` is its usage so far and `Done` ends
+    /// the call, so a cancelled call's usage is the sum of each model call's
+    /// last `Usage`.
+    #[test]
+    fn streamed_usage_sums_the_last_usage_of_each_model_call() {
+        let progress = AttemptProgress::default();
+        let done = LiveAgentEvent::Unscreened(StreamEventKind::Done {
+            finish_reason: "tool_use".to_string(),
+        });
+        progress.observe(&usage(100, 0));
+        progress.observe(&usage(100, 40));
+        progress.observe(&done);
+        progress.observe(&usage(300, 0));
+        progress.observe(&text("still thinking"));
+
+        let total = progress.inner.lock().usage.total().expect("usage streamed");
+        assert_eq!((total.input_tokens, total.output_tokens), (400, 40));
+        assert!(
+            progress.interrupted_call().is_none(),
+            "nothing was cancelled"
+        );
+    }
+
+    /// A stalled attempt keeps what its call streamed (bug-aa2044): the
+    /// usage of the message the agent sent before it went silent is priced,
+    /// counts against the task's spend, and its verdict and cost row mark it
+    /// estimated.
+    #[tokio::test]
+    async fn a_stalled_attempt_records_the_usage_it_streamed() {
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("fake-claude.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"reading the task"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}}}'
+exec sleep 60
+"#,
+        )
+        .expect("write provider script");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make script executable");
+        let config = Arc::new(watched_config(&script));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_feedback(crate::graph_task_dispatch::tests::recording_feedback(
+                    temp.path(),
+                ));
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let run = "stall-run";
+
+        let error = dispatcher
+            .dispatch(
+                &spec,
+                Vec::new(),
+                &CellContext::new()
+                    .with_cell_id("T01".to_string())
+                    .with_run_id(run.to_string()),
+            )
+            .await
+            .expect_err("the attempt stalls");
+
+        assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        assert!(
+            dispatcher.task_spend.admit("p1/T01", 0.01).is_err(),
+            "the streamed ${expected} counts against the task"
+        );
+        let roko = temp.path().join(".roko");
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["cost"]["source"], "estimated", "{verdict}");
+        assert_eq!(verdict["executed"]["provider"], "graph-cli");
+        assert_eq!(verdict["executed"]["model_dispatched"], "claude-sonnet-4-6");
+        let costs = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("learn/costs.jsonl"),
+            1,
+            |_| true,
+        )
+        .await;
+        let cost = &costs[0];
+        assert_eq!(cost["attempt_key"], verdict["attempt_key"]);
+        assert_eq!(cost["cost_source"], "estimated");
+        assert_eq!(cost["input_tokens"], 1_000);
+        assert_eq!(cost["output_tokens"], 200);
+        assert_eq!(cost["cached_tokens"], 4_000);
+        let cost_usd = cost["cost_usd"].as_f64().expect("cost");
+        assert!((cost_usd - expected).abs() < 1e-6, "{cost}");
     }
 }

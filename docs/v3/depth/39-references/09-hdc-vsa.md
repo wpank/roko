@@ -93,7 +93,7 @@ Synchronous binary code updates for continuous data arrival.
 **[Malkov & Yashunin, 2020]** *Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs.* IEEE TPAMI 2020.
 O(log N) search at 95--99% recall for billion-scale binary vectors. Production search infrastructure.
 
-**[Zhang et al., 2023]** *SPFresh: Incremental In-Place Update.* SIGMOD 2023.
+**[Xu et al., 2023]** *SPFresh: Incremental In-Place Update.* SIGMOD 2023.
 LIRE rebalancing for continuous insert/delete.
 
 ---
@@ -116,13 +116,13 @@ Gradient-descent encoder learning. Bridges fixed and learned encoding phases.
 **[Arbore et al., 2024]** *HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing.* arXiv:2410.15179.
 Unified CPU/GPU/FPGA execution model.
 
-**[Anonymous, 2025]** *Hyperdimensional Computing in Biomedical Sciences.* PMC review.
+**[Cumbo & Chicco, 2025]** *Hyperdimensional Computing in Biomedical Sciences.* PMC review.
 Production deployments validating practical viability.
 
 **[Anonymous, 2025]** *Optimal Hyperdimensional Representation.* OpenReview.
 Theoretical optimal representations. Informs the 10,240-bit dimensionality choice.
 
-**[Anonymous, 2025]** *The Hyperdimensional Transform for Distributional Modeling.* Neural Computing and Applications.
+**[Dewulf et al., 2025]** *The Hyperdimensional Transform for Distributional Modeling.* Neural Computing and Applications.
 HDC for distributional modeling, regression, and classification.
 
 ---

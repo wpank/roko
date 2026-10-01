@@ -166,6 +166,9 @@ pub struct GenerateContentResponse {
     pub candidates: Vec<Candidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_metadata: Option<UsageMetadata>,
+    /// The model version that served the response (`modelVersion`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

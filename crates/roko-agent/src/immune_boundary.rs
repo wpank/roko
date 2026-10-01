@@ -425,6 +425,12 @@ impl ImmuneScreenedAgent {
                         {
                             let _ = sink.try_send(LiveAgentEvent::Unscreened(event.kind.clone()));
                         }
+                        // Token counts and a model call's end carry no
+                        // content: the stall watchdog records what a call it
+                        // cancels used from them (bug-aa2044).
+                        StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => {
+                            let _ = sink.try_send(LiveAgentEvent::Unscreened(event.kind.clone()));
+                        }
                         _ => {}
                     }
                 }

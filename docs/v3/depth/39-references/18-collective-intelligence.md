@@ -64,10 +64,10 @@ First Thousand Brains Theory implementation with learning modules and voting. Ea
 
 ## Emergent LLM Collectives (2025)
 
-**[Anonymous, 2025]** *Emergence in Multi-Agent Language Models: Emergent Coordination.* arXiv:2510.05174.
+**[Riedl, 2025]** *Emergent Coordination in Multi-Agent Language Models.* arXiv:2510.05174.
 Information-theoretic framework measuring dynamical emergence in multi-agent LLM systems. Identity-linked differentiation and goal-directed complementarity produce genuine collective intelligence. Validates Roko's C-Factor diagnostics.
 
-**[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
+**[La Malfa et al., 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 LLMs fail at implicit coordination. Explicit coordination mechanisms (Pheromone Field, Agent Mesh) are necessary. Motivates the architectural investment in explicit coordination infrastructure.
 
 **[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning in Multi-Agent LLMs.* arXiv:2507.08616.

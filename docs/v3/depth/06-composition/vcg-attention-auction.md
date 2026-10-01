@@ -779,7 +779,7 @@ compose naturally.
 
 ---
 
-## 11. Mechanism Design for LLMs
+## 11. Mechanism Design for Large Language Models
 
 A landmark paper directly connecting mechanism design to LLM systems:
 

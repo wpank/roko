@@ -77,7 +77,10 @@ Efficient tool selection from large toolsets. Grounds tool filtering in `roko-st
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
 48.5% latency reduction via speculative tool execution. Informs parallel tool dispatch.
 
-**[Anonymous, 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
+**[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
+Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies. Grounds tool cache in the inference gateway.
+
+**[Zhang et al., 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
 50.31% cost reduction via plan-level caching. Informs plan execution optimization.
 
 **[Red Hat, 2025]** *Tool RAG: Next Breakthrough in Scalable AI Agents.* 2025.

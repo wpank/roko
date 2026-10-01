@@ -2435,7 +2435,7 @@ New color assignments for innovation-specific elements (within existing palette)
 
 ### Agent Garden
 - Park, J.S. et al. (2023). "Generative Agents: Interactive Simulacra of Human Behavior." *UIST '23*. arXiv:2304.03442.
-- Xing, E. et al. (2024). "AIDO: Toward AI-Driven Digital Organism." *NeurIPS 2024*. arXiv:2412.06993.
+- Song et al. (2024). "AIDO: Toward AI-Driven Digital Organism." *NeurIPS 2024*. arXiv:2412.06993.
 - EvoAgentX (2025). "A Comprehensive Survey of Self-Evolving AI Agents." arXiv:2508.07407.
 
 ### Pair Programming with Affect

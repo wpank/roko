@@ -55,10 +55,10 @@ Active inference provides the principled answer to "how should an agent decide w
 
 ## Active Inference for LLMs
 
-- Koudahl, M.T. et al. (2024). Active Inference for Self-Organizing Multi-LLM Systems. arXiv, 2024.
+- Prakki (2024). Active Inference for Self-Organizing Multi-LLM Systems. arXiv, 2024.
   *Grounds: Multi-LLM active inference — applies active inference to balance exploration and exploitation across prompt combinations in multi-LLM systems.*
 
-- BED-LLM (2025). Bayesian Experimental Design for LLMs. Oxford. arXiv, 2025.
+- Choudhury et al. (2025). BED-LLM: Intelligent Information Gathering with LLMs and Bayesian Experimental Design. Oxford. arXiv, 2025.
   *Grounds: Sequential information gathering — formulates interactive information gathering as sequential Bayesian experimental design using expected information gain.*
 
 ---
@@ -99,7 +99,7 @@ Active inference provides the principled answer to "how should an agent decide w
 
 ## Active Inference for LLM Systems (2024-2025)
 
-- Koudahl, M.T. et al. (2024). Active Inference for Self-Organizing Multi-LLM Systems: A Bayesian Thermodynamic Approach to Adaptation. arXiv:2412.10425.
+- Prakki (2024). Active Inference for Self-Organizing Multi-LLM Systems: A Bayesian Thermodynamic Approach to Adaptation. arXiv:2412.10425.
   *Grounds: Multi-LLM active inference — cognitive layer above LLM-based agents dynamically adjusts prompts and search strategies through principled information-seeking behavior. Validates Roko's active-inference-driven context assembly: the agent selects which knowledge to retrieve by minimizing expected free energy.*
 
 - Synthetic Active Inference Agents (2024). Realising Synthetic Active Inference Agents, Part II: Variational Message Updates. arXiv:2306.02733.

@@ -246,6 +246,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             &watched,
             Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         // ── Provider invocation ──────────────────────────────────────────

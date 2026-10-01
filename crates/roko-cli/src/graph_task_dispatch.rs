@@ -64,6 +64,7 @@ mod gate_learning;
 mod helper_calls;
 mod inert_settings;
 mod ladder;
+mod live_tool_calls;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -95,6 +96,7 @@ use budget::{
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
+use live_tool_calls::LiveToolCalls;
 use routing_context::{
     CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
     build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
@@ -512,7 +514,8 @@ impl GraphTaskDispatcher {
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
     /// written, the rest set by `[gates]` and the adaptive gate thresholds
-    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]). The
+    /// this dispatcher's verify runs record, biased by the workspace's
+    /// durable knowledge of failing rungs (see [`TaskRetryBudgets`]). The
     /// verify runs held for the flush interval are written first, so the
     /// budgets see every one so far.
     pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
@@ -522,11 +525,13 @@ impl GraphTaskDispatcher {
             .map(|dir| dir.join("tasks.toml"))
             .find(|path| path.is_file())
             .unwrap_or_else(|| plan_dir.join("tasks.toml"));
+        let knowledge = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);
         TaskRetryBudgets::load(
             self.feedback.gate_thresholds_path.as_deref(),
             &self.config.gates,
             &tasks_toml,
         )
+        .with_neuro_gate_hints(&knowledge)
         .with_ladder_min_retries(self.ladder_min_retries())
     }
 
@@ -1393,6 +1398,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             &watched,
             Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         attempt.dispatch_started();
@@ -2902,27 +2908,15 @@ printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonne
 sleep 30
 "#;
 
-    /// find-f489db: a Graph run attaches its tool observability to the agent
-    /// factory. A tool call an API model makes then leaves a scrubbed admit
-    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
-    /// run and task, a closed trace under `.roko/traces/` and a metrics
-    /// record.
-    #[tokio::test]
-    async fn graph_run_writes_tool_audit_admit_and_result() {
-        // A GitHub token, which the scrubber's built-in patterns catch.
-        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
-        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
-        let temp = tempdir().expect("tempdir");
-        let workdir = temp.path().to_path_buf();
-        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
-        let (base_url, _requests) = spawn_openai_mock(vec![
-            tool_call_turn(
-                "call-read",
-                "read_file",
-                serde_json::json!({ "path": "notes.txt" }),
-            ),
-            final_turn("read the notes"),
-        ]);
+    /// Run task `T01` of plan `p-audit` through a Graph dispatcher that
+    /// records into `feedback`, with the run's tool observability attached
+    /// to its agent factory, on an API model the OpenAI mock at `base_url`
+    /// serves (find-f489db).
+    async fn run_audited_api_task(
+        workdir: &Path,
+        base_url: String,
+        feedback: GraphFeedbackContext,
+    ) {
         let mut config = RokoConfig::default();
         config.providers.clear();
         config.models.clear();
@@ -2959,20 +2953,19 @@ sleep 30
                 ..ModelProfile::default()
             },
         );
-        // The mock answers without SSE: keep the stall watchdog, which would
-        // stream over live output, off.
+        // Keep the stall watchdog off. The attempt still streams, since its
+        // progress is tracked (bug-3a3b0f), and the mock answers in SSE.
         config.conductor.silence_timeout_secs = 0;
         config.conductor.task_stall_secs = 0;
         let config = Arc::new(config);
         let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None).await;
         let factory = Arc::new(
-            crate::graph_execution::plan_runner::attach_tool_observability(factory, &workdir).await,
+            crate::graph_execution::plan_runner::attach_tool_observability(factory, workdir).await,
         );
-        let dispatcher = Arc::new(GraphTaskDispatcher::new(
-            factory,
-            Arc::clone(&config),
-            workdir.clone(),
-        ));
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.to_path_buf())
+                .with_feedback(feedback),
+        );
         let task = TaskDef {
             id: "T01".to_string(),
             title: "Read the notes".to_string(),
@@ -3002,6 +2995,83 @@ sleep 30
         )
         .await
         .expect("the task completes");
+    }
+
+    /// gap-4d5e2d: the efficiency row of a Graph attempt on an API model lists
+    /// the tool calls roko's tool loop made, each with the outcome the tool
+    /// audit recorded: a read that worked and one of a missing file.
+    #[tokio::test]
+    async fn efficiency_tool_calls_record_outcome_of_an_audited_graph_run() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), "notes\n").expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            tool_call_turn(
+                "call-missing",
+                "read_file",
+                serde_json::json!({ "path": "missing.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        let efficiency_path = workdir.join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        run_audited_api_task(&workdir, base_url, feedback).await;
+
+        let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && !row["attempt_id"].as_str().unwrap_or("/").contains('/')
+        })
+        .await;
+        let calls: Vec<(&str, Option<bool>)> = rows[0]["tool_calls"]
+            .as_array()
+            .expect("tool calls")
+            .iter()
+            .map(|call| {
+                (
+                    call["tool_name"].as_str().unwrap_or_default(),
+                    call["succeeded"].as_bool(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [("read_file", Some(true)), ("read_file", Some(false))],
+            "{:#}",
+            rows[0]
+        );
+        assert_eq!(rows[0]["tools_used"], 2, "{:#}", rows[0]);
+    }
+
+    /// find-f489db: a Graph run attaches its tool observability to the agent
+    /// factory. A tool call an API model makes then leaves a scrubbed admit
+    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
+    /// run and task, a closed trace under `.roko/traces/` and a metrics
+    /// record.
+    #[tokio::test]
+    async fn graph_run_writes_tool_audit_admit_and_result() {
+        // A GitHub token, which the scrubber's built-in patterns catch.
+        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
+        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        run_audited_api_task(&workdir, base_url, GraphFeedbackContext::default()).await;
 
         let roko_dir = workdir.join(".roko");
         let audit =

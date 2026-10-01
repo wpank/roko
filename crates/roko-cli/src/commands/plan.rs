@@ -2448,8 +2448,9 @@ async fn cmd_plan_run_engine(
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
     };
 
-    // SIGINT/SIGTERM stop this run gracefully (cancel, finalize checkpoints,
-    // restore the terminal, exit 130/143) for as long as the guard lives.
+    // SIGINT, SIGTERM and SIGHUP stop this run gracefully (cancel, finalize
+    // checkpoints, restore the terminal, exit 130, 143 or 129) for as long as
+    // the guard lives.
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
 

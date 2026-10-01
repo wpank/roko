@@ -35,11 +35,11 @@ Re-checked 2026-09-29: unchanged; 174 non-test calls by a stricter count than th
 | crates/roko-cli/src/commands/ (develop.rs 10, util.rs 13, plan.rs 4, job.rs 3, history.rs 3, show.rs 1) | develop 160-212; util 14-103, 1525-1736; plan 1353, 1654, 1655, 1678; job 26, 270, 500; history 63-69; show 208 | Not classified: skipped with main.rs (gap-0d0e81) |
 | crates/roko-cli/src/prd.rs | 1011, 1016, 1023 | User-facing: the auto-generated plan's outcome after `roko prd draft promote` |
 | crates/roko-cli/src/prd.rs | 1032, 1033 | User-facing: error and recovery hint before giving up |
-| crates/roko-cli/src/prd.rs | 1652, 1661 | User-facing: the generated plan may reference code that does not exist |
-| crates/roko-cli/src/prd.rs | 1698, 1716, 1718, 1778, 1802, 2014, 2030, 2097 | User-facing: `roko prd plan` progress, retries and model escalation |
-| crates/roko-cli/src/prd.rs | 2211-2213 | User-facing: raw model output shown before the command fails |
-| crates/roko-cli/src/prd.rs | 2238, 2243, 2259, 2276, 2288 | User-facing: dry-run and artifact validation results for the generated plan |
-| crates/roko-cli/src/prd.rs | 3405 | User-facing: PRD validation issues |
+| crates/roko-cli/src/prd.rs | 1659, 1668 | User-facing: the generated plan may reference code that does not exist |
+| crates/roko-cli/src/prd.rs | 1705, 1723, 1725, 1785, 1809, 2021, 2037, 2105 | User-facing: `roko prd plan` progress, retries and model escalation |
+| crates/roko-cli/src/prd.rs | 2219-2221 | User-facing: raw model output shown before the command fails |
+| crates/roko-cli/src/prd.rs | 2246, 2251, 2267, 2284, 2296 | User-facing: dry-run and artifact validation results for the generated plan |
+| crates/roko-cli/src/prd.rs | 3413 | User-facing: PRD validation issues |
 | crates/roko-cli/src/runner/output_sink.rs | all 13 | User-facing: the stderr sinks' plan summary, agent lines and run-complete report |
 | crates/roko-cli/src/auth_detect.rs | all 13 | User-facing: `print_setup_instructions`, shown when no provider is configured |
 | crates/roko-cli/src/unified.rs | all 11 | User-facing: banner, tips, tool summaries, usage footer, and errors before exit 1 |

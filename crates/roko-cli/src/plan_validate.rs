@@ -415,6 +415,17 @@ pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
     out
 }
 
+/// Whether `command` negates a `grep` (`! grep -q TODO src/lib.rs`): such a
+/// step passes only while some text is absent (find-70edcb).
+fn negates_a_grep(command: &str) -> bool {
+    command.split(['\n', ';', '&', '|']).any(|part| {
+        part.trim_start().strip_prefix('!').is_some_and(|rest| {
+            let program = rest.split_whitespace().next().unwrap_or_default();
+            matches!(program, "grep" | "egrep" | "fgrep" | "rg")
+        })
+    })
+}
+
 /// The `tasks.toml` files of the plans under `dir`, sorted: `dir` itself
 /// when it is one, otherwise those of the plans `roko plan run` finds there
 /// ([`find_plan_dirs`]), so `plan validate` checks the plans that run
@@ -527,6 +538,27 @@ fn validate_tasks_file(
                             "task '{}' sets {}, which plan run parses but does not act on yet",
                             task.id,
                             fields.join(", ")
+                        ),
+                    });
+                }
+            }
+            // find-70edcb: a verify step that passes only while some text is
+            // absent fails correct code that happens to contain it.
+            for task in &tasks_file.tasks {
+                for step in &task.verify {
+                    if !negates_a_grep(&step.command) {
+                        continue;
+                    }
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_042".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: format!(
+                            "task '{}' verify step `{}` passes only while some text is absent, \
+                             so correct code that contains it fails; check what the code does \
+                             instead, with a test or a compile",
+                            task.id, step.command
                         ),
                     });
                 }
@@ -1970,6 +2002,47 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
             "{report:?}"
         );
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// find-70edcb: a verify step that negates a grep is a PLAN_042 warning.
+    #[test]
+    fn a_negative_grep_verify_step_is_a_plan_042_warning() {
+        assert!(negates_a_grep("! grep -q TODO src/lib.rs"));
+        assert!(negates_a_grep("cargo check -p demo && ! rg unwrap src/"));
+        assert!(!negates_a_grep("grep -q 'pub fn run' src/lib.rs"));
+        assert!(!negates_a_grep("test ! -f src/old.rs"));
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Remove the TODOs"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let negative = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_042")
+            .collect::<Vec<_>>();
+        assert_eq!(negative.len(), 1, "{report:?}");
+        assert_eq!(negative[0].severity, Severity::Warning);
+        assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
     }
 
     /// gap-9ed15e: `plan validate` checks the plans `plan run` finds: none

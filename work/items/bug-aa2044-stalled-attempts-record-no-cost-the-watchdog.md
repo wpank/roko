@@ -2,16 +2,16 @@
 id = "bug-aa2044"
 kind = "bug"
 title = "Stalled attempts record no cost: the watchdog drops the provider before it reports usage"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch/watchdog"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "006bc97f8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-watchdog's report, checked on work/spec-a0403b at d5546dfc7)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/watchdog.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["spec-a0403b"], blocks = [], related = ["spec-a0403b", "
 
 [[verify]]
 command = "grep -rqw 'fn a_stalled_attempt_records_the_usage_it_streamed' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_stalled_attempt_records_the_usage_it_streamed"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including a_stalled_attempt_records_the_usage_it_streamed. Merged 3dfdef519."
 +++
 
 ## Problem

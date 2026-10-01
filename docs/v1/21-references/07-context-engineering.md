@@ -24,13 +24,13 @@ Context failures, not model failures, cause most agent breakdowns. For agents ru
 - Zhang, H. et al. (2026). ACE: Agentic Context Engineering. _ICLR_, 2026. arXiv:2510.04618.
   *Grounds: Generator-Reflector-Curator cycle — treats context as an evolving playbook; +10.6% on AppWorld. Context assembly self-improves via cybernetic feedback. The three-role architecture (Generator creates, Reflector critiques, Curator compresses) maps directly to Roko's compose-verify-persist loop.*
 
-- Samsung Research (2025). CSO: Context State Object Architecture. arXiv:2511.03728.
+- Vijayvargiya & Lokesh (2025). Efficient On-Device Agents via Adaptive Context Management. arXiv:2511.03728.
   *Grounds: Structured context compression — 6x initial reduction, 10-25x growth rate reduction. Compressed structured context replaces raw history. Grounds the Composer's structured context representation.*
 
-- Kang, S. et al. (2025). ACON: Agentic Context Compression. arXiv:2510.00615.
+- Kang, S. et al. (2025). ACON: Optimizing Context Compression for Long-horizon LLM Agents. arXiv:2510.00615.
   *Grounds: Failure-driven compression — 26-54% peak token reduction. Compaction optimized by learning which compressions preserve task-relevant information and which lose it.*
 
-- Lindenbauer, T. et al. (2025). Observation Masking in Agent Context. _NeurIPS_, 2025.
+- Lindenbauer, T. et al. (2025). The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management. _NeurIPS_, 2025.
   *Grounds: T0 suppression pattern — observation masking halves cost while matching LLM summarization quality. Mask stale observations rather than summarize them. Validates the T0 probe approach: skip LLM entirely when observations haven't changed.*
 
 ---
@@ -50,7 +50,7 @@ Context failures, not model failures, cause most agent breakdowns. For agents ru
 - Sarthi, P. et al. (2024). RAPTOR: Recursive Abstractive Processing for Tree-Organized Retrieval. _ICLR_, 2024.
   *Grounds: Hierarchical retrieval — recursive summarization creates a tree of abstractions at multiple granularities. Grounds the multi-tier knowledge retrieval in NeuroStore.*
 
-- Gutierrez, B., Yang, Y., & Yu, J. (2024). HippoRAG: Neurobiologically-Inspired Long-Term Memory for LLMs. arXiv:2405.14831.
+- Gutierrez et al. (2024). HippoRAG: Neurobiologically-Inspired Long-Term Memory for LLMs. arXiv:2405.14831.
   *Grounds: Hippocampal retrieval — neurobiologically-inspired retrieval architecture combining pattern separation and pattern completion. Informs the NeuroStore's dual-process retrieval.*
 
 ---
@@ -60,7 +60,7 @@ Context failures, not model failures, cause most agent breakdowns. For agents ru
 - Liu, N.F. et al. (2024). Lost in the Middle: How Language Models Use Long Contexts. _TACL_, 2024. arXiv:2307.03172.
   *Grounds: Context position strategy — U-shaped attention: models attend most to the beginning and end of context, largely ignoring the middle. Directly motivates context assembly: highest-priority content at the beginning, second-highest at the end.*
 
-- Du, Y. et al. (2025). Context Length Hurts: Even Whitespace Degrades Performance 13.9-85%. _EMNLP_, 2025.
+- Du, Y. et al. (2025). Context Length Alone Hurts LLM Performance Despite Perfect Retrieval 13.9-85%. _EMNLP_, 2025.
   *Grounds: Aggressive compression mandate — even whitespace and formatting overhead degrades model performance. Motivates aggressive compression in prompt assembly.*
 
 - Shi, F. et al. (2023). Large Language Models Can Be Easily Distracted by Irrelevant Context. _ICML_, 2023.

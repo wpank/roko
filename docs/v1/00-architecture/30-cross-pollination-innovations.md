@@ -1388,7 +1388,7 @@ pheromone field instead of cold-starting.
   paths. A mixture-of-experts scoring combines pheromone concentration with specialized
   expertise. Pheromone reinforcement outperforms standard chain-of-thought on GSM8K, ARC, MATH.
 
-- **Li, Zhu et al. (2024)** "PooL: Pheromone-inspired Communication Framework for Large-Scale
+- **Cao et al. (2022)** "PooL: Pheromone-inspired Communication Framework for Large-Scale
   MARL," arXiv:2202.09722. Defines pheromones as RL agent outputs reflecting views of the
   environment. Achieves higher rewards with lower communication cost than SOTA methods.
 
@@ -2035,7 +2035,7 @@ create somatic markers that fire **before** the agent begins working on a code r
   AI predicts review quality from biomarkers with 87.77% accuracy. Physiological stress markers
   during code review directly predict review quality.
 
-- **Kaur et al. (2025)** "Towards Decoding Developer Cognition in the Age of AI Assistants,"
+- **Al Haque et al. (2025)** "Towards Decoding Developer Cognition in the Age of AI Assistants,"
   arXiv:2501.02684. Operationalizes the somatic marker hypothesis for programming: developers'
   physiological responses to code serve as implicit quality signals.
 
@@ -2423,7 +2423,7 @@ improves.
   "token" is epistemic quality—high-confidence outputs are rewarded, creating an internal
   economy where currency is certainty.
 
-- **Burda et al. / DreamerV3-XP (2025)** "Optimizing Exploration Through Uncertainty
+- **Bierling et al. / DreamerV3-XP (2025)** "Optimizing Exploration Through Uncertainty
   Estimation," arXiv:2510.21418. Extends Dreamer with ensemble disagreement as intrinsic
   reward. Dream quality (ensemble agreement) is the token in an internal economy balancing
   exploration and exploitation.

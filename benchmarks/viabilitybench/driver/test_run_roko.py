@@ -63,6 +63,7 @@ slug = Path(args[args.index("run") + 1]).name
 roko = repo / ".roko"
 (roko / "learn").mkdir(parents=True, exist_ok=True)
 models, succeeded = behaviour["models"], behaviour["status"] == "succeeded"
+verdict = behaviour.get("verdict")  # S01's outcome of the passing attempt, in its episode; an older Roko writes none
 completed = behaviour.get("completed") or [f"2026-09-29T15:00:0{number}Z" for number in range(len(models))]
 for number, model in enumerate(models):
     passed = succeeded and number == len(models) - 1
@@ -71,6 +72,8 @@ for number, model in enumerate(models):
     episode = {"task_id": "T01", "model": model, "backend": "cerebras", "success": passed, "turns": 1,
                "usage": usage, "completed_at": completed[number], "extra": {"plan_id": slug},
                "failure_reason": None if passed else "verify: 1/1 verify step(s) failed"}
+    if verdict:
+        episode["extra"]["outcome"] = verdict if passed else "gate_failed"
     if "durations" in behaviour:  # the Graph path's dispatch time, in seconds
         episode["duration_secs"] = behaviour["durations"][number]
     with open(roko / "episodes.jsonl", "a") as handle:
@@ -82,7 +85,7 @@ if behaviour.get("proxy_log"):  # what the metering proxy would have logged for 
         handle.writelines(json.dumps(row) + "\n" for row in behaviour["proxy"])
 if behaviour["solve"]:
     (repo / "calc" / "ops.py").write_text(behaviour["solution"])
-extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": "passed"}}}} if succeeded else {}
+extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": verdict or "passed"}}}} if succeeded else {}
 (roko / "state" / "graph" / slug).mkdir(parents=True)
 (roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
     {"schema_version": 3, "plan_id": slug, "status": behaviour["status"], "extensions": extensions}))
@@ -561,6 +564,30 @@ def test_roko_failures_timeouts_and_missing_records(places, tmp_path):
     assert run_roko._status(ran, evidence([]), settle(evidence([]))[1]) == ("timeout", "wallclock")
     # A substituted model outranks the timeout: that run is excluded, not counted as censoring.
     assert run_roko._status(ran, evidence(["glm-4.7"]), settle(evidence(["glm-4.7"]))[1])[0] == "infra_error"
+
+
+def test_an_already_satisfied_plan_is_a_failed_run_with_its_own_verdict(places, tmp_path):
+    # gap-9eb1e1: the agent changed nothing and Roko's checks passed on the tree as it was, so Roko settles the
+    # attempt as already satisfied and its plan succeeds. Only a `passed` verdict is Roko's completion (S05 §0.1 (a)).
+    binary, _ = fake_roko(tmp_path, [PIN, PIN], verdict="already_satisfied", solve=False)
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    [record] = read_jsonl(places["results"] / "TEST-ROKO" / "run-1" / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "already_satisfied")
+    verdicts = [(attempt["gate_verdict"], attempt["ended_by"]) for attempt in record["execution"]["attempts"]]
+    assert verdicts == [(None, "gate_failed"), ("already_satisfied", "already_satisfied")]
+    assert record["vs"]["label"] == 0 and record["vs"]["checks"]["completion"] == 0
+
+    # An episode's outcome names its verdict tag, if any; an older Roko's episode has none and reads as passed when
+    # it succeeded.
+    attempts, _ = settle(evidence([PIN]))
+    assert attempts[0].gate_verdict is None and attempts[0].ended_by == "gate_failed"
+    found = evidence([PIN, PIN])
+    found.episodes[-1]["success"] = True
+    found.episodes[0]["extra"]["outcome"] = "turn_cap"
+    attempts, _ = settle(found)
+    assert [(attempt.gate_verdict, attempt.ended_by) for attempt in attempts] == [
+        (None, "gate_failed"), ("passed", "gate_passed")]
 
 
 def test_proxy_meters_attempts_and_flags_silent_ones():

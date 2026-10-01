@@ -2,16 +2,16 @@
 id = "gap-51deff"
 kind = "gap"
 title = "In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-graph"]
 created = 2026-09-29
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794, branch work/gap-4d835d)"
 anchors = ["crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-graph/src/engine.rs::exclusion_conflict"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-439794"], blocks = [], related = ["gap-4d835d"], su
 
 [[verify]]
 command = "grep -rqw 'fn plan_gate_fails_closed_without_worktree' crates/roko-graph/src/cells/plan_gate.rs && cargo test -p roko-graph --lib plan_gate"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Premise false since bug-50caf2 (wk-scheduler, 2026-09-30): a rich-topology gate judges the attempt s own isolated checkout and fails closed without one, so no overlapping task s edits reach its verdict. The verify (bug-50caf2 s plan_gate tests) passed in the batch-20b extras: roko-graph plan_gate 15 passed."
 +++
 
 ## Problem

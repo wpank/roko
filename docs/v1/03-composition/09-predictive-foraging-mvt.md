@@ -426,7 +426,7 @@ Implication for Roko: if the knowledge store uses well-structured embeddings (or
 
 ### 9.3 Sufficient Context as Foraging Criterion
 
-The "Sufficient Context" framework [Harel-Canada et al., ICLR 2025, arXiv:2411.06037] provides a formal criterion for when to stop retrieving: a retrieved set is **sufficient** if a diligent reader could answer the question from it alone. This is the RAG analogue of the MVT patch-leaving criterion.
+The "Sufficient Context" framework [Joren et al., ICLR 2025, arXiv:2411.06037] provides a formal criterion for when to stop retrieving: a retrieved set is **sufficient** if a diligent reader could answer the question from it alone. This is the RAG analogue of the MVT patch-leaving criterion.
 
 ```rust
 /// Sufficient context check: estimate whether current context is enough.

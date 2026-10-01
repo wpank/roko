@@ -8,16 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/efficiency"]
 created = 2026-09-28
-updated = 2026-09-29
+updated = 2026-10-01
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "f99e45dba"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:1572", "crates/roko-cli/src/dispatch_v2.rs::agent_event_from_chunk", "crates/roko-learn/src/efficiency.rs::ToolCallMeta"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/dispatch_v2.rs::agent_event_from_chunk", "crates/roko-learn/src/efficiency.rs::ToolCallMeta"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! sed -n '/let eff_tool_calls/,/let eff_tools_used/p' crates/roko-cli/src/graph_task_dispatch.rs | grep -q 'succeeded: true' && cargo test -p roko-cli --lib efficiency_counts_distinct_tool_call_ids"
+command = "! sed -n '/let eff_tool_calls/,/let eff_tools_used/p' crates/roko-cli/src/graph_task_dispatch.rs | grep -q 'succeeded: true' && grep -rqw 'fn efficiency_counts_distinct_tool_call_ids' crates/roko-cli/src && cargo test -p roko-cli --lib efficiency_counts_distinct_tool_call_ids"
 +++
 
 The Graph writer builds a `ToolCallMeta` for every `AgentRuntimeEvent::ToolCall` event (`graph_task_dispatch.rs:1025-1034`) with `succeeded: true` and no size or status, and sets `tools_used` to the event count (`:1043`).

@@ -144,7 +144,7 @@ than any single Synapse trait). The six-trait level appears to be the right gran
 a Rust trait system: fine enough for meaningful composition, coarse enough for human reasoning.
 
 **References:**
-- Koopmans et al. (2024). "Agent Design Pattern Catalogue." arXiv:2405.10467
+- Liu et al. (2024). "Agent Design Pattern Catalogue." arXiv:2405.10467
 - Google Cloud (2025). "Choose a Design Pattern for Agentic AI Systems."
 - Franklin, S. et al. (2016). "LIDA: A Systems-level Architecture." IEEE Trans. AMD 6(1).
 
@@ -757,7 +757,7 @@ heuristic, and the week-by-week sequencing.
 
 ### Cognitive Architectures
 - Sumers, T. et al. (2023). "Cognitive Architectures for Language Agents (CoALA)." arXiv:2309.02427.
-- Franklin, S. et al. (2016). "LIDA: A Systems-level Architecture for Cognition, Emotion, and Learning." IEEE Trans. Autonomous Mental Development 6(1).
+- Franklin, S. et al. (2014). "LIDA: A Systems-level Architecture for Cognition, Emotion, and Learning." IEEE Trans. Autonomous Mental Development 6(1).
 - Laird, J. E. (2012). "The Soar Cognitive Architecture." MIT Press.
 - Anderson, J. R. (2007). "How Can the Human Mind Occur in the Physical Universe?" Oxford University Press.
 - Laird, J. E. (2022). "Analysis and Comparison of ACT-R and Soar." arXiv:2201.09305.
@@ -765,7 +765,7 @@ heuristic, and the week-by-week sequencing.
 
 ### Active Inference and Free Energy
 - Friston, K. (2010). "The free-energy principle: a unified brain theory?" Nature Reviews Neuroscience 11(2).
-- Parr, T. et al. (2024). "Active Inference: The Free Energy Principle in Mind, Brain, and Behavior." arXiv:2402.14460.
+- Parr, T. et al. (2022). "Active Inference: The Free Energy Principle in Mind, Brain, and Behavior."
 - VERSES AI (2025). "Genius: Renormalizing Generative Models." [verses.ai](https://www.verses.ai/active-inference-research)
 - Champion, T. et al. (2022). "pymdp: A Python library for active inference." arXiv:2201.03904.
 - Devillers, B. et al. (2024). "An Embodied Agent Inspired by Global Workspace Theory." Frontiers in Computational Neuroscience.
@@ -798,8 +798,8 @@ heuristic, and the week-by-week sequencing.
 - Frady, E. P. et al. (2018). "Neural computation with HDC vectors."
 
 ### Global Workspace Theory
-- Dehaene, S. et al. (2025). "GW-Dreamer: Multimodal Global Workspace + Dreamer." arXiv:2502.21142.
-- VanRullen, R. & Bhatt, A. (2025). "Functional Advantages of the Selection-Broadcast Cycle." arXiv:2505.13969.
+- Dehaene, S. et al. (2025). "Multimodal Dreaming: A Global Workspace Approach to World Model-Based Reinforcement Learning." arXiv:2502.21142.
+- VanRullen, R. & Bhatt, A. (2025). "Hypothesis on the Functional Advantages of the Selection-Broadcast Cycle Structure: Global Workspace Theory and Dealing with a Real-Time World." arXiv:2505.13969.
 
 ### Memory and Sleep
 - McClelland, J. et al. (1995). "Complementary Learning Systems." Psychological Review 102(3).

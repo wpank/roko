@@ -2209,17 +2209,18 @@ mod tests {
         assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
-    /// bug-69a002: the secret-read check missed git grep, ag and ack, reads
-    /// of what find or xargs lists, brace globs, and judged a search after a
-    /// cd from the call's directory.
+    /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
+    /// holding a secret, from the table roko-std's bash tool checks too.
     #[test]
     fn settings_hook_refuses_every_search_that_reaches_a_secret() {
         let workdir = tempdir().unwrap();
-        let src = workdir.path().join("src");
+        let root = workdir.path();
+        let src = root.join("src");
         fs::create_dir(&src).unwrap();
         fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("roko.lock"), "lock\n").unwrap();
         fs::write(
-            workdir.path().join("roko.toml"),
+            root.join("roko.toml"),
             "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
         )
         .unwrap();
@@ -2234,37 +2235,23 @@ mod tests {
                 .code()
         };
 
-        for denied in [
-            "git grep api_key",
-            "ag api_key",
-            "ack api_key",
-            "find . -exec cat {} +",
-            "find . -type f | xargs cat",
-            "ls | xargs cat",
-            "cat roko.{toml,lock}",
-            "cd src && grep -r key ..",
-        ] {
+        let cases = include_str!("../../roko-std/src/tool/builtin/sandbox/secret_read_cases.txt");
+        for line in cases
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            let (verdict, rest) = line.split_once(' ').unwrap();
+            let (cwd, command) = rest
+                .strip_prefix("in src: ")
+                .map_or((root, rest), |command| (src.as_path(), command));
+            let want = if verdict == "deny" { Some(2) } else { Some(0) };
             assert_eq!(
-                bash_code(denied, workdir.path()),
-                Some(2),
-                "`{denied}` should be denied"
+                bash_code(command, cwd),
+                want,
+                "`{command}` in {}",
+                cwd.display()
             );
         }
-        for allowed in [
-            "git grep key -- '*.rs'",
-            "find . -name '*.rs' -exec cat {} +",
-            "ls | xargs wc -l",
-            "cd src && grep -r key .",
-        ] {
-            assert_eq!(
-                bash_code(allowed, workdir.path()),
-                Some(0),
-                "`{allowed}` should be allowed"
-            );
-        }
-        // From a subdirectory, a search above it reaches the config.
-        assert_eq!(bash_code("rg key ..", &src), Some(2));
-        assert_eq!(bash_code("rg key", &src), Some(0));
     }
 
     #[test]

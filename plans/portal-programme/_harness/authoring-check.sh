@@ -18,9 +18,11 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 listed() { api GET /api/plans >/dev/null; jcheck "$WS/last.json" "any(p['id'] == '$1' for p in d)"; }
 plan_validates() { [ -n "$PLAN" ] && cli_validate "plans/$PLAN"; }
 hello_runs() { (cd "$WS" && ./hello/hello-bin | grep -q 'hello world'); }
+# The scaffold pins no model: the routing ladder picks one from the task's role
+# and tier (and a `rung` when the author sets one).
 tasks_carry_detail() {
     [ "$(api GET "/api/plans/$PLAN/tasks")" = 200 ] &&
-        jcheck "$WS/last.json" 'd["tasks"][0]["verify"][0]["command"] and "model_hint" in d["tasks"][0]'
+        jcheck "$WS/last.json" 'd["tasks"][0]["verify"][0]["command"] and d["tasks"][0]["role"] and d["tasks"][0]["tier"]'
 }
 save_refused_during_run() {
     [ "$RUN_CODE" = 202 ] && [ -n "$LIVE_BODY" ] && [ "$(api PUT /api/plans/live-a/source "$LIVE_BODY")" = 409 ]
@@ -51,7 +53,6 @@ description = "Write the second file. ARTIFACT out/second.txt"
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 files = ["out/second.txt"]
 depends_on = ["{dep}"]
 
@@ -79,7 +80,7 @@ check "POST /api/plans creates a plan (201) and returns its slug" [ "$code" = 20
 check "the created plan is a directory plan" test -f "$WS/plans/$PLAN/tasks.toml"
 check "the created plan is listed" listed "$PLAN"
 check "the created plan passes roko plan validate" plan_validates
-check "tasks carry verify commands and model_hint" tasks_carry_detail
+check "tasks carry verify commands, a role and a tier for the routing ladder" tasks_carry_detail
 
 # ── Source: read and save, losslessly ─────────────────────────────────────
 check "GET source returns the plan's TOML" [ "$(api GET "/api/plans/$PLAN/source")" = 200 ]

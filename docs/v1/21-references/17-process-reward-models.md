@@ -55,7 +55,7 @@ Process Reward Models (PRMs) verify each reasoning step rather than only the fin
 - Jin, B. et al. (2025). Search-R1: Training LLMs to Reason and Leverage Search Engines with Reinforcement Learning. 2025.
   *Grounds: Dynamic search — RL teaches agents dynamic search query generation with outcome-based rewards. Rather than fixed retrieval strategies, the agent learns to generate queries based on what it has found so far.*
 
-- Xiong, W. et al. (2025). RAG-Gym: Optimizing Reasoning and Search Agents with Process Supervision. 2025.
+- Xiong, W. et al. (2025). Supervising the search process produces reliable and generalizable information-seeking agents. 2025.
   *Grounds: Process-level supervision — multi-step retrieval as hierarchical MDP. Process-level supervision (rewarding intermediate search steps) produces more stable learning than outcome-level supervision. DPO outperforms classical RL for retrieval optimization.*
 
 ---

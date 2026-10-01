@@ -2,16 +2,16 @@
 id = "bug-a5f181"
 kind = "bug"
 title = "Native Gemini records its configured slug as the model, because it doesn't parse modelVersion"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/gemini"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "01851b630"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report, checked on work/bug-b8af02 at c4c6e86a7)"
 anchors = ["crates/roko-agent/src/gemini/native.rs", "crates/roko-agent/src/translate/mod.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-31438d", "bug-2379dc", "
 
 [[verify]]
 command = "grep -rqw 'fn gemini_native_records_the_model_version' crates/roko-agent/src/ && cargo test -p roko-agent --lib gemini_native_records_the_model_version"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including gemini_native_records_the_model_version. Merged 3dfdef519."
 +++
 
 ## Problem

@@ -32,8 +32,6 @@ The original source (`02-mortality/14-research-foundations.md`) contained 130+ p
 - Vostinar, A.E. et al. (2019). Suicidal selection: Programmed cell death evolves as adaptive behavior under spatial structure. _Evolution_, 73(5).
   *Grounds: Knowledge pruning — programmed elimination is selected for, not against, under spatial structure. Validates the Curator's active pruning of low-confidence knowledge entries.*
 
-- Wensink, M.J. et al. (2020). Death and Progress. _Evolutionary Biology_, 47(4).
-  *Grounds: Knowledge lifecycle calibration — intrinsic mortality prevents premature convergence. An optimal rate exists that balances stagnation and knowledge loss. For Roko, this maps to calibrating Ebbinghaus half-life parameters per knowledge type.*
 
 - Werfel, J. et al. (2017). How Short-Lived Agents Can Collectively Build Long-Lived Structures. _Artificial Life_, 23(3).
   *Grounds: Collective knowledge persistence — natural selection directly favors shorter lifespans under spatial resource competition. For Roko, individual knowledge entries decay but the collective NeuroStore persists.*
@@ -58,7 +56,7 @@ The original source (`02-mortality/14-research-foundations.md`) contained 130+ p
 
 ## Resource-Bounded Cognition
 
-- Ord, T. (2025). Agent success rates decay exponentially with task duration. Working paper.
+- Ord, T. (2025). Is there a half-life for the success rates of AI agents?. Working paper.
   *Grounds: Task scheduling — constant hazard rate means periodic checkpointing and task decomposition are more reliable than unbounded execution. Motivates the plan-execute-gate-persist loop.*
 
 - Sims, C.A. (2003). Implications of Rational Inattention. _Journal of Monetary Economics_, 50(3), 665-690.
@@ -109,19 +107,15 @@ The original source (`02-mortality/14-research-foundations.md`) contained 130+ p
 - Heard, E. & Martienssen, R.A. (2014). Transgenerational Epigenetic Inheritance: Myths and Mechanisms. _Cell_, 157(1), 95-109.
   *Grounds: Knowledge transfer confidence decay — most transgenerational epigenetic inheritance is deleterious; barriers evolved to prevent it. For Roko, inherited knowledge entries receive 0.85× confidence multiplier per transfer cycle (Weismann Barrier).*
 
-- Bhatt, S. et al. (2023). Few-shot imitation as cultural transmission. Working paper.
+- Bhoopchand et al. (2023). Few-shot imitation as cultural transmission. Working paper.
   *Grounds: Collective knowledge transfer — few-shot imitation produces cumulative learning across agent populations. For Roko, mesh-based knowledge sharing enables cross-agent learning without direct agent-to-agent coordination.*
 
-- Bourahla, M. et al. (2022). Vertical transmission enables agents to exceed performance ceilings. Working paper.
-  *Grounds: Knowledge backup/restore — inter-generational (vertical) knowledge transfer enables agents to exceed individual performance ceilings. For Roko, NeuroStore backup/restore provides this without biological metaphors.*
 
-- Perez, E. et al. (2024). Pure imitation leads to stagnation. _AGI_, 2024.
-  *Grounds: Knowledge diversification — pure imitation without novelty injection leads to stagnation. For Roko, the anti-proletarianization mandate ensures new agents diverge from inherited knowledge.*
 
 - Martin, J., Everitt, T., & Hutter, M. (2016). Death and Suicide in Universal Artificial Intelligence. _AGI_, 2016.
   *Grounds: Knowledge transfer completeness — RL agents learning only from survival histories develop systematic overconfidence. For Roko, knowledge transfer includes failures and negative examples (AntiKnowledge), not just successes.*
 
-- Gerstgrasser, M. et al. (2023). SUPER: Surprise-based Experience Sharing. Working paper.
+- Gerstgrasser, M. et al. (2023). Selectively Sharing Experiences Improves Multi-Agent Reinforcement Learning. Working paper.
   *Grounds: Knowledge sharing prioritization — rank shared knowledge by novelty relative to recipient. For Roko, mesh-based knowledge exchange prioritizes entries that are novel to the receiving agent.*
 
 ---
@@ -145,7 +139,7 @@ These citations are preserved for historical completeness. They were originally 
 - Ramsdell, F. & Fowlkes, B.J. (1990). Clonal Deletion versus Clonal Anergy: The Role of the Thymus in Inducing Self Tolerance. _Science_, 248(4961).
   *Historical reference: 95-98% of thymocytes die during T-cell development. For Roko, aggressive pruning of candidate knowledge entries produces a collectively intelligent knowledge repertoire.*
 
-- Simard, S.W. (2012). Mycorrhizal networks facilitate tree communication, learning, and memory. In _Memory and Learning in Plants_, Springer.
+- Simard, S.W. (2018). Mycorrhizal networks facilitate tree communication, learning, and memory. In _Memory and Learning in Plants_, Springer.
   *Historical reference: Mycorrhizal networks share resources and defense signals between trees. For Roko, the Agent Mesh as a knowledge relay mirrors this proven biological coordination mechanism.*
 
 ---

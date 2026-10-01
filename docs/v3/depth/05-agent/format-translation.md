@@ -12,8 +12,6 @@
 Research demonstrates 5--30 accuracy-point differences when tool calls
 are serialized in a format the model was not trained on:
 
-- **Meta-Harness** (Lee et al., 2026; arXiv:2603.28052) Principle 1:
-  "Design tools for the model, not for humans."
 - **WildToolBench**: 15--20% accuracy drop for models presented with
   non-native tool schemas.
 - **Qwen3-coder**: documented format-switch regression when the tool
@@ -349,8 +347,8 @@ model's comfortable range.
 
 ## Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Principle 1: tools for the model.
+1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Automated harness search (§3).
 2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
    Language Models." ICLR 2023. arXiv:2210.03629. -- ReAct pattern.
 3. `crates/roko-agent/src/translate/mod.rs` -- Translator trait, wire

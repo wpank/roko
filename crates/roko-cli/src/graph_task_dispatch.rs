@@ -1138,17 +1138,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
         }
         let mut request = AgentDispatchRequest {
-            // A task's `preferred_provider` picks which provider's entry runs
-            // the routed model; `--model` and express mode keep theirs.
-            model_key: if dispatch_plan.forced {
-                dispatch_plan.model.slug.clone()
-            } else {
-                routing_context::preferred_provider_model(
-                    &self.config,
-                    &dispatch_plan.model.slug,
-                    task.hints.preferred_provider.as_deref(),
-                )
-            },
+            model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
@@ -2178,44 +2168,56 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         }
     }
 
+    /// Feedback sink keeping `(iteration, has_prior_failure)` of each settled
+    /// attempt's routing context, in order.
+    #[derive(Debug, Default)]
+    pub(super) struct RoutingContextLog(parking_lot::Mutex<Vec<(u32, bool)>>);
+
+    impl RoutingContextLog {
+        /// Feedback that records into `log`.
+        pub(super) fn feedback(log: &Arc<Self>) -> GraphFeedbackContext {
+            GraphFeedbackContext {
+                feedback_facade: Some(Arc::new(
+                    crate::runtime_feedback::FeedbackFacade::new().with_sink(log.clone()),
+                )),
+                ..GraphFeedbackContext::default()
+            }
+        }
+
+        /// What was recorded so far.
+        pub(super) fn marks(&self) -> Vec<(u32, bool)> {
+            self.0.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for RoutingContextLog {
+        fn name(&self) -> &'static str {
+            "routing-contexts"
+        }
+
+        async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
+            if let FeedbackEvent::TaskCompleted {
+                routing_context: Some(routing),
+                ..
+            } = event
+            {
+                self.0
+                    .lock()
+                    .push((routing.iteration, routing.has_prior_failure));
+            }
+            Ok(())
+        }
+    }
+
     /// gap-b62e95: the retry of a task whose verify step failed routes, and
     /// is recorded, as a retry after a failure; its first attempt is not.
     #[tokio::test]
     async fn routing_context_marks_retry_after_failure() {
-        /// `(iteration, has_prior_failure)` of each settled attempt's
-        /// routing context, in order.
-        #[derive(Debug, Default)]
-        struct RoutingContexts(parking_lot::Mutex<Vec<(u32, bool)>>);
-
-        #[async_trait::async_trait]
-        impl crate::runtime_feedback::FeedbackSink for RoutingContexts {
-            fn name(&self) -> &'static str {
-                "routing-contexts"
-            }
-
-            async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
-                if let FeedbackEvent::TaskCompleted {
-                    routing_context: Some(routing),
-                    ..
-                } = event
-                {
-                    self.0
-                        .lock()
-                        .push((routing.iteration, routing.has_prior_failure));
-                }
-                Ok(())
-            }
-        }
-
         let temp = tempdir().expect("tempdir");
         let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, no_auto_fix).await;
-        let contexts = Arc::new(RoutingContexts::default());
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            feedback_facade: Some(Arc::new(
-                crate::runtime_feedback::FeedbackFacade::new().with_sink(contexts.clone()),
-            )),
-            ..GraphFeedbackContext::default()
-        });
+        let contexts = Arc::new(RoutingContextLog::default());
+        let dispatcher = dispatcher.with_feedback(RoutingContextLog::feedback(&contexts));
         // The verify step fails once, then passes.
         task.verify = vec![verify_step(
             "structural",
@@ -2232,7 +2234,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
             .await
             .expect("the retry passes");
 
-        assert_eq!(*contexts.0.lock(), [(0, false), (1, true)]);
+        assert_eq!(contexts.marks(), [(0, false), (1, true)]);
     }
 
     /// Every record file a Graph attempt writes, under `workdir/.roko`.

@@ -4,11 +4,17 @@
 The benchmark harness sends one instance JSON object on stdin and expects a
 unified diff on stdout. This adapter runs `roko run` against an isolated copy of
 the benchmark repo, then prints the resulting `git diff`.
+
+The harness keeps its own test command and grading tests from agents, so the
+agent checks its edits with `--validate-cmd` when given, or else with the repo's
+visible unittest tests. With neither, the adapter exits with an error: a check
+that cannot fail is worse than none.
 """
 
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,8 +72,21 @@ def query_knowledge(roko_bin, knowledge_workdir, topic):
     return result.stdout.strip()
 
 
-def write_roko_config(root, model, test_cmd):
-    escaped_test = json.dumps(["-lc", test_cmd])
+def validation_command(explicit, workdir):
+    """The shell command that checks the agent's edits, or None if there is none.
+
+    The benchmark hides its test command, so this is the caller's command or
+    the repo's own visible `test*.py` files run through unittest.
+    """
+    if explicit:
+        return explicit
+    if any(workdir.glob("test*.py")):
+        return f"{shlex.quote(sys.executable)} -m unittest discover"
+    return None
+
+
+def write_roko_config(root, model, validate_cmd):
+    escaped_test = json.dumps(["-lc", validate_cmd])
     root.joinpath("roko.toml").write_text(
         f"""[agent]
 command = "ollama"
@@ -89,14 +108,14 @@ timeout_ms = 60000
     )
 
 
-def build_prompt(instance, workdir, mode, roko_bin, knowledge_workdir):
+def build_prompt(instance, workdir, validate_cmd, mode, roko_bin, knowledge_workdir):
     problem = instance.get("problem_statement", "")
-    test_cmd = instance.get("test_cmd") or instance.get("test_command") or "true"
     prompt = (
         "Fix this small repository so the benchmark test passes. "
         "Edit the implementation files directly. Do not modify tests unless the problem explicitly asks for it.\n\n"
         f"Problem:\n{problem}\n\n"
-        f"Validation command:\n{test_cmd}\n"
+        f"Validation command:\n{validate_cmd}\n"
+        "The benchmark grades the patch with its own tests, which you cannot see.\n"
     )
     if mode in {"context", "neuro"}:
         context = file_context(workdir)
@@ -132,20 +151,34 @@ def main():
         default=os.environ.get("ROKO_KNOWLEDGE_WORKDIR", str(REPO_ROOT)),
         help="Workdir whose .roko/neuro store should be queried in neuro mode.",
     )
+    parser.add_argument(
+        "--validate-cmd",
+        default=os.environ.get("ROKO_BENCH_VALIDATE_CMD"),
+        help="Shell command that checks the agent's edits. Defaults to the repo's visible "
+        "unittest tests; the benchmark's own test command is hidden from agents.",
+    )
     args = parser.parse_args()
 
     instance = json.load(sys.stdin)
     source = Path(instance["repo_path"]).resolve()
-    test_cmd = instance.get("test_cmd") or instance.get("test_command") or "true"
 
     with tempfile.TemporaryDirectory(prefix="roko-bench-agent-") as tmp:
         workdir = Path(tmp) / "repo"
         shutil.copytree(source, workdir)
+        validate_cmd = validation_command(args.validate_cmd, workdir)
+        if validate_cmd is None:
+            sys.stderr.write(
+                f"no validation command for {instance['instance_id']}: the benchmark hides "
+                "its tests, the repo has no visible test*.py, and no --validate-cmd was given\n"
+            )
+            sys.exit(2)
         run(["git", "init", "-q"], cwd=workdir)
         run(["git", "add", "."], cwd=workdir)
-        write_roko_config(workdir, args.model, test_cmd)
+        write_roko_config(workdir, args.model, validate_cmd)
 
-        prompt = build_prompt(instance, workdir, args.mode, args.roko_bin, args.knowledge_workdir)
+        prompt = build_prompt(
+            instance, workdir, validate_cmd, args.mode, args.roko_bin, args.knowledge_workdir
+        )
         result = run(
             [
                 str(Path(args.roko_bin).resolve()),

@@ -9,7 +9,7 @@ goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
-updated = 2026-09-30
+updated = 2026-10-01
 last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (23:15, wk-tldr2 on gap-00cc7f; wk-wp-s7 on gap-4471d1)"
@@ -60,3 +60,4 @@ Pinned at `ed0c33bd5`.
   `41228d7b2` by `9a37ad4d4` on `work/gap-08d9b2`: 31 wired, 21 partial, 2 broken, 3 orphaned, 7 built but unwired,
   6 missing, 1 removed (was 23/22/2/7/7/9/1). The PDF builds to 33 pages: §0–§10 on pages 1–17, references on 18–21,
   the appendix on 22–33. The final re-pin right before the `whitepaper-v1` tag stays with this item.
+- 2026-10-01 (wk-repin): two text fixes for the final pass. §5.2's B5 learning-loop census predates ed471a8c1, so re-check its loop tags against that commit. §9.4 still lists the conductor for parking.

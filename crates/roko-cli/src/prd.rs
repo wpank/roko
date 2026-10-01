@@ -280,13 +280,13 @@ async fn regenerate_old_format_plan(
     Ok(true)
 }
 
-async fn regenerate_old_format_plans(
-    workdir: &Path,
-    model: Option<&str>,
-    plans_root: &Path,
-) -> Result<usize> {
+/// Regenerate, one planner call each, the plans in `workdir`'s plans
+/// directory whose tasks.toml lacks modern fields. Opt-in
+/// (`roko prd plan --regenerate-old`): no generate path runs it on its own.
+/// Returns how many plans it regenerated.
+pub async fn regenerate_old_format_plans(workdir: &Path, model: Option<&str>) -> Result<usize> {
     let mut regen_count = 0usize;
-    for plan_dir in old_format_plan_dirs(plans_root) {
+    for plan_dir in old_format_plan_dirs(&workspace_plans_dir(workdir)) {
         if regenerate_old_format_plan(workdir, model, &plan_dir).await? {
             regen_count += 1;
         }
@@ -978,7 +978,7 @@ async fn maybe_generate_plan_after_promote(
         prd_path.to_path_buf(),
         auto_execute,
         |slug, path, dry_run| async move {
-            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, true, None).await
+            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, None).await
         },
     )
     .await
@@ -1103,25 +1103,22 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 /// The plan is written by the planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true, None)
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, None)
             .await?;
     Ok(plans_root)
 }
 
-/// Generate implementation plans from a published PRD file without triggering
-/// old-format plan regeneration across all existing plans.
-///
-/// Use this from the API so that a single "Generate" request does not start one
-/// LLM agent per old-format plan in the repository. Each agent call's spend is
-/// published on `live` when given (see [`crate::plan_authoring::AuthoringSpend`]).
-/// The plan is written by the planner model ([`resolve_planner_model`]).
+/// Generate implementation plans from a published PRD file, publishing each
+/// agent call's spend on `live` when given (see
+/// [`crate::plan_authoring::AuthoringSpend`]). The plan is written by the
+/// planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd_isolated(
     slug: &str,
     prd_path: &Path,
     live: Option<TuiBridge>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, false, live).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, live).await?;
     Ok(plans_root)
 }
 
@@ -1134,7 +1131,7 @@ pub async fn generate_plan_from_prd_with_model(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, true, None)
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, None)
             .await?;
     Ok(plans_root)
 }
@@ -1154,7 +1151,6 @@ pub async fn generate_plan_from_prd_with_failure_context(
         dry_run,
         failure_context,
         model,
-        true,
         None,
     )
     .await?;
@@ -1536,30 +1532,25 @@ fn write_regenerated_plan(
     Ok(())
 }
 
+/// Generate the plan for the PRD at `prd_path`. Other plans are left alone:
+/// refreshing old-format plans is opt-in ([`regenerate_old_format_plans`]).
 async fn generate_plan_from_prd_with_outcome(
     slug: &str,
     prd_path: &Path,
     dry_run: bool,
     failure_context: Option<&str>,
     model: Option<&str>,
-    regenerate_old_plans: bool,
     live: Option<TuiBridge>,
 ) -> Result<(PathBuf, GenerationOutcome)> {
     let workdir = prd_workdir(prd_path)?;
-    let generated = generate_plan(PlanRequest {
+    generate_plan(PlanRequest {
         dry_run,
         failure_context,
         model,
         live,
         ..PlanRequest::new(PlanSource::Prd(prd_path), slug, &workdir)
     })
-    .await?;
-    if !dry_run && regenerate_old_plans {
-        if let Err(e) = regenerate_old_format_plans(&workdir, model, &generated.0).await {
-            eprintln!("warning: old-format plan regeneration failed (non-fatal): {e}");
-        }
-    }
-    Ok(generated)
+    .await
 }
 
 /// Generate one plan from `request`'s source. The planner model writes a
@@ -4064,6 +4055,116 @@ mod tests {
             PlannerBudget::for_context_window(Some(8_000)),
             PlannerBudget::SMALL
         );
+    }
+
+    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
+    /// other. An old-format plan and a generated plan, which names no model,
+    /// keep their tasks.toml byte for byte, and the planner is called once.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_prd_plan_does_not_regenerate_other_plans() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        ensure_dirs(workdir).expect("PRD directories");
+        let prd_path = published_dir(workdir).join("widget.md");
+        std::fs::write(
+            &prd_path,
+            "---\nid: prd-widget\ntitle: Widget\nstatus: published\n---\n\n\
+             # Widget\n\nAdd a widget module.\n",
+        )
+        .expect("write PRD");
+
+        // Two plans are already in plans/: one in the old format, and one as
+        // the generator writes it, without a model_hint. Each has a plan.md a
+        // regeneration could start from.
+        let plans = workdir.join("plans");
+        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
+        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let dir = plans.join(name);
+            std::fs::create_dir_all(&dir).expect("plan directory");
+            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
+            std::fs::write(dir.join("plan.md"), format!("---\nplan: {name}\n---\n# {name}\n"))
+                .expect("plan.md");
+        }
+
+        // The planner answers every call with the widget plan, and logs it.
+        let bin = tempfile::tempdir().expect("tempdir");
+        let widget_toml = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+             description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
+        let reply = bin.path().join("reply.jsonl");
+        std::fs::write(
+            &reply,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type": "content_block_delta",
+                    "delta": {"text": format!("```toml\n{widget_toml}```\n")},
+                }),
+                serde_json::json!({
+                    "type": "result",
+                    "session_id": "planner",
+                    "model": "claude-sonnet-4-6",
+                    "total_cost_usd": 0.0,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "is_error": false,
+                }),
+            ),
+        )
+        .expect("planner reply");
+        let calls = bin.path().join("calls.log");
+        let planner = bin.path().join("planner.sh");
+        std::fs::write(
+            &planner,
+            format!(
+                "#!/bin/sh\nset -eu\ncat >/dev/null\necho call >> '{}'\ncat '{}'\n",
+                calls.display(),
+                reply.display()
+            ),
+        )
+        .expect("planner script");
+        std::fs::set_permissions(&planner, std::fs::Permissions::from_mode(0o755))
+            .expect("make the planner executable");
+        std::fs::write(
+            workdir.join("roko.toml"),
+            format!(
+                "[agent]\ndefault_model = \"planner\"\ncommand = {planner:?}\nbare_mode = false\n\n\
+                 [providers.fake]\nkind = \"claude_cli\"\ncommand = {planner:?}\n\n\
+                 [models.planner]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
+                 context_window = 200000\n",
+                planner = planner.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+
+        generate_plan_from_prd_with_model("widget", &prd_path, false, Some("planner"))
+            .await
+            .expect("prd plan writes the widget plan");
+
+        let widget = std::fs::read_to_string(plans.join("widget").join("tasks.toml"))
+            .expect("the widget plan");
+        let widget = TasksFile::parse_str(&widget).expect("parse the widget plan");
+        assert_eq!(widget.tasks.len(), 1);
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let after = std::fs::read_to_string(plans.join(name).join("tasks.toml"))
+                .expect("tasks.toml");
+            assert_eq!(after, tasks, "plans/{name} was rewritten");
+        }
+        let calls = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(calls.lines().count(), 1, "one planner call: the widget plan");
+        // A plan that names no model is modern: only `old` counts as old.
+        assert_eq!(old_format_plan_dirs(&plans), [plans.join("old")]);
     }
 
     #[test]

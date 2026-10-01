@@ -815,7 +815,11 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 Ok(0)
             }
         },
-        PrdCmd::Plan { slug, dry_run } => {
+        PrdCmd::Plan {
+            slug,
+            dry_run,
+            regenerate_old,
+        } => {
             let t_total = Instant::now();
             let t_phase = Instant::now();
             let prd_path = find_prd(&workdir, &slug)?;
@@ -849,6 +853,15 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             )
             .await?;
             let generate_ms = t_phase.elapsed().as_millis();
+            // Other plans are regenerated only on request (bug-a5cd6b).
+            if regenerate_old && !dry_run {
+                let regenerated = roko_cli::prd::regenerate_old_format_plans(
+                    &workdir,
+                    Some(model_key.as_str()),
+                )
+                .await?;
+                tracing::info!(regenerated, "prd plan: regenerated old-format plans");
+            }
             let total_ms = t_total.elapsed().as_millis();
             tracing::info!(init_ms, generate_ms, total_ms, "prd plan: phase timing");
             crate::commands::util::print_next_step_hint(&format!(

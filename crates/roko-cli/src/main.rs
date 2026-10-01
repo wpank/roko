@@ -2483,6 +2483,10 @@ enum PrdCmd {
         /// Preview generation without writing tasks.toml files.
         #[arg(long)]
         dry_run: bool,
+        /// Also regenerate every plan in plans/ whose tasks.toml lacks modern
+        /// fields: one planner call per plan.
+        #[arg(long)]
+        regenerate_old: bool,
     },
     /// Scan all PRDs for duplicates, gaps, and inconsistencies.
     Consolidate,

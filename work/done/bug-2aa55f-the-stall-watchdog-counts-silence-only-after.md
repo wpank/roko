@@ -2,7 +2,7 @@
 id = "bug-2aa55f"
 kind = "bug"
 title = "The stall watchdog counts silence only after an assistant message, so a provider that streams only content_block_delta is never cancelled"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "faa378453"
+last_verified_rev = "8a3c530af"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tiers' report on gap-9eebcb, branch work/gap-9eebcb at 55ffa7074)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/watchdog.rs"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-9eebcb", "spec-a0403b"],
 
 [[verify]]
 command = "grep -rqw 'fn a_delta_only_stream_still_trips_the_watchdog' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_delta_only_stream_still_trips_the_watchdog"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T15:16:12Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20f gate on 2ff1b7891 (MAIN has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/core/graph/serve; lib tests roko-cli 3309, roko-agent 2296, roko-core 1963, roko-serve 992, roko-graph 480 pass; extras: all eight canaries + golden_path_suite + secret_canary 11/11 + C2 2/2 + worktree_task_diff + default_engine pass, bin 429, graph_task_dispatch suite at --test-threads=32 passed 10 of 10, including a_delta_only_stream_still_trips_the_watchdog and a_streaming_call_is_silent_from_its_start; a 30 s first-output grace keeps slow starts from being cancelled (the load flake found in the first 20f gate). Merged (work/gap-9eebcb-l7 9424434fd)."
 +++
 
 ## Problem

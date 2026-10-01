@@ -2,7 +2,7 @@
 id = "bug-acab47"
 kind = "bug"
 title = "A Claude CLI run that exits 0 without a result line counts as a successful provider run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/claude_cli"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "faa378453"
+last_verified_rev = "8a3c530af"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tiers' report on gap-9eebcb, branch work/gap-9eebcb at 55ffa7074)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-9eebcb", "gap-cd3529"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_run_without_a_result_line_is_a_provider_failure' crates/roko-agent/src/ && cargo test -p roko-agent --lib a_run_without_a_result_line_is_a_provider_failure"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T15:16:12Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20f gate on 2ff1b7891 (MAIN has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/core/graph/serve; lib tests roko-cli 3309, roko-agent 2296, roko-core 1963, roko-serve 992, roko-graph 480 pass; extras: all eight canaries + golden_path_suite + secret_canary 11/11 + C2 2/2 + worktree_task_diff + default_engine pass, bin 429, graph_task_dispatch suite at --test-threads=32 passed 10 of 10, including a_run_without_a_result_line_is_a_provider_failure. Merged (work/gap-9eebcb-l7 9424434fd)."
 +++
 
 ## Problem

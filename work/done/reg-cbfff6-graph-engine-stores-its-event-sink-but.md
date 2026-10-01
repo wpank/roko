@@ -2,7 +2,7 @@
 id = "reg-cbfff6"
 kind = "regression"
 title = "Graph engine stores its event sink but never emits to it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -10,7 +10,7 @@ subsystem = ["roko-graph/engine", "roko-cli/state-hub"]
 created = 2026-09-28
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "64c96abab"
+last_verified_rev = "8a3c530af"
 source = "gaps-md#batch-2026-09-05-engine-convergence/statehubgrapheventsink"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
 anchors = ["crates/roko-graph/src/engine.rs::with_event_sink", "crates/roko-graph/src/engine.rs:327", "crates/roko-cli/src/graph_execution/plan_runner.rs:2016", "crates/roko-cli/src/runner/types.rs:2662", "crates/roko-cli/src/runner/types.rs:2717"]
@@ -18,6 +18,14 @@ links = { depends_on = [], blocks = [], related = ["gap-7f5eb6", "gap-d40bc0", "
 
 [[verify]]
 command = '''grep -n 'event_sink' crates/roko-graph/src/engine.rs | grep -vE 'event_sink: |fn with_event_sink|self\.event_sink = Some' | grep -q .'''
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T15:16:13Z"
+by = "coordinator (session 7622b882)"
+claimed_at = "2026-10-01T09:06:26Z"
+forced = false
+evidence = "Batch 20f gate on 2ff1b7891 (MAIN has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/core/graph/serve; lib tests roko-cli 3309, roko-agent 2296, roko-core 1963, roko-serve 992, roko-graph 480 pass; extras: all eight canaries + golden_path_suite + secret_canary 11/11 + C2 2/2 + worktree_task_diff + default_engine pass, bin 429, graph_task_dispatch suite at --test-threads=32 passed 10 of 10, including the_event_sink_receives_node_lifecycle_events. Merged (work/reg-cbfff6 fc2430b99)."
 +++
 
 The 2026-09-05 engine-convergence batch recorded `StateHubGraphEventSink` as "wired into all graph execution paths". `GraphEngine` stores the sink (`crates/roko-graph/src/engine.rs:323`, set by `with_event_sink` at `:444`), but no engine code reads it, so the engine itself emits no `GraphExecutionEvent`s. Dashboards only get what the CLI host layer bridges separately, and they get it in batches (see the related items). `RunConfig.http_event_sink` is also always `None` (`crates/roko-cli/src/runner/types.rs:2662`, `:2717`; `crates/roko-cli/src/commands/do_cmd.rs:949`). The CLI-to-serve hub bridge is tracked in gap-7f5eb6.

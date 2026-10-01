@@ -2,7 +2,7 @@
 id = "gap-f59fe9"
 kind = "gap"
 title = "Blocked tasks that never started are missing from the connected dashboard's task list"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/dashboard", "roko-cli/tui"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "ed4f990e9"
+last_verified_rev = "8a3c530af"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 9ef6f4aad"
 anchors = ["crates/roko-core/src/dashboard_snapshot.rs::apply_with_ts", "crates/roko-cli/src/runner/graph_tui_bridge.rs::poll_status_changes", "crates/roko-cli/src/graph_execution/plan_runner.rs::task_outcomes", "crates/roko-cli/src/tui/state/snapshot.rs::update_from_dashboard_snapshot", "apps/portal/src/lib/runState.ts:705"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-7e1b6b", "gap-4d835d", "
 
 [[verify]]
 command = "grep -rqw 'fn a_task_blocked_before_it_started_is_listed' crates/roko-core/src && cargo test -p roko-core --lib a_task_blocked_before_it_started_is_listed && grep -rqw 'fn update_from_dashboard_snapshot_lists_blocked_tasks' crates/roko-cli/src && cargo test -p roko-cli --lib update_from_dashboard_snapshot_lists_blocked_tasks"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T15:16:14Z"
+by = "coordinator (session 7622b882)"
+size = "M"
+claimed_at = "2026-10-01T09:06:31Z"
+forced = false
+evidence = "Batch 20f gate on 2ff1b7891 (MAIN has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/core/graph/serve; lib tests roko-cli 3309, roko-agent 2296, roko-core 1963, roko-serve 992, roko-graph 480 pass; extras: all eight canaries + golden_path_suite + secret_canary 11/11 + C2 2/2 + worktree_task_diff + default_engine pass, bin 429, graph_task_dispatch suite at --test-threads=32 passed 10 of 10, including a_task_blocked_before_it_started_is_listed and a_failed_task_blocks_only_its_dependants; portal tsc clean and vitest 797/797 (wk-runstate). Merged (work/reg-cbfff6 fc2430b99)."
 +++
 
 ## Problem

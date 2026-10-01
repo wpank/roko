@@ -1446,10 +1446,12 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>]
 
 #### `roko config show`
 
-Print the effective merged config with per-field source tags.
+Print the effective merged config with per-field source tags. `--effective` prints the fully-resolved config as
+TOML instead. Name a section to print only that part of the fully-resolved config, as TOML: a top-level table such
+as `agent` or `dreams`, or a dotted path such as `providers.anthropic`. Secrets are redacted either way.
 
 ```
-roko config show [--workdir <path>] [--effective]
+roko config show [<section>] [--workdir <path>] [--effective]
 ```
 
 #### `roko config path`

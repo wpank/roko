@@ -3044,6 +3044,9 @@ enum ConfigCmd {
     },
     /// Print the effective merged config with per-field source tags.
     Show {
+        /// Print only this section of the fully-resolved config, as TOML: a
+        /// top-level table such as `agent` or a dotted path such as `providers.anthropic`.
+        section: Option<String>,
         /// Directory to resolve project config from (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,

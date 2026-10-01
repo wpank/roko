@@ -38,8 +38,9 @@ pub struct ModelPricing {
 }
 ```
 
-The cost table uses substring matching for model families (e.g., `"claude-sonnet"`
-matches `"claude-sonnet-4-20250514"`). A model the table does not price has an
+The cost table matches a slug exactly, or as a dated or versioned snapshot of a
+priced slug: `claude-sonnet-4-6-20250514` takes `claude-sonnet-4-6`'s rates, but
+`o3-mini` does not take `o3`'s (bug-1f81ab). A model the table does not price has an
 unknown cost: `compute_cost` returns an all-zero result and logs the model once,
 as roko-learn's `CostTable::calculate` does, rather than pricing it at another
 model's rates (bug-39d15f).

@@ -325,14 +325,6 @@ impl CostTable {
 
         // Gemini models with no registry row.
         models.insert(
-            "gemini-2.5-flash-lite".to_string(),
-            ModelPricing {
-                input_per_m: 0.10,
-                output_per_m: 0.40,
-                ..Default::default()
-            },
-        );
-        models.insert(
             "gemini-3.1-pro-preview".to_string(),
             ModelPricing {
                 input_per_m: 2.00,
@@ -366,24 +358,9 @@ impl CostTable {
         models.entry("sonar-pro".to_string()).and_modify(|p| {
             p.per_request = Some(0.014);
         });
-        models.insert(
-            "sonar-reasoning".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 5.00,
-                per_request: Some(0.005),
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "sonar-reasoning-pro".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                per_request: Some(0.008),
-                ..Default::default()
-            },
-        );
+        models.entry("sonar-reasoning-pro".to_string()).and_modify(|p| {
+            p.per_request = Some(0.008);
+        });
         models.insert(
             "sonar-deep-research".to_string(),
             ModelPricing {
@@ -1272,13 +1249,9 @@ mod tests {
         assert!((sonar_pro.output_per_m - 15.00).abs() < 1e-9);
         assert_eq!(sonar_pro.per_request, Some(0.014));
 
-        // sonar-reasoning: $1.00/M in, $5.00/M out, $0.005 per-request
-        let sonar_r = table
-            .lookup("sonar-reasoning")
-            .expect("sonar-reasoning pricing");
-        assert!((sonar_r.input_per_m - 1.00).abs() < 1e-9);
-        assert!((sonar_r.output_per_m - 5.00).abs() < 1e-9);
-        assert_eq!(sonar_r.per_request, Some(0.005));
+        // sonar-reasoning is no longer on Perplexity's price page (checked
+        // 2026-10-01), so it is unpriced here as everywhere (bug-1f81ab).
+        assert!(!table.models.contains_key("sonar-reasoning"));
 
         // sonar-reasoning-pro: $2.00/M in, $8.00/M out, $0.008 per-request
         let sonar_rp = table

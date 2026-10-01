@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 use parking_lot::Mutex;
 use roko_agent::Usage;
 use roko_core::config::model_registry::{
-    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER, is_snapshot_of,
 };
 use roko_core::config::schema::ModelProfile;
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,9 @@ pub struct CostTable {
 impl CostTable {
     /// Look up pricing for a model slug.
     ///
-    /// Tries exact match first, then finds any table key that is a prefix of the
-    /// slug separated by `-` or `.` (longest prefix wins).
+    /// Tries exact match first, then a table key the slug is a dated or
+    /// versioned snapshot of ([`is_snapshot_of`]; the longest such key wins),
+    /// so `o3-mini` never takes `o3`'s rates (bug-1f81ab).
     #[must_use]
     pub fn lookup(&self, slug: &str) -> Option<&ModelPricing> {
         if let Some(pricing) = self.models.get(slug) {
@@ -46,11 +47,7 @@ impl CostTable {
         }
         self.models
             .iter()
-            .filter(|(key, _)| {
-                slug.len() > key.len()
-                    && slug.starts_with(key.as_str())
-                    && matches!(slug.as_bytes().get(key.len()), Some(b'-' | b'.'))
-            })
+            .filter(|(key, _)| is_snapshot_of(slug, key))
             .max_by_key(|(key, _)| key.len())
             .map(|(_, pricing)| pricing)
     }
@@ -388,7 +385,7 @@ mod tests {
     fn lookup_no_partial_word_match() {
         let mut models = HashMap::new();
         models.insert(
-            "glm".into(),
+            "glm-5.1".into(),
             ModelPricing {
                 input_per_m: 1.0,
                 output_per_m: 1.0,
@@ -398,8 +395,10 @@ mod tests {
             },
         );
         let table = CostTable { models };
-        assert!(table.lookup("glm-5.1").is_some());
-        assert!(table.lookup("glmx").is_none());
+        assert!(table.lookup("glm-5.1-20260101").is_some());
+        assert!(table.lookup("glm-5.1x").is_none());
+        // A suffix that names another model is no snapshot (bug-1f81ab).
+        assert!(table.lookup("glm-5.1-air").is_none());
     }
 
     /// gap-ad0d39: an unknown model is unpriced, not priced at Sonnet's
@@ -451,10 +450,13 @@ mod tests {
             // Z.AI: $0.26 cached against $1.40, and $0.20 against $1.00.
             ("glm-5.1", 0.26 / 1.40, 1.0),
             ("glm-5", 0.2, 1.0),
-            // OpenAI: half for gpt-4o, a quarter for o3 and o4-mini, a
-            // tenth for gpt-5.x; only gpt-5.6-sol charges for a write.
+            // OpenAI: half for gpt-4o, gpt-4o-mini and o3-mini, a quarter
+            // for o3 and o4-mini, a tenth for gpt-5.x; only gpt-5.6-sol
+            // charges for a write.
             ("gpt-4o", 0.5, 1.0),
+            ("gpt-4o-mini", 0.5, 1.0),
             ("o3", 0.25, 1.0),
+            ("o3-mini", 0.5, 1.0),
             ("o4-mini", 0.25, 1.0),
             ("gpt-5.2", 0.1, 1.0),
             ("gpt-5.4", 0.1, 1.0),
@@ -462,12 +464,14 @@ mod tests {
             ("gpt-5.5", 0.1, 1.0),
             ("gpt-5.6-sol", 0.1, 1.25),
             // Perplexity: Sonar caches at $0.0625 against $1; Sonar Pro
-            // has no cache price.
+            // and Sonar Reasoning Pro have no cache price.
             ("sonar", 0.0625, 1.0),
             ("sonar-pro", 1.0, 1.0),
+            ("sonar-reasoning-pro", 1.0, 1.0),
             // Gemini 2.5: context caching at a tenth of input.
             ("gemini-2.5-pro", 0.1, 1.0),
             ("gemini-2.5-flash", 0.1, 1.0),
+            ("gemini-2.5-flash-lite", 0.1, 1.0),
         ];
         let table = CostTable {
             models: HashMap::new(),

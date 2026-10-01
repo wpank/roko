@@ -2790,7 +2790,10 @@ fn sidecar_tool_call_line_names_the_call_without_its_json() {
     // A tool start published through the StateHub reads the same.
     let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"payload\":{\"tool_id\":\"c1\",\"tool\":\"Bash\"}}";
     state.ingest_agent_output("b", line);
-    assert_eq!(state.agent_streams["b"].chunks.back().cloned(), sidecar_line);
+    assert_eq!(
+        state.agent_streams["b"].chunks.back().cloned(),
+        sidecar_line
+    );
 }
 
 /// gap-f59fe9: a task blocked by a failed one, which never started, is

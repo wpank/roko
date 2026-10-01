@@ -6040,7 +6040,9 @@ mod tests {
             args.extend(conflicting);
             assert!(Cli::try_parse_from(args).is_err(), "{conflicting:?}");
         }
-        assert!(Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok()
+        );
     }
 
     #[test]

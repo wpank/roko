@@ -504,6 +504,15 @@ impl CliDispatchProvider for CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         request.validate()?;
+        // A CLI gets the system prompt's cache markers as inert text; only
+        // the Anthropic API translators turn them into `cache_control`
+        // (bug-6052d8).
+        let request = &CliDispatchRequest {
+            system_prompt: roko_agent::translate::claude::strip_cache_markers(
+                &request.system_prompt,
+            ),
+            ..request.clone()
+        };
         match self.descriptor.protocol {
             CliProtocol::ClaudeStreamJson => self.build_claude_invocation(request),
             CliProtocol::CodexExecJson => self.build_codex_invocation(request),
@@ -2796,6 +2805,40 @@ mod tests {
         assert_eq!(invocation.turn_limit.effective_max_turns, None);
         assert!(invocation.args.iter().any(|arg| arg == "--model"));
         assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
+    }
+
+    /// bug-6052d8: `roko chat`'s own CLI invocation drops the system prompt's
+    /// cache markers, which only the Anthropic API reads.
+    #[test]
+    fn chat_strips_cache_markers() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let system_prompt = "Role\n\n<!-- cache:system -->\n\nWorkspace\n\n\
+                             <!-- cache:session -->\n\nTurn";
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: system_prompt.to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 50,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/t".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+
+        let invocation = provider.build_invocation(&request).unwrap();
+        let at = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .expect("the system prompt flag");
+        assert_eq!(invocation.args[at + 1], "Role\n\nWorkspace\n\nTurn");
+        assert!(!invocation.args.iter().any(|arg| arg.contains("<!-- cache:")));
     }
 
     #[test]

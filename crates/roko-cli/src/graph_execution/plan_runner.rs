@@ -1490,6 +1490,10 @@ async fn run_graph_plan_body(
                 })?;
             let control = PlanControl::default();
             controls.insert(plan_id, control.clone());
+            // Agents of the run's other plans hear what this one writes (gap-c09fc7).
+            let footprint = super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref());
+            let writes = footprint.writes.iter().map(ToString::to_string).collect();
+            graph_task_dispatcher.plan_started(&plan.id, writes);
             running.push(run_admitted_plan(&run_context, plan, control));
         }
 
@@ -1521,6 +1525,7 @@ async fn run_graph_plan_body(
                 }
                 plan_outcomes.insert(plan_id.clone(), outcome.succeeded());
                 scheduler.finish(&plan_id, outcome);
+                graph_task_dispatcher.plan_finished(&plan_id);
                 if running.is_empty() {
                     // Clear any residual pause once no plan is running.
                     shared_pause_flag.store(false, Ordering::Release);

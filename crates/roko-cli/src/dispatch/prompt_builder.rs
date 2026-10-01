@@ -169,6 +169,9 @@ pub struct PromptContext {
     /// Carried from `DispatchContext::error_patterns_context` so the prompt
     /// assembler can inject "known pitfalls" without touching the store itself.
     pub error_patterns_context: String,
+    /// The other plans running in the same working tree now, with the areas
+    /// they write ([`DispatchContext::concurrent_plans`]).
+    pub concurrent_plans: Vec<(String, Vec<String>)>,
 }
 
 impl PromptContext {
@@ -297,6 +300,7 @@ impl PromptContext {
             workspace_context,
             cfactor_context,
             error_patterns_context: ctx.error_patterns_context.clone(),
+            concurrent_plans: ctx.concurrent_plans.clone(),
         }
     }
 }
@@ -1476,6 +1480,26 @@ fn build_runner_context(
             }
         }
         parts.push(dep);
+    }
+
+    // gap-c09fc7: other plans editing this tree make a wide build fail for
+    // reasons that are not the agent's.
+    if !ctx.concurrent_plans.is_empty() {
+        let mut plans = String::from(
+            "# Plans Running Beside This One\n\nOther plans edit this working tree while you \
+             work. A build or test of more than your own crates may compile their half-finished \
+             edits and fail for reasons that are not yours. Build and test only the crates your \
+             task changes, and leave these areas alone:\n",
+        );
+        for (plan_id, areas) in &ctx.concurrent_plans {
+            let areas = if areas.is_empty() {
+                "its own files".to_string()
+            } else {
+                areas.join(", ")
+            };
+            plans.push_str(&format!("- `{plan_id}`: {areas}\n"));
+        }
+        parts.push(plans);
     }
 
     if !ctx.prd_excerpt.is_empty() {
@@ -3095,6 +3119,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             cached_cfactor_context: String::new(),
+            concurrent_plans: Vec::new(),
         }
     }
 
@@ -3773,6 +3798,29 @@ formulas = ["retries = 2 * (k + 1) - 1"]
         assert!(!plain.user_prompt.contains("## Specification"));
     }
 
+    /// gap-c09fc7: an agent hears which other plans run in its working tree
+    /// and what they write.
+    #[test]
+    fn prompt_names_concurrent_plans() {
+        let mut dispatch_ctx = ctx();
+        let areas = vec!["crates/roko-serve".to_string(), "web/src".to_string()];
+        dispatch_ctx.concurrent_plans = vec![("portal-api".to_string(), areas)];
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        assert!(
+            context.contains("# Plans Running Beside This One"),
+            "{context}"
+        );
+        assert!(
+            context.contains("- `portal-api`: crates/roko-serve, web/src\n"),
+            "{context}"
+        );
+
+        let alone = PromptContext::from_task(&task(), &ctx());
+        let context = build_runner_context(&task(), &alone).expect("runner context");
+        assert!(!context.contains("# Plans Running Beside This One"));
+    }
+
     /// gap-404fdb: the context-depth hints shape the prompt. `plan_section`
     /// narrows the PRD excerpt to its section, `skills` brings in each named
     /// skill from the skill library, `research_before_edit` asks for research
@@ -3958,6 +4006,7 @@ formulas = ["retries = 2 * (k + 1) - 1"]
             workspace_context: String::new(),
             cfactor_context: String::new(),
             error_patterns_context: String::new(),
+            concurrent_plans: Vec::new(),
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

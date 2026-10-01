@@ -3437,6 +3437,37 @@ mod tests {
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
     }
 
+    /// Writes `entries` (id and content) to `workdir`'s knowledge store.
+    fn write_knowledge(workdir: &Path, entries: &[(&str, &str)]) {
+        let neuro_dir = workdir.join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entries
+            .iter()
+            .map(|(id, content)| {
+                let entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "content": content,
+                    "confidence": 0.8,
+                    "created_at": Utc::now(),
+                }))
+                .expect("knowledge entry");
+                serde_json::to_string(&entry).expect("knowledge json") + "\n"
+            })
+            .collect::<String>();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+    }
+
+    /// Assembles `task` in `workdir` as a plan run does, from a prompt cache
+    /// loaded once.
+    fn assemble_cached(task: &TaskDef, workdir: &Path) -> AssembledPrompt {
+        let mut dispatch = ctx();
+        dispatch.workdir = workdir.to_path_buf();
+        let prompt_ctx = PromptContext::from_task(task, &dispatch);
+        PromptAssembler::with_cache(Arc::new(PromptCache::load(workdir)))
+            .assemble(task, &prompt_ctx)
+            .expect("assemble")
+    }
+
     /// A plan run's assembler reads knowledge from a cache loaded once
     /// (bug-86117a). The cache holds every hot entry, and each prompt carries
     /// those that share a content word with its task, not those that share
@@ -3444,42 +3475,21 @@ mod tests {
     #[test]
     fn cached_prompt_surfaces_matching_durable_knowledge() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let neuro_dir = temp.path().join(".roko/neuro");
-        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
-        let entry_line = |id: &str, content: &str| {
-            let entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
-                "id": id,
-                "content": content,
-                "confidence": 0.8,
-                "created_at": Utc::now(),
-            }))
-            .expect("knowledge entry");
-            serde_json::to_string(&entry).expect("knowledge json")
-        };
         // The task explains "the wiring": the first entry shares "wiring",
         // the second only "the", which a substring test also finds in "other".
-        std::fs::write(
-            neuro_dir.join("knowledge.jsonl"),
-            format!(
-                "{}\n{}\n",
-                entry_line("k-wiring", "Register new wiring in the dispatcher table"),
-                entry_line("k-stopwords", "Keep the other notes short")
-            ),
-        )
-        .expect("write knowledge");
-
-        let cache = PromptCache::load(temp.path());
+        write_knowledge(
+            temp.path(),
+            &[
+                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-stopwords", "Keep the other notes short"),
+            ],
+        );
         assert_eq!(
-            cache.neuro_entries.len(),
+            PromptCache::load(temp.path()).neuro_entries.len(),
             2,
             "the cache holds every hot entry"
         );
-        let mut dispatch = ctx();
-        dispatch.workdir = temp.path().to_path_buf();
-        let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
-        let prompt = PromptAssembler::with_cache(Arc::new(cache))
-            .assemble(&task(), &prompt_ctx)
-            .expect("assemble");
+        let prompt = assemble_cached(&task(), temp.path());
 
         let system = &prompt.system_prompt;
         assert!(system.contains("# Neuro knowledge"), "{system}");
@@ -3488,6 +3498,48 @@ mod tests {
             "{system}"
         );
         assert!(!system.contains("Keep the other notes short"), "{system}");
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// The knowledge also reaches a prompt whose domain context is longer
+    /// than its conventions section. The composer's foraging pre-pass used
+    /// to drop that section, and the knowledge with it (bug-4aa696).
+    #[test]
+    fn cached_knowledge_survives_a_long_domain_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge(
+            temp.path(),
+            &[("k-wiring", "Register new wiring in the dispatcher table")],
+        );
+        let mut long_task = task();
+        long_task.description = Some(format!(
+            "Explain the wiring. {}",
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(30)
+        ));
+        let prompt = assemble_cached(&long_task, temp.path());
+
+        let manifest = prompt
+            .diagnostics
+            .composition_manifest
+            .as_ref()
+            .expect("composition manifest");
+        let tokens = |name: &str| {
+            manifest
+                .included
+                .iter()
+                .find(|section| section.name == name)
+                .map(|section| section.estimated_tokens)
+        };
+        let domain = tokens("domain_context").expect("domain_context is kept");
+        let conventions = tokens("conventions").expect("conventions is kept");
+        assert!(domain > conventions, "{domain} <= {conventions} tokens");
+        assert!(
+            prompt
+                .system_prompt
+                .contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            "{}",
+            prompt.system_prompt
+        );
         assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
     }
 

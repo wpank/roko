@@ -207,6 +207,7 @@ pub mod run;
 pub mod run_inline;
 pub mod runner;
 pub mod runtime_feedback;
+pub mod safety_provenance;
 pub mod scaffold;
 pub mod scope_resolver;
 pub mod secrets;

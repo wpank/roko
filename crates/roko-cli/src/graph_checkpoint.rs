@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -35,14 +36,15 @@ use roko_graph::replay::{
     set_aside_uncommitted_activities,
 };
 use roko_graph::{
-    ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
-    plan_graph_fingerprint,
+    ActivityRecorder, ActivityReplayer, AuthoredPlan, EXT_SAFETY_PROVENANCE, Graph,
+    legacy_graph_execution_fingerprint, plan_graph_fingerprint,
 };
 use roko_learn::telemetry::report::RunRecords;
 use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
+use crate::safety_provenance::GraphProvenanceSink;
 use crate::task_accept;
 use crate::task_parser::{TaskDef, TasksFile};
 
@@ -785,6 +787,9 @@ pub struct PreparedGraphCheckpoint {
     replayed_entries: usize,
     cost_ledger: Option<GraphCostLedgerCheckpoint>,
     invalidated_on_resume: Vec<InvalidatedActivity>,
+    /// The run's safety provenance sink, whose summary every manifest write
+    /// stores (gap-ff95f5).
+    safety_provenance: Option<Arc<GraphProvenanceSink>>,
 }
 
 impl std::fmt::Debug for PreparedGraphCheckpoint {
@@ -849,6 +854,9 @@ impl PreparedGraphCheckpoint {
         // Best-effort: a verdict summary failure must not block the terminal write.
         if let Err(error) = self.refresh_gate_verdicts() {
             tracing::warn!(%error, "gate verdict checkpoint summary refresh failed");
+        }
+        if let Err(error) = self.refresh_safety_provenance() {
+            tracing::warn!(%error, "safety provenance checkpoint summary refresh failed");
         }
         self.manifest.updated_at_ms = unix_ms();
         write_manifest_atomic(&self.paths.manifest, &self.manifest)
@@ -1192,8 +1200,30 @@ impl PreparedGraphCheckpoint {
     /// Call this after registering extensions or transitioning receipts to
     /// make the change durable before the next external call.
     pub fn persist_manifest(&mut self) -> Result<()> {
+        self.refresh_safety_provenance()?;
         self.manifest.updated_at_ms = unix_ms();
         write_manifest_atomic(&self.paths.manifest, &self.manifest)
+    }
+
+    /// Keep the run's safety provenance (gap-ff95f5): every later manifest
+    /// write stores `sink`'s summary under [`EXT_SAFETY_PROVENANCE`].
+    pub fn attach_safety_provenance(&mut self, sink: Arc<GraphProvenanceSink>) {
+        self.safety_provenance = Some(sink);
+    }
+
+    /// Rebuild the [`EXT_SAFETY_PROVENANCE`] extension from the attached
+    /// sink, replacing what an earlier write stored. Without a sink the
+    /// extension stays as it is.
+    fn refresh_safety_provenance(&mut self) -> Result<()> {
+        let Some(sink) = &self.safety_provenance else {
+            return Ok(());
+        };
+        let value = serde_json::to_value(sink.summary()).context("serialize safety provenance")?;
+        self.manifest.extensions.insert(
+            EXT_SAFETY_PROVENANCE.to_string(),
+            host_extension(EXT_SAFETY_PROVENANCE, value)?,
+        );
+        Ok(())
     }
 }
 
@@ -1367,6 +1397,7 @@ fn resume_checkpoint(
         replayed_entries,
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume,
+        safety_provenance: None,
     };
     prepared.refresh_gate_verdicts()?;
     prepared.record_interrupted_attempts(workdir)?;
@@ -1438,6 +1469,7 @@ fn create_fresh_checkpoint(
         replayed_entries: 0,
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: Vec::new(),
+        safety_provenance: None,
     })
 }
 
@@ -3510,6 +3542,55 @@ depends_on = ["T1"]
             .expect("record");
         let replayer = ActivityReplayer::load_scoped(&activities, "p", &run_id).expect("log");
         assert_eq!(replayer.entry_count(), 2);
+    }
+
+    #[test]
+    fn checkpoint_writes_store_the_safety_provenance_summary() {
+        use roko_agent::safety::{ProvenanceCall, ProvenanceIntent, SafetyProvenanceSink};
+        use roko_core::extension::CamelTaintLevel;
+
+        use crate::safety_provenance::SafetyProvenanceSummary;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let stored = |checkpoint: &PreparedGraphCheckpoint| -> Option<SafetyProvenanceSummary> {
+            let manifest = read_manifest(&checkpoint.paths().manifest).expect("manifest");
+            let extension = manifest.extensions.get(EXT_SAFETY_PROVENANCE)?;
+            Some(serde_json::from_value(extension.value.clone()).expect("summary"))
+        };
+        checkpoint.persist_manifest().expect("persist");
+        assert_eq!(
+            stored(&checkpoint),
+            None,
+            "without a sink there is no extension"
+        );
+
+        let sink = Arc::new(GraphProvenanceSink::open(dir.path()).expect("provenance sink"));
+        checkpoint.attach_safety_provenance(Arc::clone(&sink));
+        checkpoint.persist_manifest().expect("persist");
+        assert_eq!(stored(&checkpoint).expect("extension").records, 0);
+
+        // A terminal write stores the summary as it stands then.
+        let intent = ProvenanceIntent {
+            call: ProvenanceCall {
+                run_id: checkpoint.run_id().to_string(),
+                task_id: "task-1".to_string(),
+                attempt_id: "1".to_string(),
+                turn_id: "1".to_string(),
+                call_id: "call-1".to_string(),
+                tool: "read_file".to_string(),
+                args_digest: roko_core::ContentHash::keyed(&sink.digest_key(), b"arguments"),
+            },
+            taint: CamelTaintLevel::Untrusted,
+        };
+        sink.record_intent(&intent).expect("record the intent");
+        checkpoint.finish(false).expect("finish");
+        let summary = stored(&checkpoint).expect("extension");
+        assert_eq!(summary.records, 1);
+        assert_eq!(summary, sink.summary());
     }
 
     #[test]

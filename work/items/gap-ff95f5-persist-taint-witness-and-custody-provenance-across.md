@@ -116,6 +116,26 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
     (roko-core).
   Still open: steps 3-7 (the roko-cli host sink and the `roko.safety-provenance@1` extension, restore and fail-closed
   checks, replay idempotency, threading the sink through `build_tool_dispatcher_with_audit`, the restart tests).
+- 2026-10-01 (wk-tamper): Plan step 3, option (b), on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `roko-cli/src/safety_provenance.rs`: `GraphProvenanceSink` writes each intent and outcome as a witness vertex
+    in `.roko/witness.jsonl` (an outcome's parent is its intent's vertex, whose id is the intent's ack) and as a
+    custody record chained with `custody::log_chained` (SHA-256; it now returns the new head) in
+    `.roko/custody.jsonl`. Both files are synced to disk before `record_intent` returns, so the handler runs only
+    after its intent is on disk. The sink keeps the `TaintTracker`. Its digest key is
+    `.roko/state/safety-provenance.key` (32 random bytes, created 0600; a malformed key fails closed). A reopened
+    sink extends both chains.
+  - `GraphProvenanceSink::summary` gives the record count, both chain heads and the taint index
+    (`TaintTracker::to_json`/`from_json`, new). `PreparedGraphCheckpoint::attach_safety_provenance` makes every
+    manifest write (`persist_manifest`, and best effort in `finish_with_status`) rebuild `EXT_SAFETY_PROVENANCE`
+    from it.
+  - Tests: `graph_provenance_sink_writes_synced_witness_and_custody_chains`,
+    `graph_provenance_sink_refuses_a_bad_key_file`, `checkpoint_writes_store_the_safety_provenance_summary`
+    (roko-cli lib); `tracker_json_roundtrips_state_and_refuses_other_values` (roko-agent lib).
+  Still open: the policy and contract fingerprints in the summary; step 4 (restore before scheduling: rebuild the
+  tracker, walk the witness and custody chains to the stored heads, and fail closed on a mismatch, downgrade or
+  unknown version); step 5 (replay idempotency); step 6 (no run attaches the sink yet: thread it through
+  `AgentOptions` into `build_provider_tool_dispatcher`, then `DispatchFactory`/`dispatch_v2` and `run_one_plan`,
+  which should also call `attach_safety_provenance`); `safety_provenance_restores_taint_after_restart`.
 
 ## Original notes
 

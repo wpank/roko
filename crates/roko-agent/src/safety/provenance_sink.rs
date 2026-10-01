@@ -259,8 +259,8 @@ mod tests {
 
     use async_trait::async_trait;
     use roko_core::tool::{
-        ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolHandler,
-        ToolPermission, ToolRegistry, VecToolRegistry,
+        ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolHandler, ToolPermission,
+        ToolRegistry, VecToolRegistry,
     };
     use serde_json::json;
 

@@ -272,6 +272,20 @@ impl GraphTuiBridge {
         changes
     }
 
+    /// Report a task that will not run (gap-f59fe9): blocked by the failed
+    /// task `blocked_by`, or not started for `reason`.
+    pub fn task_blocked(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        title: &str,
+        blocked_by: Option<&str>,
+        reason: &str,
+    ) {
+        self.tui
+            .task_blocked(plan_id, task_id, title, blocked_by, reason);
+    }
+
     /// Emit an event log entry for graph engine diagnostics.
     pub fn log_event(&self, event_type: &str, message: &str) {
         self.tui.status(event_type, message);

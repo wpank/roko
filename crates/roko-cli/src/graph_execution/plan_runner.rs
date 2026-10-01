@@ -2783,6 +2783,8 @@ async fn run_one_plan(
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
     let task_outcomes = task_outcomes(&output, &node_titles);
+    // The live views list each such task as blocked, with its blocker or
+    // reason (gap-f59fe9).
     for (task_id, blocker) in &task_outcomes.blocked_by {
         graph_tui_bridge.log_event(
             "graph.task_blocked",
@@ -2790,6 +2792,13 @@ async fn run_one_plan(
                 "plan '{}': task '{task_id}' blocked by failed task '{blocker}'",
                 plan.id
             ),
+        );
+        graph_tui_bridge.task_blocked(
+            &plan.id,
+            task_id,
+            node_titles.get(task_id).map_or("", String::as_str),
+            Some(blocker.as_str()),
+            &format!("blocked by failed task '{blocker}'"),
         );
     }
     for (task_id, reason) in &task_outcomes.not_started {
@@ -2800,6 +2809,8 @@ async fn run_one_plan(
                 plan.id
             ),
         );
+        let title = node_titles.get(task_id).map_or("", String::as_str);
+        graph_tui_bridge.task_blocked(&plan.id, task_id, title, None, reason);
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
     if outcome == PlanOutcome::Unverified {

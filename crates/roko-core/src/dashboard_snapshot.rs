@@ -117,6 +117,19 @@ pub enum DashboardEvent {
         task_id: String,
         outcome: String,
     },
+    /// A task will not run: a task it depends on failed (`blocked_by` names
+    /// it), or it did not start for `reason` (gap-f59fe9). It counts as
+    /// neither done nor failed.
+    TaskBlocked {
+        plan_id: String,
+        task_id: String,
+        #[serde(default)]
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_by: Option<String>,
+        #[serde(default)]
+        reason: String,
+    },
     /// A task changed phase.
     TaskPhaseChanged {
         plan_id: String,
@@ -610,6 +623,13 @@ pub struct TaskState {
     pub phase: String,
     /// Outcome string, if completed.
     pub outcome: Option<String>,
+    /// The failed task that blocked this one, when it will not run because
+    /// of it (gap-f59fe9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<String>,
+    /// Why the task will not run, when it is blocked (gap-f59fe9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 /// A single agent's live state.
@@ -1134,6 +1154,10 @@ pub const TASK_OUTCOME_UNVERIFIED: &str = "unverified";
 /// (gap-9eb1e1). Counted apart from passed tasks.
 pub const TASK_OUTCOME_ALREADY_SATISFIED: &str = "already_satisfied";
 
+/// Outcome of a task that will not run: a task it depends on failed, or it
+/// did not start (gap-f59fe9). Counted as neither done nor failed.
+pub const TASK_OUTCOME_BLOCKED: &str = "blocked";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
@@ -1150,15 +1174,19 @@ pub enum TaskOutcomeClass {
     Unverified,
     /// The task never ran: it was skipped or its condition was not met.
     Skipped,
+    /// The task will not run: a task it depends on failed, or it did not
+    /// start (gap-f59fe9). Neither done nor failed.
+    Blocked,
 }
 
 /// Classify a `TaskCompleted` outcome string.
 ///
 /// Only an outcome that names a pass (`passed`, or a legacy `success` or
-/// `succeeded`) counts as passed. A skipped task is not a pass, a failure
-/// is failed, and any other outcome, `unverified` included, is unverified.
-/// Accepted-with-failures and already-satisfied are matched exactly first:
-/// the one contains "fail".
+/// `succeeded`) counts as passed. A skipped task is not a pass, a blocked
+/// task is neither done nor failed, a failure is failed, and any other
+/// outcome, `unverified` included, is unverified. Accepted-with-failures,
+/// already-satisfied and blocked are matched exactly first: the one contains
+/// "fail".
 #[must_use]
 pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     let lower = outcome.to_ascii_lowercase();
@@ -1166,6 +1194,8 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         TaskOutcomeClass::AcceptedWithFailures
     } else if lower == TASK_OUTCOME_ALREADY_SATISFIED {
         TaskOutcomeClass::AlreadySatisfied
+    } else if lower == TASK_OUTCOME_BLOCKED {
+        TaskOutcomeClass::Blocked
     } else if lower.contains("skipped") || lower == "unknown" {
         TaskOutcomeClass::Skipped
     } else if lower == TASK_OUTCOME_PASSED || lower == "succeeded" || lower.starts_with("success") {
@@ -1501,6 +1531,66 @@ impl DashboardSnapshot {
         }
     }
 
+    /// Count a task that settled in `class` into the run's and `plan_id`'s
+    /// totals, or, when `add` is false, take it back out: a task first seen
+    /// skipped can turn out to be blocked (gap-f59fe9). A blocked task counts
+    /// as neither done nor failed.
+    fn count_settled(&mut self, plan_id: &str, class: TaskOutcomeClass, add: bool) {
+        let step = |count: &mut usize| {
+            *count = if add {
+                count.saturating_add(1)
+            } else {
+                count.saturating_sub(1)
+            };
+        };
+        let stats = &mut self.stats;
+        let plan = self.plans.get_mut(plan_id);
+        match class {
+            TaskOutcomeClass::Failed => {
+                step(&mut stats.tasks_failed);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_failed);
+                }
+            }
+            TaskOutcomeClass::AcceptedWithFailures => {
+                step(&mut stats.tasks_accepted_with_failures);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_done);
+                    step(&mut plan.tasks_accepted_with_failures);
+                }
+            }
+            TaskOutcomeClass::Passed => {
+                step(&mut stats.tasks_completed);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_done);
+                    step(&mut plan.tasks_passed);
+                }
+            }
+            TaskOutcomeClass::AlreadySatisfied => {
+                step(&mut stats.tasks_already_satisfied);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_done);
+                    step(&mut plan.tasks_already_satisfied);
+                }
+            }
+            TaskOutcomeClass::Unverified => {
+                step(&mut stats.tasks_unverified);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_done);
+                    step(&mut plan.tasks_unverified);
+                }
+            }
+            TaskOutcomeClass::Skipped => {
+                step(&mut stats.tasks_skipped);
+                if let Some(plan) = plan {
+                    step(&mut plan.tasks_done);
+                    step(&mut plan.tasks_skipped);
+                }
+            }
+            TaskOutcomeClass::Blocked => {}
+        }
+    }
+
     /// Whether an announced plan set has every member in a terminal phase.
     ///
     /// `false` when no runner announced a plan set.
@@ -1671,6 +1761,8 @@ impl DashboardSnapshot {
                         plan_id: plan_id.clone(),
                         phase: phase.clone(),
                         outcome: None,
+                        blocked_by: None,
+                        blocked_reason: None,
                     },
                 );
                 if newly_active {
@@ -1692,10 +1784,16 @@ impl DashboardSnapshot {
                 // polls, finishes without a `TaskStarted`. It counts too.
                 let (newly_terminal, was_active) = match self.tasks.get_mut(&key) {
                     Some(task) => {
-                        let newly_terminal = task.outcome.is_none();
+                        let was_active = task.outcome.is_none();
+                        // A blocked task counted nothing, so the outcome of a
+                        // later run that settles it counts (gap-f59fe9).
+                        let newly_terminal =
+                            was_active || task.outcome.as_deref() == Some(TASK_OUTCOME_BLOCKED);
                         task.phase = "completed".into();
                         task.outcome = Some(outcome.clone());
-                        (newly_terminal, newly_terminal)
+                        task.blocked_by = None;
+                        task.blocked_reason = None;
+                        (newly_terminal, was_active)
                     }
                     None => {
                         self.tasks.insert(
@@ -1706,6 +1804,8 @@ impl DashboardSnapshot {
                                 plan_id: plan_id.clone(),
                                 phase: "completed".into(),
                                 outcome: Some(outcome.clone()),
+                                blocked_by: None,
+                                blocked_reason: None,
                             },
                         );
                         self.grow_plan_task_total(plan_id);
@@ -1716,49 +1816,48 @@ impl DashboardSnapshot {
                     if was_active {
                         self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
                     }
-                    match class {
-                        TaskOutcomeClass::Failed => {
-                            self.stats.tasks_failed += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_failed += 1;
-                            }
-                        }
-                        TaskOutcomeClass::AcceptedWithFailures => {
-                            self.stats.tasks_accepted_with_failures += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_done += 1;
-                                plan.tasks_accepted_with_failures += 1;
-                            }
-                        }
-                        TaskOutcomeClass::Passed => {
-                            self.stats.tasks_completed += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_done += 1;
-                                plan.tasks_passed += 1;
-                            }
-                        }
-                        TaskOutcomeClass::AlreadySatisfied => {
-                            self.stats.tasks_already_satisfied += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_done += 1;
-                                plan.tasks_already_satisfied += 1;
-                            }
-                        }
-                        TaskOutcomeClass::Unverified => {
-                            self.stats.tasks_unverified += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_done += 1;
-                                plan.tasks_unverified += 1;
-                            }
-                        }
-                        TaskOutcomeClass::Skipped => {
-                            self.stats.tasks_skipped += 1;
-                            if let Some(plan) = self.plans.get_mut(plan_id) {
-                                plan.tasks_done += 1;
-                                plan.tasks_skipped += 1;
-                            }
-                        }
+                    self.count_settled(plan_id, class, true);
+                }
+            }
+            DashboardEvent::TaskBlocked {
+                plan_id,
+                task_id,
+                title,
+                blocked_by,
+                reason,
+            } => {
+                let key = format!("{plan_id}/{task_id}");
+                // The task may be listed already: as active, or as skipped
+                // once the status poll saw its node settle. Take back what
+                // that counted.
+                let previous = self.tasks.get(&key).map(|task| task.outcome.clone());
+                match &previous {
+                    Some(None) => {
+                        self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
                     }
+                    Some(Some(outcome)) => {
+                        self.count_settled(plan_id, classify_task_outcome(outcome), false);
+                    }
+                    None => {}
+                }
+                let task = self.tasks.entry(key).or_insert_with(|| TaskState {
+                    task_id: task_id.clone(),
+                    title: String::new(),
+                    plan_id: plan_id.clone(),
+                    phase: String::new(),
+                    outcome: None,
+                    blocked_by: None,
+                    blocked_reason: None,
+                });
+                if task.title.is_empty() {
+                    task.title.clone_from(title);
+                }
+                task.phase = TASK_OUTCOME_BLOCKED.into();
+                task.outcome = Some(TASK_OUTCOME_BLOCKED.into());
+                task.blocked_by.clone_from(blocked_by);
+                task.blocked_reason = (!reason.is_empty()).then(|| reason.clone());
+                if previous.is_none() {
+                    self.grow_plan_task_total(plan_id);
                 }
             }
             DashboardEvent::TaskPhaseChanged {
@@ -2876,6 +2975,8 @@ fn bootstrap_plan_state(
                 plan_id: plan_id.to_string(),
                 phase: String::from("completed"),
                 outcome: Some(String::from("success")),
+                blocked_by: None,
+                blocked_reason: None,
             },
         );
     }
@@ -2894,6 +2995,8 @@ fn bootstrap_plan_state(
                 plan_id: plan_id.to_string(),
                 phase: String::from("completed"),
                 outcome: Some(String::from("failed")),
+                blocked_by: None,
+                blocked_reason: None,
             },
         );
     }
@@ -2911,6 +3014,8 @@ fn bootstrap_plan_state(
                     plan_id: plan_id.to_string(),
                     phase: phase.clone(),
                     outcome: None,
+                    blocked_by: None,
+                    blocked_reason: None,
                 },
             );
         }
@@ -2938,6 +3043,8 @@ fn bootstrap_plan_state(
                 } else {
                     String::from("success")
                 }),
+                blocked_by: None,
+                blocked_reason: None,
             },
         );
     }
@@ -3219,6 +3326,8 @@ fn apply_runner_lifecycle_projection(
                     plan_id: plan_id.to_string(),
                     phase: if paused { "paused" } else { status }.to_string(),
                     outcome: outcome.map(str::to_string),
+                    blocked_by: None,
+                    blocked_reason: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3430,6 +3539,8 @@ fn apply_runner_terminal_task_maps(
                         plan_id: plan_id.clone(),
                         phase: "completed".to_string(),
                         outcome: Some(outcome.to_string()),
+                        blocked_by: None,
+                        blocked_reason: None,
                     },
                 );
                 if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -3465,6 +3576,8 @@ fn apply_runner_terminal_task_maps(
                     plan_id: plan_id.clone(),
                     phase: "completed".to_string(),
                     outcome: Some("skipped".to_string()),
+                    blocked_by: None,
+                    blocked_reason: None,
                 },
             );
             if let Some(plan) = snapshot.plans.get_mut(plan_id) {
@@ -4224,6 +4337,96 @@ fn bootstrap_efficiency_stats(snapshot: &mut DashboardSnapshot, learn_dir: &Path
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// gap-f59fe9: a task blocked by a failed one never starts. It is listed
+    /// with its blocker and title, and counts as neither done nor failed,
+    /// also when the status poll first reported it as skipped.
+    #[test]
+    fn a_task_blocked_before_it_started_is_listed() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 3,
+        });
+        snap.apply(&DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            title: "First".into(),
+            phase: "implementer".into(),
+        });
+        snap.apply(&DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            outcome: "failed".into(),
+        });
+        // The status poll saw T4's node settle before its blocker was known.
+        snap.apply(&DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: "T4".into(),
+            outcome: "skipped".into(),
+        });
+        for task_id in ["T4", "T5"] {
+            snap.apply(&DashboardEvent::TaskBlocked {
+                plan_id: "p1".into(),
+                task_id: task_id.into(),
+                title: format!("Task {task_id}"),
+                blocked_by: Some("T1".into()),
+                reason: "blocked by failed task 'T1'".into(),
+            });
+        }
+
+        for task_id in ["T4", "T5"] {
+            let task = &snap.tasks[&format!("p1/{task_id}")];
+            assert_eq!(
+                task.outcome.as_deref(),
+                Some(TASK_OUTCOME_BLOCKED),
+                "{task_id}"
+            );
+            assert_eq!(task.blocked_by.as_deref(), Some("T1"), "{task_id}");
+            assert_eq!(
+                task.blocked_reason.as_deref(),
+                Some("blocked by failed task 'T1'"),
+                "{task_id}"
+            );
+            assert_eq!(task.title, format!("Task {task_id}"));
+        }
+        assert_eq!(
+            classify_task_outcome(TASK_OUTCOME_BLOCKED),
+            TaskOutcomeClass::Blocked
+        );
+        let plan = &snap.plans["p1"];
+        assert_eq!(plan.tasks_done, 0, "a blocked task is not done");
+        assert_eq!(plan.tasks_skipped, 0);
+        assert_eq!(plan.tasks_failed, 1);
+        assert_eq!(plan.tasks_total, 3);
+        assert_eq!(snap.stats.tasks_skipped, 0);
+        assert_eq!(snap.stats.tasks_active, 0);
+
+        // A repeat counts nothing.
+        snap.apply(&DashboardEvent::TaskBlocked {
+            plan_id: "p1".into(),
+            task_id: "T4".into(),
+            title: String::new(),
+            blocked_by: Some("T1".into()),
+            reason: String::new(),
+        });
+        let plan = &snap.plans["p1"];
+        assert_eq!((plan.tasks_done, plan.tasks_failed), (0, 1));
+        assert_eq!(snap.tasks["p1/T4"].title, "Task T4");
+
+        // A later run that settles a blocked task counts its outcome.
+        snap.apply(&DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: "T5".into(),
+            outcome: TASK_OUTCOME_PASSED.into(),
+        });
+        let task = &snap.tasks["p1/T5"];
+        assert_eq!(task.outcome.as_deref(), Some(TASK_OUTCOME_PASSED));
+        assert_eq!(task.blocked_by, None);
+        let plan = &snap.plans["p1"];
+        assert_eq!((plan.tasks_done, plan.tasks_passed), (1, 1));
+        assert_eq!(snap.stats.tasks_completed, 1);
+    }
 
     #[test]
     fn plan_lifecycle() {

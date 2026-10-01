@@ -63,6 +63,22 @@ pub enum ExecutionEvent {
         outcome: String,
     },
 
+    /// A task will not run: a task it depends on failed, or it did not
+    /// start (gap-f59fe9).
+    TaskBlocked {
+        /// Task identifier.
+        task_id: String,
+        /// Human-readable task title.
+        #[serde(default)]
+        title: String,
+        /// The failed task that blocked it, when one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_by: Option<String>,
+        /// Why the task will not run.
+        #[serde(default)]
+        reason: String,
+    },
+
     /// A plan has completed.
     PlanCompleted {
         /// Plan outcome summary.

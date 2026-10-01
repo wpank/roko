@@ -237,6 +237,13 @@ describe('task_completed', () => {
     expect(s.plans['p1']!.tasksUnverified ?? 0).toBe(0);
   });
 
+  it('classifies "blocked" as skipped, counted as neither done nor failed', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'blocked' }, 2000);
+    expect(s.tasks[taskKey('p1', 't1')]!.status).toBe('skipped');
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 0, tasksFailed: 0 });
+  });
+
   it('classifies "unverified" and unrecognised outcomes as unverified, never passed', () => {
     for (const outcome of ['unverified', 'completed']) {
       let s = startTask('p1', 't1');
@@ -285,6 +292,58 @@ describe('task_completed', () => {
     const lone = applyEvent(initialRunState(), { type: 'task_completed', plan_id: 'p9', task_id: 't1', outcome: 'passed' }, 2000);
     expect(lone.tasks[taskKey('p9', 't1')]!.status).toBe('passed');
     expect(lone.plans['p9']).toBeUndefined();
+  });
+});
+
+// ── task_blocked ──────────────────────────────────────────────────────────────
+
+describe('task_blocked', () => {
+  const blockT4: WireDashboardEvent = {
+    type: 'task_blocked',
+    plan_id: 'p1',
+    task_id: 't4',
+    title: 'Fourth',
+    blocked_by: 't1',
+    reason: "blocked by failed task 't1'",
+  };
+
+  it('lists a task that never started with its blocker, counted as neither done nor failed', () => {
+    let s = startPlan('p1');
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'failed' }, 2000);
+    s = applyEvent(s, blockT4, 2100);
+    expect(s.tasks[taskKey('p1', 't4')]).toMatchObject({
+      title: 'Fourth',
+      status: 'skipped',
+      phase: 'blocked',
+      blockedBy: 't1',
+      blockedReason: "blocked by failed task 't1'",
+    });
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 0, tasksFailed: 1, tasksTotal: 3 });
+  });
+
+  it('takes back the count of a task the status poll first reported skipped', () => {
+    let s = startPlan('p1');
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't4', outcome: 'skipped' }, 2000);
+    expect(s.plans['p1']!.tasksDone).toBe(1);
+    s = applyEvent(s, blockT4, 2100);
+    expect(s.plans['p1']!.tasksDone).toBe(0);
+    // A repeat counts nothing.
+    s = applyEvent(s, blockT4, 2200);
+    expect(s.plans['p1']!.tasksDone).toBe(0);
+    expect(s.tasks[taskKey('p1', 't4')]!.title).toBe('Fourth');
+  });
+
+  it('counts the outcome of a later run that settles the blocked task', () => {
+    let s = applyEvent(startPlan('p1'), blockT4, 2000);
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't4', outcome: 'passed' }, 2100);
+    expect(s.tasks[taskKey('p1', 't4')]).toMatchObject({ status: 'passed', blockedBy: null });
+    expect(s.plans['p1']!.tasksDone).toBe(1);
+
+    // A blocked task that starts is on its first attempt, with nothing to take back.
+    let started = applyEvent(startPlan('p1'), blockT4, 2000);
+    started = applyEvent(started, { type: 'task_started', plan_id: 'p1', task_id: 't4', phase: 'impl' }, 2100);
+    expect(started.tasks[taskKey('p1', 't4')]).toMatchObject({ status: 'active', attempts: 1 });
+    expect(started.plans['p1']!.tasksDone).toBe(0);
   });
 });
 
@@ -575,6 +634,26 @@ describe('fromSnapshot', () => {
     snap.agents['a1']!.spawned_at_ms = 0;
     const s = fromSnapshot(snap, 9000);
     expect(s.agents['a1']!.spawnedAtMs).toBeNull();
+  });
+
+  it('keeps the blocker of a blocked task, shown as skipped', () => {
+    const snap = makeSnapshot();
+    snap.tasks['p1/t3'] = {
+      task_id: 't3',
+      plan_id: 'p1',
+      phase: 'blocked',
+      outcome: 'blocked',
+      title: 'Third',
+      blocked_by: 't1',
+      blocked_reason: "blocked by failed task 't1'",
+    };
+    const s = fromSnapshot(snap, 9000);
+    expect(s.tasks[taskKey('p1', 't3')]).toMatchObject({
+      status: 'skipped',
+      blockedBy: 't1',
+      blockedReason: "blocked by failed task 't1'",
+    });
+    expect(s.tasks[taskKey('p1', 't2')]!.blockedBy).toBeUndefined();
   });
 
   it('populates checks from gates with output from task_gate_outputs', () => {

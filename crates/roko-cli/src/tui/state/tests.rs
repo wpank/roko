@@ -1374,6 +1374,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             plan_id: "plan-a".into(),
             phase: "implementer".into(),
             outcome: None,
+            blocked_by: None,
+            blocked_reason: None,
         },
     );
     snap.tasks.insert(
@@ -1384,6 +1386,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             plan_id: "plan-a".into(),
             phase: "completed".into(),
             outcome: Some("success".into()),
+            blocked_by: None,
+            blocked_reason: None,
         },
     );
     snap.agents.insert(
@@ -1572,6 +1576,8 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             plan_id: "plan-b".into(),
             phase: "implementer".into(),
             outcome: None,
+            blocked_by: None,
+            blocked_reason: None,
         },
     );
     snap.agents.insert(
@@ -2622,4 +2628,67 @@ fn settle_screened_transcript_noop_when_no_unscreened() {
     let settled = vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"world\"}".to_string()];
     history.settle_screened_transcript("a", &settled, "assistant");
     assert_eq!(history.len("a"), 2);
+}
+
+/// gap-f59fe9: a task blocked by a failed one, which never started, is
+/// listed in its plan's rows as blocked and names the task that blocked it.
+/// It is not counted as done.
+#[test]
+fn update_from_dashboard_snapshot_lists_blocked_tasks() {
+    use roko_core::DashboardEvent;
+
+    let mut snap = roko_core::DashboardSnapshot::default();
+    for event in [
+        DashboardEvent::PlanStarted {
+            plan_id: "plan-a".into(),
+            tasks_total: 2,
+        },
+        DashboardEvent::TaskStarted {
+            plan_id: "plan-a".into(),
+            task_id: "T1".into(),
+            title: "First".into(),
+            phase: "implementer".into(),
+        },
+        DashboardEvent::TaskCompleted {
+            plan_id: "plan-a".into(),
+            task_id: "T1".into(),
+            outcome: "failed".into(),
+        },
+        // The status poll reports the blocked task as skipped first.
+        DashboardEvent::TaskCompleted {
+            plan_id: "plan-a".into(),
+            task_id: "T4".into(),
+            outcome: "skipped".into(),
+        },
+        DashboardEvent::TaskBlocked {
+            plan_id: "plan-a".into(),
+            task_id: "T4".into(),
+            title: "Fourth".into(),
+            blocked_by: Some("T1".into()),
+            reason: "blocked by failed task 'T1'".into(),
+        },
+    ] {
+        snap.apply(&event);
+    }
+
+    let mut state = TuiState::default();
+    state.update_from_dashboard_snapshot(&snap);
+
+    assert_eq!(state.plans.len(), 1);
+    assert_eq!(state.plans[0].tasks_done, 0, "a blocked task is not done");
+    let entry = state.plans[0]
+        .tasks
+        .iter()
+        .find(|task| task.id == "T4")
+        .expect("T4 is listed");
+    assert_eq!(entry.status, TaskStatus::Blocked);
+    assert_eq!(entry.name, "Fourth");
+    assert_eq!(entry.depends_on, ["T1"]);
+    let row = state
+        .current_task_checklist
+        .iter()
+        .find(|row| row.id == "T4")
+        .expect("T4 has a row");
+    assert_eq!(row.status, TaskStatus::Blocked);
+    assert_eq!(row.depends_on, ["T1"]);
 }

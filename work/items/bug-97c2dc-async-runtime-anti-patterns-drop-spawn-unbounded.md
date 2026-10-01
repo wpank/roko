@@ -9,9 +9,9 @@ size = "M"
 goal = "tooling"
 subsystem = ["roko-agent"]
 created = 2026-09-07
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/101-async-runtime-anti-patterns.md#101 — Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex…"
 discovered_from = "audit:tmp/backlog/archive/101-async-runtime-anti-patterns.md#101 — Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex…"
 anchors = ["crates/roko-agent-server/src/features/messaging.rs::stream_prompt", "crates/roko-agent-server/src/state.rs::DispatchLike", "crates/roko-agent/src/harness/acp_client.rs::AcpStdioClient", "crates/roko-agent/src/harness/acp_client.rs::connect"]
@@ -137,6 +137,9 @@ deadlock the reader task.
   Splitting into two commits is fine.
 - Parallel safety: the sidecar part is isolated. The ACP client part conflicts with any concurrent work in
   `crates/roko-agent/src/harness/acp_client.rs` or `hermes/acp_agent.rs`.
+- 2026-10-01 (wk-guard2): implemented on work/bug-a70def; cargo verification deferred to the batch check.
+- Sidecar: `DispatchLike::dispatch_streaming` takes an `mpsc::Sender<StreamEvent>` and `stream_prompt` uses `mpsc::channel(256)` (test `stream_delivers_more_events_than_the_channel_holds`). ACP client: the response (64), notification (1024) and turn-done (16) queues are bounded, and the stdout reader, now `ServerMessageRouter`, only calls `try_send`. Notifications leave the last 64 notification slots to server requests and are dropped past that, with one warning per burst and the count logged when room returns; a server request is dropped only when the queue is completely full, with an error naming it; a full response or turn-done queue drops with a warning. The fields document the policy. Test `notification_backlog_does_not_block_responses`; the two fixture tests now drive the real router instead of a copy of its logic.
+- Server requests get reserved room rather than an error reply, because the reader does not own stdin and nothing answers server requests today (OpenClaw only logs `session/request_permission`). Still to do before closing: `cargo test -p roko-agent hermes` and `openclaw`, and one live Hermes turn if possible.
 
 ## Original notes
 

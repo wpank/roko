@@ -31,24 +31,18 @@ Knowledge evolves. The research here establishes how knowledge compression throu
 
 ## Knowledge Compression and Transfer
 
-- Shuvaev, S. et al. (2024). Genomic Bottleneck Enhances Transfer Learning. arXiv, 2024.
+- Shuvaev, S. et al. (2024). Encoding innate ability through a genomic bottleneck. arXiv, 2024.
   *Grounds: Compression forces generalization — compression through a genomic bottleneck forces generalization. With ~2,000 gene limit, compressed knowledge transfers better than raw knowledge. Grounds the knowledge backup process: selective export compresses, which improves transfer.*
 
-- Bhatt, S. et al. (2023). Few-Shot Imitation as Cultural Transmission. 2023.
+- Bhoopchand et al. (2023). Few-Shot Imitation as Cultural Transmission. 2023.
   *Grounds: Cultural learning — few-shot imitation as cultural transmission produces cumulative learning across generations. Collective knowledge transfer through Agent Mesh produces cumulative improvement.*
 
-- Bourahla, M. et al. (2022). Vertical Transmission Enables Agents to Exceed Performance Ceilings. 2022.
-  *Grounds: Inter-agent knowledge transfer — vertical (inter-generational) transmission enables agents to exceed individual performance ceilings. Knowledge backup/restore + mesh sharing enables similar vertical transfer.*
 
 ---
 
 ## Evolutionary Divergence
 
-- Perez, J. et al. (2024). Pure Imitation Leads to Stagnation. AGI 2024.
-  *Grounds: Anti-convergence mandate — pure imitation leads to stagnation; novelty requires mixing inheritance and exploration. Agents inheriting knowledge must diverge — the 15% contrarian retrieval and hypnagogia engine ensure this.*
 
-- Wensink, M.J. et al. (2020). Death and Progress. _Evolutionary Biology_, 47(4).
-  *Grounds: Resource-driven innovation — intrinsic resource constraints prevent premature convergence. Optimal constraint rate balances stagnation and knowledge loss. Cross-referenced in [00-lifecycle-and-finite-agency.md](./00-lifecycle-and-finite-agency.md).*
 
 ---
 
@@ -60,7 +54,7 @@ Knowledge evolves. The research here establishes how knowledge compression throu
 - Hu, S. et al. (2025). Automated Design of Agentic Systems (ADAS). _ICLR_, 2025.
   *Grounds: Architecture search — meta-agent that searches the space of agent architectures. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
-- GVU (2024). Lehman, J. et al. Genome Value Update: Quality-Diversity for Robust Multi-Strategy Evolution.
+- GVU (2024). Lehman, J. et al. Self-Improving AI Agents through Self-Play.
   *Grounds: Multi-strategy evolution — quality-diversity framework for evolving robust multi-strategy agent systems.*
 
 ---

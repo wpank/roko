@@ -91,10 +91,10 @@ Runtime shields override unsafe actions. Grounds pre/post safety checks.
 
 ## Formal Verification (2024--2025)
 
-**[Anonymous, 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624.
+**[Dalrymple et al., 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624.
 World model + safety spec + verifier = quantitative guarantees. Maps to NeuroStore + Policy + Gate.
 
-**[Anonymous, 2025]** *Model Checking Deep Neural Networks.* Frontiers in Computer Science.
+**[Sbai, 2025]** *Model Checking Deep Neural Networks.* Frontiers in Computer Science.
 Temporal logic (LTL, CTL) for neural network verification.
 
 **[Odersky et al., 2026]** *Tracking Capabilities for Safer Agents.* arXiv:2603.00991. Best Paper ACM CAIS 2026.

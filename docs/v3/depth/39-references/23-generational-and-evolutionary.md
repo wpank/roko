@@ -54,7 +54,7 @@ Meta-agent searching the agent architecture space. Discovers novel building bloc
 **[DGM, 2026]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.
 Open-ended self-improvement through evolutionary architecture search. Combines evolutionary search (variation) with self-verification (selection) to produce agents that improve their own architecture. Validates Roko's meta-learning loop where the learning process itself evolves, and directly informs the R04 meta-agent lineage scope.
 
-**[Sakana AI, 2025]** *Darwin Godel Machine.* arXiv:2505.22954.
+**[Zhang et al., 2025]** *Darwin Godel Machine.* arXiv:2505.22954.
 The same DGM paper from Sakana AI. Agents that can modify their own code and verify the improvement. Key constraint: self-improvement must be verifiable. Maps to Roko's Gate pipeline as the verification mechanism for architecture changes.
 
 ---

@@ -611,7 +611,7 @@ See [11-active-inference-state-space.md](./11-active-inference-state-space.md) f
 - **Sims 2003** — "Implications of rational inattention" (Journal of Monetary Economics 50(3)). Optimal allocation of finite information processing capacity.
 - **Kahneman 2011** — "Thinking, Fast and Slow" (Farrar, Straus and Giroux). System 1/System 2 as the cognitive basis.
 - **Chen et al. 2023** — FrugalGPT (arXiv:2305.05176). Cascade routing as a practical implementation of compute-optimal allocation.
-- **Koudahl et al. 2024** — (arXiv:2412.10425). Factorized discrete POMDP for tractable active inference.
+- **Prakki 2024** — (arXiv:2412.10425). Factorized discrete POMDP for tractable active inference.
 - **VERSES AI** — Genius platform. Industrial deployment of active inference for agent cognition.
 
 ---

@@ -65,8 +65,6 @@ Autonomous agents operating in regulated domains (financial services, healthcare
 
 ## DeFi Compliance
 
-- Zbandut, A. et al. (2025). Vault Disclosure Requirements for Agent-Operated DeFi Strategies. 2025.
-  *Grounds: Agent disclosure — disclosure requirements for agent-operated DeFi vaults. Informs transparency requirements for chain domain agents.*
 
 - Schrepel, T. (2024). The Trust Dilemma in Autonomous Agent Systems. _Stanford Law Review_.
   *Grounds: Trust framework — legal analysis of trust relationships in autonomous agent systems. Addresses the liability question: when an agent causes harm, who is responsible?*

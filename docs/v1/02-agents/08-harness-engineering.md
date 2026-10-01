@@ -27,8 +27,8 @@ worse harness on a stronger model.
 
 The key paper is:
 
-> Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-> Agents." arXiv:2603.28052.
+> Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+> Harnesses." arXiv:2603.28052.
 
 Their findings across multiple benchmarks:
 
@@ -215,8 +215,7 @@ simultaneously.
 
 ## Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. — +7.7 accuracy, +4.7 math, 4× tokens.
+1. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 accuracy, +4.7 math, 4× tokens.
 2. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" — Benchmark context for harness variance.
 3. ref [46] in Meta-Harness — SWE-bench mobile, source of the "6× gap"

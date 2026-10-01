@@ -22,7 +22,7 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 ## Harness Engineering
 
 - Lee et al. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
-  *Grounds: Core thesis — 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. An agent reads its own scaffold history, proposes improvements, benchmarks them, and iterates. The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
+  *Grounds: Core thesis — The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. A coding-agent proposer reads earlier harness candidates' code, scores and execution traces, proposes new harnesses, evaluates them and iterates (§3). The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
   *Grounds: Natural-language scaffolds — scaffold logic as natural language specifications interpreted by an intelligent runtime. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*

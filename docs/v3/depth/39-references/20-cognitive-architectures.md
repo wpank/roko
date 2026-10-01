@@ -12,7 +12,7 @@
 ## Language Agent Architectures
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-9-step cognitive pipeline: perceive, retrieve, reason, act, learn. Roko's universal loop extends CoALA with verification (Gate) and meta-cognition (Theta-frequency reflection).
+Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's. Roko's universal loop extends CoALA with verification (Gate) and meta-cognition (Theta-frequency reflection).
 
 **[Sumers et al., 2024]** *Cognitive Architectures for Language Agents.* Transactions on Machine Learning Research.
 Extended CoALA treatment with updated cognitive architecture taxonomy. Provides the shared vocabulary for agent architecture comparisons.

@@ -83,7 +83,7 @@ decisions.
 **Upgrade.** Gates produce continuous progress signals alongside binary verdicts, using
 Temporal Difference estimation and Generalized Advantage Estimation. This enables:
 - Partial-success replanning (not just "try again")
-- 8x compute efficiency for verification
+- Cheaper search: AgentPRM reports over 8x better compute efficiency than baseline reward models in Best-of-N search (§4.2); the gain for Roko gates is untested
 - Test-time compute scaling
 
 **Target.** `roko-gate` pipeline and `gate_dispatch.rs`.
@@ -266,16 +266,14 @@ design.
 ### 5.1 Latent-Space Agent Communication
 
 Replace natural-language inter-agent messages with latent-space representations. LatentMAS
-(arXiv:2511.20639, ICML 2026 Spotlight) demonstrates 4x speed improvement and 14.6%
-accuracy gain. Relevant to roko's pheromone communication in agent groups. The current Bus
+(arXiv:2511.20639, ICML 2026 Spotlight) reports up to 14.6% higher accuracy and 4-4.3x faster end-to-end inference (abstract). Relevant to roko's pheromone communication in agent groups. The current Bus
 and group message systems use text; latent encodings could reduce bandwidth and improve
 coordination fidelity.
 
 ### 5.2 Federated Skill Sharing
 
 Share learned agent skills across workspaces without sharing raw data. FederatedSkill
-(arXiv:2606.03143) uses semantic skill diffs for federated learning with 44.4%
-improvement. Relevant to cross-workspace knowledge transfer via the existing relay and
+(arXiv:2606.03143) uses semantic skill diffs for federated skill evolution, with up to 44.4% higher success rates than self-evolving baselines. Relevant to cross-workspace knowledge transfer via the existing relay and
 group systems. Would require extending the current knowledge sync protocol with
 differential skill representations.
 
@@ -297,8 +295,7 @@ Additional memory research to track:
 ### 5.4 Harness Auto-Evolution
 
 Automate optimization of the agent harness itself. Two independent lines of work:
-- HarnessX / Meta-Harness (arXiv:2603.28052) -- +7.7 points on text classification from
-  harness optimization alone at 4x fewer tokens
+- Meta-Harness (arXiv:2603.28052) -- +7.7 points over ACE on online text classification with 4x fewer context tokens (§4.1); HarnessX (arXiv:2606.14249) is a separate harness foundry
 - AHE (Autonomous Harness Evolution) -- self-modifying agent scaffolding
 
 These validate roko's scaffold thesis and suggest the harness optimization loop (currently
@@ -307,9 +304,8 @@ manual via PRDs and plans) could eventually become automated.
 ### 5.5 eBPF Kernel Enforcement
 
 Use eBPF programs for kernel-level agent safety enforcement. ActPlane (arXiv:2606.25189)
-demonstrates deployable substrate for tool cooldown and isolation. This would complement
-roko's current five-level sandbox policy with OS-kernel enforcement, providing a hardware-
-backed guarantee layer beneath the existing software-based safety checks.
+enforces agent-harness policies at the OS level with eBPF, through a policy DSL, information-flow control and hierarchical policy domains (§3). This would complement
+roko's current five-level sandbox policy with OS-kernel enforcement, providing a kernel-enforced guarantee layer beneath the existing software-based safety checks.
 
 ### 5.6 Capture-Checking Safety
 
@@ -325,7 +321,7 @@ compile time rather than runtime.
 |-------|-------|-----------|
 | Semantic taint tracking | NeuroTaint (arXiv:2604.23374) | Extension to roko's classical IFC model |
 | SMT behavioral specs | VIGIL (arXiv:2606.26524) | Complement to gate pipeline |
-| Coordination failure analysis | arXiv:2605.03310 | 41-87% of failures are coordination, not capability |
+| Coordination failure analysis | arXiv:2605.03310 | Multi-agent systems fail in production at 41-87%, mostly from coordination defects (§1, citing Cemri et al. 2025) |
 | Terminal output compression | TACO (arXiv:2604.19572) | Self-evolving compression for gate output |
 | Prompt interference detection | Arbiter (arXiv:2603.08993) | Prompt quality assurance for SystemPromptBuilder |
 

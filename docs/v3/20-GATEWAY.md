@@ -981,7 +981,7 @@ asserts 9 nodes and 8 edges -- structural drift is caught by CI.
 | Song et al. 2025 | Wei Song, Zhenya Huang, Cheng Cheng, et al., "IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory," arXiv:2506.01048, 2025. Joint model-capability and query-difficulty estimation. |
 | Ding et al. 2025 | Dujian Ding, Ankur Mallick, Shaokun Zhang, et al., "BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute," arXiv:2506.22716, 2025. Chooses a model and how many responses to sample from it, by query difficulty. |
 | Dekoninck et al. 2025 | Jasper Dekoninck, Maximilian Baader, Martin Vechev, "A Unified Approach to Routing and Cascading for LLMs," arXiv:2410.10347, 2025. Cascade routing: optimal routing and cascading strategies, unified. |
-| Chen et al. 2023 | Lingjiao Chen, Matei Zaharia, James Zou, "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance," arXiv:2305.05176, 2023. Cascade routing matching GPT-4 quality at 2% cost. |
+| Chen et al. 2023 | Lingjiao Chen, Matei Zaharia, James Zou, "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance," arXiv:2305.05176, 2023. LLM cascade matching the best single LLM at 50-98% lower cost (§4, Table 3). |
 | Friston 2006 | Karl Friston, "A free energy principle for the brain," *Journal of Physiology - Paris*, 100(1-3), 70-87, 2006. EFE for model routing. |
 | Kanerva 2009 | Pentti Kanerva, "Hyperdimensional computing," *Cognitive Computation*, 2009. SimHash as HDC derivative for convergence detection. |
 | Gesell 1916 | Silvio Gesell, *The Natural Economic Order*, 1916. Cost pressure as a feature. |

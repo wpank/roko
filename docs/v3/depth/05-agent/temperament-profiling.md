@@ -23,8 +23,7 @@ temperaments, and all downstream behaviors adjust accordingly.
 | **Aggressive** | Rapid prototyping | Higher temperature, relaxed gates, faster review, more tools |
 | **Exploratory** | Research, experimentation | High temperature, permissive gates, broad tool access |
 
-This design implements Roko's harness principle 5 (Graduate Autonomy Based
-on Confidence; Lee et al., 2026; arXiv:2603.28052) at the configuration
+This design implements Roko's harness principle 5 (Graduate Autonomy Based on Confidence; Roko's own synthesis, not a Meta-Harness result) at the configuration
 level: Conservative = low autonomy with high validation; Exploratory =
 high autonomy with low validation.
 

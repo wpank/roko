@@ -337,8 +337,7 @@ set -- a candidate rule that would have *prevented* a known failure gets credit,
 while one that would have *caused* a new failure in the probe set is penalized.
 
 **Unbounded growth prevention (SkillZip).** SkillZip (arXiv:2608.11079)
-applies Minimum Description Length (MDL) compression to prevent skill libraries
-from growing without bound. The target design applies the same principle: when
+compresses one skill's text by finding its shortest faithful structural explanation: a typed minimum-description-length (MDL) objective under a hard coverage constraint, run once or on every self-evolution patch (Zip-on-Write) (abstract, §V). It is evaluation-free and does not merge rules across a library. The target design borrows the MDL idea (Roko's own extension): when
 the playbook store exceeds a configured capacity (default: 500 rules), the
 system compresses by merging rules with overlapping triggers and high HDC
 similarity into a single generalized rule. The MDL criterion ensures that

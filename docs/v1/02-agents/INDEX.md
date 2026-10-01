@@ -92,7 +92,7 @@
 ## Key Citations
 
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
-   arXiv:2309.02427. — CoALA 9-step loop, theoretical basis for Agent trait
+   arXiv:2309.02427. — CoALA-inspired 9-step loop, theoretical basis for Agent trait
    separation.
 2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 text classification, +4.7 IMO math,
    4× fewer tokens; the 6× gap is a cited SWE-bench Mobile result.

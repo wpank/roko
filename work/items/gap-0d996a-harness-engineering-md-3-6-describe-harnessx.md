@@ -2,7 +2,7 @@
 id = "gap-0d996a"
 kind = "gap"
 title = "harness-engineering.md §3–§6 describe HarnessX, Harness-Bench and Belief Divergence's dimensions and taxonomies without a check against the papers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs/v3"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "57e404d9c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report on gap-785a4f, branch work/gap-785a4f at 4201615de)"
 anchors = ["docs/v3/depth/05-agent/harness-engineering.md"]
@@ -19,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-785a4f", "gap-212b75", "
 
 [[verify]]
 command = "grep -q 'content-checked: §3–§6' docs/v3/depth/05-agent/harness-engineering.md && python3 tools/docs_integrity/check_citation_errata.py --prose"
+
+[closed]
+at = 2026-10-01
+commit = "57e404d9c"
+evidence = "four papers read in full (arXiv HTML); harness-engineering.md §3–§6 rewritten with section refs, Roko mappings marked as its own, content-checked comment added; 05-AGENT.md fixed; prose phrases for the four works in citation_errata.json (planted regression caught); verify passes, --prose clean on 905 files, 13 tests pass"
 +++
 
 ## Problem

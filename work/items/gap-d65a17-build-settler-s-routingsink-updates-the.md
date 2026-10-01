@@ -3,13 +3,14 @@ id = "gap-d65a17"
 kind = "gap"
 title = "build_settler's RoutingSink updates the router without journaling, and build_settler still has no production caller"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/graph_execution/feedback"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-settle's report, checked on work/bug-f81e9b at 7db865c81)"
 anchors = ["crates/roko-cli/src/graph_execution/feedback.rs::build_settler"]
@@ -44,3 +45,9 @@ Pick one:
 
 - [ ] `RoutingSink` is gone, or it journals.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-8a78e1` at `6b2118da1` (option a); cargo verification deferred to the batch check.
+  `graph_execution/feedback.rs` is deleted: `build_settler`, its 12 sinks and `CompletionSinkResult`. Only their own
+  tests called them. The feedback facade and dispatch's records cover what the rows did on the Graph path.

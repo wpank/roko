@@ -190,6 +190,12 @@ LLM failure blocks the content instead of passing it through.
   audit records (step 7); cancellation coverage (step 8). The verify now greps `inert_settings.rs`, where the inert
   list moved. Its test, `untrusted_tool_result_never_reaches_main_model_raw`, is left for step 6, so that it covers
   the boundary built from config; the step-3 tests use other names, so the verify does not pass early.
+- 2026-10-02 (wk-childenv): Plan step 4 (output validation, option a) on work/gap-1555ac; cargo verification
+  deferred to the batch check. `DataLlmBoundary::process` now returns a `DataLlmExtraction { summary: String,
+  facts: Vec<String> }`: after `validate_output`, the JSON is read into that type (other keys dropped), with a
+  2 KiB summary, at most 50 facts and 512 bytes per fact. A rejection names the rule broken and quotes none of the
+  output. A backend error's message, which may echo the request, stays in logs (`Debug`) and out of the notice the
+  model sees. No new dependency. Test: `data_llm_boundary_passes_on_only_a_bounded_extraction`.
 
 ## Original notes
 

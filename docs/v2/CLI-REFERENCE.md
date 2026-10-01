@@ -777,7 +777,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `P` | Switch to Processes sub-tab |
 | `w` | Show wave overview |
 | `p` | Toggle pause |
-| `i` | Enter inject mode (type directive to send to agent) |
+| `i` | Inject a directive (not available yet: shows a warning) |
 | `y` | Approve pending command |
 | `` ` `` | Cycle agent role tabs |
 
@@ -839,14 +839,8 @@ recovery keys are rejected with a reason until the Graph engine supports them.
 <details>
 <summary>Modal and dialog keybindings</summary>
 
-**Inject mode** (entered via `i` in Dashboard tab):
-
-| Key | Action |
-|---|---|
-| Any char | Append to inject buffer |
-| `Backspace` | Delete last character |
-| `Enter` | Submit inject (sends directive signal to agent) |
-| `Esc` | Cancel inject |
+**Inject mode** is not available yet: no transport reaches a running session, so `i` shows a
+warning instead of collecting a directive (see `roko inject`).
 
 **Filter mode** (entered via `/` in Plans or Logs tab):
 

@@ -51,7 +51,7 @@ max_retries = 1
 
 /// The longest the silent run may take: its attempts stall after 2 s each,
 /// far below the 2 × 120 s their timeout allows.
-const SILENT_RUN_LIMIT: Duration = Duration::from_secs(60);
+const SILENT_RUN_LIMIT: Duration = Duration::from_mins(1);
 
 /// A workspace whose one model runs on [`SILENT_PROVIDER`], with `extra`
 /// appended to its `roko.toml`, and the plan `tasks` under `plans/<plan>`.

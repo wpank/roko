@@ -1765,8 +1765,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// can hold up a fake provider or a step for seconds (bug-779ae7).
     pub(super) const FIXTURE_HANG_GUARD_SECS: u64 = 120;
 
-    /// Time limit, in ms, of the fake provider CLIs. A loaded machine can
-    /// take seconds to start one (bug-f1f814), so this is the hang guard too.
+    /// Time limit, in ms, of the fixtures' providers, the fake CLIs and the
+    /// mock servers. A loaded machine can hold up a fake CLI's start or a
+    /// mock's answer for seconds (bug-f1f814), so this is the hang guard too.
     /// A test of time limits sets its attempt's own limit, which is shorter
     /// and stops the provider first.
     pub(super) const FIXTURE_PROVIDER_TIMEOUT_MS: u64 = FIXTURE_HANG_GUARD_SECS * 1_000;

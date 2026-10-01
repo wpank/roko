@@ -231,9 +231,10 @@ impl CostTable {
     ///
     /// Seeds from the canonical shared registry
     /// ([`roko_core::config::model_registry::BUILTIN_PRICING`]) for all
-    /// well-known models, then layers provider-specific overrides (OpenRouter
-    /// prefixed slugs, Gemini high-context tiers, Perplexity per-request fees)
-    /// that the shared registry does not track.
+    /// well-known models, then layers what the shared registry does not
+    /// track (OpenRouter prefixed slugs, Gemini high-context tiers, Perplexity
+    /// per-request fees, models with no registry row). A registry row keeps
+    /// the registry's rates (bug-0c0747).
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut models = HashMap::new();
@@ -283,14 +284,6 @@ impl CostTable {
                 ..Default::default()
             },
         );
-        models.insert(
-            "anthropic/claude-opus-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 15.00,
-                output_per_m: 75.00,
-                ..Default::default()
-            },
-        );
 
         // Kimi thinking variant.
         models.insert(
@@ -322,25 +315,15 @@ impl CostTable {
                 ..Default::default()
             });
 
-        // Gemini models with high-context tier pricing.
-        models.insert(
-            "gemini-2.5-pro".to_string(),
-            ModelPricing {
-                input_per_m: 1.25,
-                output_per_m: 10.00,
-                input_per_m_high: Some(2.50),
-                output_per_m_high: Some(15.00),
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "gemini-2.5-flash".to_string(),
-            ModelPricing {
-                input_per_m: 0.30,
-                output_per_m: 2.50,
-                ..Default::default()
-            },
-        );
+        // Gemini 2.5 Pro's rates for prompts over 200K tokens
+        // (https://ai.google.dev/gemini-api/docs/pricing, checked
+        // 2026-10-01); its other rates are the shared registry's (bug-0c0747).
+        models.entry("gemini-2.5-pro".to_string()).and_modify(|p| {
+            p.input_per_m_high = Some(2.50);
+            p.output_per_m_high = Some(15.00);
+        });
+
+        // Gemini models with no registry row.
         models.insert(
             "gemini-2.5-flash-lite".to_string(),
             ModelPricing {
@@ -837,12 +820,6 @@ mod tests {
             .expect("moonshotai/kimi-k2.5 pricing");
         assert!((kimi_k2_5.input_per_m - 0.38).abs() < 1e-9);
         assert!((kimi_k2_5.output_per_m - 1.72).abs() < 1e-9);
-
-        let claude_opus = table
-            .lookup("anthropic/claude-opus-4-6")
-            .expect("anthropic/claude-opus-4-6 pricing");
-        assert!((claude_opus.input_per_m - 15.00).abs() < 1e-9);
-        assert!((claude_opus.output_per_m - 75.00).abs() < 1e-9);
     }
 
     #[test]
@@ -918,6 +895,28 @@ mod tests {
         assert!((gemini_flash.output_per_m - 2.50).abs() < 1e-9);
         assert_eq!(gemini_flash.input_per_m_high, None);
         assert_eq!(gemini_flash.output_per_m_high, None);
+    }
+
+    /// bug-0c0747: a model the shared registry prices has the registry's
+    /// rates here too, cache prices included.
+    #[test]
+    fn price_tables_agree_costs_db_with_builtin_pricing() {
+        let table = CostTable::default();
+        for (slug, builtin) in roko_core::config::model_registry::BUILTIN_PRICING {
+            let row = table.lookup(slug).expect("a costs_db row");
+            assert_eq!(row.input_per_m, builtin.input_per_m, "{slug}");
+            assert_eq!(row.output_per_m, builtin.output_per_m, "{slug}");
+            assert_eq!(
+                row.cache_read_per_m,
+                Some(builtin.cache_read_per_m),
+                "{slug}"
+            );
+            assert_eq!(
+                row.cache_write_per_m,
+                Some(builtin.cache_write_per_m),
+                "{slug}"
+            );
+        }
     }
 
     #[test]

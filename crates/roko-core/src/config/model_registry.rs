@@ -469,6 +469,15 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
 /// than guessed ones.
 pub const UNVERIFIED_PRICING: &[&str] = &["kimi-k2.5", "codex-mini"];
 
+/// A cache read's price as a multiple of the input price, for a model that
+/// names no cache-read price of its own: Anthropic's rate, which gpt-5.x and
+/// Gemini 2.5 share. Every cost path uses it (bug-0c0747).
+pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
+
+/// A cache write's price as a multiple of the input price, for a model that
+/// names no cache-write price of its own: Anthropic's 5-minute write.
+pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then any table key that is a prefix of the

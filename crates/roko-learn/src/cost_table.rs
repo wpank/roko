@@ -6,6 +6,9 @@ use std::sync::OnceLock;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use roko_agent::Usage;
+use roko_core::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use roko_core::config::schema::ModelProfile;
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +115,9 @@ impl CostTable {
         ((3.0 * pricing.input_per_m + pricing.output_per_m) / 4.0) * pricing.tokenizer_ratio
     }
 
-    /// Load pricing rows from config model profiles.
+    /// Load pricing rows from config model profiles. A profile with no cache
+    /// prices gets the shared default multiples of its input price
+    /// (bug-0c0747).
     #[must_use]
     pub fn from_config(models: &IndexMap<String, ModelProfile>) -> Self {
         let mut table = HashMap::new();
@@ -126,8 +131,12 @@ impl CostTable {
                     ModelPricing {
                         input_per_m: input,
                         output_per_m: output,
-                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                        cache_read_per_m: profile
+                            .cost_cache_read_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
+                        cache_write_per_m: profile
+                            .cost_cache_write_per_m
+                            .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                         tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
                     },
                 );
@@ -167,15 +176,16 @@ impl CostTable {
     pub fn refresh_from_config(&mut self, config: &roko_core::config::schema::RokoConfig) -> usize {
         let mut updated = 0;
         for (slug, profile) in &config.models {
+            let input = profile.cost_input_per_m.unwrap_or(0.0);
             let pricing = ModelPricing {
-                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+                input_per_m: input,
                 output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
                 cache_read_per_m: profile
                     .cost_cache_read_per_m
-                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 0.5),
+                    .unwrap_or(input * DEFAULT_CACHE_READ_MULTIPLIER),
                 cache_write_per_m: profile
                     .cost_cache_write_per_m
-                    .unwrap_or(profile.cost_input_per_m.unwrap_or(0.0) * 1.25),
+                    .unwrap_or(input * DEFAULT_CACHE_WRITE_MULTIPLIER),
                 tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
             };
             let entry = self.models.entry(slug.clone());
@@ -484,6 +494,110 @@ mod tests {
                 "{slug}: pin its cache multipliers here or list it as unverified"
             );
         }
+    }
+
+    /// bug-0c0747: the provider catalog lists no price for a model the
+    /// shared registry prices, so `roko config providers add` leaves its
+    /// rates to the registry, and lists one for every other model.
+    #[test]
+    fn price_tables_agree_provider_catalog_with_builtin_pricing() {
+        for entry in roko_core::provider_catalog::catalog() {
+            for model in entry.models {
+                let in_registry = roko_core::config::model_registry::BUILTIN_PRICING
+                    .iter()
+                    .any(|(slug, _)| *slug == model.slug);
+                assert_eq!(
+                    model.cost_input_per_m.is_none(),
+                    in_registry,
+                    "{}",
+                    model.slug
+                );
+                assert_eq!(
+                    model.cost_output_per_m.is_none(),
+                    in_registry,
+                    "{}",
+                    model.slug
+                );
+            }
+        }
+    }
+
+    /// bug-0c0747: a Codex turn's cost estimate prices its model at the
+    /// shared registry's rates, and a model the registry does not know at
+    /// gpt-5.6-sol's, the Codex CLI's default.
+    #[test]
+    fn price_tables_agree_codex_turn_estimate_with_builtin_pricing() {
+        use roko_agent::AgentRuntimeEvent;
+        use roko_agent::provider::codex_cli::stream::parse_stream_line_with_model;
+        use roko_core::config::model_registry::builtin_pricing;
+
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100}}"#;
+        for (model, priced_as) in [
+            (Some("gpt-5.6-sol"), "gpt-5.6-sol"),
+            (Some("gpt-5.4-mini"), "gpt-5.4-mini"),
+            (Some("codex-mini"), "codex-mini"),
+            (Some("gpt-9-future"), "gpt-5.6-sol"),
+            (None, "gpt-5.6-sol"),
+        ] {
+            let cost = parse_stream_line_with_model(line, model)
+                .into_iter()
+                .find_map(|event| match event {
+                    AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => total_cost_usd,
+                    _ => None,
+                })
+                .expect("a turn cost");
+            let pricing = builtin_pricing(priced_as).expect("a registry row");
+            let expected = (600.0 * pricing.input_per_m
+                + 400.0 * pricing.cache_read_per_m
+                + 100.0 * pricing.output_per_m)
+                / 1e6;
+            assert!(
+                (cost - expected).abs() < 1e-12,
+                "{model:?}: {cost} against {expected}"
+            );
+        }
+    }
+
+    /// bug-0c0747: a configured model with no cache prices gets the same
+    /// cache rates on every cost path: this table, the task runner's table
+    /// and a usage's own cost fill.
+    #[test]
+    fn price_tables_agree_on_default_cache_prices() {
+        let mut profiles = IndexMap::new();
+        profiles.insert(
+            "custom".to_string(),
+            ModelProfile {
+                slug: "custom-model".into(),
+                cost_input_per_m: Some(2.0),
+                cost_output_per_m: Some(8.0),
+                ..Default::default()
+            },
+        );
+        let read = 2.0 * DEFAULT_CACHE_READ_MULTIPLIER;
+        let write = 2.0 * DEFAULT_CACHE_WRITE_MULTIPLIER;
+
+        let learn = CostTable::from_config(&profiles);
+        let learn = &learn.models["custom-model"];
+        assert!((learn.cache_read_per_m - read).abs() < 1e-12, "{learn:?}");
+        assert!((learn.cache_write_per_m - write).abs() < 1e-12, "{learn:?}");
+
+        let agent = roko_agent::CostTable::from_config_with_defaults(&profiles);
+        let agent = &agent.models["custom-model"];
+        assert!((agent.cache_read_per_m - read).abs() < 1e-12, "{agent:?}");
+        assert!((agent.cache_write_per_m - write).abs() < 1e-12, "{agent:?}");
+
+        // What a usage priced with no cache prices pays for a million tokens.
+        let filled = |cache_read_tokens, cache_create_tokens| {
+            let mut usage = Usage {
+                cache_read_tokens,
+                cache_create_tokens,
+                ..Usage::default()
+            };
+            usage.fill_cost_from_pricing(Some(2.0), Some(8.0), None, None);
+            f64::from(usage.cost_usd)
+        };
+        assert!((filled(1_000_000, 0) - read).abs() < 1e-6);
+        assert!((filled(0, 1_000_000) - write).abs() < 1e-6);
     }
 
     #[test]

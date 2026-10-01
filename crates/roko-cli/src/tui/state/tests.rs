@@ -2825,3 +2825,62 @@ fn update_from_dashboard_snapshot_lists_blocked_tasks() {
     assert_eq!(row.status, TaskStatus::Blocked);
     assert_eq!(row.depends_on, ["T1"]);
 }
+
+#[test]
+fn agent_output_history_takes_later_ring_lines() {
+    use roko_core::DashboardEvent;
+
+    let lines = |range: std::ops::Range<usize>| -> Vec<String> {
+        range.map(|n| format!("line-{n}")).collect()
+    };
+    let append = |snap: &mut roko_core::DashboardSnapshot, range| {
+        snap.apply(&DashboardEvent::TaskOutputAppended {
+            task_id: "task-1".into(),
+            lines: lines(range),
+        });
+    };
+    let texts = |state: &TuiState| -> Vec<String> {
+        state
+            .agent_output_history
+            .records_for("agent-1")
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
+    };
+    let mut snap = roko_core::DashboardSnapshot::default();
+    snap.apply(&DashboardEvent::AgentSpawned {
+        agent_id: "agent-1".into(),
+        plan_id: "plan-1".into(),
+        task_id: "task-1".into(),
+        attempt: 1,
+        role: "implementer".into(),
+        model: "test-model".into(),
+        provider: String::new(),
+    });
+    let mut state = TuiState::default();
+
+    // The first ring is taken in whole.
+    append(&mut snap, 0..3);
+    state.update_from_dashboard_snapshot(&snap);
+    assert_eq!(texts(&state), lines(0..3));
+
+    // An unchanged ring adds nothing; the lines a later ring adds follow once.
+    state.update_from_dashboard_snapshot(&snap);
+    append(&mut snap, 3..5);
+    state.update_from_dashboard_snapshot(&snap);
+    assert_eq!(texts(&state), lines(0..5));
+
+    // Once AgentOutput events feed the agent, rings only repeat them.
+    state.push_agent_output_record(
+        "agent-1",
+        OutputRecordKind::Text,
+        "from an event".into(),
+        None,
+        None,
+    );
+    append(&mut snap, 5..6);
+    state.update_from_dashboard_snapshot(&snap);
+    let after = texts(&state);
+    assert_eq!(after.len(), 6, "{after:?}");
+    assert_eq!(after.last().map(String::as_str), Some("from an event"));
+}

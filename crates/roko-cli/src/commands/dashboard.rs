@@ -87,6 +87,7 @@ pub(crate) async fn cmd_dashboard_snapshot(
             output_dir: snapshot_dir.to_path_buf(),
             tabs: None,
             label: Some("dashboard --snapshot".to_string()),
+            ansi: false,
         },
     )?;
 

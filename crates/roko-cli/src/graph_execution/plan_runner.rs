@@ -86,8 +86,10 @@ fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Resul
 }
 
 /// Entries for [`roko_core::DashboardEvent::PlanSetLoaded`], in execution
-/// order, with each plan's dependency wave, prerequisites and conflicts.
+/// order, with each plan's group under `plans_root`, dependency wave,
+/// prerequisites and conflicts.
 fn plan_set_entries(
+    plans_root: &Path,
     plans: &[crate::runner::plan_loader::Plan],
     order: &PlanSetOrder,
     conflicts: &PlanConflicts,
@@ -106,6 +108,7 @@ fn plan_set_entries(
                 } else {
                     title.to_string()
                 },
+                group: plan_set_group(plans_root, &plan.dir),
                 tasks_total: plan.tasks.tasks.len(),
                 wave: dag
                     .as_ref()
@@ -125,6 +128,29 @@ fn plan_set_entries(
             }
         })
         .collect()
+}
+
+/// The plan set containing `plan_dir`: its parent directory relative to
+/// `plans_root`, `/`-separated, as plan discovery names it. `None` for a plan
+/// directly under the root or outside it.
+fn plan_set_group(plans_root: &Path, plan_dir: &Path) -> Option<String> {
+    let parent = plan_dir.parent()?;
+    let relative = parent
+        .strip_prefix(plans_root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            // The two may be spelled differently, e.g. one relative, one absolute.
+            let parent = parent.canonicalize().ok()?;
+            let root = plans_root.canonicalize().ok()?;
+            parent.strip_prefix(root).ok().map(Path::to_path_buf)
+        })?;
+    let group = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!group.is_empty()).then_some(group)
 }
 
 // ── Stopping a plan run: SIGINT, SIGTERM, operator ───────────────────────
@@ -1229,7 +1255,12 @@ async fn run_graph_plan_body(
     // StateHub consumers show every plan, the whole-set task total, and one
     // run clock across plan boundaries.
     state_hub_sender.publish(roko_core::DashboardEvent::PlanSetLoaded {
-        plans: plan_set_entries(&plans, &plan_order, &plan_conflicts),
+        plans: plan_set_entries(
+            &crate::plan::plans_dir(workdir),
+            &plans,
+            &plan_order,
+            &plan_conflicts,
+        ),
     });
     let state_hub_sink: Arc<dyn roko_core::TelemetryEventSink> = Arc::new(
         crate::runner::graph_tui_bridge::StateHubTelemetrySink::new(state_hub_sender.clone()),
@@ -3608,7 +3639,7 @@ mod tests {
             ..PlanSetOrder::default()
         };
 
-        let entries = plan_set_entries(&plans, &order, &PlanConflicts::new());
+        let entries = plan_set_entries(Path::new("plans"), &plans, &order, &PlanConflicts::new());
 
         let summary = entries
             .iter()
@@ -3624,6 +3655,32 @@ mod tests {
             summary,
             vec![("a-first", "a-first", 3), ("b-second", "Second", 1)]
         );
+    }
+
+    #[test]
+    fn plan_set_entries_name_each_plans_group() {
+        let root = Path::new("/workspace/plans");
+        let mut nested = test_plan("01-backend", "", 1);
+        nested.dir = root.join("portal-programme").join("01-backend");
+        let mut top_level = test_plan("02-docs", "", 1);
+        top_level.dir = root.join("02-docs");
+        let mut outside = test_plan("03-scratch", "", 1);
+        outside.dir = PathBuf::from("/elsewhere/plans/03-scratch");
+        let order = PlanSetOrder {
+            order: vec![
+                "01-backend".to_string(),
+                "02-docs".to_string(),
+                "03-scratch".to_string(),
+            ],
+            ..PlanSetOrder::default()
+        };
+
+        let plans = [nested, top_level, outside];
+        let entries = plan_set_entries(root, &plans, &order, &PlanConflicts::new());
+
+        assert_eq!(entries[0].group.as_deref(), Some("portal-programme"));
+        assert_eq!(entries[1].group, None);
+        assert_eq!(entries[2].group, None, "outside plans/");
     }
 
     /// Workspace config whose only role in use is disabled, so the task

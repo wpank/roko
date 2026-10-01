@@ -9,9 +9,9 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-cli/tui", "roko-serve/learning", "roko-cli/commands"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops 99adacd6d"
 anchors = ["crates/roko-cli/src/tui/dashboard.rs::gate_threshold_rows", "crates/roko-cli/src/tui/dashboard_model.rs::render_optimizer_page", "crates/roko-cli/src/commands/util.rs::cmd_status", "crates/roko-serve/src/routes/learning/mod.rs::build_adaptive_thresholds_response", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::load", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::apply_gates_config"]
@@ -95,3 +95,16 @@ roko-serve has `AppState::roko_config`.
   `[gates]`. And because the Graph writer (`runner::persist::GateThresholds`) never records
   `consecutive_passes`, the skip advisory on a Graph-written file always reads "no". Fix the threshold with the
   same helper. Leave the missing streak to `find-4b4344` (P1-12).
+- 2026-10-01 (wk-tuiv): implemented on work/bug-6c11d1; cargo verification deferred to the batch check.
+  Every display applies the effective `[gates]` (retry bounds and skip streak) before computing suggestions, as
+  `TaskRetryBudgets::load` does: the TUI disk loader (`DashboardData` keeps `[gates]` from the config it already
+  loads for the budget; `tui/dashboard.rs::bounded_by_gates` at the three threshold load sites), the connected
+  view (`tui/state/snapshot.rs`, through `workspace_gates_config(workdir)` when the pushed thresholds change),
+  the legacy optimizer page (`tui/dashboard_model.rs`), `roko status` (`commands/util.rs::cmd_status`) and
+  `GET /api/learn/adaptive-thresholds` (`state.roko_config.load().gates`). With no `[gates]` section that is
+  already a change: `GatesConfig::default()` bounds retries to 3..=5, so an always-passing rung now shows 3,
+  the budget plan runs give it, instead of 1.
+  Tests: `displayed_retry_suggestions_follow_gates_config` (roko-cli lib: row builder, disk loader, connected
+  view) and `adaptive_thresholds_route_applies_gates_config` (roko-serve lib).
+  Not covered: a ladder-routed task's raised floor (`TaskRetryBudgets::ladder_min_retries`) and the missing
+  `consecutive_passes` (left to find-4b4344, as the item says).

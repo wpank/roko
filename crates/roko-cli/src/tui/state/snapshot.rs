@@ -485,6 +485,11 @@ impl TuiState {
         // One run clock spans the whole announced plan set, including the
         // gaps between plans when nothing is active.
         self.plan_set_running = snap.plan_set.is_some() && !snap.plan_set_complete();
+        self.plan_set = snap
+            .plan_set
+            .as_ref()
+            .map(|set| set.plans.clone())
+            .unwrap_or_default();
         if let Some(duration_ms) = snap.run_duration_ms {
             self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
             self.run_started = None;
@@ -614,6 +619,14 @@ impl TuiState {
             .collect();
 
         let mut plan_ids: Vec<String> = snap.plans.keys().cloned().collect();
+        // While a plan set is announced, list its plans and any other plan
+        // that is running. A long-lived hub (`roko serve`, or a dashboard that
+        // replayed `.roko/events.jsonl`) still holds the plans of earlier
+        // runs, which have nothing to do with this one.
+        if let Some(set) = &snap.plan_set {
+            plan_ids
+                .retain(|plan_id| set.position(plan_id).is_some() || snap.plans[plan_id].active);
+        }
         // Announced plan-set members keep their execution order.
         let plan_set_position = |plan_id: &str| {
             snap.plan_set
@@ -687,6 +700,8 @@ impl TuiState {
             })
             .collect();
 
+        // Tasks of the plans left out above are not orphans.
+        tasks_by_plan.retain(|plan_id, _| !snap.plans.contains_key(plan_id));
         let mut orphaned_plan_ids: Vec<String> = tasks_by_plan.keys().cloned().collect();
         orphaned_plan_ids.sort();
         for plan_id in orphaned_plan_ids {
@@ -869,14 +884,12 @@ impl TuiState {
                 (agent.id.clone(), metrics)
             })
             .collect();
-        // Ingest agent output lines into the structured history (#367).
-        // Only ingest when there are output_lines that haven't been seen yet,
-        // deduplicating against the history's existing records.
+        // Take each agent's task-output ring into the structured history
+        // (#367): only the lines it adds, and only for agents whose output
+        // does not also arrive as AgentOutput events.
         for agent in &self.agents {
-            if !agent.output_lines.is_empty() && self.agent_output_history.len(&agent.id) == 0 {
-                self.agent_output_history
-                    .ingest_lines(&agent.id, &agent.output_lines, "assistant");
-            }
+            self.agent_output_history
+                .ingest_ring(&agent.id, &agent.output_lines, "assistant");
         }
 
         self.prune_agent_output_cache();
@@ -958,7 +971,13 @@ impl TuiState {
                 match serde_json::from_str::<roko_gate::adaptive_threshold::AdaptiveThresholds>(
                     &self.gate_thresholds_json,
                 ) {
-                    Ok(thresholds) => {
+                    Ok(mut thresholds) => {
+                        // Retry suggestions follow `[gates]`, as plan runs do.
+                        if !self.workdir.as_os_str().is_empty() {
+                            let gates =
+                                super::super::dashboard::workspace_gates_config(&self.workdir);
+                            thresholds.apply_gates_config(&gates);
+                        }
                         self.gate_results_page.threshold_rows =
                             super::super::dashboard::gate_threshold_rows(&thresholds);
                     }
@@ -1010,9 +1029,9 @@ impl TuiState {
 
         // Synthesize plan_summaries from snapshot-built plans so the F2 left
         // panel works in approval mode (where DashboardData is never loaded).
-        // The snapshot carries no plan set, so each plan keeps the group disk
-        // discovery gave it: from the disk-loaded summaries when there are
-        // any, else from one workspace scan per unseen plan id.
+        // Each plan takes the group its plan-set entry names, else the group
+        // disk discovery gave it: from the disk-loaded summaries when there
+        // are any, else from one workspace scan per unseen plan id.
         let discovered_groups: HashMap<String, String> = self
             .plan_summaries
             .iter()
@@ -1044,9 +1063,12 @@ impl TuiState {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
-                group: discovered_groups
-                    .get(&plan.id)
-                    .cloned()
+                group: self
+                    .plan_set
+                    .iter()
+                    .find(|entry| entry.plan_id == plan.id)
+                    .and_then(|entry| entry.group.clone())
+                    .or_else(|| discovered_groups.get(&plan.id).cloned())
                     .or_else(|| self.plan_groups.get(&plan.id).cloned().flatten()),
             })
             .collect();

@@ -2,7 +2,7 @@
 id = "gap-6e0a95"
 kind = "gap"
 title = "Whitepaper: no claim it makes about a cited work has been checked against that work's full text"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,7 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "4984c436a"
+last_verified_rev = "34a924d2f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (coordinator, after gap-11845c found unsupported claims in 62% of the docs/v3 works read in full)"
 anchors = ["docs/whitepaper/10-related-work.md", "docs/whitepaper/references.bib", "docs/whitepaper/data/"]
@@ -21,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["gap-11845c", "gap-1f72ac", "
 
 [[verify]]
 command = "python3 -c \"import json;d=json.load(open('docs/whitepaper/data/citation-content-audit.json'));assert d['complete'] is True and len(d['works'])>=40\" && python3 tools/paperlint.py --strict docs/whitepaper/0*.md docs/whitepaper/10-related-work.md"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:57:54Z"
+commit = "34a924d2f"
+size = "M"
+claimed_at = "2026-10-01T08:47:37Z"
+forced = false
+evidence = "docs/whitepaper/data/citation-content-audit.json complete: 50 works (45 supported, 5 corrected, all minor); paperlint --strict clean on 11 files; status matrix untouched"
 +++
 
 ## Problem

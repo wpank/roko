@@ -270,7 +270,10 @@ impl ServiceFactory {
         let knowledge_store = Arc::new(KnowledgeStore::for_roko_dir(&config.roko_dir));
 
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
-            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir);
+            // Nothing else costs serve's model calls, so their feedback
+            // records each call's cost (bug-c1f6b8).
+            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir)
+                .with_cost_records();
             match &cascade_router {
                 Some(router) => Arc::new(
                     feedback_service
@@ -462,7 +465,9 @@ impl ServiceFactory {
         let knowledge_store = Arc::new(KnowledgeStore::for_roko_dir(&config.roko_dir));
 
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
-            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir);
+            // As in `build`, the feedback records each call's cost.
+            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir)
+                .with_cost_records();
             match &cascade_router {
                 Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
                 None => Arc::new(feedback_service),
@@ -760,6 +765,7 @@ mod tests {
     use roko_core::foundation::{
         CachePolicy, ChatMessage, MessageRole, ModelCallRequest, ModelCaller,
     };
+    use roko_learn::costs_db::CostRecord;
     use roko_learn::provider_health::ErrorClass;
     use tempfile::TempDir;
 
@@ -891,6 +897,73 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         );
         assert_eq!(health.total_failures, 0);
         assert!(!snapshot.contains_key("health_model_v1"));
+    }
+
+    /// bug-c1f6b8: serve's model calls land in `.roko/learn/costs.jsonl`,
+    /// where `roko status` and the daily budget read spend: one row per call
+    /// that reached a provider. An answer from the response cache cost
+    /// nothing and adds none.
+    #[tokio::test]
+    async fn serve_calls_write_cost_rows() {
+        let tmp = TempDir::new().expect("tempdir");
+        let script = write_provider_script(
+            &tmp,
+            "priced-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"priced-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0625,"usage":{"input_tokens":120,"output_tokens":30}}'
+"#,
+        );
+        let mut workspace_config = RokoConfig::default();
+        workspace_config.providers.clear();
+        workspace_config.models.clear();
+        workspace_config.agent.default_model = "priced-model".to_string();
+        workspace_config.agent.fallback_model = None;
+        workspace_config.agent.tier_models.clear();
+        add_cli_model(
+            &mut workspace_config,
+            "priced-provider",
+            "priced-model",
+            "priced-model-v1",
+            script,
+        );
+        let mut config = service_config(&tmp, workspace_config);
+        config.feedback_enabled = true;
+        let bundle = ServiceFactory::build(config).expect("build live workflow services");
+
+        let cached_request = || ModelCallRequest {
+            cache_policy: CachePolicy::Default,
+            ..request()
+        };
+        let first = bundle
+            .model_call_service
+            .call(cached_request())
+            .await
+            .expect("the provider answers");
+        let second = bundle
+            .model_call_service
+            .call(cached_request())
+            .await
+            .expect("the cache answers");
+        assert_eq!(second.content, first.content);
+
+        let costs = std::fs::read_to_string(tmp.path().join(".roko/learn/costs.jsonl"))
+            .expect("serve's model calls write costs.jsonl");
+        let rows: Vec<CostRecord> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a cost record"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one row per provider call: {rows:?}");
+        let row = &rows[0];
+        assert_eq!(row.model, "priced-model-v1");
+        assert_eq!(row.provider, "priced-provider");
+        assert_eq!((row.input_tokens, row.output_tokens), (120, 30));
+        assert!(row.cost_usd > 0.0, "the call's cost: {row:?}");
+        assert!((row.cost_usd - first.usage.cost_usd).abs() < 1e-12);
+        assert_eq!(Some(&row.task_id), first.request_id.as_ref());
+        assert!(row.success);
     }
 
     #[tokio::test]

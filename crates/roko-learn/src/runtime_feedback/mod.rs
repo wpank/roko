@@ -67,7 +67,6 @@ use crate::episode_logger::{Episode, EpisodeLogger};
 use crate::latency::LatencyRegistry;
 use crate::local_reward::LocalRewardFunction;
 use crate::model_router::RoutingContext;
-use crate::pattern_discovery::{EpisodeView, PatternMiner};
 use crate::playbook::PlaybookStore;
 use crate::playbook_rules::PlaybookRules;
 use crate::post_gate_reflection::{
@@ -99,28 +98,6 @@ use persistence::{
 use routing::{compute_reward_with_latency, sync_experiment_winner_artifact};
 
 type EpisodeCompletionHook = Arc<dyn Fn(Episode) + Send + Sync>;
-
-// ── EpisodeView adapter ───────────────────────────────────────────────
-
-/// Thin wrapper that materializes the action slice required by [`EpisodeView`]
-/// from an [`Episode`]'s gate verdicts.
-struct EpisodeActions {
-    actions: Vec<String>,
-}
-
-impl EpisodeActions {
-    fn from_episode(ep: &Episode) -> Self {
-        Self {
-            actions: ep.gate_verdicts.iter().map(|v| v.gate.clone()).collect(),
-        }
-    }
-}
-
-impl EpisodeView for EpisodeActions {
-    fn actions(&self) -> &[String] {
-        &self.actions
-    }
-}
 
 fn affect_state_path(learn_root: &Path) -> PathBuf {
     let root = learn_root.parent().unwrap_or(learn_root);
@@ -216,6 +193,25 @@ pub(crate) fn recover_wal(paths: &LearningPaths) {
     }
 }
 
+/// A cascade router update journaled in the WAL.
+enum RecoveredUpdate<'a> {
+    /// An observation.
+    Observation(RecoveredObservation<'a>),
+    /// A success that a hindsight relabel retracted from the model's
+    /// confidence stats (bug-583e50).
+    Retraction { model_slug: &'a str },
+}
+
+impl<'a> RecoveredUpdate<'a> {
+    /// The model the update is for.
+    fn model_slug(&self) -> &'a str {
+        match self {
+            Self::Observation(observation) => observation.model_slug,
+            Self::Retraction { model_slug } => *model_slug,
+        }
+    }
+}
+
 /// A cascade observation journaled in the WAL.
 struct RecoveredObservation<'a> {
     model_slug: &'a str,
@@ -224,6 +220,20 @@ struct RecoveredObservation<'a> {
     success: bool,
     /// Share of a full observation its `LinUCB` update carried.
     weight: f64,
+}
+
+/// The cascade router update `entry` journals, unless a saved snapshot
+/// already holds it.
+fn recovered_update<'a>(
+    entry: &'a WalEntry,
+    folded: &HashSet<&str>,
+) -> Option<RecoveredUpdate<'a>> {
+    // A retraction undoes a success replayed before it, or one that the
+    // snapshot holds already.
+    if let WalEntry::SuccessRetraction { model_slug, .. } = entry {
+        return Some(RecoveredUpdate::Retraction { model_slug });
+    }
+    recovered_observation(entry, folded).map(RecoveredUpdate::Observation)
 }
 
 /// The cascade observation `entry` journals, unless a saved snapshot already
@@ -267,21 +277,22 @@ fn recovered_observation<'a>(
     }
 }
 
-/// Replay the cascade observations in `entries` into the snapshot at
-/// `snapshot_path`, and report whether the snapshot now holds them.
+/// Replay the cascade router updates in `entries`, in order, into the
+/// snapshot at `snapshot_path`, and report whether the snapshot now holds
+/// them.
 ///
 /// The replaying router tracks exactly the models the entries name, so no
 /// entry is skipped as an unknown model (bug-7a2630).
 fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bool {
     let folded = wal::folded_model_call_ids(entries);
-    let observations = entries
+    let updates = entries
         .iter()
-        .filter_map(|entry| recovered_observation(entry, &folded))
+        .filter_map(|entry| recovered_update(entry, &folded))
         .collect::<Vec<_>>();
     let mut models: Vec<String> = Vec::new();
-    for observation in &observations {
-        if !models.iter().any(|model| model == observation.model_slug) {
-            models.push(observation.model_slug.to_string());
+    for update in &updates {
+        if !models.iter().any(|model| model == update.model_slug()) {
+            models.push(update.model_slug().to_string());
         }
     }
     if models.is_empty() {
@@ -289,7 +300,14 @@ fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bo
     }
 
     let router = CascadeRouter::load_or_new(snapshot_path, models);
-    for observation in &observations {
+    for update in &updates {
+        let observation = match update {
+            RecoveredUpdate::Observation(observation) => observation,
+            RecoveredUpdate::Retraction { model_slug } => {
+                router.replay_retraction(model_slug);
+                continue;
+            }
+        };
         let Some(model_idx) = router.model_index_for_slug(observation.model_slug) else {
             continue;
         };
@@ -400,7 +418,6 @@ pub struct LearningRuntime {
     pub(crate) playbook_rules: PlaybookRules,
     regression: RegressionConfig,
     task_metrics: AsyncMutex<Vec<TaskMetric>>,
-    pattern_miner: parking_lot::Mutex<PatternMiner>,
     pub(crate) latency_registry: LatencyRegistry,
     cascade_router: CascadeRouter,
     context_pack_cache: ContextPackCache,
@@ -442,7 +459,6 @@ impl LearningRuntime {
         let playbook_rules = PlaybookRules::open(&paths.playbook_rules_toml)?;
         let task_metrics = load_task_metrics(&paths.task_metrics_jsonl).await?;
 
-        let pattern_miner = parking_lot::Mutex::new(PatternMiner::new(3, 0.5));
         let latency_registry = LatencyRegistry::load_or_new(&paths.latency_stats_json);
         // Save what the WAL holds but the snapshots don't, before loading them.
         recover_wal(&paths);
@@ -476,7 +492,6 @@ impl LearningRuntime {
             playbook_rules,
             regression,
             task_metrics: AsyncMutex::new(task_metrics),
-            pattern_miner,
             latency_registry,
             cascade_router,
             context_pack_cache,
@@ -518,7 +533,6 @@ impl LearningRuntime {
         let playbook_rules = PlaybookRules::open(&paths.playbook_rules_toml)?;
         let task_metrics = load_task_metrics(&paths.task_metrics_jsonl).await?;
 
-        let pattern_miner = parking_lot::Mutex::new(PatternMiner::new(3, 0.5));
         let latency_registry = LatencyRegistry::load_or_new(&paths.latency_stats_json);
         // Save what the WAL holds but the snapshots don't, before loading them.
         recover_wal(&paths);
@@ -549,7 +563,6 @@ impl LearningRuntime {
             playbook_rules,
             regression,
             task_metrics: AsyncMutex::new(task_metrics),
-            pattern_miner,
             latency_registry,
             cascade_router,
             context_pack_cache,
@@ -659,11 +672,6 @@ impl LearningRuntime {
     #[must_use]
     pub const fn latency_registry(&self) -> &LatencyRegistry {
         &self.latency_registry
-    }
-    /// Borrow pattern miner (behind `parking_lot::Mutex` for `&mut` access).
-    #[must_use]
-    pub const fn pattern_miner(&self) -> &parking_lot::Mutex<PatternMiner> {
-        &self.pattern_miner
     }
     /// Borrow cascade router.
     #[must_use]
@@ -1482,16 +1490,6 @@ impl LearningRuntime {
 
         if !skip_only && self.update_frequency.distiller_due(episode_count) {
             self.append_cfactor_snapshot().await?;
-        }
-
-        // Pattern mining
-        let actions = EpisodeActions::from_episode(&input.episode);
-        if !skip_only
-            && self.update_frequency.pattern_discovery_due(episode_count)
-            && !actions.actions.is_empty()
-        {
-            self.pattern_miner.lock().ingest_episode(&actions);
-            update.patterns_ingested = true;
         }
 
         // Cascade router observation

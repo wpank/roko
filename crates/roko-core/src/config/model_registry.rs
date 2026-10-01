@@ -518,6 +518,10 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 /// names no cache-write price of its own: Anthropic's 5-minute write.
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
+/// Price of one Perplexity Search API request (`POST /search`), which runs
+/// no model and reports no usage: a flat $5 per 1,000 requests.
+pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then a table key the slug is a snapshot of

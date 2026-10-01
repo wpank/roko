@@ -1733,13 +1733,32 @@ fn retract_success_moves_a_credited_success_to_a_failure() {
         Some(&(1, 1))
     );
 
-    cascade.retract_success("claude-sonnet-4-5", TaskCategory::Docs, true);
+    cascade.retract_success("claude-sonnet-4-5", TaskCategory::Docs);
 
     assert_eq!(
         cascade.category_stats_snapshot().get(&sonnet_docs),
         Some(&(1, 0))
     );
     let confidence = cascade.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
+/// bug-583e50: a retraction of a success that an earlier run saved
+/// survives the save, though it leaves fewer successes than were loaded.
+#[test]
+fn a_saved_success_retracted_by_a_later_run_stays_retracted() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let earlier = CascadeRouter::new(test_slugs());
+    earlier.record_observation(&default_ctx(), "claude-sonnet-4-5", 0.9, true);
+    earlier.save(&path).unwrap();
+
+    let later = CascadeRouter::load_or_new(&path, test_slugs());
+    later.retract_success("claude-sonnet-4-5", default_ctx().task_category);
+    later.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = reloaded.confidence_snapshot();
     assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
 }
 

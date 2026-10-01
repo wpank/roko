@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use roko_core::dashboard_snapshot::{
     TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
-    TASK_OUTCOME_UNVERIFIED,
+    TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
 };
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::cells::task_executor::TaskGateVerdict;
@@ -286,13 +286,18 @@ impl GraphTuiBridge {
 /// Dashboard outcome for a finished node.
 ///
 /// Only a completed node whose gate verdict is `passed` is reported as
-/// passed. One whose work was already there, so its verify steps passed on a
-/// tree its attempt left unchanged, is `already_satisfied` (gap-9eb1e1). A
-/// forced accept is accepted-with-failures, and a node that completed without
-/// a verify step judging it is unverified (bug-7e1b6b).
+/// passed. One whose verify steps passed apart from tests that failed on the
+/// plan run's start commit too says so (gap-161be1). One whose work was
+/// already there, so its verify steps passed on a tree its attempt left
+/// unchanged, is `already_satisfied` (gap-9eb1e1). A forced accept is
+/// accepted-with-failures, and a node that completed without a verify step
+/// judging it is unverified (bug-7e1b6b).
 fn node_outcome(status: NodeStatus, verdict: Option<TaskGateVerdict>) -> &'static str {
     match (status, verdict) {
         (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => TASK_OUTCOME_PASSED,
+        (NodeStatus::Complete, Some(TaskGateVerdict::PassedWithPreexistingFailures)) => {
+            TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES
+        }
         (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
             TASK_OUTCOME_ALREADY_SATISFIED
         }
@@ -511,6 +516,21 @@ mod tests {
                 TASK_OUTCOME_UNVERIFIED
             );
         }
+    }
+
+    /// gap-161be1: a task that passed only over tests that failed before the
+    /// run says so, and still counts as passed.
+    #[test]
+    fn passed_with_preexisting_failures_is_its_own_outcome() {
+        let outcome = node_outcome(
+            NodeStatus::Complete,
+            Some(TaskGateVerdict::PassedWithPreexistingFailures),
+        );
+        assert_eq!(outcome, "passed_with_preexisting_failures");
+        assert_eq!(
+            roko_core::dashboard_snapshot::classify_task_outcome(outcome),
+            roko_core::dashboard_snapshot::TaskOutcomeClass::Passed
+        );
     }
 
     /// gap-9eb1e1: a task whose work was already there is its own outcome.

@@ -891,6 +891,9 @@ fn describe_task(
             };
             let verdict = match task.gate_verdict {
                 Some(TaskGateVerdict::Passed) => "; its verify steps passed",
+                Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
+                    "; its verify steps passed, apart from tests that failed before the run"
+                }
                 Some(TaskGateVerdict::AlreadySatisfied) => {
                     "; it changed nothing, and its verify steps passed on the tree as it was"
                 }

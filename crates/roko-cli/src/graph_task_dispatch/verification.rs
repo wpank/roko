@@ -104,6 +104,9 @@ impl GraphTaskDispatcher {
         let effective_workdir = effective_workdir.to_path_buf();
         let retry_key = retry_key.to_string();
         let steps = self.verify_steps(spec, task);
+        // A step passed only because what failed in it failed on the plan
+        // run's start commit too (gap-161be1).
+        let mut preexisting_filtered = false;
         if !steps.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -205,7 +208,7 @@ impl GraphTaskDispatcher {
                 // and keep siblings from starting to edit it while the step
                 // runs (gap-1920ba).
                 let step_scope = sibling_settle::StepScope::of(step, &effective_workdir);
-                let _reading = self
+                let reading = self
                     .in_flight
                     .begin_step(&sibling_settle::StepRead {
                         plan_id: &spec.plan_id,
@@ -256,6 +259,33 @@ impl GraphTaskDispatcher {
                         })
                         .await;
                 }
+                // A test step that still fails may fail only on tests that
+                // failed on the plan run's start commit too (gap-161be1). The
+                // step is done reading the tree: the runs that tell read it
+                // again for themselves.
+                if !verdict.passed && blocked_by_sibling.is_none() {
+                    drop(reading);
+                    if let Some(judgement) = self
+                        .judge_against_baseline(
+                            spec,
+                            task,
+                            attempt_key,
+                            &effective_workdir,
+                            step_label,
+                            step,
+                            &verdict,
+                            unchanged_tree,
+                        )
+                        .await
+                    {
+                        preexisting_filtered |= baseline_verify::apply(
+                            &mut verdict,
+                            judgement,
+                            &spec.plan_id,
+                            &task.id,
+                        );
+                    }
+                }
 
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -278,7 +308,7 @@ impl GraphTaskDispatcher {
                     tui.gate_result_with_output(
                         &spec.plan_id,
                         &task.id,
-                        step_label,
+                        &verdict.gate,
                         verdict.passed,
                         Some(&published_gate_output(shown, &verdict)),
                     );
@@ -438,6 +468,7 @@ impl GraphTaskDispatcher {
                         let mut retry_ran_steps: Vec<(String, roko_core::Verdict)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
+                        let mut retry_preexisting_filtered = false;
                         let _verifying = self.in_flight.begin_verify(&verify_key);
                         for (i, (step_label, step)) in steps.iter().enumerate() {
                             let shown = crate::task_accept::prompt_command(&step.command);
@@ -463,7 +494,7 @@ impl GraphTaskDispatcher {
                             .with_phase(&step.phase);
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
-                            let _reading = self
+                            let reading = self
                                 .in_flight
                                 .begin_step(&sibling_settle::StepRead {
                                     plan_id: &spec.plan_id,
@@ -474,7 +505,31 @@ impl GraphTaskDispatcher {
                                     limit: sibling_wait,
                                 })
                                 .await;
-                            let retry_verdict = retry_gate.verify(&gate_signal, &gate_ctx).await;
+                            let mut retry_verdict =
+                                retry_gate.verify(&gate_signal, &gate_ctx).await;
+                            if !retry_verdict.passed {
+                                drop(reading);
+                                if let Some(judgement) = self
+                                    .judge_against_baseline(
+                                        spec,
+                                        task,
+                                        attempt_key,
+                                        &effective_workdir,
+                                        step_label,
+                                        step,
+                                        &retry_verdict,
+                                        unchanged_tree,
+                                    )
+                                    .await
+                                {
+                                    retry_preexisting_filtered |= baseline_verify::apply(
+                                        &mut retry_verdict,
+                                        judgement,
+                                        &spec.plan_id,
+                                        &task.id,
+                                    );
+                                }
+                            }
                             tracing::info!(
                                 plan_id = %spec.plan_id,
                                 task_id = %task.id,
@@ -492,7 +547,7 @@ impl GraphTaskDispatcher {
                                 tui.gate_result_with_output(
                                     &spec.plan_id,
                                     &task.id,
-                                    step_label,
+                                    &retry_verdict.gate,
                                     retry_verdict.passed,
                                     Some(&published_gate_output(shown, &retry_verdict)),
                                 );
@@ -523,6 +578,7 @@ impl GraphTaskDispatcher {
                         timed_out = retry_timed_out;
                         step_outcomes = retry_step_outcomes;
                         ran_steps = retry_ran_steps;
+                        preexisting_filtered = retry_preexisting_filtered;
                         skipped_steps = retry_skipped;
                         blocked_by_sibling = None;
                     }
@@ -1215,6 +1271,8 @@ impl GraphTaskDispatcher {
         self.forget_diff_base(attempt_key);
         Ok(if steps.is_empty() {
             TaskGateVerdict::Unverified
+        } else if preexisting_filtered {
+            TaskGateVerdict::PassedWithPreexistingFailures
         } else {
             TaskGateVerdict::Passed
         })
@@ -1224,7 +1282,7 @@ impl GraphTaskDispatcher {
 /// Queue a cargo verify step on the per-repository compile lock before its
 /// timeout starts, so a build by a plan running beside this one cannot time
 /// the step out. Other steps take no permit.
-async fn verify_compile_permit(
+pub(super) async fn verify_compile_permit(
     workdir: &Path,
     compile_concurrency: usize,
     step: &crate::task_parser::VerifyStep,

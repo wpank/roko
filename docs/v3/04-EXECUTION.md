@@ -680,6 +680,33 @@ for example, is re-run once the sibling settles.
 **Source:** `crates/roko-cli/src/graph_task_dispatch/sibling_settle/`
 (`verify_scope.rs`, `verify_lease.rs`)
 
+### Test failures that were there before the run
+
+A verify step that runs `cargo test` and still fails after sibling
+settlement runs its tests again without fail-fast, on the attempt's tree and
+on the plan run's start commit (the run manifest's `base_commit`, else
+`HEAD`), in a detached temporary worktree with a target directory of its
+own. The failing tests are compared by name:
+
+- When every one failed on the start commit too, the step passes. Its gate
+  is `pre-existing-filtered:<step>`, its output names the tests, and the
+  attempt settles as `passed_with_preexisting_failures`, which counts as
+  passed but is never reported as a clean pass.
+- A test that passed on the start commit still fails the step, and so does
+  one the task names or declares a file for. The output names the new
+  failures apart from the old.
+- What cannot be compared by name fails the step as before: a build error, a
+  crashed test binary, quiet or truncated output, or a baseline that timed
+  out.
+
+Read-only checks before the tests (`test -f`, `grep -q`) are left out of the
+comparison, since the start commit may fail them by design, and the parts of
+the step after its tests must still pass on their own. The baseline runs once
+per start commit and command for the run. `[gates] baseline_filter = false`
+turns it off, and FAST mode never runs it.
+
+**Source:** `crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs`
+
 ## 11. Merge Queue
 
 > **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,

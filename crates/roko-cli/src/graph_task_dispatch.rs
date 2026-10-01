@@ -54,6 +54,7 @@ use crate::task_parser::TaskDef;
 
 mod attempt;
 mod attempt_workspace;
+pub(crate) mod baseline_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;
@@ -242,6 +243,9 @@ pub struct GraphTaskDispatcher {
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
+    /// Failed test steps run again on the plan run's start commit, to tell
+    /// pre-existing failures from new ones (gap-161be1).
+    baselines: baseline_verify::Baselines,
     /// The run's conductor, which supervises running attempts (see
     /// [`Self::with_conductor`]).
     conductor: Option<supervision::GraphConductor>,
@@ -290,6 +294,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
+            baselines: baseline_verify::Baselines::default(),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
         }

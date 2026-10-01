@@ -124,6 +124,11 @@ pub const TASK_GATE_VERDICT_TAG: &str = "roko.gate.verdict";
 pub enum TaskGateVerdict {
     /// Every authored `[[task.verify]]` step passed.
     Passed,
+    /// Every authored verify step passed, or failed only on tests that also
+    /// failed on the plan run's start commit, which the attempt neither
+    /// caused nor was asked to fix. Replayed like a pass, but its own
+    /// outcome, so it never looks like a clean pass.
+    PassedWithPreexistingFailures,
     /// Every authored verify step passed on a tree the attempt left
     /// unchanged: the task's work was already there, as on a `--fresh`
     /// rerun of a finished task. Replayed like a pass, but its own outcome,
@@ -144,6 +149,7 @@ impl TaskGateVerdict {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::PassedWithPreexistingFailures => "passed_with_preexisting_failures",
             Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
@@ -155,6 +161,7 @@ impl TaskGateVerdict {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "passed_with_preexisting_failures" => Some(Self::PassedWithPreexistingFailures),
             "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
@@ -180,9 +187,10 @@ impl TaskGateVerdict {
             .filter_map(|signal| signal.tag(TASK_GATE_VERDICT_TAG).and_then(Self::parse))
             .max_by_key(|verdict| match verdict {
                 Self::Passed => 0,
-                Self::AlreadySatisfied => 1,
-                Self::Unverified => 2,
-                Self::ForcedAccept => 3,
+                Self::PassedWithPreexistingFailures => 1,
+                Self::AlreadySatisfied => 2,
+                Self::Unverified => 3,
+                Self::ForcedAccept => 4,
             })
     }
 
@@ -1294,6 +1302,27 @@ task_def_json = "{}"
         ];
         verdict.stamp(&mut satisfied);
         let mixed: Vec<Signal> = passed.into_iter().chain(satisfied).collect();
+        assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
+    }
+
+    /// gap-161be1: a pass over pre-existing failures replays like a pass but
+    /// never hides behind a clean one.
+    #[test]
+    fn passed_with_preexisting_failures_is_replayable_and_ranks_below_passed() {
+        let verdict = TaskGateVerdict::PassedWithPreexistingFailures;
+        assert_eq!(verdict.as_str(), "passed_with_preexisting_failures");
+        assert_eq!(TaskGateVerdict::parse(verdict.as_str()), Some(verdict));
+        assert!(verdict.is_replayable());
+
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut filtered = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("old failures only"))
+                .build(),
+        ];
+        verdict.stamp(&mut filtered);
+        let mixed: Vec<Signal> = passed.into_iter().chain(filtered).collect();
         assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
     }
 

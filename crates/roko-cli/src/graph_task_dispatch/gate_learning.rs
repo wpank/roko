@@ -131,10 +131,12 @@ pub(super) fn update_graph_gate_thresholds(
 
 impl GraphTaskDispatcher {
     /// Settle what an attempt's verify run teaches the persisted gate
-    /// learning: load `gate-thresholds.json` and the ratchet beside it,
-    /// update both ([`update_graph_gate_thresholds`]), save them, and tell
-    /// the dashboard. A file that fails to load or save is logged and left
-    /// to the next task's update.
+    /// learning: update `gate-thresholds.json` and the ratchet beside it
+    /// ([`update_graph_gate_thresholds`]) in one read-modify-write under the
+    /// thresholds' file lock ([`GateThresholds::update_locked`]), so tasks
+    /// and processes that update them at once lose nothing (bug-e0f472), and
+    /// tell the dashboard. A file that fails to load or save is logged and
+    /// left to the next task's update.
     pub(super) fn settle_gate_learning(
         &self,
         spec: &TaskExecutionSpec,
@@ -158,36 +160,43 @@ impl GraphTaskDispatcher {
         let files = GATE_LEARNING_FILES
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut thresholds =
-            GateThresholds::load_or_default(thresholds_path).unwrap_or_else(|err| {
+        // The ratchet is only written here, under the thresholds' lock.
+        let updated = GateThresholds::update_locked(thresholds_path, |thresholds| {
+            let mut ratchet = GateRatchet::load_or_new(&ratchet_path);
+            let learning = update_graph_gate_thresholds(
+                thresholds,
+                &mut ratchet,
+                &task_key,
+                &profile,
+                temperament,
+                step_outcomes,
+                test_pass_forecast,
+            );
+            (learning, ratchet.save(&ratchet_path))
+        });
+        drop(files);
+        let (thresholds, learning) = match updated {
+            Ok((thresholds, (learning, ratchet_saved))) => {
+                if let Err(err) = ratchet_saved {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        error = %err,
+                        "P1-11: gate ratchet save failed (non-fatal)"
+                    );
+                }
+                (thresholds, learning)
+            }
+            Err(err) => {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
                     error = %err,
-                    "P2-LRN-6 Loop 1: gate threshold load failed (non-fatal)"
+                    "P2-LRN-6 Loop 1: gate threshold update failed (non-fatal)"
                 );
-                GateThresholds::default()
-            });
-        let mut ratchet = GateRatchet::load_or_new(&ratchet_path);
-        let learning = update_graph_gate_thresholds(
-            &mut thresholds,
-            &mut ratchet,
-            &task_key,
-            &profile,
-            temperament,
-            step_outcomes,
-            test_pass_forecast,
-        );
-        let saved = thresholds.save(thresholds_path);
-        if let Err(err) = ratchet.save(&ratchet_path) {
-            tracing::warn!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                error = %err,
-                "P1-11: gate ratchet save failed (non-fatal)"
-            );
-        }
-        drop(files);
+                return;
+            }
+        };
 
         if !learning.residuals.is_empty() {
             tracing::debug!(
@@ -228,31 +237,19 @@ impl GraphTaskDispatcher {
                  (advisory only)"
             );
         }
-        match saved {
-            Ok(()) => {
-                // The learning tab shows the updated per-rung EMAs at once.
-                if let Some(tui) = &self.tui_bridge {
-                    if let Ok(json) = serde_json::to_string(&thresholds) {
-                        tui.gate_thresholds_updated(&json);
-                    }
-                }
-                tracing::debug!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    steps = step_outcomes.len(),
-                    profile = %profile.name,
-                    "P2-LRN-6 Loop 1: gate thresholds updated"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    error = %err,
-                    "P2-LRN-6 Loop 1: gate threshold save failed (non-fatal)"
-                );
+        // The learning tab shows the per-rung EMAs as saved, at once.
+        if let Some(tui) = &self.tui_bridge {
+            if let Ok(json) = serde_json::to_string(&thresholds) {
+                tui.gate_thresholds_updated(&json);
             }
         }
+        tracing::debug!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            steps = step_outcomes.len(),
+            profile = %profile.name,
+            "P2-LRN-6 Loop 1: gate thresholds updated"
+        );
     }
 }
 

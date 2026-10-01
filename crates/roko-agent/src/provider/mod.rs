@@ -282,9 +282,19 @@ pub fn create_agent_for_model(
                     provider: resolved.provider_kind,
                 });
             }
+            // Without a command to run instead, a model key nothing resolves
+            // fails here rather than running `cat` as its agent, which
+            // echoed the prompt back as a successful answer (gap-fd44df).
+            let Some(command) = legacy_command else {
+                let reason = match roko_core::agent::try_resolve_model(config, model_key) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => format!("model `{model_key}` has no provider to run it"),
+                };
+                return Err(AgentCreationError::MissingConfig(reason));
+            };
             tracing::warn!(
                 model_key = model_key,
-                command = %legacy_command.unwrap_or("unknown"),
+                command = %command,
                 "no provider found — falling back to ExecAgent (no tool support)"
             );
 
@@ -293,15 +303,11 @@ pub fn create_agent_for_model(
             } else {
                 &options.env_passthrough
             };
-            let mut agent = ExecAgent::new(
-                legacy_command.unwrap_or("cat"),
-                options.extra_args.clone(),
-                safety_layer,
-            )
-            .with_timeout_ms(options.effective_timeout_ms(None))
-            .with_credential_scrub(
-                CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
-            );
+            let mut agent = ExecAgent::new(command, options.extra_args.clone(), safety_layer)
+                .with_timeout_ms(options.effective_timeout_ms(None))
+                .with_credential_scrub(
+                    CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
+                );
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -2257,6 +2263,21 @@ mod tests {
         let result = agent.run(&prompt("fallback-ok"), &Context::now()).await;
         assert!(result.success);
         assert_eq!(result.output.body.as_text().unwrap_or(""), "fallback-ok");
+    }
+
+    /// gap-fd44df: a model key nothing resolves, with no command configured
+    /// to run instead, fails with the reason rather than running `cat`.
+    #[test]
+    fn an_unknown_model_without_a_command_is_an_error() {
+        let mut config = RokoConfig::default();
+        config.agent.command = None;
+
+        let result = create_agent_for_model(&config, "mystery-model", AgentOptions::default());
+
+        let Err(AgentCreationError::MissingConfig(message)) = result else {
+            panic!("an unknown model with no command must not get an agent");
+        };
+        assert!(message.contains("unknown model `mystery-model`"), "{message}");
     }
 
     #[test]

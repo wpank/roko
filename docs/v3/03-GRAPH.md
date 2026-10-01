@@ -1054,7 +1054,7 @@ Each fixture contains `tasks.toml`, `graph.toml`, `expected.json`, and
   large clusters. *Comm. ACM*, 51(1), 107--113. (Speculative execution for
   straggler mitigation.)
 - Sumers, T. R. et al. (2023). Cognitive architectures for language agents.
-  *arXiv:2309.02427*. (CoALA 9-step cognitive cycle; informing the 7
+  *arXiv:2309.02427*. (CoALA decision cycle, §4.6; informing the 7
   cognitive cells.)
 
 ---

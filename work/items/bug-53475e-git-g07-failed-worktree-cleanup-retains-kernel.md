@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "32938ad4b"
 source = "tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/creation_journal.rs::retain_lock_if_cleanup_unproved", "crates/roko-cli/src/orchestrator/worktree/creation_journal.rs::acquire_repository_mutation_lock", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::start_owned_operation", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::mark_cleanup_unproved", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stuck_mutation_lock", "crates/roko-cli/src/orchestrator/worktree/mod.rs::REPOSITORY_MUTATION_LOCK", "crates/roko-cli/src/graph_execution/plan_runner.rs:1157"]
@@ -135,6 +135,29 @@ gone, or fail fast with an error that names the process to check. No operation b
 - Touches the same files as `bug-109b5a` (`orchestrator/worktree/cleanup.rs`); do not run the two in parallel
   without coordinating.
 - Only reachable with `--worktree-per-task` today; becomes default-path if `gap-4ec59f` lands.
+- 2026-10-01 (wk-tiers): Implemented on `work/gap-4ec59f` at `8e23f0a79`; cargo verification deferred to the batch check.
+  - Nothing is leaked any more. After an unproved cleanup, the worker stores the repository lock and the git PIDs
+    it could not stop (`OperationLifecycle::mark_cleanup_unproved_for`) in the manager's reservation
+    (`OperationState.retained`, `git_ops.rs`). Every later mutation checks them first
+    (`release_retained_ownership`). It releases them once each PID is gone (`kill(pid, 0)` gives ESRCH).
+    Otherwise it returns `WorktreeError::OwnershipRetained` at once, naming the PIDs. With no PID known (the
+    create-rollback path), mutations stay refused until roko restarts, and the error says so.
+  - Cross-process: the `flock` is tried without blocking in a loop for up to 60 s (`REPOSITORY_LOCK_WAIT`), then
+    the wait fails naming the holder. The holder writes `<pid> <unix secs>` into the lock file after locking.
+  - `clear_stuck_mutation_lock` now unlinks the file before it releases the flock. A process waiting on the old
+    file then fails its binding check, instead of mutating beside the holder of a new file.
+  - Tests:
+    - `unproved_cleanup_fails_fast_instead_of_blocking_later_operations`: with no PID, the next prune is refused
+      at once; with a live `sleep` PID, it is refused naming that PID; once the process is reaped, prune runs and
+      releases the hold.
+    - `a_contended_repository_lock_times_out_naming_its_holder`: a subprocess with a 300 ms wait, set through a
+      test-only environment variable.
+    - `unproved_create_cleanup_permanently_withholds_mutation_owner` now asserts the retained ownership instead
+      of a leaked guard.
+  - Not done:
+    - PID start-time fingerprints. A reused PID keeps the hold, so this fails closed.
+    - Whether the TUI shows the error. The Graph dispatcher reports it through its existing "failed to acquire
+      worktree" path; that path was not checked.
 
 ## Original notes
 

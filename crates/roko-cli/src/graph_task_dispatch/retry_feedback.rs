@@ -131,10 +131,14 @@ impl RetryFeedbackBook {
                 .insert((plan_id.to_string(), task_id), standing);
         }
         for (task_id, micro_usd) in kept.spend {
-            state.spend.insert((plan_id.to_string(), task_id), micro_usd);
+            state
+                .spend
+                .insert((plan_id.to_string(), task_id), micro_usd);
         }
         for (task_id, retry) in kept.turn_caps {
-            state.turn_caps.insert((plan_id.to_string(), task_id), retry);
+            state
+                .turn_caps
+                .insert((plan_id.to_string(), task_id), retry);
         }
         let mut task_ids = Vec::with_capacity(kept.tasks.len());
         for (task_id, entry) in kept.tasks {
@@ -330,32 +334,29 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
         .filter(|((plan, _), _)| plan == plan_id)
         .map(|((_, task_id), retry)| (task_id.clone(), *retry))
         .collect();
-    let written = if tasks.is_empty()
-        && ladder.is_empty()
-        && spend.is_empty()
-        && turn_caps.is_empty()
-    {
-        match std::fs::remove_file(path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
-    } else {
-        let file = RetryFeedbackFile {
-            schema_version: SCHEMA_VERSION,
-            plan_id: plan_id.to_string(),
-            run_id: run_id.clone(),
-            tasks,
-            ladder,
-            spend,
-            turn_caps,
+    let written =
+        if tasks.is_empty() && ladder.is_empty() && spend.is_empty() && turn_caps.is_empty() {
+            match std::fs::remove_file(path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            }
+        } else {
+            let file = RetryFeedbackFile {
+                schema_version: SCHEMA_VERSION,
+                plan_id: plan_id.to_string(),
+                run_id: run_id.clone(),
+                tasks,
+                ladder,
+                spend,
+                turn_caps,
+            };
+            serde_json::to_string_pretty(&file)
+                .map_err(std::io::Error::other)
+                .and_then(|text| {
+                    let text = roko_core::obs::scrub_secrets_in_json(&text);
+                    roko_core::io::atomic_write(path, text.as_bytes())
+                })
         };
-        serde_json::to_string_pretty(&file)
-            .map_err(std::io::Error::other)
-            .and_then(|text| {
-                let text = roko_core::obs::scrub_secrets_in_json(&text);
-                roko_core::io::atomic_write(path, text.as_bytes())
-            })
-    };
     match written {
         Ok(()) => Some(path.clone()),
         Err(error) => {

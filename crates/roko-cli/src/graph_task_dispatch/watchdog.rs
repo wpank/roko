@@ -552,9 +552,9 @@ impl GraphTaskDispatcher {
     /// `[conductor] silence_timeout_secs` and `task_stall_secs` are both 0.
     pub(super) fn stall_watch(&self) -> Option<StallWatch> {
         let thresholds = StallThresholds::from_config(&self.config.conductor);
-        thresholds.is_enabled().then(|| {
-            StallWatch::new(thresholds).with_first_output_grace(self.first_output_grace)
-        })
+        thresholds
+            .is_enabled()
+            .then(|| StallWatch::new(thresholds).with_first_output_grace(self.first_output_grace))
     }
 
     /// Give each call `grace` before its silence counts, instead of

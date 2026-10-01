@@ -82,8 +82,8 @@ fn cmd_backlog_list(workdir: &Path, path: Option<&Path>) -> Result<i32> {
 
     let specs = list_backlog_specs(&backlog_dir)?;
     // `backlog import` records each spec as an idea in the PRD ideas file.
-    let ideas = std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(workdir))
-        .unwrap_or_default();
+    let ideas =
+        std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(workdir)).unwrap_or_default();
 
     println!("Backlog specs ({} items):", specs.len());
     println!("{:<6} {:<50} {:<9} {}", "ID", "Slug", "Imported", "Status");
@@ -1029,8 +1029,14 @@ mod tests {
             ("00-INDEX.md", "# Index\n"),
             ("00-STATUS-SUMMARY.md", "# Summary\n"),
             ("README.md", "# Backlog\n"),
-            ("58-perf-hot-path.md", "# 58\n\n**Status**: Done (2026-09-03) -- abc123\n"),
-            ("7_tier-ladder.md", "# 7\n\n> **Status**: quoted prose, not a status line\n"),
+            (
+                "58-perf-hot-path.md",
+                "# 58\n\n**Status**: Done (2026-09-03) -- abc123\n",
+            ),
+            (
+                "7_tier-ladder.md",
+                "# 7\n\n> **Status**: quoted prose, not a status line\n",
+            ),
             ("archive/01-t0-reflex-store.md", "# 1\n"),
             ("_archive/README.md", "# Old\n"),
         ] {
@@ -1040,14 +1046,26 @@ mod tests {
         let specs = list_backlog_specs(&backlog_dir).unwrap();
         let rows: Vec<(u32, &str, bool, Option<&str>)> = specs
             .iter()
-            .map(|spec| (spec.id, spec.slug.as_str(), spec.archived, spec.status.as_deref()))
+            .map(|spec| {
+                (
+                    spec.id,
+                    spec.slug.as_str(),
+                    spec.archived,
+                    spec.status.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             rows,
             [
                 (1, "t0-reflex-store", true, None),
                 (7, "tier-ladder", false, None),
-                (58, "perf-hot-path", false, Some("Done (2026-09-03) -- abc123")),
+                (
+                    58,
+                    "perf-hot-path",
+                    false,
+                    Some("Done (2026-09-03) -- abc123")
+                ),
             ]
         );
         assert_eq!(
@@ -1065,10 +1083,16 @@ mod tests {
         std::fs::create_dir_all(&backlog_dir).unwrap();
         std::fs::write(backlog_dir.join("58-perf-hot-path.md"), "# Perf hot path\n").unwrap();
 
-        let code =
-            cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false, false)
-                .await
-                .unwrap();
+        let code = cmd_backlog_import(
+            tmp.path(),
+            Path::new("tmp/backlog"),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(code, 0);
 
         let ideas =
@@ -1089,10 +1113,16 @@ mod tests {
         std::fs::write(backlog_dir.join("58-perf-hot-path.md"), "# Perf hot path\n").unwrap();
         let before = tree_snapshot(tmp.path());
 
-        let code =
-            cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false, true)
-                .await
-                .unwrap();
+        let code = cmd_backlog_import(
+            tmp.path(),
+            Path::new("tmp/backlog"),
+            false,
+            false,
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(code, 0);
         assert_eq!(tree_snapshot(tmp.path()), before);

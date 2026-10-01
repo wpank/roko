@@ -1106,7 +1106,9 @@ mod tests {
     #[tokio::test]
     async fn task_spend_and_turn_cap_retry_survive_resume() {
         let temp = tempdir().expect("tempdir");
-        let kept = temp.path().join(".roko/state/graph/plan/retry-feedback.json");
+        let kept = temp
+            .path()
+            .join(".roko/state/graph/plan/retry-feedback.json");
         let usage = roko_core::Usage {
             input_tokens: 1_000,
             output_tokens: 200,

@@ -660,11 +660,12 @@ pub const ATTEMPT_TIMEOUT_MARKER: &str = "timed out after";
 /// not the attempt's.
 #[must_use]
 pub fn detect_attempt_timeout(text: &str) -> bool {
-    text.match_indices(ATTEMPT_TIMEOUT_MARKER).any(|(at, marker)| {
-        let rest = text[at + marker.len()..].trim_start();
-        let digits = rest.chars().take_while(char::is_ascii_digit).count();
-        digits > 0 && rest[digits..].trim_start().starts_with("ms")
-    })
+    text.match_indices(ATTEMPT_TIMEOUT_MARKER)
+        .any(|(at, marker)| {
+            let rest = text[at + marker.len()..].trim_start();
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            digits > 0 && rest[digits..].trim_start().starts_with("ms")
+        })
 }
 
 #[cfg(test)]

@@ -406,7 +406,12 @@ fn interrupted_attempts(
     let outcomes: BTreeMap<&str, AttemptOutcome> = records
         .verdicts
         .iter()
-        .map(|verdict| (verdict.record.identity.attempt_key.as_str(), verdict.record.outcome))
+        .map(|verdict| {
+            (
+                verdict.record.identity.attempt_key.as_str(),
+                verdict.record.outcome,
+            )
+        })
         .collect();
     let mut latest: BTreeMap<&str, &AttemptOpenRecord> = BTreeMap::new();
     for open in records.opens.iter().map(|open| &open.record) {
@@ -3341,7 +3346,11 @@ depends_on = ["T1"]
             [expected("task-2", 2, false), expected("task-3", 1, true)]
         );
         let persisted = read_manifest(&resumed.paths().manifest).expect("manifest");
-        assert!(persisted.extensions.contains_key(INTERRUPTED_ATTEMPT_EXTENSION));
+        assert!(
+            persisted
+                .extensions
+                .contains_key(INTERRUPTED_ATTEMPT_EXTENSION)
+        );
 
         // Once every task's latest attempt has settled, the next resume drops
         // the record.

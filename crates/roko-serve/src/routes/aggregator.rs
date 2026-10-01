@@ -1492,7 +1492,10 @@ mod tests {
 
         for long in ["知識".repeat(60), "🦀".repeat(100)] {
             let label = knowledge_label(&long);
-            assert!(label.ends_with('…'), "label {label:?} should end with an ellipsis");
+            assert!(
+                label.ends_with('…'),
+                "label {label:?} should end with an ellipsis"
+            );
             assert_eq!(label.chars().count(), 81);
         }
 
@@ -1553,7 +1556,11 @@ mod tests {
         assert_eq!(results.len(), 1, "only the matching entry: {results:?}");
         assert_eq!(results[0]["id"], "k-gate");
         assert_eq!(results[0]["kind"], "warning");
-        assert!(results[0]["score"].as_f64().is_some_and(|score| score > 0.0));
+        assert!(
+            results[0]["score"]
+                .as_f64()
+                .is_some_and(|score| score > 0.0)
+        );
 
         let missed = call_json(&router, "/api/knowledge/search?q=zebra").await;
         assert_eq!(missed["results"].as_array().map(Vec::len), Some(0));

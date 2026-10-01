@@ -1700,7 +1700,11 @@ mod tests {
         let test = &thresholds.rungs[&2];
         assert_eq!(test.total_count, 16, "{thresholds:?}");
         assert_eq!(test.pass_count, 8, "{thresholds:?}");
-        assert_eq!(thresholds.rungs.len(), 7, "every canonical rung is filled in");
+        assert_eq!(
+            thresholds.rungs.len(),
+            7,
+            "every canonical rung is filled in"
+        );
     }
 
     /// Audit #80: `load_gate_thresholds` on a fresh workspace (no file)

@@ -115,8 +115,11 @@ pub fn install_capture_distillation(
 ) {
     let workdir = workdir.to_path_buf();
     runtime.set_episode_completion_hook(move |episode| {
-        let recorded: Arc<dyn ModelCaller> =
-            Arc::new(DistillationSpend::new(&workdir, &episode, Arc::clone(&caller)));
+        let recorded: Arc<dyn ModelCaller> = Arc::new(DistillationSpend::new(
+            &workdir,
+            &episode,
+            Arc::clone(&caller),
+        ));
         roko_neuro::spawn_episode_distillation(workdir.clone(), episode, Some(recorded));
     });
 }

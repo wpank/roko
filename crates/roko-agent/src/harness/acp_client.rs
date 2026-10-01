@@ -1614,7 +1614,10 @@ done
                 None => notifications += 1,
             }
         }
-        assert_eq!(notifications, NOTIFICATION_QUEUE_CAPACITY - SERVER_REQUEST_RESERVE);
+        assert_eq!(
+            notifications,
+            NOTIFICATION_QUEUE_CAPACITY - SERVER_REQUEST_RESERVE
+        );
         assert_eq!(server_requests, [99]);
     }
 

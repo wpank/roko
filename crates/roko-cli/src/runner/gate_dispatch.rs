@@ -357,11 +357,9 @@ pub(crate) async fn acquire_compile_ownership(
     // Then a slot shared with the other roko processes that build in this
     // repository, in what is left of the wait (gap-c89b40).
     let build_slot = match build_slot_dir(&repository) {
-        Some(dir) => {
-            acquire_build_slot(&dir, permits, max_wait.saturating_sub(started.elapsed()))
-                .await
-                .map_err(|error| format!("compile ownership timed out for `{command}`: {error}"))?
-        }
+        Some(dir) => acquire_build_slot(&dir, permits, max_wait.saturating_sub(started.elapsed()))
+            .await
+            .map_err(|error| format!("compile ownership timed out for `{command}`: {error}"))?,
         None => None,
     };
     info!(
@@ -3070,7 +3068,10 @@ path = "src/shared.rs"
     fn build_slots_live_in_the_git_common_dir() {
         let repo = git_repo();
         let common_dir = repo.path().join(".git");
-        assert_eq!(build_slot_dir(&common_dir), Some(common_dir.join("roko-build-slots")));
+        assert_eq!(
+            build_slot_dir(&common_dir),
+            Some(common_dir.join("roko-build-slots"))
+        );
         let plain = tempfile::tempdir().expect("tempdir should be created");
         assert_eq!(build_slot_dir(plain.path()), None);
     }
@@ -3653,14 +3654,21 @@ path = "src/shared.rs"
         std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
         std::fs::write(dir.path().join("index.js"), "x\n").unwrap();
         let task_files = vec!["README.md".to_string()];
-        let outcome =
-            attempt_auto_fix(dir.path(), "lint", "1 problem", test_fix_bounds(&task_files))
-                .await
-                .expect("skipping must not error");
+        let outcome = attempt_auto_fix(
+            dir.path(),
+            "lint",
+            "1 problem",
+            test_fix_bounds(&task_files),
+        )
+        .await
+        .expect("skipping must not error");
 
         assert!(outcome.was_candidate);
         assert!(!outcome.fix_applied);
-        assert!(outcome.command.is_none(), "no fixer may run on the whole tree");
+        assert!(
+            outcome.command.is_none(),
+            "no fixer may run on the whole tree"
+        );
     }
 
     #[tokio::test]

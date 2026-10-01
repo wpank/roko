@@ -411,7 +411,9 @@ fn query_entry_text(content: &str, verbose: bool) -> String {
         .collect();
     let hidden = lines.len().saturating_sub(QUERY_PREVIEW_LINES);
     if hidden > 0 {
-        preview.push(format!("… {hidden} more line(s); --verbose prints the entry in full"));
+        preview.push(format!(
+            "… {hidden} more line(s); --verbose prints the entry in full"
+        ));
     }
     preview.join("\n   ")
 }

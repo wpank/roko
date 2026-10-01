@@ -2737,8 +2737,16 @@ mod tests {
         let trace = out.turn_traces.first().expect("a tool turn");
         let ids: Vec<&str> = trace.tool_calls.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["p1", "p2"]);
-        assert!(trace.tool_results[0].contains("\"a\""), "{:?}", trace.tool_results);
-        assert!(trace.tool_results[1].contains("\"b\""), "{:?}", trace.tool_results);
+        assert!(
+            trace.tool_results[0].contains("\"a\""),
+            "{:?}",
+            trace.tool_results
+        );
+        assert!(
+            trace.tool_results[1].contains("\"b\""),
+            "{:?}",
+            trace.tool_results
+        );
     }
 
     #[tokio::test]

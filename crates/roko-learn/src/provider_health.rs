@@ -226,8 +226,10 @@ impl ProviderHealth {
             // to Open.
             self.state = CircuitState::Open;
             let until = now_ms + self.cooldown_ms(error);
-            self.cooldown_until =
-                Some(self.cooldown_until.map_or(until, |current| current.max(until)));
+            self.cooldown_until = Some(
+                self.cooldown_until
+                    .map_or(until, |current| current.max(until)),
+            );
         }
     }
 

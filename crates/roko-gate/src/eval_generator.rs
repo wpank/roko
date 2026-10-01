@@ -527,24 +527,22 @@ fn sanitize(title: &str) -> String {
 /// empty-bodied tests that once stood in for them proved nothing
 /// (bug-017c2d).
 fn builtin_templates() -> Vec<EvalTemplate> {
-    vec![
-        EvalTemplate {
-            name: "property-invariant".into(),
-            gate_type: "test".into(),
-            strategy: EvalStrategy::PropertyBased,
-            expected_behavior: "Implementation satisfies domain invariants".into(),
-            template_body: concat!(
-                "// Generated property eval: {task_title}\n",
-                "// Crate: {crate_name}, Files: {files}\n",
-                "// Strategy: property-based (verify invariants hold)\n",
-                "#[test]\n",
-                "fn gen_property_invariant() {\n",
-                "    {property_body}\n",
-                "}\n",
-            )
-            .into(),
-        },
-    ]
+    vec![EvalTemplate {
+        name: "property-invariant".into(),
+        gate_type: "test".into(),
+        strategy: EvalStrategy::PropertyBased,
+        expected_behavior: "Implementation satisfies domain invariants".into(),
+        template_body: concat!(
+            "// Generated property eval: {task_title}\n",
+            "// Crate: {crate_name}, Files: {files}\n",
+            "// Strategy: property-based (verify invariants hold)\n",
+            "#[test]\n",
+            "fn gen_property_invariant() {\n",
+            "    {property_body}\n",
+            "}\n",
+        )
+        .into(),
+    }]
 }
 
 #[cfg(test)]

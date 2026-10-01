@@ -1978,9 +1978,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         );
         // `[conductor] max_agents = 1`: the next task runs only once the
         // failed one freed its slot.
-        let slots: Arc<dyn TaskDispatcher> = Arc::new(
-            crate::graph_execution::agent_slots::AgentSlotDispatcher::new(dispatcher, 1),
-        );
+        let slots: Arc<dyn TaskDispatcher> =
+            Arc::new(crate::graph_execution::agent_slots::AgentSlotDispatcher::new(dispatcher, 1));
         let cell = |id: &str, max_retries: u32| {
             let task = TaskDef {
                 id: id.to_string(),
@@ -2040,7 +2039,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         )
         .await;
         assert!(
-            verdicts.iter().all(|verdict| verdict["outcome"] != "passed"),
+            verdicts
+                .iter()
+                .all(|verdict| verdict["outcome"] != "passed"),
             "{verdicts:?}"
         );
 

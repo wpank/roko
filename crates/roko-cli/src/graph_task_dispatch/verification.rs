@@ -1550,7 +1550,10 @@ fn failed_step_summary(
         .unwrap_or(&verdict.reason);
     let output = verdict.detail.as_deref().unwrap_or_default().trim();
     let summary = format!("{}: {fail_msg}\n{output}", verdict.gate);
-    Some(head_and_tail(summary.trim_end(), GATE_FAILURE_SUMMARY_BYTES))
+    Some(head_and_tail(
+        summary.trim_end(),
+        GATE_FAILURE_SUMMARY_BYTES,
+    ))
 }
 
 /// Retry-facing summary of a failed verify run, including skipped steps.
@@ -2563,7 +2566,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
         let mut hardened = task.clone();
         hardened.hints.quality_profile = Some(roko_core::TaskQualityProfile::Hardened);
-        assert_eq!(rungs_of(&hardened), ["rung[compile]", "rung[test]", "rung[audit]"]);
+        assert_eq!(
+            rungs_of(&hardened),
+            ["rung[compile]", "rung[test]", "rung[audit]"]
+        );
     }
 
     /// A pinned acceptance step is quoted by its header line, not its

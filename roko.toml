@@ -428,7 +428,7 @@ refresh_rate_ms = 250
 preset = "full"
 
 [timeouts]
-agent_dispatch_secs = 600
+agent_dispatch_secs = 1800
 gate_compile_secs = 600
 gate_test_secs = 900
 gate_clippy_secs = 300

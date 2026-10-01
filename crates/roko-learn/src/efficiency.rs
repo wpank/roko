@@ -677,14 +677,20 @@ pub struct FrequencyCostProfile {
     pub frequency: OperatingFrequency,
     /// Number of efficiency events contributing.
     pub observations: u64,
-    /// Average cost in USD per turn.
-    pub avg_cost_usd: f64,
-    /// Total cost in USD across all turns.
-    pub total_cost_usd: f64,
+    /// Average cost in USD per measured turn; `None` when no turn's cost was
+    /// measured. Cost figures leave out turns with an unknown cost, as in
+    /// [`RoleCostProfile`].
+    pub avg_cost_usd: Option<f64>,
+    /// Total measured cost in USD; `None` when no turn's cost was measured.
+    pub total_cost_usd: Option<f64>,
     /// Overall gate pass rate for this frequency.
     pub pass_rate: f64,
-    /// Total cost / gate passes — true cost of one success.
-    pub cost_per_pass: f64,
+    /// Measured cost / gate passes among the measured turns — the true cost
+    /// of one success; `None` when no measured turn passed.
+    pub cost_per_pass: Option<f64>,
+    /// Turns whose cost nobody measured, left out of the cost figures.
+    #[serde(default)]
+    pub cost_unknown: u64,
 }
 
 /// Composite C-Factor snapshot for a single `roko plan run` session.
@@ -827,6 +833,10 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
 }
 
 /// Compute a [`FrequencyCostProfile`] for each distinct operating frequency.
+///
+/// Like [`compute_role_profiles`], cost figures come only from events whose
+/// cost was measured; the rest are counted in
+/// [`FrequencyCostProfile::cost_unknown`], never averaged in as $0.
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<FrequencyCostProfile> {
     let mut groups: HashMap<OperatingFrequency, Vec<&AgentEfficiencyEvent>> = HashMap::new();
@@ -839,14 +849,29 @@ pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<Freque
         .map(|(frequency, evts)| {
             let n = evts.len() as f64;
             let n_u64 = evts.len() as u64;
-            let total_cost = evts.iter().map(|e| e.cost_usd).sum::<f64>();
-            let avg_cost_usd = if n == 0.0 { 0.0 } else { total_cost / n };
             let pass_count = evts.iter().filter(|e| e.gate_passed == Some(true)).count();
             let pass_rate = if n == 0.0 { 0.0 } else { pass_count as f64 / n };
-            let cost_per_pass = if pass_count > 0 {
-                total_cost / pass_count as f64
+
+            // Cost figures come only from turns whose cost was measured.
+            let costed: Vec<&AgentEfficiencyEvent> = evts
+                .iter()
+                .copied()
+                .filter(|e| e.has_known_cost())
+                .collect();
+            let total_cost = if costed.is_empty() {
+                None
             } else {
-                0.0
+                Some(costed.iter().map(|e| e.cost_usd).sum::<f64>())
+            };
+            let avg_cost_usd = total_cost.map(|total| total / costed.len() as f64);
+            let costed_passes = costed
+                .iter()
+                .filter(|e| e.gate_passed == Some(true))
+                .count();
+            let cost_per_pass = if costed_passes > 0 {
+                total_cost.map(|total| total / costed_passes as f64)
+            } else {
+                None
             };
 
             FrequencyCostProfile {
@@ -856,6 +881,7 @@ pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<Freque
                 total_cost_usd: total_cost,
                 pass_rate,
                 cost_per_pass,
+                cost_unknown: n_u64.saturating_sub(costed.len() as u64),
             }
         })
         .collect();
@@ -1934,10 +1960,11 @@ mod tests {
         let profile = FrequencyCostProfile {
             frequency: OperatingFrequency::Gamma,
             observations: 10,
-            avg_cost_usd: 0.42,
-            total_cost_usd: 4.20,
+            avg_cost_usd: Some(0.42),
+            total_cost_usd: Some(4.20),
             pass_rate: 0.7,
-            cost_per_pass: 0.60,
+            cost_per_pass: Some(0.60),
+            cost_unknown: 0,
         };
         let json = serde_json::to_string(&profile).expect("serialize");
         let p2: FrequencyCostProfile = serde_json::from_str(&json).expect("deserialize");
@@ -2085,6 +2112,33 @@ mod tests {
     fn efficiency_role_profiles_empty_input() {
         let profiles = compute_role_profiles(&[]);
         assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn frequency_profiles_skip_unknown_costs() {
+        // Two priced turns and one that consumed tokens but recorded $0.
+        let events = vec![
+            make_test_event("Impl", 0.50, 1000, 200, 0, 10000, 10, 5, false, true),
+            make_test_event("Impl", 0.30, 1000, 200, 0, 10000, 10, 5, false, false),
+            make_test_event("Impl", 0.0, 1000, 200, 0, 10000, 10, 5, false, true),
+        ];
+        let p = &compute_frequency_profiles(&events)[0];
+        assert_eq!(p.observations, 3);
+        assert_eq!(p.cost_unknown, 1);
+        assert!((p.total_cost_usd.expect("measured cost") - 0.80).abs() < 1e-9);
+        assert!((p.avg_cost_usd.expect("measured cost") - 0.40).abs() < 1e-9);
+        assert!((p.cost_per_pass.expect("a measured turn passed") - 0.80).abs() < 1e-9);
+        assert!((p.pass_rate - 2.0 / 3.0).abs() < 1e-9);
+
+        // No measured turn: no cost figures, never $0.
+        let unmeasured = vec![make_test_event(
+            "Bench", 0.0, 100, 20, 0, 1000, 0, 0, false, true,
+        )];
+        let p = &compute_frequency_profiles(&unmeasured)[0];
+        assert_eq!(p.cost_unknown, 1);
+        assert_eq!(p.total_cost_usd, None);
+        assert_eq!(p.avg_cost_usd, None);
+        assert_eq!(p.cost_per_pass, None);
     }
 
     #[test]

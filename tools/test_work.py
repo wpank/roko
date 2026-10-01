@@ -5,6 +5,7 @@ event log.
 Run: python3 tools/test_work.py
 """
 
+import datetime as dt
 import json
 import os
 import subprocess
@@ -119,11 +120,11 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(errs, [])
         return items
 
-    def run_work(self, *args):
+    def run_work(self, *args, check=True):
         """Run tools/work.py in the repo as a separate process, the way the skills do."""
         env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
         return subprocess.run([sys.executable, str(Path(work.__file__)), *args], cwd=self.root,
-                              env={**env, "WORK_REPO": str(self.root)}, check=True, capture_output=True, text=True)
+                              env={**env, "WORK_REPO": str(self.root)}, check=check, capture_output=True, text=True)
 
     def events(self, session):
         f = self.root / "work" / "telemetry" / "events" / f"{session}.jsonl"
@@ -227,6 +228,71 @@ class TestWorktreeBusy(RepoTest):
         (self.root / "src" / "c.rs").write_text("fn dirty() {}\n")
         work.set_repo(self.add_worktree("work/worker"))
         self.assertEqual(work.worktree_changes(), {"src/c.rs": f"{self.root.name} (main)"})
+
+
+class TestClaims(RepoTest):
+    def claim_file(self, iid, **fields):
+        d = work.claims_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{iid}.json").write_text(json.dumps({"id": iid, "by": "t", **fields}))
+
+    def test_claim_refuses_an_overlapping_footprint(self):
+        self.run_work("claim", "bug-aaaaaa", "--by", "t1", "--branch", "work/a")
+        # bug-bbbbbb is anchored on the same file, so another worker may not claim it...
+        refused = self.run_work("claim", "bug-bbbbbb", "--by", "t2", "--branch", "work/b", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("its files overlap bug-aaaaaa, claimed by t1", refused.stderr)
+        self.assertNotIn("bug-bbbbbb", work.load_claims())
+        # ...but the worker holding bug-aaaaaa may take it on the same branch,
+        self.run_work("claim", "bug-bbbbbb", "--by", "t1", "--branch", "work/a")
+        self.run_work("release", "bug-bbbbbb")
+        # and --force overrides, saying what it overrode.
+        forced = self.run_work("claim", "bug-bbbbbb", "--by", "t2", "--branch", "work/b", "--force")
+        self.assertIn("--force overrides: its files overlap bug-aaaaaa", forced.stderr)
+        self.assertEqual(work.load_claims()["bug-bbbbbb"]["by"], "t2")
+
+    def test_claim_refuses_an_item_whose_dependency_is_open(self):
+        self.write("gap-dddddd", item("gap-dddddd", "D", anchors=["src/d.rs"]).replace(
+            "depends_on = []", 'depends_on = ["gap-cccccc"]'))
+        self.commit("D waits on C")
+        refused = self.run_work("claim", "gap-dddddd", "--by", "t", check=False)
+        self.assertIn("it depends on gap-cccccc, which is still open", refused.stderr)
+        # One worker may take both on one branch and do them in turn.
+        self.run_work("claim", "gap-cccccc", "gap-dddddd", "--by", "t", "--branch", "work/cd")
+        self.assertEqual(sorted(work.load_claims()), ["gap-cccccc", "gap-dddddd"])
+
+    def test_claim_renew_extends_the_ttl_by_size(self):
+        now = dt.datetime.now().astimezone()
+        ago = lambda h: (now - dt.timedelta(hours=h)).isoformat(timespec="seconds")  # noqa: E731
+        self.claim_file("gap-cccccc", at=ago(30), size="M", branch="work/c")
+        self.claim_file("bug-aaaaaa", at=ago(9), size="S")
+        self.claim_file("bug-bbbbbb", at=ago(7), size="S")
+        claims = work.load_claims()
+        self.assertEqual({k: (c["ttl_h"], c["stale"]) for k, c in claims.items()},
+                         {"gap-cccccc": (24, True), "bug-aaaaaa": (8, True), "bug-bbbbbb": (8, False)})
+        # Only the claimant renews; the renewed M claim, made 30 h ago, is live again.
+        other = self.run_work("claim", "gap-cccccc", "--renew", "--by", "someone-else", check=False)
+        self.assertIn("only the claimant renews a claim", other.stderr)
+        self.run_work("claim", "gap-cccccc", "--renew", "--by", "t", "--session", "s1")
+        c = work.load_claims()["gap-cccccc"]
+        self.assertEqual((c["stale"], c["at"]), (False, ago(30)))
+        self.assertRegex(c["renewed_at"], work.TS_RE)
+        (renewal,) = self.events("s1")
+        self.assertEqual((renewal["event"], renewal["renew"], renewal["branch"]), ("claim", True, "work/c"))
+
+    def test_next_and_claims_delete_nothing(self):
+        self.write("gap-cccccc", item("gap-cccccc", "C", status="done",
+                                      extra='\n[closed]\nat = 2026-09-02\nevidence = "done"'))
+        self.write("gap-eeeeee", item("gap-eeeeee", "E", anchors=["src/c.rs"]))
+        self.commit("close C; E touches the same file")
+        self.claim_file("gap-cccccc", at=dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+        self.run_work("next", "--n", "3")
+        self.run_work("claims")
+        self.assertIn("gap-cccccc", work.load_claims())
+        # Meanwhile a claim on a closed item holds no file back.
+        self.assertIn("gap-eeeeee", [i["id"] for i in work.pick_next(self.items(), n=3, worktrees={})[0]])
+        self.assertIn("pruned gap-cccccc (closed)", self.run_work("claims", "--prune").stdout)
+        self.assertNotIn("gap-cccccc", work.load_claims())
 
 
 class TestEvents(RepoTest):

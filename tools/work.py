@@ -14,8 +14,10 @@ Picking up work (work/README.md, "For agents"):
         # the same files as each other, a live claim, or what any other worktree is changing
   work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH] [--session S]   # shared claim in the main tree's .roko/work-claims/
         [--executor claude-agent|claude-session|roko-plan|human] [--via work-batch|work-next|manual|roko-plan] [--size S|M|L]
+        # refuses an item whose files overlap a live claim or another worktree's changes, or whose depends_on are open
+  work.py claim <id>… --renew --by "<who>"   # the claimant extends its claim: S 8 h, M 24 h, L 72 h from now
   work.py release <id>… [--session S] [--reason verify-fail|blocked|decision-needed|conflict|timeout|session-limit]
-  work.py claims                             # list live and stale claims
+  work.py claims [--prune]                   # list live and stale claims; --prune drops the claims of closed items
 
 The development record (work/telemetry/README.md; not for workers): claim and release, run in the main checkout, append
 an event to work/telemetry/events/<session>.jsonl (session: --session, else $WORK_SESSION, else --by). The orchestrator
@@ -34,7 +36,7 @@ Keeping the graph current (work/README.md, "Keeping the graph current"):
 """
 from __future__ import annotations
 
-import argparse, datetime as dt, hashlib, json, os, re, subprocess, sys, time, tomllib
+import argparse, contextlib, datetime as dt, fcntl, hashlib, json, os, re, subprocess, sys, time, tomllib
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -521,7 +523,8 @@ def drift_summary(drift) -> str:
 
 # ---------------------------------------------------------------- claims + picking work
 
-CLAIM_TTL_HOURS = 24
+CLAIM_TTL_HOURS = 24  # an unsized claim's TTL
+SIZE_TTL_HOURS = {"S": 8, "M": 24, "L": 72}
 SIZES = ["S", "M", "L"]
 
 
@@ -536,20 +539,71 @@ def claims_dir() -> Path:
     return main_root() / ".roko" / "work-claims"
 
 
-def load_claims(ttl_hours: int = CLAIM_TTL_HOURS):
-    """{id: claim dict with 'age_h' and 'stale'} from .roko/work-claims/*.json."""
+def claim_ttl_hours(c) -> int:
+    """How long a claim lives after it was made or last renewed: by the size it was claimed at (gap-823dce)."""
+    return SIZE_TTL_HOURS.get(c.get("size"), CLAIM_TTL_HOURS)
+
+
+def load_claims(ttl_hours: int | None = None):
+    """{id: claim dict with 'age_h', 'ttl_h' and 'stale'} from .roko/work-claims/*.json. Age counts from the last
+    renewal (`renewed_at`, else `at`). A claim is stale once older than its size's TTL, or than `ttl_hours` when
+    given. Claim files written before sizes and renewals existed load as unsized, unrenewed claims."""
     out = {}
     d = claims_dir()
     for f in sorted(d.glob("*.json")) if d.exists() else []:
         try:
             c = json.loads(f.read_text())
-            age = (time.time() - dt.datetime.fromisoformat(c["at"]).timestamp()) / 3600
+            since = c.get("renewed_at") or c["at"]
+            age = (time.time() - dt.datetime.fromisoformat(since).timestamp()) / 3600
         except Exception:  # noqa: BLE001
             continue
         c["age_h"] = round(age, 1)
-        c["stale"] = age > ttl_hours
+        c["ttl_h"] = ttl_hours if ttl_hours is not None else claim_ttl_hours(c)
+        c["stale"] = age > c["ttl_h"]
         out[c["id"]] = c
     return out
+
+
+@contextlib.contextmanager
+def claims_lock():
+    """Hold the exclusive lock on the claims directory (.roko/work-claims/.lock): claim, release and close take it,
+    so two sessions cannot claim overlapping items in the same moment."""
+    d = claims_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def write_claim(path: Path, rec: dict) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(rec, indent=1) + "\n")
+    os.replace(tmp, path)
+
+
+def claim_conflicts(it, items_by_id, live, branch, worktrees) -> list[str]:
+    """Why `it` cannot be claimed now: its files overlap a live claim or a file another worktree is changing, or a
+    dependency is still open. A claim on the same branch is no conflict (one worker does them in turn), and neither
+    is that branch's own worktree or a dependency claimed on it."""
+    why = []
+    fp = footprint(it)
+    for iid, c in sorted(live.items()):
+        other = items_by_id.get(iid)
+        if (iid != it["id"] and other and other.get("status") in OPEN and not (branch and c.get("branch") == branch)
+                and fp and overlaps(fp, footprint(other))):
+            why.append(f"its files overlap {iid}, claimed by {c.get('by')}")
+    for f, label in sorted(worktrees.items()):
+        if fp and overlaps(fp, {f}) and not (branch and label.endswith(f"({branch})")):
+            why.append(f"{f} is being changed in worktree {label}")
+            break
+    for dep in (it.get("links") or {}).get("depends_on", []) or []:
+        d = items_by_id.get(dep)
+        if d and d.get("status") in OPEN and not (branch and live.get(dep, {}).get("branch") == branch):
+            why.append(f"it depends on {dep}, which is still open")
+    return why
 
 
 def prune_claims():
@@ -641,8 +695,9 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
     receives one dict per item skipped for a worktree."""
     claims = load_claims() if claims is None else claims
     worktrees = worktree_changes() if worktrees is None else worktrees
-    live = {k: c for k, c in claims.items() if not c["stale"]}
     by_id = {i["id"]: i for i in items}
+    # A claim on an item that has since closed holds nothing back (next no longer prunes it; `claims --prune` does).
+    live = {k: c for k, c in claims.items() if not c["stale"] and by_id.get(k, {}).get("status") in OPEN}
     busy = set().union(*(footprint(by_id[k]) for k in live if k in by_id)) if live else set()
     order = goal_order()
     cands = [i for i in items if i.get("status") == "open" and i.get("triage") == "verified" and not i.get("hold")
@@ -676,8 +731,7 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
 
 
 def cmd_next(a):
-    prune_claims()
-    items = [i for i in load("work")[0]]
+    items = [i for i in load("work")[0]]  # read-only: `claims --prune` is the one place that drops claims
     details = []
     picked, skipped = pick_next(items, a.n, a.goal, a.max_size, worktrees={} if a.ignore_worktrees else None,
                                 details=details)
@@ -705,58 +759,93 @@ def cmd_next(a):
 def cmd_claim(a):
     idx = index()
     d = claims_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    live = {k for k, c in load_claims().items() if not c["stale"]}
     session = session_name(a.session, a.by)
+    with claims_lock():
+        claims = load_claims()
+        if a.renew:
+            renew_claims(a, claims, session)
+            return
+        live = {k: c for k, c in claims.items() if not c["stale"]}
+        worktrees = {} if a.ignore_worktrees else worktree_changes()
+        for iid in a.ids:
+            it = idx.get(iid)
+            if it is None or it.get("status") not in OPEN:
+                sys.exit(f"{iid}: not found or not open")
+            if iid in live and not a.force:
+                c = live[iid]
+                sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
+            why = claim_conflicts(it, idx, live, a.branch, worktrees)
+            if why and not a.force:
+                sys.exit(f"{iid}: not claimed: {'; '.join(why)} (use --force to claim it anyway)")
+            overrode = why + ([f"the live claim of {live[iid].get('by')}"] if iid in live else [])
+            if overrode:
+                print(f"{iid}: --force overrides: {'; '.join(overrode)}", file=sys.stderr)
+            now = dt.datetime.now().astimezone()
+            size = a.size or it.get("size")
+            rec = {"id": iid, "by": a.by, "at": now.isoformat(timespec="seconds"), "claimed_at": utc_ts(now),
+                   "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session,
+                   "executor": a.executor, "via": a.via, "size": size}
+            f = d / f"{iid}.json"
+            try:
+                fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
+            except FileExistsError:
+                sys.exit(f"{iid}: claimed by someone else a moment ago")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(rec, indent=1) + "\n")
+            live[iid] = rec  # the rest of this command's items see it
+            log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
+                      size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
+            print(f"claimed {iid} for {a.by} ({size or 'unsized'}: live for {claim_ttl_hours(rec)} h unless renewed)")
+
+
+def renew_claims(a, claims, session):
+    """`claim --renew`: the claimant restarts its claims' clocks. A renewal is not a new attempt."""
     for iid in a.ids:
-        it = idx.get(iid)
-        if it is None or it.get("status") not in OPEN:
-            sys.exit(f"{iid}: not found or not open")
-        if iid in live and not a.force:
-            c = load_claims()[iid]
-            sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
-        now = dt.datetime.now().astimezone()
-        size = a.size or it.get("size")
-        rec = {"id": iid, "by": a.by, "at": now.isoformat(timespec="seconds"), "claimed_at": utc_ts(now),
-               "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session,
-               "executor": a.executor, "via": a.via, "size": size}
-        f = d / f"{iid}.json"
-        try:
-            fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
-        except FileExistsError:
-            sys.exit(f"{iid}: claimed by someone else a moment ago")
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(rec, indent=1) + "\n")
-        log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
-                  size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
-        print(f"claimed {iid} for {a.by}")
+        c = claims.get(iid)
+        if c is None:
+            sys.exit(f"{iid}: no claim to renew")
+        if c.get("by") != a.by:
+            sys.exit(f"{iid}: claimed by {c.get('by')}; only the claimant renews a claim")
+        rec = {k: v for k, v in c.items() if k not in ("age_h", "ttl_h", "stale")}
+        rec["renewed_at"] = utc_ts()
+        write_claim(claims_dir() / f"{iid}.json", rec)
+        log_event("claim", iid, session=session, executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"),
+                  by=a.by, size=c.get("size"), claimed_at=c.get("claimed_at"), renew=True)
+        print(f"renewed {iid}: live for {claim_ttl_hours(rec)} h")
 
 
 def cmd_release(a):
-    claims = load_claims()
-    for iid in a.ids:
-        f = claims_dir() / f"{iid}.json"
-        if f.exists():
-            c = claims.get(iid) or {}
-            # Logged before the claim goes: the event keeps what the claim knew.
-            log_event("release", iid, session=session_name(a.session, c.get("session"), c.get("by")),
-                      executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"), by=c.get("by"),
-                      reason=a.reason, size=c.get("size"), claimed_at=c.get("claimed_at"))
-            f.unlink()
-            print(f"released {iid}")
-        else:
-            print(f"{iid}: no claim")
+    with claims_lock():
+        claims = load_claims()
+        for iid in a.ids:
+            f = claims_dir() / f"{iid}.json"
+            if f.exists():
+                c = claims.get(iid) or {}
+                # Logged before the claim goes: the event keeps what the claim knew.
+                log_event("release", iid, session=session_name(a.session, c.get("session"), c.get("by")),
+                          executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"), by=c.get("by"),
+                          reason=a.reason, size=c.get("size"), claimed_at=c.get("claimed_at"))
+                f.unlink()
+                print(f"released {iid}")
+            else:
+                print(f"{iid}: no claim")
 
 
 def cmd_claims(a):
-    for iid in prune_claims():
-        print(f"pruned {iid} (closed)")
+    if a.prune:
+        with claims_lock():
+            for iid in prune_claims():
+                print(f"pruned {iid} (closed)")
     claims = load_claims()
     if not claims:
         print("no claims")
     for iid, c in sorted(claims.items(), key=lambda kv: kv[1]["at"]):
         where = " · ".join(x for x in (c.get("branch"), c.get("worktree")) if x)
-        print(f"{'STALE ' if c['stale'] else ''}{iid} by {c.get('by')} {c['age_h']}h ago{(' · ' + where) if where else ''} — {c.get('title', '')}")
+        clock = f"{c['age_h']}h since {'renewed' if c.get('renewed_at') else 'claimed'}"
+        left = c["ttl_h"] - c["age_h"]
+        life = f"expired {-left:.1f}h ago" if c["stale"] else f"{left:.1f}h left"
+        print(f"{'STALE ' if c['stale'] else ''}{iid} by {c.get('by')} · {c.get('size') or 'unsized'}, {clock}, {life}"
+              f"{(' · ' + where) if where else ''} — {c.get('title', '')}")
 
 
 # ---------------------------------------------------------------- event log (work/telemetry/; not for workers)
@@ -1144,7 +1233,8 @@ def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=N
               run_id=run_id, forced=forced)
     f = claims_dir() / f"{it['id']}.json"
     if f.exists() and in_main_checkout():
-        f.unlink()
+        with claims_lock():
+            f.unlink(missing_ok=True)
 
 
 def resolve_rev(rev: str | None) -> str | None:
@@ -1197,7 +1287,8 @@ def sync_candidates(items):
 def cmd_sync(a, quiet=False):
     items = [i for k in ROOTS for i in load(k)[0]]
     if not a.dry_run:
-        prune_claims()
+        with claims_lock():
+            prune_claims()
     # Its closures are logged as `reconciled`, under the syncing session (the commit hook passes its session id).
     session = session_name(getattr(a, "session", None), getattr(a, "hook_session", None), "sync")
     closed, conflicts = [], []
@@ -1610,10 +1701,12 @@ def main():
     p.add_argument("--executor", choices=EXECUTORS, help="who executes the item")
     p.add_argument("--via", choices=VIAS, help="how it was picked up")
     p.add_argument("--size", choices=SIZES, help="the size judged before work starts (default: the item's size)")
+    p.add_argument("--renew", action="store_true", help="restart the clock of a claim you hold (S 8 h, M 24 h, L 72 h)")
+    p.add_argument("--ignore-worktrees", action="store_true", help="do not refuse files other worktrees are changing")
     p = sp.add_parser("release"); p.add_argument("ids", nargs="+")
     p.add_argument("--reason", choices=RELEASE_REASONS, help="why the item goes back unfinished")
     p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else the claim's session)")
-    sp.add_parser("claims")
+    p = sp.add_parser("claims"); p.add_argument("--prune", action="store_true", help="drop the claims of closed items")
     p = sp.add_parser("event", help="log a merge, post-merge verify, escape or intervention (main checkout only)")
     p.add_argument("kind", choices=["merged", "post-verify", "escape", "intervention"]); p.add_argument("id")
     p.add_argument("--merge-sha"); p.add_argument("--conflicts", type=int); p.add_argument("--fixups", type=int)

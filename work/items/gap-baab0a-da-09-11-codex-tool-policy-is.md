@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-agent/codex-cli"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
 anchors = ["crates/roko-agent/src/provider/claude_cli.rs::CodexCliAdapter", "crates/roko-agent/src/exec.rs::CodexOperationPolicy", "crates/roko-agent/src/exec.rs::check_codex_output_against_policy", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::effective_agent_contract", "crates/roko-cli/src/dispatch_v2.rs::build_codex_invocation"]
@@ -160,6 +160,9 @@ Recommended: (A) for allowlists plus (B), then (C) as a follow-up if Codex suppo
   depend on the installed Codex version. Confirm them against a captured run first.
 - Touches `crates/roko-agent/src/exec.rs`, which every exec-based CLI provider uses. Avoid running in parallel
   with other work on `exec.rs` or `provider/claude_cli.rs`.
+- 2026-10-01 (wk-guard2): PARTIAL on work/bug-a70def; cargo verification deferred to the batch check. Keep the item open: its verify command passes after this step, but most of Done-when does not.
+- Landed Plan step 1 and the live half of step 2, all in `crates/roko-agent/src/exec.rs`. Baseline tests cover `CodexOperationPolicy::from_contract`, `permits` and the JSONL scan. `ExecAgent` now checks Codex's JSONL as it arrives (`CodexStreamBroker`, one line at a time) and kills the process tree at the first denied operation, so a denied `item.started` stops Codex as the operation begins; the post-exit scan stays for a final line without a newline. Test `codex_restrictive_contract_is_enforced`: a fake `codex` prints a denied `command_execution` and sleeps 30 s; the run fails with the violation within 5 s and the process is gone.
+- Still open: the `web_search` and `mcp_tool_call` item types and the `file_change` worktree-root check (confirm Codex's item names and fields against a captured run first); the web-search and sandbox-network pins in `CodexCliAdapter::create_agent` (confirm the `--config` keys against the installed Codex); step 3, the typed fail-closed error for task allowlists plus failover; step 4, policy and denials as run events; step 5, deleting the dead `build_codex_invocation`; step 6, the live check. A denial still lands as the operation starts, so this bounds the damage but does not prevent it; only Plan (C) would.
 
 ## Original notes
 

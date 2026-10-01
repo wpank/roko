@@ -3,13 +3,14 @@ id = "gap-25065c"
 kind = "gap"
 title = "Import the rest of the research programme's checklist as unverified work items"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R5); W3a-crosswalk-core.md; W3b-crosswalk-product.md"
 anchors = ["tools/work_import_checklist.py", "tools/test_work_import_checklist.py"]
@@ -69,3 +70,4 @@ S02.P1-1 to bug-8da8ba and bug-f68404.
 
 - Will reviews the dry-run list before the real run. Do not edit `checklist.json`.
 - **From wk-filer (2026-09-29):** the import must also cover open rows no epic took: S01.P0-3, -4, -5, -7, -8, -9 and -10; S08.T8–T10 and T14–T17; S09.E3–E11 (including the E4 pre-registration lock and E11, the full comparison whitepaper §8 cites); companion rows E2–E4, E6, E11 and E13.
+- 2026-10-01 (wk-filer4): partial: the importer and its tests landed on work/gap-2bc1b9; the real import waits for Will's review of the dry run. tools/work_import_checklist.py takes the open rows of S02–S07, S10 and S11 plus wk-filer's extra rows. It skips a row that a W3a/W3b crosswalk marks TRACKED or CLOSED, or that an existing gap, bug, regression or finding names; it imports PARTIAL rows, related to their partial cover. It maps lanes (L1/L6 bench, L2/L5 rust-cold, L3 rust-hot, L4 frontend, L7–L9 paper), effort, milestone, goals and parents as the plan says (S11 on hold), turns files_owned into existing anchors, and links deps to imported or covering items, imported dependencies first. It writes everything with gap-2bc1b9's `new` checks or nothing at all. The dry run against the main checkout (WORK_REPO=main): 133 to import, 22 skipped, 0 problems. The list is in tmp/cybernetic-harness/workstreams/checklist-import-dry-run-2026-10-01.md. Next: Will reviews it; then, in the main checkout, `python3 tools/work_import_checklist.py`, `python3 tools/work.py check` and render, which makes the verify pass (S10.T1 is imported). Tests: tools/test_work_import_checklist.py (2) and tools/test_work.py (39) pass.

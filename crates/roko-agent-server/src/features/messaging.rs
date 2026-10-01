@@ -25,6 +25,11 @@ use uuid::Uuid;
 
 use crate::state::{AgentState, MessageContext, SidecarDispatchError};
 
+/// Stream events buffered between the dispatcher and the socket. When the
+/// socket falls behind, the dispatcher waits for room instead of queueing
+/// without limit.
+const STREAM_EVENT_CAPACITY: usize = 256;
+
 /// Messaging routes.
 pub fn router() -> Router<Arc<AgentState>> {
     Router::new()
@@ -168,7 +173,7 @@ async fn stream_prompt(
     };
 
     let request = message_request(prompt, true);
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::channel(STREAM_EVENT_CAPACITY);
     let stream_task =
         tokio::spawn(async move { dispatcher.dispatch_streaming(request, event_tx).await });
 
@@ -314,18 +319,20 @@ mod tests {
         async fn dispatch_streaming(
             &self,
             _request: ChatRequest,
-            event_tx: mpsc::UnboundedSender<StreamEvent>,
+            event_tx: mpsc::Sender<StreamEvent>,
         ) -> Result<ChatResponse, SidecarDispatchError> {
             if let Some(error) = &self.error {
                 return Err(error.clone());
             }
 
             for chunk in &self.stream_chunks {
-                let _ = event_tx.send(StreamEvent::now(StreamEventKind::TextDelta(chunk.clone())));
+                let event = StreamEvent::now(StreamEventKind::TextDelta(chunk.clone()));
+                let _ = event_tx.send(event).await;
             }
-            let _ = event_tx.send(StreamEvent::now(StreamEventKind::Done {
+            let done = StreamEvent::now(StreamEventKind::Done {
                 finish_reason: "stop".to_string(),
-            }));
+            });
+            let _ = event_tx.send(done).await;
             Ok(self.response.clone())
         }
     }
@@ -508,6 +515,42 @@ mod tests {
         assert_eq!(first["chunk"], json!("Hello"));
         assert_eq!(second["chunk"], json!(", "));
         assert_eq!(third["chunk"], json!("world"));
+        assert_eq!(done["done"], json!(true));
+
+        socket.close(None).await.expect("close websocket");
+        handle.abort();
+    }
+
+    /// bug-97c2dc: the stream channel is bounded. A dispatcher that sends more
+    /// events than it holds waits for room, and every event arrives in order.
+    #[tokio::test]
+    async fn stream_delivers_more_events_than_the_channel_holds() {
+        let chunks: Vec<String> = (0..2 * STREAM_EVENT_CAPACITY)
+            .map(|i| format!("chunk-{i}"))
+            .collect();
+        let state = test_state(Some(Arc::new(MockDispatcher {
+            response: chat_response("done"),
+            stream_chunks: chunks.clone(),
+            error: None,
+        })));
+        let (addr, handle) = spawn_ws_server(state).await;
+        let url = format!("ws://{addr}/stream");
+        let (mut socket, _) = connect_async(&url).await.expect("connect websocket");
+
+        socket
+            .send(ClientMessage::Text("hi".to_string().into()))
+            .await
+            .expect("send websocket prompt");
+
+        for chunk in &chunks {
+            let frame = tokio::time::timeout(Duration::from_secs(5), next_ws_json(&mut socket))
+                .await
+                .expect("chunk frame");
+            assert_eq!(frame["chunk"], json!(chunk));
+        }
+        let done = tokio::time::timeout(Duration::from_secs(5), next_ws_json(&mut socket))
+            .await
+            .expect("done frame");
         assert_eq!(done["done"], json!(true));
 
         socket.close(None).await.expect("close websocket");

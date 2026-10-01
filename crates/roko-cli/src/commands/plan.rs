@@ -461,6 +461,29 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Prepare {
+            plan_dir,
+            force,
+            workdir,
+        } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let plan_dir = if plan_dir.is_absolute() {
+                plan_dir
+            } else {
+                workdir.join(plan_dir)
+            };
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            let prepared = roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?;
+            if !cli.quiet {
+                for path in &prepared.written {
+                    println!("wrote {}", path.display());
+                }
+                for path in &prepared.kept {
+                    println!("kept {} (it exists; --force overwrites it)", path.display());
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
         PlanCmd::Run {
             plans_dir,
             engine,
@@ -685,7 +708,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             from_backlog,
         } => {
             use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
+            use roko_cli::agent_exec::{
+                AgentExecEpisode, AgentExecOpts, run_agent_logged_with_spend,
+            };
+            use roko_cli::plan_authoring::AuthoringSpend;
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
@@ -738,8 +764,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
                     let task_prompt = build_backlog_task_prompt(&spec, &slug);
                     let task_id = format!("plan:generate:backlog:{id}");
+                    // The call's spend is recorded against the plan, as every
+                    // other generate path records it (bug-ac5432).
+                    let spend = AuthoringSpend::generation(&workdir, &slug, None);
 
-                    let exit_code = run_agent_logged(
+                    let exit_code = run_agent_logged_with_spend(
                         AgentExecOpts {
                             prompt: &task_prompt,
                             workdir: &workdir,
@@ -755,6 +784,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             task_kind: "plan-generate",
                             task_id: &task_id,
                         },
+                        &spend,
                     )
                     .await;
 
@@ -1464,13 +1494,8 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
             let manifest =
                 roko_cli::runner::queue_manifest::QueueManifest::from_file(&manifest_path)?;
 
-            // Collect completed plan IDs from executor state.
-            let completed: std::collections::HashSet<String> = read_executor_state(&wd)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(_, done, total)| *total > 0 && done == total)
-                .map(|(id, _, _)| id)
-                .collect();
+            // Graph runs write checkpoints, not the old executor snapshot.
+            let completed = manifest.completed_plans(&wd);
 
             if cli.json {
                 let milestones: Vec<serde_json::Value> = manifest
@@ -1584,11 +1609,13 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
 }
 
 /// Handle `roko resume [run-id]` by locating the snapshot and delegating
-/// to `cmd_plan` with a synthesized `PlanCmd::Run`.
+/// to `cmd_plan` with a synthesized `PlanCmd::Run`. `max_tasks` is the run's
+/// `--max-tasks`, which never stops a checkpoint from resuming.
 pub(crate) async fn cmd_resume(
     cli: &Cli,
     run_id: Option<String>,
     workdir: Option<std::path::PathBuf>,
+    max_tasks: usize,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let snapshot = if let Some(ref id) = run_id {
@@ -1655,7 +1682,7 @@ pub(crate) async fn cmd_resume(
         approval: false,
         no_tui: false,
         max_retries: None,
-        max_tasks: 0,
+        max_tasks,
         dry_run: false,
         fresh: false,
         force_resume: false,
@@ -1901,37 +1928,6 @@ struct ValidateJson<'a> {
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
-/// The `tasks.toml` files `plan validate` lints: `dir` itself when it is one, otherwise every one
-/// under it outside `archive/` and `archived/` directories, sorted. This is the walk of
-/// `plan_validate::collect_tasks_files`, which is private.
-fn validated_tasks_files(dir: &Path) -> Vec<PathBuf> {
-    if dir.is_file() {
-        return vec![dir.to_path_buf()];
-    }
-    let mut files = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(current) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let archived = path
-                    .file_name()
-                    .is_some_and(|name| name == "archive" || name == "archived");
-                if !archived {
-                    pending.push(path);
-                }
-            } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
@@ -1969,7 +1965,9 @@ pub(crate) fn cmd_plan_validate(
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
     let spec_report = spec_quality
-        .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
+        .then(|| plan_validate::collect_tasks_files(dir))
+        .transpose()?
+        .map(|files| roko_gate::spec_quality::lint_files(&files, workdir));
 
     // The workspace rungs every plan task runs after its own verify steps.
     let rungs = config
@@ -2427,6 +2425,8 @@ async fn cmd_plan_run_engine(
         only_plans: None,
         live_agent_output,
         force_disk_check: force,
+        effort: None,
+        no_cascade: false,
     })
     .await
 }

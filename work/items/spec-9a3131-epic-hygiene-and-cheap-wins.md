@@ -96,17 +96,17 @@ This is the implementation plan.
 - [x] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
 - [x] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
 - [x] bug-91af0e: The graph_execution module doc still says delivery is backed by MergeQueue and GitHubWorkflow
-- [ ] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
-- [ ] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
-- [ ] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
+- [x] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
+- [x] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
+- [x] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
 - [x] bug-c1950e: roko config validate warns that agent.default_model references a missing model when the model is a builtin
-- [ ] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
+- [x] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
 - [ ] dec-01be49: Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions
-- [ ] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
+- [x] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
 - [x] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
-- [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
-- [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
-- [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
+- [x] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
+- [x] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
+- [x] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
 - [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
 - [x] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers

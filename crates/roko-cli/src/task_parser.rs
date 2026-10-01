@@ -72,6 +72,11 @@ pub struct TaskMeta {
     /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalMode>,
+    /// Whether the plan's implementer tasks may have no verify step. Such a
+    /// task runs and ends unverified, and its plan does not succeed. `roko
+    /// run` sets it in a workspace that no gate can check (bug-1410e8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unverified: bool,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1085,7 +1090,11 @@ impl TasksFile {
             if role == "implementer" {
                 for &field in IMPLEMENTER_REQUIRED {
                     let missing = match field {
-                        "verify" => task.verify.is_empty() && !task.has_accept_tests(),
+                        "verify" => {
+                            task.verify.is_empty()
+                                && !task.has_accept_tests()
+                                && !self.meta.allow_unverified
+                        }
                         "files" => task.files.is_empty(),
                         _ => false,
                     };
@@ -2610,6 +2619,7 @@ depends_on = []
                 workspace_rungs: None,
                 verify: Vec::new(),
                 approval: None,
+                allow_unverified: false,
             },
             tasks: Vec::new(),
         };

@@ -502,6 +502,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let approval =
                 approval || (!no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal());
 
+            // `--config` names the run's config (bug-4ed3c2): a file that does
+            // not exist is an error, not a fall back to the workspace's.
+            if let Some(config) = &cli.config
+                && !config.is_file()
+            {
+                anyhow::bail!("--config {}: no such file", config.display());
+            }
+
             // Resolve workdir FIRST (before using plans_dir)
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let layout = RokoLayout::for_project(&wd);
@@ -570,6 +578,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // the run to the server rather than executing locally.  The
             // server already holds the runner lock so we must not acquire it.
             if let Some(endpoint) = roko_cli::serve_client::discover_workspace_server(&wd) {
+                // The server runs the plan under its own config (bug-4ed3c2).
+                if let Some(config) = &cli.config {
+                    anyhow::bail!(
+                        "--config {} cannot be used when a server owns this workspace: the \
+                         server runs the plan under its own config; stop the server first",
+                        config.display()
+                    );
+                }
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,

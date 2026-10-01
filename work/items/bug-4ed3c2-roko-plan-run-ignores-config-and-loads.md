@@ -9,9 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/plan-run", "roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "32938ad4b"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_run_engine", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-core/src/config/loader.rs::find_config_path", "crates/roko-cli/src/main.rs::resolve_config_for_workdir"]
@@ -80,3 +80,17 @@ server's own config applies.
   checkpoint. That is expected.
 - Other subcommands (`plan generate`, `prd plan`, …) were not audited for the same problem.
 - gap-6bc156 (inert `max_concurrent_plans` keys) is a related config-trust problem in the same runner.
+- 2026-10-01 (wk-childenv): Premise re-checked at `32938ad4b`: `cmd_plan` still never read `cli.config`.
+  Implemented on `work/bug-4ed3c2`; cargo verification deferred to the batch check.
+  - Instead of a new `GraphPlanRunParams` field, `main` hands `--config` to the core loader once
+    (`roko_core::config::loader::set_config_path_override`), and `find_config_path` reads it ahead of
+    `ROKO_CONFIG`. So every discovery-based load in the process uses it, the Graph runner's and the many other
+    modules' alike, the way `ROKO_CONFIG` works, but without exporting it to agents and verify commands (the
+    leak plan step 4 warned about). A file that does not exist is not installed: `plan run` refuses it
+    ("--config <path>: no such file"), and `setup`, which can create it, is unaffected.
+  - `plan run` forwarded to a live `roko serve` refuses `--config`, since the server's config applies.
+  - Test: `tests/plan_run_config_flag.rs::plan_run_uses_the_config_flag` runs the binary with the workspace's
+    provider writing `workspace` and `--config other.toml`'s writing `other`, and checks `other`; a missing
+    `--config` file fails before any agent runs.
+  - Not changed: `roko do`'s standard path pre-flight reads `workdir/roko.toml` directly
+    (`commands/do_cmd.rs::run_standard_path`), and commands that load `--config` themselves keep doing so.

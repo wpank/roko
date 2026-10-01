@@ -451,16 +451,11 @@ async fn list_knowledge_entries(
         .iter()
         .map(|e| {
             let domain = domain_from_entry(e);
-            let label = if e.content.len() > 80 {
-                format!("{}…", &e.content[..80])
-            } else {
-                e.content.clone()
-            };
             json!({
                 "id": e.id,
                 "domain": domain,
                 "citations": e.source_episodes.len() + e.confirmation_count as usize,
-                "label": label,
+                "label": knowledge_label(&e.content),
                 "confidence": e.confidence,
             })
         })
@@ -537,6 +532,16 @@ async fn list_knowledge_edges(State(state): State<Arc<AppState>>) -> Result<Json
         .put_cached_json(cache_key, KNOWLEDGE_TTL, body.clone())
         .await;
     Ok(Json(body))
+}
+
+/// Short label for a knowledge entry: its first 80 characters, plus `…` when
+/// the content is longer. Counts characters, not bytes, so multi-byte text is
+/// never cut inside a character (bug-1cb461).
+fn knowledge_label(content: &str) -> String {
+    match content.char_indices().nth(80) {
+        Some((idx, _)) => format!("{}…", &content[..idx]),
+        None => content.to_string(),
+    }
 }
 
 /// Derive a domain label from a knowledge entry's kind, source, and tags.
@@ -1443,17 +1448,71 @@ mod tests {
         server.abort();
     }
 
+    #[test]
+    fn knowledge_label_truncates_on_char_boundary() {
+        // 79 ASCII bytes then a two-byte `é`: byte 80 falls inside the `é`.
+        let straddling = format!("{}é{}", "a".repeat(79), "tail");
+        let label = knowledge_label(&straddling);
+        assert_eq!(label, format!("{}é…", "a".repeat(79)));
+
+        for long in ["知識".repeat(60), "🦀".repeat(100)] {
+            let label = knowledge_label(&long);
+            assert!(label.ends_with('…'), "label {label:?} should end with an ellipsis");
+            assert_eq!(label.chars().count(), 81);
+        }
+
+        assert_eq!(knowledge_label("short entry"), "short entry");
+        let exactly_eighty = "é".repeat(80);
+        assert_eq!(knowledge_label(&exactly_eighty), exactly_eighty);
+    }
+
+    #[tokio::test]
+    async fn knowledge_entries_route_lists_multibyte_content() {
+        let dir = tempdir().expect("tempdir");
+        let state = test_state_at(dir.path());
+        write_knowledge_entries(
+            &state,
+            &[json!({
+                "id": "k-multibyte",
+                "content": format!("{}é and more text after the boundary", "a".repeat(79)),
+            })],
+        );
+
+        let router = Router::new()
+            .nest("/api", routes())
+            .with_state(Arc::clone(&state));
+        let listed = call_json(&router, "/api/knowledge/entries").await;
+
+        assert_eq!(listed["total"], 1);
+        assert_eq!(listed["items"][0]["id"], "k-multibyte");
+        assert_eq!(listed["items"][0]["label"], format!("{}é…", "a".repeat(79)));
+    }
+
     fn test_state() -> Arc<AppState> {
         let dir = tempdir().expect("tempdir");
+        test_state_at(dir.path())
+    }
+
+    fn test_state_at(dir: &std::path::Path) -> Arc<AppState> {
         Arc::new(
             AppState::new(
-                dir.path().to_path_buf(),
+                dir.to_path_buf(),
                 Arc::new(NoOpRuntime),
                 RokoConfig::default(),
                 Arc::new(ManualBackend::default()),
             )
             .expect("AppState::new"),
         )
+    }
+
+    /// Write raw knowledge-store lines. Every `KnowledgeEntry` field has a
+    /// serde default, so a test only spells out the fields it cares about.
+    fn write_knowledge_entries(state: &AppState, entries: &[Value]) {
+        let store = roko_neuro::knowledge_store::KnowledgeStore::for_layout(&state.layout);
+        let dir = store.path().parent().expect("knowledge store dir");
+        std::fs::create_dir_all(dir).expect("create knowledge store dir");
+        let lines: String = entries.iter().map(|entry| format!("{entry}\n")).collect();
+        std::fs::write(store.path(), lines).expect("write knowledge store");
     }
 
     async fn call_json(router: &Router, uri: &str) -> Value {

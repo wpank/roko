@@ -117,6 +117,14 @@ pub struct PlanRunOptions {
     /// `AppState::effective_live_agent_output()` by plan run handlers so that
     /// the trust level configured at startup flows into every server-side run.
     pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
+
+    /// The run id the caller returned to its client: the `id` of the 202
+    /// from `POST /api/plans/{id}/execute` or `POST /api/plans/execute`.
+    ///
+    /// The runtime runs under it: the run's events, its status and, for a
+    /// fresh single plan, its checkpoint take this id. `None` lets the runtime
+    /// mint its own.
+    pub run_id: Option<String>,
 }
 
 /// Summary info for a configured repository, used to give agents

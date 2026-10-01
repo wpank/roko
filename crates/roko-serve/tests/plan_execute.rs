@@ -8,12 +8,14 @@
 //! 4. `POST /api/plans/:id/cancel` on an active plan returns HTTP 200 with
 //!    `{ "cancelled": true }` and removes the entry from the active set, so a
 //!    subsequent `GET /api/plans/:id/status` reports HTTP 404.
+//! 5. The run id a 202 returns is the one the runtime runs the plan under,
+//!    for a single plan and for a plan set.
 //!
 //! A stub `CliRuntime` is used so no real agent is dispatched.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -24,7 +26,7 @@ use roko_serve::deploy::create_backend;
 use roko_serve::plan_types::{PlanSummaryDto, PlanTasksDto};
 use roko_serve::routes::build_router;
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, RunResult, SessionStatusInfo,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanRunOptions, RunResult, SessionStatusInfo,
 };
 use roko_serve::state::AppState;
 use tempfile::tempdir;
@@ -42,12 +44,15 @@ use tower::ServiceExt;
 ///   across the 409 and cancel assertions)
 struct StubRuntime {
     known_ids: HashSet<String>,
+    /// The run id each `run_plan_with_options` call was given.
+    run_ids: Mutex<Vec<Option<String>>>,
 }
 
 impl StubRuntime {
     fn new(known_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             known_ids: known_ids.into_iter().map(|s| s.into()).collect(),
+            run_ids: Mutex::default(),
         }
     }
 
@@ -91,6 +96,27 @@ impl CliRuntime for StubRuntime {
         // against the cancel token so the task exits cleanly on cancel.
         std::future::pending::<()>().await;
         unreachable!()
+    }
+
+    /// Record the run id the handler gave the run, then block like `run_plan`.
+    async fn run_plan_with_options(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_ids.lock().expect("lock run ids").push(options.run_id);
+        self.run_plan(workdir, plan_target).await
+    }
+
+    /// A set runs the plans it names, in the order given.
+    async fn plan_run_order(
+        &self,
+        _workdir: &Path,
+        _plan_target: &Path,
+        only_plans: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(only_plans.unwrap_or_default())
     }
 
     async fn load_plan_summary(
@@ -158,6 +184,14 @@ impl CliRuntime for StubRuntime {
 /// Also creates a plan directory under `<workdir>/plans/<plan_id>/` so the
 /// path that `execute_plan` passes to `run_plan` is a real directory.
 async fn make_state(plan_id: &str) -> (tempfile::TempDir, Arc<AppState>) {
+    make_state_with(plan_id, Arc::new(StubRuntime::new([plan_id]))).await
+}
+
+/// [`make_state`] backed by `runtime`, so a test can read what it recorded.
+async fn make_state_with(
+    plan_id: &str,
+    runtime: Arc<StubRuntime>,
+) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempdir().expect("tempdir");
     let workdir = dir.path().to_path_buf();
 
@@ -175,7 +209,7 @@ async fn make_state(plan_id: &str) -> (tempfile::TempDir, Arc<AppState>) {
     .await
     .expect("write tasks.toml");
 
-    let runtime: Arc<dyn CliRuntime> = Arc::new(StubRuntime::new([plan_id]));
+    let runtime: Arc<dyn CliRuntime> = runtime;
     let deploy_backend =
         Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
     let state = Arc::new(
@@ -412,4 +446,46 @@ async fn cancel_active_plan_removes_from_active_set() {
         StatusCode::NOT_FOUND,
         "status must return 404 after the plan has been cancelled"
     );
+}
+
+/// 5. bug-4f833d: the run id a 202 returns is the one the runtime runs the
+///    plan under, for a single plan and for a plan set, so a client can find
+///    the run's events, status and checkpoint by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn execute_passes_run_id_to_runtime() {
+    let plan_id = "my-dir-plan";
+    for (uri, body) in [
+        (format!("/api/plans/{plan_id}/execute"), String::new()),
+        ("/api/plans/execute".to_string(), format!(r#"{{"plans":["{plan_id}"]}}"#)),
+    ] {
+        let runtime = Arc::new(StubRuntime::new([plan_id]));
+        let (_dir, state) = make_state_with(plan_id, Arc::clone(&runtime)).await;
+        let response = build_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&uri)
+                    .body(Body::from(body))
+                    .expect("build request"),
+            )
+            .await
+            .expect("send request");
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{uri}");
+        let payload = body_json(response).await;
+        let run_id = payload["id"].as_str().expect("the 202 names its run").to_string();
+        assert_eq!(payload["run_id"], run_id.as_str(), "{uri}: {payload}");
+
+        // The run starts on a spawned task: wait until the runtime sees it.
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(seen) = runtime.run_ids.lock().expect("lock run ids").first() {
+                    return seen.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run starts");
+        assert_eq!(seen.as_deref(), Some(run_id.as_str()), "{uri}");
+    }
 }

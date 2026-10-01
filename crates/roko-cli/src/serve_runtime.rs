@@ -275,6 +275,7 @@ impl CliRuntime for RokoCliRuntime {
                 options.max_parallel_plans,
                 options.cancel,
                 live_agent_output,
+                options.run_id,
             )
         })
         .await
@@ -828,6 +829,7 @@ fn run_plan_on_local_runtime(
     max_parallel_plans: Option<usize>,
     cancel: Option<CancelToken>,
     live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
+    run_id: Option<String>,
 ) -> anyhow::Result<PlanExecutionResult> {
     // Acquire the runner lock before touching the workspace.  Server-side runs
     // and `roko plan run` both take this lock, so only one plan executor can be
@@ -869,8 +871,11 @@ fn run_plan_on_local_runtime(
             });
         }
 
-        let exit_code =
-            crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+        // The run takes the id the server returned to its client, so the
+        // client can find the run's events, status and, for a fresh single
+        // plan, its checkpoint by it (bug-4f833d).
+        let exit_code = crate::graph_execution::plan_runner::run_graph_plan_in_run(
+            crate::graph_execution::GraphPlanRunParams {
                 plans_dir: execution_root,
                 workdir: workdir.clone(),
                 // Suppress interactive output: this runs inside an HTTP handler.
@@ -903,8 +908,10 @@ fn run_plan_on_local_runtime(
                 only_plans,
                 live_agent_output,
                 force_disk_check: false,
-            })
-            .await?;
+            },
+            run_id,
+        )
+        .await?;
 
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
 

@@ -406,6 +406,7 @@ async fn execute_plans(
             only_plans,
             max_parallel_plans: Some(effective_max),
             live_agent_output: Some(live_agent_output),
+            run_id: Some(run_id_for_task.clone()),
         };
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events
@@ -437,6 +438,7 @@ async fn execute_plans(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({
             "id": run_id,
+            "run_id": run_id,
             "order": order_for_response,
             "max_parallel_plans": effective_max,
         })),
@@ -510,6 +512,7 @@ async fn start_plan_run(
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         let plan_dir = plan_dir.clone();
+        let run_id = run_id.clone();
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
             // PlanStarted event (with the correct tasks_total) into the server
@@ -524,6 +527,8 @@ async fn start_plan_run(
                 fresh: !resume,
                 force_resume: resume,
                 live_agent_output: Some(live_agent_output),
+                // The run takes the id this handler returns (bug-4f833d).
+                run_id: Some(run_id),
                 ..PlanRunOptions::default()
             };
             let success = match runtime
@@ -619,7 +624,7 @@ async fn execute_plan(
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id, "resume": resume })),
+        Json(json!({ "id": run_id, "run_id": run_id, "resume": resume })),
     ))
 }
 
@@ -771,7 +776,7 @@ async fn resume_plan(
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id, "resumed": true, "resume": true })),
+        Json(json!({ "id": run_id, "run_id": run_id, "resumed": true, "resume": true })),
     ))
 }
 

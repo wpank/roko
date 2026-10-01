@@ -1448,10 +1448,27 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
 /// collects unknown keys in the other sections' entries.
 const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models"];
 
+/// Tables that keep keys the schema does not name: a `[profiles.<name>]`
+/// entry collects them in its flattened `DomainProfile::extra` map.
+/// Validation still checks the keys the schema names and accepts the rest.
+/// A `*` segment matches any one user-defined key.
+const OPEN_TABLES: &[&str] = &["profiles.*"];
+
 /// Whether the dotted `path` names a dynamic map section.
 fn is_dynamic_section(path: &str) -> bool {
+    matches_section_pattern(path, DYNAMIC_MAP_SECTIONS)
+}
+
+/// Whether the dotted `path` names an [`OPEN_TABLES`] table.
+fn is_open_table(path: &str) -> bool {
+    matches_section_pattern(path, OPEN_TABLES)
+}
+
+/// Whether the dotted `path` matches one of `patterns`, where a `*` segment
+/// matches any one key.
+fn matches_section_pattern(path: &str, patterns: &[&str]) -> bool {
     !path.is_empty()
-        && DYNAMIC_MAP_SECTIONS.iter().any(|pattern| {
+        && patterns.iter().any(|pattern| {
             let mut keys = path.split('.');
             pattern
                 .split('.')
@@ -1482,7 +1499,8 @@ const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
 /// `toml::Value`, then walks the input recursively. Dynamic map sections
 /// (providers, models, profiles, agent.roles, tools.profiles) treat their
 /// keys as user-defined names and validate each value against the map's
-/// value schema. Legacy removed sections produce targeted diagnostics.
+/// value schema. [`OPEN_TABLES`] accept keys the schema does not name.
+/// Legacy removed sections produce targeted diagnostics.
 ///
 /// This replaces the previous top-level-only `unknown_field_diagnostics`.
 pub fn validate_known_config_paths(value: &toml::Value) -> Vec<ConfigDiagnostic> {
@@ -1540,6 +1558,7 @@ fn build_schema_tree() -> toml::Value {
     use super::routing::RewardWeights;
     use super::schema::{DomainProfile, GateProfileConfig};
     use super::subscriptions::SubscriptionConfig;
+    use super::tools::ToolProfileConfig;
 
     let mut config = RokoConfig::default();
 
@@ -1802,6 +1821,11 @@ fn build_schema_tree() -> toml::Value {
         .retrieval
         .role_token_budgets
         .insert("_schema_sentinel".to_string(), 0);
+    // `tools.profiles` maps domains to tool profiles (a dynamic map section).
+    config
+        .tools
+        .profiles
+        .insert("_schema_sentinel".to_string(), ToolProfileConfig::default());
 
     let mut value =
         toml::Value::try_from(config).expect("sentinel RokoConfig must serialize to toml::Value");
@@ -1928,6 +1952,8 @@ fn walk_config_paths(
     };
 
     let known_keys: Vec<&str> = schema_table.keys().map(String::as_str).collect();
+    // An open table keeps the keys its schema does not name.
+    let open = is_open_table(prefix);
 
     for (key, val) in input_table {
         let dotted = if prefix.is_empty() {
@@ -1979,7 +2005,7 @@ fn walk_config_paths(
             } else {
                 walk_config_paths(val, schema_val, &child_path, diagnostics);
             }
-        } else {
+        } else if !open {
             // Unknown key. Suggest nearest match if edit distance is small.
             let suggestion = find_nearest_key(key, &known_keys);
             let msg = match suggestion {
@@ -4780,6 +4806,7 @@ max_concurrent_plans = 3
     fn every_accepted_config_field_is_in_the_schema_tree() {
         use super::super::agent::RoleOverride;
         use super::super::provider::{ProviderLimits, ProviderRouting};
+        use super::super::tools::ToolProfileConfig;
 
         const UNKNOWN_PROBE: &str = "unknown field `__probe__`, expected ";
         // Aliases serde accepts that the tree leaves out on purpose:
@@ -4793,9 +4820,9 @@ max_concurrent_plans = 3
             "gates.custom_rungs",
         ];
         // Tables that take any key but are checked against a fixed key set:
-        // `tui.effects` is free-form TOML, and a profile collects unknown
-        // keys in its flattened `extra` map.
-        const FIXED_KEY_TABLES: &[&str] = &["tui.effects", "profiles._schema_sentinel"];
+        // `tui.effects` is free-form TOML. (A profile, which collects
+        // unknown keys in its flattened `extra` map, is an open table.)
+        const FIXED_KEY_TABLES: &[&str] = &["tui.effects"];
 
         let schema = build_schema_tree();
         let parsed = schema.clone().try_into::<RokoConfig>();
@@ -4831,7 +4858,10 @@ max_concurrent_plans = 3
                 continue;
             }
 
-            if is_dynamic_section(&dotted) || FIXED_KEY_TABLES.contains(&dotted.as_str()) {
+            if is_dynamic_section(&dotted)
+                || is_open_table(&dotted)
+                || FIXED_KEY_TABLES.contains(&dotted.as_str())
+            {
                 continue;
             }
             let samples = [
@@ -4872,6 +4902,10 @@ max_concurrent_plans = 3
             (
                 "models._schema_sentinel.provider_routing",
                 struct_fields::<ProviderRouting>(),
+            ),
+            (
+                "tools.profiles._schema_sentinel",
+                struct_fields::<ToolProfileConfig>(),
             ),
         ];
         for (template, fields) in templates {
@@ -4925,6 +4959,60 @@ name = "my-domain"
             unexpected.is_empty(),
             "dynamic map keys must not produce diagnostics: {unexpected:?}"
         );
+    }
+
+    /// bug-ccfa0d: a `[profiles.<name>]` entry keeps the keys it does not
+    /// name in its flattened `extra` map, and `[tools.profiles.<name>]`
+    /// entries have a template, so validation accepts both, a typo inside a
+    /// tool profile is still reported, and a load keeps the values.
+    #[test]
+    fn profile_extra_keys_and_tools_profiles_are_known_config_paths() {
+        let text = r#"
+[profiles.docs]
+name = "docs"
+model = "haiku"
+house_style = "plain"
+
+[profiles.docs.review]
+depth = 2
+
+[tools.profiles.research]
+extra_tools = ["web_search", "web_fetch"]
+excluded_tools = ["write_file"]
+"#;
+        let value: toml::Value = text.parse().expect("parse profiles toml");
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.is_empty(),
+            "profile keys must not produce diagnostics: {diags:?}"
+        );
+
+        let typo: toml::Value = "[tools.profiles.research]\nextra_tool = [\"bash\"]\n"
+            .parse()
+            .expect("parse typo toml");
+        let diags = validate_known_config_paths(&typo);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "tools.profiles.research.extra_tool"),
+            "expected a diagnostic for the tool-profile typo, got: {diags:?}"
+        );
+        assert_eq!(
+            schema_value_for_path("tools.profiles.research.extra_tools"),
+            Some(toml::Value::Array(Vec::new()))
+        );
+
+        let config = deserialize_migrated_toml(text).expect("load profiles config");
+        let docs = &config.profiles["docs"];
+        assert_eq!(docs.model.as_deref(), Some("haiku"));
+        assert_eq!(
+            docs.extra.get("house_style"),
+            Some(&toml::Value::String("plain".to_string()))
+        );
+        assert!(docs.extra.contains_key("review"));
+        let research = &config.tools.profiles["research"];
+        assert_eq!(research.extra_tools, ["web_search", "web_fetch"]);
+        assert_eq!(research.excluded_tools, ["write_file"]);
     }
 
     #[test]

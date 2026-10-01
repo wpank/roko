@@ -2,16 +2,16 @@
 id = "q-1faa0c"
 kind = "question"
 title = "Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "825d45f97"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "a788dfd8d"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent::failure", "crates/roko-agent/src/exec.rs:643", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointStatus", "crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/background_writes.rs", "crates/roko-cli/tests/graph_timeout_matrix.rs"]
@@ -19,6 +19,17 @@ links = { depends_on = ["bug-690dc6"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "test -f crates/roko-cli/tests/graph_timeout_matrix.rs && cargo test -p roko-cli --test graph_timeout_matrix -- --include-ignored"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-01T23:48:27Z"
+commit = "39feebc07"
+by = "wk-honestbench"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-01T18:58:27Z"
+forced = false
+evidence = "Gate 6d (39feebc07): cargo test -p roko-cli --test graph_timeout_matrix passed 6 of 6 against the gate binary, with the canaries: timeout_keeps_usage, terminal_projections_agree, interrupt_settles_when_agent_ignores_sigterm, timeout_retry_continues_from_partial_work, fast_deadline_stops_the_run and resume_after_timeout_is_idempotent. The matrix and run_one_plan's ROW_WRITES_TIMEOUT landed in e37b7e913. The item's Answer section maps each of the five behaviours to its test, with timeout salvage dropped for option (a); no case failed, so no bug was filed."
 +++
 
 ## Problem
@@ -108,6 +119,28 @@ Related: `bug-690dc6` (timeout usage at $0), `gap-4a6dcb` (FAST per-attempt clam
 - A timed-out attempt shows non-zero tokens and its model in `.roko/learn/costs.jsonl`.
 - Verify: `test -f crates/roko-cli/tests/graph_timeout_matrix.rs && cargo test -p roko-cli --test graph_timeout_matrix -- --include-ignored`
 
+## Answer
+
+Answered on 2026-10-02 from gate 6d (`39feebc07`). There, `graph_timeout_matrix.rs` passed 6 of 6 against the
+gate's `roko` binary. A Graph `roko plan run` behaves correctly on all five behaviours, and a named test proves
+each one. No case failed, so no bug was filed.
+
+| # | Behaviour required | Graph path at `39feebc07` | Test |
+|---|---|---|---|
+| 1 | A timed-out provider keeps its usage | **Yes.** A Claude CLI attempt keeps the tokens and model it streamed (bug-690dc6, `e0673e3e0`), and its cost is marked `estimated` (gap-288e38). Codex and Gemini (`ExecAgent`) runs have kept theirs since bug-dc4d63, which has its own tests | `timeout_keeps_usage` |
+| 2 | Terminal projections agree | **Yes.** After a pass, a failed verify step, a timeout and SIGTERM, the exit code, `run.completed`, the checkpoint status and `roko plan status` agree, and no agent the run registered outlives it. A resumed run neither re-runs nor re-records a task that passed | `terminal_projections_agree`, `resume_after_timeout_is_idempotent` |
+| 3 | Settlement at shutdown is bounded | **Yes.** An agent that ignores SIGTERM is killed, and the run exits 143 within the drain and forced-exit bounds (the test allows 25 s), with its checkpoint `interrupted`. Every run now waits up to 1 s (`ROW_WRITES_TIMEOUT`) for its attempts' cost and learning rows | `interrupt_settles_when_agent_ignores_sigterm` |
+| 4 | Timeout salvage | **Dropped**, for option (a). A timed-out attempt's diff is not verified. The retry gets half again the time and is told to continue from that diff, which is still in the tree. The escalated timeout survives a resume (gap-6f77a3) | `timeout_retry_continues_from_partial_work` |
+| 5 | FAST deadlines | **Yes.** The run deadline stops a run as SIGTERM does, and the run is logged as stopped by `deadline`. The per-attempt bounds landed with gap-4a6dcb (`6f888a765`) | `fast_deadline_stops_the_run` |
+
+What the matrix does not cover:
+- **Per-task worktrees.** The matrix runs in the shared working tree: `ScriptedPlanWorkspace` sets
+  `runner.worktree_per_task = false`. Per-task worktrees, the default since gap-4ec59f, reuse a task's checkout
+  across retries (`worktree_generation`), so option (a) holds there by design, but no case runs that mode.
+- **The checkpoint's stop cause** (gap-fab2cc's `roko.run.stop@1`). No case compares it with
+  `run.completed.interrupted_by`.
+- **The per-plan ledger** (`costs.json`). `graph_budget_resume.rs` covers it.
+
 ## Notes
 
 - The matrix uses real subprocesses and signals: Unix only (`#![cfg(unix)]`), temp workspaces only,
@@ -134,6 +167,8 @@ Related: `bug-690dc6` (timeout usage at $0), `gap-4a6dcb` (FAST per-attempt clam
   writes only after an interrupt, so the last attempt's `costs.jsonl` row could be lost when the process exited.
   It now waits after every run (`ROW_WRITES_TIMEOUT`, 1 s). Left for the gate: run the matrix, then answer the
   question (step 4). The per-plan ledger (`costs.json`) has no case of its own here; `graph_budget_resume.rs` covers it.
+- 2026-10-02 (wk-honestbench): gate 6d (`39feebc07`) ran `graph_timeout_matrix` and all 6 cases passed. Step 4's
+  answer is in the Answer section above. No case failed, so no bug was filed.
 
 ## Original notes
 

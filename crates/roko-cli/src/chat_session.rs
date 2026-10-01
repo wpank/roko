@@ -275,6 +275,41 @@ pub fn accumulate_tool_event(
     }
 }
 
+/// Start a new paragraph in a text delta that follows a tool event.
+///
+/// Claude's stream-json output gives each assistant message's text as one
+/// `MessageDelta` with no message boundary, and tool calls are what separate
+/// the messages of a turn. Without a separator, the text written before and
+/// after a tool call runs together ("…the repository.No `Cargo.toml`…").
+/// `streamed` is the turn's text so far, and `after_tool` records a tool
+/// event since the last text delta. The streaming turn rewrites each event
+/// before it keeps or forwards it, so the reply, the terminal and the live
+/// view show the same text.
+fn separate_assistant_messages(
+    event: &mut AgentRuntimeEvent,
+    streamed: &str,
+    after_tool: &mut bool,
+) {
+    match event {
+        AgentRuntimeEvent::ToolCall { .. } | AgentRuntimeEvent::ToolOutput { .. } => {
+            *after_tool = true;
+        }
+        AgentRuntimeEvent::MessageDelta { text } if !text.is_empty() => {
+            if std::mem::take(after_tool) && !streamed.is_empty() {
+                let separator = if streamed.ends_with("\n\n") {
+                    ""
+                } else if streamed.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+                text.insert_str(0, separator);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn write_stdout_bytes(bytes: &[u8]) {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -1399,6 +1434,7 @@ async fn send_turn_streaming_with_program(
 
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut accumulated_text = String::new();
+    let mut after_tool = false;
     let mut tool_calls = Vec::new();
     let mut pending_ids = Vec::new();
     let mut final_session_id: Option<String> = None;
@@ -1433,7 +1469,8 @@ async fn send_turn_streaming_with_program(
                     continue;
                 }
 
-                for event in parse_stream_line(&line) {
+                for mut event in parse_stream_line(&line) {
+                    separate_assistant_messages(&mut event, &accumulated_text, &mut after_tool);
                     accumulate_tool_event(&mut tool_calls, &mut pending_ids, &event);
 
                     match &event {
@@ -2706,6 +2743,47 @@ printf '%s\n' '{"type":"result","session_id":"","model":"claude-sonnet-4-6","tot
         assert_eq!(result.input_tokens, 9);
         assert_eq!(result.output_tokens, 10);
         assert_eq!(result.text, "partial");
+    }
+
+    /// bug-6ae24e: the text of assistant messages split by tool calls does
+    /// not run together, in the reply or in the forwarded deltas.
+    #[tokio::test]
+    async fn streaming_turn_separates_assistant_messages() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-split","model":"claude-sonnet-4-6","tools":[]}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Looking at the repository."},{"type":"tool_use","id":"tool-1","name":"Glob","input":{"pattern":"Cargo.toml"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Glob","tool_use_id":"tool-1","content":"no matches"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"No Cargo.toml exists yet.\n"},{"type":"tool_use","id":"tool-2","name":"Read","input":{"path":"README.md"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Read","tool_use_id":"tool-2","content":"readme"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Done."}]}}'
+printf '%s\n' '{"type":"result","session_id":"sess-split","model":"claude-sonnet-4-6","total_cost_usd":0.01,"is_error":false}'
+"#,
+        );
+
+        let mut session = streaming_test_session(tmp.path().to_path_buf());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let result = send_turn_streaming_with_program(&mut session, "hi", tx, &script)
+            .await
+            .expect("streaming turn");
+
+        let mut streamed = String::new();
+        while let Some(event) = rx.recv().await {
+            if let AgentRuntimeEvent::MessageDelta { text } = event {
+                streamed.push_str(&text);
+            }
+        }
+
+        assert_eq!(
+            result.text,
+            "Looking at the repository.\n\nNo Cargo.toml exists yet.\n\nDone."
+        );
+        assert_eq!(streamed, result.text);
+        assert_eq!(result.tool_calls.len(), 2);
     }
 
     #[tokio::test]

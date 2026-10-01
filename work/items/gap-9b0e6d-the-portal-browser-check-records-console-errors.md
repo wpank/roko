@@ -9,8 +9,8 @@ goal = "visibility"
 size = "S"
 subsystem = ["apps/portal", "plans/portal-programme"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "d5c1dc6be"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "gap-e5bbd6 plan step 3 and bug-48494b notes ('consider making browser-flow.cjs fail on console errors'), neither done"
@@ -77,3 +77,4 @@ Checked at `d5c1dc6be`. The recorded runs show what a strict check would meet to
 - The verify needs `apps/portal/node_modules` (symlink it from the main checkout in a worktree) and Playwright's
   Chromium in `demo/demo-app` (see gap-e5bbd6). The run takes about 100 s.
 - Do not weaken the existing 09 checks.
+- 2026-10-01 (wk-filer4): implemented on work/gap-2bc1b9 (plan steps 1 and 3); the portal check is deferred to the coordinator's gate. browser-flow.cjs now records failed requests (status >= 400, and requestfailed) with method, URL and status in browser-<mode>.json, and after a completed flow prints `BROWSER no-console-errors: PASS`, or `FAIL <n> <first three>` with exit code 1. All three scripts (portal-check.sh flow and parallel, hello-world-real.sh real) already turn every BROWSER line into a check, so they needed no change. "Failed to load resource" console lines are judged through their requests, which have URLs. ALLOWED_BROWSER_ERRORS starts empty: the recorded evidence names no URLs, so plan step 2's triage happens on the first gate run, whose FAIL line lists the failing requests. Expected ones go on the allow-list with a why; real defects become items.

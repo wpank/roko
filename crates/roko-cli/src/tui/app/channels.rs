@@ -311,111 +311,12 @@ impl App {
                 roko_core::DashboardEvent::AgentOutput {
                     agent_id, content, ..
                 } => {
-                    // Streaming text/tool records — handled below.
-                    // Each record is pushed into the canonical AgentOutputHistory
-                    // (P1-TUI-G4) so the structured semantic renderer sees typed
-                    // records rather than raw text.  The legacy agent_streams
-                    // chunk path is retained to keep the Live Stream panel alive.
-                    let Some(record) =
-                        content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
-                    else {
-                        // Non-prefixed line: push as plain text record.
-                        self.tui_state.push_agent_output_record(
-                            agent_id,
-                            super::super::state::OutputRecordKind::Text,
-                            content.clone(),
-                            None,
-                            None,
-                        );
-                        self.tui_state.push_agent_chunk(agent_id, content.clone());
-                        continue;
-                    };
-                    let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
-                        continue;
-                    };
-                    let kind = record
-                        .get("kind")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("text");
-                    let payload = record.get("payload").cloned().unwrap_or_default();
-                    match kind {
-                        "text" => {
-                            if let Some(text) =
-                                payload.get("text").and_then(serde_json::Value::as_str)
-                            {
-                                self.tui_state.push_agent_output_record(
-                                    agent_id,
-                                    super::super::state::OutputRecordKind::Text,
-                                    text.to_string(),
-                                    None,
-                                    None,
-                                );
-                                self.tui_state.push_agent_chunk(agent_id, text.to_string());
-                            }
-                        }
-                        "reasoning" => {
-                            if let Some(text) =
-                                payload.get("text").and_then(serde_json::Value::as_str)
-                            {
-                                self.tui_state.push_agent_output_record(
-                                    agent_id,
-                                    super::super::state::OutputRecordKind::Reasoning,
-                                    text.to_string(),
-                                    None,
-                                    None,
-                                );
-                                self.tui_state
-                                    .push_agent_chunk(agent_id, format!("[thinking] {text}"));
-                            }
-                        }
-                        "tool_start" => {
-                            let tool = payload
-                                .get("tool")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool");
-                            let id = payload
-                                .get("tool_id")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            self.tui_state.push_agent_output_record(
-                                agent_id,
-                                super::super::state::OutputRecordKind::ToolCall,
-                                String::new(),
-                                if id.is_empty() {
-                                    None
-                                } else {
-                                    Some(id.to_string())
-                                },
-                                Some(tool.to_string()),
-                            );
-                            self.tui_state
-                                .push_agent_chunk(agent_id, format!("[tool ⏵ {tool} {id}]"));
-                        }
-                        "tool_result" => {
-                            let output = payload
-                                .get("output")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            let id = payload
-                                .get("tool_id")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("");
-                            self.tui_state.push_agent_output_record(
-                                agent_id,
-                                super::super::state::OutputRecordKind::ToolResult,
-                                output.to_string(),
-                                if id.is_empty() {
-                                    None
-                                } else {
-                                    Some(id.to_string())
-                                },
-                                None,
-                            );
-                            self.tui_state
-                                .push_agent_chunk(agent_id, format!("[tool ✓ {id}]\n{output}"));
-                        }
-                        _ => {}
-                    }
+                    // Streaming text/tool records go into the canonical
+                    // AgentOutputHistory (P1-TUI-G4) exactly as a snapshot
+                    // backfill puts them there, so output seen live and the
+                    // same output replayed agree (gap-836ae9). The legacy
+                    // agent_streams chunks keep the Live Stream panel alive.
+                    self.tui_state.ingest_agent_output(agent_id, content);
                 }
                 roko_core::DashboardEvent::AgentTopologyUpdated { .. } => {
                     // Topology changes (node/edge additions and state transitions)

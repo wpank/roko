@@ -238,7 +238,7 @@ pub(super) fn attempt_failure_reason(class: &str, detail: &str) -> String {
 
 /// `text` when it fits in `max` bytes; otherwise its head and tail, cut at
 /// line breaks near the cut points, joined by `… N bytes omitted …`.
-fn head_and_tail(text: &str, max: usize) -> String {
+pub(super) fn head_and_tail(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }

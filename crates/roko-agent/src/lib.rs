@@ -89,7 +89,6 @@ pub mod mcp;
 pub mod metamorphosis;
 pub mod mock;
 pub mod model_call_service;
-pub mod multi_pool;
 mod multimodal;
 pub mod nl_to_format;
 pub mod observer;
@@ -99,7 +98,6 @@ pub mod openai_compat_backend;
 pub mod openclaw;
 pub mod parity_matrix;
 pub mod perplexity;
-pub mod pool;
 pub mod process;
 pub mod provider;
 /// Provider-change tracking and attempt-scoped attribution (T009).
@@ -154,7 +152,6 @@ pub use lifecycle::*;
 pub use metamorphosis::{MorphError, MorphableAgent, RoleProfile};
 pub use mock::MockAgent;
 pub use model_call_service::ModelCallService;
-pub use multi_pool::{KillReport, MultiAgentPool, WarmEntry};
 pub use observer::{InferenceObserver, NoopInferenceObserver};
 pub use ollama::agent::{OllamaAgent, OllamaLlmBackend};
 pub use openai_compat_backend::OpenAiCompatLlmBackend;
@@ -171,7 +168,6 @@ pub use perplexity::{
     Annotation, PerplexityChatAgent, PerplexityDeepResearchAgent, PerplexityEmbedAgent,
     PerplexityMetadata, PerplexitySearchClient, SearchOptions, SearchResult,
 };
-pub use pool::{AgentInstanceId, AgentPool, AgentTask, InstanceStatus, TaskOutcome};
 pub use provider::{
     ProviderAdapter, adapter_for_kind, create_agent_for_model, current_safety_layer,
     with_scoped_safety_layer,

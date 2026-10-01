@@ -1561,7 +1561,7 @@ fn tool_calls_for_task(spec: &DemoTaskSpec, primary: bool) -> Vec<ToolCallMeta> 
         tool_name: "Read".to_string(),
         duration_ms: if primary { 230 } else { 180 },
         result_tokens: if primary { 420 } else { 260 },
-        succeeded: true,
+        succeeded: Some(true),
         advanced_task: true,
         was_redundant: false,
         error_category: None,
@@ -1570,7 +1570,7 @@ fn tool_calls_for_task(spec: &DemoTaskSpec, primary: bool) -> Vec<ToolCallMeta> 
         tool_name: if spec.success { "Write" } else { "Search" }.to_string(),
         duration_ms: if primary { 320 } else { 140 },
         result_tokens: if spec.success { 180 } else { 110 },
-        succeeded: spec.success || !primary,
+        succeeded: Some(spec.success || !primary),
         advanced_task: spec.success || !primary,
         was_redundant: !primary && !spec.success,
         error_category: if spec.success && !primary {

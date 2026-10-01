@@ -2493,7 +2493,10 @@ impl GraphEngine {
     ) -> bool {
         match sink.publish(event).await {
             Ok(crate::events::GraphEventDisposition::Dropped) => {
-                warn!(event = event.variant_name(), "graph event sink dropped an event");
+                warn!(
+                    event = event.variant_name(),
+                    "graph event sink dropped an event"
+                );
                 false
             }
             Ok(_) => true,

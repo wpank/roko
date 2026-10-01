@@ -258,6 +258,11 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
             );
         }
     }
+    // The sampling parameters the requests carried; empty when the
+    // provider's defaults applied (gap-13bbbd).
+    episode
+        .extra
+        .insert("sampling".into(), serde_json::json!(executed.sampling));
     // An unreported count is unknown, not one turn.
     match executed.turns {
         Some(turns) => episode.turns = u64::from(turns),
@@ -500,6 +505,56 @@ mod tests {
             (episode.usage.cost_usd - 0.003).abs() < 1e-9,
             "helper cost stays out of the agent run's usage"
         );
+    }
+
+    /// gap-13bbbd: an episode names the sampling its requests carried, and
+    /// records an empty map when the provider's defaults applied.
+    #[tokio::test]
+    async fn episodes_record_the_sampling_sent() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        for (task_id, temperature) in [("sampled", Some(0.2)), ("defaults", None)] {
+            let key = AttemptKey::new("run-1", "plan-1", task_id, 1);
+            let mut verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::Unverified,
+                true,
+            );
+            if let Some(temperature) = temperature {
+                verdict
+                    .executed
+                    .sampling
+                    .insert("temperature".into(), serde_json::json!(temperature));
+            }
+            sink.on_event(&FeedbackEvent::TaskCompleted {
+                turns: 1,
+                failure_reason: None,
+                settled: Some(Arc::new(verdict)),
+                plan_id: "plan-1".into(),
+                task_id: task_id.into(),
+                outcome: outcome(),
+                model_source: ModelChoiceSource::Router,
+                succeeded: true,
+                routing_context: None,
+                prompt_text: None,
+                cache_read_tokens: 0,
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: "gpt-oss-120b".into(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let episodes = EpisodeLogger::read_all(&path).await.unwrap();
+        assert_eq!(
+            episodes[0].extra["sampling"],
+            serde_json::json!({ "temperature": 0.2 })
+        );
+        assert_eq!(episodes[1].extra["sampling"], serde_json::json!({}));
     }
 
     /// Every attempt still gets its episode, but a learner reading episodes

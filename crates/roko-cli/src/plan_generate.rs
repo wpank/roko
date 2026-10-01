@@ -325,6 +325,7 @@ Detect the project language and use the right commands:
 ## Verify steps by role
 
 - **implementer**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
+- **Weak verify steps** (any role): a verify step must fail on the unchanged code and pass once the task is done. Prefer the crate's own gate (e.g. `cargo check -p roko-core`, `cargo test -p roko-core parse_config`) to a check that reads only the edited file, which lets a regression elsewhere in the crate through. Never negate a grep (`! grep -q ...`): correct code that mentions the text fails it (`roko plan validate` warns, PLAN_042). Never use a command that cannot fail (`echo ok`, `true`).
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
@@ -335,6 +336,7 @@ Before finalizing, verify your tasks against:
 - [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
 - [ ] Every task has ≤ max_loc lines of change for its tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
+- [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
 - [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
 - [ ] No task requires reading more than 3 files

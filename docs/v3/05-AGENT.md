@@ -1208,8 +1208,8 @@ cargo run -p roko-cli -- doctor
 2. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in
    Language Models." ICLR 2023. arXiv:2210.03629. -- ReAct pattern
    implemented by the ToolLoop.
-3. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Harness quality as dominant performance
+3. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Harness quality as dominant performance
    factor.
 4. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
    harness engineering framework.

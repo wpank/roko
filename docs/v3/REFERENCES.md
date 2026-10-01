@@ -2009,14 +2009,14 @@ Brief annotation: Multi-round RL-based model routing.
 **[Qian et al., 2025]** *xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning.* Salesforce. arXiv:2510.08439.
 Brief annotation: Cost-aware RL orchestration across models.
 
-**[Song et al., 2025]** *IRT-Router.* ACL 2025. arXiv:2506.01048.
+**[Song et al., 2025]** *IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory.* ACL 2025. arXiv:2506.01048.
 Brief annotation: Item Response Theory for model routing.
 
-**[Ding et al., 2025]** *BEST-Route.* ICML 2025. arXiv:2506.22716.
-Brief annotation: Best-effort routing with quality guarantees.
+**[Ding et al., 2025]** *BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute.* ICML 2025. arXiv:2506.22716.
+Brief annotation: Chooses a model and how many responses to sample from it, by query difficulty; up to 60% cheaper with under 1% performance drop.
 
-**[Dekoninck et al., 2025]** *A Unified Approach to Routing and Cascading.* ICLR 2025. arXiv:2410.10347.
-Brief annotation: +14% on SWE-Bench via unified routing/cascading.
+**[Dekoninck et al., 2025]** *A Unified Approach to Routing and Cascading for LLMs.* arXiv:2410.10347.
+Brief annotation: Cascade routing unifies routing and cascading and outperforms either alone; quality estimators are the critical factor.
 
 **[Anonymous, 2025]** *Rethinking Predictive Modeling for LLM Routing: When Simple kNN Beats Complex Learned Routers.* arXiv:2505.12601.
 Brief annotation: Simple kNN outperforms complex learned routers in some settings.
@@ -2064,6 +2064,9 @@ Brief annotation: Temporal knowledge graph completion via LLMs.
 ---
 
 ## Additional References (Compression, Context Management)
+
+**[Mehta, 2025]** *Beyond Accuracy: A Multi-Dimensional Framework for Evaluating Enterprise Agentic AI Systems.* arXiv:2511.14136.
+Brief annotation: Proposes CLEAR (Cost, Latency, Efficacy, Assurance, Reliability); optimizing for accuracy alone yields agents 4.4-10.8x more expensive than cost-aware alternatives with comparable performance.
 
 **[Han et al., 2025]** *TALE Framework.* ACL Findings 2025. arXiv:2412.18547.
 Brief annotation: 68.9% token reduction via adaptive context management.

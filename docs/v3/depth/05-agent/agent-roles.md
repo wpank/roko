@@ -263,5 +263,5 @@ Roles compose into agent types for different task categories:
 2. `crates/roko-compose/src/templates/` -- 11 role-specific prompt templates.
 3. `crates/roko-agent/src/dispatcher/mod.rs` -- Permission enforcement in
    dispatch pipeline.
-4. Lee, S. Y. et al. (2026). "Meta-Harness." arXiv:2603.28052. -- Graduated
+4. Lee, Y. et al. (2026). "Meta-Harness." arXiv:2603.28052. -- Graduated
    autonomy (principle #5).

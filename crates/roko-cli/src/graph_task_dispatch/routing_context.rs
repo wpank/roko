@@ -142,14 +142,31 @@ fn select_cheap_model_key_with(
 /// of a task whose `preferred_provider` is `provider`, a `[providers.*]` id:
 /// the key of that provider's entry for the same slug when it has a usable
 /// one, else `model` as routed.
-pub(super) fn preferred_provider_model(
-    config: &RokoConfig,
-    model: &str,
-    provider: Option<&str>,
-) -> String {
+fn preferred_provider_model(config: &RokoConfig, model: &str, provider: Option<&str>) -> String {
     preferred_provider_model_with(config, model, provider, |key| {
         config.provider_available_for_model_key(key)
     })
+}
+
+impl GraphTaskDispatcher {
+    /// The model an attempt of `task` dispatches for `dispatch_plan`, on
+    /// both dispatch paths: the routed model, run by the entry of the task's
+    /// `preferred_provider` when it has one ([`preferred_provider_model`]).
+    /// `--model` and express mode keep theirs.
+    pub(super) fn dispatch_model_key(
+        &self,
+        dispatch_plan: &crate::dispatch::RunnerDispatchPlan,
+        task: &TaskDef,
+    ) -> String {
+        if dispatch_plan.forced {
+            return dispatch_plan.model.slug.clone();
+        }
+        preferred_provider_model(
+            &self.config,
+            &dispatch_plan.model.slug,
+            task.hints.preferred_provider.as_deref(),
+        )
+    }
 }
 
 /// [`preferred_provider_model`] with an injectable provider-availability

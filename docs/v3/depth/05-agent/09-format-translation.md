@@ -348,8 +348,8 @@ model's comfortable range.
 
 ## Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Principle 1: tools for the model.
+1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Principle 1: tools for the model.
 2. `crates/roko-agent/src/translate/mod.rs` -- Translator trait, wire
    format enums, BackendResponse, FinishReason normalization.
 3. `crates/roko-agent/src/translate/capability.rs` -- ModelCapabilities,

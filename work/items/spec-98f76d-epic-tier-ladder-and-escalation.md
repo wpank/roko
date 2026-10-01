@@ -91,7 +91,7 @@ edits hot files: one writer per file at a time.
 - [x] gap-b62e95: The router's context treats every retry as a first attempt (existing item)
 - [x] gap-e21595: Integration test C8: the ladder routes by tier and escalates after two failures
 - [x] bug-a6b433: roko-learn's complexity_bucket reads complex as architectural, while TaskTier reads it as integrative
-- [ ] bug-cae1e1: The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider
+- [x] bug-cae1e1: The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider
 - [ ] The epic's `[[verify]]` command (test C8) passes on the merged branch.
 
 ## Notes

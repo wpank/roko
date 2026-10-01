@@ -33,8 +33,8 @@ use crate::provider::{
 };
 use crate::tool_loop::backends::create_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
-use crate::translate::capability::cap_tools_for_profile;
-use crate::translate::{OpenAiTranslator, Translator};
+use crate::translate::Translator;
+use crate::translate::capability::{cap_tools_for_profile, translator_for_openai_compat};
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -546,7 +546,10 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 
         if model.supports_tools {
             let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-            let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
+            // The profile's tool format picks the translator: a `hermes_json`
+            // model writes `<tool_call>` blocks instead of native calls
+            // (bug-d0b8b8).
+            let translator: Arc<dyn Translator> = translator_for_openai_compat(model);
             let dispatcher = build_provider_tool_dispatcher(
                 registry,
                 resolver,
@@ -1321,6 +1324,98 @@ mod tests {
             message.get("role").and_then(Value::as_str) == Some("tool")
                 && message.get("tool_call_id").and_then(Value::as_str) == Some("call-ls-1")
         }));
+
+        handle.join().expect("server thread");
+    }
+
+    /// bug-d0b8b8: a `hermes_json` profile on an OpenAI-compatible endpoint
+    /// gets the Hermes translator. Its tools go in the system message, the
+    /// request carries no native `tools`, the model's `<tool_call>` text is
+    /// run, and the result comes back in a `<tool_response>` block.
+    #[tokio::test]
+    async fn hermes_json_profile_uses_hermes_translator() {
+        let reply = |id: &str, content: &str| {
+            serde_json::json!({
+                "id": id,
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": content },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 17, "completion_tokens": 4, "total_tokens": 21 }
+            })
+            .to_string()
+        };
+        let (base_url, captured, handle) = spawn_chat_server_sequence(vec![
+            reply(
+                "chatcmpl-hermes-1",
+                "<tool_call>\n{\"name\": \"ls\", \"arguments\": {\"path\": \".\"}}\n</tool_call>",
+            ),
+            reply("chatcmpl-hermes-2", "hermes-loop-ok"),
+        ]);
+
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(format!("{base_url}/v1")),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(1_500),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let model = ModelProfile {
+            provider: "nous".to_string(),
+            slug: "hermes-4-70b".to_string(),
+            context_window: 128_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            tool_format: "hermes_json".to_string(),
+            ..Default::default()
+        };
+
+        let agent = OpenAiCompatAdapter
+            .create_agent(&provider, &model, &AgentOptions::default())
+            .expect("create tool-loop agent");
+        let result = agent.run(&prompt("hello"), &Context::now()).await;
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.body.as_text().unwrap_or(""), "hermes-loop-ok");
+
+        let requests = captured.lock().expect("capture lock").clone();
+        assert_eq!(requests.len(), 2, "the Hermes call runs, then the model answers");
+        let body = |n: usize| -> Value {
+            let body = requests[n].split("\r\n\r\n").nth(1).expect("request body");
+            serde_json::from_str(body).expect("request json")
+        };
+        let first = body(0);
+        assert!(first.get("tools").is_none(), "{first}");
+        assert!(
+            first["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|system| system.contains("<tools>")),
+            "{first}"
+        );
+        let second = body(1);
+        let messages = second["messages"]
+            .as_array()
+            .expect("second request messages");
+        // The model's own call stays in the history (bug-318aab), followed by
+        // its result.
+        let turn = |role: &str, text: &str| {
+            messages.iter().position(|message| {
+                message["role"] == role
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains(text))
+            })
+        };
+        let call = turn("assistant", "<tool_call>").expect("the model's call turn");
+        let result = turn("user", "<tool_response>").expect("the call's result");
+        assert!(call < result, "{second}");
 
         handle.join().expect("server thread");
     }

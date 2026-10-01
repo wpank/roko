@@ -9,9 +9,9 @@ size = "S"
 goal = "hermes"
 subsystem = ["roko-agent/translate"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "c58c7c2ba"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-agent/src/translate/hermes.rs::parse_calls", "crates/roko-agent/src/translate/hermes.rs::extract_text"]
@@ -89,6 +89,14 @@ The only reasoning test, `parse_skips_think_blocks` (`hermes.rs:440`), has no to
 - Keep the change inside `parse_calls`. Do not change `repair_json` or `tool_call_from_value`: those are `bug-0a1729` and `bug-b14145`. All three touch `hermes.rs`, so run them one after another or expect a trivial merge.
 - Other translators (`ReActTranslator`, Qwen XML) may have the same weakness. That is out of scope here; if you confirm it, file a separate item.
 - Size S. Pure parser change with unit tests; no I/O or config.
+- 2026-10-01 (wk-tiers): implemented on work/bug-7567eb; cargo verification deferred to the batch check.
+  - `parse_calls` now makes one left-to-right pass over reasoning openers (`<think>`, `<thinking>`, `<reasoning>`,
+    in `REASONING_TAGS`) and `<tool_call>`, taking whichever comes first (`next_opener`):
+    - a reasoning block is skipped to its closer, and an unterminated one ends the scan;
+    - a `<tool_call>` keeps the old handling, including the unclosed-tag fallback.
+  - So reasoning text inside a call's arguments is untouched. The module doc lists the skipped tags.
+  - Tests: `parse_ignores_tool_call_inside_think`, `parse_ignores_unclosed_tool_call_inside_unterminated_think`
+    (which also covers `<thinking>`) and `parse_keeps_think_text_inside_tool_call_arguments`.
 
 ## Original notes
 

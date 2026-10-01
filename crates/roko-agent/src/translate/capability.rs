@@ -25,8 +25,8 @@ use roko_core::config::schema::ModelProfile;
 use roko_core::tool::{ToolDef, ToolFormat, format::profile_for_model};
 
 use super::{
-    ClaudeTranslator, GeminiTranslator, HermesXmlTranslator, OllamaTranslator, ReActTranslator,
-    Translator,
+    ClaudeTranslator, GeminiTranslator, HermesXmlTranslator, OllamaTranslator, OpenAiTranslator,
+    ReActTranslator, Translator,
 };
 
 /// Snapshot of a model's tool-calling capabilities.
@@ -194,6 +194,19 @@ pub fn translator_for_capabilities(capabilities: &ModelCapabilities) -> Arc<dyn 
 #[must_use]
 pub fn translator_for_profile(profile: &ModelProfile) -> Arc<dyn Translator> {
     translator_for_capabilities(&capabilities_from_profile(profile))
+}
+
+/// Pick the translator for a resolved model profile served by an
+/// OpenAI-compatible chat endpoint, whose native tools travel in the OpenAI
+/// wire shape: Hermes `<tool_call>` text blocks when the profile's
+/// `tool_format` is `hermes_json`, and the OpenAI translator otherwise
+/// (bug-d0b8b8).
+#[must_use]
+pub fn translator_for_openai_compat(profile: &ModelProfile) -> Arc<dyn Translator> {
+    match translator_name_for_profile(profile) {
+        "hermes" => Arc::new(HermesXmlTranslator),
+        _ => Arc::new(OpenAiTranslator),
+    }
 }
 
 /// Short, stable name of the translator Roko picks for a model slug.
@@ -494,6 +507,32 @@ mod tests {
             ToolFormat::Custom("gemini_native".to_string())
         );
         assert_eq!(translator_name_for_profile(&profile), "gemini");
+    }
+
+    /// bug-d0b8b8: an OpenAI-compatible endpoint keeps the OpenAI translator
+    /// for every native format, and uses Hermes text blocks only for a
+    /// `hermes_json` profile.
+    #[test]
+    fn translator_for_openai_compat_follows_hermes_json_only() {
+        let profile = |tool_format: &str| ModelProfile {
+            provider: "nous".to_string(),
+            slug: "hermes-4-70b".to_string(),
+            supports_tools: true,
+            tool_format: tool_format.to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            translator_for_openai_compat(&profile("hermes_json")).format(),
+            ToolFormat::HermesJson
+        );
+        for native in ["openai_json", "anthropic_blocks", "gemini_native"] {
+            assert_eq!(
+                translator_for_openai_compat(&profile(native)).format(),
+                ToolFormat::OpenAiJson,
+                "{native}"
+            );
+        }
     }
 
     #[test]

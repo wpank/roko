@@ -3252,7 +3252,8 @@ fn validate_and_fix_generated_plan(
         if serialized.contains(placeholder) {
             tracing::info!(
                 "prd plan: replaced placeholder '{}' with '{}'",
-                placeholder, replacement
+                placeholder,
+                replacement
             );
             serialized = serialized.replace(placeholder, replacement);
         }

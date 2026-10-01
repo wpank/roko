@@ -249,8 +249,7 @@ fn load_or_create_key(path: &Path) -> Result<[u8; 32]> {
     key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);

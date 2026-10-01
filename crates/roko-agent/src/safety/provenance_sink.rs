@@ -292,8 +292,13 @@ mod tests {
         sink: &Arc<MemoryProvenanceSink>,
         seen: &Arc<StdMutex<Vec<usize>>>,
     ) -> ToolDispatcher {
-        let def = ToolDef::new("probe", "x", ToolCategory::Meta, ToolPermission::read_only())
-            .with_concurrency(ToolConcurrency::Serial);
+        let def = ToolDef::new(
+            "probe",
+            "x",
+            ToolCategory::Meta,
+            ToolPermission::read_only(),
+        )
+        .with_concurrency(ToolConcurrency::Serial);
         let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![def]));
         let handler: Arc<dyn ToolHandler> = Arc::new(ProbeHandler {
             sink: Arc::clone(sink),
@@ -339,8 +344,10 @@ mod tests {
         // The intent was already recorded when the handler ran.
         assert_eq!(*seen.lock().expect("seen lock"), [1]);
         let records = sink.records();
-        let [ProvenanceRecord::Intent(intent), ProvenanceRecord::Outcome(outcome)] =
-            records.as_slice()
+        let [
+            ProvenanceRecord::Intent(intent),
+            ProvenanceRecord::Outcome(outcome),
+        ] = records.as_slice()
         else {
             panic!("expected an intent, then an outcome: {records:?}");
         };
@@ -381,8 +388,10 @@ mod tests {
         let records = sink.records();
         let encoded = serde_json::to_string(&records).expect("records serialize");
         assert!(!encoded.contains("quokka"), "{encoded}");
-        let [ProvenanceRecord::Intent(intent), ProvenanceRecord::Outcome(outcome)] =
-            records.as_slice()
+        let [
+            ProvenanceRecord::Intent(intent),
+            ProvenanceRecord::Outcome(outcome),
+        ] = records.as_slice()
         else {
             panic!("expected an intent, then an outcome: {records:?}");
         };

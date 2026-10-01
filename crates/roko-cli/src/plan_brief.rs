@@ -216,7 +216,9 @@ pub async fn prepare_full(
                 "Task: rubric: Write {RUBRIC_FILE} for plan `{plan_id}`\n\n{sources}\n\
                  ## {DECOMPOSITION_FILE}\n\n{decomposition}"
             );
-            let document = writer.write(RUBRIC_FILE, RUBRIC_SYSTEM_PROMPT, prompt).await?;
+            let document = writer
+                .write(RUBRIC_FILE, RUBRIC_SYSTEM_PROMPT, prompt)
+                .await?;
             write_document(&rubric_path, &document)?;
             prepared.written.push(rubric_path);
         } else {
@@ -337,8 +339,8 @@ impl DocumentWriter {
             "the model failed to write {file}: {}",
             reply.chars().take(500).collect::<String>()
         );
-        let document =
-            document_from_reply(reply).with_context(|| format!("the model wrote an empty {file}"))?;
+        let document = document_from_reply(reply)
+            .with_context(|| format!("the model wrote an empty {file}"))?;
         Ok(format!(
             "<!-- Written by model `{}` for `roko plan prepare --full`. `tasks.toml` and \
              `plan.md` decide where they differ. -->\n\n{document}",

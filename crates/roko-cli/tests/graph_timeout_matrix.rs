@@ -288,7 +288,10 @@ fn checkpoint_status(workspace: &ScriptedPlanWorkspace) -> String {
         &std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
     )
     .expect("checkpoint json");
-    checkpoint["status"].as_str().unwrap_or_default().to_string()
+    checkpoint["status"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The status `roko plan status` reports for [`PLAN`].
@@ -418,7 +421,10 @@ fn timeout_keeps_usage() {
         assert_eq!(ended.status.code(), Some(1), "{}", ended.context());
         let rows = cost_rows(&workspace, "T1");
         let [row] = rows.as_slice() else {
-            panic!("expected one cost row for T1: {rows:#?}\n{}", ended.context());
+            panic!(
+                "expected one cost row for T1: {rows:#?}\n{}",
+                ended.context()
+            );
         };
         assert_eq!(row["success"], false, "{row}");
         if row["input_tokens"] == 0 {
@@ -654,7 +660,10 @@ fn timeout_retry_continues_from_partial_work() {
         assert_eq!(ended.status.code(), Some(0), "{}", ended.context());
         let calls = provider.calls_for("T1");
         let [first, second] = calls.as_slice() else {
-            panic!("expected two attempts at T1: {calls:#?}\n{}", ended.context());
+            panic!(
+                "expected two attempts at T1: {calls:#?}\n{}",
+                ended.context()
+            );
         };
         let resumes = |prompt: &str| prompt.contains("# Resuming a timed-out task");
         assert!(!resumes(&first.prompt), "{}", first.prompt);
@@ -693,7 +702,11 @@ fn fast_deadline_stops_the_run() {
             .env("ROKO_FAST_MODE", "1")
             .env("ROKO_FAST_PLAN_DEADLINE_SECS", deadline_secs);
         let ended = run(command);
-        let agents: Vec<u32> = provider.calls().iter().filter_map(|call| call.pid).collect();
+        let agents: Vec<u32> = provider
+            .calls()
+            .iter()
+            .filter_map(|call| call.pid)
+            .collect();
         if agents.is_empty() {
             // The deadline came before the agent started.
             continue;
@@ -733,7 +746,12 @@ fn resume_after_timeout_is_idempotent() {
 
     let first = run(plan_run(&workspace, &[]));
     assert_eq!(first.status.code(), Some(1), "{}", first.context());
-    assert_eq!(checkpoint_status(&workspace), "failed", "{}", first.context());
+    assert_eq!(
+        checkpoint_status(&workspace),
+        "failed",
+        "{}",
+        first.context()
+    );
     assert_eq!(provider.calls_for("T1").len(), 1, "{}", first.context());
     assert_eq!(provider.calls_for("T2").len(), 1, "{}", first.context());
     let t1_rows = cost_rows(&workspace, "T1").len();
@@ -763,5 +781,10 @@ fn resume_after_timeout_is_idempotent() {
         "the passed task was recorded again\n{}",
         resumed.context()
     );
-    assert_eq!(cost_rows(&workspace, "T2").len(), 2, "{}", resumed.context());
+    assert_eq!(
+        cost_rows(&workspace, "T2").len(),
+        2,
+        "{}",
+        resumed.context()
+    );
 }

@@ -415,7 +415,10 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
     seed_repo(
         &repo,
         &provider,
-        &[(".gitignore", ".roko/\n"), ("plans/isolated/tasks.toml", &tasks)],
+        &[
+            (".gitignore", ".roko/\n"),
+            ("plans/isolated/tasks.toml", &tasks),
+        ],
     );
     let before = operator_state(&repo);
 

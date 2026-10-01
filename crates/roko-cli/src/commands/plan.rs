@@ -1471,7 +1471,10 @@ async fn cmd_plan_dir_status(
             println!("plan check:      {failure}");
         }
         if let Some(delivery) = &delivery {
-            println!("delivered:       {} at {}", delivery.branch, delivery.merge_commit);
+            println!(
+                "delivered:       {} at {}",
+                delivery.branch, delivery.merge_commit
+            );
             if let Some(command) = &merge_command {
                 println!("take it with:    {command}");
             }

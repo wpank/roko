@@ -57,11 +57,7 @@ struct RecordingRuntime {
 
 #[async_trait::async_trait]
 impl CliRuntime for RecordingRuntime {
-    async fn run_once(
-        &self,
-        workdir: &std::path::Path,
-        prompt: &str,
-    ) -> anyhow::Result<RunResult> {
+    async fn run_once(&self, workdir: &std::path::Path, prompt: &str) -> anyhow::Result<RunResult> {
         self.calls.lock().expect("lock calls").push(RecordedCall {
             kind: "once",
             workdir: workdir.to_path_buf(),
@@ -1513,9 +1509,7 @@ async fn plan_completions_of_single_plan_run(fail_before_start: bool) -> Vec<boo
         .replay_from(0)
         .into_iter()
         .filter_map(|envelope| match envelope.payload {
-            roko_core::DashboardEvent::PlanCompleted { plan_id, success }
-                if plan_id == "hello" =>
-            {
+            roko_core::DashboardEvent::PlanCompleted { plan_id, success } if plan_id == "hello" => {
                 Some(success)
             }
             _ => None,
@@ -1864,11 +1858,10 @@ async fn execute_plans_empty_body_runs_all() {
     let notify = Arc::clone(&runtime.as_ref().notify);
     let (_dir, state) = test_state_with_runtime(runtime);
 
-    let response =
-        match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await {
-            Ok(r) => r.into_response(),
-            Err(e) => panic!("execute_plans empty body should succeed, got error: {e:?}"),
-        };
+    let response = match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await {
+        Ok(r) => r.into_response(),
+        Err(e) => panic!("execute_plans empty body should succeed, got error: {e:?}"),
+    };
 
     assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
 
@@ -2046,10 +2039,7 @@ async fn plan_list_and_detail_carry_the_summary_fields() {
             }
         }
 
-        fn dashboard_scaffold(
-            &self,
-            _workdir: &std::path::Path,
-        ) -> crate::runtime::DashboardInfo {
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
             crate::runtime::DashboardInfo {
                 rendered: String::new(),
             }
@@ -2337,8 +2327,7 @@ async fn task_diff_reads_the_graph_task_result() {
     assert_eq!(reply["held"], true);
     let log = std::fs::read_to_string(roko_fs::RokoLayout::for_project(repo).reviews_log())
         .expect("review log");
-    let entry: Value =
-        serde_json::from_str(log.lines().last().expect("an entry")).expect("json");
+    let entry: Value = serde_json::from_str(log.lines().last().expect("an entry")).expect("json");
     assert_eq!(entry["attempt_key"], "run-1:plan-a:T1:2");
     assert_eq!(entry["decision"], "rejected");
     assert_eq!(entry["comment"], "keep it smaller");

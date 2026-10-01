@@ -35,10 +35,11 @@ pub fn spawn_episode_distillation(
 /// Role under which the spend of an episode-distillation call is recorded.
 pub const DISTILLATION_ROLE: &str = "episode-distiller";
 
-/// [`spawn_episode_distillation`] through a `model_caller` that records
-/// nothing itself, such as a bare `ModelCallService`: the call's spend is
-/// recorded through [`DistillationSpend`]. The CLI's capture paths and ACP
-/// distil this way.
+/// [`spawn_episode_distillation`] that records the call's spend.
+///
+/// For a `model_caller` that records nothing itself, such as a bare
+/// `ModelCallService`, the spend goes through [`DistillationSpend`]. The CLI's
+/// capture paths and ACP distil this way.
 pub fn spawn_recorded_episode_distillation(
     workdir: PathBuf,
     episode: Episode,

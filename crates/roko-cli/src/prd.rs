@@ -4223,7 +4223,12 @@ mod tests {
 
         let report = outcome.validation_report.expect("validation report");
         assert_eq!(report["totals"]["plans_checked"], 1, "{report}");
-        assert_eq!(report["plans"][0]["plan_id"], "widget", "{report}");
+        // The report lists only plans with findings: never the broken sibling.
+        let plans = report["plans"].as_array().expect("plans");
+        assert!(
+            plans.iter().all(|plan| plan["plan_id"] == "widget"),
+            "{report}"
+        );
         assert!(!report.to_string().contains("PLAN_001"), "{report}");
     }
 

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
 use crate::task_accept;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{TaskDef, TasksFile};
 
 /// Current host checkpoint schema version. V2 manifests are migrated in-memory
 /// to v3 with empty extensions and receipts; other versions fail closed.
@@ -1681,7 +1681,7 @@ pub(crate) fn start_plan_checkpoint(
     workdir: &Path,
     plan: &Plan,
 ) -> Result<PreparedGraphCheckpoint> {
-    let graph = convert_plan(plan, &ResumeOptions::default())?;
+    let graph = convert_plan(plan, &plan_task_infos(plan, |task| task.max_retries))?;
     prepare_graph_checkpoint(workdir, None, &plan.id, 1, &graph, false, false)
 }
 
@@ -1834,7 +1834,10 @@ pub fn preview_plan_resume(
     if options.rich_topology {
         bail!("the checkpoint preview does not support --rich-topology");
     }
-    let graph = convert_plan(plan, options)?;
+    // A run's retry budgets come from its dispatcher's gate thresholds. They
+    // live in the node configs, which the plan fingerprint leaves out.
+    let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+    let graph = convert_plan(plan, &tasks)?;
     let mut preview = preview_graph_checkpoint(
         workdir,
         options.resume_plan,
@@ -1857,11 +1860,15 @@ pub fn preview_plan_resume(
     Ok(preview)
 }
 
-/// Convert `plan` as `graph_execution::plan_runner::run_one_plan` does with
-/// the default topology, so the preview fingerprints the graph a run executes.
-fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
+/// `plan`'s tasks as the Graph converters take them, each with the retry
+/// budget `max_retries` gives it. `run_one_plan` and the resume preview both
+/// build their graphs from this list, so the preview fingerprints the graph a
+/// run executes (gap-be7368).
+pub(crate) fn plan_task_infos(
+    plan: &Plan,
+    mut max_retries: impl FnMut(&TaskDef) -> u32,
+) -> Vec<(String, PlanTaskInfo)> {
+    plan.tasks
         .tasks
         .iter()
         .map(|task| {
@@ -1875,23 +1882,33 @@ fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
                 depends_on: task.depends_on.clone(),
                 depends_on_plan: task.depends_on_plan.clone(),
                 timeout_secs: task.timeout_secs,
-                max_retries: options.max_retries.unwrap_or(task.max_retries),
+                max_retries: max_retries(task),
                 domain: task.domain.as_ref().map(|domain| format!("{domain:?}")),
                 sequence: task.sequence,
                 full_config_json: serde_json::to_value(task).unwrap_or_default(),
             };
             (task.id.clone(), info)
         })
-        .collect();
-    // The plan's own concurrency, and 1 when it omits `max_parallel`, as
-    // `run_one_plan` converts it: the run applies `--max-tasks` and widens
-    // the graph only after its identity is taken (gap-7147bb).
-    let max_parallel = plan.tasks.meta.max_parallel.unwrap_or(1);
+        .collect()
+}
+
+/// The concurrency `plan` converts at: its own `max_parallel`, and 1 when it
+/// omits it, as before that meant "as wide as the DAG allows" (gap-272448).
+/// The checkpoint identity hashes the converted concurrency, so a run applies
+/// `--max-tasks` and the DAG width only after taking it (gap-7147bb).
+pub(crate) fn converted_max_parallel(plan: &Plan) -> u32 {
+    plan.tasks.meta.max_parallel.unwrap_or(1)
+}
+
+/// Convert `plan`'s `tasks` ([`plan_task_infos`]) with the default topology,
+/// at [`converted_max_parallel`]: the graph `run_one_plan` runs, and the one
+/// the resume preview fingerprints.
+pub(crate) fn convert_plan(plan: &Plan, tasks: &[(String, PlanTaskInfo)]) -> Result<Graph> {
     plan_to_graph(
         &plan.id,
         &plan.dir.display().to_string(),
-        &tasks,
-        max_parallel,
+        tasks,
+        converted_max_parallel(plan),
     )
     .with_context(|| format!("convert plan '{}' to a Graph", plan.id))
 }
@@ -2216,7 +2233,8 @@ depends_on = ["T1"]
     }
 
     fn plan_graph(plan: &Plan, options: &ResumeOptions<'_>) -> Graph {
-        convert_plan(plan, options).expect("convert plan")
+        let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+        convert_plan(plan, &tasks).expect("convert plan")
     }
 
     /// Start a run of plan `p`, record T1's output, and stop it as failed.
@@ -2567,6 +2585,23 @@ depends_on = ["T1"]
         )
         .expect("resume with another --max-tasks");
         assert_eq!(resumed.replayed_entries(), 1);
+    }
+
+    /// gap-be7368: a run and the resume preview convert a plan with one
+    /// mapping ([`plan_task_infos`], [`convert_plan`]). Only their retry
+    /// budgets differ, and those are not part of the plan's identity.
+    #[test]
+    fn retry_budgets_leave_the_preview_identity_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let identity = |budget: u32| {
+            let graph =
+                convert_plan(&plan, &plan_task_infos(&plan, |_| budget)).expect("convert plan");
+            GraphIdentity::of(dir.path(), &graph)
+                .expect("identity")
+                .current
+        };
+        assert_eq!(identity(0), identity(4));
     }
 
     #[test]

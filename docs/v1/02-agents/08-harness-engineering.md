@@ -6,10 +6,10 @@
 > Sub-doc 08 of **02-agents** · Roko Documentation
 >
 > This document covers the Meta-Harness research (Lee et al., 2026), the
-> evidence for harness quality as the dominant factor in agent performance,
-> the six harness principles, and how they map to Roko's implementation.
-> Nuance: the "6× gap" cited below refers to ref [46] from the Meta-Harness
-> paper (SWE-bench mobile), not to a general claim about all agent tasks.
+> evidence that the harness can matter as much as the model, Roko's own
+> harness-design principles, and how they map to Roko's implementation.
+> Nuance: the "6× gap" below is a result the Meta-Harness paper cites
+> (SWE-bench Mobile), not one it measures.
 
 
 > **Implementation**: Shipping
@@ -20,10 +20,9 @@
 
 The central finding of harness engineering research is that the **harness** —
 the scaffolding around an LLM (prompts, tools, context management, retry
-logic) — contributes more to agent performance than the model itself. This
-is counter-intuitive: most effort goes into model improvement, but the
-evidence shows that a better harness on a weaker model often outperforms a
-worse harness on a stronger model.
+logic) — can matter as much as the model itself (Lee et al. 2026, §1). Most
+effort goes into model improvement, yet the same model can do much better
+with a better harness.
 
 The key paper is:
 
@@ -34,30 +33,29 @@ Their findings across multiple benchmarks:
 
 | Benchmark | Harness improvement | Notes |
 |---|---|---|
-| Text classification | **+7.7 accuracy points** | Same model, better harness |
-| IMO math problems | **+4.7 points** | Structured tool access + validation |
-| Token efficiency | **4× fewer tokens** | Context pruning + right-sized prompts |
-| SWE-bench mobile | **6× performance gap** | ref [46]; harness vs. no harness |
+| Online text classification | **+7.7 points** | Over Agentic Context Engineering, same model (§4.1) |
+| IMO-level math, 200 problems | **+4.7 points** | Retrieval-augmented harness, averaged over five held-out models (§4.2) |
+| Context cost | **4× fewer context tokens** | The same text-classification harness (§4.1) |
+| SWE-bench Mobile | **6× performance gap** | Cited by the paper, not measured (§1) |
 
 ### The nuance on "6×"
 
-The "6× gap" number comes from reference [46] in the Meta-Harness paper,
-which is a SWE-bench mobile benchmark. It measures the performance difference
-between a bare model (no harness) and the same model with a full harness
-(tools, file access, test execution, context management). This is a
+The "6× gap" number is a result the Meta-Harness paper cites in its
+introduction (SWE-bench Mobile): changing the harness around a fixed model
+produced a 6× gap on that benchmark. This is a
 **specific benchmark result**, not a general claim about all agent tasks.
 The +7.7 and +4.7 numbers from text classification and math are more
 representative of typical harness impact.
 
-The practical takeaway: harness quality is consistently the largest lever
-for agent performance, but the exact magnitude varies by task type.
+The practical takeaway: the harness can matter as much as the model, and the
+exact magnitude varies by task type.
 
 ---
 
-## Six Harness Principles
+## Roko's Harness-Design Principles
 
-The Meta-Harness paper identifies six principles for effective agent harnesses.
-Here is how each maps to Roko's implementation:
+These six principles are Roko's own synthesis; the Meta-Harness paper does not
+state them. Here is how each maps to Roko's implementation:
 
 ### 1. Design Tools for the Model, Not for Humans
 
@@ -159,7 +157,7 @@ decisions. Record what worked, what failed, and why.
 
 ## Applying Meta-Harness to Roko
 
-### Where Roko implements Meta-Harness principles well
+### Where Roko follows these principles well
 
 1. **Tool validation pipeline** — The 7-step ToolDispatcher is exactly the
    "validate before executing" principle, implemented with audit signals for
@@ -185,14 +183,14 @@ decisions. Record what worked, what failed, and why.
 2. **Role prompts are minimal** — The current role prompt templates are
    approximately 1 sentence each, versus Mori's ~2K-token role prompts that
    carried detailed behavioral instructions. This gap means agents don't get
-   the nuanced persona guidance that Meta-Harness principle #1 calls for.
+   the nuanced persona guidance that principle #1 calls for.
 
 3. **Context pruning is basic** — The current prune strategy is byte-based
    rather than semantic. A smarter approach would preserve messages referenced
    by recent tool calls and drop messages about completed sub-tasks.
 
 4. **No iterative refinement** — When a gate rejects an agent's output, the
-   orchestrator currently marks the task as failed. Meta-Harness principle #6
+   orchestrator currently marks the task as failed. Principle #6
    calls for feeding the gate feedback back into the agent for a retry with
    the specific failure reason.
 
@@ -200,12 +198,12 @@ decisions. Record what worked, what failed, and why.
 
 ## SWE-bench Context
 
-The Meta-Harness paper draws heavily on SWE-bench (Jimenez et al., 2024),
-where harness quality accounts for most of the performance variance between
-agent systems. The finding that the same underlying model can score 25% or
-85% on SWE-bench depending on the harness was a wake-up call for the field.
+The Meta-Harness paper evaluates text classification, IMO-level math and
+TerminalBench-2 (§4); SWE-bench appears in it only through the cited SWE-bench
+Mobile result behind the 6× figure. SWE-bench itself (Jimenez et al., 2024) is
+the usual agentic-coding benchmark.
 
-Roko's architecture is designed with this finding in mind: the six crate
+Roko's architecture treats the harness as the lever: the six crate
 layers (core, agent, orchestrator, gate, compose, learn) provide the
 harness infrastructure, while the model is a pluggable component selected
 at runtime. This separation means harness improvements benefit all models
@@ -218,8 +216,8 @@ simultaneously.
 1. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 accuracy, +4.7 math, 4× tokens.
 2. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" — Benchmark context for harness variance.
-3. ref [46] in Meta-Harness — SWE-bench mobile, source of the "6× gap"
-   number between harness and no-harness configurations.
+3. SWE-bench Mobile, cited in the Meta-Harness introduction as the source of
+   the "6× gap".
 4. `crates/roko-agent/src/dispatcher/mod.rs` — 7-step pipeline.
 5. `crates/roko-agent/src/safety/mod.rs` — SafetyLayer.
 6. `crates/roko-compose/src/system_prompt_builder.rs` — 6-layer prompts.

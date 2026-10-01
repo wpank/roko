@@ -266,7 +266,7 @@ The `supports_*` flags drive adapter behavior at multiple levels:
   for reasoning extraction.
 - **`tool_format`** — Selects the `Translator` implementation: `"openai_json"`,
   `"anthropic_blocks"`, `"ollama_json"`, or `"react_text"`. This is the
-  enforcement point for the Meta-Harness principle that tool-call format
+  enforcement point for Roko's harness principle that tool-call format
   preference is model-specific (see sub-doc 09 for full discussion).
 - **`max_tools`** — When set, the adapter truncates the tool array to this
   size. Research shows that some models (notably Qwen3-coder) degrade above

@@ -9,8 +9,9 @@ const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 ///
 /// A non-positive or non-finite ceiling means unlimited. When
 /// `continue_on_exhaustion` is enabled, spend is still recorded and exposed
-/// for observability, but new dispatches are not blocked. This mirrors the
-/// existing Runner-v2 semantics for explicit CLI budget overrides.
+/// for observability, but new dispatches are not blocked. Only `--no-budget`
+/// enables it, with an unlimited ceiling, which also turns off the per-task
+/// and daily checks; `--budget-override` is a hard ceiling (gap-d31457).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphPlanBudgetPolicy {
     pub(super) ceiling_micro_usd: Option<u64>,
@@ -511,7 +512,7 @@ impl std::fmt::Display for DailyStop {
                 f,
                 "budget.max_daily_usd = ${:.4} cannot be enforced: today's spend (UTC) includes \
                  {calls} provider call(s) whose cost was never priced; give their models a price \
-                 in [models], or run with --budget-override",
+                 in [models], or run with --no-budget",
                 micro_usd_to_usd(ceiling_micro_usd)
             ),
             Self::Malformed(bits) => write!(
@@ -566,8 +567,9 @@ impl GraphTaskDispatcher {
     }
 
     /// Refuse a provider dispatch once today's spend reached
-    /// `budget.max_daily_usd`, mirroring the plan ceiling: an explicit
-    /// `--budget` override only warns, and `--no-budget` disables the check.
+    /// `budget.max_daily_usd`, mirroring the plan ceiling: a policy that
+    /// continues on exhaustion only warns, and `--no-budget` disables the
+    /// check.
     pub(super) async fn admit_daily_budget(&self, spec: &TaskExecutionSpec) -> Result<()> {
         let policy = self.budget_policy;
         if policy.continue_on_exhaustion && policy.ceiling_micro_usd.is_none() {
@@ -585,7 +587,7 @@ impl GraphTaskDispatcher {
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task = %spec.title,
-                "{stop}; continuing under the explicit --budget override"
+                "{stop}; continuing, as the plan's budget policy allows"
             );
             return Ok(());
         }
@@ -1202,13 +1204,13 @@ mod tests {
         );
     }
 
-    /// `--budget-override` only warns about a spent day, `--no-budget` turns
-    /// the check off, and a ceiling of `0.0` is unlimited.
+    /// `--no-budget` turns the daily check off, and a daily ceiling of `0.0`
+    /// is unlimited, so a spent day still dispatches. `--budget-override`
+    /// lifts only the plan ceiling (`a_budget_override_leaves_a_spent_day_spent`).
     #[tokio::test]
-    async fn overrides_and_a_zero_ceiling_let_a_spent_day_dispatch() {
+    async fn no_budget_and_a_zero_daily_ceiling_let_a_spent_day_dispatch() {
         let earlier = [earlier_call(chrono::Utc::now(), 3.0)];
         for (label, max_daily_usd, override_ceiling) in [
-            ("--budget-override", 1.0, Some(10.0)),
             ("--no-budget", 1.0, Some(0.0)),
             ("max_daily_usd = 0", 0.0, None),
         ] {
@@ -1231,6 +1233,34 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{label}: the call is admitted: {error}"));
             assert!(provider_ran(&temp), "{label}");
         }
+    }
+
+    /// gap-d31457: `--budget-override` sets a hard plan ceiling and lifts no
+    /// other limit, so a spent day still starts no task.
+    #[tokio::test]
+    async fn a_budget_override_leaves_a_spent_day_spent() {
+        let temp = tempdir().expect("tempdir");
+        let earlier = [earlier_call(chrono::Utc::now(), 3.0)];
+        let (dispatcher, task) = daily_dispatcher(&temp, 1.0, &earlier, true).await;
+        // The policy `--budget-override 10` runs with.
+        let dispatcher = dispatcher.with_plan_budget(10.0, 0.0, false);
+        let spec = make_spec(&task);
+        dispatcher.prime_daily_budget().await;
+        assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the day is spent");
+        assert!(
+            matches!(
+                error,
+                RokoError::BudgetExceeded { dimension, .. }
+                    if dimension.contains("budget.max_daily_usd")
+            ),
+            "got {error:?}"
+        );
+        assert!(!provider_ran(&temp), "the provider was never called");
     }
 
     /// A call whose cost was never priced makes the day's spend unknown,

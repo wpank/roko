@@ -510,7 +510,8 @@ const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
 /// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
 /// only under `--no-budget`, which also lets a spent day dispatch. An explicit
 /// CLI ceiling is a hard cap, as a configured one is: once the plan has spent
-/// it, no further task starts (gap-d31457).
+/// it, no further task starts (gap-d31457). `--budget-override 0` removes the
+/// plan ceiling but keeps the per-task and daily ones.
 pub fn resolve_budget_ceiling(
     budget_override: Option<f64>,
     no_budget: bool,
@@ -4097,6 +4098,7 @@ max_retries = 0
     fn a_budget_override_is_a_hard_ceiling() {
         for (budget_override, no_budget, expected) in [
             (Some(2.0), false, (2.0, false)),
+            (Some(0.0), false, (0.0, false)),
             (Some(-1.0), false, (0.0, false)),
             (None, false, (25.0, false)),
             (None, true, (0.0, true)),

@@ -2212,13 +2212,14 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
         /// replacing whatever is configured in roko.toml. Once the plan has
         /// spent it, no further task starts, as with a configured ceiling.
-        /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
+        /// `--budget-override 0` removes the plan ceiling; the per-task and
+        /// daily ceilings still apply.
         #[arg(long, value_name = "AMOUNT")]
         budget_override: Option<f64>,
         /// Disable budget enforcement entirely for this run.
         ///
-        /// Equivalent to `--budget-override 0`: sets the per-plan ceiling to
-        /// unlimited (0.0) so `BudgetAction::Block` is never triggered.
+        /// No plan, per-task or daily ceiling stops a dispatch; spend is still
+        /// recorded.
         #[arg(long, conflicts_with = "budget_override")]
         no_budget: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk

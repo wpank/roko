@@ -763,23 +763,17 @@ the harness matters more than the model.
 
 ## Citations
 
-1. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language
-   Models." ICLR 2023. arXiv:2210.03629. — ReAct pattern.
+1. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
 2. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal
    Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366. — Self-reflection.
-3. Zhou, A. et al. (2024). "Language Agent Tree Search Unifies Reasoning,
-   Acting, and Planning." ICML 2024. arXiv:2310.04406. — LATS/MCTS.
-4. Yao, S. et al. (2023). "Tree of Thoughts: Deliberate Problem Solving with
-   Large Language Models." NeurIPS 2023. arXiv:2305.10601. — ToT.
-5. arXiv:2511.14650 (2025). "AutoTool: Efficient Tool Selection for Large Language Model Agents." AAAI 2026. — Graph-based tool prediction.
+3. Zhou, A. et al. (2024). "Language Agent Tree Search Unifies Reasoning, Acting, and Planning." ICML 2024. arXiv:2310.04406.
+4. Yao, S. et al. (2023). "Tree of Thoughts: Deliberate Problem Solving with Large Language Models." NeurIPS 2023. arXiv:2305.10601.
+5. arXiv:2511.14650 (2025). "AutoTool: Efficient Tool Selection for Large Language Model Agents." AAAI 2026.
 6. arXiv:2603.18897 (2025). Microsoft Research. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." — 48.5% latency reduction.
-8. arXiv:2506.14852 (2025). "Agentic Plan Caching." — 50.31% cost reduction.
+8. arXiv:2506.14852 (2025). "Agentic Plan Caching."
 9. Red Hat (2025). "Tool RAG: Next Breakthrough in Scalable AI Agents."
-   — 99.6% token reduction.
-10. Patil, S. et al. (2025). "BFCL: Berkeley Function Calling Leaderboard."
-    ICML 2025. — Tool use benchmark.
-11. arXiv:2604.06185 (2025). "WildToolBench: Benchmarking LLM Tool-Use in
-    the Wild." ICLR 2026. — <15% session accuracy.
+10. Patil, S. et al. (2025). "BFCL: Berkeley Function Calling Leaderboard." ICML 2025.
+11. arXiv:2604.06185 (2025). "WildToolBench: Benchmarking LLM Tool-Use in the Wild." ICLR 2026.
 12. `crates/roko-agent/src/tool_loop/mod.rs` — Full 769-line source.
 13. `crates/roko-agent/src/dispatcher/mod.rs` — Full 1070-line source.
 14. `crates/roko-agent/src/safety/mod.rs` — SafetyLayer, 6 policy families.

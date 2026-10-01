@@ -804,30 +804,16 @@ pub enum PlanRecoveryDecision {
 
 ## References
 
-- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and
-  low-complexity task scheduling for heterogeneous computing. *IEEE Trans.
-  Parallel and Distributed Systems*, 13(3), 260–274. (HEFT algorithm)
-- Ousterhout, J. (2013). Sparrow: Distributed, low latency scheduling. *SOSP
-  2013*. (Power-of-two-choices dispatch)
-- Vickrey, W. (1961). Counterspeculation, auctions, and competitive sealed
-  tenders. *Journal of Finance*, 16(1), 8–37. (Second-price auction theory)
+- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and low-complexity task scheduling for heterogeneous computing. *IEEE Trans. Parallel and Distributed Systems*, 13(3), 260–274.
+- Ousterhout, J. (2013). Sparrow: Distributed, low latency scheduling. *SOSP 2013*.
+- Vickrey, W. (1961). Counterspeculation, auctions, and competitive sealed tenders. *Journal of Finance*, 16(1), 8–37.
 - Hu, S. et al. (2025). Automated design of agentic systems. *ICLR 2025*.
-  (ADAS — meta-agent architecture search, relevant to automatic task
-  decomposition and role assignment)
-- Lee, J. et al. (2026). FrugalGPT: How to use large language models while
-  reducing cost and improving performance. *arXiv:2603.28052*. (Cost-efficient
+- Chen, L., Zaharia, M. & Zou, J. (2023). FrugalGPT: How to use large language models while reducing cost and improving performance. *arXiv:2305.05176*. (Cost-efficient
   model routing, underpins the CascadeRouter)
-- Garcia-Molina, H. & Salem, K. (1987). Sagas. *ACM SIGMOD 1987*. (Saga
-  pattern for long-lived transactions with compensation.)
+- Garcia-Molina, H. & Salem, K. (1987). Sagas. *ACM SIGMOD 1987*.
 - Gerevini, A. et al. (2003). Planning through stochastic local search and
   temporal action graphs in LPG. *JAIR*, 20, 239–290. (LPG-adapt plan repair.)
-- Sacerdoti, E. D. (1974). Planning in a hierarchy of abstraction spaces.
-  *Artificial Intelligence*, 5(2), 115–135. (ABSTRIPS — abstraction
-  hierarchies in automated planning.)
-- Erol, K., Hendler, J. & Nau, D. S. (1994). HTN planning: Complexity and
-  expressivity. *AAAI 1994*. (Hierarchical Task Network decomposition.)
-- Fox, M. et al. (2006). Plan stability: Replanning versus plan repair.
-  *ICAPS 2006*. (When repair beats replanning.)
-- desJardins, M. E. et al. (1999). A survey of research in distributed,
-  continual planning. *AI Magazine*, 20(4), 13–22. (Interleaving planning
-  and execution, meta-reasoning about when to replan.)
+- Sacerdoti, E. D. (1974). Planning in a hierarchy of abstraction spaces. *Artificial Intelligence*, 5(2), 115–135.
+- Erol, K., Hendler, J. & Nau, D. S. (1994). HTN planning: Complexity and expressivity. *AAAI 1994*.
+- Fox, M. et al. (2006). Plan stability: Replanning versus plan repair. *ICAPS 2006*.
+- desJardins, M. E. et al. (1999). A survey of research in distributed, continual planning. *AI Magazine*, 20(4), 13–22.

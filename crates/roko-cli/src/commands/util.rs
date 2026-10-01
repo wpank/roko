@@ -4,6 +4,7 @@ use crate::*;
 use roko_cli::status::{StatusDiagnostic, collect_session_status};
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
+use roko_learn::efficiency::AgentEfficiencyEvent;
 use std::io::IsTerminal;
 
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
@@ -486,6 +487,38 @@ pub(crate) async fn cmd_run(
     }
 }
 
+/// One `roko status` line per role. The role profiles' cost figures come only
+/// from events whose cost was measured: an event that consumed tokens but
+/// recorded $0 (a bench run of an external agent, say) has an unknown cost,
+/// so it is counted as unknown rather than averaged in as free.
+fn efficiency_role_lines(events: &[AgentEfficiencyEvent]) -> Vec<String> {
+    compute_role_profiles(events)
+        .iter()
+        .map(|profile| {
+            let cost = match (profile.avg_cost_usd, profile.p95_cost_usd) {
+                (Some(avg_cost), Some(p95_cost)) => {
+                    let mut cost = format!(
+                        "avg_cost=${:.4}  p95_cost=${:.4}",
+                        avg_cost.max(0.0),
+                        p95_cost.max(0.0),
+                    );
+                    if profile.cost_unknown > 0 {
+                        cost.push_str(&format!("  cost_unknown={}", profile.cost_unknown));
+                    }
+                    cost
+                }
+                _ => "avg_cost=unknown  p95_cost=unknown".to_string(),
+            };
+            format!(
+                "  {:<16} {cost}  pass_rate={:.0}%  n={}",
+                profile.role,
+                profile.pass_rate * 100.0,
+                profile.observations,
+            )
+        })
+        .collect()
+}
+
 pub(crate) async fn cmd_status(
     cli: &Cli,
     workdir: Option<PathBuf>,
@@ -926,16 +959,8 @@ pub(crate) async fn cmd_status(
         Ok(events) if !events.is_empty() => {
             println!();
             println!("efficiency events: {} total", events.len());
-            let profiles = compute_role_profiles(&events);
-            for p in &profiles {
-                println!(
-                    "  {:<16} avg_cost=${:.4}  p95_cost=${:.4}  pass_rate={:.0}%  n={}",
-                    p.role,
-                    p.avg_cost_usd.max(0.0),
-                    p.p95_cost_usd.max(0.0),
-                    p.pass_rate * 100.0,
-                    p.observations,
-                );
+            for line in efficiency_role_lines(&events) {
+                println!("{line}");
             }
         }
         _ => {}
@@ -2674,3 +2699,50 @@ pub(crate) fn warn_capability_mismatch(config: &RokoConfig, model_key: &str, rol
 // NOTE: `preflight_providers_aggregate` was removed — it emitted warnings for
 // ALL configured providers, even those not used by the current command.
 // Commands now call `preflight_provider_for_model` for only the selected model.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn efficiency_event(role: &str, cost_usd: f64) -> AgentEfficiencyEvent {
+        let mut event = AgentEfficiencyEvent::default_event();
+        event.role = role.to_string();
+        event.input_tokens = 100;
+        event.output_tokens = 20;
+        event.cost_usd = cost_usd;
+        event.gate_passed = Some(true);
+        event
+    }
+
+    #[test]
+    fn cfactor_shows_unknown_cost_as_unknown() {
+        let lines = efficiency_role_lines(&[
+            // Bench runs of an external agent: tokens, but no measured cost.
+            efficiency_event("BenchAgent", 0.0),
+            efficiency_event("BenchAgent", 0.0),
+            efficiency_event("Implementer", 0.5),
+            efficiency_event("Implementer", 0.0),
+        ]);
+        let line = |role: &str| {
+            lines
+                .iter()
+                .find(|line| line.contains(role))
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        let bench = line("BenchAgent");
+        assert!(bench.contains("avg_cost=unknown"), "{bench}");
+        assert!(
+            !bench.contains('$'),
+            "an unknown cost must not print as dollars: {bench}"
+        );
+        assert!(bench.contains("n=2"), "{bench}");
+
+        // The one measured cost is averaged alone; the other is counted.
+        let implementer = line("Implementer");
+        assert!(implementer.contains("avg_cost=$0.5000"), "{implementer}");
+        assert!(implementer.contains("cost_unknown=1"), "{implementer}");
+        assert!(implementer.contains("n=2"), "{implementer}");
+    }
+}

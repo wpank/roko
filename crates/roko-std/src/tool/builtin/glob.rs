@@ -149,7 +149,9 @@ fn match_segments(pat: &[&str], path: &[&str]) -> bool {
     }
 }
 
-fn segment_match(pat: &[u8], text: &[u8]) -> bool {
+/// Whether `text` matches the glob `pat` as one segment: `*` matches any run
+/// of bytes, a `/` included, `?` one byte, and `[...]` a class.
+pub(super) fn segment_match(pat: &[u8], text: &[u8]) -> bool {
     let mut pi = 0;
     let mut ti = 0;
     let mut star: Option<(usize, usize)> = None;

@@ -1,5 +1,9 @@
 # Agent Harnesses and Tool Use
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -22,30 +26,25 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 ## Harness Engineering
 
 - Lee et al. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
-  *Grounds: Core thesis — 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. An agent reads its own scaffold history, proposes improvements, benchmarks them, and iterates. The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
+  *Grounds: Core thesis — The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. A coding-agent proposer reads earlier harness candidates' code, scores and execution traces, proposes new harnesses, evaluates them and iterates (§3). The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
-  *Grounds: Natural-language scaffolds — scaffold logic as natural language specifications interpreted by an intelligent runtime. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - Kapoor, S. et al. (2026). HAL: A Holistic Agent Leaderboard. _ICLR_, 2026.
-  *Grounds: Scaffold importance — 21,730 agent rollouts show scaffold choice matters as much as model choice. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 ---
 
 ## Agent-Computer Interfaces
 
 - Yang, J. et al. (2024). SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering. _NeurIPS_, 2024.
-  *Grounds: ACI design — Agent-Computer Interfaces purpose-built for LLM agents. How an agent interacts with its environment (tool design, output formatting, feedback structure) matters as much as reasoning. Influences Roko's tool permissions, structured error digests, and role-specific feedback formatting.*
 
 - Gauthier, P. (2024). Aider: AI Pair Programming in Your Terminal. aider.chat.
-  *Grounds: Repository map — pioneered practical patterns for AI-assisted code editing: edit format negotiation, repository map construction, and diff-based output parsing. Influences Roko's workspace map generation.*
 
 ---
 
 ## Multi-Agent Orchestration
 
 - Schluntz & Zhang (2024). Building Effective Agents. anthropic.com.
-  *Grounds: Composition over complexity — keep individual agents simple, compose through a controller. Directly influenced Roko's architecture: each agent role does one thing, the orchestrator composes them into pipelines.*
 
 ---
 
@@ -55,7 +54,6 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
   *Grounds: 16 T0 probes — cascade architectures can achieve up to 98% cost reduction while matching top-model quality. The key is intelligent routing. Grounds Roko's T0/T1/T2 cascade.*
 
 - Ong et al. (2024). RouteLLM: Learning to Route LLMs with Preference Data. arXiv:2406.18665.
-  *Grounds: Preference-based routing — learn routing decisions from preference data. Informs the CascadeRouter's training on historical task outcomes.*
 
 
 ---
@@ -63,26 +61,21 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 ## Cognitive Architecture Integration
 
 - Sumers, T.R., Yao, S., Narasimhan, K., & Griffiths, T.L. (2023). Cognitive Architectures for Language Agents (CoALA). arXiv:2309.02427.
-  *Grounds: 9-step cognitive loop — defines the CoALA framework mapping to Roko's universal loop. Cross-referenced in [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
+  *Grounds: Roko's universal loop — CoALA's decision cycle (planning, then execution, §4.6) is the framework Roko's loop maps to; the 9-step list is Roko's own. Cross-referenced in [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
 
 - Park, J.S. et al. (2023). Generative Agents: Interactive Simulacra of Human Behavior. _UIST_, 2023. arXiv:2304.03442.
-  *Grounds: Memory + reflection — memory, retrieval, and reflection architecture producing emergent social behaviors. Cross-referenced in [01-memory-consolidation.md](./01-memory-consolidation.md).*
 
 ---
 
 ## Evaluation and Benchmarks
 
 - Jimenez, C.E. et al. (2024). SWE-bench: Can Language Models Resolve Real-World GitHub Issues? _ICLR_, 2024.
-  *Grounds: Agent benchmark — 2,294 real GitHub issues from 12 Python repositories. The gold standard for coding agent evaluation.*
 
 - Shahul Es, S. et al. (2024). RAGAS: Automated Evaluation of Retrieval Augmented Generation. _EACL_, 2024.
-  *Grounds: RAG evaluation — three metrics (faithfulness, answer relevance, context relevance) for automated RAG evaluation without human annotations.*
 
 - Saad-Falcon, J. et al. (2024). ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems. _NAACL_, 2024.
-  *Grounds: Statistical RAG evaluation — Prediction-Powered Inference provides statistically valid RAG evaluation from ~300 human labels with confidence intervals.*
 
 - Liu, X. et al. (2024). AgentBench: Evaluating LLMs as Agents. _ICLR_, 2024.
-  *Grounds: Multi-environment evaluation — tests agents across eight environments. Agent performance varies dramatically across environments, supporting environment-specific scaffold design.*
 
 ---
 

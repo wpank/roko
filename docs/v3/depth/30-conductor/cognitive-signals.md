@@ -211,10 +211,8 @@ responses means better matching between detected anomalies and corrective action
 
 - Ashby, W.R. (1956). *An Introduction to Cybernetics*. Chapman & Hall. -- Law of
   Requisite Variety: "Only variety can absorb variety."
-- Yerkes, R.M. & Dodson, J.D. (1908). "The relation of strength of stimulus to
-  rapidity of habit-formation." -- Cooldown signal rationale.
-- Beer, S. (1972). *Brain of the Firm*. -- Algedonic signals as priority interrupts
-  that bypass normal management hierarchy.
+- Yerkes, R.M. & Dodson, J.D. (1908). "The relation of strength of stimulus to rapidity of habit-formation."
+- Beer, S. (1972). *Brain of the Firm*.
 
 ---
 

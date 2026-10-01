@@ -450,8 +450,7 @@ approach is compatible: the tier multiplier and demurrage model generalize
 the basic Ebbinghaus curve with economic reinforcement.
 
 Memory Worth (arXiv:2604.12007) introduces outcome-grounded forgetting --
-evaluating each memory by its causal contribution to task success rather than
-by age alone. Roko's reinforcement signals partially implement this: the
+tracking how often each memory co-occurs with successful versus failed outcomes rather than relying on age alone; the paper stresses that this signal is associational, not causal (§3, §4.2). Roko's reinforcement signals partially implement this: the
 `Gated` signal specifically rewards knowledge that contributed to gate success.
 The catalytic score (`catalytic_score` field) extends this further by tracking
 how many new entries each entry helped create, enabling autocatalysis
@@ -1074,12 +1073,7 @@ correlation) and historical success rates for each domain pair.
 
 ### xMemory decoupling pattern
 
-xMemory (arXiv:2602.02007) advocates decoupling memory retrieval from memory
-aggregation. Roko's architecture follows this pattern: HDC similarity search
-(retrieval) operates independently of the demurrage/reinforcement model
-(aggregation), and the CognitiveWorkspace VCG auction (composition) is a third
-independent stage. This separation allows each component to evolve without
-breaking the others.
+xMemory (Hu et al. 2026, arXiv:2602.02007) argues that agent memory should decouple before it aggregates: split the interaction history into segments and reusable memory components first, then aggregate related components into groups for retrieval (abstract). Roko separates a different set of stages: HDC similarity search, the demurrage/reinforcement model and the CognitiveWorkspace VCG auction run independently, so each can evolve without breaking the others. That separation is Roko's design; the paper does not test it.
 
 ---
 
@@ -1365,8 +1359,7 @@ least `min_tag_overlap` tags in common.
   make kind assignment itself adaptive.
 
 - **Memory Worth** (arXiv:2604.12007). Outcome-grounded forgetting metric --
-  evaluating memory by causal contribution to task success rather than age
-  alone. Roko's `Gated` reinforcement signal and catalytic score partially
+  tracking how often a memory co-occurs with success versus failure rather than relying on age alone (associational, not causal, as the paper stresses; §3, §4.2). Roko's `Gated` reinforcement signal and catalytic score partially
   implement this.
 
 - **FadeMem** (arXiv:2601.18642). Validates the Ebbinghaus-based decay
@@ -1378,12 +1371,9 @@ least `min_tag_overlap` tags in common.
   Roko's distillation pipeline self-improvement.
 
 - **PathHD** (arXiv:2512.09369). HDC for knowledge graph retrieval.
-  Demonstrates that HDC role-filler binding naturally encodes KG relationships
-  with competitive retrieval accuracy.
+  Encodes multi-hop relation paths with an order-sensitive, non-commutative (block-diagonal GHRR) binding and retrieves them by calibrated cosine similarity; competitive Hits@1 and F1 on WebQSP, CWQ and GrailQA at markedly lower inference cost (abstract).
 
-- **xMemory** (arXiv:2602.02007). Decoupling memory retrieval from memory
-  aggregation. Validates Roko's architectural separation of HDC similarity
-  search, demurrage/reinforcement model, and VCG composition.
+- **xMemory** (arXiv:2602.02007). Decouple before aggregating: split history into segments and memory components, then group them (abstract); Roko's stage separation is its own design, not tested by the paper.
 
 ---
 

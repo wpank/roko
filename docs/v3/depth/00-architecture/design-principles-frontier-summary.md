@@ -44,9 +44,7 @@ persisted or acted upon. No unverified Signals enter the audit DAG as trusted.
 **Rationale**: LLMs hallucinate. Tools fail silently. External data sources lie.
 Without systematic verification, errors compound through the lineage DAG. The Gate
 pipeline is the firewall between "the agent produced something" and "the system
-trusts it." This addresses the Hallucination Amplification anti-pattern from the MAST
-taxonomy (Cemri et al. 2025, arXiv:2503.13657): 41.8% of multi-agent failures stem
-from specification issues where unverified outputs cascade.
+trusts it." This addresses the task-verification failures in the MAST taxonomy (Cemri et al. 2025, arXiv:2503.13657): premature termination and missing or incorrect verification form one of its three failure categories (§4). "Hallucination amplification" is Roko's own name; MAST has no such mode.
 
 **Application**: 19 gates in a 7-rung pipeline. Code passes through compile -> test ->
 clippy -> diff gates. Knowledge claims pass through confidence threshold -> source

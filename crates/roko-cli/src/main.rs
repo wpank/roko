@@ -478,6 +478,72 @@ fn suggested_command(cmd: &clap::Command, word: &str) -> Option<String> {
     })
 }
 
+/// Parse `args` (the program name first) into a [`Cli`].
+///
+/// clap parses a subcommand that follows a bare word before it checks the
+/// word, so `roko dream run` would fail with `run`'s missing-prompt error.
+/// When parsing fails and the first word names no subcommand, the error is
+/// the unknown-command one instead, with its suggestion.
+fn try_parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    Cli::try_parse_from(&args).map_err(|error| {
+        let mut cmd = Cli::command();
+        cmd.build();
+        match leading_unknown_word(&cmd, &args) {
+            Some(word) if error.use_stderr() => unknown_command_error(&cmd, &word),
+            _ => error,
+        }
+    })
+}
+
+/// The first bare word of `args`, past the program name, options and their
+/// values, when it names no subcommand and is not a prompt of several words.
+fn leading_unknown_word(cmd: &clap::Command, args: &[std::ffi::OsString]) -> Option<String> {
+    let mut words = args.iter().skip(1).map(|arg| arg.to_string_lossy());
+    while let Some(word) = words.next() {
+        if word == "--" {
+            return None;
+        }
+        let takes_value = if let Some(long) = word.strip_prefix("--") {
+            !long.contains('=') && option_takes_value(cmd, |arg| is_long_option(arg, long))
+        } else if let Some(short) = word.strip_prefix('-') {
+            let short = short.chars().last();
+            short.is_some() && option_takes_value(cmd, |arg| arg.get_short() == short)
+        } else {
+            let word = word.trim();
+            let prompt = word.split_whitespace().nth(1).is_some();
+            let known = is_subcommand(cmd, word);
+            return (!word.is_empty() && !prompt && !known).then(|| word.to_string());
+        };
+        if takes_value {
+            words.next();
+        }
+    }
+    None
+}
+
+/// Whether `cmd` has an option `is_option` picks that takes a value.
+fn option_takes_value(cmd: &clap::Command, is_option: impl Fn(&clap::Arg) -> bool) -> bool {
+    cmd.get_arguments()
+        .any(|arg| is_option(arg) && arg.get_action().takes_values())
+}
+
+/// Whether `arg` is the option `--long`, by name or alias.
+fn is_long_option(arg: &clap::Arg, long: &str) -> bool {
+    let aliases = arg.get_all_aliases().unwrap_or_default();
+    arg.get_long() == Some(long) || aliases.contains(&long)
+}
+
+/// Whether `word` names one of `cmd`'s subcommands, or an alias of one.
+fn is_subcommand(cmd: &clap::Command, word: &str) -> bool {
+    cmd.get_subcommands()
+        .any(|sub| sub.get_name() == word || sub.get_all_aliases().any(|alias| alias == word))
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -3422,7 +3488,7 @@ fn main() {
     // keys) from what they write.
     let scrubber = roko_fs::observability::RunScrubber::install(&startup_env_redactions);
 
-    let mut cli = Cli::parse();
+    let mut cli = try_parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
     apply_env_overrides(&mut cli);
 
     // ── ACP early exit ───────────────────────────────────────────────
@@ -4994,6 +5060,33 @@ mod tests {
         assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
         let cli = Cli::try_parse_from(["roko", "run", "fix"]).expect("a one-word run");
         assert!(matches!(cli.command, Some(Command::Run { .. })));
+    }
+
+    /// bug-8589fc: an unknown first word is the error whatever follows it,
+    /// not the missing prompt of the `run` clap parses after it.
+    #[test]
+    fn dream_run_reports_an_unknown_command() {
+        use clap::error::ErrorKind;
+
+        for args in [
+            &["roko", "dream", "run"][..],
+            &["roko", "--json", "dream", "run"],
+            &["roko", "--config", "roko.toml", "dream", "run"],
+            &["roko", "--force-model=m", "dream", "run"],
+        ] {
+            let error = try_parse_cli(args).expect_err("dream is not a command");
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{args:?}");
+            let message = error.to_string();
+            assert!(message.contains("subcommand 'dream'"), "{message}");
+            assert!(message.contains("'roko knowledge dream'"), "{message}");
+        }
+        // An error about a real command stays that command's error.
+        for args in [&["roko", "run"][..], &["roko", "--model", "dream", "run"]] {
+            let error = try_parse_cli(args).expect_err("run needs a prompt");
+            let kind = error.kind();
+            assert_eq!(kind, ErrorKind::MissingRequiredArgument, "{args:?}");
+        }
+        assert!(try_parse_cli(["roko", "status"]).is_ok());
     }
 
     #[test]

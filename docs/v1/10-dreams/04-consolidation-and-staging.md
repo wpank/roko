@@ -334,7 +334,7 @@ Three-phase biological sleep analogy implemented computationally: Wake (sensory 
 
 ### Map to Roko
 
-The WSCL architecture validates Roko's three-phase dream cycle design with computational evidence. The 38% reduction in catastrophic forgetting confirms that interleaving wake and sleep processing is not merely a metaphor but a computationally validated architecture.
+WSCL's wake, NREM and REM phases are a computational analogue of Roko's three-phase dream cycle: on image classification they beat continual-learning baselines on image classification, with positive forward transfer (abstract). The paper does not test Roko's design.
 
 ---
 
@@ -347,7 +347,7 @@ The WSCL architecture validates Roko's three-phase dream cycle design with compu
 | McClelland et al. (1995), Psychological Review, CLS theory | Fast episodic → slow semantic transfer via sleep replay |
 | Grassé (1959), Insectes Sociaux 6(1) | Stigmergic knowledge: pheromone deposits that decay without reinforcement |
 | Park et al. (2023), UIST, arXiv:2304.03442, "Generative Agents" | Memory synthesis and reflection cycle architecture |
-| WSCL (2024), "Wake-sleep continual learning" | 38% reduction in catastrophic forgetting via interleaved wake-sleep training |
+| WSCL (Sorrenti et al. 2024), "Wake-sleep continual learning" | Wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Tononi lab, Science (2024), "Prefrontal synaptic regulation of homeostatic sleep pressure" | First causal demonstration of SHY: synaptic potentiation in PFC sufficient and necessary for NREM delta power |
 | PP2Ac-alpha study, Communications Biology (2025) | Phosphatase regulation of synaptic homeostasis molecular machinery |
 | Skenderi et al. (2024), arXiv:2401.08623 / IEEE, "Wake-Sleep Consolidated Learning" | Three-phase wake-NREM-REM architecture achieves SOTA continual learning |

@@ -3,7 +3,7 @@
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
-> How the historical CoALA 9-step pipeline maps onto Roko's canonical seven-step universal loop - the domain-agnostic version every agent executes. See `tmp/refinements/05-loop-retold.md`, `tmp/refinements/09-phase-2-implications.md`, and `docs/00-architecture/01-naming-and-glossary.md`.
+> How the historical CoALA-inspired 9-step pipeline maps onto Roko's canonical seven-step universal loop - the domain-agnostic version every agent executes. See `tmp/refinements/05-loop-retold.md`, `tmp/refinements/09-phase-2-implications.md`, and `docs/00-architecture/01-naming-and-glossary.md`.
 
 
 > **Implementation**: Specified
@@ -16,7 +16,7 @@
 
 ## Abstract
 
-The CoALA 9-step pipeline (OBSERVE → RETRIEVE → ANALYZE → GATE → SIMULATE → VALIDATE → EXECUTE → VERIFY → REFLECT) is the legacy framing that guided Roko's initial cognitive architecture. Roko's canonical universal loop is now the seven-step SENSE → ASSESS → COMPOSE → ACT → VERIFY → PERSIST + BROADCAST → REACT loop.
+The CoALA-inspired 9-step pipeline (OBSERVE → RETRIEVE → ANALYZE → GATE → SIMULATE → VALIDATE → EXECUTE → VERIFY → REFLECT) is the legacy framing that guided Roko's initial cognitive architecture. Roko's canonical universal loop is now the seven-step SENSE → ASSESS → COMPOSE → ACT → VERIFY → PERSIST + BROADCAST → REACT loop.
 
 The universal Synapse loop is not a different pipeline. It is the same runtime expressed in terms of the composable Synapse traits (Substrate, Bus, Scorer, Gate, Router, Composer, Policy) plus the cognitive cross-cuts. The CoALA heartbeat is the theoretical frame; the Synapse loop is the implementation frame. Domain-specific heartbeat variants (chain, coding, research) are parameterizations of the universal loop, not separate architectures. In REF09, that also means Phase 2+ systems ride the same topic-driven runtime: `HeartbeatPolicy` emits the tick Pulses and domain consumers subscribe, rather than importing their own schedulers.
 
@@ -26,7 +26,7 @@ This document provides the complete side-by-side mapping between CoALA and Synap
 
 ## Side-by-Side Mapping Table
 
-The CoALA 9-step pipeline and the universal Synapse loop are structurally related but differ in granularity and naming. The table below shows the current canonical correspondence. Historical CoALA names are retained only where they clarify lineage.
+The CoALA-inspired 9-step pipeline and the universal Synapse loop are structurally related but differ in granularity and naming. The table below shows the current canonical correspondence. Historical CoALA names are retained only where they clarify lineage.
 
 | Historical framing | Canonical loop landing | Synapse trait(s) | Layer | Description |
 |---|---|---|---|---|
@@ -177,7 +177,7 @@ CoALA provides the intellectual justification. The Synapse loop provides the eng
 ## Academic Foundations
 
 - **Sumers, Yao, Narasimhan & Griffiths 2023** — "Cognitive Architectures for Language Agents" (arXiv:2309.02427). The CoALA framework.
-- **Lee et al. 2026** — "Meta-Harness: Optimizing Agent Scaffolds" (arXiv:2603.28052). Evidence that scaffold optimization matters more than model selection.
+- **Lee et al. 2026** — "Meta-Harness: End-to-End Optimization of Model Harnesses" (arXiv:2603.28052). Automated harness search (§3); its results show that the harness alone moves accuracy (§4).
 - **Conant & Ashby 1970** — "Every Good Regulator of a System Must Be a Model of That System" (International Journal of Systems Science 1(2)). The Good Regulator Theorem — justifies explicit self-modeling and cross-cut regulation.
 - **Friston 2010** — "The Free-Energy Principle" (Nature Reviews Neuroscience 11(2)). Prediction error as the organizing signal for cognitive architecture.
 

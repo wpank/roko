@@ -460,12 +460,15 @@ pub struct EfficiencySummaryRecord {
     /// Total input plus output tokens.
     #[serde(default)]
     pub total_tokens: u64,
-    /// Observed cost in USD.
+    /// Observed cost in USD; `null` when nobody measured it
+    /// ([`Episode::cost_known`]), so sums skip it instead of adding a free
+    /// run (bug-9a6799).
     #[serde(default)]
-    pub cost_usd: f64,
-    /// Estimated cost without cache discount.
+    pub cost_usd: Option<f64>,
+    /// Estimated cost without cache discount; `null` when the cost is
+    /// unknown.
     #[serde(default)]
-    pub cost_usd_without_cache: f64,
+    pub cost_usd_without_cache: Option<f64>,
     /// Cache hit rate in `[0.0, 1.0]`.
     #[serde(default)]
     pub cache_hit_rate: f64,
@@ -541,8 +544,10 @@ impl EfficiencySummaryRecord {
             cache_read_tokens: episode.usage.cache_read_tokens,
             cache_write_tokens: episode.usage.cache_write_tokens,
             total_tokens,
-            cost_usd: episode.usage.cost_usd,
-            cost_usd_without_cache: episode.usage.cost_usd_without_cache,
+            cost_usd: episode.cost_known().then_some(episode.usage.cost_usd),
+            cost_usd_without_cache: episode
+                .cost_known()
+                .then_some(episode.usage.cost_usd_without_cache),
             cache_hit_rate: ratio_u64(episode.usage.cache_read_tokens, episode.usage.input_tokens),
             duration_ms: episode.usage.wall_ms,
             time_to_first_token_ms: extra_u64(episode, "time_to_first_token_ms").unwrap_or(0),
@@ -621,8 +626,8 @@ impl EfficiencySummaryRecord {
             cache_read_tokens: event.cache_read_tokens,
             cache_write_tokens: event.cache_write_tokens,
             total_tokens: event.total_tokens(),
-            cost_usd: event.cost_usd,
-            cost_usd_without_cache: event.cost_usd_without_cache,
+            cost_usd: Some(event.cost_usd),
+            cost_usd_without_cache: Some(event.cost_usd_without_cache),
             cache_hit_rate: event.cache_hit_rate(),
             duration_ms: event.duration_ms.max(event.wall_time_ms),
             time_to_first_token_ms: event.time_to_first_token_ms,

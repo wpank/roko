@@ -583,7 +583,7 @@ are no orphan loops. Seven KPIs measure whether compounding is occurring:
 
 ### 5.3 Darwin Godel Machine (DGM)
 
-The Darwin Godel Machine (Lange et al. 2025, arXiv:2505.22954) extends
+The Darwin Godel Machine (Zhang et al. 2025, arXiv:2505.22954) extends
 Schmidhuber's original Godel Machine with archive-based open-ended evolution.
 Instead of requiring self-referential proofs of improvement (which are
 intractable for non-trivial systems), DGM maintains a population of candidate

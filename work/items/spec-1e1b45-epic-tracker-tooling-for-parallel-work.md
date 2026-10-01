@@ -71,7 +71,7 @@ This is the implementation plan. One agent at a time works on `tools/work.py`.
 ## Done when
 
 - [ ] gap-130a3e: work.py: validate the lane, parent and milestone fields, and add next --lane and --mix
-- [ ] gap-d1f787: work.py next treats files changed in any other worktree as busy
+- [x] gap-d1f787: work.py next treats files changed in any other worktree as busy
 - [ ] gap-823dce: work.py claim re-checks the footprint under a lock, can be renewed, and expires by size
 - [ ] gap-c9e61b: work.py list, show and status, plus a generated EPICS.md with progress per epic and lane
 - [ ] gap-2bc1b9: work.py new accepts every item field as a flag

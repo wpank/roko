@@ -94,7 +94,7 @@ This is the implementation plan.
 ## Done when
 
 - [x] gap-853b31: Frontier planner everywhere: an [authoring] planner_model on every plan generate and revise path
-- [ ] gap-2623b2: One plan generator instead of three prompts, without the 8,000-character PRD and 5-file caps
+- [x] gap-2623b2: One plan generator instead of three prompts, without the 8,000-character PRD and 5-file caps
 - [x] gap-d14a43: Planner-written acceptance tests in [task.accept], stored out of the agent's reach
 - [x] gap-1cd8d3: speclint first slice: static spec-quality rules SQ01–SQ12 with hard fails (S07.1)
 - [x] gap-b3fa0a: Red-on-base checker: prove each task's verify step fails on a clean base (S07.2)
@@ -104,15 +104,15 @@ This is the implementation plan.
 - [x] gap-46ab3f: plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)
 - [x] bug-477ede: prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model
 - [x] gap-1b5636: Prompts paste each pinned acceptance script verbatim; show pinned steps by their header line only
-- [ ] gap-ba4d01: Portal plans 08b–08e and 08g still hand-copy their acceptance tests instead of pinning them with [task.accept]
+- [x] gap-ba4d01: Portal plans 08b–08e and 08g still hand-copy their acceptance tests instead of pinning them with [task.accept]
 - [x] bug-b0fd73: For accept plans, authored_plan_running reports that tasks.toml no longer matches on every run
 - [x] bug-019f02: speclint and roko_gate::spec_quality ignore [task.accept], so plans that pin acceptance tests lose verify steps and acceptance credit
 - [x] bug-05d1ac: verification.rs quotes each step's full command in skipped-step lists, progress events and gate output, so a pinned step repeats its script in retry feedback
 - [x] bug-c1b845: speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests
 - [x] gap-9ca898: plan_generator.rs's DefaultPlanGenerator doesn't know rung
-- [ ] gap-f7ebd4: The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint
+- [x] gap-f7ebd4: The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint
 - [ ] bug-009c0e: roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially
-- [ ] bug-880b37: PLAN_038 misses accept-test copies made through a variable or a loop (A=…/accept, cp $A/…, for p in …)
+- [x] bug-880b37: PLAN_038 misses accept-test copies made through a variable or a loop (A=…/accept, cp $A/…, for p in …)
 - [ ] dec-50192e: Should the plan-validate CI job run roko plan validate --strict?
 - [ ] The epic's `[[verify]]` command (the weak and fixed fixture pair) passes on the merged branch.
 

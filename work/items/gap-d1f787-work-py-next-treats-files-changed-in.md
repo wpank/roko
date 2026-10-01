@@ -2,14 +2,16 @@
 id = "gap-d1f787"
 kind = "gap"
 title = "work.py next treats files changed in any other worktree as busy"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "S"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "a56a62e41"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R3, R6); W13-active-sessions-coordination.md (rec 2)"
 anchors = ["tools/work.py::pick_next", "tools/work.py::cmd_next", "tools/test_work.py"]
@@ -19,6 +21,19 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_next_treats_files_changed_in_other_worktrees_as_busy' tools/test_work.py && python3 tools/test_work.py -k test_next_treats_files_changed_in_other_worktrees_as_busy"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:41:47Z"
+commit = "a56a62e41"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-01T08:36:19Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Premise re-checked at bdeaff586: pick_next's busy set came from live claims only. a56a62e41: worktree_changes() reads each other worktree (read-only, 16 at a time): commits since the merge-base with HEAD for branches with unmerged commits (one for-each-ref --no-merged call) plus 'git status --porcelain -z' (uncommitted and untracked); the main checkout counts only uncommitted files; work/, target/ and node_modules/ ignored. pick_next skips an item anchored on such a file with the reason 'touches files changed in worktree <name> (<branch>)'; next --json keeps stdout as the list of picks and writes the skipped items with worktree and branch to stderr; --ignore-worktrees disables the scan. On the real repo: 224 worktrees, 697 busy files from 35 of them, scan 1.65 s, next 2.4 s. tools/test_work.py: committed and uncommitted changes in other worktrees hold items back with the worktree named, a clean merged worktree and work/ edits add nothing, a worker sees the main checkout's uncommitted edits; the [[verify]] command passes."
 +++
 
 ## Problem

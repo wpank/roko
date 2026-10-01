@@ -283,11 +283,8 @@ environment is constructed by past agents and constrains future agents.
 
 ## References
 
-- Grassé, P.-P. (1959). La reconstruction du nid et les coordinations
-  interindividuelles chez Bellicositermes natalensis et Cubitermes sp.
-  *Insectes Sociaux*, 6(1), 41–80. (Original stigmergy paper)
-- Parunak, H. V. D. (2002). Digital pheromones for coordination of unmanned
-  vehicles. *AAMAS 2002*. (Digital stigmergy)
+- Grassé, P.-P. (1959). La reconstruction du nid et les coordinations interindividuelles chez Bellicositermes natalensis et Cubitermes sp. *Insectes Sociaux*, 6(1), 41–80.
+- Parunak, H. V. D. (2002). Digital pheromones for coordination of unmanned vehicles. *AAMAS 2002*.
 - Dorigo, M. & Gambardella, L. M. (1997). Ant colony system: A cooperative
   learning approach to the traveling salesman problem. *IEEE Trans.
   Evolutionary Computation*, 1(1), 53–66.
@@ -300,5 +297,4 @@ environment is constructed by past agents and constrains future agents.
   *Theoretical Population Biology*, 9(2), 129–136.
 - Derrida, J. (1993). *Specters of Marx: The State of the Debt, the Work of
   Mourning and the New International*. Routledge.
-- Tomasello, M. (2014). *A Natural History of Human Thinking*. Harvard
-  University Press. (Shared intentionality and collective cognition)
+- Tomasello, M. (2014). *A Natural History of Human Thinking*. Harvard University Press.

@@ -319,8 +319,7 @@ The ToolLoop has comprehensive tests covering all stop conditions:
 
 ## 13. Citations
 
-1. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language
-   Models." ICLR 2023. arXiv:2210.03629. -- The ReAct pattern.
+1. Yao, S. et al. (2023). "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR 2023. arXiv:2210.03629.
 2. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal
    Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366.
 3. Zhou, A. et al. (2024). "Language Agent Tree Search Unifies Reasoning,

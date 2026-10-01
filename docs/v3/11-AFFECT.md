@@ -895,7 +895,7 @@ let inverted_pad = PadVector {
 
 - **Large enough** to break feedback loops (5% would be absorbed by 85% majority)
 - **Small enough** to preserve mood-congruent benefits (Bower 1981: 5-30% accuracy boost)
-- **Empirically grounded** via Emotional RAG (2024, arXiv:2410.23041)
+- **Not from Emotional RAG**: that paper (2024, arXiv:2410.23041) tests mood-congruent retrieval only; 15% is Roko's own choice
 
 ### 7.4 Three Loop-Breaking Mechanisms
 

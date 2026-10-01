@@ -337,8 +337,7 @@ set -- a candidate rule that would have *prevented* a known failure gets credit,
 while one that would have *caused* a new failure in the probe set is penalized.
 
 **Unbounded growth prevention (SkillZip).** SkillZip (arXiv:2608.11079)
-applies Minimum Description Length (MDL) compression to prevent skill libraries
-from growing without bound. The target design applies the same principle: when
+compresses one skill's text by finding its shortest faithful structural explanation: a typed minimum-description-length (MDL) objective under a hard coverage constraint, run once or on every self-evolution patch (Zip-on-Write) (abstract, §V). It is evaluation-free and does not merge rules across a library. The target design borrows the MDL idea (Roko's own extension): when
 the playbook store exceeds a configured capacity (default: 500 rules), the
 system compresses by merging rules with overlapping triggers and high HDC
 similarity into a single generalized rule. The MDL criterion ensures that
@@ -893,8 +892,7 @@ and adjusts section weights accordingly.
 
 > **Status (2026-09-29): a hypothesis, not a result.** No measurement shows Roko's
 > learning compounding, and recent studies argue against expecting it:
-> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
-> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> of three agent optimizers, only the one with regression control built into its loop kept improving on new tasks (Wang, Kattakinda and Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
 > amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
 > consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
 > The defensible claim is bounded, audited improvement with rollback. The metric
@@ -1436,8 +1434,8 @@ cargo test -p roko-learn
 - Li, L. et al. (2010). A Contextual-Bandit Approach to Personalized News Article Recommendation. *WWW 2010*.
 - ReSkill (arXiv:2606.01619, June 2026). Iterative skill refinement through self-correction.
 - Shinn, N. et al. (2023). Reflexion: Language Agents with Verbal Reinforcement Learning. *NeurIPS 2023*.
-- SiriuS (arXiv:2502.04780, Feb 2025). Self-improving through iterative use and self-referencing.
-- SkillZip (arXiv:2608.11079, Aug 2026). MDL compression for bounded skill libraries.
+- SiriuS (arXiv:2502.04780, Feb 2025). Self-improving multi-agent systems through an experience library of successful and repaired reasoning trajectories (§2.2).
+- SkillZip (arXiv:2608.11079, Aug 2026). Evaluation-free MDL compression of a skill's text, with Zip-on-Write for self-evolution patches (§V).
 - Thompson, W.R. (1933). On the likelihood that one unknown probability exceeds another in view of the evidence of two samples. *Biometrika* 25(3-4), 285-294.
 - Wang, G. et al. (2023). Voyager: An Open-Ended Embodied Agent with Large Language Models. *NeurIPS 2023 (Oral)*.
 - Woolley, A.W. et al. (2010). Evidence for a collective intelligence factor in the performance of human groups. *Science* 330(6004), 686-688.

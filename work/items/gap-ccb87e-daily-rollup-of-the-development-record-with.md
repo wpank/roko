@@ -2,14 +2,16 @@
 id = "gap-ccb87e"
 kind = "gap"
 title = "Daily rollup of the development record with a committed manifest"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "59bf180e2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (A5)"
 anchors = ["tools/work_telemetry.py", "tools/test_work_telemetry.py", "work/telemetry/ROLLUP.md", "work/telemetry/manifests/"]
@@ -19,6 +21,17 @@ links = { depends_on = ["gap-d0643c", "gap-263de5"], blocks = [], related = ["ga
 
 [[verify]]
 command = "grep -qw 'def test_rollup_reports_cost_per_merged_item_with_coverage' tools/test_work_telemetry.py && python3 tools/test_work_telemetry.py -k test_rollup_reports_cost_per_merged_item_with_coverage"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:34:45Z"
+commit = "59bf180e2"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+model = "claude-opus-5-5"
+forced = false
+evidence = "59bf180e2: tools/work_telemetry.py (stdlib) 'rollup' computes every DEFINITIONS.md v1 metric with coverage (tables by day, executor, kind x size, lane; backfill tabled apart; cost at prices-2026-09-28, API-equivalent (subscription), overhead row) into work/telemetry/ROLLUP.md (opens 'Not for workers', prints DEFINITIONS sha256) and rollup.json; 'manifest' writes sha256 + row count per input (events, harvest, DEFINITIONS, price snapshot, [closed] blocks) to manifests/<date>.json. tools/test_work_telemetry.py: the two-item fixture (one claimed twice, released over a conflict, merged with a conflicted file; harvest rows for both, one after the merge, one unpriced; an overhead row) gives attempts 1/1 (mean 1.5), first-try 1/2, conflict rate 1/2 with 1 abandoned, cost per merged item 6.00 and 4.00 USD (median 5, p90 6, total 10), overhead 1.00 (0.50 per item), coverage 2 of 2; the manifest changes when an event or harvest row changes; the [[verify]] command passes. Generated outputs are not committed on the branch: run rollup and manifest in the main checkout's bookkeeping."
 +++
 
 ## Problem

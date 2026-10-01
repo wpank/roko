@@ -2,7 +2,7 @@
 id = "gap-2623b2"
 kind = "gap"
 title = "One plan generator instead of three prompts, without the 8,000-character PRD and 5-file caps"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/prd", "roko-cli/plan_generate"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "286c5e53a"
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (duplicate generators; planner input budget)"
 anchors = ["crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_outcome", "crates/roko-cli/src/plan_generate.rs::build_generation_prompt", "crates/roko-cli/src/commands/plan.rs::cmd_plan", "crates/roko-cli/src/commands/do_cmd.rs::run_standard_path_inner"]
@@ -21,6 +21,13 @@ links = { depends_on = ["gap-853b31"], blocks = [], related = ["find-84bfa8", "b
 
 [[verify]]
 command = "grep -rqw 'fn generator_prompt_keeps_a_long_prd_whole' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_keeps_a_long_prd_whole && ! grep -rq 'build_generation_prompt' crates/roko-cli/src/commands/"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:18Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91; taskdef's own clone: prd/plan_generate/plan_generator/plan_authoring/plan_validate 163/163 and the item verify. Merged ce7156389 (work/gap-2623b2 e73442d1e)."
 +++
 
 ## Problem

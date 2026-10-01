@@ -229,6 +229,24 @@ describe('task_completed', () => {
     expect(s.plans['p1']!.tasksDone).toBe(1);
   });
 
+  it('classifies "already_satisfied" as its own status: done, but not passed', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'already_satisfied' }, 2000);
+    expect(s.tasks[taskKey('p1', 't1')]!.status).toBe('already_satisfied');
+    expect(s.plans['p1']!.tasksDone).toBe(1);
+    expect(s.plans['p1']!.tasksUnverified ?? 0).toBe(0);
+  });
+
+  it('classifies "unverified" and unrecognised outcomes as unverified, never passed', () => {
+    for (const outcome of ['unverified', 'completed']) {
+      let s = startTask('p1', 't1');
+      s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome }, 2000);
+      expect(s.tasks[taskKey('p1', 't1')]!.status, outcome).toBe('unverified');
+      expect(s.plans['p1']!.tasksDone, outcome).toBe(1);
+      expect(s.plans['p1']!.tasksUnverified, outcome).toBe(1);
+    }
+  });
+
   it('is idempotent — second task_completed on a terminal task is ignored', () => {
     let s = startTask('p1', 't1');
     s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'passed' }, 2000);

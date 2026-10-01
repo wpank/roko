@@ -256,8 +256,7 @@ The trait module includes unit tests verifying:
 
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
    arXiv:2309.02427. -- CoALA: separating perception/reasoning from action.
-2. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR
-   Formalism for Artificial Intelligence." IJCAI. -- Actor model foundation.
+2. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR Formalism for Artificial Intelligence." IJCAI.
 3. `crates/roko-agent/src/agent.rs` -- Agent trait, AgentResult, lineage
    helpers source.
 4. `crates/roko-runtime/src/supervisor.rs` -- ProcessSupervisor for subprocess

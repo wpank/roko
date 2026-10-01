@@ -203,6 +203,29 @@ def test_labels_censoring_and_exclusions_follow_appendix_d1():
     assert the(mixed, "honest_conflict_rate").value == 0.5 and the(mixed, "honest_conflict_rate").n == 2
 
 
+def test_an_already_satisfied_run_is_counted_apart_and_never_as_a_pass():
+    # gap-9eb1e1: Roko's final attempt changed nothing and its checks passed on the tree as it was. The runner
+    # records that run as failed (S05 §0.1 (a) counts only `passed` as Roko's completion), and the report counts it
+    # in a metric of its own: never a reported pass, a false green or a VS.
+    satisfied = run_record("F4-l3-0002", 1, run_id="run-s", arm="roko_fixed", label=0, visible=False, status="failed",
+                           verdict="already_satisfied")
+    runs = [satisfied, run_record("F4-l3-0002", 2, run_id="run-s", arm="roko_fixed", verdict="passed"),
+            run_record("F4-l3-0002", 3, run_id="run-s", arm="roko_fixed", label=0, visible=True, verdict="unverified")]
+    assert metrics.final_verdict(satisfied) == "already_satisfied" and not metrics.reported_pass(satisfied)
+    found = metrics.arm_metrics(runs, EXPERIMENT, "roko_fixed")
+    assert the(found, "already_satisfied_runs", arm="roko_fixed").value == 1
+    assert the(found, "already_satisfied_runs", arm="roko_fixed").n == 3
+    assert the(found, "unverified_runs", arm="roko_fixed").value == 1  # the unverified run only
+    assert the(found, "false_greens", arm="roko_fixed").value == 0
+    assert the(found, "false_green_rate", arm="roko_fixed").n == 1  # the passed run is the one reported pass
+    assert the(found, "vs_rate", arm="roko_fixed").value == pytest.approx(1 / 3)
+    assert metrics.false_greens(runs) == []
+
+    # Arms without a Roko gate never get the count.
+    assert not [m for m in metrics.arm_metrics(all_records(), EXPERIMENT, "cheap_direct")
+                if m.metric == "already_satisfied_runs"]
+
+
 def test_cost_per_vs_follows_appendix_d2():
     found = metrics.arm_metrics(all_records(), EXPERIMENT, "cheap_direct")
     per_vs = the(found, "usd_per_vs", cost_basis="api_equiv_usd")

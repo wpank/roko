@@ -13,6 +13,7 @@
 //! | [`batch`] | The run's batch branch, and delivery of finished plans into it |
 //! | [`control_adapter`] | CLI/TUI command transport to graph-layer control service |
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
+//! | [`disk_admission`] | Free-disk check at run start, and disk headroom per attempt |
 //! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
 //! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
 //! | [`feedback`] | 12-row completion feedback settlement sinks |
@@ -30,6 +31,7 @@ pub mod agent_slots;
 pub mod batch;
 pub mod control_adapter;
 pub mod delivery;
+pub mod disk_admission;
 pub mod event_log;
 pub mod fast_lane;
 pub mod feedback;

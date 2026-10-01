@@ -151,13 +151,16 @@ impl GraphTaskDispatcher {
     /// Returns the dispatch with the models failover passed over, which the
     /// attempt's records carry beside the one that ran. A call a provider
     /// refused gets cost and efficiency rows of its own, keyed by
-    /// `attempt_key` (role `failover_refused`, bug-220385).
+    /// `attempt_key` (role `failover_refused`, bug-220385). Each call starts
+    /// on `progress`, so a call the watchdog cancels is recorded against the
+    /// model it ran on (bug-aa2044).
     pub(super) async fn run_bridge_with_failover(
         &self,
         spec: &TaskExecutionSpec,
         task_id: &str,
         attempt_key: String,
         mut request: AgentDispatchRequest,
+        progress: Option<&super::watchdog::AttemptProgress>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
@@ -184,6 +187,12 @@ impl GraphTaskDispatcher {
             }
 
             request.model_key = candidate.model_key.clone();
+            if let Some(progress) = progress {
+                progress.call_started(
+                    self.resolve_candidate(&candidate),
+                    FailoverChain::of(&refusals),
+                );
+            }
             let call_started = Instant::now();
             let dispatch = match &candidate.config {
                 Some(config) => {

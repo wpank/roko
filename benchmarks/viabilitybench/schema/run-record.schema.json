@@ -87,7 +87,7 @@
                 }
               },
               "fault_injected": {"type": ["string", "null"]},
-              "gate_verdict": {"enum": ["passed", "unverified", "forced_accept", null]},
+              "gate_verdict": {"enum": ["passed", "already_satisfied", "unverified", "forced_accept", null], "description": "S01's verdict tag of the attempt (roko.verdict/1): passed; already_satisfied, when the attempt changed nothing and its verify steps passed on the tree as it was (gap-9eb1e1); unverified; forced_accept (legacy checkpoints). null when its gate failed or the arm has no Roko gate"},
               "task_id": {"type": ["string", "null"], "description": "the plan task the attempt worked on (a Roko plan's task id); absent or null for a single-task arm without a plan"},
               "cost_class": {"enum": ["plan", "execute", "retry", "escalate", "integrate", null], "description": "what the attempt's spend was for (S09 §4.9): plan (the planner), execute (a task's first attempt), retry (a later attempt on the model before it), escalate (a later attempt on another model, a rung up the ladder), integrate (merges, conflict repairs and whole-plan gate runs). Absent or null when the runner does not class its attempts; costs.by_class sums it"},
               "started_at": {"type": ["string", "null"], "description": "when the attempt's task started working on it: with finished_at, the attempt's busy time"},

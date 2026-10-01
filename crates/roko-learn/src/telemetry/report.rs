@@ -582,8 +582,6 @@ fn undated(model: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
     use tempfile::TempDir;
 
     use super::*;
@@ -750,12 +748,8 @@ mod tests {
         // it, so check must.
         let mut again = run.verdicts[0].clone();
         again.seq = 15;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(RunFile::Attempts.path_in(dir.path()))
-            .expect("open attempts.jsonl");
-        let line = serde_json::to_string(&again).expect("serialize");
-        writeln!(file, "{line}").expect("append");
+        roko_core::io::append_jsonl(&RunFile::Attempts.path_in(dir.path()), &again)
+            .expect("append");
         let run = RunRecords::load(dir.path()).expect("reload");
         let mut legacy = legacy;
         legacy.costs.pop();

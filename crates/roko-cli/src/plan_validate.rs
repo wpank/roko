@@ -2195,6 +2195,34 @@ files = [
         );
     }
 
+    /// gap-ba4d01: the portal plans that ship planner-written acceptance tests
+    /// pin every one with `[task.accept]`; none copies a test out of `accept/`
+    /// by hand, so none gets PLAN_038.
+    #[test]
+    fn portal_plans_have_no_hand_copied_acceptance_tests() {
+        let portal = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plans/portal-programme");
+        for name in [
+            "08b-portal-polish",
+            "08c-portal-live-steps",
+            "08d-portal-legibility",
+            "08e-portal-refine",
+            "08f-final-polish",
+            "08g-first-run",
+        ] {
+            let report = validate_plans_dir(&portal.join(name), None).unwrap();
+            // A plan with no diagnostics at all is checked but not listed.
+            assert_eq!(report.totals.plans_checked, 1, "{name}: {report:?}");
+            let accept: Vec<&str> = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_038")
+                .map(|diag| diag.message.as_str())
+                .collect();
+            assert!(accept.is_empty(), "{name}: {accept:#?}");
+        }
+    }
+
     #[test]
     fn validate_file_references_allows_only_declared_dependency_outputs() {
         let temp = TempDir::new().unwrap();

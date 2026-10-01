@@ -244,7 +244,7 @@ unimportant knowledge.
 | McClelland et al. (1995), CLS theory | Fast episodic to slow semantic transfer |
 | Grasse (1959), Insectes Sociaux 6(1) | Stigmergic knowledge: decay without reinforcement |
 | Park et al. (2023), UIST | Generative Agents memory synthesis |
-| WSCL (2024) | 38% reduction in catastrophic forgetting |
+| WSCL (Sorrenti et al. 2024) | Wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Sawada et al. (2024), Science | First causal demonstration of SHY |
 | PP2Ac-alpha (2025), Communications Biology | Phosphatase regulation of synaptic homeostasis |
 

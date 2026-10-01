@@ -7,12 +7,15 @@
 //! 3. SIGTERM the entire process group + descendants.
 //! 4. Wait up to 800 ms.
 //! 5. SIGKILL if still alive.
+//!
+//! [`KillTreeOnDrop`] sends the same signals when a run's future is dropped
+//! before the run could call [`kill_tree`] itself.
 
 use std::time::Duration;
 use tokio::process::Child;
 
 use super::group::collect_descendants;
-use super::registry::register_spawned_descendants;
+use super::registry::{register_spawned_descendants, unregister_pid};
 
 /// Default grace period before SIGTERM (milliseconds).
 pub const GRACE_STDIN_CLOSE_MS: u64 = roko_core::defaults::DEFAULT_GRACE_STDIN_CLOSE_MS;
@@ -83,6 +86,90 @@ pub async fn kill_tree(child: &mut Child, grace: Duration) -> Result<(), std::io
         ));
     }
     Ok(())
+}
+
+/// Terminates a child's process tree when dropped while armed.
+///
+/// `kill_on_drop` kills only the direct child, so a run whose future is
+/// dropped (a cancel, the stall watchdog) would leave the subprocesses that
+/// child started, such as shells, test runners and builds, running. Dropping
+/// an armed guard sends SIGTERM to the child's process group and its
+/// descendants, then SIGKILL after [`GRACE_SIGTERM_MS`] from a detached
+/// thread, so the drop never blocks for the grace period. It then removes the
+/// root from the PID registry.
+///
+/// Declare it right after the [`Child`], so it drops first: descendants are
+/// found through their parent, which only works while the root is alive.
+#[must_use = "a guard dropped at once kills the tree"]
+pub struct KillTreeOnDrop {
+    root_pid: Option<u32>,
+    root_reaped: bool,
+}
+
+impl KillTreeOnDrop {
+    /// Arm a guard for the tree of a child spawned in its own process group
+    /// ([`set_process_group`](super::group::set_process_group)).
+    pub const fn new(root_pid: Option<u32>) -> Self {
+        Self {
+            root_pid,
+            root_reaped: false,
+        }
+    }
+
+    /// The root was waited on, so its PID may be reused: signal only its
+    /// group, whose ID stays reserved while any member lives.
+    pub const fn root_reaped(&mut self) {
+        self.root_reaped = true;
+    }
+
+    /// Leave the tree alone on drop: the run finished or killed it itself.
+    pub const fn disarm(&mut self) {
+        self.root_pid = None;
+    }
+}
+
+impl Drop for KillTreeOnDrop {
+    fn drop(&mut self) {
+        let Some(root_pid) = self.root_pid.take() else {
+            return;
+        };
+        #[cfg(unix)]
+        {
+            let (root, descendants) = if self.root_reaped {
+                (None, Vec::new())
+            } else {
+                (Some(root_pid), collect_descendants(root_pid))
+            };
+            signal_tree(root_pid, root, &descendants, libc::SIGTERM);
+            let grace = Duration::from_millis(GRACE_SIGTERM_MS);
+            let escalate = move || {
+                std::thread::sleep(grace);
+                signal_tree(root_pid, root, &descendants, libc::SIGKILL);
+                unregister_pid(root_pid);
+            };
+            if let Err(error) = std::thread::Builder::new()
+                .name("roko-kill-tree".into())
+                .spawn(escalate)
+            {
+                tracing::warn!(root_pid, %error, "could not wait to SIGKILL a dropped process tree");
+                signal_tree(root_pid, root, &[], libc::SIGKILL);
+                unregister_pid(root_pid);
+            }
+        }
+        #[cfg(not(unix))]
+        unregister_pid(root_pid);
+    }
+}
+
+/// Signal the process group `pgid`, then `root` and `descendants` one by one,
+/// which also reaches processes that left the group. Best effort: a process
+/// that is gone or out of reach is skipped.
+#[cfg(unix)]
+fn signal_tree(pgid: u32, root: Option<u32>, descendants: &[u32], signal: i32) {
+    let _ = signal_pid(-(pgid as i32), signal);
+    for pid in root.iter().chain(descendants) {
+        let _ = signal_pid(*pid as i32, signal);
+    }
 }
 
 async fn wait_for_root(child: &mut Child, duration: Duration) -> std::io::Result<bool> {

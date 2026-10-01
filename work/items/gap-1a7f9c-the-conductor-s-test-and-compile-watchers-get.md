@@ -2,14 +2,16 @@
 id = "gap-1a7f9c"
 kind = "gap"
 title = "The conductor's test and compile watchers get no gate signal on the Graph path, so RG2 stays PARTIAL"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-conductor/watchers", "roko-cli/graph_execution"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "1bf49188d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-repin's report)"
 anchors = ["crates/roko-conductor/src/watchers/test_failure_budget.rs", "crates/roko-conductor/src/watchers/compile_fail_repeat.rs", "crates/roko-cli/src/episode.rs"]
@@ -19,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["gap-08d9b2"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn conductor_watchers_receive_graph_gate_verdicts' crates/roko-cli/src/ && cargo test -p roko-cli --lib conductor_watchers_receive_graph_gate_verdicts"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:22Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate on fcdaf32ae/ca5645373 (MAIN 1bf49188d has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/gate/learn/neuro/serve; lib tests roko-cli 3273, roko-agent 2278, roko-core 1962, roko-learn 1209, roko-serve 989, roko-gate 692, roko-neuro 239, roko-acp 199, roko-dreams 100 all pass; extras: C1 1/1, C7 2/2, learn_paths 7, cost_comparison 1, bin 429, verify loop 10/10, speclint 91, including conductor_watchers_receive_graph_gate_verdicts and gate_advice_never_cancels_a_ladder_escalation; gate-driven decisions are advisory on the Graph path (see gap-ebd656, on hold). Merged 1bf49188d (work/gap-1a7f9c 99a9feb61)."
 +++
 
 ## Problem

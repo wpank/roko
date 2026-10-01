@@ -30,6 +30,13 @@
   /** Accepted but with failures — amber, NOT green. */
   --state-accepted: var(--amber);
 
+  /**
+   * Already satisfied — info cyan. The task's work was already there: its
+   * verify steps passed on a tree its attempt left unchanged. Verified, but
+   * not a pass of this attempt, so not done green.
+   */
+  --state-satisfied: var(--accent-cyan);
+
   /** Hard failure — signal red (clear red, not rose). */
   --state-failed:   var(--signal-red);
 

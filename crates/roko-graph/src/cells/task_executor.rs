@@ -1061,10 +1061,7 @@ task_def_json = "{}"
             .expect_err("a stopped attempt fails the task");
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
-        assert!(matches!(
-            error,
-            roko_core::error::RokoError::Cancelled(_)
-        ));
+        assert!(matches!(error, roko_core::error::RokoError::Cancelled(_)));
     }
 
     #[tokio::test]

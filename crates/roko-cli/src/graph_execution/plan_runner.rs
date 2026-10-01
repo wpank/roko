@@ -4409,6 +4409,80 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// Where [`interrupt_stops_running_gate_command`] tells
+    /// [`interrupted_gate_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_GATE_DIR: &str = "ROKO_INTERRUPTED_GATE_CHILD_DIR";
+
+    /// A verify command that runs until it is signalled, marking when it
+    /// starts and when it gets SIGTERM.
+    #[cfg(unix)]
+    const SIGNALLED_GATE: &str =
+        "trap 'echo > got-term; exit 143' TERM; echo > gate-started; sleep 60 & wait $!";
+
+    /// gap-b367bf: an interrupt stops a task's running verify command the way
+    /// it stops the run's agents, with SIGTERM, which the command here traps
+    /// into a marker file. The interrupt signals every registered process of
+    /// its process, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_stops_running_gate_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "gated", "", &[("T1", &[], SIGNALLED_GATE)]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_gate_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_GATE_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(
+            dir.path().join("got-term").exists(),
+            "the interrupt never sent the verify command SIGTERM"
+        );
+    }
+
+    /// The interrupted run of [`interrupt_stops_running_gate_command`]: it
+    /// interrupts the plan in that test's workspace once the task's verify
+    /// command runs. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_gate_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_GATE_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("gate-started");
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the verify command started");
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);

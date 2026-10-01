@@ -99,7 +99,8 @@ Graph write site through `dispatch.result.usage_obs`.
   `cost_source`, since the record now carries it (the JSON key is unchanged).
 - Set from the verdict's `cost.source` at the Graph write site, and from each helper call's `usage_obs` (with the CLI
   backend flag) for helper and refused-failover rows. `unknown` where the source is not known: plan authoring
-  (`AgentCapture` has no usage source), the settlement-sink receipt, `create_cost_record` and episode-derived rows.
+  (`AgentCapture` has no usage source), `create_cost_record` and episode-derived rows. (The settlement-sink
+  receipt's constructor went with `graph_execution/feedback.rs`, which bug-8a78e1 deleted.)
 - Shown apart: `CostsLog::estimated_cost`, `roko status` (`estimated_cost_usd` in JSON, an "Estimated:" line in the
   cost summary), and `roko diagnose` attempts (`cost_source`). The bench's Roko runner prices an attempt `estimated`
   when S01's verdict meters it with `cost.source` estimated, unless the proxy metered it.

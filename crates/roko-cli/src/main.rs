@@ -728,6 +728,7 @@ Examples:
   roko show                         Overview: work items, agents, costs, learning
   roko show costs                   Cost breakdown by model, task, and day
   roko show agents                  Agent status from executor and efficiency state
+  roko show agents --since all      Include agents with no activity in the last 7 days
   roko show knowledge               Durable knowledge entries
   roko show plans                   Plans in progress and recent plan state
   roko show learning                Routing, experiments, gates, and C-Factor
@@ -756,6 +757,10 @@ Examples:
         /// One of: costs, agents, knowledge, plans, learning, history, or a work id.
         #[arg(value_name = "SUBCOMMAND_OR_WORK_ID")]
         subject: Option<String>,
+        /// Count recent activity since WHEN: a span such as 24h or 7d, a YYYY-MM-DD date, an
+        /// RFC 3339 time, or `all` (default: 7d).
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
     },
     /// Diagnose self-hosted workspace bootstrap state.
     Doctor {
@@ -4054,13 +4059,23 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             serve_url,
             workdir,
             subject,
+            since,
         } => {
             // #363: --live is a deprecated alias for --dashboard.
             let use_dashboard = dashboard || live;
             if live && !dashboard {
                 eprintln!("warning: --live is deprecated; use --dashboard instead");
             }
-            commands::show::cmd_show(cli, workdir, use_dashboard, follow, serve_url, subject).await
+            commands::show::cmd_show(
+                cli,
+                workdir,
+                use_dashboard,
+                follow,
+                serve_url,
+                subject,
+                since,
+            )
+            .await
         }
         Command::Doctor {
             subject,

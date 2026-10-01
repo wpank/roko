@@ -14,6 +14,7 @@ import {
   TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
   TASK_OUTCOME_ALREADY_SATISFIED,
   TASK_OUTCOME_BLOCKED,
+  TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES,
   TASK_OUTCOME_UNVERIFIED,
 } from '@/api/contracts';
 import { decodeFrame } from '@/lib/streamRecord';
@@ -30,6 +31,9 @@ export const MAX_USAGE_SAMPLES = 600;
 export type TaskStatus =
   | 'active'
   | 'passed'
+  // Passed apart from tests that also failed on the run's start commit
+  // (gap-161be1): counted as passed, shown apart.
+  | 'passed_with_preexisting_failures'
   | 'failed'
   | 'accepted_with_failures'
   | 'already_satisfied'
@@ -131,6 +135,7 @@ export interface RunState {
 
 const TERMINAL: Set<TaskStatus> = new Set([
   'passed',
+  'passed_with_preexisting_failures',
   'failed',
   'accepted_with_failures',
   'already_satisfied',
@@ -167,14 +172,17 @@ export function parseCheckName(name: string): { index: number | null; phase: str
 /**
  * Classify a task outcome string into a TaskStatus.
  * Mirrors `classify_task_outcome` in the Rust source: only an outcome that
- * names a pass is 'passed', and any outcome it does not recognise is
- * 'unverified'. The accepted_with_failures and already_satisfied checks run
- * first: the one contains "fail".
+ * names a pass is 'passed' (or 'passed_with_preexisting_failures', which
+ * counts as passed but is shown apart), and any outcome it does not recognise
+ * is 'unverified'. The accepted_with_failures, already_satisfied and
+ * passed_with_preexisting_failures checks run first: two of them contain
+ * "fail".
  */
 function classifyOutcome(outcome: string): TaskStatus {
   const lo = outcome.toLowerCase();
   if (lo === TASK_OUTCOME_ACCEPTED_WITH_FAILURES) return 'accepted_with_failures';
   if (lo === TASK_OUTCOME_ALREADY_SATISFIED) return 'already_satisfied';
+  if (lo === TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES) return 'passed_with_preexisting_failures';
   // A blocked task (gap-f59fe9) shows as skipped: the portal has no blocked state.
   if (lo.includes('skipped') || lo === 'unknown' || lo === TASK_OUTCOME_BLOCKED) return 'skipped';
   if (lo === 'passed' || lo === 'succeeded' || lo.startsWith('success')) return 'passed';
@@ -282,9 +290,9 @@ function upsertCheck(
  * are removed and all counters reset to zero.
  *
  * After 'failed' or 'cancelled': resume — task records whose status is
- * 'passed', 'already_satisfied', 'unverified', 'skipped' (but not blocked), or
- * 'accepted_with_failures' are kept and counted; every other task record (and
- * its transcript) is removed.
+ * 'passed', 'passed_with_preexisting_failures', 'already_satisfied',
+ * 'unverified', 'skipped' (but not blocked), or 'accepted_with_failures' are
+ * kept and counted; every other task record (and its transcript) is removed.
  *
  * The plan's generation is incremented in both cases.
  */
@@ -330,6 +338,7 @@ function beginNewRun(
     // Resume: keep tasks that finished well, remove the rest
     const GOOD: Set<TaskStatus> = new Set([
       'passed',
+      'passed_with_preexisting_failures',
       'already_satisfied',
       'unverified',
       'skipped',
@@ -735,7 +744,8 @@ export function applyEvent(
           } else if (existing!.status === 'failed') {
             tasksFailed = Math.max(0, tasksFailed - 1);
           } else {
-            // passed, already satisfied or skipped
+            // passed (with or without pre-existing failures), already
+            // satisfied or skipped
             tasksDone = Math.max(0, tasksDone - 1);
           }
         }
@@ -824,8 +834,9 @@ export function applyEvent(
         } else if (status === 'failed') {
           tasksFailed += 1;
         } else if (event.outcome.toLowerCase() !== TASK_OUTCOME_BLOCKED) {
-          // passed, already satisfied and skipped all count as done; blocked
-          // counts as neither done nor failed
+          // passed (with or without pre-existing failures), already satisfied
+          // and skipped all count as done; blocked counts as neither done nor
+          // failed
           tasksDone += 1;
         }
         // A task first seen here can raise the plan's total, as in task_started.
@@ -896,6 +907,7 @@ export function applyEvent(
           tasksFailed = Math.max(0, tasksFailed - 1);
         } else if (
           counted === 'passed' ||
+          counted === 'passed_with_preexisting_failures' ||
           counted === 'already_satisfied' ||
           counted === 'skipped' ||
           counted === 'accepted_with_failures' ||

@@ -24,6 +24,13 @@ export const TASK_OUTCOME_ACCEPTED_WITH_FAILURES = 'accepted_with_failures' as c
 export const TASK_OUTCOME_UNVERIFIED = 'unverified' as const;
 
 /**
+ * Outcome string emitted when a task passed its verify steps apart from tests that also failed on
+ * the plan run's start commit (gap-161be1). Counted as passed; its own outcome keeps those
+ * failures in view.
+ */
+export const TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES = 'passed_with_preexisting_failures' as const;
+
+/**
  * Outcome string emitted when a task's work was already there: its attempt changed nothing,
  * and its verify steps passed on the tree as it was.
  */

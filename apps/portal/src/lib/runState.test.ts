@@ -237,6 +237,23 @@ describe('task_completed', () => {
     expect(s.plans['p1']!.tasksUnverified ?? 0).toBe(0);
   });
 
+  it('classifies "passed_with_preexisting_failures" as its own pass, counted as done', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(
+      s,
+      { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'passed_with_preexisting_failures' },
+      2000,
+    );
+    expect(s.tasks[taskKey('p1', 't1')]!.status).toBe('passed_with_preexisting_failures');
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 1, tasksFailed: 0, tasksAccepted: 0 });
+    expect(s.plans['p1']!.tasksUnverified ?? 0).toBe(0);
+
+    // A retry takes it back out of the done count, like any pass.
+    s = applyEvent(s, { type: 'task_started', plan_id: 'p1', task_id: 't1', phase: 'impl' }, 2100);
+    expect(s.tasks[taskKey('p1', 't1')]).toMatchObject({ status: 'active', attempts: 2 });
+    expect(s.plans['p1']!.tasksDone).toBe(0);
+  });
+
   it('classifies "blocked" as skipped, counted as neither done nor failed', () => {
     let s = startTask('p1', 't1');
     s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'blocked' }, 2000);
@@ -634,6 +651,13 @@ describe('fromSnapshot', () => {
     snap.agents['a1']!.spawned_at_ms = 0;
     const s = fromSnapshot(snap, 9000);
     expect(s.agents['a1']!.spawnedAtMs).toBeNull();
+  });
+
+  it('keeps a pass over pre-existing failures apart from a clean pass', () => {
+    const snap = makeSnapshot();
+    snap.tasks['p1/t2']!.outcome = 'passed_with_preexisting_failures';
+    const s = fromSnapshot(snap, 9000);
+    expect(s.tasks[taskKey('p1', 't2')]!.status).toBe('passed_with_preexisting_failures');
   });
 
   it('keeps the blocker of a blocked task, shown as skipped', () => {

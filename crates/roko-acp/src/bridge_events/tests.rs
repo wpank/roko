@@ -1158,7 +1158,7 @@ fn json_type_matches(value: &serde_json::Value, json_type: &str) -> bool {
 #[test]
 fn session_update_spec_conformance() {
     use crate::types::{
-        CostInfo, PlanEntry, PlanStatus, Priority, SessionBudgetStatus, ToolCallLocation,
+        CostInfo, PlanEntry, PlanEntryStatus, Priority, SessionBudgetStatus, ToolCallLocation,
     };
 
     let schema: serde_json::Value =
@@ -1202,7 +1202,7 @@ fn session_update_spec_conformance() {
         entries: vec![PlanEntry {
             content: "Write the test".to_owned(),
             priority: Priority::High,
-            status: PlanStatus::InProgress,
+            status: PlanEntryStatus::InProgress,
         }],
     }));
 

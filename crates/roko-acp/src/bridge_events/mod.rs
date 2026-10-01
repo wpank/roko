@@ -29,9 +29,9 @@ pub(crate) use context::{
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
-    acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context, append_acp_episode,
-    derive_acp_tool_capabilities, emit_acp_efficiency_event, truncate_assistant_history,
-    truncate_to_title,
+    acp_contract_role_for_mode, acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context,
+    append_acp_episode, derive_acp_tool_capabilities, emit_acp_efficiency_event,
+    truncate_assistant_history, truncate_to_title,
 };
 pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
 pub(crate) use experiments::{
@@ -604,7 +604,7 @@ where
     let session_mcp_servers = session.mcp_servers.clone();
     let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
-    let session_agent_role = session.config_state.agent_mode.clone();
+    let session_agent_role = acp_contract_role_for_mode(&session.config_state.agent_mode);
     let session_tool_capabilities = derive_acp_tool_capabilities(
         &session.config_state.agent_mode,
         &session.client_capabilities,

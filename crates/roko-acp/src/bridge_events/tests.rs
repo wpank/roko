@@ -2435,6 +2435,45 @@ async fn acp_builtin_tool_handler_unknown_role_falls_closed() {
 }
 
 #[tokio::test]
+async fn builtin_tool_permitted_in_default_code_mode() {
+    // A new session starts in `code` mode, which loads the implementer contract.
+    let session = test_session("test-model", "none");
+    assert_eq!(session.config_state.agent_mode, "code");
+    let role = acp_contract_role_for_mode(&session.config_state.agent_mode);
+    assert_eq!(role, "implementer");
+
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("notes.txt"), "read in code mode").expect("write fixture");
+    let (tx, _rx) = mpsc::channel(16);
+    let handler = AcpBuiltinToolHandler {
+        tool_name: "read_file".into(),
+        session_id: session.session_id.clone(),
+        workdir: tmp.path().to_path_buf(),
+        event_sender: tx,
+        role,
+    };
+    let call = ToolCall {
+        id: "code-mode-read".into(),
+        name: "read_file".into(),
+        arguments: json!({ "path": "notes.txt" }),
+        request_ts_ms: 0,
+    };
+    let result = handler
+        .execute(call, &ToolContext::testing(tmp.path()))
+        .await;
+    assert!(
+        result.is_ok(),
+        "read_file must run in code mode, got {result:?}"
+    );
+    assert_eq!(result.text_content(), "read in code mode");
+
+    // The other modes load their own contracts, and unknown modes still fail closed.
+    assert_eq!(acp_contract_role_for_mode("plan"), "strategist");
+    assert_eq!(acp_contract_role_for_mode("research"), "researcher");
+    assert_eq!(acp_contract_role_for_mode("unknown-mode"), "unknown-mode");
+}
+
+#[tokio::test]
 async fn permission_prompt_precedes_write() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let target = tmp.path().join("permission-gated.txt");

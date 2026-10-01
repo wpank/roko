@@ -9,7 +9,7 @@ goal = "hermes"
 subsystem = ["roko-acp/tools"]
 created = 2026-09-28
 updated = 2026-09-29
-last_verified = 2026-09-29
+last_verified = 2026-10-01
 last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
@@ -27,3 +27,11 @@ Confirm with a conformance test that a builtin tool executes in `code` mode; fix
 Verified 2026-09-28 (static check against 3d0ee4d02): The gate lives at crates/roko-acp/src/bridge_events/tools.rs:455-478: it loads AgentContract::load_for_role_with_mode(role, RestrictedFallback) and denies tools the contract does not permit, with unknown roles falling back to a deny-everything restricted contract. The role is the session mode (session_agent_role = agent_mode, bridge_events/mod.rs:607; SafetyLayer .with_role(agent_mode) at :624, :913), default "code" (session.rs:179, :296); bundled contracts cover roles such as implementer/auto-fixer (crates/roko-agent/src/safety/contract.rs:46-51) but no "code" role, and no code->implementer mapping exists in roko-acp. Not run; a conformance test would confirm.
 
 Re-verified 2026-09-29 at d9e79e9d8 (static): unchanged. The anchor crates/roko-acp/src/tools.rs:458 no longer exists; the gate is in bridge_events/tools.rs:455-478. bridge_events/cost.rs::acp_role_for_mode already maps code -> Implementer for cost and capability derivation; the fix can reuse it for the contract lookup.
+
+## Notes
+
+- 2026-10-01 (wk-specq): implemented on work/bug-8dbffd; cargo verification deferred to the batch check.
+  New `cost.rs::acp_contract_role_for_mode` maps `code`/`plan`/`research` to the implementer, strategist and
+  researcher contracts (reusing `acp_role_for_mode`); any other mode keeps its name and still gets the deny-all
+  fallback. The prompt handler passes it as the builtin handlers' role. The pre/post-dispatch `SafetyLayer` still
+  takes the raw mode; the role-scoped layer in gap-55eada is where that changes.

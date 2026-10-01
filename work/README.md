@@ -102,7 +102,9 @@ work/
   README.md                 this file
   goals.toml                hand-edited: active goals, highest priority first
   lanes.toml                hand-edited: lanes (paths, agents at once, pools) and milestones
-  items/<id>-<slug>.md      one file per item (tracked, public)
+  items/<id>-<slug>.md      one file per open item (tracked, public): status open, in_progress or blocked
+  done/<id>-<slug>.md       finished items (status done), with their [closed] evidence
+  closed/<id>-<slug>.md     items closed without being done (status wontfix or superseded)
   parked/<id>-<slug>.md     parked items: not planned, kept for search (see "Parking")
   NOW.md                    GENERATED — what to work on next: the top items of each goal
   STATUS.md                 GENERATED — open items by subsystem, recently closed
@@ -213,7 +215,7 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
 - A `done` item whose verify command later fails is reopened as `kind = "regression"` linking the old item.
 - `triage = "unverified"` items (bulk imports) are listed in `TRIAGE.md` until someone checks them against the
   code and sets `triage = "verified"` and `last_verified`.
-- Moving or renaming files is never closure.
+- Moving or renaming files is never closure: the `status` field is. The file follows its status: `close` moves a done item to `done/` and a won't-fix or superseded one to `closed/`, `park` and `unpark` move it to and from `parked/`, and `work.py tidy` moves any item that sits in the wrong folder (for example one closed by an older `work.py` on a branch). `check` reports a misplaced item.
 
 ## Keeping the graph current
 

@@ -1058,7 +1058,7 @@ pub async fn run_workflow_pipeline(
                             for (index, change) in changes.iter().enumerate() {
                                 let tool_call_id = format!("file-change-{}", index + 1);
                                 let (title_prefix, kind) = match change.change_type {
-                                    FileChangeType::Added => ("+", ToolCallKind::Create),
+                                    FileChangeType::Added => ("+", ToolCallKind::Edit),
                                     FileChangeType::Modified => ("~", ToolCallKind::Edit),
                                     FileChangeType::Deleted => ("-", ToolCallKind::Delete),
                                     FileChangeType::Renamed => (">", ToolCallKind::Edit),
@@ -1069,12 +1069,8 @@ pub async fn run_workflow_pipeline(
                                         title: format!("{title_prefix} {}", change.path),
                                         kind,
                                         locations: Some(vec![crate::types::ToolCallLocation {
-                                            uri: format!(
-                                                "file://{}/{}",
-                                                workdir.display(),
-                                                change.path
-                                            ),
-                                            range: None,
+                                            path: workdir.join(&change.path).display().to_string(),
+                                            line: None,
                                         }]),
                                     })
                                     .await;

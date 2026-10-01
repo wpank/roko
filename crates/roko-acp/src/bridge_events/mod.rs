@@ -41,8 +41,8 @@ pub(crate) use experiments::{
     replace_experiment_section, resolve_acp_dispatch_model,
 };
 pub(crate) use helpers::{
-    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, send_cognitive_event,
-    send_session_update, workflow_template_name,
+    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, roko_meta_update,
+    send_cognitive_event, send_session_update, workflow_template_name,
 };
 pub use permissions::request_permission;
 pub(crate) use permissions::request_permission_for_event;
@@ -983,20 +983,13 @@ where
         );
         session.record_efficiency_cost(efficiency_event.cost_usd);
         let budget_status = session.budget_status();
-        if let (Some(cost_budget_usd), Some(accumulated_cost_usd), Some(budget_remaining_usd)) = (
-            budget_status.cost_budget_usd,
-            budget_status.accumulated_cost_usd,
-            budget_status.budget_remaining_usd,
-        ) && let Err(error) = send_session_update(
-            transport,
-            &session.session_id,
-            SessionUpdate::BudgetStatusUpdate {
-                cost_budget_usd,
-                accumulated_cost_usd,
-                budget_remaining_usd,
-            },
-        )
-        .await
+        if budget_status.cost_budget_usd.is_some()
+            && let Err(error) = send_session_update(
+                transport,
+                &session.session_id,
+                roko_meta_update("budget", &budget_status),
+            )
+            .await
         {
             warn!(
                 session_id = %session.session_id,
@@ -1055,8 +1048,8 @@ where
         let title = truncate_to_title(&prompt_text_for_title, 60);
         session.session_name = Some(title.clone());
         let title_update = SessionUpdate::SessionInfoUpdate {
-            session_id: session.session_id.clone(),
-            session_name: Some(title),
+            title: Some(title),
+            _meta: None,
         };
         if let Err(error) = send_session_update(transport, &session.session_id, title_update).await
         {

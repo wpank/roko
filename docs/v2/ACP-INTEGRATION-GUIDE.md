@@ -1112,15 +1112,21 @@ SessionUpdate::ToolCall {
     title: String,
     kind: ToolCallKind,
     status: ToolCallStatus,
-    content: Vec<ContentBlock>,
+    content: Vec<ContentBlock>,               // sent as spec ToolCallContent items
+    locations: Option<Vec<ToolCallLocation>>, // [{"path": "/abs/file", "line": 12}]
 }
 
+// Serialized as the spec's ToolKind values.
 pub enum ToolCallKind {
-    Edit,
-    Create,
-    Delete,
-    Terminal,
-    Other,
+    Edit,      // "edit", also used for new files
+    Delete,    // "delete"
+    Terminal,  // "execute"
+    Read,      // "read"
+    Search,    // "search"
+    Fetch,     // "fetch"
+    Think,     // "think"
+    Move,      // "move"
+    Other,     // "other"
 }
 
 pub enum ToolCallStatus {
@@ -1138,8 +1144,10 @@ pub enum ToolCallStatus {
 #### `tool_call_update`
 
 The previously announced tool action has finished (or changed state). Find the
-matching card by `toolCallId` and update it. The `content` field may contain a
-diff block showing exactly what changed.
+matching card by `toolCallId` and update it. Each `content` item is a spec
+`ToolCallContent`: text output is wrapped as `{"type": "content", ...}`, and a
+change with the new file text is a `diff` item. A change that only has a unified
+diff is sent as a fenced `diff` text block.
 
 ```json
 {
@@ -1148,9 +1156,14 @@ diff block showing exactly what changed.
   "status": "completed",
   "content": [
     {
+      "type": "content",
+      "content": {"type": "text", "text": "Updated the login handler"}
+    },
+    {
       "type": "diff",
-      "path": "src/auth/login.rs",
-      "diff": "@@ -10,6 +10,10 @@\n..."
+      "path": "/path/to/project/src/auth/login.rs",
+      "oldText": "...",
+      "newText": "..."
     }
   ]
 }
@@ -1312,23 +1325,30 @@ pub struct CostInfo {
 
 #### `session_info_update`
 
-The session's display name has changed.
+The session's title has changed.
 
 ```json
 {
   "sessionUpdate": "session_info_update",
-  "sessionId": "sess_abc123",
-  "sessionName": "New session name"
+  "title": "New session name"
 }
 ```
+
+Roko also uses this update to carry its own data under `_meta.roko`, because spec
+clients drop session updates they do not know:
+
+- `_meta.roko.mcpStatus`: the per-server MCP startup results (`name`, `status`,
+  `toolCount`, and `message` on failure).
+- `_meta.roko.budget`: after a paid turn in a session with a cost ceiling,
+  `costBudgetUsd`, `accumulatedCostUsd` and `budgetRemainingUsd`.
 
 <details>
 <summary>Type definition</summary>
 
 ```rust
 SessionUpdate::SessionInfoUpdate {
-    session_id: String,
-    session_name: Option<String>,
+    title: Option<String>,
+    _meta: Option<serde_json::Value>,
 }
 ```
 

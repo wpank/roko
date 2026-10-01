@@ -3,13 +3,14 @@ id = "bug-a70def"
 kind = "bug"
 title = "The Claude MCP isolation tests assume the host has no managed-mcp.json"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-agent/claude_cli"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-cc-isolate's report on gap-b7a2d5, branch work/gap-b7a2d5 at 42859fc78)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs"]
@@ -42,3 +43,8 @@ The MCP isolation tests in `claude_cli_agent.rs`, and the function that locates 
 
 - [ ] The MCP tests pass whether or not the host has a `managed-mcp.json`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-guard2): implemented on work/bug-a70def; cargo verification deferred to the batch check.
+- At BASE the directory was already injectable (`ClaudeIsolation::with_managed_settings_dir`), but `ClaudeCliAgent::new` read the host's real one, so `command_isolates_claude_code_from_the_user_configuration`, `only_explicit_caller_choices_widen_the_isolation` and `runs_fake_claude_binary_and_passes_flags` (one `--strict-mcp-config` each) would fail on a host with a `managed-mcp.json`. `claude_managed_settings_dir` now returns a path that never exists when this crate's tests are compiled (the crate's `cfg!(test)` idiom); tests that want a managed config pass their own directory, as `a_managed_mcp_config_is_reported_before_the_run` already did. New test `mcp_isolation_tests_ignore_the_hosts_managed_mcp_json`.

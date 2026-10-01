@@ -7,6 +7,7 @@ use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use roko_core::ObservableEvent;
+use roko_neuro::KnowledgeTier;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -28,10 +29,9 @@ struct NeuroQueryRequest {
     query: String,
     #[serde(default = "default_limit")]
     limit: usize,
-    /// Tier filter hint — accepted from the request body but not yet consumed
-    /// by the underlying query implementation.
+    /// Least durable tier to return (one of [`TIER_NAMES`]); entries in lower
+    /// tiers are left out.
     #[serde(default)]
-    #[allow(dead_code)]
     min_tier: Option<String>,
 }
 
@@ -39,10 +39,38 @@ fn default_limit() -> usize {
     10
 }
 
+/// Tier names `min_tier` accepts, least durable first.
+const TIER_NAMES: [&str; 4] = ["transient", "working", "consolidated", "persistent"];
+
+/// Durability rank of a tier: its position in [`TIER_NAMES`].
+fn tier_rank(tier: KnowledgeTier) -> usize {
+    match tier {
+        KnowledgeTier::Transient => 0,
+        KnowledgeTier::Working => 1,
+        KnowledgeTier::Consolidated => 2,
+        KnowledgeTier::Persistent => 3,
+    }
+}
+
+/// Rank of a tier name, ignoring ASCII case; `None` for an unknown name.
+fn tier_rank_by_name(name: &str) -> Option<usize> {
+    TIER_NAMES
+        .iter()
+        .position(|tier| tier.eq_ignore_ascii_case(name.trim()))
+}
+
 impl RequestPayload for NeuroQueryRequest {
     fn validate_payload(&self) -> Result<(), ApiError> {
         if self.query.trim().is_empty() {
             return Err(ApiError::bad_request("query must not be blank"));
+        }
+        if let Some(min_tier) = self.min_tier.as_deref()
+            && tier_rank_by_name(min_tier).is_none()
+        {
+            return Err(ApiError::bad_request(format!(
+                "unknown min_tier '{min_tier}'; valid tiers: {}",
+                TIER_NAMES.join(", ")
+            )));
         }
         Ok(())
     }
@@ -57,9 +85,19 @@ async fn neuro_query(
     let store = roko_neuro::knowledge_store::KnowledgeStore::for_layout(layout);
 
     let started = Instant::now();
-    let results = store
-        .query(&body.query, body.limit)
-        .map_err(|e| ApiError::internal(format!("neuro query failed: {e}")))?;
+    let min_rank = body.min_tier.as_deref().and_then(tier_rank_by_name);
+    let results = match min_rank {
+        // Rank every match before filtering, so lower tiers cannot crowd out `limit`.
+        Some(min_rank) => store.query(&body.query, usize::MAX).map(|entries| {
+            entries
+                .into_iter()
+                .filter(|entry| tier_rank(entry.tier) >= min_rank)
+                .take(body.limit)
+                .collect::<Vec<_>>()
+        }),
+        None => store.query(&body.query, body.limit),
+    }
+    .map_err(|e| ApiError::internal(format!("neuro query failed: {e}")))?;
 
     let total = results.len();
     crate::emit_lens_observation(
@@ -300,4 +338,102 @@ async fn retrieval_query(
         "total": total,
         "latency_ms": duration_ms,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use roko_core::config::schema::RokoConfig;
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    use crate::deploy::manual::ManualBackend;
+    use crate::runtime::NoOpRuntime;
+
+    #[tokio::test]
+    async fn query_filters_by_min_tier() {
+        let dir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        // Every `KnowledgeEntry` field has a serde default, so raw lines suffice.
+        let store = roko_neuro::knowledge_store::KnowledgeStore::for_layout(&state.layout);
+        std::fs::create_dir_all(store.path().parent().expect("store dir")).expect("store dir");
+        let lines: String = ["transient", "working", "consolidated"]
+            .iter()
+            .map(|tier| {
+                let entry = json!({
+                    "id": format!("k-{tier}"),
+                    "tier": tier,
+                    "content": "retry with exponential backoff",
+                });
+                format!("{entry}\n")
+            })
+            .collect();
+        std::fs::write(store.path(), lines).expect("write knowledge store");
+        let router = Router::new()
+            .nest("/api", routes())
+            .with_state(Arc::clone(&state));
+
+        let (status, all) = post_query(&router, json!({ "query": "backoff" })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result_ids(&all), ["k-consolidated", "k-transient", "k-working"]);
+
+        let working_up = json!({ "query": "backoff", "min_tier": "Working" });
+        let (status, durable) = post_query(&router, working_up).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result_ids(&durable), ["k-consolidated", "k-working"]);
+
+        let first_only = json!({ "query": "backoff", "min_tier": "transient", "limit": 1 });
+        let (status, top) = post_query(&router, first_only).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(top["total"], 1);
+
+        let unknown_tier = json!({ "query": "backoff", "min_tier": "durable" });
+        let (status, rejected) = post_query(&router, unknown_tier).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = rejected["message"].as_str().unwrap_or_default();
+        assert!(message.contains("unknown min_tier 'durable'"), "{rejected}");
+    }
+
+    async fn post_query(router: &Router, body: Value) -> (StatusCode, Value) {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/neuro/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        (status, serde_json::from_slice(&bytes).expect("json body"))
+    }
+
+    /// Result ids, sorted: entries with equal scores have no fixed order.
+    fn result_ids(body: &Value) -> Vec<String> {
+        let mut ids: Vec<String> = body["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .filter_map(|entry| entry["id"].as_str().map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids
+    }
 }

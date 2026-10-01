@@ -1655,9 +1655,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 api_key_env: None,
                 command: Some(script.display().to_string()),
                 args: None,
-                timeout_ms: Some(5_000),
-                ttft_timeout_ms: Some(5_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1797,6 +1797,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// can hold up a fake provider or a step for seconds (bug-779ae7).
     pub(super) const FIXTURE_HANG_GUARD_SECS: u64 = 120;
 
+    /// Time limit, in ms, of the fixtures' providers, the fake CLIs and the
+    /// mock servers. A loaded machine can hold up a fake CLI's start or a
+    /// mock's answer for seconds (bug-f1f814), so this is the hang guard too.
+    /// A test of time limits sets its attempt's own limit, which is shorter
+    /// and stops the provider first.
+    pub(super) const FIXTURE_PROVIDER_TIMEOUT_MS: u64 = FIXTURE_HANG_GUARD_SECS * 1_000;
+
     pub(super) fn verify_step(phase: &str, command: &str) -> crate::task_parser::VerifyStep {
         crate::task_parser::VerifyStep {
             phase: phase.to_string(),
@@ -1853,9 +1860,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 api_key_env: None,
                 command: Some(script.display().to_string()),
                 args: None,
-                timeout_ms: Some(5_000),
-                ttft_timeout_ms: Some(5_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1986,9 +1993,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             api_key_env: None,
             command: Some(command.to_string()),
             args: None,
-            timeout_ms: Some(5_000),
-            ttft_timeout_ms: Some(5_000),
-            connect_timeout_ms: Some(5_000),
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
             extra_headers: None,
             max_concurrent: None,
             limits: None,

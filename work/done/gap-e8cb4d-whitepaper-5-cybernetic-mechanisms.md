@@ -90,7 +90,8 @@ Checked at `41c7ffbd6`.
 - Lane `paper`; no hot files.
 - **2026-09-29, wk-wp-s5:** written on `work/gap-e8cb4d` at `d231cb588`, with the four new bibliography keys in
   `352c79b88` and claim CM3 reworded in `8ffa71cd4` (the count of 16 loops has no tracked source). Every tag is taken
-  from the status matrix pinned at `a17d4dadd`, as its rows stand on `work/gap-35a614` at `e035b5efe`. The static
-  half of the verify passes. The paperlint half can't run here, because `tools/paperlint.py` hasn't merged; the
-  in-progress copy from `work/gap-af0b57` passes `--strict`, `--budget 1.3` and `--check-identifiers` (977 words,
-  1.15×). Close once gap-af0b57 and gap-35a614 have merged and the verify passes on the merged branch.
+  from the status matrix pinned at `a17d4dadd`, as its rows stand on `work/gap-35a614` at `e035b5efe`. The static half
+  of the verify passes. The paperlint half can't run here, because `tools/paperlint.py` hasn't merged; the in-progress
+  copy from `work/gap-af0b57` passes `--strict`, `--budget 1.3` and `--check-identifiers`. The committed paperlint
+  `0cca5d0cb`, which counts words by the README's rule, also passes `--strict`: 935 words, 1.10×. Close once gap-af0b57
+  and gap-35a614 have merged and the verify passes on the merged branch.

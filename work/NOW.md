@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 11 anchor gone · 188 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 11 anchor gone · 185 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -26,13 +26,13 @@ _0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 9 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P3** [bug-009c0e](items/bug-009c0e-roko-prd-plan-s-planner-prompt-shows-max.md) roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially [bug] · size S · verified 2026-10-01
 
-_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -44,31 +44,31 @@ _0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 - nothing checked and open
 
-_0 more open · 5 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
-- **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 - **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-09-29
+- **P1** [bug-ae28ac](items/bug-ae28ac-df-0925-p4-budget-limits-are-not.md) Daily and agent-lifetime budget limits are not enforced by the Graph engine [bug] · size M · verified 2026-09-29
 
-_68 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_67 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
-- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · size M · verified 2026-09-29
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
 - **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
+- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-09-29
 
-_26 more open · `goal = "visibility"`_
+_24 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
 - **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
 - **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · size M · verified 2026-09-29
-- **P1** [bug-86117a](items/bug-86117a-graph-prompts-never-include-durable-knowledge-promptcache.md) Graph prompts never include durable knowledge: PromptCache loads entries with an empty query that matches nothing [bug] · size S · verified 2026-09-29
+- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-09-29
 
-_14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_13 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -76,7 +76,7 @@ _14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 16 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

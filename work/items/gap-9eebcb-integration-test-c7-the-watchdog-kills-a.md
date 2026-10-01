@@ -3,13 +3,15 @@ id = "gap-9eebcb"
 kind = "gap"
 title = "Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "a4e175c9c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G7, canary C7)"
 anchors = ["crates/roko-cli/tests/supervision_canary.rs"]
@@ -67,3 +69,13 @@ No such test at `41c7ffbd6`. The watchdog (spec-a0403b) and the disk preflight (
 
 - The test edits no hot file; it merges last.
 - If reg-7cf6f9 adds a new threshold key instead of honouring `min_free_disk_mb`, use that key.
+- 2026-10-01 (wk-tiers), reg-7cf6f9 (notes here, since its item file is dirty in MAIN): implemented on `work/gap-9eebcb` at `aa68eeff7` in `graph_execution/disk_admission.rs`.
+  - `check_free_disk` refuses a run below `[resources] min_free_disk_mb` before any dispatch, and the message names the free space and the threshold. `plan run --force` now skips that check on the Graph engine; before, the engine ignored `--force`.
+  - With `--worktree-per-task`, `DiskAdmission` reserves `WORKTREE_GROWTH_ESTIMATE_MB` (3 GB) per attempt until the attempt ends. Under disk pressure, attempts wait for running ones to end and then run one at a time. Each admission publishes `worktree_count` and `disk_budget_remaining` on the conductor ring.
+  - Tests: `disk_admission_blocks_under_low_budget` (its verify), `disk_admission_serialises_only_under_pressure`, `a_run_refuses_to_start_below_the_free_disk_threshold`, `an_attempt_waits_for_disk_headroom`.
+  - Not restored: Runner-v2's pre-plan log rotation, stale-target cleanup and GC; the opt-in post-gate `cargo clean` (`ROKO_EXPLICIT_CARGO_CLEAN`); `per_plan_disk_budget_mb`; growth measured from the worktrees (the estimate is fixed). The Graph conductor evaluates only attempt-tagged signals, so nothing acts on the two metrics yet.
+- 2026-10-01 (wk-tiers): C7 implemented on `work/gap-9eebcb` at `7d4169c48`, with the 300 s sleep at `d399a6526`. `supervision_canary` and `supervision_canary_refuses_a_low_disk_run` pass in the worktree in about 10 s.
+  - With `task_stall_secs = 0` set by hand, `supervision_canary` fails on the duration check: the run took 307 s.
+  - The stalled attempts' per-attempt record is the dashboard diagnosis (`intervention_taken = "cancelled stalled attempt"`, one per attempt key). Their verdicts say `provider_error` with infra blame: the `RokoError::Timeout` text lacks the `timed out after` marker that `provider_failure_outcome` looks for. So a stall is neither a timeout nor agent-blamed, and the checkpoint records only that T1 failed.
+  - The watchdog counts silence only after an `assistant` message: an agent that printed only `content_block_delta` lines and then slept was never cancelled. It then exited 0 with no `result` line, and its attempt passed.
+  - Plan step 3, the shadow tier-limit log, is not asserted. Workspace verification is deferred to the batch check.

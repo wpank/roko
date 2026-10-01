@@ -802,6 +802,34 @@ impl ClaudeCliAgent {
                     ),
                 );
             }
+            // `usage` counts only the main model; `modelUsage` counts every
+            // model the session used, background turns and subagents
+            // included, as `total_cost_usd` does, and its thinking tokens
+            // (gap-ad0d39).
+            if let Some(per_model) = event.get("modelUsage").and_then(Value::as_object)
+                && !per_model.is_empty()
+            {
+                let total = |key: &str| {
+                    per_model
+                        .values()
+                        .filter_map(|entry| entry.get(key).and_then(Value::as_u64))
+                        .reduce(|sum, count| sum + count)
+                };
+                Self::update_stream_usage_field(&mut usage.input_tokens, total("inputTokens"));
+                Self::update_stream_usage_field(&mut usage.output_tokens, total("outputTokens"));
+                Self::update_stream_usage_field(
+                    &mut usage.cache_creation_tokens,
+                    total("cacheCreationInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.cache_read_tokens,
+                    total("cacheReadInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.reasoning_tokens,
+                    total("thinkingTokens"),
+                );
+            }
         }
         if usage.source == UsageSource::Unknown {
             return streamed.stream_usage(fallback_model);
@@ -819,7 +847,7 @@ impl ClaudeCliAgent {
             output_tokens: stream_usage.output_tokens,
             cache_creation_tokens: stream_usage.cache_creation_tokens,
             cache_read_tokens: stream_usage.cache_read_tokens,
-            reasoning_tokens: None,
+            reasoning_tokens: stream_usage.reasoning_tokens,
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
             model: stream_usage.model.clone(),
@@ -1563,6 +1591,8 @@ struct StreamUsage {
     output_tokens: Option<u64>,
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
+    /// Thinking tokens, a part of `output_tokens`, from `modelUsage`.
+    reasoning_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
     /// Agent turns the CLI reported in its final `result` event, or the
@@ -1584,6 +1614,7 @@ impl StreamUsage {
                 self.cache_creation_tokens =
                     self.cache_creation_tokens.or(other.cache_creation_tokens);
                 self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.reasoning_tokens = self.reasoning_tokens.or(other.reasoning_tokens);
                 self.cost_usd = self.cost_usd.or(other.cost_usd);
                 self.model = self.model.or(other.model);
                 self.num_turns = self.num_turns.or(other.num_turns);
@@ -1700,6 +1731,7 @@ impl StreamedMessages {
             output_tokens: Some(output),
             cache_creation_tokens: Some(cache_creation),
             cache_read_tokens: Some(cache_read),
+            reasoning_tokens: None,
             cost_usd,
             model: top_level().rev().find_map(|message| message.model.clone()),
             num_turns: Some(top_level().count() as u64),
@@ -2566,6 +2598,27 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, Some(44));
         assert_eq!(usage.cost_usd, Some(0.25));
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    /// gap-ad0d39: `modelUsage` counts every model the session used, so the
+    /// background turns on a small model count with the main model's, and
+    /// its thinking tokens are the output's reasoning part.
+    #[test]
+    fn parse_stream_usage_counts_every_model_in_model_usage() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","model":"claude-sonnet-4-6","total_cost_usd":0.2791,"usage":{"input_tokens":38,"output_tokens":3120,"cache_creation_input_tokens":21904,"cache_read_input_tokens":186112},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":38,"outputTokens":3120,"thinkingTokens":1450,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costUSD":0.2756},"claude-haiku-4-5":{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.0035}}}"#,
+            "claude-test-model",
+        );
+
+        assert_eq!(usage.source, UsageSource::ProviderReported);
+        assert_eq!(usage.input_tokens, Some(38 + 2_513));
+        assert_eq!(usage.output_tokens, Some(3_120 + 196));
+        assert_eq!(usage.cache_read_tokens, Some(186_112));
+        assert_eq!(usage.cache_creation_tokens, Some(21_904));
+        assert_eq!(usage.reasoning_tokens, Some(1_450));
+        assert_eq!(usage.cost_usd, Some(0.2791));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.reasoning_tokens, Some(1_450));
     }
 
     #[test]

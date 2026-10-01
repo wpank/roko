@@ -6,11 +6,12 @@
 //! global config with one interactive pass.
 
 use crate::config::{
-    ConfigPaths, DetectedCli, GateConfig, ResolvedConfig, Source, detect_clis, global_config_path,
+    ConfigPaths, DetectedCli, ResolvedConfig, Source, detect_clis, global_config_path,
     load_resolved_config, read_toml_file, resolve_paths, set_toml_dotted_key, write_toml_file,
 };
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::agent::ProviderKind;
+use roko_core::config::GateRungConfig;
 use roko_core::config::hot_reload::{self, ConfigChange, ConfigSection};
 use roko_core::config::schema::{
     CURRENT_CONFIG_VERSION, CURRENT_SCHEMA_VERSION, ModelProfile, ProviderConfig, RokoConfig,
@@ -33,9 +34,10 @@ pub struct WizardInputs {
     pub agent_args: Option<Vec<String>>,
     /// Preferred model slug, if the backend supports one.
     pub model: Option<String>,
-    /// Token budget for prompt composition.
+    /// Token budget for prompt composition (`budget.prompt_token_budget`).
     pub token_budget: Option<usize>,
-    /// System role text.
+    /// Ignored: no config key sets the agent persona since `[prompt] role`
+    /// was removed. The wizard says so when one is given.
     pub role: Option<String>,
     /// Whether to enable cargo compile+clippy gates by default.
     pub enable_gates: Option<bool>,
@@ -71,37 +73,18 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
         None => prompt_usize("Token budget for prompt composition", 8000)?,
     };
 
-    // 3. Role text.
-    let role = match &inputs.role {
-        Some(r) => r.clone(),
-        None => prompt_string(
-            "System role / persona",
-            "You are a Roko agent — concise, precise, and correct.",
-        )?,
-    };
-
-    // 4. Default gates.
+    // 3. Default gates.
     let enable_gates = match inputs.enable_gates {
         Some(v) => v,
         None => prompt_bool("Enable default cargo gates (compile + clippy)?", false)?,
     };
-    let gates = if enable_gates {
-        Some(vec![
-            GateConfig::Compile {
-                build_system: "cargo".into(),
-                timeout_ms: 600_000,
-            },
-            GateConfig::Clippy {
-                build_system: "cargo".into(),
-                timeout_ms: 600_000,
-            },
-        ])
-    } else {
-        None
-    };
+    if inputs.role.is_some() {
+        println!("note: the role text is not saved: no config key sets the agent persona");
+    }
 
     // Build the wizard config as a raw TOML document so only explicitly set
-    // keys appear in the output file (no default inflation).
+    // keys appear in the output file (no default inflation). Every key is in
+    // the current schema, so `roko config validate` accepts the file.
     let mut doc = toml::Value::Table(toml::map::Map::new());
     set_toml_dotted_key(&mut doc, "agent.command", &agent_command)?;
     if !agent_args.is_empty() {
@@ -109,26 +92,22 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
         set_toml_dotted_key(&mut doc, "agent.args", &args_json)?;
     }
     if let Some(model) = &inputs.model {
-        set_toml_dotted_key(&mut doc, "agent.model", model)?;
+        set_toml_dotted_key(&mut doc, "agent.default_model", model)?;
     }
-    set_toml_dotted_key(&mut doc, "tools.prefer_mcp", "false")?;
-    set_toml_dotted_key(&mut doc, "tools.global_denied", "[]")?;
-    set_toml_dotted_key(&mut doc, "tools.mcp_timeout_secs", "30")?;
-    set_toml_dotted_key(&mut doc, "prompt.token_budget", &token_budget.to_string())?;
-    set_toml_dotted_key(&mut doc, "prompt.role", &role)?;
-    if let Some(gate_list) = gates {
-        let gate_toml: toml::Value =
-            toml::Value::try_from(&gate_list).context("serialize gates")?;
+    set_toml_dotted_key(
+        &mut doc,
+        "budget.prompt_token_budget",
+        &token_budget.to_string(),
+    )?;
+    if enable_gates {
+        let rungs = default_cargo_gate_rungs();
+        let rungs = toml::Value::try_from(rungs).context("serialize gates")?;
+        let mut gates = toml::map::Map::new();
+        gates.insert("rungs".to_string(), rungs);
         doc.as_table_mut()
-            .unwrap()
-            .insert("gate".to_string(), gate_toml);
+            .ok_or_else(|| anyhow!("config root is not a table"))?
+            .insert("gates".to_string(), toml::Value::Table(gates));
     }
-    set_toml_dotted_key(&mut doc, "executor.max_concurrent_tasks", "4")?;
-    set_toml_dotted_key(&mut doc, "executor.max_auto_fix_iterations", "5")?;
-    set_toml_dotted_key(&mut doc, "executor.max_merge_attempts", "3")?;
-    set_toml_dotted_key(&mut doc, "executor.task_timeout_secs", "3600")?;
-    set_toml_dotted_key(&mut doc, "executor.auto_replan", "false")?;
-    set_toml_dotted_key(&mut doc, "executor.use_worktrees", "true")?;
     set_toml_dotted_key(&mut doc, "runner.plan_timeout_secs", "3600")?;
     set_toml_dotted_key(&mut doc, "serve.auth.enabled", "false")?;
     set_toml_dotted_key(&mut doc, "serve.auth.api_key", "")?;
@@ -178,6 +157,24 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
     }
 
     Ok(path)
+}
+
+/// The compile and clippy rungs `config init` writes for cargo gates: the
+/// commands `roko config migrate` gives the legacy cargo `[[gate]]` entries.
+fn default_cargo_gate_rungs() -> Vec<GateRungConfig> {
+    [
+        ("compile", "cargo check --workspace"),
+        ("clippy", "cargo clippy --workspace --no-deps -- -D warnings"),
+    ]
+    .into_iter()
+    .map(|(name, command)| GateRungConfig {
+        name: name.to_string(),
+        command: command.to_string(),
+        timeout_secs: 600,
+        required: true,
+        parallel_with: Vec::new(),
+    })
+    .collect()
 }
 
 /// Print the effective merged config with `[source]` tags on each field.
@@ -1132,31 +1129,6 @@ fn print_resolved(r: &ResolvedConfig) {
         r.config.agent.timeout_ms,
         r.sources.agent_timeout_ms.tag()
     );
-    println!(
-        "  tools.prefer_mcp   = {} {}",
-        r.config.tools.prefer_mcp,
-        r.sources.tools_prefer_mcp.tag()
-    );
-    println!(
-        "  tools.global_denied = {:?} {}",
-        r.config.tools.global_denied,
-        r.sources.tools_global_denied.tag()
-    );
-    println!(
-        "  tools.mcp_timeout_secs = {} {}",
-        r.config.tools.mcp_timeout_secs,
-        r.sources.tools_mcp_timeout_secs.tag()
-    );
-    println!(
-        "  prompt.token_budget= {} {}",
-        r.config.prompt.token_budget,
-        r.sources.prompt_token_budget.tag()
-    );
-    println!(
-        "  prompt.role        = {:?} {}",
-        r.config.prompt.role,
-        r.sources.prompt_role.tag()
-    );
     // Serialize providers to TOML and redact secret fields (api_key, tokens,
     // extra_headers values, etc.) before printing so that `roko config show`
     // never leaks literal API keys or bearer tokens to stdout.
@@ -1236,10 +1208,8 @@ fn print_resolved(r: &ResolvedConfig) {
     let fully_default = r.sources.agent_command == Source::Default
         && r.sources.auto_plan == Source::Default
         && r.sources.prompt_token_budget == Source::Default
-        && r.sources.prompt_role == Source::Default
         && r.sources.providers == Source::Default
         && r.sources.models == Source::Default
-        && r.sources.tools_prefer_mcp == Source::Default
         && r.sources.dreams_auto_dream == Source::Default
         && r.sources.dreams_idle_threshold_mins == Source::Default
         && r.sources.dreams_min_episodes_for_dream == Source::Default
@@ -2290,32 +2260,19 @@ scheduled_cron = "invalid cron"
     #[test]
     fn set_dotted_key_sets_prompt_budget() {
         let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "prompt.token_budget", "12345").unwrap();
-        assert_eq!(doc["prompt"]["token_budget"].as_integer().unwrap(), 12_345);
+        set_toml_dotted_key(&mut doc, "budget.prompt_token_budget", "12345").unwrap();
+        let budget = doc["budget"]["prompt_token_budget"].as_integer();
+        assert_eq!(budget, Some(12_345));
     }
 
     #[test]
-    fn set_dotted_key_sets_tools_prefer_mcp() {
+    fn set_dotted_key_sets_tools_deny() {
         let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.prefer_mcp", "true").unwrap();
-        assert!(doc["tools"]["prefer_mcp"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn set_dotted_key_sets_tools_global_denied() {
-        let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.global_denied", r#"["write_file","bash"]"#).unwrap();
-        let arr = doc["tools"]["global_denied"].as_array().unwrap();
+        set_toml_dotted_key(&mut doc, "tools.deny", r#"["write_file","bash"]"#).unwrap();
+        let arr = doc["tools"]["deny"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0].as_str().unwrap(), "write_file");
         assert_eq!(arr[1].as_str().unwrap(), "bash");
-    }
-
-    #[test]
-    fn set_dotted_key_sets_tools_timeout() {
-        let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.mcp_timeout_secs", "75").unwrap();
-        assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 75);
     }
 
     #[test]
@@ -2363,15 +2320,45 @@ scheduled_cron = "invalid cron"
         // Read back the file as raw TOML and verify the wizard-set keys.
         let doc = read_toml_file(&path).unwrap();
         assert_eq!(doc["agent"]["command"].as_str().unwrap(), "cat");
-        assert_eq!(doc["prompt"]["token_budget"].as_integer().unwrap(), 4000);
-        assert_eq!(doc["tools"]["prefer_mcp"].as_bool().unwrap(), false);
-        let denied = doc["tools"]["global_denied"].as_array().unwrap();
-        assert!(denied.is_empty());
-        assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 30);
+        let budget = doc["budget"]["prompt_token_budget"].as_integer();
+        assert_eq!(budget, Some(4000));
         assert_eq!(doc["serve"]["auth"]["enabled"].as_bool().unwrap(), false);
         assert_eq!(doc["serve"]["auth"]["api_key"].as_str().unwrap(), "");
-        // gap-6bc156: no plan run reads `executor.max_concurrent_plans`.
-        assert!(doc["executor"].get("max_concurrent_plans").is_none());
+    }
+
+    /// bug-49a966: the wizard writes only keys of the current schema, so the
+    /// file it writes passes path validation and parses strictly. It used to
+    /// write v1 keys: `[executor]`, `[tools]`, `[prompt]` and `[[gate]]`.
+    #[test]
+    fn init_wizard_output_validates_against_the_core_schema() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.toml");
+        let inputs = WizardInputs {
+            agent_command: Some("cat".into()),
+            agent_args: Some(vec!["--quiet".into()]),
+            model: Some("claude-haiku-4-5".into()),
+            token_budget: Some(4000),
+            role: Some("test role".into()),
+            enable_gates: Some(true),
+            yes: true,
+        };
+        run_init_wizard(Some(path.clone()), &inputs).expect("run the wizard");
+
+        let text = fs::read_to_string(&path).expect("read the written config");
+        let value: toml::Value = text.parse().expect("parse the written config");
+        let unknown = roko_core::config::loader::validate_known_config_paths(&value);
+        assert!(unknown.is_empty(), "unknown keys: {unknown:?}\n{text}");
+        let config = RokoConfig::from_toml(&text).expect("the written config parses");
+        assert_eq!(config.agent.command.as_deref(), Some("cat"));
+        assert_eq!(config.agent.default_model, "claude-haiku-4-5");
+        assert_eq!(config.budget.prompt_token_budget, 4000);
+        let rungs = config
+            .gates
+            .custom_rungs
+            .iter()
+            .map(|rung| rung.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rungs, ["compile", "clippy"]);
     }
 
     #[test]
@@ -2542,7 +2529,7 @@ scheduled_cron = "invalid cron"
             ("serve.auth.api_key", ""),
             ("serve.auth.api_key", "${SERVE_KEY}"),
             ("agent.default_model", "sk-looking-model"),
-            ("prompt.token_budget", "5000"),
+            ("budget.prompt_token_budget", "5000"),
         ] {
             let outcome = set_secret_config_key(workdir, &paths, key, value).unwrap();
             assert_eq!(outcome, None, "{key} = {value}");

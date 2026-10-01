@@ -31,7 +31,8 @@
 //! # Robustness
 //!
 //! The parser handles common model quirks:
-//! - `<think>...</think>` reasoning blocks are skipped
+//! - `<think>`, `<thinking>` and `<reasoning>` blocks are skipped, closed or
+//!   not, so a `<tool_call>` the model only drafted while reasoning is not run
 //! - Missing `"arguments"` key defaults to `{}`
 //! - Single-block `"tool_calls": [...]` arrays are unpacked
 //! - Trailing commas and minor JSON malformations are repaired
@@ -41,6 +42,18 @@
 use roko_core::tool::{ToolCall, ToolDef, ToolFormat, ToolResult};
 
 use super::{BackendResponse, RenderedResults, RenderedTools, Translator, TranslatorError};
+
+/// Opening and closing tags of the reasoning blocks a model may write before
+/// or between its tool calls. A `<tool_call>` inside one is a draft the model
+/// considered, not a call (bug-7567eb).
+const REASONING_TAGS: &[(&str, &str)] = &[
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+    ("<reasoning>", "</reasoning>"),
+];
+
+const TOOL_CALL_OPEN: &str = "<tool_call>";
+const TOOL_CALL_CLOSE: &str = "</tool_call>";
 
 /// Translator for the Hermes XML `<tool_call>` format.
 ///
@@ -92,35 +105,41 @@ impl Translator for HermesXmlTranslator {
     fn parse_calls(&self, response: &BackendResponse) -> Result<Vec<ToolCall>, TranslatorError> {
         let text = extract_text(response);
 
-        // Parse all <tool_call>...</tool_call> blocks from the text.
+        // One left-to-right pass over reasoning blocks and
+        // <tool_call>...</tool_call> blocks. A `<tool_call>` inside reasoning
+        // is a draft, not a call (bug-7567eb), and reasoning tags inside a
+        // call's arguments are only text, so reasoning is skipped in the same
+        // pass rather than stripped first.
         let mut calls = Vec::new();
         let mut search_from = 0;
 
-        while let Some(start) = text[search_from..].find("<tool_call>") {
-            let abs_start = search_from + start + "<tool_call>".len();
-            let Some(end_offset) = text[abs_start..].find("</tool_call>") else {
+        while let Some((at, open, close)) = next_opener(&text, search_from) {
+            let body_start = at + open.len();
+            let end = text[body_start..].find(close).map(|end| body_start + end);
+            if open != TOOL_CALL_OPEN {
+                // Reasoning without its closer runs to the end of the text, so
+                // nothing after its opener is a call.
+                let Some(end) = end else {
+                    break;
+                };
+                search_from = end + close.len();
+                continue;
+            }
+            let Some(abs_end) = end else {
                 // Unclosed tag -- try to parse what we have up to end-of-string.
-                let body = text[abs_start..].trim();
-                #[allow(clippy::collapsible_if)]
+                let body = text[body_start..].trim();
                 if !body.is_empty() {
-                    if let Some(call) = parse_tool_call_body(body, calls.len()) {
-                        calls.push(call);
-                    }
+                    calls.extend(parse_tool_call_body(body, calls.len()));
                 }
                 break;
             };
-            let abs_end = abs_start + end_offset;
-            let body = text[abs_start..abs_end].trim();
-
-            #[allow(clippy::collapsible_if)]
+            let body = text[body_start..abs_end].trim();
             if !body.is_empty() {
                 // Try to parse the JSON body inside the tags.
-                if let Some(call) = parse_tool_call_body(body, calls.len()) {
-                    calls.push(call);
-                }
+                calls.extend(parse_tool_call_body(body, calls.len()));
             }
 
-            search_from = abs_end + "</tool_call>".len();
+            search_from = abs_end + close.len();
         }
 
         Ok(calls)
@@ -187,6 +206,17 @@ fn extract_text(response: &BackendResponse) -> String {
             buf
         }
     }
+}
+
+/// The earliest reasoning opener or `<tool_call>` in `text` at or after
+/// `from`: where it starts, and its opening and closing tags.
+fn next_opener(text: &str, from: usize) -> Option<(usize, &'static str, &'static str)> {
+    REASONING_TAGS
+        .iter()
+        .copied()
+        .chain(std::iter::once((TOOL_CALL_OPEN, TOOL_CALL_CLOSE)))
+        .filter_map(|(open, close)| text[from..].find(open).map(|at| (from + at, open, close)))
+        .min_by_key(|(at, _, _)| *at)
 }
 
 /// Parse the JSON body inside a `<tool_call>` block into a `ToolCall`.
@@ -447,6 +477,61 @@ mod tests {
             .expect("parse should succeed");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "read_file");
+    }
+
+    /// bug-7567eb: a `<tool_call>` the model drafts inside its reasoning is
+    /// not a call; the one after the reasoning is.
+    #[test]
+    fn parse_ignores_tool_call_inside_think() {
+        let text = "<think>\n\
+                    Maybe I should run <tool_call>{\"name\": \"write_file\", \"arguments\": \
+                    {\"path\": \"x.rs\", \"content\": \"\"}}</tool_call>\n\
+                    ... no, read it first.\n\
+                    </think>\n\
+                    <tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"x.rs\"}}</tool_call>";
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(text.into()))
+            .expect("parse should succeed");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].id, "hermes-tc-0");
+    }
+
+    /// bug-7567eb: unterminated reasoning runs to the end of the text, so an
+    /// unclosed `<tool_call>` inside it is not parsed either; nor is a draft
+    /// inside `<thinking>`.
+    #[test]
+    fn parse_ignores_unclosed_tool_call_inside_unterminated_think() {
+        let unterminated = "<think>\n\
+                            I could <tool_call>{\"name\": \"bash\", \"arguments\": {\"cmd\": \"rm -rf x\"}}";
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(unterminated.into()))
+            .expect("parse should succeed");
+        assert!(calls.is_empty(), "{calls:?}");
+
+        let thinking = "<thinking><tool_call>{\"name\": \"bash\"}</tool_call></thinking>\n\
+                        <tool_call>{\"name\": \"read_file\"}</tool_call>";
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(thinking.into()))
+            .expect("parse should succeed");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].name, "read_file");
+    }
+
+    /// bug-7567eb: reasoning tags inside a call's arguments are only text.
+    #[test]
+    fn parse_keeps_think_text_inside_tool_call_arguments() {
+        let text = "<tool_call>{\"name\": \"write_file\", \"arguments\": \
+                    {\"path\": \"prompt.txt\", \"content\": \"<think>plan</think> then <think>\"}}\
+                    </tool_call>";
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(text.into()))
+            .expect("parse should succeed");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(
+            calls[0].arguments["content"],
+            "<think>plan</think> then <think>"
+        );
     }
 
     #[test]

@@ -141,7 +141,9 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
-    let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
+    // Nothing else costs this direct model call (bug-724982).
+    let roko_dir = workdir.join(".roko");
+    let feedback_service = FeedbackService::from_roko_dir(&roko_dir).with_cost_records();
     let feedback_sink: Arc<dyn FeedbackSink> = match &cascade_router {
         Some(router) => Arc::new(
             feedback_service

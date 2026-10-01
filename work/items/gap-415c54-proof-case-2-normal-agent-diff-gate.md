@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "a962bcab9"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
@@ -19,6 +19,9 @@ links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4"], 
 
 [[verify]]
 command = "grep -rqw 'fn worktree_task_diff_is_gated_merged_and_cleaned' crates/roko-cli/ && cargo test -p roko-cli worktree_task_diff_is_gated_merged_and_cleaned"
+
+[[verify]]
+command = "grep -rqw 'fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing' crates/roko-cli/tests && cargo test -p roko-cli --test worktree_task_diff worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing"
 +++
 
 ## Problem
@@ -155,3 +158,30 @@ Imported without verification from:
 How to verify: Source: Dogfood audit, proof case 2. Check the described code path for: Agent makes a real worktree diff and exits normally; gate, commit/merge, summary, and cleanup all terminate without manual intervention.
 
 Verified 2026-09-28: The diff + gate + summary half ran live in the 2026-09-25 portal run (in place, no worktree). Commit/merge is not wired on the Graph path: with --worktree-per-task a successful attempt's lease is released with WorkspaceReleasePolicy::Delete (graph_task_dispatch.rs 'Worktree isolation: release on success': 'can be merged separately via the delivery pipeline. For now the worktree is cleaned up'), and graph_execution/delivery.rs::CliCompletionDeliveryService is constructed only in its own tests.
+- 2026-10-01 (wk-childenv): Premise re-checked at `a962bcab9`. Commit and merge had landed. Each passed attempt
+  is committed and folded into `roko/plan/<plan>` (gap-3b5361); a plan whose tasks all passed is delivered into
+  `roko/batch/<run>` with its `[meta] verify` as the regression check (spec-f830c4); `--promote <branch>` moves
+  the batch into a branch nobody has checked out, or parks it. The C3/C4 canaries
+  (`tests/plan_branch_integration.rs`) cover the commits, the meta-verify failure and the untouched operator
+  checkout. Missing were cleanup and the summary: both topologies keep a passed attempt's worktree
+  (`RetainForReview`) and nothing removed it or its `roko/attempt/*` branch later (the delivery receipt's
+  `release_policy` was never read), and the run summary did not mention the batch, the delivered commit or the
+  promotion. Implemented on `work/gap-415c54`; cargo verification and the run of the new tests are deferred to the
+  batch check.
+  - Cleanup: `WorktreeManager` records every attempt it accepts per plan. Once a plan's delivery ends with
+    `release_policy` `Delete`, `deliver_plan_to_batch` calls `WorktreeManager::release_accepted`, which, under the
+    operation and repository mutation locks, removes each accepted checkout (only when its attempt branch is
+    still at the accepted commit and the checkout is clean apart from roko's `.cursor` copy) and deletes its
+    branch by compare-and-swap. Anything else is kept and logged. A failed or undelivered plan keeps everything.
+    Not covered: checkouts accepted by an earlier process of a resumed run (the record is in memory).
+  - Summary: the `--json` summary has `batch` (branch, each delivery's record with its merge commit, and the
+    promotion), and the text summary names each delivered plan's merge commit and the promotion.
+  - Tests: `tests/worktree_task_diff.rs` runs the real binary in a scratch repository, as C3 does.
+    `worktree_task_diff_is_gated_merged_and_cleaned` checks the commit on the plan branch and in the checkpoint,
+    the delivery into the batch and the promotion into `release` (and the summary's commits), no attempt worktree
+    or branch afterwards, no cleanup warning in `.roko/roko.log.*`, and the untouched operator checkout.
+    `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` checks that a failed edit stays in
+    its kept worktree on its attempt branch, and that no plan branch exists and neither the batch nor `release`
+    moved. `a_worktree_run_delivers_each_plan_into_its_batch_branch` (in-process) now also checks the cleanup.
+  - The live-run evidence the Done-when asks for is these binary tests' run in the batch check; gap-3aa9cb can
+    fold them onto its shared scripted provider.

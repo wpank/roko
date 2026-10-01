@@ -1,7 +1,7 @@
 # Flow Lifecycle
 
 > Depth file for [04-EXECUTION.md](../../04-EXECUTION.md) section 7.
-> Documents Flow states, transitions, and the `GuaranteedFinallyController`.
+> Documents Flow states, transitions, and where a plan run's cleanup happens.
 
 ---
 
@@ -18,7 +18,8 @@ The engine executes cells; the controller manages the surrounding state
 machine: resource acquisition, lifecycle events, cleanup, and terminal
 receipts.
 
-**Source:** `crates/roko-graph/src/finally.rs`, `crates/roko-graph/src/engine.rs`
+**Source:** `crates/roko-cli/src/graph_execution/plan_runner.rs` (`run_one_plan`),
+`crates/roko-graph/src/engine.rs`
 
 ---
 
@@ -61,111 +62,25 @@ Terminal states are absorbing -- once reached, no further transitions occur.
 | Running | CancelRequested | Cancelled | CancellationToken triggered |
 | Running | PauseRequested | Paused | Operator intervention |
 | Paused | ResumeRequested | Running | Snapshot restore + continue |
-| Running | Panic | Failed | Panic caught by finally controller |
 
 ---
 
-## GuaranteedFinallyController
+## Cleanup on exit
 
-The `GuaranteedFinallyController` wraps graph execution with an absolute
-guarantee that cleanup runs even on failure, panic, or cancellation. It is
-NOT a graph node -- it is a controller hook that runs outside the DAG.
+A `GuaranteedFinallyController` was drafted in `crates/roko-graph/src/finally.rs`, but
+roko-graph never compiled it (its `lib.rs` declared no `mod finally`), and it was deleted
+on 2026-10-01 (gap-ff6e83).
 
-**Source:** `crates/roko-graph/src/finally.rs`
+`run_one_plan` (`crates/roko-cli/src/graph_execution/plan_runner.rs`) does a plan run's
+cleanup:
 
-### Terminal outcomes
+- On an interrupt it cancels the graph and sends SIGTERM to in-flight agents. Attempts
+  still running after a drain timeout are stopped, and agents that ignored SIGTERM are
+  killed.
+- It then writes the checkpoint's terminal status and the tasks the run did not complete,
+  and closes the run manifest.
 
-```rust
-pub enum TerminalOutcome {
-    Success,     // all tasks completed and passed gates
-    Failure,     // one or more tasks failed or gates rejected
-    Cancelled,   // execution was cancelled by operator or timeout
-}
-```
-
-### TerminalReceipt
-
-```rust
-pub struct TerminalReceipt {
-    pub run_id: String,
-    pub plan_id: String,
-    pub outcome: TerminalOutcome,
-    pub started_at_ms: u64,
-    pub finished_at_ms: u64,
-    pub total_nodes: usize,
-    pub completed_nodes: usize,
-    pub failed_nodes: usize,
-    pub skipped_nodes: usize,
-    pub budget_spent_micro_usd: u64,
-}
-```
-
-Exactly one `TerminalReceipt` is emitted per execution. This is the
-controller's primary output; downstream consumers use it to drive
-delivery, notification, and reporting.
-
-### Guarantees
-
-Regardless of how execution ends:
-
-1. **Exactly one terminal receipt.** The controller emits precisely one
-   `TerminalReceipt`. No double-emission, no missing receipt.
-
-2. **Workspace lease release.** All workspace leases acquired during
-   execution are released via the workspace provider.
-
-3. **Agent process shutdown.** All tracked agent processes are stopped
-   through the `ProcessSupervisor`. The shutdown sequence is: cancel
-   token, SIGTERM, 10-second grace period, SIGKILL.
-
-4. **Final snapshot flush.** The last snapshot is written to disk so the
-   run can be inspected or resumed. The atomic write-fsync-rename pattern
-   ensures no partial writes.
-
-### FinallyGuard
-
-The controller uses an explicit `FinallyGuard` that tracks whether cleanup
-has been performed. If the guard is dropped without explicit cleanup (due
-to a panic), it logs a diagnostic warning. The actual cleanup must be
-called by the async controller since `Drop` cannot run async code.
-
-```rust
-struct FinallyGuard {
-    cleaned_up: bool,
-    run_id: String,
-}
-
-impl Drop for FinallyGuard {
-    fn drop(&mut self) {
-        if !self.cleaned_up {
-            tracing::error!(
-                run_id = %self.run_id,
-                "FinallyGuard dropped without cleanup"
-            );
-        }
-    }
-}
-```
-
-### Execution flow
-
-```
-1. Create FinallyGuard (cleaned_up = false)
-2. Start graph execution
-3. Wait for completion, failure, or cancellation
-4. Run cleanup:
-   a. Determine terminal outcome
-   b. Release workspace leases
-   c. Stop agent processes
-   d. Flush snapshot
-   e. Emit TerminalReceipt
-   f. Set cleaned_up = true
-5. Drop FinallyGuard (no-op because cleaned_up = true)
-```
-
-If step 2 panics, the guard's `Drop` fires at step 5 with
-`cleaned_up = false`, producing the diagnostic warning. The caller's
-panic handler can then perform synchronous cleanup.
+A forced exit or SIGHUP ends the run without that terminal write (bug-4641e3).
 
 ---
 
@@ -259,8 +174,7 @@ for the `roko plan status` command.
 
 ## Scope Boundary
 
-The `GuaranteedFinallyController` owns the finally-guarantee lifecycle.
-It does NOT own:
+`run_one_plan` owns a plan run's cleanup. It does NOT own:
 
 - Graph construction (see `topology.rs`, `convert.rs`)
 - Graph execution (see `engine.rs`)

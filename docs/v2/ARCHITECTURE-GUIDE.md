@@ -1053,7 +1053,7 @@ The separation in the current Graph-based approach:
 ```
 ProductionPlanTopology    -- builds per-task subgraphs (11 nodes each)
 GraphEngine               -- executes the DAG in topological waves
-GuaranteedFinallyController -- ensures cleanup on any exit path
+run_one_plan (roko-cli)   -- interrupt handling and the terminal checkpoint write
 FeedbackSettler           -- drives 12 completion sinks with exactly-once semantics
 ```
 

@@ -259,6 +259,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::RunCompleted { .. } => "run_completed",
         DashboardEvent::TaskStarted { .. } => "task_started",
         DashboardEvent::TaskCompleted { .. } => "task_completed",
+        DashboardEvent::TaskBlocked { .. } => "task_blocked",
         DashboardEvent::TaskPhaseChanged { .. } => "task_phase_changed",
         DashboardEvent::AgentSpawned { .. } => "agent_spawned",
         DashboardEvent::AgentOutput { .. } => "agent_output",

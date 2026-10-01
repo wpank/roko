@@ -707,6 +707,8 @@ impl GraphEngine {
         let mut outputs = self.initial_tick_outputs();
         let mut statuses: HashMap<NodeId, NodeStatus> = HashMap::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
+        // How many results the event sink has been told about.
+        let mut published = 0;
         // Once set, no further node starts: why the rest are skipped.
         let mut abort: Option<String> = None;
         let mut resumed_emitted = false;
@@ -719,6 +721,9 @@ impl GraphEngine {
             if let Some(previous) = previous.replace(node_id) {
                 clock.settle(previous);
             }
+            published = self
+                .publish_settled(&run_id, &results, published, &outputs)
+                .await;
             // SAFETY: topological_order only returns IDs that are in the graph.
             let Some(node) = self.graph.get_node(node_id) else {
                 continue;
@@ -834,6 +839,7 @@ impl GraphEngine {
                 &cell_ancestry,
             )
             .await;
+            self.publish_node_started(&run_id, node).await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "executing node");
             let timing = NodeTiming::dispatched_now(clock.ready_at_ms(&self.graph, node_id));
@@ -945,6 +951,8 @@ impl GraphEngine {
                 }
             }
         }
+        self.publish_settled(&run_id, &results, published, &outputs)
+            .await;
 
         let total_duration = start.elapsed();
         let success = graph_execution_succeeded(&results);
@@ -1178,6 +1186,8 @@ impl GraphEngine {
         }
         let mut outputs = self.initial_tick_outputs();
         let mut results: Vec<NodeResult> = Vec::with_capacity(queue.len());
+        // How many results the event sink has been told about.
+        let mut published = 0;
         let mut total_cost_usd = 0.0;
         let mut resumed_emitted = false;
         let mut was_cancelled = false;
@@ -1318,6 +1328,9 @@ impl GraphEngine {
 
                 runnable.insert(pos, input);
             }
+            published = self
+                .publish_settled(&run_id, &results, published, &outputs)
+                .await;
 
             // Start queued nodes, in topological order, while slots are free.
             while running.len() < max_concurrent {
@@ -1361,6 +1374,7 @@ impl GraphEngine {
                 }
                 let cell = self.registry.create(&node.cell_type, node.config.clone())?;
                 statuses.lock().insert(node.id.clone(), NodeStatus::Running);
+                self.publish_node_started(&run_id, node).await;
                 timings.insert(pos, NodeTiming::dispatched_now(queue.ready_at_ms(pos)));
                 let task = running.spawn(run_node(NodeLaunch {
                     node_id: node.id.clone(),
@@ -1463,7 +1477,12 @@ impl GraphEngine {
             statuses.lock().insert(node.id.clone(), run.result.status);
             results.push(run.result);
             queue.settle(pos);
+            published = self
+                .publish_settled(&run_id, &results, published, &outputs)
+                .await;
         }
+        self.publish_settled(&run_id, &results, published, &outputs)
+            .await;
 
         results.sort_by_key(|result| queue.position_of(&result.node_id));
         Ok(ReadyQueueRun {
@@ -1977,6 +1996,8 @@ impl GraphEngine {
 
         let mut outputs = self.initial_tick_outputs();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
+        // How many results the event sink has been told about.
+        let mut published = 0;
         let mut total_cost_usd = 0.0;
         let mut was_cancelled = false;
         // Once set, no further node starts: why the rest are skipped.
@@ -1997,6 +2018,9 @@ impl GraphEngine {
             if let Some(previous) = previous.replace(node_id) {
                 clock.settle(previous);
             }
+            published = self
+                .publish_settled(&run_id, &results, published, &outputs)
+                .await;
             // Honour cancellation between nodes.
             if cancel.is_cancelled() {
                 info!(node_id = %node_id, "flow cancelled before node");
@@ -2131,6 +2155,7 @@ impl GraphEngine {
                 &ancestry,
             )
             .await;
+            self.publish_node_started(&run_id, node).await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "flow: executing node");
             let timing = NodeTiming::dispatched_now(clock.ready_at_ms(&self.graph, node_id));
@@ -2234,6 +2259,8 @@ impl GraphEngine {
                 }
             }
         }
+        self.publish_settled(&run_id, &results, published, &outputs)
+            .await;
 
         let total_duration = start.elapsed();
         let success = !was_cancelled && graph_execution_succeeded(&results);
@@ -2414,6 +2441,104 @@ impl GraphEngine {
         };
         if let Err(error) = telemetry.emit(event, ancestry).await {
             warn!(%error, event_kind = ?event.kind(), "passive telemetry delivery failed");
+        }
+    }
+
+    /// Publish one graph execution event to the event sink, when one is
+    /// attached (reg-cbfff6). A failed delivery is logged: the sink observes
+    /// the run and does not stop it.
+    async fn publish_graph_event(&self, event: crate::events::GraphExecutionEvent) {
+        let Some(sink) = &self.event_sink else {
+            return;
+        };
+        if let Err(error) = sink.publish(&event).await {
+            warn!(%error, event = event.variant_name(), "graph event delivery failed");
+        }
+    }
+
+    /// Publish that `node`'s cell started running (reg-cbfff6).
+    async fn publish_node_started(&self, run_id: &str, node: &Node) {
+        if self.event_sink.is_none() {
+            return;
+        }
+        let event = crate::events::GraphExecutionEvent::NodeStarted {
+            common: crate::events::make_common(run_id, &self.graph.metadata.name, &self.event_seq),
+            node: crate::events::make_node_fields(
+                &node.id,
+                &node.cell_type,
+                node.execution_class,
+                0,
+            ),
+        };
+        self.publish_graph_event(event).await;
+    }
+
+    /// Publish how each node result from index `published` on settled, and
+    /// return how many results are now published (reg-cbfff6). A completed
+    /// task node carries the outcome its gate verdict earns.
+    async fn publish_settled(
+        &self,
+        run_id: &str,
+        results: &[NodeResult],
+        published: usize,
+        outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+    ) -> usize {
+        if self.event_sink.is_some() {
+            for result in results.iter().skip(published) {
+                let event = self.settled_event(run_id, result, outputs);
+                self.publish_graph_event(event).await;
+            }
+        }
+        results.len()
+    }
+
+    /// The event saying how `result`'s node settled: completed, failed or
+    /// skipped.
+    fn settled_event(
+        &self,
+        run_id: &str,
+        result: &NodeResult,
+        outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+    ) -> crate::events::GraphExecutionEvent {
+        use crate::events::GraphExecutionEvent;
+
+        let execution_class = self
+            .graph
+            .get_node(&result.node_id)
+            .map(|node| node.execution_class)
+            .unwrap_or_default();
+        let common = crate::events::make_common(run_id, &self.graph.metadata.name, &self.event_seq);
+        let node =
+            crate::events::make_node_fields(&result.node_id, &result.cell_type, execution_class, 0);
+        let elapsed_ms = duration_ms(result.duration);
+        let reason = result.error.clone().unwrap_or_default();
+        match result.status {
+            NodeStatus::Complete => GraphExecutionEvent::NodeCompleted {
+                common,
+                node,
+                elapsed_ms,
+                outcome: completed_outcome(
+                    &result.cell_type,
+                    outputs.get(&result.node_id).map_or(&[][..], Vec::as_slice),
+                ),
+            },
+            NodeStatus::Failed => GraphExecutionEvent::NodeFailed {
+                common,
+                node,
+                elapsed_ms,
+                error: reason,
+            },
+            NodeStatus::Skipped
+            | NodeStatus::ConditionSkipped
+            | NodeStatus::Pending
+            | NodeStatus::Running => GraphExecutionEvent::NodeSkipped {
+                common,
+                node,
+                reason: match &result.blocked_by {
+                    Some(blocker) => format!("blocked by failed node '{blocker}': {reason}"),
+                    None => reason,
+                },
+            },
         }
     }
 
@@ -3021,6 +3146,32 @@ async fn execute_cell_with_retries(
             Err(error) => return (Err(error), retry_attempt.saturating_add(1)),
         }
     }
+}
+
+/// Cell type of a plan task node.
+const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
+
+/// The dashboard outcome a completed node settled with (reg-cbfff6): the one
+/// its gate verdict earns, `unverified` for a task node that carries no
+/// verdict, and none for any other node.
+fn completed_outcome(cell_type: &str, outputs: &[roko_core::Signal]) -> Option<String> {
+    use roko_core::dashboard_snapshot::{
+        TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
+        TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES, TASK_OUTCOME_UNVERIFIED,
+    };
+
+    let outcome = match TaskGateVerdict::from_signals(outputs) {
+        Some(TaskGateVerdict::Passed) => TASK_OUTCOME_PASSED,
+        Some(TaskGateVerdict::PassedWithPreexistingFailures) => {
+            TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES
+        }
+        Some(TaskGateVerdict::AlreadySatisfied) => TASK_OUTCOME_ALREADY_SATISFIED,
+        Some(TaskGateVerdict::ForcedAccept) => TASK_OUTCOME_ACCEPTED_WITH_FAILURES,
+        Some(TaskGateVerdict::Unverified) => TASK_OUTCOME_UNVERIFIED,
+        None if cell_type == TASK_EXECUTOR_CELL_TYPE => TASK_OUTCOME_UNVERIFIED,
+        None => return None,
+    };
+    Some(outcome.to_string())
 }
 
 /// Collect the gate verdicts stamped on each node's outputs.
@@ -6101,6 +6252,172 @@ to = "grandchild"
                 );
             }
         }
+    }
+
+    /// A graph event sink that records every event it receives.
+    #[derive(Default)]
+    struct RecordingGraphSink {
+        events: parking_lot::Mutex<Vec<crate::events::GraphExecutionEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::events::GraphEventSink for RecordingGraphSink {
+        async fn publish(
+            &self,
+            event: &crate::events::GraphExecutionEvent,
+        ) -> std::result::Result<crate::events::GraphEventDisposition, crate::events::GraphEventError>
+        {
+            self.events.lock().push(event.clone());
+            Ok(crate::events::GraphEventDisposition::Acknowledged)
+        }
+    }
+
+    /// reg-cbfff6: a sink attached with `with_event_sink` receives each
+    /// node's lifecycle while the graph runs, whichever execution path runs
+    /// it: a start before the node's cell runs, then how the node settled. A
+    /// node blocked by a failed one is skipped with the blocker in the reason.
+    #[tokio::test(start_paused = true)]
+    async fn the_event_sink_receives_node_lifecycle_events() {
+        use crate::events::GraphExecutionEvent;
+
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "lifecycle"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", fail = true }
+
+[[nodes]]
+id = "child"
+cell_type = "sleep"
+config = { label = "child" }
+
+[[nodes]]
+id = "grandchild"
+cell_type = "sleep"
+config = { label = "grandchild" }
+
+[[nodes]]
+id = "other"
+cell_type = "sleep"
+config = { label = "other" }
+
+[[edges]]
+from = "broken"
+to = "child"
+
+[[edges]]
+from = "child"
+to = "grandchild"
+"#,
+        )
+        .unwrap();
+
+        for max_concurrent_nodes in [1, 4] {
+            for through_start in [false, true] {
+                let case =
+                    format!("max_concurrent_nodes {max_concurrent_nodes}, start {through_start}");
+                let mut graph = graph.clone();
+                graph.policy.max_concurrent_nodes = max_concurrent_nodes;
+                let log = Arc::new(SleepLog::default());
+                let sink = Arc::new(RecordingGraphSink::default());
+                let engine =
+                    GraphEngine::new(graph, sleep_registry(&log)).with_event_sink(sink.clone());
+                let output = if through_start {
+                    engine
+                        .start(CellContext::new())
+                        .await_completion()
+                        .await
+                        .expect("flow output")
+                } else {
+                    engine.execute(&CellContext::new()).await.unwrap()
+                };
+                assert!(!output.success, "{case}");
+
+                let events = sink.events.lock().clone();
+                let seqs: Vec<u64> = events.iter().map(|event| event.common().seq).collect();
+                assert!(
+                    seqs.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{case}: {seqs:?}"
+                );
+                let lifecycle = |node_id: &str| -> Vec<&'static str> {
+                    events
+                        .iter()
+                        .filter(|event| event.node().is_some_and(|node| node.node_id == node_id))
+                        .map(GraphExecutionEvent::variant_name)
+                        .collect()
+                };
+                assert_eq!(
+                    lifecycle("other"),
+                    ["NodeStarted", "NodeCompleted"],
+                    "{case}"
+                );
+                assert_eq!(lifecycle("broken"), ["NodeStarted", "NodeFailed"], "{case}");
+                for blocked in ["child", "grandchild"] {
+                    assert_eq!(lifecycle(blocked), ["NodeSkipped"], "{case}: {blocked}");
+                }
+                let skip_reason = |node_id: &str| {
+                    events.iter().find_map(|event| match event {
+                        GraphExecutionEvent::NodeSkipped { node, reason, .. }
+                            if node.node_id == node_id =>
+                        {
+                            Some(reason.clone())
+                        }
+                        _ => None,
+                    })
+                };
+                assert!(
+                    skip_reason("grandchild").is_some_and(|reason| reason.contains("'broken'")),
+                    "{case}: {events:?}"
+                );
+                // A cell that is not a plan task has no task outcome.
+                assert!(
+                    events.iter().all(|event| !matches!(
+                        event,
+                        GraphExecutionEvent::NodeCompleted {
+                            outcome: Some(_),
+                            ..
+                        }
+                    )),
+                    "{case}: {events:?}"
+                );
+            }
+        }
+    }
+
+    /// reg-cbfff6: a completed plan task node carries the outcome its gate
+    /// verdict earns, one with no verdict is unverified, and any other node
+    /// has no task outcome.
+    #[test]
+    fn a_completed_task_node_carries_its_gate_outcome() {
+        let mut signals =
+            vec![roko_core::Signal::builder(roko_core::Kind::Custom("task.output".into())).build()];
+        assert_eq!(
+            completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
+            Some("unverified")
+        );
+        assert_eq!(completed_outcome("sleep", &signals), None);
+        TaskGateVerdict::Passed.stamp(&mut signals);
+        assert_eq!(
+            completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
+            Some("passed")
+        );
+        TaskGateVerdict::PassedWithPreexistingFailures.stamp(&mut signals);
+        assert_eq!(
+            completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
+            Some("passed_with_preexisting_failures")
+        );
+        TaskGateVerdict::ForcedAccept.stamp(&mut signals);
+        assert_eq!(
+            completed_outcome(TASK_EXECUTOR_CELL_TYPE, &signals).as_deref(),
+            Some("accepted_with_failures")
+        );
     }
 
     /// The dispatch stop halts a `SkipFailed` run the way a spent plan budget

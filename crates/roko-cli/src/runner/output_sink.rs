@@ -1335,6 +1335,16 @@ pub fn format_dashboard_event(
                 format!("Task {outcome}"),
             )
         }
+        DashboardEvent::TaskBlocked {
+            plan_id,
+            task_id,
+            reason,
+            ..
+        } => (
+            format!("[{plan_id}/{task_id}]"),
+            "-",
+            format!("Task blocked: {reason}"),
+        ),
         DashboardEvent::TaskPhaseChanged {
             plan_id,
             task_id,

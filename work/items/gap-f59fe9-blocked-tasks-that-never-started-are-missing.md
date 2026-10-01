@@ -9,9 +9,9 @@ goal = "visibility"
 size = "M"
 subsystem = ["roko-core/dashboard", "roko-cli/tui"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ed4f990e9"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 9ef6f4aad"
 anchors = ["crates/roko-core/src/dashboard_snapshot.rs::apply_with_ts", "crates/roko-cli/src/runner/graph_tui_bridge.rs::poll_status_changes", "crates/roko-cli/src/graph_execution/plan_runner.rs::task_outcomes", "crates/roko-cli/src/tui/state/snapshot.rs::update_from_dashboard_snapshot", "apps/portal/src/lib/runState.ts:705"]
@@ -78,3 +78,15 @@ tasks with outcome "skipped" would therefore inflate `tasks_done`.
 ## Notes
 
 Coordinate with bug-7e1b6b, which changes how skipped and unverified outcomes are classified in the same two files.
+
+Implemented on `work/reg-cbfff6` at `ed4f990e9`; cargo verification deferred to the batch check. Portal: `tsc --noEmit` and vitest (80 files, 794 tests) pass.
+
+Plan step 1 took the new event: `DashboardEvent::TaskBlocked { plan_id, task_id, title, blocked_by, reason }`. After the final status poll, `run_one_plan` publishes it for each entry of `task_outcomes.blocked_by`, with the blocker and the reason "blocked by failed task '<id>'". It also publishes it for each entry of `task_outcomes.not_started`, with no blocker and the node's skip reason (a fail-fast abort, or a dispatch stop such as a spent budget). Both show as blocked.
+- Snapshot: the outcome and phase are `blocked` (`TASK_OUTCOME_BLOCKED`, `TaskOutcomeClass::Blocked`), and `TaskState` has `blocked_by` and `blocked_reason`. A blocked task counts as neither done nor failed: the event takes back what the poll's earlier `skipped` completion counted, and a repeat counts nothing. A later run's `TaskCompleted` counts again and clears the blocker.
+- TUI: the task shows as `TaskStatus::Blocked`, with its blocker in `depends_on` of both the plan's entry and the checklist row.
+- Serve: the runs route names the class `blocked`, the health counter knows the event, and the bridge carries it (bug-bfdb9a).
+- Portal: `task_blocked` is folded into the run state. It shows as skipped, keeps `blockedBy` and `blockedReason`, counts as neither done nor failed, is not counted as a retry when it starts, and a resume runs it again. `fromSnapshot` carries the two fields.
+
+Still open from plan step 3: no portal view says "blocked by T1" yet. The data is in `TaskRun`, but the portal has no blocked status, and a blocked task's row reads as skipped. Also, the bug-230de6 `EventLogWriter` summary counts outcomes from `TaskCompleted` only, so it counts a blocked task as skipped; the `task_blocked` line is in the log.
+
+`6fc37262d` extends the plan-run test `a_failed_task_blocks_only_its_dependants`: after the run, the hub's snapshot lists T4 as blocked by T1, and the plan counts no skipped task for it. That covers the first Done-when on the real run path.

@@ -47,12 +47,14 @@ export interface TaskRowModel {
 
 /**
  * Statuses that are "done" for waitingOn and focusTaskId purposes:
- * passed, already_satisfied, accepted_with_failures, unverified, skipped, marked_done.
+ * passed, passed_with_preexisting_failures, already_satisfied, accepted_with_failures,
+ * unverified, skipped, marked_done.
  *
  * Note: 'cancelled' is NOT included — a cancelled dep still blocks.
  */
 const FINISHED_STATUSES: ReadonlySet<TaskRowModel['status']> = new Set([
   'passed',
+  'passed_with_preexisting_failures',
   'already_satisfied',
   'accepted_with_failures',
   'unverified',

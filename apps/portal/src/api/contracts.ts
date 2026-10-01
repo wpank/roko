@@ -10,7 +10,7 @@
  *   crates/roko-serve/src/projection_contract.rs  — state_frame (WireStateHubSnapshotResponse)
  *   crates/roko-serve/src/routes/sse.rs           — gap payload (WireGapPayload)
  *
- * Types only — no runtime code except the one TASK_OUTCOME_ACCEPTED_WITH_FAILURES constant.
+ * Types only — no runtime code except the TASK_OUTCOME_* constants.
  */
 
 // ---------------------------------------------------------------------------
@@ -24,10 +24,23 @@ export const TASK_OUTCOME_ACCEPTED_WITH_FAILURES = 'accepted_with_failures' as c
 export const TASK_OUTCOME_UNVERIFIED = 'unverified' as const;
 
 /**
+ * Outcome string emitted when a task passed its verify steps apart from tests that also failed on
+ * the plan run's start commit (gap-161be1). Counted as passed; its own outcome keeps those
+ * failures in view.
+ */
+export const TASK_OUTCOME_PASSED_WITH_PREEXISTING_FAILURES = 'passed_with_preexisting_failures' as const;
+
+/**
  * Outcome string emitted when a task's work was already there: its attempt changed nothing,
  * and its verify steps passed on the tree as it was.
  */
 export const TASK_OUTCOME_ALREADY_SATISFIED = 'already_satisfied' as const;
+
+/**
+ * Outcome string of a task that will not run: a task it depends on failed, or it did not start.
+ * Counted as neither done nor failed.
+ */
+export const TASK_OUTCOME_BLOCKED = 'blocked' as const;
 
 // ---------------------------------------------------------------------------
 // Dashboard events
@@ -68,6 +81,15 @@ export type WireDashboardEvent =
     }
   | { type: 'task_started'; plan_id: string; task_id: string; title?: string; phase: string }
   | { type: 'task_completed'; plan_id: string; task_id: string; outcome: string }
+  | {
+      type: 'task_blocked';
+      plan_id: string;
+      task_id: string;
+      title?: string;
+      /** The failed task that blocked this one; absent when it did not start for another reason. */
+      blocked_by?: string;
+      reason?: string;
+    }
   | {
       type: 'task_phase_changed';
       plan_id: string;
@@ -155,6 +177,10 @@ export interface WireTaskState {
   plan_id: string;
   phase: string;
   outcome: string | null;
+  /** The failed task that blocked this one, when it is blocked. Older servers omit it. */
+  blocked_by?: string;
+  /** Why the task will not run, when it is blocked. Older servers omit it. */
+  blocked_reason?: string;
 }
 
 /** Live state of one agent (AgentState in Rust). */

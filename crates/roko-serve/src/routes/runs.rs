@@ -20,8 +20,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::{self, StreamExt};
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
-    TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
+    TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
 };
 use roko_core::obs::LogScrubber;
 use serde::Deserialize;
@@ -1385,6 +1385,7 @@ fn outcome_status(outcome: &str) -> &'static str {
         TaskOutcomeClass::AlreadySatisfied => TASK_OUTCOME_ALREADY_SATISFIED,
         TaskOutcomeClass::Unverified => TASK_OUTCOME_UNVERIFIED,
         TaskOutcomeClass::Skipped => "skipped",
+        TaskOutcomeClass::Blocked => TASK_OUTCOME_BLOCKED,
     }
 }
 

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 14 anchor gone · 188 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 11 anchor gone · 188 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -20,7 +20,7 @@ _3 more open · on hold: gap-8f8544 · 7 unchecked (`TRIAGE.md`) · `goal = "rel
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 - **P2** [gap-08d9b2](items/gap-08d9b2-whitepaper-final-matrix-re-pin-right-before.md) Whitepaper: final matrix re-pin right before the whitepaper-v1 tag · size S · verified 2026-09-30
 
-_0 more open · on hold: gap-85f86a · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -38,7 +38,7 @@ _0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 13 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -76,7 +76,7 @@ _14 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 20 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

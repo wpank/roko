@@ -4741,6 +4741,83 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// One run of [`a_runs_cancel_stops_its_own_gate_command_only`]: a thread
+    /// in a spawn scope of its own, as `roko serve` runs a plan, that runs
+    /// [`SIGNALLED_GATE`] in `dir` and cancels its run when told to, or when
+    /// the test drops its sender. Joining it gives the number of processes
+    /// that cancel signalled.
+    #[cfg(unix)]
+    fn scoped_gate_run(
+        dir: &Path,
+    ) -> (tokio::sync::oneshot::Sender<()>, std::thread::JoinHandle<usize>) {
+        use roko_core::Verify as _;
+
+        std::fs::create_dir_all(dir).expect("run dir");
+        let payload = roko_gate::GatePayload::in_dir(dir);
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let run = std::thread::spawn(move || {
+            let _scope =
+                roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("run runtime");
+            runtime.block_on(async move {
+                let args = vec!["-c".to_string(), SIGNALLED_GATE.to_string()];
+                let gate = roko_gate::ShellGate::new("bash", args).with_timeout_ms(120_000);
+                let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+                    .body(roko_core::Body::from_json(&payload).expect("gate payload"))
+                    .build();
+                let cancel = async {
+                    let _ = cancelled.await;
+                    terminate_in_flight_agents()
+                };
+                let (_, signalled) =
+                    tokio::join!(gate.verify(&signal, &roko_core::Context::now()), cancel);
+                signalled
+            })
+        });
+        (cancel, run)
+    }
+
+    /// q-9852b5: a gate command joins the agent PID registry in the spawn
+    /// scope of the run that starts it (gap-b367bf, find-65ff6b), so a run's
+    /// cancel stops its own running gate command and leaves another run's
+    /// alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_cancel_stops_its_own_gate_command_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (own, other) = (dir.path().join("own"), dir.path().join("other"));
+        let (cancel_own, own_run) = scoped_gate_run(&own);
+        let (cancel_other, other_run) = scoped_gate_run(&other);
+        let started = |run: &Path| {
+            for _ in 0..1_200 {
+                if run.join("gate-started").exists() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        };
+        assert!(started(&own) && started(&other), "both gate commands run");
+
+        cancel_own.send(()).expect("cancel the run");
+        let signalled = own_run.join().expect("the cancelled run");
+        assert!(signalled > 0, "the cancel signalled its gate command");
+        assert!(own.join("got-term").exists(), "it got SIGTERM");
+        // A SIGTERM the cancel sent the other command would have landed by now.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !other.join("got-term").exists(),
+            "another run's gate command runs on"
+        );
+
+        cancel_other.send(()).expect("cancel the other run");
+        assert!(other_run.join().expect("the other run") > 0);
+        assert!(other.join("got-term").exists());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);

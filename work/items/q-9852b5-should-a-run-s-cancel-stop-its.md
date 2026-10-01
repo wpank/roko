@@ -3,13 +3,14 @@ id = "q-9852b5"
 kind = "question"
 title = "Should a run's cancel stop its gate commands now that they join the agent PID registry?"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-b367bf"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::live_agent_process_trees", "crates/roko-gate/src/cancel_safe_command.rs"]
@@ -18,6 +19,9 @@ links = { depends_on = [], blocks = [], related = ["gap-b367bf"], supersedes = [
 
 [[verify]]
 command = "grep -n 'register_spawned_pid' crates/roko-gate/src/cancel_safe_command.rs"
+
+[[verify]]
+command = "cargo test -p roko-cli --lib a_runs_cancel_stops_its_own_gate_command_only"
 +++
 
 ## Problem
@@ -35,3 +39,12 @@ Confirm the intended behaviour, then add a test that a run's cancel stops its ow
 ## Notes
 
 - Reported on 2026-10-01 by the worker on gap-b367bf, during the evening close-out round.
+- 2026-10-01 (wk-scheduler): decided yes, for the run's own scope (team-lead's call). A gate command is the run's
+  work like its agents, and once the run stops its verdict teaches nothing (bug-82cbef settles it as cancelled). A
+  gate command registers under the spawn scope of the thread that starts it, so a `roko serve` run's cancel stops its
+  own gate commands and leaves other runs' and the server's generation, revision and chat agents alone
+  (find-65ff6b). A CLI run has no scope and owns every unscoped process of its process, gate commands included,
+  which is right: the runner lock allows one plan executor at a time.
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  Test `a_runs_cancel_stops_its_own_gate_command_only` in plan_runner.rs runs two gate commands on two scoped
+  threads; one run's cancel (`terminate_in_flight_agents`) SIGTERMs its own command and not the other run's.

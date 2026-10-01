@@ -20,7 +20,8 @@ use validator::Validate;
 use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::state::{AppState, OperationHandle, OperationStatus};
+use crate::operations::{run_outcome, spawn_operation};
+use crate::state::AppState;
 use parking_lot::Mutex;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_runtime::event_bus::{EventBus, PublishOrigin, RokoEvent, global_event_bus};
@@ -487,50 +488,34 @@ async fn draft_prd(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         let slug = slug.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_draft".into(),
             });
 
             match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => {
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_draft".into(),
-                        success: result.success,
-                    });
-                }
+                Ok(result) => run_outcome(&result, &format!("PRD draft for {slug}")),
                 Err(err) => {
                     tracing::warn!(
                         slug = %slug,
                         error = %err,
                         "PRD draft operation failed"
                     );
+                    let message = format!("PRD draft failed for {slug}: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("PRD draft failed for {slug}: {err}"),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_draft".into(),
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("prd_draft:{slug}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("prd_draft:{slug}");
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_draft", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -667,11 +652,11 @@ async fn consolidate_prds(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_consolidate".into(),
             });
 
@@ -681,31 +666,20 @@ async fn consolidate_prds(
                 prd_dir = workdir.join(".roko").join("prd").display(),
             );
 
-            let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => result.success,
+            match runtime.run_once(&workdir, &prompt).await {
+                Ok(result) => run_outcome(&result, "PRD consolidation"),
                 Err(err) => {
+                    let message = format!("PRD consolidation failed: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("PRD consolidation failed: {err}"),
+                        message: message.clone(),
                     });
-                    false
+                    Err(message)
                 }
-            };
-
-            bus.publish(ServerEvent::OperationCompleted {
-                op_id,
-                kind: "prd_consolidate".into(),
-                success,
-            });
+            }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: "prd_consolidate".into(),
-        status: OperationStatus::Running,
-        handle,
     };
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = "prd_consolidate".to_string();
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_consolidate", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -882,52 +856,42 @@ async fn queue_plan_generation_op(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         let slug = slug.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_plan".into(),
             });
             match runtime
                 .generate_plan_from_prd(&workdir, &slug, &prd_path)
                 .await
             {
-                Ok(generated) => {
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_plan".into(),
-                        success: !generated.plan_targets.is_empty(),
-                    });
+                Ok(generated) if generated.plan_targets.is_empty() => {
+                    Err(format!("plan generation for {slug} wrote no plan"))
                 }
+                Ok(generated) => Ok(Some(json!({
+                    "slug": slug,
+                    "plan_count": generated.plan_targets.len(),
+                }))),
                 Err(err) => {
                     tracing::warn!(
                         slug = %slug,
                         error = %err,
                         "plan generation failed"
                     );
+                    let message = format!("plan generation failed for {slug}: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("plan generation failed for {slug}: {err}"),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_plan".into(),
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("prd_plan:{slug}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("prd_plan:{slug}");
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_plan", work).await;
     op_id
 }
 

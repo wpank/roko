@@ -1160,9 +1160,8 @@ async fn plan_chat(
     let workdir = state.workdir.clone();
     let plan_id = id.clone();
 
-    let op_id_inner = op_id.clone();
-    let handle = tokio::spawn(async move {
-        let success = match runtime.run_once(&workdir, &prompt).await {
+    let work = async move {
+        match runtime.run_once(&workdir, &prompt).await {
             Ok(RunResult {
                 success,
                 output_text,
@@ -1190,29 +1189,23 @@ async fn plan_chat(
                         }
                     }
                 }
-                success
+                if success {
+                    Ok(None)
+                } else {
+                    Err(format!("plan chat for {plan_id} did not succeed"))
+                }
             }
             Err(err) => {
+                let message = format!("plan chat failed for {plan_id}: {err}");
                 bus.publish(ServerEvent::Error {
-                    message: format!("plan chat failed for {plan_id}: {err}"),
+                    message: message.clone(),
                 });
-                false
+                Err(message)
             }
-        };
-        bus.publish(ServerEvent::OperationCompleted {
-            op_id: op_id_inner,
-            kind: "plan_chat".into(),
-            success,
-        });
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("plan_chat:{id}"),
-        status: OperationStatus::Running,
-        handle,
+        }
     };
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("plan_chat:{id}");
+    crate::operations::spawn_operation(&state, op_id.clone(), op_kind, "plan_chat", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,

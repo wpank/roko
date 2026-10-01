@@ -20,7 +20,7 @@
 
 Lin et al. (2025, arXiv:2504.13171, "Sleep-time Compute: Beyond Inference Scaling at Test-time") demonstrated that dedicating computation to offline processing during idle periods yields a **5× reduction in test-time compute requirements**. The key insight: agents can perform significant cognitive work (knowledge organization, strategy refinement, counterfactual exploration) during idle periods, making their waking performance dramatically more efficient.
 
-WSCL (2024, "Wake-Sleep Continual Learning") showed a complementary result: interleaving wake and sleep processing phases produces a **38% reduction in catastrophic forgetting** compared to continuous waking-only learning. Sleep consolidation prevents new knowledge from overwriting old knowledge — the CLS architecture in action.
+WSCL (Sorrenti et al. 2024, "Wake-Sleep Consolidated Learning") reported a complementary result for image classification: wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract). Sleep consolidation prevents new knowledge from overwriting old knowledge — the CLS architecture in action.
 
 These results provide the economic justification for Roko's dream system: the compute spent on dreams is not wasted idle-time activity but an investment in waking performance.
 
@@ -248,7 +248,7 @@ SLEEP-TIME-PRECOMPUTE(episodes, existing_summaries, config):
 | Paper | How It Informs Sleep-Time Compute |
 |-------|----------------------------------|
 | Lin et al. (2025), arXiv:2504.13171 | 5× reduction in test-time compute via sleep-time processing |
-| WSCL (2024), "Wake-Sleep Continual Learning" | 38% reduction in catastrophic forgetting |
+| WSCL (Sorrenti et al. 2024), "Wake-Sleep Continual Learning" | Wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Sumers et al. (2023), arXiv:2309.02427, CoALA | Cognitive architecture with three operating frequencies |
 | Tononi & Cirelli (2006), "Synaptic homeostasis hypothesis" | Sleep as global synaptic renormalization |
 | Lin, Packer, Wooders et al. (2025), arXiv:2504.13171, "Sleep-time Compute: Beyond Inference Scaling at Test-time" | Pre-computed dense summaries reduce test-time compute by 5x; query predictability determines effectiveness |

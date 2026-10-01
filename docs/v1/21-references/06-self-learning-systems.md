@@ -1,5 +1,9 @@
 # Self-Learning Systems
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -21,7 +25,7 @@ An agent that does not improve is an expensive cron job. The research here estab
 
 ## Verbal Self-Reflection
 
-- Shinn, N. et al. (2023). Reflexion: Language Agents with Verbal Reinforcement Learning. _NeurIPS_, 2023. arXiv:2308.xxxxx.
+- Shinn, N. et al. (2023). Reflexion: Language Agents with Verbal Reinforcement Learning. _NeurIPS_, 2023. arXiv:2303.11366.
   *Grounds: Single-loop learning — verbal RL via stored self-reflection: +22% AlfWorld, +20% HotPotQA. Post-task reflection stored in NeuroStore as a Theta-frequency operation. Reflexion works because reflection is structured and persistently stored.*
 
 ---
@@ -29,10 +33,8 @@ An agent that does not improve is an expensive cron job. The research here estab
 ## Experiential Learning
 
 - Zhao, A. et al. (2024). ExpeL: LLM Agents Are Experiential Learners. arXiv:2308.10144.
-  *Grounds: Double-loop learning — cross-task experience extraction; insights accumulate across episodes. Insights evolve across task sessions. ExpeL works because experiences accumulate across episodes in the knowledge store.*
 
 - Wang, G. et al. (2023). Voyager: An Open-Ended Embodied Agent with Large Language Models. arXiv:2305.16291.
-  *Grounds: EvoSkills — code-as-action skill library; 3.3x more unique behaviors vs baselines. Grounds the self-evolving skill library where agents compose reusable procedural skills as Engrams.*
 
 ---
 
@@ -42,33 +44,26 @@ An agent that does not improve is an expensive cron job. The research here estab
   *Grounds: "The scaffold IS the product" thesis — The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points on text classification, +4.7 on IMO math, at 4x fewer tokens. The foundational paper for Roko's harness engineering approach.*
 
 - Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
-  *Grounds: Natural-language scaffolds — scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable.*
 
 - Kapoor, S. et al. (2026). HAL: A Holistic Agent Leaderboard. _ICLR_, 2026.
-  *Grounds: Scaffold vs model importance — 21,730 agent rollouts show scaffold choice matters as much as model choice. Single-axis model leaderboards are misleading for agent systems.*
 
 ---
 
 ## Prompt and Strategy Evolution
 
 - Guo, Q. et al. (2024). EvoPrompt: Connecting Large Language Models with Evolutionary Algorithms Yields Powerful Prompt Optimizers. arXiv:2309.08532.
-  *Grounds: Evolutionary strategy selection — genetic algorithm prompt optimization; up to +25% on BBH tasks. Grounds the evolutionary selection of strategies in the NeuroStore.*
 
 - Fernando, C. et al. (2024). Promptbreeder: Self-Referential Self-Improvement via Prompt Evolution. arXiv:2309.16797.
-  *Grounds: Self-referential improvement — prompts that evolve the mutation operators that evolve the prompts. Grounds the meta-learning loop where the learning process itself improves.*
 
 - Khattab, O. et al. (2024). DSPy: Compiling Declarative Language Model Calls into Self-Improving Pipelines. _ICLR_, 2024. arXiv:2310.03714.
-  *Grounds: Declarative prompt compilation — replaces hand-crafted prompts with declarative signatures; compiler optimizes prompts, few-shot examples, and fine-tuning data automatically. Influences Roko's approach to prompt budget allocation.*
 
 - Opsahl-Ong, K. et al. (2024). MIPROv2: Optimizing Instructions and Demonstrations for Multi-Stage Language Model Programs. _EMNLP_, 2024.
-  *Grounds: Bayesian prompt optimization — three-stage Bayesian optimization for LLM program parameters. Applicable to Roko's prompt budget and context assembly optimization.*
 
 ---
 
 ## Architecture Search
 
 - Hu, S. et al. (2025). Automated Design of Agentic Systems (ADAS). _ICLR_, 2025.
-  *Grounds: ADAS innovation — meta-agent that searches the space of agent architectures. Discovers novel building blocks, agentic patterns, and compositions of these. Roko provides the composable trait system (6 Synapse traits) that ADAS-style search operates over.*
 
 ---
 
@@ -78,34 +73,28 @@ An agent that does not improve is an expensive cron job. The research here estab
   *Grounds: Step-level verification — process reward models that verify each reasoning step outperform outcome-only verification. Grounds the Gate pipeline's per-step verification architecture. Cross-referenced in [17-process-reward-models.md](./17-process-reward-models.md).*
 
 - Song, Y. et al. (2025). Mind the Gap: Examining the Self-Improvement Capabilities of Large Language Models. _ICLR_, 2025.
-  *Grounds: Generation-verification gap — self-improvement works only when verification ability exceeds generation ability. If the verifier is weaker than the generator, feedback is noise. Foundational result validating the separation of agent (generator) and Gate (verifier) in Roko. Cross-referenced in [17-process-reward-models.md](./17-process-reward-models.md).*
 
 ---
 
 ## Self-Correction Limitations
 
 - Huang, J. et al. (2024). Large Language Models Cannot Self-Correct Reasoning Yet. _ICLR_, 2024.
-  *Grounds: External verification mandate — LLMs self-correcting without external feedback typically make answers worse. The model's assessment draws on the same biases that produced the original error. Foundational result motivating external verification in Roko's Gate system.*
 
 - Pan, A. et al. (2024). Spontaneous Reward Hacking in Iterative Self-Refinement. _ICML_, 2024.
-  *Grounds: Generator-verifier separation — when the same model generates and judges, it learns to produce outputs that score well on its own rubric without improving on the task. Validates the separation between agent and Gate in Roko.*
 
 ---
 
 ## Triple-Loop Learning
 
 - Argyris, C. & Schön, D. (1978). _Organizational Learning_. Addison-Wesley.
-  *Grounds: Triple-loop learning — single-loop (fix errors), double-loop (change strategy), triple-loop (change the learning process). Maps to Roko's Gamma (reactive execution), Theta (strategy reflection), Delta (consolidation and meta-learning). Cross-referenced in [15-cybernetics-and-vsm.md](./15-cybernetics-and-vsm.md).*
 
 ---
 
 ## Bandit-Based Optimization
 
 - TensorZero (2025). Track-and-Stop Optimal Bandits in an LLM Gateway. 2025.
-  *Grounds: CascadeRouter bandit — implements optimal bandits directly in an LLM gateway routing layer. Each call is assigned to a configuration, each response gets a reward signal. Grounds Roko's CascadeRouter model selection.*
 
 - MASPOB (2026). MASPOB: Bandit-Based Prompt Optimization for Multi-Agent Systems with Graph Neural Networks. arXiv, 2026.
-  *Grounds: Multi-agent prompt optimization — extends bandit optimization to jointly optimize agent prompts and model routing across interacting agents.*
 
 
 ---
@@ -113,10 +102,8 @@ An agent that does not improve is an expensive cron job. The research here estab
 ## Multi-Level Reflection (2025)
 
 - Ge et al. (2025). Self-Learning Agents Enhanced by Multi-level Reflection. _EMNLP_, 2025. arXiv:2509.20562.
-  *Grounds: Multi-level reflection — integrates self-reflection into post-training; reflection across trajectories substantially outperforms single-trajectory reflection (Reflexion). Error classification and clustering extract insight from failures. Validates Roko's Theta-frequency reflection operating across episodes, not just within single task runs.*
 
 - MAR (2025). Multi-Agent Reflexion Improves Reasoning Abilities in LLMs. arXiv:2512.20845.
-  *Grounds: Multi-agent reflection — extends Reflexion from single-agent to multi-agent settings, addressing systematic shortcomings of single-agent self-correction. Validates the separation of reflection across multiple agents in Roko Collectives rather than relying on individual agent self-correction.*
 
 ---
 

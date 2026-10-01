@@ -10,7 +10,8 @@ Usage:
   work.py unpark <id>…                                                   # restore status, move back to items/
 
 Picking up work (work/README.md, "For agents"):
-  work.py next [--n 4] [--goal G] [--max-size M] [--json]   # top unclaimed items that don't touch the same files
+  work.py next [--n 4] [--goal G] [--max-size M] [--json] [--ignore-worktrees]   # top unclaimed items that don't touch
+        # the same files as each other, a live claim, or what any other worktree is changing
   work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH] [--session S]   # shared claim in the main tree's .roko/work-claims/
         [--executor claude-agent|claude-session|roko-plan|human] [--via work-batch|work-next|manual|roko-plan] [--size S|M|L]
   work.py release <id>… [--session S] [--reason verify-fail|blocked|decision-needed|conflict|timeout|session-limit]
@@ -588,13 +589,58 @@ def pick_key(it, order):
     return (order.get(it.get("goal"), len(order)),) + now_key(it)
 
 
-def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None = None, claims=None):
+WORKTREE_SKIP = re.compile(r"^work/|(?:^|/)(?:target|node_modules)(?:/|$)")
+
+
+def worktree_changes() -> dict[str, str]:
+    """{path: "<worktree> (<branch>)"} for the files the repo's other worktrees are changing (gap-d1f787): each
+    worktree's commits since its merge-base with this checkout's HEAD, plus its uncommitted and untracked files. The
+    main checkout's commits are the trunk, so only its uncommitted files count. Files under work/ (items and views)
+    and build output are left out. Read-only: it runs git diff and status in each worktree, several at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    me, main, head = REPO.resolve(), main_root().resolve(), git("rev-parse", "HEAD").strip()
+    # One call finds the branches with commits this checkout lacks; only their worktrees need a diff.
+    unmerged = set(git("for-each-ref", f"--no-merged={head}", "--format=%(refname)", "refs/heads").split()) if head else set()
+    entries = []
+    for block in git("worktree", "list", "--porcelain").strip().split("\n\n"):
+        w = dict(ln.partition(" ")[::2] for ln in block.splitlines())
+        if w.get("worktree"):
+            entries.append(w)
+
+    def scan(w):
+        path = Path(w["worktree"])
+        if not path.is_dir() or path.resolve() == me:
+            return w, set()
+        files = set()
+        if path.resolve() != main and head and w.get("HEAD") and (w.get("branch") in unmerged or "detached" in w):
+            files.update(git("diff", "--name-only", f"{head}...{w['HEAD']}").splitlines())  # since the merge-base
+        status = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "-z", "--no-renames"],
+                                capture_output=True, text=True).stdout
+        files.update(e[3:].rstrip("/") for e in status.split("\0") if len(e) > 3)
+        return w, {f for f in files if f and not WORKTREE_SKIP.search(f)}
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        scanned = list(pool.map(scan, entries))
+    busy = {}
+    for w, files in scanned:
+        label = f"{Path(w['worktree']).name} ({w.get('branch', '').removeprefix('refs/heads/') or 'detached'})"
+        for f in sorted(files):
+            busy.setdefault(f, label)
+    return busy
+
+
+def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None = None, claims=None, worktrees=None,
+              details: list | None = None):
     """Top-priority open items that a worker can start now, pairwise free of file conflicts.
 
     Skips: claimed items (live claims), items on hold, unverified items, decisions/questions (they need a human), items whose
-    depends_on are still open, items larger than max_size, and items whose footprint overlaps a claimed item or an
-    item already picked. Returns (picked, skipped_reasons)."""
+    depends_on are still open, items larger than max_size, items whose footprint overlaps a claimed item or an
+    item already picked, and items anchored on a file another worktree is changing (`worktrees`, from
+    worktree_changes() unless given; {} turns it off). Returns (picked, skipped_reasons); `details`, when given,
+    receives one dict per item skipped for a worktree."""
     claims = load_claims() if claims is None else claims
+    worktrees = worktree_changes() if worktrees is None else worktrees
     live = {k: c for k, c in claims.items() if not c["stale"]}
     by_id = {i["id"]: i for i in items}
     busy = set().union(*(footprint(by_id[k]) for k in live if k in by_id)) if live else set()
@@ -617,6 +663,13 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
         if fp and overlaps(fp, busy):
             skipped["touches files of a claimed or already-picked item"] += 1
             continue
+        hit = next((f for f in worktrees if overlaps(fp, {f})), None) if fp else None
+        if hit:
+            skipped[f"touches files changed in worktree {worktrees[hit]}"] += 1
+            if details is not None:
+                wt, _, branch = worktrees[hit].partition(" (")
+                details.append({"id": it["id"], "file": hit, "worktree": wt, "branch": branch.rstrip(")")})
+            continue
         picked.append(it)
         busy |= fp
     return picked, skipped
@@ -625,14 +678,17 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
 def cmd_next(a):
     prune_claims()
     items = [i for i in load("work")[0]]
-    picked, skipped = pick_next(items, a.n, a.goal, a.max_size)
-    order = goal_order()
+    details = []
+    picked, skipped = pick_next(items, a.n, a.goal, a.max_size, worktrees={} if a.ignore_worktrees else None,
+                                details=details)
     if a.json:
         rows = [{"id": i["id"], "title": i["title"], "goal": i.get("goal"), "severity": i["severity"], "size": i.get("size"),
                  "path": str(i["_path"].relative_to(REPO)), "anchors": i.get("anchors") or [],
                  "verify": [v.get("command") for v in i.get("verify") or []]} for i in picked]
         json.dump(rows, sys.stdout, indent=1)
         print()
+        if details:  # stdout stays the list of picks; why items were held back goes to stderr
+            print(json.dumps({"skipped_for_worktrees": details}), file=sys.stderr)
         return
     goals = {g["key"]: g["title"] for g in load_goals()}
     for i in picked:
@@ -1547,6 +1603,7 @@ def main():
     sp.add_parser("hook")
     p = sp.add_parser("next"); p.add_argument("--n", type=int, default=1); p.add_argument("--goal"); p.add_argument("--max-size", choices=SIZES)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--ignore-worktrees", action="store_true", help="do not treat files other worktrees are changing as busy")
     p = sp.add_parser("claim"); p.add_argument("ids", nargs="+"); p.add_argument("--by", required=True); p.add_argument("--branch")
     p.add_argument("--worktree"); p.add_argument("--force", action="store_true")
     p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")

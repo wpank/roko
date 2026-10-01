@@ -1,1 +1,2 @@
 {"schema": "roko.work_event/1", "ts": "2026-10-01T08:21:59Z", "event": "claim", "item": "bug-6af02b", "executor": null, "via": null, "session": "wk-guard2", "branch": "work/guard-l9", "concurrency": 45, "source": "live", "by": "wk-guard2", "size": "S", "claimed_at": "2026-10-01T08:21:59Z"}
+{"schema": "roko.work_event/1", "ts": "2026-10-01T08:40:03Z", "event": "claim", "item": "gap-18d1a7", "executor": null, "via": null, "session": "wk-guard2", "branch": "work/guard-l9", "concurrency": 56, "source": "live", "by": "wk-guard2", "size": "S", "claimed_at": "2026-10-01T08:40:03Z"}

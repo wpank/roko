@@ -1030,11 +1030,11 @@ When methods disagree — e.g., Lipschitz says a prediction is robust but IBP fi
 
 ### Citations
 
-- Cohen, J. M., Rosenfeld, E., & Kolter, Z. (2019). "Certified Adversarial Robustness via Randomized Smoothing." *ICML 2019*. — Foundational randomized smoothing certification.
-- Gowal, S., et al. (2018). "On the Effectiveness of Interval Bound Propagation for Training Verifiably Robust Models." arXiv:1810.12715. — IBP for certified training.
-- Mao, Z., et al. (2024). "Understanding Certified Training with Interval Bound Propagation." *ICLR 2024*. — Analysis of IBP tightness and certified training dynamics.
-- NeurIPS 2024. "ECLipsE: Efficient Compositional Lipschitz Constant Estimation for Deep Neural Networks." — Compositional Lipschitz estimation with 1000x speedup.
-- Steinhardt, G., Koh, P. W., & Liang, P. S. (2017). "Certified Defenses for Data Poisoning Attacks." *NeurIPS 2017*. — Certified defenses against training-time attacks.
+- Cohen, J. M., Rosenfeld, E., & Kolter, Z. (2019). "Certified Adversarial Robustness via Randomized Smoothing." *ICML 2019*.
+- Gowal, S., et al. (2018). "On the Effectiveness of Interval Bound Propagation for Training Verifiably Robust Models." arXiv:1810.12715.
+- Mao, Z., et al. (2024). "Understanding Certified Training with Interval Bound Propagation." *ICLR 2024*.
+- NeurIPS 2024. "ECLipsE: Efficient Compositional Lipschitz Constant Estimation for Deep Neural Networks."
+- Steinhardt, G., Koh, P. W., & Liang, P. S. (2017). "Certified Defenses for Data Poisoning Attacks." *NeurIPS 2017*.
 
 ### Test criteria
 

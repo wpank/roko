@@ -711,16 +711,12 @@ capability warrant chain (OCaps), never bypass the supervision hierarchy.
 1. Sumers, T. R. et al. (2023). "Cognitive Architectures for Language Agents."
    arXiv:2309.02427. — Theoretical basis for separating perception/reasoning
    from action execution.
-2. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR
-   Formalism for Artificial Intelligence." IJCAI. — Actor model foundation.
-3. Wang, J. et al. (2024). "Mixture-of-Agents Enhances Large Language Model
-   Capabilities." arXiv:2406.04692, ICLR 2025. — MoA layered composition.
-4. Anthropic Transformer Circuits Team (2025). "Emergent Introspective
-   Awareness in Large Language Models." — ~20% accuracy, narrow circuits.
-5. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff." — +7.78pp from metacognitive monitoring.
-6. arXiv:2410.15048 (2024). "MorphAgent: Empowering Agents through Self-Evolving Profiles and Decentralized Collaboration." — Dynamic role switching.
-7. arXiv:2601.04748 (2025). "When Single-Agent with Skills Replace Multi-Agent
-   Systems." — 53.7% token reduction, phase transition at 50–100 skills.
+2. Hewitt, C., Bishop, P., & Steiger, R. (1973). "A Universal Modular ACTOR Formalism for Artificial Intelligence." IJCAI.
+3. Wang, J. et al. (2024). "Mixture-of-Agents Enhances Large Language Model Capabilities." arXiv:2406.04692, ICLR 2025.
+4. Anthropic Transformer Circuits Team (2025). "Emergent Introspective Awareness in Large Language Models."
+5. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff."
+6. arXiv:2410.15048 (2024). "MorphAgent: Empowering Agents through Self-Evolving Profiles and Decentralized Collaboration."
+7. arXiv:2601.04748 (2025). "When Single-Agent with Skills Replace Multi-Agent Systems."
 8. Murray, T. "Analysing Object-Capability Security." Oxford. — OCaps model.
 9. Tenuo (2025). tenuo.dev — Cryptographic capability warrants for AI agents.
 10. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal

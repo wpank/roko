@@ -1,5 +1,9 @@
 # 39-06 Self-Learning Systems -- Annotated Reference Map
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > Research foundations for agent self-improvement, experiential learning, skill
 > evolution, and metacognitive loops in Roko's learning subsystems.
 >
@@ -17,10 +21,8 @@ Verbal RL via stored self-reflection: 91% HumanEval. Foundational for the playbo
 ## Experiential Learning
 
 **[Zhao et al., 2024]** *ExpeL: LLM Agents Are Experiential Learners.* arXiv:2308.10144.
-Cross-task experience extraction; insights accumulate across episodes. Grounds double-loop learning.
 
 **[Wang et al., 2023]** *Voyager: An Open-Ended Embodied Agent.* arXiv:2305.16291.
-Code-as-action skill library; 3.3x more unique behaviors. Grounds EvoSkills and persistent skill accumulation.
 
 ---
 
@@ -30,33 +32,26 @@ Code-as-action skill library; 3.3x more unique behaviors. Grounds EvoSkills and 
 The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. Core thesis for Roko's approach: the scaffold IS the product.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
-Scaffold logic as natural language specifications. Makes scaffold design inspectable and portable.
 
 **[Kapoor et al., 2026]** *HAL: A Holistic Agent Leaderboard.* ICLR 2026.
-21,730 rollouts show scaffold choice matters as much as model choice.
 
 ---
 
 ## Prompt and Strategy Evolution
 
 **[Guo et al., 2024]** *EvoPrompt.* arXiv:2309.08532.
-GA prompt optimization; +25% on BBH tasks. Grounds evolutionary strategy selection.
 
 **[Fernando et al., 2024]** *Promptbreeder: Self-Referential Self-Improvement.* arXiv:2309.16797.
-Prompts evolving mutation operators. Grounds the meta-learning loop.
 
 **[Khattab et al., 2024]** *DSPy: Compiling Declarative Language Model Calls.* ICLR 2024. arXiv:2310.03714.
-Declarative signatures replace hand-crafted prompts. Influences prompt budget allocation.
 
 **[Opsahl-Ong et al., 2024]** *MIPROv2.* EMNLP 2024.
-Bayesian optimization for multi-stage LLM programs. Applicable to context assembly optimization.
 
 ---
 
 ## Architecture Search
 
 **[Hu et al., 2025]** *Automated Design of Agentic Systems (ADAS).* ICLR 2025.
-Meta-agent searching agent architecture space. Roko provides the composable trait system ADAS-style search operates over.
 
 ---
 
@@ -66,43 +61,34 @@ Meta-agent searching agent architecture space. Roko provides the composable trai
 Process reward models outperform outcome-only. Foundational for the Gate pipeline's per-step verification.
 
 **[Song et al., 2025]** *Mind the Gap: Examining the Self-Improvement Capabilities of Large Language Models.* ICLR 2025.
-Self-improvement works only when verification exceeds generation. Core architectural principle separating agent and Gate.
 
 **[Huang et al., 2024]** *Large Language Models Cannot Self-Correct Reasoning Yet.* ICLR 2024.
-Self-correction without external feedback worsens answers. Motivates external Gates.
 
 **[Pan et al., 2024]** *Spontaneous Reward Hacking in Iterative Self-Refinement.* arXiv:2407.04549.
-Same model as generator and judge leads to reward hacking. Validates generator-verifier separation.
 
 ---
 
 ## Triple-Loop Learning
 
 **[Argyris & Schon, 1978]** *Organizational Learning.* Addison-Wesley.
-Single/double/triple-loop learning. Maps to Gamma/Theta/Delta cognitive frequencies.
 
 ---
 
 ## Bandit-Based Optimization
 
 **[Mishler, 2025]** *Bandits in your LLM Gateway: Improve LLM Applications Faster with Adaptive Experimentation (A/B Testing).* Working paper.
-Bandit-based model routing in production gateways. Validates the CascadeRouter approach.
 
 **[Hong et al., 2026]** *MASPOB: Bandit-Based Prompt Optimization for Multi-Agent Systems with Graph Neural Networks.* Working paper. arXiv:2603.02630.
-Bandit optimization for multi-agent system prompts.
 
 ---
 
 ## Multi-Level Reflection (2025)
 
 **[Ge et al., 2025]** *SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection.* EMNLP 2025. arXiv:2509.20562.
-Multi-level reflection outperforms single-trajectory Reflexion. Error clustering extracts insight from failures.
 
 **[Ozer et al., 2025]** *MAR: Multi-Agent Reflexion.* arXiv:2512.20845.
-Addresses Reflexion's single-agent limitations with multi-agent extension.
 
 **[Kang et al., 2025]** *Self-Evolving LLMs via Continual Instruction Tuning.* arXiv:2509.18133.
-Autonomous adaptation and cross-task knowledge integration. Maps to triple-loop learning.
 
 **[Bell et al., 2025]** *The Future of Continual Learning in the Era of Foundation Models.* arXiv:2506.03320.
 Validates NeuroStore's non-parametric approach to continual knowledge management.

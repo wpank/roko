@@ -1,5 +1,9 @@
 # Mechanism Design and Attention Economics
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -22,50 +26,40 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 ## VCG Mechanism
 
 - Vickrey, W. (1961). Counterspeculation, Auctions, and Competitive Sealed Tenders. _Journal of Finance_, 16(1), 8-37.
-  *Grounds: Second-price auctions — the Vickrey auction: bidders submit sealed bids, the highest bidder wins but pays the second-highest price. Guarantees truthful bidding. Foundational for the VCG attention auction.*
 
 - Clarke, E.H. (1971). Multipart Pricing of Public Goods. _Public Choice_, 11(1), 17-33.
-  *Grounds: Multi-item pricing — extends truthful mechanisms to public goods with multiple items. Enables simultaneous allocation of multiple context sections.*
 
 - Groves, T. (1973). Incentives in Teams. _Econometrica_, 41(4), 617-631.
-  *Grounds: Team incentives — truthful revelation in team settings. Completes the VCG mechanism: subsystems truthfully reveal their valuation of context sections.*
 
 ---
 
 ## Auction Theory
 
 - Milgrom, P. (2004). _Putting Auction Theory to Work_. Cambridge University Press.
-  *Grounds: Applied auction theory — comprehensive treatment of auction design for practical applications. Provides the theoretical foundation for implementing the attention auction efficiently.*
 
 - Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW_, 2024. arXiv:2310.10826.
-  *Grounds: LLM mechanism design — applies mechanism design specifically to LLM systems. Validates applying auction theory to LLM context allocation.*
 
 ---
 
 ## Algorithmic Game Theory
 
 - Nisan, N., Roughgarden, T., Tardos, E., & Vazirani, V.V. (2007). _Algorithmic Game Theory_. Cambridge University Press.
-  *Grounds: AGT reference — comprehensive treatment of computational aspects of game theory. Provides algorithms for implementing VCG efficiently.*
 
 ---
 
 ## Submodular Optimization
 
 - Nemhauser, G.L., Wolsey, L.A., & Fisher, M.L. (1978). An Analysis of Approximations for Maximizing Submodular Set Functions. _Mathematical Programming_, 14(1), 265-294.
-  *Grounds: Greedy context selection — submodular function maximization with greedy algorithm providing (1-1/e) approximation guarantee. Context selection is submodular: adding more context has diminishing returns. The greedy algorithm provides near-optimal context assembly.*
 
 ---
 
 ## Reputation Systems
 
 - Glickman, M.E. (1999). Parameter Estimation in Large Dynamic Paired Comparison Experiments. _Journal of the Royal Statistical Society, Series C_, 48(3), 377-394.
-  *Grounds: Glicko-2 — dynamic rating system that accounts for rating reliability (RD) and volatility. Grounds the reputation tracking in ERC-8004 agent identity, where reputation is not just a number but includes confidence intervals.*
 
 - Nasrulin et al. (2022). Nasrulin, B. et al. MeritRank: Sybil Tolerant Reputation. arXiv:2207.09950.
-  *Grounds: Sybil-tolerant reputation — reputation system resistant to Sybil attacks. Informs the on-chain reputation registry design.*
 
 - Soulbound Tokens (2022). Weyl, E.G., Ohlhaver, P., & Buterin, V. Decentralized Society: Finding Web3's Soul. _SSRN_.
-  *Grounds: Non-transferable identity — soulbound tokens as non-transferable identity primitives. Grounds the Korai Passport (ERC-721 soulbound) agent identity.*
 
 ---
 
@@ -79,33 +73,26 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 ## Demurrage and Token Economics
 
 - Gesell, S. (1916). _The Natural Economic Order_.
-  *Grounds: Demurrage — money that decays over time to encourage circulation. KORAI's 1% annual demurrage mirrors Engram half-life: both knowledge tokens and knowledge entries decay, preventing hoarding and ensuring freshness.*
 
 - Ostrom, E. (1990). _Governing the Commons_. Cambridge University Press.
-  *Grounds: Commons governance — principles for governing shared resources without central authority. Informs the governance of the shared knowledge commons in Agent Mesh.*
 
 ---
 
 ## Knowledge Markets
 
 - Williamson, O.E. (1979). Transaction-Cost Economics. _Journal of Law and Economics_.
-  *Grounds: Transaction costs — institutional structures emerge to minimize transaction costs. The Agent Mesh reduces knowledge sharing transaction costs through standardized Engram formats and HDC similarity search.*
 
 - Bakos, Y. & Brynjolfsson, E. (1999). Bundling Information Goods. _Management Science_.
-  *Grounds: Information bundling — economics of bundling information goods. Informs the design of knowledge bundles for collective sharing.*
 
 ---
 
 ## Agent Marketplaces and AI Economies (2024-2025)
 
 - Yang et al. (2025). Agent Exchange: Shaping the Future of AI Agent Economics. arXiv:2507.03904.
-  *Grounds: Agent marketplace architecture — auction engine inspired by Real-Time Bidding for agent task allocation. Four ecosystem components: User-Side Platform, Agent-Side Platform, Agent Hubs for team coordination, and Data Management Platform for knowledge sharing. Directly informs Roko's agent job marketplace design.*
 
 - Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW Best Paper_, 2024. arXiv:2310.10826.
-  *Grounds: LLM mechanism design — token auction model operating on a token-by-token basis for joint output generation through multiple LLM agents. Validates applying auction theory to LLM-level resource allocation, extending VCG from context to token granularity.*
 
 - Tacchetti et al. (2024). Learning Social and Economic Policies for Human Benefit. _PNAS_, 2024.
-  *Grounds: Neural mechanism design — deep neural networks trained with RL create desirable mechanisms for multi-agent coordination. Validates the feasibility of learning optimal allocation mechanisms rather than hand-designing them.*
 
 ---
 

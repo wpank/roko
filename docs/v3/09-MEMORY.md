@@ -1073,12 +1073,7 @@ correlation) and historical success rates for each domain pair.
 
 ### xMemory decoupling pattern
 
-xMemory (arXiv:2602.02007) advocates decoupling memory retrieval from memory
-aggregation. Roko's architecture follows this pattern: HDC similarity search
-(retrieval) operates independently of the demurrage/reinforcement model
-(aggregation), and the CognitiveWorkspace VCG auction (composition) is a third
-independent stage. This separation allows each component to evolve without
-breaking the others.
+xMemory (Hu et al. 2026, arXiv:2602.02007) argues that agent memory should decouple before it aggregates: split the interaction history into segments and reusable memory components first, then aggregate related components into groups for retrieval (abstract). Roko separates a different set of stages: HDC similarity search, the demurrage/reinforcement model and the CognitiveWorkspace VCG auction run independently, so each can evolve without breaking the others. That separation is Roko's design; the paper does not test it.
 
 ---
 
@@ -1376,12 +1371,9 @@ least `min_tag_overlap` tags in common.
   Roko's distillation pipeline self-improvement.
 
 - **PathHD** (arXiv:2512.09369). HDC for knowledge graph retrieval.
-  Demonstrates that HDC role-filler binding naturally encodes KG relationships
-  with competitive retrieval accuracy.
+  Encodes multi-hop relation paths with an order-sensitive, non-commutative (block-diagonal GHRR) binding and retrieves them by calibrated cosine similarity; competitive Hits@1 and F1 on WebQSP, CWQ and GrailQA at markedly lower inference cost (abstract).
 
-- **xMemory** (arXiv:2602.02007). Decoupling memory retrieval from memory
-  aggregation. Validates Roko's architectural separation of HDC similarity
-  search, demurrage/reinforcement model, and VCG composition.
+- **xMemory** (arXiv:2602.02007). Decouple before aggregating: split history into segments and memory components, then group them (abstract); Roko's stage separation is its own design, not tested by the paper.
 
 ---
 

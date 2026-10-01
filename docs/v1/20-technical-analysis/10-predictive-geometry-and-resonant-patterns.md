@@ -955,11 +955,11 @@ Oracle::predict()
 
 ### Citations
 
-- Adams, H., et al. (2017). "Persistence Images: A Stable Vector Representation of Persistent Homology." *JMLR*, 18(8), 1-35. — Persistence images: stable vectorization of persistence diagrams for ML.
-- Bauer, U. (2021). "Ripser: Efficient Computation of Vietoris-Rips Persistence Barcodes." *JACT*, 5(1), 91-119. — Fastest known algorithm for Rips persistence.
-- Zhang, S., Xiao, M., & Wang, H. (2020). "GPU-Accelerated Computation of Vietoris-Rips Persistence Barcodes." *SoCG 2020*. — GPU parallelization of Ripser.
-- Cohen-Steiner, D., Edelsbrunner, H., & Harer, J. (2007). "Stability of Persistence Diagrams." *DCG*, 37(1), 103-120. — Foundational stability theorem for persistence.
-- Luchinsky, A., & Islambekov, U. (2025). "TDAvec: Vectorization of Persistence Diagrams." *JOSS*, 10(114). — Unified vectorization library and comparative analysis.
+- Adams, H., et al. (2017). "Persistence Images: A Stable Vector Representation of Persistent Homology." *JMLR*, 18(8), 1-35.
+- Bauer, U. (2021). "Ripser: Efficient Computation of Vietoris-Rips Persistence Barcodes." *JACT*, 5(1), 91-119.
+- Zhang, S., Xiao, M., & Wang, H. (2020). "GPU-Accelerated Computation of Vietoris-Rips Persistence Barcodes." *SoCG 2020*.
+- Cohen-Steiner, D., Edelsbrunner, H., & Harer, J. (2007). "Stability of Persistence Diagrams." *DCG*, 37(1), 103-120.
+- Luchinsky, A., & Islambekov, U. (2025). "TDAvec: Vectorization of Persistence Diagrams." *JOSS*, 10(114).
 
 ### Test criteria
 

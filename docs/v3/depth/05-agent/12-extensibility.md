@@ -388,10 +388,9 @@ mechanisms (Liu & van der Schaar, 2025; arXiv:2506.05109).
 
 ## Citations
 
-1. Sakana AI et al. (2025). "Darwin Godel Machine." arXiv:2505.22954.
+1. Zhang, J. et al. (2025). "Darwin Godel Machine." arXiv:2505.22954.
    -- SWE-bench 20% to 50%.
-2. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291. -- Lifelong
-   skill learning.
+2. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291.
 3. Liu, T. & van der Schaar, M. (2025). "Truly Self-Improving Agents
    Require Intrinsic Metacognitive Learning." arXiv:2506.05109.
 4. `crates/roko-agent/src/provider/mod.rs` -- ProviderAdapter trait.

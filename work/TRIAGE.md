@@ -58,11 +58,10 @@
 ### roko-cli/dispatch (1)
 - **P1** [spec-98f76d](items/spec-98f76d-epic-tier-ladder-and-escalation.md) Epic: tier ladder and escalation [spec] · size L
 
-### tools/work (7)
+### tools/work (6)
 - **P1** [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) Epic: tracker tooling for parallel work [spec] · size L
 - **P1** [gap-823dce](items/gap-823dce-work-py-claim-re-checks-the-footprint.md) work.py claim re-checks the footprint under a lock, can be renewed, and expires by size · size S
 - **P1** [gap-c9e61b](items/gap-c9e61b-work-py-list-show-and-status-plus.md) work.py list, show and status, plus a generated EPICS.md with progress per epic and lane · size M
-- **P1** [gap-d1f787](items/gap-d1f787-work-py-next-treats-files-changed-in.md) work.py next treats files changed in any other worktree as busy · size S
 - **P1** [gap-130a3e](items/gap-130a3e-work-py-validate-the-lane-parent-and.md) work.py: validate the lane, parent and milestone fields, and add next --lane and --mix · size M
 - **P2** [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items · size M
 - **P2** [gap-2bc1b9](items/gap-2bc1b9-work-py-new-accepts-every-item-field.md) work.py new accepts every item field as a flag · size S
@@ -75,8 +74,9 @@
 - **P2** [bug-f1f814](items/bug-f1f814-graph-task-dispatch-s-fake-provider-clis-use.md) graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load [bug] · size S
 - **P3** [dec-af63cc](items/dec-af63cc-should-t0-reflexes-serve-tasks-that-something.md) Should T0 reflexes serve tasks that something verifies, running verification on their cached output? [decision] · size S
 
-### docs/whitepaper (1)
+### docs/whitepaper (2)
 - **P1** [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) Epic: whitepaper v1 [spec] · size L
+- **P1** [gap-6e0a95](items/gap-6e0a95-whitepaper-no-claim-it-makes-about-a.md) Whitepaper: no claim it makes about a cited work has been checked against that work's full text · size M
 
 ### benchmarks/viabilitybench/experiments (3)
 - **P1** [gap-c33709](items/gap-c33709-pilot-a-the-direct-arms-on-20.md) Pilot A: the direct arms on 20 tasks (S09.E1a) · size S
@@ -115,6 +115,9 @@
 ### roko-acp (1)
 - **P2** [bug-31bca6](items/bug-31bca6-nothing-reads-learning-dreams-max-concurrent-so.md) Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs [bug] · size S
 
+### tmp/cybernetic-harness/paper (1)
+- **P2** [gap-f052aa](items/gap-f052aa-research-paper-claims-about-cited-works-216.md) Research paper: claims about cited works (216 keys, related work above all) have not been checked against the papers' full text · size L
+
 ### roko-cli/deployment (1)
 - **P2** [dec-648cce](items/dec-648cce-should-roko-deploy-railway-forward-roko-serve.md) Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys? [decision] · size S
 
@@ -130,9 +133,6 @@
 
 ### roko-std/sandbox (1)
 - **P2** [bug-bb3262](items/bug-bb3262-the-rust-guard-port-fails-open-at-deep.md) The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases [bug] · size S
-
-### docs/v3 (1)
-- **P2** [gap-1f72ac](items/gap-1f72ac-the-121-unread-cited-works-in-docs.md) The ~121 unread cited works in docs/v3 likely carry unsupported claims at the audited 62% rate: banner the references, cut unchecked annotations to bare citations · size M
 
 ### roko-learn (1)
 - **P2** [bug-8417d9](items/bug-8417d9-thirteen-jsonl-appenders-write-each-row-and.md) Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows [bug] · size M

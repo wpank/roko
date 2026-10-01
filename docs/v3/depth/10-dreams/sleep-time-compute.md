@@ -18,10 +18,7 @@ requirements**. The key insight: agents can perform significant cognitive work
 (knowledge organization, strategy refinement, counterfactual exploration) during
 idle periods, making their waking performance dramatically more efficient.
 
-WSCL (Skenderi et al. 2024, "Wake-Sleep Consolidated Learning," arXiv:2401.08623,
-IEEE 2024) showed a complementary result: interleaving wake and sleep processing
-phases produces a **38% reduction in catastrophic forgetting** compared to
-continuous waking-only learning. Sleep consolidation prevents new knowledge from
+WSCL (Sorrenti et al. 2024, "Wake-Sleep Consolidated Learning," arXiv:2401.08623, IEEE 2024) reported a complementary result for image classification: splitting continual learning into wake, NREM and REM phases beat the baselines on CIFAR-10, Tiny-ImageNet and FG-ImageNet and gave positive forward transfer (abstract). Sleep consolidation prevents new knowledge from
 overwriting old knowledge -- the CLS architecture in action.
 
 These results provide the economic justification for Roko's dream system: the
@@ -307,7 +304,7 @@ hypnagogia_provider = "api"    # Use API for hypnagogia
 | Paper | How It Informs Sleep-Time Compute |
 |-------|----------------------------------|
 | Lin et al. (2025), arXiv:2504.13171, "Sleep-time Compute" | 5x reduction in test-time compute via sleep-time processing; query predictability metric; 10x cost weighting |
-| WSCL (Skenderi et al. 2024), arXiv:2401.08623, IEEE | 38% reduction in catastrophic forgetting via wake-sleep interleaving |
+| WSCL (Sorrenti et al. 2024), arXiv:2401.08623, IEEE | Wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Sumers et al. (2023), arXiv:2309.02427, CoALA | Cognitive architecture with three operating frequencies; Sleepwalker mode basis |
 | Tononi & Cirelli (2006), Sleep Medicine Reviews | Sleep as global synaptic renormalization |
 | McClelland et al. (1995), CLS theory | Fast/slow memory systems bridged by sleep replay |

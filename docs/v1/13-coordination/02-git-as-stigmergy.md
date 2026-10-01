@@ -362,8 +362,7 @@ Complex coordinated behavior emerged from simple local interactions with the sha
 ## References
 
 - [Bolici et al. 2009] Scalability in OSS via stigmergy, *AMCIS Proceedings*
-- [Dourish, P. "The Parrot's Tale." *Proceedings of ECSCW*, 2001] — Awareness in collaborative
-  software development
+- [Dourish, P. "The Parrot's Tale." *Proceedings of ECSCW*, 2001]
 - [Elliott, M. 2006] Stigmergic Collaboration, University of Melbourne
 - [Fowler, M. 1999] *Refactoring: Improving the Design of Existing Code*, Addison-Wesley
 - [Gibson, J.J. 1979] *The Ecological Approach to Visual Perception*, Lawrence Erlbaum

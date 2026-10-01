@@ -286,6 +286,14 @@ impl GraphTaskDispatcher {
                         );
                     }
                 }
+                // A passed `bench` step fails when its benchmarks got slower.
+                verdict = bench_verify::judge_bench_step(
+                    &self.workdir,
+                    &spec.plan_id,
+                    &task.id,
+                    &step.phase,
+                    verdict,
+                );
 
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -532,6 +540,13 @@ impl GraphTaskDispatcher {
                                     );
                                 }
                             }
+                            retry_verdict = bench_verify::judge_bench_step(
+                                &self.workdir,
+                                &spec.plan_id,
+                                &task.id,
+                                &step.phase,
+                                retry_verdict,
+                            );
                             tracing::info!(
                                 plan_id = %spec.plan_id,
                                 task_id = %task.id,

@@ -55,6 +55,7 @@ use crate::task_parser::TaskDef;
 mod attempt;
 mod attempt_workspace;
 pub(crate) mod baseline_verify;
+mod bench_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;

@@ -12,8 +12,8 @@
 //! - silent for `[conductor] task_stall_secs`: it drops the dispatch future,
 //!   which cancels the provider call, publishes a diagnosis saying so, and the
 //!   attempt fails as stalled ([`AttemptInterrupted::error`]) and settles as a
-//!   timeout ([`AttemptInterrupted::settlement`]), so the Graph engine retries
-//!   it under the task's `max_retries`.
+//!   timeout ([`failed_call_settlement`]), so the Graph engine retries it under
+//!   the task's `max_retries`.
 //!
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
 //! `timeout_secs` stays the outer bound either way.
@@ -28,8 +28,8 @@
 //! - every event the agent streams is progress, text and reasoning deltas
 //!   included;
 //! - a provider whose adapter streams as it goes (the Claude CLI) is silent
-//!   from the start of its call, so one that never reports anything is
-//!   cancelled too (bug-2aa55f);
+//!   from the start of its call once [`FIRST_OUTPUT_GRACE`] has passed, so one
+//!   that never reports anything is cancelled too (bug-2aa55f);
 //! - other providers may report nothing until they finish (the Codex CLI hands
 //!   over its whole answer at the end), so their attempts are left to the hard
 //!   timeout until they first report something;
@@ -58,6 +58,13 @@ const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// How often a running attempt checks whether its plan run asked it to stop
 /// ([`WatchedAttempt::stop`]).
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How long a call whose provider streams as it goes may report nothing from
+/// its start before that counts as silence. Starting the CLI and the model's
+/// first token take longer than the gap between two events, and much longer
+/// under load, so a short `task_stall_secs` would otherwise cancel a call that
+/// is only starting.
+const FIRST_OUTPUT_GRACE: Duration = Duration::from_secs(30);
 
 /// Capacity of the channel between the provider boundary and the live-output
 /// tap. The boundary never waits on it: events that do not fit are dropped.
@@ -275,13 +282,19 @@ impl AttemptProgress {
     }
 
     /// How long, at `now`, the attempt has been waiting on its model without
-    /// reporting progress: since its last event, or since its call started
-    /// when its provider streams as it goes. `None` before a provider that
-    /// may report only at the end first reports anything, and while a tool
-    /// call the agent made is still running.
+    /// reporting progress: since its last event or, when its provider streams
+    /// as it goes, since its call started, once [`FIRST_OUTPUT_GRACE`] has
+    /// passed. `None` within that grace, before a provider that may report
+    /// only at the end first reports anything, and while a tool call the
+    /// agent made is still running.
     fn silence(&self, now: Instant) -> Option<Duration> {
         let state = self.inner.lock();
-        let quiet_since = state.last_event.or(state.quiet_since)?;
+        let quiet_since = match state.last_event {
+            Some(last_event) => last_event,
+            None => state
+                .quiet_since
+                .filter(|&started| now.saturating_duration_since(started) >= FIRST_OUTPUT_GRACE)?,
+        };
         state
             .open_tool_calls
             .is_empty()
@@ -1366,7 +1379,8 @@ exec sleep 60
     /// bug-4c553b: an attempt the watchdog cancelled settles as a timeout,
     /// not a provider error. Once it reported progress the timeout is the
     /// agent's; a Claude CLI call that never reported anything is silent
-    /// from its start, and its timeout is the provider's.
+    /// from its start (after its first-output grace), and its timeout is the
+    /// provider's.
     #[tokio::test]
     async fn a_stalled_attempt_settles_as_a_timeout() {
         let temp = tempdir().expect("tempdir");
@@ -1412,7 +1426,7 @@ exec sleep 60
         );
         let mut config = watched_config(&script);
         config.conductor.silence_timeout_secs = 0;
-        config.conductor.task_stall_secs = 3;
+        config.conductor.task_stall_secs = 5;
         let started = Instant::now();
         let (error, verdict) = dispatch_once(temp.path(), config, "deltas").await;
         let elapsed = started.elapsed();
@@ -1426,14 +1440,14 @@ exec sleep 60
             "the deltas held the watchdog off until they stopped"
         );
         assert!(
-            elapsed < secs(30),
+            elapsed < secs(55),
             "the watchdog, not the 60 s timeout, ended the attempt after {elapsed:?}"
         );
     }
 
     /// bug-2aa55f: a call whose provider streams as it goes is silent from
-    /// its start; one whose provider may report only at the end is not until
-    /// it reports something.
+    /// its start, once its first-output grace has passed; one whose provider
+    /// may report only at the end is not until it reports something.
     #[test]
     fn a_streaming_call_is_silent_from_its_start() {
         let config = Arc::new(watched_config(Path::new("/bin/true")));
@@ -1446,7 +1460,15 @@ exec sleep 60
 
         let streaming = AttemptProgress::default();
         streaming.call_started_at(claude, FailoverChain::default(), t0);
-        assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(5)));
+        assert_eq!(
+            streaming.silence(t0 + secs(5)),
+            None,
+            "a call that is only starting has its grace"
+        );
+        assert_eq!(
+            streaming.silence(t0 + FIRST_OUTPUT_GRACE),
+            Some(FIRST_OUTPUT_GRACE)
+        );
         assert!(!streaming.reported_progress());
         streaming.observe_at(&text("working"), t0 + secs(4));
         assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(1)));

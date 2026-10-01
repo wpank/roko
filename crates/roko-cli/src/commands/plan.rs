@@ -1265,6 +1265,25 @@ fn record_held_review(
     Ok(attempt_key)
 }
 
+/// `roko plan status`'s label for a plan: its Graph checkpoint's status when
+/// it has one (`succeeded` reads `complete`, and an interrupted or cancelled
+/// run shows as such, gap-20ab07), else what its task counts say.
+fn plan_status_label(
+    checkpoint: Option<roko_cli::graph_checkpoint::GraphCheckpointStatus>,
+    done_tasks: usize,
+    total_tasks: usize,
+) -> &'static str {
+    use roko_cli::graph_checkpoint::GraphCheckpointStatus;
+
+    match checkpoint {
+        Some(GraphCheckpointStatus::Succeeded) => "complete",
+        Some(status) => status.as_str(),
+        None if total_tasks > 0 && done_tasks == total_tasks => "complete",
+        None if done_tasks == 0 => "not started",
+        None => "in progress",
+    }
+}
+
 async fn cmd_plan_dir_status(
     cli: &Cli,
     workdir: &std::path::Path,
@@ -1338,63 +1357,20 @@ async fn cmd_plan_dir_status(
         total_tasks
     };
 
-    // Overlay Graph engine checkpoint status.  The graph engine writes terminal
-    // state to `.roko/state/graph/<safe-plan-id>/checkpoint.json` rather than
-    // updating tasks.toml or the legacy executor snapshot.  Read it here so
-    // that `plan status` reflects the same data as `plan list`.
-    let safe_plan_id: String = plan_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let graph_checkpoint_path = workdir
-        .join(".roko/state/graph")
-        .join(&safe_plan_id)
-        .join("checkpoint.json");
-    let graph_status: Option<String> = std::fs::read(&graph_checkpoint_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|v| {
-            v.get("status")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        });
-
-    let checkpoint_succeeded = graph_status.as_deref() == Some("succeeded");
+    // Overlay the Graph engine checkpoint status. The graph engine writes
+    // terminal state to `.roko/state/graph/<safe-plan-id>/checkpoint.json`
+    // rather than updating tasks.toml or the legacy executor snapshot. Read it
+    // here so that `plan status` reflects the same data as `plan list`.
+    let graph_status = roko_cli::graph_checkpoint::canonical_checkpoint_status(workdir, plan_id);
+    let checkpoint_succeeded =
+        graph_status == Some(roko_cli::graph_checkpoint::GraphCheckpointStatus::Succeeded);
     if checkpoint_succeeded && done_tasks == 0 && effective_total > 0 {
         // The graph engine completed all tasks; tasks.toml wasn't updated.
         done_tasks = effective_total;
     }
 
     // Derive the human-readable status string.
-    let status_str = if let Some(gs) = &graph_status {
-        match gs.as_str() {
-            "succeeded" => "complete",
-            "unverified" => "unverified",
-            "failed" => "failed",
-            "running" => "running",
-            _ => {
-                if effective_total > 0 && done_tasks == effective_total {
-                    "complete"
-                } else if done_tasks == 0 {
-                    "not started"
-                } else {
-                    "in progress"
-                }
-            }
-        }
-    } else if effective_total > 0 && done_tasks == effective_total {
-        "complete"
-    } else if done_tasks == 0 {
-        "not started"
-    } else {
-        "in progress"
-    };
+    let status_str = plan_status_label(graph_status, done_tasks, effective_total);
 
     // Why the plan's whole-plan check failed, when it did (gap-60233f).
     let plan_check_failure =
@@ -2491,6 +2467,32 @@ mod tests {
     fn read_executor_state_returns_none_without_snapshot() {
         let dir = tempdir().expect("tempdir");
         assert!(read_executor_state(dir.path()).is_none());
+    }
+
+    /// gap-20ab07: `plan status` shows an interrupted or cancelled Graph run
+    /// as such, not through the task statuses in tasks.toml.
+    #[test]
+    fn plan_status_reports_interrupted_and_cancelled_checkpoints() {
+        let dir = tempdir().expect("tempdir");
+        let checkpoint_dir = dir.path().join(".roko/state/graph/demo-plan");
+        std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir");
+        for (recorded, label) in [
+            ("interrupted", "interrupted"),
+            ("cancelled", "cancelled"),
+            ("succeeded", "complete"),
+            ("failed", "failed"),
+        ] {
+            let checkpoint = format!(r#"{{"status":"{recorded}"}}"#);
+            std::fs::write(checkpoint_dir.join("checkpoint.json"), checkpoint).expect("checkpoint");
+            let status =
+                roko_cli::graph_checkpoint::canonical_checkpoint_status(dir.path(), "demo-plan");
+            // tasks.toml says one of two tasks is done.
+            assert_eq!(plan_status_label(status, 1, 2), label, "{recorded}");
+        }
+
+        assert_eq!(plan_status_label(None, 0, 2), "not started");
+        assert_eq!(plan_status_label(None, 1, 2), "in progress");
+        assert_eq!(plan_status_label(None, 2, 2), "complete");
     }
 
     #[test]

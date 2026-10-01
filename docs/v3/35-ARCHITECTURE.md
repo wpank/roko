@@ -189,7 +189,7 @@ foundations at the bottom, user-facing entry points at the top.
 graph TB
     subgraph UserFacing ["User-Facing Entry Points"]
         CLI["roko-cli<br/><i>CLI binary, TUI dashboard,<br/>plan runner, 85+ commands</i>"]
-        SERVE["roko-serve<br/><i>HTTP control plane,<br/>~376 routes, SSE, WebSocket</i>"]
+        SERVE["roko-serve<br/><i>HTTP control plane,<br/>REST routes, SSE, WebSocket</i>"]
         ACP["roko-acp<br/><i>Editor integration protocol<br/>(Cursor, etc.)</i>"]
     end
 
@@ -693,7 +693,7 @@ How users and external systems interact with Roko.
 | Crate | What it does | Key types |
 |-------|-------------|-----------|
 | **roko-cli** | Main binary (`roko`). CLI commands, plan DAG runner, merge queue, worktree manager, interactive ratatui TUI with 10 tabs (F1-F10). | `PlanRunner`, `TuiBridge`, `DashboardApp` |
-| **roko-serve** | HTTP control plane: ~376 canonical REST routes + SSE + WebSocket on port 6677. Relay subscription execution, arena/meta-agent services. | Axum routes, `StateHub`, `PeriodicObserver` |
+| **roko-serve** | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on port 6677. Relay subscription execution, arena/meta-agent services. | Axum routes, `StateHub`, `PeriodicObserver` |
 | **roko-acp** | Agent Client Protocol server for editor integration (Cursor, etc.). Mutation consent, budget enforcement, experiment assignment. 180 tests. | `AcpServer`, `AcpSession` |
 | **roko-agent-server** | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` (WebSocket), `/predictions`, `/research`, `/tasks`. | Sidecar routes |
 
@@ -800,7 +800,7 @@ curl http://localhost:6677/api/metrics/c_factor
 curl -X POST http://localhost:6677/api/plans/execute -d '{"path":"plans/"}'
 ```
 
-The server exposes ~376 canonical routes (~421 including aliases) organized by
+The server exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) organized by
 subsystem: health/metrics, plans, PRDs, research, agents, knowledge, learning,
 configuration, events, and more.
 

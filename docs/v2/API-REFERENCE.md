@@ -1,6 +1,6 @@
 # Roko HTTP API Reference
 
-> **Implementation status (verified 2026-09-15):** IMPLEMENTED — `roko serve` exposes ~376 canonical REST routes (~421 incl. aliases) plus SSE and WebSocket on :6677. Auth middleware, secret scrubbing, and trace layer are live. All route categories listed in this document are wired. Run-scoped observability (per-run JSONL indexes, cursor-paginated events, evidence bundles) is live. The 19-gate pipeline and per-agent sidecar routes are wired. Named surface routes (E37 5 routes) are wired. See `.roko/GAPS.md` for remaining product residuals.
+> **Implementation status (verified 2026-09-15):** IMPLEMENTED — `roko serve` exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) plus SSE and WebSocket on :6677. Auth middleware, secret scrubbing, and trace layer are live. All route categories listed in this document are wired. Run-scoped observability (per-run JSONL indexes, cursor-paginated events, evidence bundles) is live. The 19-gate pipeline and per-agent sidecar routes are wired. Named surface routes (E37 5 routes) are wired. See `.roko/GAPS.md` for remaining product residuals.
 
 ## What is this API?
 

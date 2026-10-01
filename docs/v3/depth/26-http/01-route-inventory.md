@@ -1,6 +1,6 @@
-# 26.01 -- Route Inventory (~376 Canonical Routes)
+# 26.01 -- Route Inventory
 
-> Depth file for [26-HTTP.md](../../26-HTTP.md).
+> Depth file for [26-HTTP-API.md](../../26-HTTP-API.md).
 
 ---
 
@@ -249,13 +249,20 @@ Each of these modules contributes additional routes:
 
 ## Counting Methodology
 
-The ~376 canonical route count is produced by `python3 tools/http_route_inventory.py`,
-which scans all `routes()` functions for `.route()` calls, counts distinct
-(method, path) pairs, and includes feature-gated variants. The ~421 total includes
-legacy aliases (e.g., `/events` alongside `/sse`).
+This page does not copy the route counts, because every new route changes them.
+`python3 tools/http_route_inventory.py` scans the literal Axum `.route(...)`
+registrations under `crates/roko-serve/src` and reports two numbers: every method
+registration, aliases included (`total_registrations`), and the canonical
+registrations left after removing aliases of the same (method, handler) pair within
+one router (`canonical_registrations`). The committed snapshot,
+`tools/http_route_inventory.snapshot.json`, holds the current numbers. CI runs
+`python3 tools/http_route_inventory.py --check-snapshot`, which fails when a route is
+added or removed without `--refresh`. The scan does not follow `.nest()` prefixes,
+`route_service`, feature gates or runtime-composed paths.
 
 ## Source
 
 - `crates/roko-serve/src/routes/mod.rs` -- Router assembly
 - `crates/roko-serve/src/routes/*.rs` -- Individual domain handlers
 - `tools/http_route_inventory.py` -- Automated route counter
+- `tools/http_route_inventory.snapshot.json` -- Current route counts and registrations

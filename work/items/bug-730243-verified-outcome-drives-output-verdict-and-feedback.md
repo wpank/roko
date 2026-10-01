@@ -9,16 +9,16 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/graph-dispatch", "roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::verified_outcome_drives_output_verdict_and_feedback", "crates/roko-cli/src/graph_task_dispatch/verification.rs::efficiency_records", "crates/roko-cli/src/graph_task_dispatch/tui_forward.rs::append_jsonl_line_async", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 links = { depends_on = [], blocks = [], related = ["bug-c34782", "bug-0b668a", "bug-ea9959"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn concurrent_jsonl_appends_never_interleave' crates/roko-cli/src && cargo test -p roko-cli --lib concurrent_jsonl_appends_never_interleave && cargo test -p roko-cli --lib verified_outcome_drives_output_verdict_and_feedback"
+command = "grep -rqw 'fn rows_appended_at_once_stay_whole' crates/roko-cli/src && cargo test -p roko-cli --lib rows_appended_at_once_stay_whole && cargo test -p roko-cli --lib verified_outcome_drives_output_verdict_and_feedback"
 +++
 
 ## Problem
@@ -83,3 +83,12 @@ explain a 60 s miss for a local append, and a torn line can. Nothing serializes 
 
   Fix the Graph helper first; file the others if confirmed.
 - `bug-0b668a` (closed) was an earlier flake of this kind: an unflushed `tokio::fs` write.
+- 2026-10-01 (wk-honestbench): already fixed at BASE `ebdc0f5d5`, by `2c61e9053` (2026-09-30, for bug-779ae7).
+  `append_jsonl_line_async` (`crates/roko-cli/src/graph_task_dispatch/tui_forward.rs:204`) writes each row and
+  its newline in one `write_all` (:219), and `rows_appended_at_once_stay_whole` (:236) appends 64 rows at once
+  and parses every line. All Graph feedback rows go through `background_writes::spawn`
+  (`crates/roko-cli/src/background_writes.rs:30`), and `efficiency_records`
+  (`graph_task_dispatch/verification.rs:1499`) awaits `background_writes::settled` (:1500) before it reads, so
+  the test waits on the writes rather than a deadline. The `[[verify]]` now names that test instead of the
+  planned `concurrent_jsonl_appends_never_interleave`. The sibling files listed above no longer contain a
+  `writeln!` append.

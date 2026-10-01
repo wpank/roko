@@ -9,12 +9,12 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-cli/graph-dispatch", "roko-cli/runner"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops 99adacd6d"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/runner/persist.rs::GateThresholds::load_or_default", "crates/roko-cli/src/runner/persist.rs::GateThresholds::save", "crates/roko-fs/src/atomic.rs::with_locked_json_transaction"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::GraphTaskDispatcher::settle_gate_learning", "crates/roko-cli/src/runner/persist.rs::GateThresholds::update_locked", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/runner/persist.rs::GateThresholds::load_or_default", "crates/roko-cli/src/runner/persist.rs::GateThresholds::save", "crates/roko-fs/src/atomic.rs::with_locked_json_transaction"]
 links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-4b4344", "gap-7a3527"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -88,3 +88,10 @@ an update and an atomic write.
 - `find-4b4344` asks not to add a second writer for `gate-thresholds.json`. Change this writer in place.
 - Readers (`TaskRetryBudgets::load`, TUI, serve) read without the lock. `atomic_write`'s rename keeps each read
   consistent, so they need no change.
+- 2026-10-01 (wk-honestbench): implemented on work/bug-730243; cargo verification deferred to the batch check.
+  At BASE the block had moved to `gate_learning.rs::settle_gate_learning`, behind an in-process mutex only (no
+  file lock across processes). New `GateThresholds::update_locked` (persist.rs) runs load, `fill_default_rungs`,
+  update and save in `roko_fs::with_locked_json_transaction`; `settle_gate_learning` uses it, with the ratchet
+  loaded and saved inside the same lock, and tells the dashboard the state as saved. A malformed thresholds file is
+  now reported and left as it is instead of being replaced with defaults. Test:
+  `concurrent_verify_updates_keep_every_gate_observation` (16 threads, one observation each).

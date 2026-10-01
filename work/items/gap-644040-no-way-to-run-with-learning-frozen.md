@@ -9,8 +9,8 @@ goal = "learning"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-09-28
 updated = 2026-10-01
-last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::plan_skips_enrichment", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs:153"]
@@ -31,3 +31,20 @@ Benchmarks and A/B comparisons therefore cannot hold learning fixed, and repeate
 Fix: a frozen-learning mode (learned state read-only, no writes, dreams and timers off), recorded in each run's manifest.
 
 2026-09-29: re-verified at d9e79e9d8. Still open; anchors moved (skip_enrichment use at graph_task_dispatch.rs:3288, reflections 2575-2618, T0 reflexes 3213, prompt_builder.rs:153). `roko bench swe --no-learning` exists but only stops bench telemetry writes; it is not a frozen-learning run mode.
+
+## Notes
+
+- 2026-10-01 (wk-honestbench): blocked; this needs a scope decision and several days, so no code changed. The
+  premise holds at BASE `ebdc0f5d5`. Nothing freezes learning, and the run manifest's
+  `experiment.ablation_flags` (`roko-learn/src/telemetry/records.rs:1072`) exists but nothing sets it.
+  - The Graph writers come in through `GraphFeedbackContext` (`graph_task_dispatch/feedback.rs`): the feedback
+    facade (episodes, router, knowledge), efficiency, playbooks, experiments, gate failures, post-gate
+    reflections, gate thresholds and ratchet, retrieval outcomes, and the holdout and gaming detectors.
+  - Several of these paths are both read (prompt injection, retry budgets) and written, so "read-only" cannot be
+    done by dropping the paths.
+  - Decisions needed: what counts as learned state (are `costs.jsonl`, episodes and attempt logs telemetry that
+    stays on?), and the switch's form (`[learning] frozen`, a `plan run` flag, or both).
+  - Next step: one `learning_frozen` flag in `GraphFeedbackContext`, set from that switch and recorded as an
+    ablation flag. Each writer above checks it while its reads stay on, plus dreams and serve timers off. Then
+    `frozen_learning_run_writes_no_learned_state` runs a fake-provider plan and compares `.roko/learn` before and
+    after.

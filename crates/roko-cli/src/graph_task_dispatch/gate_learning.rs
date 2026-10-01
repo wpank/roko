@@ -72,23 +72,16 @@ pub(super) struct GateLearning {
     pub(super) would_skip: Vec<(u32, bool)>,
 }
 
-/// Feed one verify run of a Graph task, `(phase, passed)` per step that ran,
-/// into the gate learning.
-///
-/// `profile` seeds the rungs of `thresholds` that have no observations yet.
-/// Each step whose phase names a canonical rung then updates that rung's EMA,
-/// and a test step also the oracle residual of `test_pass_forecast`, which
-/// was taken before the steps ran. Skip advice is read from the thresholds as
-/// they were before this run: a step `thresholds` would let `temperament`
-/// skip.
-pub(super) fn update_graph_gate_thresholds(
-    thresholds: &mut GateThresholds,
-    profile: &ThresholdProfile,
+/// What one verify run of a Graph task, `(phase, passed)` per step that ran,
+/// gets at once from `thresholds` as they were before it: the steps they
+/// would let `temperament` skip (P1-12). The thresholds take the run later
+/// ([`VerifyRun::apply`]). Regressions are the step history's
+/// ([`super::step_ratchet`]).
+fn skip_advice(
+    thresholds: &GateThresholds,
     temperament: Temperament,
     step_outcomes: &[(String, bool)],
-    test_pass_forecast: Option<(f64, f64)>,
 ) -> GateLearning {
-    thresholds.apply_profile(profile);
     let mut learning = GateLearning::default();
     for (phase, passed) in step_outcomes {
         let Some(rung) = rung_for_gate_name(phase).map(|rung| rung.as_index()) else {
@@ -98,16 +91,129 @@ pub(super) fn update_graph_gate_thresholds(
             learning.would_skip.push((rung, *passed));
         }
     }
-    learning.residuals = thresholds.observe_verify_steps(step_outcomes, test_pass_forecast);
     learning
+}
+
+/// A verify run's share of `gate-thresholds.json`, held until it is written
+/// ([`GateThresholdWrites`]).
+struct VerifyRun {
+    /// Seeds the rungs that have no observations yet (P1-10).
+    profile: ThresholdProfile,
+    /// `(phase, passed)` per step that ran.
+    step_outcomes: Vec<(String, bool)>,
+    /// The CodingOracle's test pass-rate forecast, taken before the steps
+    /// ran.
+    test_pass_forecast: Option<(f64, f64)>,
+}
+
+impl VerifyRun {
+    /// The observations the run adds: its steps whose phase names a
+    /// canonical rung.
+    fn observations(&self) -> u64 {
+        self.step_outcomes
+            .iter()
+            .filter(|(phase, _)| rung_for_gate_name(phase).is_some())
+            .count() as u64
+    }
+
+    /// Fold the run into `thresholds`: the profile's priors for rungs with no
+    /// observations yet, then each step's observation, and for a test step
+    /// the oracle residual of the forecast (P1-08), which this returns.
+    fn apply(&self, thresholds: &mut GateThresholds) -> Vec<(u32, f64)> {
+        thresholds.apply_profile(&self.profile);
+        thresholds.observe_verify_steps(&self.step_outcomes, self.test_pass_forecast)
+    }
+}
+
+/// The verify runs a dispatcher has not written to `gate-thresholds.json`
+/// yet. Once they add up to `[learning] gate_threshold_flush_interval`
+/// observations they are written together. What is left is written before a
+/// plan's retry budgets are read ([`Self::flush`]) and when the dispatcher is
+/// dropped at the end of its run (reg-c7ecf6).
+pub(super) struct GateThresholdWrites {
+    interval: u64,
+    pending: parking_lot::Mutex<PendingRuns>,
+}
+
+/// Runs waiting to be written, and where they go.
+#[derive(Default)]
+struct PendingRuns {
+    path: Option<PathBuf>,
+    runs: Vec<VerifyRun>,
+    observations: u64,
+}
+
+impl GateThresholdWrites {
+    /// Write every `interval` observations, at least one.
+    pub(super) fn new(interval: u64) -> Self {
+        Self {
+            interval: interval.max(1),
+            pending: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// Hold `run`, bound for `path`. Returns the runs to write now, this one
+    /// last, once they add up to the interval.
+    fn add(&self, path: &Path, run: VerifyRun) -> Option<Vec<VerifyRun>> {
+        let mut pending = self.pending.lock();
+        pending.observations += run.observations();
+        pending.runs.push(run);
+        pending.path = Some(path.to_path_buf());
+        if pending.observations < self.interval {
+            return None;
+        }
+        pending.observations = 0;
+        Some(std::mem::take(&mut pending.runs))
+    }
+
+    /// Write the runs held so far.
+    pub(super) fn flush(&self) {
+        let pending = std::mem::take(&mut *self.pending.lock());
+        write_held_runs(pending);
+    }
+}
+
+impl Drop for GateThresholdWrites {
+    fn drop(&mut self) {
+        write_held_runs(std::mem::take(self.pending.get_mut()));
+    }
+}
+
+/// Write `pending`'s runs to their `gate-thresholds.json`, logging a failure.
+fn write_held_runs(pending: PendingRuns) {
+    if pending.runs.is_empty() {
+        return;
+    }
+    let Some(path) = pending.path else {
+        return;
+    };
+    let _files = GATE_LEARNING_FILES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let written = GateThresholds::update_locked(&path, |thresholds| {
+        for run in &pending.runs {
+            run.apply(thresholds);
+        }
+    });
+    if let Err(err) = written {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "P2-LRN-6 Loop 1: held gate thresholds were not written (non-fatal)"
+        );
+    }
 }
 
 impl GraphTaskDispatcher {
     /// Settle what an attempt's verify run teaches the persisted gate
-    /// learning: load `gate-thresholds.json`, update it
-    /// ([`update_graph_gate_thresholds`]), save it, and tell the dashboard.
-    /// A file that fails to load or save is logged and left to the next
-    /// task's update.
+    /// learning. Its skip advice is read at once ([`skip_advice`]). The
+    /// thresholds take the run with the runs before it once they add up to
+    /// the flush interval ([`GateThresholdWrites`]), and the dashboard then
+    /// hears of them. The file is read and written in one read-modify-write
+    /// under its lock ([`GateThresholds::update_locked`]), so tasks and
+    /// processes that update it at once lose nothing (bug-e0f472). A file
+    /// that fails to load or save is logged and left to the next task's
+    /// update.
     pub(super) fn settle_gate_learning(
         &self,
         spec: &TaskExecutionSpec,
@@ -124,28 +230,36 @@ impl GraphTaskDispatcher {
             .agent
             .temperament_for_role(task.role.as_deref().unwrap_or("implementer"));
 
+        let run = VerifyRun {
+            profile: profile.clone(),
+            step_outcomes: step_outcomes.to_vec(),
+            test_pass_forecast,
+        };
+        let due = self.gate_threshold_writes.add(thresholds_path, run);
+
         let files = GATE_LEARNING_FILES
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut thresholds =
-            GateThresholds::load_or_default(thresholds_path).unwrap_or_else(|err| {
+        let updated = GateThresholds::update_locked(thresholds_path, |thresholds| {
+            let mut learning = skip_advice(thresholds, temperament, step_outcomes);
+            for run in due.iter().flatten() {
+                learning.residuals.extend(run.apply(thresholds));
+            }
+            learning
+        });
+        drop(files);
+        let (thresholds, learning) = match updated {
+            Ok(updated) => updated,
+            Err(err) => {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
                     error = %err,
-                    "P2-LRN-6 Loop 1: gate threshold load failed (non-fatal)"
+                    "P2-LRN-6 Loop 1: gate threshold update failed (non-fatal)"
                 );
-                GateThresholds::default()
-            });
-        let learning = update_graph_gate_thresholds(
-            &mut thresholds,
-            &profile,
-            temperament,
-            step_outcomes,
-            test_pass_forecast,
-        );
-        let saved = thresholds.save(thresholds_path);
-        drop(files);
+                return;
+            }
+        };
 
         if !learning.residuals.is_empty() {
             tracing::debug!(
@@ -173,31 +287,22 @@ impl GraphTaskDispatcher {
                  (advisory only)"
             );
         }
-        match saved {
-            Ok(()) => {
-                // The learning tab shows the updated per-rung EMAs at once.
-                if let Some(tui) = &self.tui_bridge {
-                    if let Ok(json) = serde_json::to_string(&thresholds) {
-                        tui.gate_thresholds_updated(&json);
-                    }
-                }
-                tracing::debug!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    steps = step_outcomes.len(),
-                    profile = %profile.name,
-                    "P2-LRN-6 Loop 1: gate thresholds updated"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    error = %err,
-                    "P2-LRN-6 Loop 1: gate threshold save failed (non-fatal)"
-                );
+        let Some(written) = due else {
+            return;
+        };
+        // The learning tab shows the per-rung EMAs as saved, at once.
+        if let Some(tui) = &self.tui_bridge {
+            if let Ok(json) = serde_json::to_string(&thresholds) {
+                tui.gate_thresholds_updated(&json);
             }
         }
+        tracing::debug!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            runs = written.len(),
+            profile = %profile.name,
+            "P2-LRN-6 Loop 1: gate thresholds updated"
+        );
     }
 }
 
@@ -206,12 +311,70 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::graph_task_dispatch::tests::{VERIFY_PROVIDER, make_spec, make_test_dispatcher};
 
     fn steps(outcomes: &[(&str, bool)]) -> Vec<(String, bool)> {
         outcomes
             .iter()
             .map(|(phase, passed)| ((*phase).to_string(), *passed))
             .collect()
+    }
+
+    /// One verify run through the gate learning at once, as a flush interval
+    /// of one writes it: the advice, then the thresholds.
+    fn update_graph_gate_thresholds(
+        thresholds: &mut GateThresholds,
+        profile: &ThresholdProfile,
+        temperament: Temperament,
+        step_outcomes: &[(String, bool)],
+        test_pass_forecast: Option<(f64, f64)>,
+    ) -> GateLearning {
+        let mut learning = skip_advice(thresholds, temperament, step_outcomes);
+        let run = VerifyRun {
+            profile: profile.clone(),
+            step_outcomes: step_outcomes.to_vec(),
+            test_pass_forecast,
+        };
+        learning.residuals = run.apply(thresholds);
+        learning
+    }
+
+    /// reg-c7ecf6: verify runs reach gate-thresholds.json once they add up
+    /// to `[learning] gate_threshold_flush_interval` observations, on a
+    /// flush, and when the dispatcher is dropped.
+    #[tokio::test]
+    async fn gate_thresholds_are_written_every_flush_interval() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("learn").join("gate-thresholds.json");
+        let feedback = GraphFeedbackContext {
+            gate_thresholds_path: Some(path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| config.learning.gate_threshold_flush_interval = 3,
+            feedback,
+        )
+        .await;
+        let spec = make_spec(&task);
+        let compiles = || {
+            let thresholds = GateThresholds::load_or_default(&path).expect("load thresholds");
+            thresholds.rungs[&0].total_count
+        };
+
+        let first = steps(&[("compile", true), ("test", true)]);
+        dispatcher.settle_gate_learning(&spec, &task, &first, None);
+        assert_eq!(compiles(), 0, "two observations wait for a third");
+        dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", false)]), None);
+        assert_eq!(compiles(), 2, "the third writes all three");
+        dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", true)]), None);
+        assert_eq!(compiles(), 2, "the next run waits for more");
+        dispatcher.gate_threshold_writes.flush();
+        assert_eq!(compiles(), 3, "a flush writes what is held");
+        dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", true)]), None);
+        drop(dispatcher);
+        assert_eq!(compiles(), 4, "dropping the dispatcher writes what was left");
     }
 
     /// Two attempts of one task through the file a Graph verify run writes:

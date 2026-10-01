@@ -2,6 +2,7 @@
 //! records their verdict settles.
 
 use super::tui_forward::append_jsonl_line_async;
+use super::turn_policy::head_and_tail;
 use super::*;
 
 impl GraphTaskDispatcher {
@@ -973,6 +974,14 @@ impl GraphTaskDispatcher {
                     } else {
                         classification
                     };
+                    // The summary leads with the failed step's label, which
+                    // `roko diagnose` reads, then its failure message and
+                    // output. A long command would crowd those out, and
+                    // diagnose reads it from tasks.toml (bug-6f7f72).
+                    let classification = match failed_step_summary(&steps, &ran_steps) {
+                        Some(summary) => classification.with_summary(summary),
+                        None => classification,
+                    };
                     let record = roko_gate::GateFailureRecord::from_classification(
                         &spec.plan_id,
                         &task.id,
@@ -1513,6 +1522,30 @@ pub(super) fn verify_step_rung(phase: &str) -> u32 {
         },
         |rung| rung.as_index(),
     )
+}
+
+/// Most bytes of a gate failure record's summary, as of an episode's failure
+/// reason.
+const GATE_FAILURE_SUMMARY_BYTES: usize = 2_048;
+
+/// The summary of a failed verify run's gate failure record: the first
+/// failed step's label, then its failure message (its authored `fail_msg`,
+/// else how it ended) and its output, kept to
+/// [`GATE_FAILURE_SUMMARY_BYTES`] by its head and tail. `None` when no step
+/// failed.
+fn failed_step_summary(
+    steps: &[(String, crate::task_parser::VerifyStep)],
+    ran_steps: &[(String, roko_core::Verdict)],
+) -> Option<String> {
+    let (_, verdict) = ran_steps.iter().find(|(_, verdict)| !verdict.passed)?;
+    let fail_msg = steps
+        .iter()
+        .find(|(label, _)| *label == verdict.gate)
+        .and_then(|(_, step)| step.fail_msg.as_deref())
+        .unwrap_or(&verdict.reason);
+    let output = verdict.detail.as_deref().unwrap_or_default().trim();
+    let summary = format!("{}: {fail_msg}\n{output}", verdict.gate);
+    Some(head_and_tail(summary.trim_end(), GATE_FAILURE_SUMMARY_BYTES))
 }
 
 /// Retry-facing summary of a failed verify run, including skipped steps.
@@ -2217,6 +2250,48 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let record = &records[0];
         assert_eq!(record.task_id, task.id);
         assert_eq!(record.failure_kind, roko_gate::GateFailureKind::Timeout);
+    }
+
+    /// bug-6f7f72: a long verify command no longer crowds its failure
+    /// message out of the gate failure record. The summary leads with the
+    /// step's label, which `roko diagnose` reads, and leaves the command out.
+    #[tokio::test]
+    async fn a_long_verify_command_keeps_its_failure_message() {
+        let temp = tempdir().expect("tempdir");
+        let gate_failures = temp.path().join(".roko/learn/gate-failures.jsonl");
+        let feedback = GraphFeedbackContext {
+            gate_failures_path: Some(gate_failures.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let padding = "a_long_filter_name".repeat(16);
+        let command = format!(": {padding}; echo 'the widget count is off by one' >&2; exit 1");
+        assert!(command.len() > 250);
+        task.verify = vec![crate::task_parser::VerifyStep {
+            fail_msg: Some("widgets do not add up".to_string()),
+            ..verify_step("test", &command)
+        }];
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the step fails");
+
+        let records = gate_failure_records(&gate_failures, 1).await;
+        let summary = &records[0].summary;
+        assert!(
+            summary.starts_with("verify[0:test]: widgets do not add up"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("the widget count is off by one"),
+            "{summary}"
+        );
+        assert!(
+            !summary.contains(&padding),
+            "the command is left out: {summary}"
+        );
     }
 
     fn rung(name: &str, command: &str, required: bool) -> roko_core::config::GateRungConfig {

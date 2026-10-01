@@ -2,16 +2,16 @@
 id = "bug-77413c"
 kind = "bug"
 title = "roko-std's refuse_key_file_in_command has none of the guard's search checks (grep -r, rg, git grep, ag/ack, find/xargs reads, brace globs, cd)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-std/sandbox"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "286c5e53a"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report, checked on work/bug-7830f5 at c537d9739)"
 anchors = ["crates/roko-std/src/tool/builtin/sandbox.rs", "crates/roko-std/src/tool/builtin/bash.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-41bea4", "bug-69a002", "
 
 [[verify]]
 command = "grep -rqw 'fn bash_refuses_every_search_that_reaches_a_secret' crates/roko-std/src/ && cargo test -p roko-std --lib bash_refuses_every_search_that_reaches_a_secret"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including roko-std bash_refuses_every_search_that_reaches_a_secret (105-case table) and roko-agent settings_hook_refuses_every_search_that_reaches_a_secret. Merged bf40f3269 (work/bug-77413c 49acd1711 + rustfmt a2a25e606)."
 +++
 
 ## Problem

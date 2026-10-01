@@ -2,16 +2,16 @@
 id = "bug-9bffe2"
 kind = "bug"
 title = "roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/commands/util"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "286c5e53a"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-960ab1 at b482d7830)"
 anchors = ["crates/roko-cli/src/commands/util.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-a445eb", "bug-9a6799"], 
 
 [[verify]]
 command = "grep -rqw 'fn cfactor_shows_unknown_cost_as_unknown' crates/roko-cli/src/ && cargo test -p roko-cli cfactor_shows_unknown_cost_as_unknown"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including cfactor_shows_unknown_cost_as_unknown (bin). Merged e6ce34be4 (work/bug-0320da dd7cb7320 + rustfmt 89bb840f3)."
 +++
 
 ## Problem

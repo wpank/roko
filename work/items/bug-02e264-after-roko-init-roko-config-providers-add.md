@@ -2,16 +2,16 @@
 id = "bug-02e264"
 kind = "bug"
 title = "After roko init, roko config providers add anthropic appends a duplicate [models.\"claude-sonnet-4-6\"] table, and the file stops parsing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/commands/config_cmd"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "5809020f8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report, checked on work/bug-17f0e4 at 6b332b25f)"
 anchors = ["crates/roko-cli/src/commands/config_cmd.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-e2cfdf", "bug-e1327f"], 
 
 [[verify]]
 command = "grep -rqw 'fn providers_add_after_init_keeps_the_config_parseable' crates/roko-cli/src/ && cargo test -p roko-cli providers_add_after_init_keeps_the_config_parseable"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including providers_add_after_init_keeps_the_config_parseable (bin). Merged 6a26c7544 (work/bug-02e264 fa9091279 + closure fix 057f2994a)."
 +++
 
 ## Problem

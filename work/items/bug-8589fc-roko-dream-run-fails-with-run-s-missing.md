@@ -2,16 +2,16 @@
 id = "bug-8589fc"
 kind = "bug"
 title = "roko dream run fails with run's missing-prompt error instead of the unknown-command message"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/main"]
 created = 2026-09-30
-updated = 2026-09-30
-last_verified = 2026-09-30
-last_verified_rev = "5809020f8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report, checked on work/bug-17f0e4 at 6b332b25f)"
 anchors = ["crates/roko-cli/src/main.rs"]
@@ -20,6 +20,11 @@ links = { depends_on = ["bug-17f0e4"], blocks = [], related = ["bug-17f0e4"], su
 
 [[verify]]
 command = "grep -rqw 'fn dream_run_reports_an_unknown_command' crates/roko-cli/src/ && cargo test -p roko-cli dream_run_reports_an_unknown_command"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including dream_run_reports_an_unknown_command (bin). Merged 6a26c7544."
 +++
 
 ## Problem

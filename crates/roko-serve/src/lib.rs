@@ -54,6 +54,7 @@ pub mod integrations;
 pub mod job_runner;
 pub mod jwks;
 pub mod openapi;
+mod operations;
 pub mod parity;
 pub mod plan_types;
 pub mod projection_contract;

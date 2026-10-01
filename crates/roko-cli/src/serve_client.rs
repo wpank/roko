@@ -19,6 +19,7 @@
 //!
 //! - [`WorkspaceServerClient::submit_plan_run`]
 //! - [`WorkspaceServerClient::cancel_plan_run`]
+//! - [`WorkspaceServerClient::pause_plan_run`]
 //! - [`WorkspaceServerClient::plan_run_finished`]
 
 use std::path::Path;
@@ -30,6 +31,8 @@ use serde_json::Value;
 use tracing::debug;
 
 use roko_serve::endpoint::ServeEndpoint;
+
+use crate::execution_control::{CommandAckReceiver, ExecutionCommandSender};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -186,6 +189,7 @@ pub struct SubmittedRun {
 /// resolved via [`crate::auth::resolve_api_key`].
 ///
 /// All methods are blocking.
+#[derive(Clone)]
 pub struct WorkspaceServerClient {
     client: Client,
     base_url: String,
@@ -373,6 +377,36 @@ impl WorkspaceServerClient {
             let body_text = resp.text().await.unwrap_or_default();
             return Err(ServeClientError::Other(anyhow::anyhow!(
                 "POST /api/plans/{run_id}/cancel returned {status}: {body_text}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// `POST /api/plans/{run_id}/pause` — pause an active plan run. The server
+    /// stops it at its checkpoint, and running the plan again resumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns an error
+    /// status.
+    pub async fn pause_plan_run(&self, run_id: &str) -> std::result::Result<(), ServeClientError> {
+        let url = format!("{}/api/plans/{run_id}/pause", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.headers.clone())
+            .send()
+            .await
+            .map_err(|e| ServeClientError::Other(anyhow::anyhow!("HTTP request failed: {e}")))?;
+
+        self.handle_auth_error(&resp)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(ServeClientError::Other(anyhow::anyhow!(
+                "POST /api/plans/{run_id}/pause returned {status}: {body_text}"
             )));
         }
 
@@ -658,6 +692,39 @@ pub async fn run_plan_via_server(
 
 /// Follow a server-managed plan run on the TUI, exiting when the run ends or
 /// when Ctrl-C / SIGTERM arrives (in which case the run is cancelled).
+/// A client TUI's pause acknowledgement: the server's pause stops the run.
+const SERVER_PAUSED: &str = "paused on the server; running the plan again resumes it";
+
+/// The command channel of a client TUI following `run_id` (gap-1555ac). Pause
+/// and cancel go to the server that owns the run. It has no resume, retry,
+/// repair, skip or approval endpoint for such a run, so those are rejected,
+/// saying so.
+fn server_command_bridge(
+    client: WorkspaceServerClient,
+    run_id: &str,
+) -> (ExecutionCommandSender, CommandAckReceiver) {
+    use crate::execution_control::{CommandAckStatus, ExecutionCommandKind};
+
+    let run = run_id.to_string();
+    crate::execution_control::spawn_command_bridge(run_id, move |command| {
+        let (client, run) = (client.clone(), run.clone());
+        async move {
+            let (result, done) = match command.kind {
+                ExecutionCommandKind::Pause => (client.pause_plan_run(&run).await, SERVER_PAUSED),
+                ExecutionCommandKind::Cancel => (client.cancel_plan_run(&run).await, "cancelled"),
+                other => {
+                    let reason = format!("{other} is not available for a server-owned run");
+                    return (CommandAckStatus::Rejected, Some(reason));
+                }
+            };
+            match result {
+                Ok(()) => (CommandAckStatus::Completed, Some(done.to_string())),
+                Err(error) => (CommandAckStatus::Failed, Some(error.to_string())),
+            }
+        }
+    })
+}
+
 async fn follow_run_tui(
     wd: &Path,
     mirror: &crate::state_hub::SharedStateHub,
@@ -705,13 +772,16 @@ async fn follow_run_tui(
         }
     });
 
-    // Spawn the TUI on a blocking thread.
+    // Spawn the TUI on a blocking thread. Its pause and cancel keys reach the
+    // server (gap-1555ac).
     let mirror_tui = mirror.clone();
     let wd_buf = wd.to_path_buf();
+    let (commands, acks) = server_command_bridge(serve_client.clone(), run_id);
     let tui_handle = std::thread::Builder::new()
         .name("roko-serve-client-tui".to_string())
         .spawn(move || {
             crate::tui::App::new_connected_with_page(&wd_buf, None, &mirror_tui)
+                .with_execution_command_sender(commands, acks)
                 .with_exit_on_plan_completion()
                 .with_host_termination_signals()
                 .with_shutdown_receiver(shutdown_rx)

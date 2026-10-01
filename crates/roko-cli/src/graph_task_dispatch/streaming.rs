@@ -181,6 +181,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
+            concurrent_plans: self.concurrent_plans(&spec.plan_id),
         };
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,

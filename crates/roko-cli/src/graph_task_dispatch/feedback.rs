@@ -324,25 +324,30 @@ impl GraphTaskDispatcher {
                 })
                 .collect();
             let eff_system_prompt_tokens = dispatch_plan.prompt.diagnostics.estimated_tokens;
-            let eff_tool_calls: Vec<roko_learn::efficiency::ToolCallMeta> = dispatch
-                .events
-                .iter()
-                .filter_map(|ev| match ev {
-                    roko_agent::AgentRuntimeEvent::ToolCall { name, .. } => {
-                        Some(roko_learn::efficiency::ToolCallMeta {
-                            tool_name: name.clone(),
-                            duration_ms: 0,
-                            result_tokens: 0,
-                            succeeded: true,
-                            advanced_task: false,
-                            was_redundant: false,
-                            error_category: None,
-                        })
-                    }
-                    _ => None,
-                })
-                .collect();
+            let eff_tool_calls = efficiency_tool_calls(&dispatch.events);
             let eff_tools_used = eff_tool_calls.len() as u32;
+            // The tools the contract allows, or 0 (unknown) when the
+            // provider's own tool set applies (gap-7a8474).
+            let eff_tools_available = effective_agent_contract(role, task, &self.config)
+                .allowed_tools
+                .map_or(0, |tools| tools.len() as u32);
+            // Without pricing for the model the saving is unknown, and the
+            // row records none; a price list never undercuts the reported cost.
+            let eff_cost_without_cache = crate::dispatch_v2::usage_cost_without_cache(
+                &dispatch.result.usage,
+                dispatch.target.model_profile.as_ref(),
+                &dispatch.target.model_slug,
+            )
+            .map_or(cost_usd, |uncached| uncached.max(cost_usd));
+            // The task's first attempt, or a retry of a failed one, which
+            // a replan follows when gate failures trigger one.
+            let eff_strategy = if settled.key().attempt <= 1 {
+                "initial"
+            } else if self.feedback.replan_on_gate_failure {
+                "replan"
+            } else {
+                "retry"
+            };
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
                 agent_id: format!("{}/{}", spec.plan_id, task.id),
                 role: role.to_string(),
@@ -353,15 +358,19 @@ impl GraphTaskDispatcher {
                 attempt_id: attempt_key.to_string(),
                 input_tokens: tokens_in,
                 output_tokens: tokens_out,
-                reasoning_tokens: 0,
+                reasoning_tokens: reported_reasoning_tokens(
+                    &dispatch.result.usage,
+                    dispatch.result.usage_obs.as_ref(),
+                    &dispatch.events,
+                ),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
                 cache_write_tokens: u64::from(dispatch.result.usage.cache_create_tokens),
                 cost_usd,
-                cost_usd_without_cache: cost_usd,
+                cost_usd_without_cache: eff_cost_without_cache,
                 prompt_sections: eff_prompt_sections,
                 total_prompt_tokens: tokens_in,
                 system_prompt_tokens: u64::from(eff_system_prompt_tokens),
-                tools_available: eff_tool_calls.len() as u32,
+                tools_available: eff_tools_available,
                 tools_used: eff_tools_used,
                 tool_calls: eff_tool_calls,
                 wall_time_ms: duration_ms,
@@ -382,7 +391,7 @@ impl GraphTaskDispatcher {
                 gate_errors: vec![],
                 model_used: model_slug.clone(),
                 frequency: roko_core::OperatingFrequency::Gamma,
-                strategy_attempted: String::new(),
+                strategy_attempted: eff_strategy.to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
             let row = AttemptKeyed {
@@ -580,6 +589,85 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Reasoning (thinking) tokens a dispatch reported (gap-7a8474): its usage,
+/// else its usage observation, else the sum of its token-usage events, which
+/// some CLI providers stream.
+fn reported_reasoning_tokens(
+    usage: &roko_core::Usage,
+    observed: Option<&roko_core::UsageObservation>,
+    events: &[roko_agent::AgentRuntimeEvent],
+) -> u64 {
+    let reported = u64::from(usage.reasoning_tokens);
+    if reported > 0 {
+        return reported;
+    }
+    if let Some(observed) = observed.and_then(|observed| observed.reasoning_tokens)
+        && observed > 0
+    {
+        return observed;
+    }
+    events
+        .iter()
+        .map(|event| match event {
+            roko_agent::AgentRuntimeEvent::TokenUsage {
+                reasoning_tokens, ..
+            } => *reasoning_tokens,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The tool calls a dispatch's events record, one per call (bug-f9ae3e).
+///
+/// A streaming provider sends a call's start, each argument delta and its
+/// end as separate tool-call events under one id, and a delta may name no
+/// tool; a call without an id counts once for each event that names a
+/// tool. A call's tool output gives its result size. Nothing on this path
+/// observes whether a call succeeded, so its outcome stays unknown.
+fn efficiency_tool_calls(
+    events: &[roko_agent::AgentRuntimeEvent],
+) -> Vec<roko_learn::efficiency::ToolCallMeta> {
+    let unobserved = |name: &str| roko_learn::efficiency::ToolCallMeta {
+        tool_name: name.to_string(),
+        duration_ms: 0,
+        result_tokens: 0,
+        succeeded: None,
+        advanced_task: false,
+        was_redundant: false,
+        error_category: None,
+    };
+    let mut calls: Vec<roko_learn::efficiency::ToolCallMeta> = Vec::new();
+    let mut by_id: HashMap<&str, usize> = HashMap::new();
+    for event in events {
+        match event {
+            roko_agent::AgentRuntimeEvent::ToolCall { id, name } if !id.is_empty() => {
+                match by_id.entry(id.as_str()) {
+                    Entry::Occupied(entry) => {
+                        let call = &mut calls[*entry.get()];
+                        if call.tool_name.is_empty() {
+                            call.tool_name.clone_from(name);
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(calls.len());
+                        calls.push(unobserved(name.as_str()));
+                    }
+                }
+            }
+            roko_agent::AgentRuntimeEvent::ToolCall { name, .. } if !name.is_empty() => {
+                calls.push(unobserved(name.as_str()));
+            }
+            roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
+                if let Some(&index) = by_id.get(id.as_str()) {
+                    calls[index].result_tokens += roko_compose::estimate_tokens(output) as u64;
+                }
+            }
+            _ => {}
+        }
+    }
+    calls
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -746,6 +834,98 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// efficiency row and the provider's health, but it no longer observes
     /// or saves `cascade-router.json` from the provider's own success,
     /// before any gate ran.
+    /// bug-f9ae3e: a streamed call's start, argument deltas and end make one
+    /// efficiency record, sized by its tool output and with its outcome
+    /// unknown; a call without an id counts once per event naming a tool.
+    #[test]
+    fn efficiency_counts_distinct_tool_call_ids() {
+        use roko_agent::AgentRuntimeEvent as Event;
+
+        let call = |id: &str, name: &str| Event::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let events = vec![
+            call("tu_1", "Read"),
+            call("tu_1", ""),
+            call("tu_1", ""),
+            call("tu_1", "Read"),
+            Event::ToolOutput {
+                id: "tu_1".to_string(),
+                output: "x".repeat(40),
+            },
+            call("tu_2", "Bash"),
+            call("", ""),
+            call("", "Grep"),
+            Event::MessageDelta {
+                text: "done".to_string(),
+            },
+        ];
+
+        let calls = efficiency_tool_calls(&events);
+        let names: Vec<&str> = calls.iter().map(|call| call.tool_name.as_str()).collect();
+        assert_eq!(names, ["Read", "Bash", "Grep"]);
+        assert_eq!(calls[0].result_tokens, 10, "40 bytes of tool output");
+        assert_eq!(calls[1].result_tokens, 0, "no output observed");
+        assert!(calls.iter().all(|call| call.succeeded.is_none()));
+    }
+
+    /// gap-7a8474: the Graph efficiency row's usage fields come from what the
+    /// dispatch reported. Reasoning tokens fall back from the usage to its
+    /// observation to the streamed token events, and cache reads on a priced
+    /// model make the uncached cost higher than the cost.
+    #[test]
+    fn graph_efficiency_event_populates_usage_fields() {
+        use crate::dispatch_v2::usage_cost_without_cache;
+        use roko_agent::AgentRuntimeEvent as Event;
+        use roko_core::config::schema::ModelProfile;
+
+        let streamed = |reasoning_tokens: u64| Event::TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens,
+        };
+        let events = [streamed(40), streamed(2)];
+        let mut usage = roko_core::Usage::zero();
+        assert_eq!(reported_reasoning_tokens(&usage, None, &events), 42);
+        let observed = roko_core::UsageObservation {
+            reasoning_tokens: Some(7),
+            ..roko_core::UsageObservation::default()
+        };
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            7
+        );
+        usage.reasoning_tokens = 9;
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            9
+        );
+
+        usage.input_tokens = 1_000;
+        usage.output_tokens = 500;
+        usage.cache_read_tokens = 9_000;
+        usage.fill_cost_from_pricing(Some(3.0), Some(15.0), None, None);
+        let profile = ModelProfile {
+            cost_input_per_m: Some(3.0),
+            cost_output_per_m: Some(15.0),
+            ..ModelProfile::default()
+        };
+        let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
+            .expect("the profile prices the model");
+        assert!(
+            uncached > f64::from(usage.cost_usd),
+            "{uncached} against {}",
+            usage.cost_usd
+        );
+        assert_eq!(
+            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");

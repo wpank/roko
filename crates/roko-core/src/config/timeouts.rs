@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(cfg.gate_effect(), Duration::from_secs(900));
         assert_eq!(cfg.agent_silence(), Duration::from_secs(180));
         assert_eq!(cfg.scheduler_no_progress(), Duration::from_secs(1800));
-        assert_eq!(cfg.agent_dispatch(), Duration::from_secs(600));
+        assert_eq!(cfg.agent_dispatch(), Duration::from_secs(1800));
         assert_eq!(cfg.gate_compile(), Duration::from_secs(600));
         assert_eq!(cfg.gate_test(), Duration::from_secs(900));
         assert_eq!(cfg.gate_clippy(), Duration::from_secs(300));

@@ -578,6 +578,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: run.overrides.effort.clone(),
+            no_cascade: run.overrides.cascade_enabled == Some(false),
         },
         Some(run_id.clone()),
     )

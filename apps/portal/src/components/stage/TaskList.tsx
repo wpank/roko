@@ -78,6 +78,14 @@ function ExpandedDetail({
         </pre>
       )}
 
+      {/* ── Blocked: the task that blocked it, and why ────────────────────── */}
+      {row.blocked !== null && (
+        <div className="flex flex-col gap-0.5">
+          <span className="rd-section">blocked</span>
+          <p className="text-xs text-text-muted whitespace-pre-wrap">{row.blocked}</p>
+        </div>
+      )}
+
       {/* ── Failed: optional Retry button (the digest line is on the row) ── */}
       {row.status === 'failed' && (
         <div className="flex flex-col gap-2">
@@ -299,6 +307,17 @@ function TaskRow({
           title={headline}
         >
           {headline}
+        </p>
+      )}
+
+      {/* ── Blocked: which task blocked it, on the row itself ────────────── */}
+      {row.blocked !== null && (
+        <p
+          data-blocked=""
+          className="pl-6 text-xs font-mono text-text-muted truncate"
+          title={row.blocked}
+        >
+          {row.blocked}
         </p>
       )}
 

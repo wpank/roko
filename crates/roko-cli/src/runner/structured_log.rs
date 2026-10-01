@@ -5,8 +5,8 @@
 //! is serialized as a single JSON line and flushed to the file.
 //! The logger is a no-op when no path is configured.
 //!
-//! A Graph plan run's `--log-file` is written by
-//! `graph_execution::event_log::run_recorded`.
+//! A Graph run's `--log-file` is written by
+//! `graph_execution::event_log::run_recorded` (gap-208b38).
 
 use std::fs::File;
 use std::io::{BufWriter, Write};

@@ -100,7 +100,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Ctrl-t", "agent topology panel", theme));
     lines.push(kb("Ctrl-e", "toggle post-processing effects", theme));
     lines.push(kb("Ctrl-x", "force-advance (confirm)", theme));
-    lines.push(kb("Ctrl-d", "reset selected plan (confirm)", theme));
+    lines.push(kb("Ctrl-d", "cancel selected plan (confirm)", theme));
     lines.push(kb("Ctrl-g", "git reconcile (confirm)", theme));
     lines.push(Line::from(""));
 
@@ -158,7 +158,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
     lines.push(kb("F", "force-advance past current task", theme));
-    lines.push(kb("R", "restart plan (confirm)", theme));
+    lines.push(kb("R", "cancel plan (confirm)", theme));
     lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));
     lines.push(Line::from(""));

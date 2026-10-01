@@ -374,7 +374,11 @@ mod tests {
         assert_eq!(compiles(), 3, "a flush writes what is held");
         dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", true)]), None);
         drop(dispatcher);
-        assert_eq!(compiles(), 4, "dropping the dispatcher writes what was left");
+        assert_eq!(
+            compiles(),
+            4,
+            "dropping the dispatcher writes what was left"
+        );
     }
 
     /// Two attempts of one task through the file a Graph verify run writes:

@@ -141,10 +141,14 @@ impl RetryFeedbackBook {
                 .insert((plan_id.to_string(), task_id), standing);
         }
         for (task_id, micro_usd) in kept.spend {
-            state.spend.insert((plan_id.to_string(), task_id), micro_usd);
+            state
+                .spend
+                .insert((plan_id.to_string(), task_id), micro_usd);
         }
         for (task_id, retry) in kept.turn_caps {
-            state.turn_caps.insert((plan_id.to_string(), task_id), retry);
+            state
+                .turn_caps
+                .insert((plan_id.to_string(), task_id), retry);
         }
         for (task_id, steps) in kept.passed_steps {
             state

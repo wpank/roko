@@ -55,16 +55,6 @@ turn_budget_usd = 0.5
 Override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`,
 `tools`, `budget`, `thresholds`, `routing_overrides`, `turn_budget_usd`.
 
-### `[agent.data_llm]` -- DataLlmConfig
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `model` | String | `"claude-haiku-3-5"` | Model for data extraction |
-| `max_tokens` | u64 | 4096 | Output token limit |
-| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
-| `strip_tool_calls` | bool | true | Remove tool calls from output |
-| `sanitize_input` | bool | true | Sanitize inputs before sending |
-
 ---
 
 ## `[authoring]` -- AuthoringConfig
@@ -211,9 +201,8 @@ Defaults come from `LearningConfig` (`crates/roko-core/src/config/learning.rs`),
 defaults and `Default` impl agree. Checked at `7c556bc0a` (2026-09-29), most of these keys
 change nothing: "No effect" marks a key that only the config tooling reads (loading,
 `roko config set`, presets and config views). "No effect on Graph runs" marks a key that
-`roko plan run`, and the plans that `roko run` and `roko serve` start, never read. When the
-replan keys are set to a non-default value, `roko config doctor` reports them
-(`graph_engine_inert_settings` in `crates/roko-cli/src/graph_task_dispatch.rs`).
+`roko plan run`, and the plans that `roko run` and `roko serve` start, never read. The replan
+limits `replan_max_per_plan` and `replan_gate_attempts` were removed (see [Removed keys](#removed-keys)).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -226,8 +215,6 @@ replan keys are set to a non-default value, `roko config doctor` reports them
 | `file_intel_max_entries` | usize | 15 | Maximum file-intel entries injected per task. No effect |
 | `warning_max_entries` | usize | 5 | Maximum warning entries injected per task. No effect |
 | `replan_on_gate_failure` | bool | true | Graph runs never revise a plan: a failed task is retried up to its `max_retries`. When true and a cheap model is available, each failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json` |
-| `replan_max_per_plan` | u32 | 2 | Maximum gate-failure plan revisions per plan. No effect on Graph runs (gap-7a3527) |
-| `replan_gate_attempts` | u32 | 3 | Consecutive gate failures before a plan revision. No effect on Graph runs (gap-7a3527) |
 | `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run`. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
 | `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
 | `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
@@ -242,7 +229,7 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
-| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `max_concurrent` | usize | 1 | Most dream consolidations that ACP sessions run at once in one process; an ACP turn that finds this many running starts none (0 is treated as 1). The plan-completion trigger keeps its own limit of one |
 | `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
 | `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
 
@@ -287,6 +274,7 @@ max_iterations = 5
 | `terminal_commands` | Vec\<String\> | `[]` | Command lines a terminal session may run instead of the login shell; any other `command` is refused |
 | `terminal_max_sessions` | usize | 8 | Most PTY sessions open at once; `0` lifts the cap |
 | `terminal_session_ttl_secs` | u64 | 28800 | Seconds a PTY session may live, attached or not; `0` lifts the limit |
+| `revision_max_retries` | u32 | 1 | Times `POST /api/plans/{id}/revise` asks the planning agent again, with the validation diagnostics, after a revision that fails validation; `0` makes one attempt only |
 
 ### `[serve.auth]` -- ServeAuthConfig
 
@@ -305,6 +293,23 @@ max_iterations = 5
 | `bind` | String | `"127.0.0.1"` | Bind address |
 | `port` | u16 | 6677 | HTTP port |
 | `cors_origins` | Vec\<String\> | `[]` | Allowed CORS origins |
+
+---
+
+## Removed keys
+
+These keys were removed because nothing read them. Loading an old `roko.toml` that sets one
+still works: the key is dropped with a warning that says why, and `roko config doctor` parses
+the file the same way. `roko config validate` reports the key as removed, so delete the line.
+The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
+
+| Key | Why it went |
+|-----|-------------|
+| `runner.max_concurrent_plans` | No plan run read it. `conductor.max_parallel_plans` (or `roko plan run --max-parallel-plans`) sets how many plans run at once (gap-6bc156) |
+| `gates.domain_gates` | No gate ran its commands. Give the plan tasks of that domain their own verify commands (gap-7a3527) |
+| `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
+| `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
+| `agent.data_llm` | No dispatch path routed untrusted content to a separate data LLM, so setting it isolated nothing. `DataLlmConfig` and `DataLlmRouter` remain for future CaMeL work (gap-7a3527) |
 
 ---
 

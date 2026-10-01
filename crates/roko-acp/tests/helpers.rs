@@ -330,6 +330,8 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             search_context_size: None,
             cost_per_request: None,
             tier: None,
+            temperature: None,
+            seed: None,
         },
     );
     config

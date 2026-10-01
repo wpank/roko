@@ -317,7 +317,9 @@ impl InFlightTasks {
             plan_id = step.plan_id,
             task_id = step.task_id,
             step = step.label,
-            blocked_by_sibling = blame.as_ref().map_or("none", |blame| blame.siblings.as_str()),
+            blocked_by_sibling = blame
+                .as_ref()
+                .map_or("none", |blame| blame.siblings.as_str()),
             "verify step still fails after sibling tasks settled"
         );
         let Some(blame) = blame else {

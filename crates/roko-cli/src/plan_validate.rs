@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
+use roko_cli::orchestrator::plan_discovery::{PlanDir, find_plan_dirs};
 use roko_core::AgentRole;
 use roko_core::config::GatesConfig;
 use roko_core::config::routing::LadderConfig;
@@ -414,7 +415,29 @@ pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
     out
 }
 
-fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
+/// Whether `command` negates a `grep` (`! grep -q TODO src/lib.rs`): such a
+/// step passes only while some text is absent (find-70edcb).
+fn negates_a_grep(command: &str) -> bool {
+    command.split(['\n', ';', '&', '|']).any(|part| {
+        part.trim_start().strip_prefix('!').is_some_and(|rest| {
+            let program = rest.split_whitespace().next().unwrap_or_default();
+            matches!(program, "grep" | "egrep" | "fgrep" | "rg")
+        })
+    })
+}
+
+/// The `tasks.toml` files of the plans under `dir`, sorted: `dir` itself
+/// when it is one, otherwise those of the plans `roko plan run` finds there
+/// ([`find_plan_dirs`]), so `plan validate` checks the plans that run
+/// (gap-9ed15e). `plan validate --spec-quality` lints the same set
+/// (gap-4b3bd5).
+///
+/// # Errors
+///
+/// Returns an error when `dir` does not exist, is a file other than
+/// `tasks.toml`, or cannot be read, and when two plans under it share a plan
+/// id.
+pub fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
     if dir.is_file() {
         if dir.file_name().is_some_and(|name| name == "tasks.toml") {
             return Ok(vec![dir.to_path_buf()]);
@@ -432,37 +455,13 @@ fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
         bail!("{} is not a directory", dir.display());
     }
 
-    let mut out = Vec::new();
-    collect_tasks_files_recursive(dir, &mut out)?;
-    out.sort();
-    Ok(out)
-}
-
-fn collect_tasks_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .with_context(|| format!("read directory {}", dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("read directory entries for {}", dir.display()))?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            // Skip archived plans — they contain stale references to
-            // removed files/models and should not block active plan runs.
-            if path
-                .file_name()
-                .is_some_and(|name| name == "archive" || name == "archived")
-            {
-                continue;
-            }
-            collect_tasks_files_recursive(&path, out)?;
-        } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-            out.push(path);
-        }
-    }
-
-    Ok(())
+    let plans =
+        find_plan_dirs(dir).with_context(|| format!("find the plans in {}", dir.display()))?;
+    Ok(plans
+        .into_iter()
+        .filter(PlanDir::has_tasks)
+        .map(|plan| plan.dir.join("tasks.toml"))
+        .collect())
 }
 
 fn validate_tasks_file(
@@ -539,6 +538,27 @@ fn validate_tasks_file(
                             "task '{}' sets {}, which plan run parses but does not act on yet",
                             task.id,
                             fields.join(", ")
+                        ),
+                    });
+                }
+            }
+            // find-70edcb: a verify step that passes only while some text is
+            // absent fails correct code that happens to contain it.
+            for task in &tasks_file.tasks {
+                for step in &task.verify {
+                    if !negates_a_grep(&step.command) {
+                        continue;
+                    }
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_042".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: format!(
+                            "task '{}' verify step `{}` passes only while some text is absent, \
+                             so correct code that contains it fails; check what the code does \
+                             instead, with a test or a compile",
+                            task.id, step.command
                         ),
                     });
                 }
@@ -1982,6 +2002,63 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
             "{report:?}"
         );
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// find-70edcb: a verify step that negates a grep is a PLAN_042 warning.
+    #[test]
+    fn a_negative_grep_verify_step_is_a_plan_042_warning() {
+        assert!(negates_a_grep("! grep -q TODO src/lib.rs"));
+        assert!(negates_a_grep("cargo check -p demo && ! rg unwrap src/"));
+        assert!(!negates_a_grep("grep -q 'pub fn run' src/lib.rs"));
+        assert!(!negates_a_grep("test ! -f src/old.rs"));
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Remove the TODOs"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let negative = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_042")
+            .collect::<Vec<_>>();
+        assert_eq!(negative.len(), 1, "{report:?}");
+        assert_eq!(negative[0].severity, Severity::Warning);
+        assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// gap-9ed15e: `plan validate` checks the plans `plan run` finds: none
+    /// under `_meta/` or a dot-directory, and none nested in another plan.
+    #[test]
+    fn validate_reads_the_plans_that_discovery_finds() {
+        let temp = TempDir::new().unwrap();
+        let plans = temp.path().join("plans");
+        for dir in ["demo", "demo/nested", "_meta/notes", ".hidden/old"] {
+            fs::create_dir_all(plans.join(dir)).unwrap();
+            fs::write(plans.join(dir).join("tasks.toml"), "[meta]\nplan = \"x\"\n").unwrap();
+        }
+
+        let files = collect_tasks_files(&plans).unwrap();
+
+        assert_eq!(files, [plans.join("demo/tasks.toml")]);
     }
 
     /// gap-0f3980: a hint that `plan run` parses but ignores is a PLAN_039

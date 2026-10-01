@@ -18,11 +18,10 @@ pub struct InertGraphSetting {
 /// `roko config doctor`, so operators stop relying on them.
 #[must_use]
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
-    const LEGACY_GATES: &str = "only the legacy Runner-v2 gate pipeline (--engine legacy) reads it";
+    const LEGACY_GATES: &str = "only the deleted Runner-v2 gate pipeline read it";
     const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
                             adaptive_min_retries and adaptive_max_retries (task retry budgets); \
                             its gate EMA uses a fixed alpha";
-    const NO_READER: &str = "no production code reads it";
     const NO_LONG_LIVED_AGENT: &str = "no production code reads it: each plan-run attempt is a \
                                        fresh provider session, bounded by budget.max_task_usd and \
                                        budget.max_task_retry_usd";
@@ -81,11 +80,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.domain_gates != default_gates.domain_gates,
-            "gates.domain_gates",
-            NO_READER,
-        ),
-        (
             gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
             "gates.ema_alpha",
             ADAPTIVE,
@@ -106,17 +100,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             "budget.max_agent_lifetime_usd",
             NO_LONG_LIVED_AGENT,
         ),
-        (
-            config.learning.replan_max_per_plan != defaults.learning.replan_max_per_plan,
-            "learning.replan_max_per_plan",
-            NO_READER,
-        ),
-        (
-            config.learning.replan_gate_attempts != defaults.learning.replan_gate_attempts,
-            "learning.replan_gate_attempts",
-            NO_READER,
-        ),
-        (config.agent.data_llm.is_some(), "agent.data_llm", NO_READER),
         (
             routing.algorithm != default_routing.algorithm,
             "routing.algorithm",
@@ -232,10 +215,7 @@ mod tests {
         assert!(graph_engine_inert_settings(&RokoConfig::default()).is_empty());
 
         let mut config = RokoConfig::default();
-        config
-            .gates
-            .domain_gates
-            .insert("docs".to_string(), vec!["shell:true".to_string()]);
+        config.gates.max_rung = Some(2);
         config.runner.warm_pool_size = 4;
         // Wired keys are never reported.
         config.pipeline.focused.max_turns = 50;
@@ -255,7 +235,7 @@ mod tests {
             .iter()
             .map(|setting| setting.key)
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["gates.domain_gates", "runner.warm_pool_size"]);
+        assert_eq!(keys, ["gates.max_rung", "runner.warm_pool_size"]);
 
         // Focused mode and its impact settings scope authored Cargo tests
         // (gap-1426e4); structural mode is still legacy-only.

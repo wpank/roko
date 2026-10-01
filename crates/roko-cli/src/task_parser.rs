@@ -228,10 +228,6 @@ impl TaskDef {
     pub fn unused_hints(&self) -> Vec<&'static str> {
         let hints = &self.hints;
         [
-            ("context_weight", hints.context_weight.is_some()),
-            ("skills", hints.skills.is_some()),
-            ("plan_section", hints.plan_section.is_some()),
-            ("research_before_edit", hints.research_before_edit.is_some()),
             ("parallel_group", hints.parallel_group.is_some()),
             ("exclusive_files", hints.exclusive_files.is_some()),
             ("tags", hints.tags.is_some()),
@@ -684,7 +680,10 @@ impl TaskDef {
     }
 }
 
-/// Roles a plan task may declare in `role`.
+/// Roles a plan task may declare in `role`: those with a bundled safety
+/// contract, as a role without one gets no tools at dispatch. Plan
+/// validation, plan generation, PRD planning and `roko run --role` all read
+/// this one list (bug-db607b).
 pub const PLAN_TASK_ROLES: &[&str] = &[
     "implementer",
     "researcher",
@@ -693,6 +692,8 @@ pub const PLAN_TASK_ROLES: &[&str] = &[
     "reviewer",
     "quick-reviewer",
     "scribe",
+    "auditor",
+    "auto-fixer",
 ];
 
 /// What a task in `role` may do when it does not narrow its own tools.
@@ -3446,6 +3447,31 @@ depends_on = ["T2"]
         assert_eq!(role_capabilities("quick-reviewer"), caps(true, false, true));
     }
 
+    /// bug-db607b: an `auditor` task is a plan task like any other role with
+    /// a bundled contract, so schema validation accepts it.
+    #[test]
+    fn an_auditor_task_passes_schema_validation() {
+        let file = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "roles"
+
+[[task]]
+id = "T1"
+title = "Audit the parser"
+role = "auditor"
+"#,
+        )
+        .expect("parse");
+
+        let issues = file.validate_against_schema();
+
+        assert!(
+            !issues.iter().any(|issue| issue.contains("unknown role")),
+            "{issues:?}"
+        );
+    }
+
     #[test]
     fn every_plan_role_has_a_contract_that_agrees_on_write() {
         for role in PLAN_TASK_ROLES {
@@ -3511,6 +3537,9 @@ files = ["README.md"]
         let message = issues[0].to_string();
         assert!(message.contains("docs/design.md"), "{message}");
         assert!(message.contains("cannot write files"), "{message}");
-        assert!(message.contains("(implementer, scribe)"), "{message}");
+        assert!(
+            message.contains("(implementer, scribe, auto-fixer)"),
+            "{message}"
+        );
     }
 }

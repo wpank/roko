@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for tools/work.py: verify-command parsing and lint, picking non-conflicting work, claims, drift and sync.
+"""Tests for tools/work.py: verify-command parsing and lint, picking non-conflicting work, claims, drift, sync and the
+event log.
 
 Run: python3 tools/test_work.py
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -105,6 +107,24 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(errs, [])
         return items
 
+    def run_work(self, *args):
+        """Run tools/work.py in the repo as a separate process, the way the skills do."""
+        env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
+        return subprocess.run([sys.executable, str(Path(work.__file__)), *args], cwd=self.root,
+                              env={**env, "WORK_REPO": str(self.root)}, check=True, capture_output=True, text=True)
+
+    def events(self, session):
+        f = self.root / "work" / "telemetry" / "events" / f"{session}.jsonl"
+        return [json.loads(ln) for ln in f.read_text().splitlines()]
+
+    def add_worktree(self, branch):
+        """A linked worktree of the repo on a new branch, removed after the test."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "wt"
+        self.git("worktree", "add", "-q", "-b", branch, str(path))
+        return path
+
 
 class TestPicking(RepoTest):
     def test_next_skips_items_that_touch_the_same_files(self):
@@ -163,6 +183,42 @@ class TestDriftAndSync(RepoTest):
         it = {i["id"]: i for i in self.items()}["gap-cccccc"]
         work.close_item(it, evidence="done in test", commit="abc1234")
         self.assertFalse((d / "gap-cccccc.json").exists())
+
+
+class TestEvents(RepoTest):
+    def test_claim_and_release_append_events_to_the_session_file(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        self.run_work("release", "gap-cccccc", "--session", "s1")
+        rows = self.events("s1")
+        self.assertEqual([r["event"] for r in rows], ["claim", "release"])
+        for r in rows:
+            self.assertEqual(work.check_event(r), [])
+            self.assertEqual((r["item"], r["session"], r["branch"], r["source"]), ("gap-cccccc", "s1", "work/gap-cccccc", "live"))
+        # The release is logged while its claim is still live, and then the claim is gone.
+        self.assertEqual([r["concurrency"] for r in rows], [1, 1])
+        self.assertFalse((work.claims_dir() / "gap-cccccc.json").exists())
+
+    def test_the_session_defaults_to_the_claimant(self):
+        self.run_work("claim", "gap-cccccc", "--by", "Batch Orchestrator")
+        self.run_work("release", "gap-cccccc")
+        self.assertEqual([r["event"] for r in self.events("batch-orchestrator")], ["claim", "release"])
+
+    def test_event_merged_appends_a_row_with_the_merge_sha(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        sha = self.git("rev-parse", "HEAD").strip()
+        self.run_work("event", "merged", "gap-cccccc", "--merge-sha", sha, "--conflicts", "2", "--session", "s1")
+        self.run_work("event", "post-verify", "gap-cccccc", "--rc", "0", "--session", "s1")
+        merged, verify = self.events("s1")[1:]
+        for r in (merged, verify):
+            self.assertEqual(work.check_event(r), [])
+        self.assertEqual((merged["event"], merged["conflicts"], merged["branch"]), ("merged", 2, "work/gap-cccccc"))
+        self.assertTrue(sha.startswith(merged["merge_sha"]))
+        self.assertEqual((verify["event"], verify["rc"]), ("post-verify", 0))
+
+    def test_a_worker_in_a_linked_worktree_logs_no_events(self):
+        work.set_repo(self.add_worktree("work/gap-cccccc"))
+        self.assertIsNone(work.log_event("claim", "gap-cccccc", session="s1"))
+        self.assertFalse((self.root / "work" / "telemetry").exists())
 
 
 if __name__ == "__main__":

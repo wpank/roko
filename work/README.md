@@ -94,6 +94,8 @@ work/
   DECISIONS.md              GENERATED — open decisions and questions
   TRIAGE.md                 GENERATED — imported items not yet verified against current code
   history/                  frozen records (old GAPS.md sections, migration summary)
+  telemetry/                the development record: events, harvest, metric definitions (not for workers;
+                            see telemetry/README.md)
 .roko/work-local/items/     same format, untracked: private/local items (e.g. application-specific work)
 .roko/work-claims/          untracked: who is working on what right now
 ```

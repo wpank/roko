@@ -11,9 +11,14 @@ Usage:
 
 Picking up work (work/README.md, "For agents"):
   work.py next [--n 4] [--goal G] [--max-size M] [--json]   # top unclaimed items that don't touch the same files
-  work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH]   # shared claim in the main tree's .roko/work-claims/
-  work.py release <id>…                      # drop a claim (the item stays open)
+  work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH] [--session S]   # shared claim in the main tree's .roko/work-claims/
+  work.py release <id>… [--session S]        # drop a claim (the item stays open)
   work.py claims                             # list live and stale claims
+
+The development record (work/telemetry/README.md; not for workers): claim and release, run in the main checkout, append
+an event to work/telemetry/events/<session>.jsonl (session: --session, else $WORK_SESSION, else --by). The orchestrator
+logs what happens after the work:
+  work.py event merged|post-verify|escape|intervention <id> [--merge-sha REV] [--conflicts N] [--fixups N] [--rc N] [--caused-by ID]
 
 Keeping the graph current (work/README.md, "Keeping the graph current"):
   work.py close <id> --evidence "…" [--commit REV] [--run-id RUN] [--status done|wontfix|superseded] [--duplicate-of ID]
@@ -626,6 +631,7 @@ def cmd_claim(a):
     d = claims_dir()
     d.mkdir(parents=True, exist_ok=True)
     live = {k for k, c in load_claims().items() if not c["stale"]}
+    session = session_name(a.session, a.by)
     for iid in a.ids:
         it = idx.get(iid)
         if it is None or it.get("status") not in OPEN:
@@ -634,7 +640,7 @@ def cmd_claim(a):
             c = load_claims()[iid]
             sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
         rec = {"id": iid, "by": a.by, "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-               "branch": a.branch, "worktree": a.worktree, "title": it["title"]}
+               "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session}
         f = d / f"{iid}.json"
         try:
             fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
@@ -642,13 +648,19 @@ def cmd_claim(a):
             sys.exit(f"{iid}: claimed by someone else a moment ago")
         with os.fdopen(fd, "w") as fh:
             fh.write(json.dumps(rec, indent=1) + "\n")
+        log_event("claim", iid, session=session, branch=a.branch, by=a.by, force=True if a.force else None)
         print(f"claimed {iid} for {a.by}")
 
 
 def cmd_release(a):
+    claims = load_claims()
     for iid in a.ids:
         f = claims_dir() / f"{iid}.json"
         if f.exists():
+            c = claims.get(iid) or {}
+            # Logged before the claim goes: the event keeps what the claim knew.
+            log_event("release", iid, session=session_name(a.session, c.get("session"), c.get("by")),
+                      branch=c.get("branch"), by=c.get("by"))
             f.unlink()
             print(f"released {iid}")
         else:
@@ -664,6 +676,107 @@ def cmd_claims(a):
     for iid, c in sorted(claims.items(), key=lambda kv: kv[1]["at"]):
         where = " · ".join(x for x in (c.get("branch"), c.get("worktree")) if x)
         print(f"{'STALE ' if c['stale'] else ''}{iid} by {c.get('by')} {c['age_h']}h ago{(' · ' + where) if where else ''} — {c.get('title', '')}")
+
+
+# ---------------------------------------------------------------- event log (work/telemetry/; not for workers)
+#
+# One append-only file per session, work/telemetry/events/<session>.jsonl in the main checkout, one
+# roko.work_event/1 object per line. Only that session writes its file, so sessions never conflict. A worker in a
+# linked worktree logs nothing (W12: workers never write events or see metrics), and no view reads the log.
+
+EVENT_SCHEMA = "roko.work_event/1"
+EVENTS = ("claim", "release", "closed", "merged", "post-verify", "escape", "intervention", "lane-start")
+EVENT_SOURCES = ("live", "harvest", "reconciled", "backfill")
+EVENT_FIELDS = ("schema", "ts", "event", "item", "executor", "via", "session", "branch", "concurrency", "source")
+TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def utc_ts(when: dt.datetime | None = None) -> str:
+    """An ISO 8601 UTC timestamp to the second, such as 2026-09-30T08:15:00Z."""
+    when = when or dt.datetime.now(dt.timezone.utc)
+    return when.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def events_dir() -> Path:
+    return main_root() / "work" / "telemetry" / "events"
+
+
+def in_main_checkout() -> bool:
+    return REPO.resolve() == main_root().resolve()
+
+
+def session_name(explicit=None, *fallbacks) -> str:
+    """The session a command logs under: --session, else $WORK_SESSION, else the first fallback given (such as
+    --by), as a slug. It names the session's events file."""
+    raw = explicit or os.environ.get("WORK_SESSION") or next((f for f in fallbacks if f), None) or "unnamed"
+    return re.sub(r"[^a-z0-9]+", "-", str(raw).lower()).strip("-")[:60] or "unnamed"
+
+
+def event_row(event: str, item, *, session: str, ts=None, executor=None, via=None, branch=None, concurrency=None,
+              source="live", **fields) -> dict:
+    """One roko.work_event/1 row: the common fields, always present (null when unknown), then the event's own."""
+    row = {"schema": EVENT_SCHEMA, "ts": ts or utc_ts(), "event": event, "item": item, "executor": executor,
+           "via": via, "session": session, "branch": branch, "concurrency": concurrency, "source": source}
+    row.update({k: v for k, v in fields.items() if v is not None})
+    return row
+
+
+def check_event(row) -> list[str]:
+    """Why `row` is not a valid roko.work_event/1 event; empty when it is."""
+    errs = [f"missing {k}" for k in EVENT_FIELDS if k not in row]
+    if row.get("schema") != EVENT_SCHEMA:
+        errs.append(f"schema is not {EVENT_SCHEMA}")
+    if row.get("event") not in EVENTS:
+        errs.append(f"unknown event {row.get('event')!r}")
+    if row.get("source") not in EVENT_SOURCES:
+        errs.append(f"unknown source {row.get('source')!r}")
+    if not TS_RE.match(str(row.get("ts"))):
+        errs.append(f"ts {row.get('ts')!r} is not a UTC timestamp")
+    if row.get("item") is not None and not ID_RE.match(str(row["item"])):
+        errs.append(f"bad item {row.get('item')!r}")
+    if row.get("item") is None and row.get("event") != "lane-start":
+        errs.append("no item")
+    if not (isinstance(row.get("session"), str) and row["session"]):
+        errs.append("no session")
+    c = row.get("concurrency")
+    if c is not None and not (isinstance(c, int) and not isinstance(c, bool) and c >= 0):
+        errs.append(f"bad concurrency {c!r}")
+    return errs
+
+
+def log_event(event: str, item, **kw) -> dict | None:
+    """Append one event to the session's file in the main checkout. Records how many claims are live as
+    `concurrency`. Returns the row, or None in a linked worktree, where nothing is logged."""
+    if not in_main_checkout():
+        return None
+    live = sum(1 for c in load_claims().values() if not c["stale"])
+    row = event_row(event, item, concurrency=live, **kw)
+    d = events_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / f"{row['session']}.jsonl", "a") as fh:
+        fh.write(json.dumps(row) + "\n")
+    return row
+
+
+def cmd_event(a):
+    """Log what happened to an item after its work: its merge, the post-merge verify, an escape, an intervention."""
+    if not ID_RE.match(a.id):
+        sys.exit(f"{a.id}: not an item id")
+    if a.caused_by and not ID_RE.match(a.caused_by):
+        sys.exit(f"{a.caused_by}: not an item id")
+    if a.kind == "merged" and not a.merge_sha:
+        sys.exit("event merged needs --merge-sha")
+    if a.kind == "post-verify" and a.rc is None:
+        sys.exit("event post-verify needs --rc")
+    c = load_claims().get(a.id) or {}
+    fields = {"merged": {"merge_sha": resolve_rev(a.merge_sha), "conflicts": a.conflicts, "fixups": a.fixups},
+              "post-verify": {"rc": a.rc}, "escape": {"caused_by": a.caused_by}, "intervention": {}}[a.kind]
+    session = session_name(a.session, a.by, c.get("session"), c.get("by"))
+    row = log_event(a.kind, a.id, session=session, branch=a.branch or c.get("branch"), **fields)
+    if row is None:
+        print("not logged: a worker in a linked worktree logs no events")
+    else:
+        print(f"logged {a.kind} {a.id} to work/telemetry/events/{session}.jsonl")
 
 
 # ---------------------------------------------------------------- views
@@ -1342,15 +1455,22 @@ def main():
     p.add_argument("--json", action="store_true")
     p = sp.add_parser("claim"); p.add_argument("ids", nargs="+"); p.add_argument("--by", required=True); p.add_argument("--branch")
     p.add_argument("--worktree"); p.add_argument("--force", action="store_true")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")
     p = sp.add_parser("release"); p.add_argument("ids", nargs="+")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else the claim's session)")
     sp.add_parser("claims")
+    p = sp.add_parser("event", help="log a merge, post-merge verify, escape or intervention (main checkout only)")
+    p.add_argument("kind", choices=["merged", "post-verify", "escape", "intervention"]); p.add_argument("id")
+    p.add_argument("--merge-sha"); p.add_argument("--conflicts", type=int); p.add_argument("--fixups", type=int)
+    p.add_argument("--rc", type=int); p.add_argument("--caused-by"); p.add_argument("--branch")
+    p.add_argument("--session"); p.add_argument("--by")
     p = sp.add_parser("check"); p.add_argument("--strict", action="store_true", help="treat verify-command lint warnings as errors")
     p.add_argument("--lint", action="store_true", help="list verify-command lint warnings")
     sp.add_parser("render")
     a = ap.parse_args()
     simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
               "touched": cmd_touched, "verify": cmd_verify, "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
-              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims}
+              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event}
     if a.cmd == "id":
         print(make_id(a.kind, a.title, a.created, a.source)); return
     if a.cmd in simple:

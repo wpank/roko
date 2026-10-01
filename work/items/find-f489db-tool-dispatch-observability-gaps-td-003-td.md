@@ -9,9 +9,9 @@ size = "M"
 goal = "visibility"
 subsystem = ["roko-agent/tool_loop"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "df746d76c"
 source = "tmp/backlog/archive/389-tool-dispatch-observability-gaps.md#389 — Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005)"
 discovered_from = "audit:tmp/backlog/archive/389-tool-dispatch-observability-gaps.md#389 — Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs:868", "crates/roko-cli/src/dispatch/factory.rs::SharedAgentFactory::with_tool_audit", "crates/roko-cli/src/dispatch_v2.rs::AgentDispatcherV2::with_tool_audit", "crates/roko-fs/src/tool_audit.rs::ScrubAuditAdapter", "crates/roko-fs/src/observability.rs::FsObservabilitySinks", "crates/roko-agent/src/tool_loop/context_factory.rs::ToolExecutionContextFactory::new", "crates/roko-agent/src/dispatcher/mod.rs::emit_terminal_audit", "crates/roko-agent/src/provider/mod.rs::AgentOptions"]
@@ -102,6 +102,33 @@ Expected: every tool call dispatched by roko's own tool loop in a plan run produ
 - TD-006 (result/call misattribution in turn traces) belongs to `bug-7debad`, not here.
 - Touches `plan_runner.rs`, `dispatch_v2.rs`, `provider/mod.rs` and the provider tool-loop builders. Moderate conflict risk with other Graph-runner or provider items, so avoid running it in parallel with items anchored in `plan_runner.rs` or `provider/*`.
 - Size M.
+
+- Implemented on `work/find-f489db` at `df746d76c`; cargo verification deferred to the batch check.
+- Premise re-checked at a962bcab9; it still held. Two further gaps appeared:
+  - Every production `ToolContext` had an empty correlation, because nothing called `ToolLoopAgent::with_correlation`.
+  - Wiring `JsonlTraceSink` as it was would have leaked a file descriptor per tool call: the dispatcher appended to a
+    fresh trace id per call and never finished it, and the sink keeps an open writer per unfinished trace.
+- How each plan step was done:
+  - TD-003. `attach_tool_observability` (`plan_runner.rs`) attaches the audit and the sinks to the run's factory.
+    Opening the log can fail; the run then warns and goes on. The audit scrubs with the process's secret scrubber
+    (`roko_core::obs::secret_scrubber`), else the built-in patterns. `roko run` goes through the same plan runner.
+    Not wired: `dispatch/mod.rs::spawn_agent_result_bridge`, and serve paths that do not run a Graph plan.
+  - Correlation. Each `AuditLine` gains an optional `correlation`: run, task, attempt key and agent, each cut to
+    256 bytes. `AgentDispatcherV2` derives it from the request's attempt key and passes it as
+    `AgentOptions.tool_correlation`.
+  - TD-005. The sinks go through `SharedAgentFactory` and `AgentDispatcherV2` (`with_observability_sinks`) into
+    `AgentOptions` (`trace_sink`, `metrics_sink`). Every provider tool loop applies them, Perplexity included.
+  - Placeholders. `HandlerFinished.exit_ms` is now the call's wall-clock time: safety checks, handler and screening.
+    The timeout stays in the audit details. `ToolMetrics` holds quality rates, not durations, so each call records a
+    one-call sample (known tool, schema check, completion), and duration and success go into the closed trace's
+    outcome. Model, role and format come from the dispatcher's `ToolCallIdentity`
+    (`build_provider_tool_dispatcher`): the model slug, the contract's role (default implementer, since `AgentRole`
+    has no unknown) and the translator's format.
+  - Flush. Not needed: each trace is finished per call, which flushes and closes it.
+- Tests: `graph_run_writes_tool_audit_admit_and_result` (roko-cli lib; a real Graph task dispatch against the
+  OpenAI-compatible mock) and `terminal_observation_records_elapsed_time_and_metrics` (roko-agent dispatcher).
+- `ScrubAuditAdapter::record_admit`/`record_result` now take the correlation. Their callers in roko-fs's tests and
+  `tests/tool_audit_evidence.rs` pass an empty one. Four full `AgentOptions` literals gained the three new fields.
 
 ## Original notes
 

@@ -182,7 +182,7 @@ const MAX_FAILURE_REASON_BYTES: usize = 2_048;
 /// recorded on its episode. A reason within [`MAX_FAILURE_REASON_BYTES`]
 /// keeps every line, so a verify summary keeps the step that failed; a
 /// longer one keeps its first lines and its tail around an omission marker.
-fn attempt_failure_reason(class: &str, detail: &str) -> String {
+pub(super) fn attempt_failure_reason(class: &str, detail: &str) -> String {
     let detail = detail.trim();
     let detail = if detail.is_empty() {
         "no detail"

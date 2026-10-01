@@ -1,5 +1,5 @@
 //! Spend accounting at the Graph dispatch boundary: the per-plan budget ledger
-//! and its reservations, and the per-task spend ledger.
+//! and its reservations, the per-task spend ledger, and the daily ceiling.
 
 use super::*;
 
@@ -334,17 +334,39 @@ pub(super) fn task_budget_ceiling_usd(
 }
 
 /// Provider spend per task (`"{plan_id}/{task_id}"`), summed across every
-/// attempt of this run, for per-task ceiling admission.
+/// attempt of this run, for per-task ceiling admission, and the process's
+/// spend across all tasks, for the daily ceiling.
 ///
 /// Unlike the plan ledger it is not checkpointed: a resumed run starts each
 /// task's count at zero.
 #[derive(Debug, Default)]
 pub(super) struct GraphTaskSpendLedger {
     tasks: parking_lot::Mutex<HashMap<String, u64>>,
+    /// Calls whose cost was never priced: they used tokens at $0.
+    unpriced_calls: std::sync::atomic::AtomicUsize,
+}
+
+/// What this process has spent on provider calls so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ProcessSpend {
+    micro_usd: u64,
+    /// Calls whose cost was never priced.
+    unpriced_calls: usize,
 }
 
 impl GraphTaskSpendLedger {
-    pub(super) fn record(&self, task_key: &str, cost_usd: f64) {
+    /// Record one provider call of `task_key`, at the cost its usage
+    /// reports. A call that used tokens at $0 was never priced: its cost
+    /// is unknown, not zero ([`roko_core::Usage::has_known_cost`]).
+    pub(super) fn record(&self, task_key: &str, usage: &roko_core::Usage) {
+        if !usage.has_known_cost() {
+            self.unpriced_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.record_usd(task_key, f64::from(usage.cost_usd));
+    }
+
+    fn record_usd(&self, task_key: &str, cost_usd: f64) {
         let cost_micro_usd = usd_to_micro_usd(cost_usd);
         if cost_micro_usd == 0 {
             return;
@@ -370,6 +392,266 @@ impl GraphTaskSpendLedger {
             });
         }
         Ok(())
+    }
+
+    /// Everything this process has recorded, across all tasks.
+    pub(super) fn process_spend(&self) -> ProcessSpend {
+        ProcessSpend {
+            micro_usd: self
+                .tasks
+                .lock()
+                .values()
+                .fold(0, |total, spent| total.saturating_add(*spent)),
+            unpriced_calls: self
+                .unpriced_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// `budget.max_daily_usd` at the Graph dispatch boundary (bug-ae28ac).
+///
+/// Today's spend (the UTC calendar day, across every run and command that
+/// records to `.roko/learn/costs.jsonl`) is what that log held when this
+/// process read it for today, plus what this process has recorded since. The
+/// log is read once a day: when a run starts
+/// ([`GraphTaskDispatcher::prime_daily_budget`]), and again by the first
+/// dispatch after midnight UTC, so spend that other processes record
+/// meanwhile is not seen. Calls count once they settle, so the day can
+/// overshoot its ceiling by the calls running when it is reached.
+///
+/// A call whose cost was never priced makes the day's spend unknown, and an
+/// unknown spend counts as over the ceiling: a money control fails closed.
+#[derive(Debug, Default)]
+pub(super) struct GraphDailyBudget {
+    /// The day the log was last read for, and what it held then.
+    baseline: parking_lot::Mutex<Option<DailyBaseline>>,
+}
+
+/// What the costs log held for `day`, and this process's spend just before
+/// it was read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DailyBaseline {
+    day: chrono::NaiveDate,
+    logged: roko_learn::costs_log::DaySpend,
+    process_at_read: ProcessSpend,
+}
+
+/// `budget.max_daily_usd`, read as a ceiling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DailyCeiling {
+    /// `0.0`, the documented default.
+    Unlimited,
+    MicroUsd(u64),
+    /// Negative, NaN or infinite: no dispatch can be shown to fit under it.
+    Malformed(f32),
+}
+
+impl DailyCeiling {
+    fn from_config(max_daily_usd: f32) -> Self {
+        if max_daily_usd == 0.0 {
+            Self::Unlimited
+        } else if max_daily_usd.is_finite() && max_daily_usd > 0.0 {
+            Self::MicroUsd(usd_to_micro_usd(f64::from(max_daily_usd)).max(1))
+        } else {
+            Self::Malformed(max_daily_usd)
+        }
+    }
+}
+
+/// Why `budget.max_daily_usd` allows no further provider call today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DailyStop {
+    /// Today's spend reached the ceiling.
+    Spent {
+        spent_micro_usd: u64,
+        ceiling_micro_usd: u64,
+    },
+    /// Today's spend includes calls whose cost was never priced.
+    Unpriced {
+        calls: usize,
+        ceiling_micro_usd: u64,
+    },
+    /// The ceiling is negative, NaN or infinite; the value's bits.
+    Malformed(u32),
+}
+
+impl DailyStop {
+    fn error(self) -> RokoError {
+        match self {
+            Self::Spent {
+                spent_micro_usd,
+                ceiling_micro_usd,
+            } => RokoError::BudgetExceeded {
+                dimension: "daily spend in micro-USD (budget.max_daily_usd)",
+                used: micro_usd_to_usize(spent_micro_usd),
+                limit: micro_usd_to_usize(ceiling_micro_usd),
+            },
+            Self::Unpriced { .. } | Self::Malformed(_) => RokoError::Config(self.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for DailyStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Spent {
+                spent_micro_usd,
+                ceiling_micro_usd,
+            } => write!(
+                f,
+                "daily budget exhausted: ${:.4} spent today (UTC) of budget.max_daily_usd = ${:.4}",
+                micro_usd_to_usd(spent_micro_usd),
+                micro_usd_to_usd(ceiling_micro_usd)
+            ),
+            Self::Unpriced {
+                calls,
+                ceiling_micro_usd,
+            } => write!(
+                f,
+                "budget.max_daily_usd = ${:.4} cannot be enforced: today's spend (UTC) includes \
+                 {calls} provider call(s) whose cost was never priced; give their models a price \
+                 in [models], or run with --budget-override",
+                micro_usd_to_usd(ceiling_micro_usd)
+            ),
+            Self::Malformed(bits) => write!(
+                f,
+                "budget.max_daily_usd = {} is not a ceiling: set a positive amount, or 0 for \
+                 unlimited",
+                f32::from_bits(bits)
+            ),
+        }
+    }
+}
+
+/// Whether today's spend, `baseline` plus what the process recorded since
+/// (`now`), allows no further call under `ceiling`.
+fn daily_stop(
+    ceiling: DailyCeiling,
+    baseline: DailyBaseline,
+    now: ProcessSpend,
+) -> Option<DailyStop> {
+    let ceiling_micro_usd = match ceiling {
+        DailyCeiling::Unlimited => return None,
+        DailyCeiling::Malformed(value) => return Some(DailyStop::Malformed(value.to_bits())),
+        DailyCeiling::MicroUsd(ceiling) => ceiling,
+    };
+    let at_read = baseline.process_at_read;
+    let unpriced = baseline
+        .logged
+        .unpriced_calls
+        .saturating_add(now.unpriced_calls.saturating_sub(at_read.unpriced_calls));
+    if unpriced > 0 {
+        return Some(DailyStop::Unpriced {
+            calls: unpriced,
+            ceiling_micro_usd,
+        });
+    }
+    let spent_micro_usd = usd_to_micro_usd(baseline.logged.cost_usd)
+        .saturating_add(now.micro_usd.saturating_sub(at_read.micro_usd));
+    (spent_micro_usd >= ceiling_micro_usd).then_some(DailyStop::Spent {
+        spent_micro_usd,
+        ceiling_micro_usd,
+    })
+}
+
+impl GraphTaskDispatcher {
+    /// Read today's spend so far from the costs log, so that a run whose day
+    /// is already spent starts no task ([`Self::plan_dispatch_stop`]).
+    /// Dispatches read it themselves otherwise.
+    pub async fn prime_daily_budget(&self) {
+        if DailyCeiling::from_config(self.config.budget.max_daily_usd) != DailyCeiling::Unlimited {
+            self.daily_baseline().await;
+        }
+    }
+
+    /// Refuse a provider dispatch once today's spend reached
+    /// `budget.max_daily_usd`, mirroring the plan ceiling: an explicit
+    /// `--budget` override only warns, and `--no-budget` disables the check.
+    pub(super) async fn admit_daily_budget(&self, spec: &TaskExecutionSpec) -> Result<()> {
+        let policy = self.budget_policy;
+        if policy.continue_on_exhaustion && policy.ceiling_micro_usd.is_none() {
+            return Ok(());
+        }
+        let ceiling = DailyCeiling::from_config(self.config.budget.max_daily_usd);
+        if ceiling == DailyCeiling::Unlimited {
+            return Ok(());
+        }
+        let baseline = self.daily_baseline().await;
+        let Some(stop) = daily_stop(ceiling, baseline, self.task_spend.process_spend()) else {
+            return Ok(());
+        };
+        if policy.continue_on_exhaustion {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task = %spec.title,
+                "{stop}; continuing under the explicit --budget override"
+            );
+            return Ok(());
+        }
+        tracing::warn!(
+            plan_id = %spec.plan_id,
+            task = %spec.title,
+            "{stop}; refusing the provider dispatch"
+        );
+        Err(stop.error())
+    }
+
+    /// Why no further task may start today under `budget.max_daily_usd`, as
+    /// far as the last read of the costs log for today tells: before that
+    /// read, or once the day is over, the next dispatch decides.
+    pub(super) fn daily_dispatch_stop(&self) -> Option<String> {
+        let policy = self.budget_policy;
+        if policy.continue_on_exhaustion {
+            return None;
+        }
+        let ceiling = DailyCeiling::from_config(self.config.budget.max_daily_usd);
+        let today = chrono::Utc::now().date_naive();
+        let baseline =
+            (*self.daily_budget.baseline.lock()).filter(|baseline| baseline.day == today);
+        daily_stop(ceiling, baseline?, self.task_spend.process_spend()).map(|stop| stop.to_string())
+    }
+
+    /// Today's baseline: the one read for today, or a fresh read of the
+    /// costs log. An unreadable log counts as no spend, with a warning.
+    async fn daily_baseline(&self) -> DailyBaseline {
+        let today = chrono::Utc::now().date_naive();
+        let cached = *self.daily_budget.baseline.lock();
+        if let Some(baseline) = cached
+            && baseline.day == today
+        {
+            return baseline;
+        }
+        // Taken before the read: a call that settles meanwhile may count
+        // twice, never not at all.
+        let process_at_read = self.task_spend.process_spend();
+        let logged = match &self.feedback.costs_path {
+            Some(path) => roko_learn::costs_log::CostsLog::at(path)
+                .spend_on(today)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "cannot read today's spend for budget.max_daily_usd; counting none"
+                    );
+                    roko_learn::costs_log::DaySpend::default()
+                }),
+            None => roko_learn::costs_log::DaySpend::default(),
+        };
+        let read = DailyBaseline {
+            day: today,
+            logged,
+            process_at_read,
+        };
+        let mut baseline = self.daily_budget.baseline.lock();
+        match *baseline {
+            Some(stored) if stored.day == today => stored,
+            _ => {
+                *baseline = Some(read);
+                read
+            }
+        }
     }
 }
 
@@ -401,8 +683,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, batch_ctx, make_batch_dispatcher,
-        make_scripted_batch_dispatcher, make_spec, make_task_def,
+        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, VERIFY_PROVIDER, batch_ctx,
+        make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec, make_task_def,
     };
 
     #[test]
@@ -584,9 +866,9 @@ mod tests {
     #[test]
     fn task_spend_ledger_blocks_at_the_ceiling_per_task() {
         let ledger = GraphTaskSpendLedger::default();
-        ledger.record("plan/T1", 0.30);
+        ledger.record_usd("plan/T1", 0.30);
         assert!(ledger.admit("plan/T1", 0.50).is_ok());
-        ledger.record("plan/T1", 0.20);
+        ledger.record_usd("plan/T1", 0.20);
         let error = ledger
             .admit("plan/T1", 0.50)
             .expect_err("the ceiling has been reached");
@@ -724,5 +1006,315 @@ mod tests {
             return;
         }
         panic!("no provider streamed its message before its time ran out");
+    }
+
+    /// gap-288e38: a timed-out attempt's `costs.jsonl` row says its cost was
+    /// priced from the usage it streamed (`estimated`), `CostRecord` reads
+    /// that back, and the log's totals show it apart. A row whose usage the
+    /// provider reported says so (`cli_usage` for the Claude CLI).
+    #[tokio::test]
+    async fn a_timed_out_attempt_cost_record_is_marked_estimated() {
+        let temp = tempdir().expect("tempdir");
+        let costs_path = temp.path().join("costs.jsonl");
+        let (dispatcher, task) =
+            make_scripted_batch_dispatcher(&temp, VERIFY_PROVIDER, |_| {}).await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            costs_path: Some(costs_path.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("the attempt completes");
+        let reported = first_cost_record(&costs_path).await;
+        assert_eq!(reported["cost_source"], "cli_usage", "{reported}");
+
+        for timeout_secs in TIMEOUT_SECS_UNDER_LOAD {
+            let temp = tempdir().expect("tempdir");
+            let costs_path = temp.path().join("costs.jsonl");
+            let (dispatcher, mut task) =
+                make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {})
+                    .await;
+            let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+                costs_path: Some(costs_path.clone()),
+                ..GraphFeedbackContext::default()
+            });
+            task.timeout_secs = timeout_secs;
+            let spec = make_spec(&task);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .expect_err("the attempt runs out of time");
+            if dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd <= 0.0 {
+                // The provider ran out of time before its message arrived.
+                continue;
+            }
+
+            let row = first_cost_record(&costs_path).await;
+            assert_eq!(row["cost_source"], "estimated", "{row}");
+            let record: roko_learn::costs_db::CostRecord =
+                serde_json::from_value(row).expect("the row is a CostRecord");
+            assert_eq!(
+                record.cost_source,
+                roko_learn::telemetry::CostSource::Estimated
+            );
+            let estimated = roko_learn::costs_log::CostsLog::at(&costs_path)
+                .estimated_cost()
+                .await
+                .expect("read the costs");
+            assert!(estimated > 0.0 && (estimated - record.cost_usd).abs() < 1e-9);
+            return;
+        }
+        panic!("no provider streamed its message before its time ran out");
+    }
+
+    // ── budget.max_daily_usd (bug-ae28ac) ───────────────────────────────
+
+    /// A call an earlier run recorded at `timestamp`.
+    fn earlier_call(timestamp: chrono::DateTime<chrono::Utc>, cost_usd: f64) -> CostRecord {
+        CostRecord {
+            timestamp: timestamp.to_rfc3339(),
+            model: "claude-sonnet-4-6".to_string(),
+            provider: "claude_cli".to_string(),
+            role: "implementer".to_string(),
+            plan_id: "earlier-plan".to_string(),
+            task_id: "T1".to_string(),
+            complexity_band: "focused".to_string(),
+            input_tokens: 1_000,
+            output_tokens: 200,
+            cached_tokens: 0,
+            cost_usd,
+            duration_ms: 1_000,
+            success: true,
+            session_id: "earlier-run".to_string(),
+            cost_source: roko_learn::telemetry::CostSource::CliUsage,
+        }
+    }
+
+    /// A batch dispatcher whose workspace costs log holds `earlier` calls,
+    /// under `budget.max_daily_usd = max_daily_usd`. Each call costs $0.10,
+    /// or, unless `priced`, uses tokens at $0 of a model with no price.
+    async fn daily_dispatcher(
+        temp: &tempfile::TempDir,
+        max_daily_usd: f32,
+        earlier: &[CostRecord],
+        priced: bool,
+    ) -> (GraphTaskDispatcher, TaskDef) {
+        let costs_path = temp.path().join(".roko/learn/costs.jsonl");
+        std::fs::create_dir_all(costs_path.parent().expect("learn dir")).expect("learn dir");
+        let lines = earlier
+            .iter()
+            .map(|record| serde_json::to_string(record).expect("cost record") + "\n")
+            .collect::<String>();
+        std::fs::write(&costs_path, lines).expect("write the costs log");
+        let cost_usd = if priced { 0.10 } else { 0.0 };
+        let (dispatcher, task) = make_batch_dispatcher(temp, cost_usd, |config| {
+            config.budget.max_daily_usd = max_daily_usd;
+            if !priced && let Some(profile) = config.models.get_mut("batch-model") {
+                profile.slug = "unpriced-test-model".to_string();
+            }
+        })
+        .await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            costs_path: Some(costs_path),
+            ..GraphFeedbackContext::default()
+        });
+        (dispatcher, task)
+    }
+
+    /// Whether the fake provider was launched.
+    fn provider_ran(temp: &tempfile::TempDir) -> bool {
+        temp.path().join("provider-args").exists()
+    }
+
+    /// Once today's spend before the run reaches `budget.max_daily_usd`,
+    /// the run starts no task, and a dispatch is refused before any provider
+    /// call. Yesterday's spend does not count.
+    #[tokio::test]
+    async fn graph_daily_budget_blocks_dispatch() {
+        let temp = tempdir().expect("tempdir");
+        let now = chrono::Utc::now();
+        let earlier = [
+            earlier_call(now - chrono::Duration::days(1), 5.0),
+            earlier_call(now, 0.60),
+            earlier_call(now, 0.40),
+        ];
+        let (dispatcher, task) = daily_dispatcher(&temp, 1.0, &earlier, true).await;
+        let spec = make_spec(&task);
+
+        dispatcher.prime_daily_budget().await;
+        let stop = dispatcher
+            .plan_dispatch_stop(&spec.plan_id)
+            .expect("the day is spent");
+        assert!(
+            stop.starts_with("daily budget exhausted: $1.0000 spent today"),
+            "{stop}"
+        );
+        assert!(stop.contains("budget.max_daily_usd"), "{stop}");
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the day is spent");
+        assert!(
+            matches!(
+                error,
+                RokoError::BudgetExceeded {
+                    dimension,
+                    used: 1_000_000,
+                    limit: 1_000_000,
+                } if dimension.contains("budget.max_daily_usd")
+            ),
+            "got {error:?}"
+        );
+        assert!(!provider_ran(&temp), "the provider was never called");
+    }
+
+    /// This process's own calls count toward the day: once they take it to
+    /// the ceiling, the next dispatch is refused.
+    #[tokio::test]
+    async fn the_runs_own_spend_counts_toward_the_daily_ceiling() {
+        let temp = tempdir().expect("tempdir");
+        let earlier = [earlier_call(chrono::Utc::now(), 0.15)];
+        let (dispatcher, task) = daily_dispatcher(&temp, 0.20, &earlier, true).await;
+        let spec = make_spec(&task);
+        dispatcher.prime_daily_budget().await;
+        assert_eq!(dispatcher.plan_dispatch_stop(&spec.plan_id), None);
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("$0.15 of $0.20 spent: the call is admitted");
+        assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
+        let mut other = task.clone();
+        other.id = "T-OTHER".to_string();
+        let error = dispatcher
+            .dispatch(&make_spec(&other), Vec::new(), &batch_ctx())
+            .await
+            .expect_err("$0.25 of $0.20 spent");
+        assert!(
+            matches!(
+                error,
+                RokoError::BudgetExceeded { dimension, used, .. }
+                    if dimension.contains("budget.max_daily_usd") && used >= 250_000
+            ),
+            "got {error:?}"
+        );
+    }
+
+    /// `--budget-override` only warns about a spent day, `--no-budget` turns
+    /// the check off, and a ceiling of `0.0` is unlimited.
+    #[tokio::test]
+    async fn overrides_and_a_zero_ceiling_let_a_spent_day_dispatch() {
+        let earlier = [earlier_call(chrono::Utc::now(), 3.0)];
+        for (label, max_daily_usd, override_ceiling) in [
+            ("--budget-override", 1.0, Some(10.0)),
+            ("--no-budget", 1.0, Some(0.0)),
+            ("max_daily_usd = 0", 0.0, None),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, task) = daily_dispatcher(&temp, max_daily_usd, &earlier, true).await;
+            let dispatcher = match override_ceiling {
+                Some(ceiling) => dispatcher.with_plan_budget(ceiling, 0.0, true),
+                None => dispatcher,
+            };
+            let spec = make_spec(&task);
+            dispatcher.prime_daily_budget().await;
+            assert_eq!(
+                dispatcher.plan_dispatch_stop(&spec.plan_id),
+                None,
+                "{label}"
+            );
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .unwrap_or_else(|error| panic!("{label}: the call is admitted: {error}"));
+            assert!(provider_ran(&temp), "{label}");
+        }
+    }
+
+    /// A call whose cost was never priced makes the day's spend unknown,
+    /// which counts as over the ceiling: earlier runs' calls, and this
+    /// process's own.
+    #[tokio::test]
+    async fn unknown_spend_counts_as_over_the_daily_ceiling() {
+        let temp = tempdir().expect("tempdir");
+        let earlier = [earlier_call(chrono::Utc::now(), 0.0)];
+        let (dispatcher, task) = daily_dispatcher(&temp, 5.0, &earlier, true).await;
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect_err("today's spend is unknown");
+        assert!(
+            matches!(&error, RokoError::Config(message) if message.contains("1 provider call(s) whose cost was never priced")),
+            "got {error:?}"
+        );
+        assert!(!provider_ran(&temp));
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = daily_dispatcher(&temp, 5.0, &[], false).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("nothing is unknown yet");
+        let mut other = task.clone();
+        other.id = "T-OTHER".to_string();
+        let error = dispatcher
+            .dispatch(&make_spec(&other), Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the first call used tokens at $0");
+        assert!(matches!(error, RokoError::Config(_)), "got {error:?}");
+    }
+
+    /// A negative, NaN or infinite ceiling refuses every dispatch.
+    #[tokio::test]
+    async fn a_malformed_daily_ceiling_fails_closed() {
+        assert_eq!(DailyCeiling::from_config(0.0), DailyCeiling::Unlimited);
+        assert_eq!(
+            DailyCeiling::from_config(1.5),
+            DailyCeiling::MicroUsd(1_500_000)
+        );
+        for value in [-1.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                matches!(DailyCeiling::from_config(value), DailyCeiling::Malformed(_)),
+                "{value}"
+            );
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = daily_dispatcher(&temp, -1.0, &[], true).await;
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect_err("a negative ceiling admits nothing");
+        assert!(
+            matches!(&error, RokoError::Config(message) if message.contains("is not a ceiling")),
+            "got {error:?}"
+        );
+    }
+
+    /// Yesterday's total is never carried into a new UTC day: the first
+    /// dispatch of the day reads the costs log again.
+    #[tokio::test]
+    async fn a_new_utc_day_reads_the_costs_log_again() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = daily_dispatcher(&temp, 1.0, &[], true).await;
+        let today = chrono::Utc::now().date_naive();
+        *dispatcher.daily_budget.baseline.lock() = Some(DailyBaseline {
+            day: today.pred_opt().expect("yesterday"),
+            logged: roko_learn::costs_log::DaySpend {
+                cost_usd: 5.0,
+                unpriced_calls: 0,
+            },
+            process_at_read: ProcessSpend::default(),
+        });
+        let spec = make_spec(&task);
+        assert_eq!(dispatcher.plan_dispatch_stop(&spec.plan_id), None);
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("today's log holds nothing");
+        let baseline = (*dispatcher.daily_budget.baseline.lock()).expect("read today");
+        assert_eq!(baseline.day, today);
     }
 }

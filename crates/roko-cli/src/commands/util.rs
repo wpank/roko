@@ -621,6 +621,12 @@ pub(crate) async fn cmd_status(
             None
         }
     };
+    // The part of the total priced from estimated usage (gap-288e38).
+    let estimated_cost_usd = if total_cost_usd.is_some() {
+        costs_log.estimated_cost().await.ok()
+    } else {
+        None
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -752,6 +758,7 @@ pub(crate) async fn cmd_status(
         status.last_episode_passed = last_passed;
         status.cfactor = cfactor_snapshot;
         status.total_cost_usd = total_cost_usd;
+        status.estimated_cost_usd = estimated_cost_usd;
         status.today_cost_usd = today_cost_usd;
         status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
@@ -1004,6 +1011,9 @@ pub(crate) async fn cmd_status(
         println!("Cost Summary:");
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
+        }
+        if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
+            println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");
         }
         if let Some(today_cost_usd) = today_cost_usd {
             println!("  Today:    ${:.4}", today_cost_usd.max(0.0));

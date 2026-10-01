@@ -477,8 +477,10 @@ pub struct PromptRun<'a> {
 ///
 /// The prompt becomes a one-task plan in `.roko/runs/<run_id>/` (never under
 /// `plans/`): an `implementer` task whose verify steps are the workspace
-/// gates (see [`prompt_verify_steps`]). The Graph run takes the same run id,
-/// so its attempt records and manifest share that directory.
+/// gates (see [`prompt_verify_steps`]). A workspace with none, such as a docs
+/// or Python repository with no declared rung, still runs: its task ends
+/// unverified, which is not a success (bug-1410e8). The Graph run takes the
+/// same run id, so its attempt records and manifest share that directory.
 /// [`run_graph_plan`] executes it with
 /// the provider dispatch, failover, safety contracts, budget, checkpoints,
 /// and per-task episodes, efficiency, and cost records of `roko plan run`.
@@ -489,9 +491,9 @@ pub struct PromptRun<'a> {
 ///
 /// # Errors
 ///
-/// Fails before any provider call when no agent is configured, the role
-/// override is not a plan task role, or no gate can verify the change; and
-/// when the Graph engine cannot start the run.
+/// Fails before any provider call when no agent is configured or the role
+/// override is not a plan task role, and when the Graph engine cannot start
+/// the run.
 pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     use crate::graph_execution::GraphPlanRunParams;
     use crate::graph_execution::plan_runner::{
@@ -512,10 +514,12 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         ),
     };
     let verify = prompt_verify_steps(run.workdir, &model_config.gates);
-    if verify.is_empty() {
-        bail!(
-            "no gate can verify this change: declare the project's build or test command \
-             in roko.toml as a `[[gates.rungs]]` entry (`name`, `command`)"
+    let unverified = verify.is_empty();
+    if unverified && !run.quiet {
+        eprintln!(
+            "note: no gate can verify this change, so it will end unverified; declare the \
+             project's build or test command in roko.toml as a `[[gates.rungs]]` entry \
+             (`name`, `command`)"
         );
     }
 
@@ -619,7 +623,13 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             .iter()
             .rev()
             .find_map(|episode| episode.failure_reason.clone())
-            .unwrap_or_else(|| format!("Graph engine exited with code {exit_code}"))
+            .unwrap_or_else(|| {
+                if unverified {
+                    "unverified: no gate could verify the change".to_string()
+                } else {
+                    format!("Graph engine exited with code {exit_code}")
+                }
+            })
     };
     record_workflow_feedback(layout.root(), &report, outcome, duration).await;
     Ok(report)
@@ -663,6 +673,9 @@ fn prompt_tasks_file(
     workdir: &Path,
 ) -> TasksFile {
     let title = prompt.lines().next().unwrap_or(prompt).trim();
+    // With no gate to verify it, the task may run without a verify step and
+    // end unverified (bug-1410e8).
+    let allow_unverified = verify.is_empty();
     TasksFile {
         meta: TaskMeta {
             plan: run_id.to_string(),
@@ -680,6 +693,7 @@ fn prompt_tasks_file(
             workspace_rungs: None,
             verify: Vec::new(),
             approval: None,
+            allow_unverified,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),
@@ -1117,6 +1131,84 @@ command = "true"
             .expect("read the manifest")
             .expect("the run's manifest");
         assert_eq!(manifest.run_id, report.run_id);
+    }
+
+    /// bug-1410e8: a workspace with no Cargo.toml or go.mod and no declared
+    /// gate rung, here a docs repository, still runs: the agent is
+    /// dispatched and makes its change, the task ends unverified, and the
+    /// run is not a success.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prompt_plan_without_build_manifest() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let provider = tmp.path().join("fake-provider.sh");
+        std::fs::write(
+            &provider,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf 'Edited by the agent.\n' >> README.md
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("make provider executable");
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[agent]
+default_model = "run-model"
+command = {provider:?}
+bare_mode = false
+
+[providers.run-cli]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.run-model]
+provider = "run-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[gates]
+sibling_settle_secs = 0
+"#,
+                provider = provider.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+        std::fs::write(tmp.path().join("README.md"), "# docs\n").expect("README");
+        assert!(prompt_verify_steps(tmp.path(), &Default::default()).is_empty());
+
+        let report = run_prompt(PromptRun {
+            prompt: "Add a line to the README",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+        })
+        .await
+        .expect("roko run dispatches without a build manifest");
+
+        let readme = std::fs::read_to_string(tmp.path().join("README.md")).expect("README");
+        assert!(readme.contains("Edited by the agent."), "{readme}");
+        assert!(!report.success, "an unverified change is not a success");
+        let run_dir = roko_fs::RokoLayout::for_project(tmp.path()).run_dir(&report.run_id);
+        let attempts =
+            std::fs::read_to_string(run_dir.join("attempts.jsonl")).expect("attempt records");
+        let verdict = attempts
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("a record"))
+            .find(|line| line["schema_version"] == "roko.verdict/1")
+            .expect("the task's verdict");
+        assert_eq!(verdict["gate_verdict"], "unverified", "{verdict}");
     }
 
     #[test]

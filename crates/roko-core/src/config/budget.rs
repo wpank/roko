@@ -44,9 +44,12 @@ pub struct BudgetConfig {
     /// Default: `5.0` ($5.00 per task across all retries).
     #[serde(default = "default_max_task_retry_usd")]
     pub max_task_retry_usd: f32,
-    /// Per-calendar-day cost ceiling in USD, enforced across all plan runs.
-    /// `0.0` means unlimited. When the day's total spend (read from the
-    /// costs log) reaches this ceiling, new dispatches are blocked.
+    /// Per-calendar-day (UTC) cost ceiling in USD, across every run and
+    /// command that records to `.roko/learn/costs.jsonl`. `0.0` means
+    /// unlimited. Once the day's spend reaches it, `roko plan run` starts no
+    /// further task and refuses provider dispatches. A call whose cost was
+    /// never priced makes the day's spend unknown, which counts as reaching
+    /// it. `--budget-override` only warns; `--no-budget` disables it.
     #[serde(default)]
     pub max_daily_usd: f32,
     /// Token budget for prompt composition.
@@ -55,11 +58,12 @@ pub struct BudgetConfig {
     /// Complexity multipliers applied to [`Self::max_task_usd`].
     #[serde(default)]
     pub tier_multipliers: TaskBudgetMultipliers,
-    /// P3-34: Per-agent cumulative lifetime cost ceiling in USD.
+    /// P3-34: Per-agent cumulative lifetime cost ceiling in USD (`0.0`, the
+    /// default, means unlimited).
     ///
-    /// `0.0` means unlimited (default). When a single agent's cumulative
-    /// cost exceeds this limit, an `AgentBudgetExhausted` event is emitted
-    /// and the agent is drained.
+    /// Not enforced: no production code reads it. A `roko plan run` attempt
+    /// is a fresh provider session, bounded by `max_task_usd` and
+    /// `max_task_retry_usd`.
     #[serde(default)]
     pub max_agent_lifetime_usd: f32,
 }

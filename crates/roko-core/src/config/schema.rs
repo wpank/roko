@@ -2569,6 +2569,12 @@ pub struct CoreRunnerConfig {
     /// files (by mtime) are removed. Defaults to 100.
     #[serde(default = "CoreRunnerConfig::default_prompt_log_retention")]
     pub prompt_log_retention: usize,
+    /// When `true`, a `--worktree-per-task` run deletes the `roko/attempt/*`
+    /// branches of a delivered plan's attempts, along with their checkouts
+    /// (gap-415c54). Defaults to `false`: the checkouts, which hold the disk,
+    /// are removed, and the branches stay for inspection and history.
+    #[serde(default)]
+    pub delete_attempt_branches: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2618,6 +2624,7 @@ impl Default for CoreRunnerConfig {
             warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
+            delete_attempt_branches: false,
         }
     }
 }

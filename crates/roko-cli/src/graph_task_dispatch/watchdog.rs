@@ -18,6 +18,11 @@
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
 //! `timeout_secs` stays the outer bound either way.
 //!
+//! A plan run that outlives its interrupt's drain asks its attempts to stop
+//! ([`WatchedAttempt::stop`]): `run_watched` drops the call within
+//! [`STOP_CHECK_INTERVAL`], and the attempt settles as cancelled with the usage
+//! its watch saw stream (bug-2b1ddc).
+//!
 //! Silence counts only while the agent waits on its model:
 //!
 //! - every event the agent streams is progress, text and reasoning deltas
@@ -34,6 +39,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use roko_agent::StreamEventKind;
@@ -48,6 +54,10 @@ use super::*;
 /// How often a running attempt's [`StallWatch`] is checked. The thresholds
 /// are whole seconds, so this is precise enough.
 const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often a running attempt checks whether its plan run asked it to stop
+/// ([`WatchedAttempt::stop`]).
+const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Capacity of the channel between the provider boundary and the live-output
 /// tap. The boundary never waits on it: events that do not fit are dropped.
@@ -101,7 +111,8 @@ struct ProgressState {
     call: Option<CallInFlight>,
     /// What that call streamed of its token usage.
     usage: StreamedUsage,
-    /// The watchdog or the conductor cancelled the call.
+    /// The watchdog, the conductor or a stopping plan run cancelled the
+    /// call.
     interrupted: bool,
 }
 
@@ -137,8 +148,8 @@ impl StreamedUsage {
     }
 }
 
-/// A provider call the watchdog or the conductor cancelled, with what it
-/// streamed of its usage (bug-aa2044).
+/// A provider call the watchdog, the conductor or a stopping plan run
+/// cancelled, with what it streamed of its usage (bug-aa2044, bug-2b1ddc).
 #[derive(Debug)]
 pub(super) struct InterruptedCall {
     call: CallInFlight,
@@ -245,13 +256,15 @@ impl AttemptProgress {
         self.inner.lock().last_event.is_some()
     }
 
-    /// The watchdog or the conductor cancelled the call in flight.
+    /// The watchdog, the conductor or a stopping plan run cancelled the call
+    /// in flight.
     fn interrupted(&self) {
         self.inner.lock().interrupted = true;
     }
 
-    /// The call the watchdog or the conductor cancelled, with the usage it
-    /// streamed; `None` when none was cancelled.
+    /// The call the watchdog, the conductor or a stopping plan run
+    /// cancelled, with the usage it streamed; `None` when none was
+    /// cancelled.
     pub(super) fn interrupted_call(&self) -> Option<InterruptedCall> {
         let state = self.inner.lock();
         let call = state.call.clone().filter(|_| state.interrupted)?;
@@ -356,6 +369,11 @@ pub(super) struct WatchedAttempt<'a> {
     pub(super) task_id: &'a str,
     /// Durable attempt key, which names the attempt's diagnoses.
     pub(super) attempt_key: &'a str,
+    /// The plan run's request that its attempts stop (the cell context's
+    /// cancel flag). Once set, the attempt's provider call is dropped and the
+    /// attempt settles with the usage its stall watch saw stream
+    /// (bug-2b1ddc).
+    pub(super) stop: Option<&'a AtomicBool>,
 }
 
 /// Why [`GraphTaskDispatcher::run_watched`] ended an attempt before its
@@ -366,11 +384,14 @@ pub(super) enum AttemptInterrupted {
     Stalled(Duration),
     /// The conductor restarted it.
     Restarted(ConductorRestart),
+    /// Its plan run is stopping (an interrupt the attempt outlived).
+    Stopped,
 }
 
 impl AttemptInterrupted {
-    /// The error the attempt fails with, which the Graph engine retries under
-    /// the task's `max_retries`: a timeout for a stall.
+    /// The error the attempt fails with. The Graph engine retries a stall's
+    /// timeout under the task's `max_retries`, but not the cancellation of a
+    /// stopping run.
     pub(super) fn error(&self, attempt: &WatchedAttempt<'_>) -> RokoError {
         match self {
             Self::Stalled(silent_for) => RokoError::Timeout {
@@ -384,24 +405,10 @@ impl AttemptInterrupted {
                 timeout_ms: u64::try_from(silent_for.as_millis()).unwrap_or(u64::MAX),
             },
             Self::Restarted(restart) => restart.error(),
-        }
-    }
-
-    /// How the attempt settles, failed with `error` (its [`Self::error`]): a
-    /// stall as a timeout, whatever the error's text says (bug-4c553b), the
-    /// agent's once `progress` shows it reported anything and the provider's
-    /// before; a conductor restart as a provider failure.
-    pub(super) fn settlement(
-        &self,
-        error: &RokoError,
-        progress: Option<&AttemptProgress>,
-    ) -> Settlement {
-        match self {
-            Self::Stalled(_) => Settlement::stalled(
-                &error.to_string(),
-                progress.is_some_and(AttemptProgress::reported_progress),
-            ),
-            Self::Restarted(_) => Settlement::provider_failure(&error.to_string(), false),
+            Self::Stopped => RokoError::cancelled(format!(
+                "agent for {}/{} stopped: its plan run is stopping",
+                attempt.plan_id, attempt.task_id
+            )),
         }
     }
 
@@ -409,23 +416,36 @@ impl AttemptInterrupted {
     pub(super) const fn outcome(&self) -> TaskDispatchOutcomeKind {
         match self {
             Self::Stalled(_) => TaskDispatchOutcomeKind::TimedOut,
-            Self::Restarted(_) => TaskDispatchOutcomeKind::Cancelled,
+            Self::Restarted(_) | Self::Stopped => TaskDispatchOutcomeKind::Cancelled,
         }
     }
 }
 
-/// How an attempt whose provider call failed with `error` settles: as what
-/// `interrupted` it, when the watchdog or the conductor ended it, else as a
-/// provider failure.
+/// How an attempt whose provider call failed with `error` settles, the one
+/// path for every such call. `interrupted` is what ended the call, when
+/// [`GraphTaskDispatcher::run_watched`] did; `error` is then its
+/// [`AttemptInterrupted::error`].
+///
+/// - A stall is a timeout, whatever the error's text says (bug-4c553b): the
+///   agent's once `progress` shows it reported anything, the provider's
+///   before.
+/// - A cancellation, a stopping plan run's included, teaches nothing
+///   (bug-2b1ddc).
+/// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
     error: &RokoError,
     progress: Option<&AttemptProgress>,
 ) -> Settlement {
-    interrupted.map_or_else(
-        || Settlement::provider_failure(&error.to_string(), false),
-        |interrupted| interrupted.settlement(error, progress),
-    )
+    match interrupted {
+        Some(AttemptInterrupted::Stalled(_)) => Settlement::stalled(
+            &error.to_string(),
+            progress.is_some_and(AttemptProgress::reported_progress),
+        ),
+        Some(AttemptInterrupted::Restarted(_) | AttemptInterrupted::Stopped) | None => {
+            Settlement::provider_call_error(error)
+        }
+    }
 }
 
 /// The dashboard diagnosis of a silent attempt, or of one the watchdog
@@ -539,11 +559,12 @@ impl GraphTaskDispatcher {
     /// Drive an attempt's provider `dispatch` to its end, publishing a TUI
     /// heartbeat every [`AGENT_HEARTBEAT_INTERVAL`] so the dashboard's
     /// elapsed-time counter stays live, and checking `watch` every
-    /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, or that the
-    /// conductor restarts through `supervised`, returns
-    /// [`AttemptInterrupted`]; `dispatch` is dropped with it, which cancels
-    /// the provider call, and `watch`'s progress then gives the call and what
-    /// it streamed ([`AttemptProgress::interrupted_call`]).
+    /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, that the conductor
+    /// restarts through `supervised`, or whose plan run asks it to stop
+    /// ([`WatchedAttempt::stop`]) returns [`AttemptInterrupted`]; `dispatch`
+    /// is dropped with it, which cancels the provider call, and `watch`'s
+    /// progress then gives the call and what it streamed
+    /// ([`AttemptProgress::interrupted_call`]).
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
@@ -559,6 +580,9 @@ impl GraphTaskDispatcher {
         let mut stall_check = tokio::time::interval(STALL_CHECK_INTERVAL);
         stall_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stall_check.tick().await;
+        let mut stop_check = tokio::time::interval(STOP_CHECK_INTERVAL);
+        stop_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        stop_check.tick().await;
         let restarted = async {
             match supervised {
                 Some(supervised) => supervised.restarted().await,
@@ -583,6 +607,14 @@ impl GraphTaskDispatcher {
                             attempt.task_id,
                             started_at.elapsed().as_millis() as u64,
                         );
+                    }
+                }
+                _ = stop_check.tick(), if attempt.stop.is_some() => {
+                    if attempt.stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+                        if let Some(watch) = &watch {
+                            watch.progress.interrupted();
+                        }
+                        return Err(AttemptInterrupted::Stopped);
                     }
                 }
                 _ = stall_check.tick(), if watch.is_some() => {
@@ -757,6 +789,7 @@ mod tests {
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            stop: None,
         };
         let silent = stall_diagnosis(&attempt, thresholds(180, 300), secs(181), false);
         assert_eq!(silent.severity, DiagnosisSeverity::Warn);
@@ -1108,6 +1141,7 @@ exec sleep 60
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            stop: None,
         };
 
         let unwatched = dispatcher

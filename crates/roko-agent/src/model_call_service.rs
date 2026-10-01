@@ -520,6 +520,7 @@ impl ModelCallService {
             env: self.env.clone(),
             effort: Some(self.config.agent.default_effort.clone())
                 .filter(|effort| !effort.trim().is_empty()),
+            thinking: req.thinking.clone(),
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             ..AgentOptions::default()
         };
@@ -1598,7 +1599,8 @@ impl CacheCell {
     }
 
     /// Compute a cache key from request fields.
-    /// Hash of: model + system prompt + ordered messages + relevant generation parameters.
+    /// Hash of: model + system prompt + ordered messages + relevant generation
+    /// parameters, the thinking setting among them (bug-b9cb83).
     fn cache_key(
         model: &str,
         system: Option<&str>,
@@ -1606,6 +1608,7 @@ impl CacheCell {
         input_messages: &[ModelInputMessage],
         temperature: Option<f32>,
         max_tokens: Option<u32>,
+        thinking: Option<&roko_core::foundation::ThinkingConfig>,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         model.hash(&mut hasher);
@@ -1623,6 +1626,7 @@ impl CacheCell {
 
         temperature.map(f32::to_bits).hash(&mut hasher);
         max_tokens.hash(&mut hasher);
+        thinking.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2311,6 +2315,7 @@ impl ModelCaller for ModelCallService {
             &req.input_messages,
             req.temperature,
             req.max_tokens,
+            req.thinking.as_ref(),
         );
         let request_id = self.next_request_id(&run_id, cache_key);
         let provider = self.provider_for_model(&model);
@@ -2780,6 +2785,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 
@@ -3046,6 +3052,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -3072,6 +3079,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -3101,6 +3109,7 @@ mod tests {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
@@ -3274,6 +3283,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -3312,6 +3322,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
@@ -3340,6 +3351,23 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
         let options = svc.build_agent_options(&req, None);
         let tools = options.pre_discovered_mcp_tools.expect("tools threaded");
         assert_eq!(tools.as_ref(), &vec![tool]);
+    }
+
+    /// bug-b9cb83: the request's thinking setting reaches the provider.
+    #[test]
+    fn request_thinking_is_threaded_to_agent_options() {
+        let svc = ModelCallService::new("claude".into());
+        let thinking = roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+        let req = ModelCallRequest {
+            thinking: Some(thinking.clone()),
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+        assert_eq!(options.thinking, Some(thinking));
     }
 
     /// MCP config precedence: explicit `with_mcp_config` > `AgentConfig.mcp_config` > None.
@@ -3492,6 +3520,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3537,6 +3566,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);
@@ -3554,8 +3584,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
+        let first =
+            CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024), None);
+        let second =
+            CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024), None);
 
         assert_eq!(first, second);
     }
@@ -3567,8 +3599,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None);
-        let second = CacheCell::cache_key("model-b", None, &messages, &[], None, None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None, None);
+        let second = CacheCell::cache_key("model-b", None, &messages, &[], None, None, None);
 
         assert_ne!(first, second);
     }
@@ -3580,8 +3612,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.1), None);
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.9), None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.1), None, None);
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.9), None, None);
 
         assert_ne!(first, second);
     }
@@ -3593,8 +3625,27 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(2048));
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(1024), None);
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(2048), None);
+
+        assert_ne!(first, second);
+    }
+
+    /// bug-b9cb83: a cached answer is not reused for another thinking setting.
+    #[test]
+    fn cache_key_differs_on_thinking() {
+        let messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "hello".into(),
+        }];
+        let thinking = roko_core::foundation::ThinkingConfig {
+            kind: roko_core::foundation::ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None, None);
+        let second =
+            CacheCell::cache_key("model-a", None, &messages, &[], None, None, Some(&thinking));
 
         assert_ne!(first, second);
     }
@@ -3622,8 +3673,15 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             },
         ];
 
-        let first =
-            CacheCell::cache_key("model-a", None, &first_messages, &[], Some(0.2), Some(1024));
+        let first = CacheCell::cache_key(
+            "model-a",
+            None,
+            &first_messages,
+            &[],
+            Some(0.2),
+            Some(1024),
+            None,
+        );
         let second = CacheCell::cache_key(
             "model-a",
             None,
@@ -3631,6 +3689,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             &[],
             Some(0.2),
             Some(1024),
+            None,
         );
 
         assert_ne!(first, second);
@@ -3665,7 +3724,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
         )];
 
         let key = |input: &[ModelInputMessage]| {
-            CacheCell::cache_key("model-a", None, &messages, input, None, None)
+            CacheCell::cache_key("model-a", None, &messages, input, None, None, None)
         };
         assert_ne!(key(&first_input), key(&bytes_changed));
         assert_ne!(key(&first_input), key(&mime_changed));
@@ -4158,6 +4217,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         };
 
         let estimate = svc.cost_predict(&req);

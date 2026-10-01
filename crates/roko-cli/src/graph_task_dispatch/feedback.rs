@@ -51,7 +51,8 @@ pub struct GraphFeedbackContext {
     /// so the EMA pass-rate converges toward the workspace's real gate history.
     /// The file is written atomically after every task's verify sequence
     /// completes (both pass and fail), and a `GateThresholdsUpdated` event is
-    /// published to the TUI bridge.
+    /// published to the TUI bridge. The gate ratchet, `gate-ratchet.json`,
+    /// is kept beside it (find-4b4344).
     pub gate_thresholds_path: Option<PathBuf>,
 
     /// RAG-10: Path to `.roko/learn/retrieval-outcomes.jsonl`.
@@ -76,14 +77,12 @@ pub struct GraphFeedbackContext {
 /// outcome and the learning label, `null` when the attempt teaches nothing
 /// (S01 §4.3). The row's own `success` keeps its meaning, which `roko
 /// status` and `roko show costs` read. `R` is the [`CostRecord`] with the
-/// verdict's executed-model columns ([`roko_learn::efficiency::ExecutedRow`]).
+/// verdict's executed-model columns ([`roko_learn::efficiency::ExecutedRow`]);
+/// the record's `cost_source` is the verdict's `cost.source`.
 #[derive(serde::Serialize)]
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
-    /// Where the row's usage came from (the verdict's `cost.source`):
-    /// `estimated` for a call cancelled mid-stream (bug-aa2044).
-    cost_source: roko_learn::telemetry::CostSource,
     #[serde(flatten)]
     row: R,
 }
@@ -262,8 +261,10 @@ impl GraphTaskDispatcher {
             }
 
             // Only a pass carries the learning label 1: every authored
-            // verify step passed (`TaskGateVerdict::Passed`). Only those grow
-            // durable knowledge.
+            // verify step passed (`TaskGateVerdict::Passed`), or failed only
+            // on tests that failed before the run too
+            // (`PassedWithPreexistingFailures`). Only those grow durable
+            // knowledge.
             if learning == Some(true) {
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),
@@ -439,13 +440,16 @@ impl GraphTaskDispatcher {
                 duration_ms,
                 success: succeeded,
                 session_id: String::new(),
+                // `estimated` for usage a call streamed before it was
+                // cancelled or timed out (bug-aa2044), so readers of
+                // `costs.jsonl` show it apart (gap-288e38).
+                cost_source: settled.verdict.cost.source,
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
-                    cost_source: settled.verdict.cost.source,
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,

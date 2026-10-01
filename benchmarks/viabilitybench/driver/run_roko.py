@@ -62,6 +62,9 @@ of the agent's reach.
 - the served model: the helper calls' rows name it, but the agent run's streamed calls leave it null. So an
   attempt's `model_reported` is null and its cost unknown (null) unless S01 verdicts or the metering proxy supply
   them. Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
+  When S01's verdict meters an attempt and says its usage was `estimated` (`cost.source`: usage a call streamed
+  before Roko cut it off), the attempt's cost is `estimated` too, in its record and its ledger row, and the report
+  counts it apart (gap-288e38). The proxy, when it meters an attempt, saw what the provider billed.
 - its gate verdict: S01's outcome, which each episode carries in `extra.outcome`. `passed`, `already_satisfied`,
   `unverified` and `forced_accept` are verdict tags, and any other outcome has none. An older Roko's episode says
   only whether it succeeded, read as `passed`.
@@ -131,7 +134,7 @@ import signal
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import agent_env
@@ -186,6 +189,7 @@ class RokoAttempt(harness.Attempt):
     helper_calls: int | None = None  # helper model calls after its gate (bug-62e3f4); None when Roko does not say
     roko_calls: int | None = None  # its model calls by Roko's records: turns plus helper calls; None if unknown
     model_swapped: bool = False  # a record says the declared swap's model served it (model_swap, gap-8bdf5e)
+    usage_estimated: bool = False  # S01's verdict metered it from usage a call streamed (`cost.source` estimated)
 
     def as_record(self) -> dict:
         record = super().as_record()
@@ -511,6 +515,8 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     for attempt in attempts:
         if attempt.cost is None:  # the proxy has already priced an attempt that billed nothing
             attempt.cost = ledger.price(attempt.reported_usage(), snapshot.row(attempt.model_reported))
+            if attempt.usage_estimated and attempt.cost.source == "provider_usage":
+                attempt.cost = replace(attempt.cost, source="estimated")
     return attempts, problems
 
 
@@ -531,6 +537,7 @@ def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
                          **{name: usage[name] for name in ("tokens_cache_write_5m", "tokens_cache_write_1h")
                             if isinstance(usage.get(name), int)}}
         attempt.usage_unknown = False
+        attempt.usage_estimated = (verdict.get("cost") or {}).get("source") == "estimated"
 
 
 def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag,
@@ -577,6 +584,7 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
                 attempt.queue_wait_s = 0.0  # its requests, and their waits, count toward the attempt before
             continue
         attempt.queue_wait_s = _rate_limit_waits(window, rows)
+        attempt.usage_estimated = False  # the proxy saw what the provider billed
         billed = [row for row in window if row.get("usage_source") != "none"]  # none: a fault, refusal or error
         served = {row.get("model_reported") for row in billed}
         usages = [_proxy_usage(row.get("usage")) for row in billed]

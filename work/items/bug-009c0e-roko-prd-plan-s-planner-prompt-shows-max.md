@@ -11,16 +11,19 @@ subsystem = ["roko-cli/prd"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "5e39cb9d5"
+last_verified_rev = "849449ded"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-repin's report)"
-anchors = ["crates/roko-cli/src/prd.rs"]
+anchors = ["crates/roko-cli/src/prd.rs", "crates/roko-cli/src/commands/plan.rs"]
 lane = "rust-cold"
 parent = "spec-e57870"
 links = { depends_on = [], blocks = [], related = ["gap-272448", "gap-a8d786"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "! sed -n '/^async fn generate_plan_from_prd_with_outcome(/,/^}/p;/^pub async fn generate_plan(/,/^}/p' crates/roko-cli/src/prd.rs | grep -q 'max_parallel = 1'"
+
+[[verify]]
+command = "grep -qF '# Add [[task]] entries below' crates/roko-cli/src/commands/plan.rs && ! grep -F '# Add [[task]] entries below' crates/roko-cli/src/commands/plan.rs | grep -q max_parallel"
 +++
 
 ## Problem
@@ -53,4 +56,7 @@ The prompt string in `generate_plan_from_prd_with_outcome`.
   comment the shared system prompt uses (`# max_parallel is omitted: tasks that do not depend on each other run
   together`). The verify now reads `generate_plan` too, where the prompt lives; it read only the wrapper and would
   pass vacuously.
+- `roko plan create`'s scaffold (`commands/plan.rs`) wrote `max_parallel = 1` into every hand-created plan's `[meta]`.
+  It now omits the field (`849449ded`), and the second `[[verify]]` checks the scaffold. Test fixtures keep their
+  `max_parallel = 1`.
 - The 132 existing plans are unchanged. Plan step 2 (a `plan validate` warning) is not done.

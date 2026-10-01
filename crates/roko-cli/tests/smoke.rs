@@ -324,7 +324,11 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         live_output: None,
         cancel_token: None,
         tool_audit: None,
+        trace_sink: None,
+        metrics_sink: None,
+        tool_correlation: None,
         max_turns: None,
+        thinking: None,
     };
 
     let agent = ClaudeCliAdapter

@@ -184,6 +184,14 @@ pub struct GatesConfig {
     /// it starts editing.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// Whether a Graph verify step that runs cargo tests, and still fails
+    /// after sibling settlement, is run again on the plan run's start commit
+    /// to tell tests that failed before the run from new failures. A step
+    /// that fails only on the former passes, and its attempt is recorded as
+    /// `passed_with_preexisting_failures`. FAST mode never runs the baseline.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub baseline_filter: bool,
     /// Runaway-output guard for Graph task attempts: the most output tokens
     /// an attempt may report before it fails as a red flag, without running
     /// its verify steps. Keyed by task role, with `default` for roles not
@@ -291,6 +299,7 @@ impl Default for GatesConfig {
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            baseline_filter: default_true(),
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),

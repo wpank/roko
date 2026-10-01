@@ -385,6 +385,8 @@ impl LlmBackend for GeminiNativeBackend {
             let mut acc_input: u64 = 0;
             let mut acc_output: u64 = 0;
             let mut acc_cache_read: Option<u64> = None;
+            // Thinking tokens, reported apart from the candidates (find-af6b7f).
+            let mut acc_thoughts: Option<u64> = None;
             // The model version the chunks name (bug-a5f181).
             let mut acc_model: Option<String> = None;
 
@@ -414,6 +416,7 @@ impl LlmBackend for GeminiNativeBackend {
                                     acc_input,
                                     acc_output,
                                     acc_cache_read,
+                                    acc_thoughts,
                                     acc_model.clone(),
                                     &tx,
                                 )
@@ -457,6 +460,11 @@ impl LlmBackend for GeminiNativeBackend {
                                 {
                                     acc_cache_read = Some(cache);
                                 }
+                                if let Some(thoughts) =
+                                    usage.get("thoughtsTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_thoughts = Some(thoughts);
+                                }
                             }
 
                             // Check for finish reason.
@@ -478,6 +486,7 @@ impl LlmBackend for GeminiNativeBackend {
                                     acc_input,
                                     acc_output,
                                     acc_cache_read,
+                                    acc_thoughts,
                                     acc_model.clone(),
                                     &tx,
                                 )
@@ -503,6 +512,7 @@ impl LlmBackend for GeminiNativeBackend {
                             acc_input,
                             acc_output,
                             acc_cache_read,
+                            acc_thoughts,
                             acc_model.clone(),
                             &tx,
                         )
@@ -604,18 +614,22 @@ async fn emit_accumulated_usage(
     input: u64,
     output: u64,
     cache_read: Option<u64>,
+    thoughts: Option<u64>,
     model: Option<String>,
     tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
 ) {
-    if input == 0 && output == 0 {
+    let thoughts = thoughts.unwrap_or(0);
+    if input == 0 && output == 0 && thoughts == 0 {
         return;
     }
     // `promptTokenCount` includes the cached content; input is the uncached
-    // part, so each cached token counts once (bug-afcf63).
+    // part, so each cached token counts once (bug-afcf63). Thinking is billed
+    // as output and counted as its reasoning part (find-af6b7f).
     let cache_read = cache_read.unwrap_or(0);
     let usage = Usage {
         input_tokens: input.saturating_sub(cache_read) as u32,
-        output_tokens: output as u32,
+        output_tokens: (output + thoughts) as u32,
+        reasoning_tokens: thoughts as u32,
         cache_read_tokens: cache_read as u32,
         cache_create_tokens: 0,
         ..Default::default()
@@ -639,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn streamed_gemini_usage_counts_cached_tokens_once() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        emit_accumulated_usage(1_000, 50, Some(600), None, &tx).await;
+        emit_accumulated_usage(1_000, 50, Some(600), None, None, &tx).await;
         let event = rx.recv().await.expect("a usage event").expect("no error");
         let StreamEventKind::Usage(usage) = event.kind else {
             panic!("expected usage, got {:?}", event.kind);
@@ -652,6 +666,19 @@ mod tests {
             ),
             (400, 600, 50)
         );
+    }
+
+    /// A streamed call's thinking tokens are billed output, as its reasoning
+    /// part (find-af6b7f).
+    #[tokio::test]
+    async fn streamed_gemini_usage_counts_thoughts_as_output() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_accumulated_usage(10, 120, None, Some(900), None, &tx).await;
+        let event = rx.recv().await.expect("a usage event").expect("no error");
+        let StreamEventKind::Usage(usage) = event.kind else {
+            panic!("expected usage, got {:?}", event.kind);
+        };
+        assert_eq!((usage.output_tokens, usage.reasoning_tokens), (1_020, 900));
     }
 
     #[derive(Debug)]

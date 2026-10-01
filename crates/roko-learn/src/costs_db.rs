@@ -19,6 +19,8 @@ use roko_agent::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::telemetry::CostSource;
+
 // ─── CostRecord ─────────────────────────────────────────────────────────────
 
 /// One cost entry per LLM API request.
@@ -52,6 +54,13 @@ pub struct CostRecord {
     pub success: bool,
     /// Optional session / run identifier for grouping.
     pub session_id: String,
+    /// Where the usage behind `cost_usd` came from: S01 §4.4's `cost.source`,
+    /// which flat records spell `cost_source`. `estimated` marks usage that a
+    /// call streamed before it was cancelled or timed out (bug-aa2044): no
+    /// provider reported it, so totals show it apart. A row written before
+    /// this field reads `unknown` (gap-288e38).
+    #[serde(default)]
+    pub cost_source: CostSource,
 }
 
 /// One payment entry for a paid feed request or metered session.
@@ -716,6 +725,8 @@ pub fn create_cost_record(
         duration_ms,
         success,
         session_id: session_id.to_string(),
+        // A `Usage` does not say where its tokens came from.
+        cost_source: CostSource::Unknown,
     }
 }
 
@@ -746,6 +757,7 @@ fn make_test_record(
         duration_ms: 5000,
         success,
         session_id: "session-1".into(),
+        cost_source: CostSource::Unknown,
     }
 }
 

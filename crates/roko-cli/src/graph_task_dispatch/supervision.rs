@@ -881,6 +881,7 @@ mod tests {
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            stop: None,
         }
     }
 

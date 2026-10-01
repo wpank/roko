@@ -10,10 +10,6 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
-use roko_core::defaults::{
-    DEFAULT_GATE_RETRY_COLD_START, DEFAULT_GATE_RETRY_MAX, DEFAULT_GATE_RETRY_MIN,
-    DEFAULT_GATE_RETRY_MIN_OBSERVATIONS,
-};
 use roko_fs::RokoLayout;
 use roko_runtime::StateSnapshot;
 use serde::{Deserialize, Serialize};
@@ -427,8 +423,9 @@ impl GateThresholds {
     /// P1-10: Apply a domain-specific threshold profile.
     ///
     /// Sets rung priors from the profile when the rung has no prior
-    /// observations, giving domain-appropriate initial expectations.
-    #[allow(dead_code)] // wired in tests; production caller not yet connected
+    /// observations, giving domain-appropriate initial expectations. Graph
+    /// verify runs apply their task's profile before observing. A rung's
+    /// first observation replaces its prior ([`Self::observe`]).
     pub(crate) fn apply_profile(
         &mut self,
         profile: &roko_gate::adaptive_threshold::ThresholdProfile,
@@ -443,32 +440,16 @@ impl GateThresholds {
         }
     }
 
-    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
-    pub(crate) fn suggested_max_retries(&self, rung: u32) -> u32 {
-        let Some(stats) = self.rungs.get(&rung) else {
-            return DEFAULT_GATE_RETRY_COLD_START;
-        };
-
-        if stats.total_count < DEFAULT_GATE_RETRY_MIN_OBSERVATIONS {
-            return DEFAULT_GATE_RETRY_COLD_START;
-        }
-
-        let max_f = f64::from(DEFAULT_GATE_RETRY_MAX);
-        let range_f = f64::from(DEFAULT_GATE_RETRY_MAX - DEFAULT_GATE_RETRY_MIN);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let retries = stats.ema_pass_rate.mul_add(-range_f, max_f).round() as u32;
-
-        retries.clamp(DEFAULT_GATE_RETRY_MIN, DEFAULT_GATE_RETRY_MAX)
-    }
-
     /// P1-12: Check whether a rung should be skipped based on its pass
-    /// streak, modulated by the current daimon temperament.
+    /// streak, modulated by the temperament.
     ///
     /// - Conservative: never skip.
     /// - Balanced / Exploratory: skip if consecutive passes exceed
     ///   `SKIP_STREAK_THRESHOLD` (20, matching `AdaptiveThresholds`).
     /// - Aggressive: skip at half the threshold (10).
-    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
+    ///
+    /// Advisory only: Graph verify runs log what it would skip and run every
+    /// step.
     pub(crate) fn should_skip_rung_for_temperament(
         &self,
         _rung: u32,
@@ -818,8 +799,15 @@ fn append_buffered_run_index(
         );
     }
     if let Some(writer) = cache.writers.get_mut(&run_path) {
+        // The per-run index is a second copy of the event log, so it gets the
+        // redaction the global log's writer applies (roko_fs::log_rotation):
+        // agent output can quote a provider key.
+        let scrubbed = match std::str::from_utf8(line).map(roko_core::obs::scrub_secrets_in_jsonl) {
+            Ok(std::borrow::Cow::Owned(text)) => std::borrow::Cow::Owned(text.into_bytes()),
+            _ => std::borrow::Cow::Borrowed(line),
+        };
         writer
-            .write_all(line)
+            .write_all(&scrubbed)
             .with_context(|| format!("buffering run index {}", run_path.display()))?;
         if flush {
             writer

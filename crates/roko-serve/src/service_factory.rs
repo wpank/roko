@@ -18,7 +18,7 @@ use roko_daimon::policy::DaimonPolicy;
 use roko_gate::gate_service::GateService;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -256,10 +256,12 @@ impl ServiceFactory {
         let cascade_journal = Arc::new(ModelCallJournal::for_learn_dir(
             &config.roko_dir.join("learn"),
         ));
+        // The router is loaded once the snapshot holds what a crashed writer
+        // journaled and never saved (bug-8a78e1).
         let cascade_router = if config.cascade_enabled {
             let cascade_model_slugs = model_slugs_for_config(&workspace_config, &model);
             Some(Arc::new(
-                CascadeRouter::load_or_new(cascade_journal.snapshot_path(), cascade_model_slugs)
+                load_recovered_router(cascade_journal.snapshot_path(), cascade_model_slugs)
                     .with_model_tiers(&workspace_config.effective_models()),
             ))
         } else {

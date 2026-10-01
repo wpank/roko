@@ -54,10 +54,12 @@ use crate::task_parser::TaskDef;
 
 mod attempt;
 mod attempt_workspace;
+pub(crate) mod baseline_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;
 mod feedback;
+mod gate_learning;
 mod helper_calls;
 mod inert_settings;
 mod ladder;
@@ -87,7 +89,8 @@ pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{
-    GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget, task_budget_ceiling_usd,
+    GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget,
+    task_budget_ceiling_usd,
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
@@ -206,6 +209,8 @@ pub struct GraphTaskDispatcher {
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
     task_spend: GraphTaskSpendLedger,
+    /// Today's spend before this process, for `budget.max_daily_usd`.
+    daily_budget: GraphDailyBudget,
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
@@ -242,6 +247,9 @@ pub struct GraphTaskDispatcher {
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
+    /// Failed test steps run again on the plan run's start commit, to tell
+    /// pre-existing failures from new ones (gap-161be1).
+    baselines: baseline_verify::Baselines,
     /// The run's conductor, which supervises running attempts (see
     /// [`Self::with_conductor`]).
     conductor: Option<supervision::GraphConductor>,
@@ -282,6 +290,7 @@ impl GraphTaskDispatcher {
             reflex_store: None,
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
+            daily_budget: GraphDailyBudget::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -290,6 +299,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
+            baselines: baseline_verify::Baselines::default(),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
         }
@@ -487,13 +497,15 @@ impl GraphTaskDispatcher {
     }
 
     /// Why no further task of `plan_id` may be dispatched in this run, when
-    /// that is so: its settled spend reached the plan ceiling (and no
-    /// explicit override lets it continue), or its cost ledger cannot be
-    /// persisted. In-flight reservations alone never stop a plan.
+    /// that is so: its settled spend reached the plan ceiling, or today's
+    /// reached `budget.max_daily_usd` (and no explicit override lets it
+    /// continue), or its cost ledger cannot be persisted. In-flight
+    /// reservations alone never stop a plan.
     #[must_use]
     pub fn plan_dispatch_stop(&self, plan_id: &str) -> Option<String> {
         self.budget_ledger
             .dispatch_stop(plan_id, self.budget_policy)
+            .or_else(|| self.daily_dispatch_stop())
     }
 
     /// Return aggregate token and dispatch counts accumulated across all
@@ -648,6 +660,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
             .reserve(&spec.plan_id, self.budget_policy)?;
@@ -878,6 +891,21 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let effective_workdir = lease
             .as_ref()
             .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+        // A git process killed mid-command (an earlier attempt's agent, a
+        // crashed run) leaves `index.lock` behind, and every index-writing git
+        // command here then fails: clear a stale one before the agent starts
+        // (bug-109b5a). The shared checkout is the user's, whose own git may
+        // hold the lock for minutes (a commit waiting on its editor), so a lock
+        // there must be much older than in a roko-owned worktree.
+        let stale_index_lock_after = if lease.is_some() {
+            std::time::Duration::from_secs(roko_core::defaults::DEFAULT_STALE_LOCK_SECS)
+        } else {
+            std::time::Duration::from_mins(10)
+        };
+        crate::orchestrator::worktree::clear_stale_index_lock(
+            &effective_workdir,
+            stale_index_lock_after,
+        );
         // Until this attempt ends, a sibling's failed verify step in the same
         // working tree may wait for it to settle. It starts editing once no
         // sibling runs a verify step that reads its files (gap-1920ba).
@@ -1252,6 +1280,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &watched_key,
+            stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
         let supervised = self.supervise_attempt(&watched);
@@ -1315,9 +1344,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 if let Some(tui) = &self.tui_bridge {
                     tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
                 }
-                // A call the stall watchdog or the conductor cancelled is
-                // accounted like any failed call, with the usage it streamed
-                // (bug-aa2044).
+                // A call the stall watchdog, the conductor or a stopping plan
+                // run cancelled is accounted like any failed call, with the
+                // usage it streamed (bug-aa2044, bug-2b1ddc).
                 if let Some(interrupted) = progress
                     .as_ref()
                     .and_then(|progress| progress.interrupted_call())
@@ -1328,7 +1357,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                    self.task_spend.record(&task_spend_key, cost_usd);
+                    self.task_spend
+                        .record(&task_spend_key, &dispatch.result.usage);
                     if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                         tracing::warn!(
                             plan_id = %spec.plan_id,
@@ -1378,7 +1408,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
         self.task_spend
-            .record(&task_spend_key, f64::from(dispatch.result.usage.cost_usd));
+            .record(&task_spend_key, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -2507,4 +2537,154 @@ cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
 printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
 sleep 30
 "#;
+
+    /// find-f489db: a Graph run attaches its tool observability to the agent
+    /// factory. A tool call an API model makes then leaves a scrubbed admit
+    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
+    /// run and task, a closed trace under `.roko/traces/` and a metrics
+    /// record.
+    #[tokio::test]
+    async fn graph_run_writes_tool_audit_admit_and_result() {
+        // A GitHub token, which the scrubber's built-in patterns catch.
+        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
+        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "mock_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                command: None,
+                args: None,
+                timeout_ms: Some(15_000),
+                ttft_timeout_ms: Some(15_000),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "mock_api".to_string(),
+                slug: "api-model-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        // The mock answers without SSE: keep the stall watchdog, which would
+        // stream over live output, off.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None).await;
+        let factory = Arc::new(
+            crate::graph_execution::plan_runner::attach_tool_observability(factory, &workdir).await,
+        );
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            workdir.clone(),
+        ));
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Read the notes".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let cell_config = toml::Value::Table(toml::map::Map::from_iter([
+            (
+                "plan_id".to_string(),
+                toml::Value::String("p-audit".to_string()),
+            ),
+            ("title".to_string(), toml::Value::String(task.title.clone())),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
+            (
+                "task_def_json".to_string(),
+                toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
+            ),
+        ]));
+        let cell = roko_graph::cells::TaskExecutorCell::live(cell_config, dispatcher);
+        cell.execute(
+            Vec::new(),
+            &CellContext::new().with_cell_id("T01".to_string()),
+        )
+        .await
+        .expect("the task completes");
+
+        let roko_dir = workdir.join(".roko");
+        let audit =
+            std::fs::read_to_string(roko_dir.join("tool_audit.jsonl")).expect("tool audit log");
+        assert!(!audit.contains(SECRET), "{audit}");
+        let lines: Vec<serde_json::Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("audit line is JSON"))
+            .collect();
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|line| line["kind"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(kinds, ["admit", "result"], "{audit}");
+        for line in &lines {
+            assert_eq!(line["call_id"], "call-read", "{line}");
+            assert_eq!(line["call_name"], "read_file", "{line}");
+            let correlation = &line["correlation"];
+            assert_eq!(correlation["task_id"], "T01", "{line}");
+            let run_id = correlation["run_id"].as_str().unwrap_or_default();
+            assert!(!run_id.is_empty(), "{line}");
+            assert_eq!(
+                correlation["attempt_id"],
+                format!("{run_id}:p-audit:T01:1"),
+                "{line}"
+            );
+        }
+
+        // The call's trace is closed with its handler time and outcome, and
+        // its metrics sample is keyed on the model.
+        let traces: Vec<String> = std::fs::read_dir(roko_dir.join("traces"))
+            .expect("trace directory")
+            .flatten()
+            .flat_map(|day| std::fs::read_dir(day.path()).expect("trace day").flatten())
+            .map(|file| std::fs::read_to_string(file.path()).expect("trace file"))
+            .collect();
+        assert_eq!(traces.len(), 1, "{traces:#?}");
+        assert!(
+            traces[0].contains("handler_finished") && traces[0].contains("\"outcome\""),
+            "{traces:#?}"
+        );
+        let metrics = std::fs::read_to_string(roko_dir.join("metrics").join("tool_metrics.jsonl"))
+            .expect("tool metrics");
+        assert_eq!(metrics.lines().count(), 1, "{metrics}");
+        assert!(
+            metrics.contains("read_file") && metrics.contains("api-model-1"),
+            "{metrics}"
+        );
+    }
 }

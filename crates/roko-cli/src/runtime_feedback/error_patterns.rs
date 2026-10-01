@@ -10,9 +10,7 @@
 //! turn-cap stop or a timeout after output. Provider and harness failures say
 //! nothing about the agent's work.
 //!
-//! It is the one error-pattern writer on the Graph path. The receipt
-//! settler's `error_pattern` row (`graph_execution::feedback::build_settler`)
-//! has no production caller.
+//! It is the one error-pattern writer on the Graph path.
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

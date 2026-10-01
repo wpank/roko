@@ -182,8 +182,14 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
             tools.extend(git_tools());
         }
 
-        // Strategy/planning roles: read-only + limited exec for cargo check.
-        AgentRole::Strategist | AgentRole::PrePlanner => {
+        // Strategy role: read-only. Its contract forbids writes and `bash`;
+        // plan authoring runs it with Read, Grep and Glob alone.
+        AgentRole::Strategist => {
+            // read_only_tools only
+        }
+
+        // Pre-planning role: read-only + limited exec for cargo check.
+        AgentRole::PrePlanner => {
             tools.extend(exec_tools());
         }
 

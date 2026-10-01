@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-gateway/provider"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "e78145143"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F023"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F023"
 anchors = ["crates/roko-gateway/src/provider.rs::ModelCallerBackend::request", "crates/roko-gateway/src/types.rs::ThinkingConfig", "crates/roko-core/src/foundation.rs::ModelCallRequest", "crates/roko-gateway/src/gateway.rs::GatewayConfig::from_model_caller", "crates/roko-agent/src/provider/mod.rs::AgentOptions", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::create_tool_loop_backend_with_api_key"]
@@ -140,6 +140,7 @@ default budget when none is given. `ModelCallerBackend::request()` then converts
   `anthropic_api/tool_loop.rs::default_thinking_budget` equal. The doc comment on `default_thinking_budget` (around `tool_loop.rs:949`) says they must match.
 - Do not change the HTTP wire shape of `ThinkingConfig`: the `type` field and lowercase `enabled`/`disabled`.
 - This item has no dependencies. Live verification needs an Anthropic key, so the unit tests above are the gate.
+- Implemented on `work/bug-2b1ddc` at `64fd639a3` (cache key in `e78145143`); cargo verification deferred to the batch check. Premise re-checked at `faa378453`: still true. Plan option 1: `ThinkingConfig` and `ThinkingMode` moved unchanged to `roko-core` foundation and re-exported by the gateway. `ModelCallRequest.thinking` is forwarded on complete and stream, and reaches the Anthropic tool loop through `AgentOptions.thinking`. A requested budget is clamped to at least 1024 and below `max_tokens`. `ProviderAdapter::honours_thinking_config` drives the debug log for adapters that ignore it. `ModelCallService`'s response cache now keys on the setting too. Not changed: with no request setting, a profile's default budget can still reach or exceed `max_tokens` (opus 32768 and sonnet 16384 against `DEFAULT_MAX_OUTPUT_TOKENS` 16384 when `max_output` is unset).
 
 ## Original notes
 

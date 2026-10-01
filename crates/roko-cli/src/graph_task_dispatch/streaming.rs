@@ -51,6 +51,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Budget reservation ───────────────────────────────────────────
+        self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
             .reserve(&spec.plan_id, self.budget_policy)?;
@@ -231,6 +232,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &attempt_key,
+            stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
         let supervised = self.supervise_attempt(&watched);
@@ -261,12 +263,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         attempt.dispatch_ended();
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
-            // The stall watchdog or the conductor cancelled the provider
-            // call: the attempt ends timed out or cancelled, and the engine
-            // retries it.
+            // The stall watchdog, the conductor or a stopping plan run
+            // cancelled the provider call: the attempt ends timed out or
+            // cancelled, and the engine retries it unless its run is
+            // stopping.
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
-                let settlement = interrupted.settlement(&error, progress.as_ref());
+                let settlement =
+                    watchdog::failed_call_settlement(Some(&interrupted), &error, progress.as_ref());
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
                 let streamed = match progress
@@ -280,8 +284,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.task_spend
-                            .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                        self.task_spend.record(
+                            &format!("{}/{}", spec.plan_id, task.id),
+                            &dispatch.result.usage,
+                        );
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -411,8 +417,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.task_spend
-                    .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                self.task_spend.record(
+                    &format!("{}/{}", spec.plan_id, task.id),
+                    &dispatch.result.usage,
+                );
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -526,7 +534,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             }
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
-                // attempt's verdict is recorded.
+                // attempt's verdict is recorded. A DispatchV2Error is a setup
+                // failure before any call, never a cancellation.
                 let settlement = Settlement::provider_failure(&error.to_string(), false);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;

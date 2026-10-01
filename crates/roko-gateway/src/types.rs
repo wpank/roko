@@ -6,6 +6,10 @@ use roko_core::foundation::{ChatMessage, MessageRole};
 use roko_core::tool::ToolDef;
 use serde::{Deserialize, Serialize};
 
+// The thinking types live in roko-core, so that a `ModelCallRequest` carries
+// them past the gateway to the provider (bug-b9cb83).
+pub use roko_core::foundation::{ThinkingConfig, ThinkingMode};
+
 /// Stable agent identifier at the gateway boundary.
 pub type AgentId = String;
 /// Canonical message type shared with the workflow foundation.
@@ -124,28 +128,6 @@ fn default_namespace() -> String {
 
 const fn default_iteration() -> u32 {
     1
-}
-
-/// Extended-thinking activation mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThinkingMode {
-    /// Extended thinking is enabled.
-    Enabled,
-    /// Extended thinking is disabled.
-    #[default]
-    Disabled,
-}
-
-/// Provider-neutral extended-thinking configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThinkingConfig {
-    /// Activation mode (`type` on provider wire formats).
-    #[serde(rename = "type")]
-    pub kind: ThinkingMode,
-    /// Explicit token budget, if supplied by the caller.
-    #[serde(default)]
-    pub budget_tokens: Option<u32>,
 }
 
 /// A request entering the inference gateway.

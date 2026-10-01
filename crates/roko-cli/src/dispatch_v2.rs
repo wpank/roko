@@ -99,9 +99,8 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     use roko_core::foundation::{
         ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
     };
-    use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::feedback_service::FeedbackService;
-    use roko_learn::model_call_feedback::ModelCallJournal;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 
     let workdir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let config = crate::config::load_resolved_config(&workdir)
@@ -134,12 +133,10 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
         .join("learn")
         .join("cascade-router.json");
     let cascade_model_slugs = capture_runtime_model_slugs(&model_config, &model);
-    let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-        Arc::new(CascadeRouter::load_or_new(
-            &cascade_path,
-            cascade_model_slugs,
-        ))
-    });
+    // The snapshot first takes what a crashed writer journaled and never
+    // saved (bug-8a78e1).
+    let cascade_router = (!cascade_model_slugs.is_empty())
+        .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
     // Observations are journaled in the learning WAL until the save below
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
@@ -1455,6 +1452,9 @@ pub struct AgentDispatcherV2 {
     /// When set, every tool call records scrubbed admit/result lines to
     /// `.roko/tool_audit.jsonl` for durable observability.
     tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Per-call trace and metrics sinks for the tool calls of every agent
+    /// this dispatcher creates (find-f489db).
+    observability: Option<roko_fs::FsObservabilitySinks>,
 }
 
 impl std::fmt::Debug for AgentDispatcherV2 {
@@ -1467,6 +1467,7 @@ impl std::fmt::Debug for AgentDispatcherV2 {
             .field("health_registry", &self.health_registry)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit)
+            .field("observability", &self.observability)
             .finish()
     }
 }
@@ -1485,6 +1486,7 @@ impl AgentDispatcherV2 {
             health_registry: None,
             cancel_token: None,
             tool_audit: None,
+            observability: None,
         }
     }
 
@@ -1502,6 +1504,7 @@ impl AgentDispatcherV2 {
             health_registry: None,
             cancel_token: None,
             tool_audit: None,
+            observability: None,
         }
     }
 
@@ -1543,6 +1546,16 @@ impl AgentDispatcherV2 {
     /// scrubbed admit/result lines to `.roko/tool_audit.jsonl`.
     pub fn with_tool_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.tool_audit = Some(adapter);
+        self
+    }
+
+    /// Attach per-call trace and metrics sinks.
+    ///
+    /// When set, every tool call an agent created by this dispatcher makes
+    /// leaves a closed trace under `.roko/traces/` and a record in
+    /// `.roko/metrics/tool_metrics.jsonl` (find-f489db).
+    pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
+        self.observability = Some(sinks);
         self
     }
 
@@ -1879,11 +1892,44 @@ impl AgentDispatcherV2 {
             // Thread the persistent file audit adapter so every tool call
             // records scrubbed admit/result lines to disk.
             tool_audit: self.tool_audit.clone(),
+            // find-f489db: each tool call also leaves a closed trace and a
+            // metrics record, and all three join back to the attempt.
+            trace_sink: self
+                .observability
+                .as_ref()
+                .map(roko_fs::FsObservabilitySinks::trace_sink_dyn),
+            metrics_sink: self
+                .observability
+                .as_ref()
+                .map(roko_fs::FsObservabilitySinks::metrics_sink_dyn),
+            tool_correlation: Some(tool_correlation(request)),
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
             ..Default::default()
         }
+    }
+}
+
+/// The correlation a dispatch's tool calls carry into their audit, trace and
+/// metrics records (find-f489db): the run and task of the attempt the
+/// request serves, the attempt's key (`"{run}:{plan}:{task}:{attempt}"`,
+/// which telemetry rows also carry), and the agent id. A request without an
+/// attempt key names only the agent.
+fn tool_correlation(request: &AgentDispatchRequest) -> roko_core::tool::CorrelationEnvelope {
+    let attempt = request
+        .attempt_key
+        .as_deref()
+        .and_then(roko_learn::telemetry::AttemptKey::parse);
+    roko_core::tool::CorrelationEnvelope {
+        run_id: attempt
+            .as_ref()
+            .map(|key| key.run_id.clone())
+            .unwrap_or_default(),
+        task_id: attempt.map(|key| key.task_id).unwrap_or_default(),
+        attempt_id: request.attempt_key.clone().unwrap_or_default(),
+        turn_id: String::new(),
+        agent_id: request.agent_id.clone(),
     }
 }
 

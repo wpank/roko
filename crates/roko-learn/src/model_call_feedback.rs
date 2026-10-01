@@ -90,12 +90,14 @@ impl ModelCallFeedbackRecorder {
         Self::from_learn_dir(workdir.join(".roko").join("learn"), model_slugs)
     }
 
-    /// Create a recorder rooted directly at a `.roko/learn` directory.
+    /// Create a recorder rooted directly at a `.roko/learn` directory. Its
+    /// router is loaded once the snapshot holds what a crashed writer
+    /// journaled ([`load_recovered_router`]).
     #[must_use]
     pub fn from_learn_dir(learn_dir: PathBuf, model_slugs: Vec<String>) -> Self {
         let cascade_journal = ModelCallJournal::for_learn_dir(&learn_dir);
         let cascade_router = (!model_slugs.is_empty()).then(|| {
-            Arc::new(CascadeRouter::load_or_new(
+            Arc::new(load_recovered_router(
                 cascade_journal.snapshot_path(),
                 model_slugs,
             ))
@@ -708,6 +710,30 @@ mod tests {
             "the narrower opener kept model-b's entry"
         );
         assert_eq!(wide.cascade_router().total_observations(), 2);
+    }
+
+    #[test]
+    fn a_recorder_routes_with_what_a_crashed_writer_journaled() {
+        // bug-8a78e1: chat, the vision loop and serve's template dispatch
+        // build their recorder's router from the snapshot once it holds a
+        // crashed writer's journal.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let recorder = ModelCallFeedbackRecorder::from_learn_dir(learn_dir.clone(), models);
+        let router = recorder
+            .cascade_router
+            .as_ref()
+            .expect("the recorder's router");
+        assert_eq!(router.confidence_snapshot()["model-a"], (1, 1));
+        assert_eq!(journaled_entries(&learn_dir), 0, "the journal was replayed");
     }
 
     #[tokio::test]

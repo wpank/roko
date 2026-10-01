@@ -1923,6 +1923,9 @@ mod tests {
             "find . -execdir sudo rm {} +",
             "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
             "find . -exec git checkout {} \\;",
+            // Quoted or escaped parentheses group find's tests.
+            "find . \\( -name '*.o' -o -name '*.a' \\) -exec rm -f {} +",
+            "find . '(' -name x ')' -exec rm {} \\;",
             "sudo find . -delete",
             // rm on what find or fd lists, however it gets there.
             "find . -name x | xargs rm",
@@ -2271,7 +2274,8 @@ mod tests {
     }
 
     /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
-    /// holding a secret, from the table roko-std's bash tool checks too.
+    /// holding a secret, or a key file in .roko, from the table roko-std's
+    /// bash tool checks too, and the Grep calls only this guard checks.
     #[test]
     fn settings_hook_refuses_every_search_that_reaches_a_secret() {
         let workdir = tempdir().unwrap();
@@ -2280,20 +2284,39 @@ mod tests {
         fs::create_dir(&src).unwrap();
         fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
         fs::write(root.join("roko.lock"), "lock\n").unwrap();
+        for key in [
+            ".roko/.env",
+            ".roko/secrets.toml",
+            "vendor/pkg/.roko/credentials.json",
+        ] {
+            let key = root.join(key);
+            fs::create_dir_all(key.parent().unwrap()).unwrap();
+            fs::write(&key, "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        }
         fs::write(
             root.join("roko.toml"),
             "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
         )
         .unwrap();
         let bash_hook = bash_hook_command();
-        let bash_code = |command: &str, cwd: &std::path::Path| {
-            let payload = serde_json::json!({
-                "cwd": cwd,
-                "tool_input": { "command": command },
-            });
-            run_hook(&bash_hook, &payload.to_string(), &[])
-                .status
-                .code()
+        let file_hook = file_hook_command();
+        // A "Grep:" row is a Grep call, with its input as JSON.
+        let hook_code = |command: &str, cwd: &std::path::Path| {
+            let (hook, payload) = match command.strip_prefix("Grep: ") {
+                Some(input) => (
+                    &file_hook,
+                    serde_json::json!({
+                        "cwd": cwd,
+                        "tool_name": "Grep",
+                        "tool_input": serde_json::from_str::<Value>(input).unwrap(),
+                    }),
+                ),
+                None => (
+                    &bash_hook,
+                    serde_json::json!({ "cwd": cwd, "tool_input": { "command": command } }),
+                ),
+            };
+            run_hook(hook, &payload.to_string(), &[]).status.code()
         };
 
         let cases = include_str!("../../roko-std/src/tool/builtin/sandbox/secret_read_cases.txt");
@@ -2307,12 +2330,114 @@ mod tests {
                 .map_or((root, rest), |command| (src.as_path(), command));
             let want = if verdict == "deny" { Some(2) } else { Some(0) };
             assert_eq!(
-                bash_code(command, cwd),
+                hook_code(command, cwd),
                 want,
                 "`{command}` in {}",
                 cwd.display()
             );
         }
+    }
+
+    /// bug-6af02b: Claude Code runs Grep as `rg --hidden`. The Read deny
+    /// rules in the settings keep the key files out of it (Claude Code turns
+    /// them into `--iglob` exclusions for its Grep and Glob), so the guard
+    /// lets such a Grep run. It refuses a Grep that would read a roko.toml
+    /// holding a secret, unless the Grep's path, glob or type leaves the file
+    /// out or git ignores it.
+    #[test]
+    fn grep_tool_at_a_workspace_root_cannot_read_a_key_file() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
+        let workdir = tempdir().unwrap();
+        let root = workdir.path();
+        fs::create_dir_all(root.join(".roko")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".roko/.env"), "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        fs::write(root.join("src/a.rs"), "fn main() {}\n").unwrap();
+        let file_hook = file_hook_command();
+        let code = |tool: &str, tool_input: Value| {
+            let payload =
+                serde_json::json!({ "cwd": root, "tool_name": tool, "tool_input": tool_input });
+            run_hook(&file_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+        let grep = |extra: Value| {
+            let mut tool_input = serde_json::json!({ "pattern": "OPENAI" });
+            tool_input
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            code("Grep", tool_input)
+        };
+
+        // The deny rules keep the key files out of a Grep at the root, so it
+        // runs; a Grep rooted at .roko, and a Read of a key file, do not.
+        assert_eq!(grep(serde_json::json!({})), Some(0));
+        assert_eq!(grep(serde_json::json!({ "path": ".roko" })), Some(2));
+        assert_eq!(
+            code("Read", serde_json::json!({ "file_path": ".roko/.env" })),
+            Some(2)
+        );
+
+        // No deny rule covers a roko.toml that holds a secret.
+        fs::write(
+            root.join("roko.toml"),
+            "[serve.auth]\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "glob": "*.toml" }),
+            serde_json::json!({ "glob": "*.rs *.toml" }),
+            serde_json::json!({ "type": "toml" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(2),
+                "Grep {extra} should be denied"
+            );
+        }
+        for extra in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "glob": "*.rs" }),
+            serde_json::json!({ "glob": "!roko.toml" }),
+            serde_json::json!({ "type": "rust" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(0),
+                "Grep {extra} should be allowed"
+            );
+        }
+
+        // rg skips what git ignores.
+        let git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(git(&["init", "-q"]), "git init");
+        assert_eq!(
+            grep(serde_json::json!({})),
+            Some(2),
+            "a config git does not ignore"
+        );
+        fs::write(root.join(".gitignore"), "roko.toml\n").unwrap();
+        assert_eq!(grep(serde_json::json!({})), Some(0), "a config git ignores");
     }
 
     #[test]
@@ -2374,6 +2499,15 @@ mod tests {
             .pointer("/hooks/PreToolUse/0/hooks/0/command")
             .and_then(Value::as_str)
             .expect("hook command")
+            .to_string()
+    }
+
+    fn file_hook_command() -> String {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command")
             .to_string()
     }
 

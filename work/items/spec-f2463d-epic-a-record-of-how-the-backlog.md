@@ -2,14 +2,16 @@
 id = "spec-f2463d"
 kind = "spec"
 title = "Epic: a record of how the backlog gets done"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "L"
 subsystem = ["tools/work", "work/telemetry"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ad14d38d7"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md"
 anchors = ["tools/work.py::cmd_claim", "tools/work.py::close_item", "tmp/cybernetic-harness/tools/field_rollup.py::load_summaries", "work/telemetry/"]
@@ -19,6 +21,13 @@ links = { depends_on = ["bug-7b37c4", "gap-d0643c", "gap-0b9056", "gap-92033c", 
 
 [[verify]]
 command = "test -f work/telemetry/DEFINITIONS.md && grep -qw 'def test_rollup_reports_cost_per_merged_item_with_coverage' tools/test_work_telemetry.py && python3 tools/test_work_telemetry.py -k test_rollup_reports_cost_per_merged_item_with_coverage"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:35:49Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "All six children done and merged (gap-d0643c, gap-0b9056, gap-92033c, gap-dc6775, gap-ccb87e via work/gap-d0643c, plus bug-1440cd), ad14d38d7. The epic verify passes in MAIN: DEFINITIONS.md present and test_rollup_reports_cost_per_merged_item_with_coverage OK; test_work 22, test_work_backfill 3, test_work_telemetry 4, test_work_harvest 8 all OK. First rollup and manifest committed (14 merged items; cost coverage 0 until a harvest runs)."
 +++
 
 ## Problem
@@ -76,8 +85,8 @@ after the P0/P1 fixes (W12 Phase B).
 - [x] gap-92033c: The work skills add Work-Item, Executor and Conflicts trailers to merge commits
 - [x] gap-263de5: Transcript harvester: tokens, model and time per backlog item from Claude Code transcripts
 - [x] gap-7984a5: DEFINITIONS.md: the development record's metrics, fixed in advance
-- [ ] gap-ccb87e: Daily rollup of the development record with a committed manifest
-- [ ] gap-dc6775: Backfill executors for already-closed items from [closed].by and the reflog
+- [x] gap-ccb87e: Daily rollup of the development record with a committed manifest
+- [x] gap-dc6775: Backfill executors for already-closed items from [closed].by and the reflog
 - [x] gap-09e478: Dogfood session evidence bundle (existing item)
 - [x] bug-652bb7: Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order
 - [x] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are

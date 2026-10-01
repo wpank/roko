@@ -761,6 +761,10 @@ def check_event(row) -> list[str]:
         errs.append(f"unknown event {row.get('event')!r}")
     if row.get("source") not in EVENT_SOURCES:
         errs.append(f"unknown source {row.get('source')!r}")
+    if row.get("executor") is not None and row["executor"] not in CLOSED_EXECUTORS:
+        errs.append(f"unknown executor {row.get('executor')!r}")
+    if row.get("via") is not None and row["via"] not in VIAS:
+        errs.append(f"unknown via {row.get('via')!r}")
     if not TS_RE.match(str(row.get("ts"))):
         errs.append(f"ts {row.get('ts')!r} is not a UTC timestamp")
     if row.get("item") is not None and not ID_RE.match(str(row["item"])):

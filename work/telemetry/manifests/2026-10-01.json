@@ -1,0 +1,47 @@
+{
+ "schema": "roko.work_manifest/1",
+ "date": "2026-10-01",
+ "head": "ad14d38d7",
+ "files": [
+  {
+   "path": "work/telemetry/events/backfill.jsonl",
+   "sha256": "f3c105215d13ad3904f0d19c1c7427e360ff418f39584a83854a3964123248cd",
+   "rows": 705
+  },
+  {
+   "path": "work/telemetry/events/wk-childenv.jsonl",
+   "sha256": "af39555aea59bf8153d05b086f4fab354bf765f3c3a7e613309366ec5ea3c628",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/wk-guard2.jsonl",
+   "sha256": "eac1a853942da1eaabc758db09352bdead804b534a8ea7595c0e805ca1f03332",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/wk-honestbench.jsonl",
+   "sha256": "4b6b516e34155eb438e195361b594bdb122c67cecc5558b6319df11f2b02610b",
+   "rows": 1
+  },
+  {
+   "path": "work/telemetry/events/wk-runstate.jsonl",
+   "sha256": "66b60fc1d7ec5d98a7ef02e515ab7c3ab6c0f4184d7d5004c1ef09e4cd2b3245",
+   "rows": 3
+  },
+  {
+   "path": "work/telemetry/DEFINITIONS.md",
+   "sha256": "ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720",
+   "rows": 175
+  },
+  {
+   "path": "config/prices/2026-09-28.toml",
+   "sha256": "e39403657edc6ec66fc9cd9ed648ad03800a05dc263d8be3b291db4f727bd0b0",
+   "rows": 27
+  },
+  {
+   "path": "work/items/*.md [closed]",
+   "sha256": "50e17fdbd93f252665c84edc2a9d0a23babdea1f91427a25504e1c46a3a7824c",
+   "rows": 465
+  }
+ ]
+}

@@ -468,7 +468,19 @@ impl ProviderHealthRegistry {
         let health = providers
             .entry(key.clone())
             .or_insert_with(|| new_provider_health(&key));
+        let was_open = health.state == CircuitState::Open;
         health.record_failure(error, unix_ms_now());
+        // The breaker just took the provider out of routing: say so where an
+        // operator looks, rather than only in the health file (gap-4e35b0).
+        if !was_open && health.state == CircuitState::Open {
+            tracing::warn!(
+                provider = %key,
+                error_class = ?error,
+                consecutive_failures = health.consecutive_failures,
+                cooldown_until_ms = ?health.cooldown_until,
+                "provider circuit opened: routing skips this provider until its cooldown ends"
+            );
+        }
         drop(providers);
         self.schedule_persist();
     }

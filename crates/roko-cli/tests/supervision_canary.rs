@@ -17,15 +17,15 @@ use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
 
 /// A `claude_cli` provider that reports one message and then goes silent:
-/// it logs its pid, prints an assistant message, and becomes `sleep 60` (same
-/// pid).
+/// it logs its pid, prints an assistant message, and becomes `sleep 300`
+/// (same pid), longer than its task's `timeout_secs`.
 const SILENT_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cat >/dev/null
 printf '%s\n' "$$" >> "$dir/provider-pids"
 printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"reading the task"}]}}'
-exec sleep 60
+exec sleep 300
 "#;
 
 /// One task on the silent provider. Without the watchdog its two attempts

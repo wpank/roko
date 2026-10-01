@@ -3338,6 +3338,9 @@ pub fn default_registry() -> CellRegistry {
         .with_display_name("CognitiveComposeCell"),
         |_config| Box::new(crate::cells::cognitive::CognitiveComposeCell::new()),
     );
+    // ActCell passes its input through without dispatching to a provider
+    // (gap-3d5cce), so `act` and its `claude-agent` alias are stubs: a
+    // production start refuses graphs that use them (bug-91a34e).
     registry.register_with_descriptor(
         "act",
         CellDescriptor::new(
@@ -3347,7 +3350,8 @@ pub fn default_registry() -> CellRegistry {
             Some(TypeSchema::OfKind(Kind::Episode)),
         )
         .with_protocols(vec![ProtocolId::Connect])
-        .with_display_name("ActCell"),
+        .with_display_name("ActCell")
+        .with_stub(true),
         |_config| Box::new(crate::cells::cognitive::ActCell::new()),
     );
     registry.register_with_descriptor(
@@ -3438,7 +3442,8 @@ pub fn default_registry() -> CellRegistry {
             Some(TypeSchema::OfKind(Kind::Episode)),
         )
         .with_protocols(vec![ProtocolId::Connect])
-        .with_display_name("ActCell (claude-agent alias)"),
+        .with_display_name("ActCell (claude-agent alias)")
+        .with_stub(true),
         |_config| Box::new(crate::cells::cognitive::ActCell::new()),
     );
     registry.register_with_descriptor(
@@ -5326,13 +5331,45 @@ to = "b"
                 graph.add_edge(make_edge(from, to)).unwrap();
             }
 
-            let engine = GraphEngine::new(graph, registry);
+            // `act` is a stub (bug-91a34e); this test checks the edge types.
+            let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
             let result = engine.validate_for_start();
             assert!(
                 result.is_ok(),
                 "default registry cognitive loop should validate: {:?}",
                 result.err()
             );
+        }
+
+        /// bug-91a34e: `act` and `claude-agent` build ActCell, which passes
+        /// its input through and dispatches nothing (gap-3d5cce). A
+        /// production start refuses graphs that use them; tests may still
+        /// run them.
+        #[test]
+        fn stub_cells_are_refused_for_agent_nodes_in_production_starts() {
+            for cell_type in ["act", "claude-agent"] {
+                let mut graph = Graph::new(GraphMetadata {
+                    name: "agent".to_string(),
+                    ..Default::default()
+                });
+                graph.add_node(make_node("agent", cell_type)).unwrap();
+
+                let refused = GraphEngine::new(graph.clone(), default_registry())
+                    .validate_for_start()
+                    .err()
+                    .unwrap_or_else(|| panic!("a production start accepted `{cell_type}`"));
+                assert!(
+                    refused.to_string().contains("test-stub node(s): agent"),
+                    "{cell_type}: {refused}"
+                );
+                assert!(
+                    GraphEngine::new(graph, default_registry())
+                        .with_allow_test_stubs(true)
+                        .validate_for_start()
+                        .is_ok(),
+                    "{cell_type}"
+                );
+            }
         }
 
         #[test]

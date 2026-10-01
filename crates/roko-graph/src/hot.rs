@@ -116,6 +116,9 @@ pub struct HotCheckpointOptions {
     pub fresh: bool,
     /// Archive an invalid or drifted checkpoint and begin a new run.
     pub force_resume: bool,
+    /// Run cells whose registry descriptors are stubs, which a start refuses
+    /// otherwise (see [`GraphEngine::with_allow_test_stubs`]).
+    pub allow_test_stubs: bool,
 }
 
 impl HotCheckpointOptions {
@@ -126,6 +129,7 @@ impl HotCheckpointOptions {
             directory: directory.into(),
             fresh: false,
             force_resume: false,
+            allow_test_stubs: false,
         }
     }
 }
@@ -296,7 +300,7 @@ pub fn start_hot_with_budget(
     budget: Option<BudgetEnforcer>,
 ) -> HotGraphHandle {
     configure_hot_graph(&mut graph, &policy);
-    start_hot_engine(graph, registry, policy, parent_cancel, budget, None)
+    start_hot_engine(graph, registry, policy, parent_cancel, budget, None, false)
 }
 
 /// Start or resume a crash-recoverable Hot Graph.
@@ -340,6 +344,7 @@ pub fn start_hot_resumable_with_budget(
         parent_cancel,
         budget,
         Some(prepared),
+        checkpoint.allow_test_stubs,
     ))
 }
 
@@ -356,6 +361,7 @@ fn start_hot_engine(
     parent_cancel: Option<CancellationToken>,
     budget: Option<BudgetEnforcer>,
     checkpoint: Option<PreparedHotCheckpoint>,
+    allow_test_stubs: bool,
 ) -> HotGraphHandle {
     let cancel = parent_cancel.map(|p| p.child_token()).unwrap_or_default();
     let initial_tick = checkpoint
@@ -369,7 +375,7 @@ fn start_hot_engine(
     let parallel_execution = graph.policy.max_concurrent_nodes > 1;
     let graph_name = graph.metadata.name.clone();
 
-    let mut engine = GraphEngine::new(graph, registry);
+    let mut engine = GraphEngine::new(graph, registry).with_allow_test_stubs(allow_test_stubs);
 
     // Validate edge type compatibility before spawning work.
     if let Err(error) = engine.validate_for_start() {
@@ -974,6 +980,67 @@ execution_class = "activity"
             })
         });
         registry
+    }
+
+    /// bug-91a34e: a Hot Graph start refuses cells whose descriptors are
+    /// stubs, unless its options allow them, as `roko agent serve
+    /// --allow-stub-cognitive-loop` does.
+    #[tokio::test]
+    async fn stub_cells_are_refused_by_hot_graph_starts_unless_allowed() {
+        let temp = tempdir().expect("tempdir");
+        let stub_registry = |executions: Arc<AtomicU64>| {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "counter",
+                crate::registry::CellDescriptor::test_stub("counter"),
+                move |_| {
+                    Box::new(CountingCell {
+                        executions: executions.clone(),
+                        cancel_after: None,
+                    })
+                },
+            );
+            registry
+        };
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(1),
+            persist_tick_state: true,
+            loop_level: None,
+        };
+
+        let refused_executions = Arc::new(AtomicU64::new(0));
+        let refused = start_hot_resumable(
+            hot_graph("stub-refused"),
+            stub_registry(refused_executions.clone()),
+            policy.clone(),
+            None,
+            HotCheckpointOptions::new(temp.path().join("refused")),
+        )
+        .expect("start refused graph");
+        let failure = refused
+            .wait_result()
+            .await
+            .expect_err("a stub cell is refused");
+        assert!(
+            failure.to_string().contains("test-stub node(s): counter"),
+            "{failure}"
+        );
+        assert_eq!(refused_executions.load(Ordering::Relaxed), 0);
+
+        let allowed_executions = Arc::new(AtomicU64::new(0));
+        let mut options = HotCheckpointOptions::new(temp.path().join("allowed"));
+        options.allow_test_stubs = true;
+        let allowed = start_hot_resumable(
+            hot_graph("stub-allowed"),
+            stub_registry(allowed_executions.clone()),
+            policy,
+            None,
+            options,
+        )
+        .expect("start allowed graph");
+        allowed.wait_result().await.expect("stub cells allowed");
+        assert_eq!(allowed_executions.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

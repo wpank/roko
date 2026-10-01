@@ -2063,7 +2063,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                      total = 1\n\
                      done = 0\n\
                      status = \"ready\"\n\
-                     max_parallel = 1\n\n\
+                     # max_parallel is omitted: tasks that do not depend on each other run together\n\n\
                      [[task]]\n\
                      id = \"T1\"\n\
                      title = \"Task title\"\n\

@@ -3,19 +3,21 @@ id = "gap-a6de8d"
 kind = "gap"
 title = "Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-serve/routes"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W5-contention-parallelism.md (F1, F2, rec 3)"
 anchors = ["crates/roko-serve/src/routes/plans.rs", "crates/roko-serve/src/routes/plans/"]
 lane = "rust-cold"
 parent = "spec-9a3131"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+last_verified = 2026-10-01
+last_verified_rev = "b181478bd"
 
 [[verify]]
 command = "test -f crates/roko-serve/src/routes/plans/run_control.rs && test -f crates/roko-serve/src/routes/plans/authoring.rs && test -f crates/roko-serve/src/routes/plans/merge.rs && test -f crates/roko-serve/src/routes/plans/reads.rs && cargo test -p roko-serve --lib routes::plans && cargo test -p roko-serve --test route_coverage_matrix"
@@ -70,3 +72,11 @@ Unsplit at `41c7ffbd6`.
 
 - Serve routes are hot in general, but this file has no writer today, so do it before anyone starts one.
 - tldr/05 P0 #5 lists a fix to the diff route; that fix would then land in `merge.rs`.
+
+2026-10-01 (wk-runstate): implemented on work/find-8872ad at the working branch's b181478bd; cargo verification deferred to the batch check. This is a pure move with no behaviour changes. `plans.rs` keeps `routes()` (the same 20 routes, 22 method-and-path registrations, still in this file) and the shared helpers `task_status`, `plan_to_json`, `plans_dir` and `resolve_plan`. It declares `mod run_control`, `mod authoring`, `mod merge` and `mod reads`, and glob-imports them.
+- The handler groups moved as the Where section lists them, together with their request structs and helpers. `run_control` holds the run helpers (`active_run_conflict`, `active_run_for`, `plan_run_rejected`, `hub_published_plan_completed`). `reads` holds the history helpers.
+- Each module starts with `use super::*`. Moved items and their struct fields are `pub(super)`, so siblings and the tests reach them as before. That is a visibility change only, and `slug_from_title` stays `pub(crate)`.
+- No `pub(crate) use` re-export of `slug_from_title` was added: nothing outside `plans.rs` uses it, so a crate-visible re-export would be unused.
+- The tests moved as one file, `plans/tests.rs`, dedented, so their paths stay `routes::plans::tests::*`; they were not split per group.
+- The three signatures that grew past 100 columns with `pub(super)` are broken the way rustfmt breaks them. A line-by-line comparison against the original shows every other line unchanged.
+- `tools/http_route_inventory.py --check-snapshot` already failed at b181478bd: the snapshot said 421 registrations against 453, from routes other branches had added. It was refreshed in a separate commit; the split itself moves no registration.

@@ -58,6 +58,10 @@ async fn run_acp_server_inner(config: AcpConfig) -> Result<()> {
         // Non-fatal — we'll fall back to /tmp for logging.
         warn!("cannot create .roko/: {e}");
     }
+    // Register the agents this server spawns under its workspace, as the CLI
+    // does for its other commands; otherwise they land under the current
+    // directory, where registry cleanup for the workspace cannot find them.
+    roko_agent::process::set_registry_root(&workdir);
 
     let _guard = setup_file_logging(config.log_file())
         .or_else(|e| {

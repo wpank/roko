@@ -1,7 +1,6 @@
 //! Per-plan mutable state tracked by the executor.
 //!
-//! Each plan gets a [`PlanState`] when it enters the executor via
-//! [`add_plan`](super::ParallelExecutor::add_plan). The state machine
+//! Each plan gets a [`PlanState`] when it enters the executor. The state machine
 //! ([`super::state_machine`]) reads and updates `PlanState` as the plan
 //! progresses through phases.
 

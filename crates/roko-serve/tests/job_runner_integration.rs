@@ -1054,3 +1054,114 @@ async fn filter_jobs_by_assigned_to() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["id"], "assign-a");
 }
+
+// ---------------------------------------------------------------------------
+// Tests: cancelling a running job (gap-2a9ed7)
+// ---------------------------------------------------------------------------
+
+/// Runtime whose `run_once` waits until the test releases it, so the test can
+/// cancel a job while it runs.
+struct BlockingRuntime {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for BlockingRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(RunResult {
+            success: true,
+            output_text: Some("finished after release".to_string()),
+            usage: None,
+            gate_results: Vec::new(),
+        })
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: Some(0),
+            episode_count: Some(0),
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancel_running_auto_execute_job_stays_cancelled() {
+    let dir = tempdir().expect("tempdir");
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let runtime = BlockingRuntime {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    };
+    let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+    let state = Arc::new(
+        AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(runtime),
+            RokoConfig::default(),
+            deploy,
+        )
+        .expect("AppState::new"),
+    );
+    let auth = ServeAuthConfig {
+        enabled: false,
+        ..ServeAuthConfig::default()
+    };
+    let app = build_router(Arc::clone(&state), &[], auth);
+    write_job_file(
+        dir.path(),
+        &serde_json::json!({
+            "id": "job-running-cancel",
+            "title": "Long job",
+            "description": "Runs until the test releases it.",
+            "job_type": "other",
+            "status": "open",
+            "auto_execute": true
+        }),
+    );
+
+    let runner_state = Arc::clone(&state);
+    let runner = tokio::spawn(async move {
+        roko_serve::job_runner::execute_job(&runner_state, "job-running-cancel").await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .expect("job should start running");
+
+    let (status, cancelled) = post_json(
+        &app,
+        "/api/jobs/job-running-cancel/cancel",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+    assert_eq!(cancelled["receipt"]["prior_status"], "in_progress");
+    assert_eq!(cancelled["receipt"]["acknowledged"], true);
+
+    // Let the runtime finish: the runner must not record its result over the cancel.
+    release.notify_one();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), runner)
+        .await
+        .expect("runner should stop")
+        .expect("runner task");
+    assert!(outcome.is_err(), "cancelled run reported: {outcome:?}");
+    let on_disk = read_job_file(dir.path(), "job-running-cancel");
+    assert_eq!(on_disk["status"], "cancelled");
+}

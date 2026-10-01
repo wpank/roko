@@ -55,14 +55,17 @@ use crate::task_parser::TaskDef;
 mod attempt;
 mod attempt_workspace;
 pub(crate) mod baseline_verify;
+mod bench_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;
+mod fast;
 mod feedback;
 mod gate_learning;
 mod helper_calls;
 mod inert_settings;
 mod ladder;
+mod live_tool_calls;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -94,6 +97,7 @@ use budget::{
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
+use live_tool_calls::LiveToolCalls;
 use routing_context::{
     CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
     build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
@@ -151,6 +155,9 @@ pub struct GraphTaskDispatcher {
     cli_model_override: Option<String>,
     /// Whether to skip agent permission prompts (from `--dangerously-skip-permissions`).
     dangerously_skip_permissions: bool,
+    /// FAST mode's bounds on each attempt (`./dev.sh fast`, gap-4a6dcb); `None`
+    /// outside FAST mode.
+    fast: Option<crate::graph_execution::fast_lane::FastAttemptBounds>,
     /// Learning/feedback subsystems wired into the Graph engine.
     feedback: GraphFeedbackContext,
     /// Optional per-task worktree isolation provider. When `Some`, each task
@@ -269,6 +276,9 @@ pub struct GraphTaskDispatcher {
     /// The plans of this run that are running now, by id, with the areas
     /// their tasks write ([`Self::plan_started`]).
     running_plans: parking_lot::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Registry that counts verify verdicts beside the tracing fields
+    /// ([`Self::with_metrics`]).
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 impl GraphTaskDispatcher {
@@ -289,6 +299,7 @@ impl GraphTaskDispatcher {
             budget_ledger: GraphPlanBudgetLedger::default(),
             cli_model_override: None,
             dangerously_skip_permissions: false,
+            fast: None,
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
             disk_admission: None,
@@ -320,6 +331,7 @@ impl GraphTaskDispatcher {
             approval_plans: parking_lot::Mutex::default(),
             first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
             running_plans: parking_lot::Mutex::default(),
+            metrics: None,
         }
     }
 
@@ -405,6 +417,19 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn with_live_agent_output(mut self, setting: LiveAgentOutput) -> Self {
         self.live_agent_output = Some(setting);
+        self
+    }
+
+    /// Count each verify step's verdict and duration in `registry` as well as
+    /// in the tracing fields (gap-d8c39a). Serve passes the registry that
+    /// `/metrics` renders; a run without one, such as `roko plan run`, keeps
+    /// the tracing fields only.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        registry: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    ) -> Self {
+        self.metrics = registry;
         self
     }
 
@@ -494,7 +519,7 @@ impl GraphTaskDispatcher {
             );
         }
         // The tasks' spend and turn-cap retries the earlier process kept
-        // (gap-34b2ed).
+        // (gap-34b2ed), and its timeout retries (gap-6f77a3).
         for (task_id, micro_usd) in self.gate_retry_context.kept_task_spend(plan_id) {
             let key = format!("{plan_id}/{task_id}");
             self.task_spend.restore(&key, micro_usd);
@@ -503,11 +528,16 @@ impl GraphTaskDispatcher {
             let key = format!("{plan_id}/{task_id}");
             self.turn_cap_retries.lock().insert(key, retry);
         }
+        for (task_id, timeout_ms) in self.gate_retry_context.kept_timeouts(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.timeout_retries.lock().insert(key, timeout_ms);
+        }
     }
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
     /// written, the rest set by `[gates]` and the adaptive gate thresholds
-    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]). The
+    /// this dispatcher's verify runs record, biased by the workspace's
+    /// durable knowledge of failing rungs (see [`TaskRetryBudgets`]). The
     /// verify runs held for the flush interval are written first, so the
     /// budgets see every one so far.
     pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
@@ -517,11 +547,13 @@ impl GraphTaskDispatcher {
             .map(|dir| dir.join("tasks.toml"))
             .find(|path| path.is_file())
             .unwrap_or_else(|| plan_dir.join("tasks.toml"));
+        let knowledge = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);
         TaskRetryBudgets::load(
             self.feedback.gate_thresholds_path.as_deref(),
             &self.config.gates,
             &tasks_toml,
         )
+        .with_neuro_gate_hints(&knowledge)
         .with_ladder_min_retries(self.ladder_min_retries())
     }
 
@@ -551,7 +583,7 @@ impl GraphTaskDispatcher {
 
     /// Why no further task of `plan_id` may be dispatched in this run, when
     /// that is so: its settled spend reached the plan ceiling, or today's
-    /// reached `budget.max_daily_usd` (and no explicit override lets it
+    /// reached `budget.max_daily_usd` (unless `--no-budget` lets it
     /// continue), or its cost ledger cannot be persisted. In-flight
     /// reservations alone never stop a plan.
     #[must_use]
@@ -566,15 +598,22 @@ impl GraphTaskDispatcher {
     /// result, an agent that exits on that SIGTERM included, settles as
     /// cancelled rather than as a provider failure, and fails with
     /// [`RokoError::Cancelled`], which the task executor does not retry
-    /// (bug-28b604).
+    /// (bug-28b604). So does a verify step that fails then, a gate command
+    /// stopped with the agents say, and no further verify step starts
+    /// (bug-82cbef).
     pub fn begin_stop(&self) {
         self.stopping.store(true, Ordering::Release);
+    }
+
+    /// Whether the plan run began to stop ([`Self::begin_stop`]).
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
     }
 
     /// The cancellation a call of `plan_id/task_id` that ended with `cause`
     /// becomes once its run began to stop ([`Self::begin_stop`]).
     fn stopped_call(&self, plan_id: &str, task_id: &str, cause: &str) -> Option<RokoError> {
-        self.stopping.load(Ordering::Acquire).then(|| {
+        self.is_stopping().then(|| {
             RokoError::cancelled(format!(
                 "agent for {plan_id}/{task_id} ended while its plan run was stopping: {cause}"
             ))
@@ -652,7 +691,7 @@ impl GraphTaskDispatcher {
     }
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
-    /// the plan ceiling: an explicit `--budget` override only warns, and
+    /// the plan ceiling: a policy that continues on exhaustion only warns, and
     /// `--no-budget` disables the check.
     fn admit_task_budget(
         &self,
@@ -674,7 +713,7 @@ impl GraphTaskDispatcher {
                 task_id = %task.id,
                 ceiling_usd,
                 %error,
-                "per-task budget exhausted; continuing under the explicit --budget override"
+                "per-task budget exhausted; continuing, as the plan's budget policy allows"
             );
             return Ok(());
         }
@@ -1264,7 +1303,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
         // rerun the budget that already ran out.
-        let timeout_resume = self.timeout_retries.lock().remove(&task_spend_key);
+        let timeout_resume = self.take_timeout_retry(&spec.plan_id, &task.id);
         let timeout_ms = timeout_resume.map_or(base_timeout_ms, |previous_ms| {
             let raised = raised_attempt_timeout_ms(previous_ms, base_timeout_ms);
             tracing::info!(
@@ -1314,6 +1353,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
         };
+        // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
+        self.fast_bound(&mut request);
 
         // Bind the prompt treatments to the exact final prompt before launch;
         // an attempt that ends before `emit_feedback` abandons them on drop.
@@ -1381,6 +1422,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             &watched,
             Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         attempt.dispatch_started();
@@ -1620,9 +1662,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 });
             }
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
-                self.timeout_retries
-                    .lock()
-                    .insert(task_spend_key.clone(), timeout_ms);
+                self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
             }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,
@@ -2424,12 +2464,13 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
     }
 
-    /// bug-017c2d: no placeholder test is written, and nothing reaches the
-    /// repo root. With `write_eval_artifacts` on, only checked evaluations
-    /// are written; the built-in template needs a property body that the
-    /// fixture task does not author, so none is.
+    /// bug-017c2d, bug-05a434: no placeholder test is written, and nothing
+    /// reaches the repo root. With `write_eval_artifacts` on, only checked
+    /// evaluations are written; the built-in template needs a property body
+    /// that no plan task authors, so none is, and `plan run` reports the key
+    /// as inert.
     #[tokio::test]
-    async fn eval_artifacts_never_hold_placeholder_tests_or_reach_the_repo_root() {
+    async fn write_eval_artifacts_writes_nothing_without_a_property_body() {
         for write_eval_artifacts in [false, true] {
             let temp = tempdir().expect("tempdir");
             let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
@@ -2456,21 +2497,19 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         }
     }
 
+    /// `[meta] skip_enrichment` is read once per plan, and a plan that sets it
+    /// still dispatches. What it skips leaves nothing to observe here: eval
+    /// artifacts need a property body (bug-05a434), and the fixture has no
+    /// dream routing advice.
     #[tokio::test]
-    async fn skip_enrichment_plan_meta_is_read_and_suppresses_eval_artifacts() {
+    async fn skip_enrichment_plan_meta_is_read_once_per_plan() {
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
-            config.gates.write_eval_artifacts = true;
-        })
-        .await;
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            eval_generation_enabled: true,
-            ..GraphFeedbackContext::default()
-        });
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |_| {}).await;
         let plan_dir = temp.path().join("plans/authored");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks_path = plan_dir.join("tasks.toml");
         std::fs::write(
-            plan_dir.join("tasks.toml"),
+            &tasks_path,
             "[meta]\nplan = \"authored\"\nskip_enrichment = true\n\n\
              [[task]]\nid = \"T-EXP\"\ntitle = \"Wire the batch fixture\"\n",
         )
@@ -2483,8 +2522,10 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         dispatcher
             .dispatch(&spec, Vec::new(), &batch_ctx())
             .await
-            .expect("dispatch");
-        assert!(!temp.path().join(".roko/generated-tests").exists());
+            .expect("a plan that skips enrichment still dispatches");
+        // Read once: removing the plan file afterwards changes nothing.
+        std::fs::remove_file(&tasks_path).expect("remove tasks.toml");
+        assert!(dispatcher.plan_skips_enrichment(&spec));
 
         let mut unflagged = make_spec(&task);
         unflagged.plan_id = "unflagged".to_string();
@@ -2891,27 +2932,15 @@ printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonne
 sleep 30
 "#;
 
-    /// find-f489db: a Graph run attaches its tool observability to the agent
-    /// factory. A tool call an API model makes then leaves a scrubbed admit
-    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
-    /// run and task, a closed trace under `.roko/traces/` and a metrics
-    /// record.
-    #[tokio::test]
-    async fn graph_run_writes_tool_audit_admit_and_result() {
-        // A GitHub token, which the scrubber's built-in patterns catch.
-        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
-        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
-        let temp = tempdir().expect("tempdir");
-        let workdir = temp.path().to_path_buf();
-        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
-        let (base_url, _requests) = spawn_openai_mock(vec![
-            tool_call_turn(
-                "call-read",
-                "read_file",
-                serde_json::json!({ "path": "notes.txt" }),
-            ),
-            final_turn("read the notes"),
-        ]);
+    /// Run task `T01` of plan `p-audit` through a Graph dispatcher that
+    /// records into `feedback`, with the run's tool observability attached
+    /// to its agent factory, on an API model the OpenAI mock at `base_url`
+    /// serves (find-f489db).
+    async fn run_audited_api_task(
+        workdir: &Path,
+        base_url: String,
+        feedback: GraphFeedbackContext,
+    ) {
         let mut config = RokoConfig::default();
         config.providers.clear();
         config.models.clear();
@@ -2948,20 +2977,19 @@ sleep 30
                 ..ModelProfile::default()
             },
         );
-        // The mock answers without SSE: keep the stall watchdog, which would
-        // stream over live output, off.
+        // Keep the stall watchdog off. The attempt still streams, since its
+        // progress is tracked (bug-3a3b0f), and the mock answers in SSE.
         config.conductor.silence_timeout_secs = 0;
         config.conductor.task_stall_secs = 0;
         let config = Arc::new(config);
         let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None).await;
         let factory = Arc::new(
-            crate::graph_execution::plan_runner::attach_tool_observability(factory, &workdir).await,
+            crate::graph_execution::plan_runner::attach_tool_observability(factory, workdir).await,
         );
-        let dispatcher = Arc::new(GraphTaskDispatcher::new(
-            factory,
-            Arc::clone(&config),
-            workdir.clone(),
-        ));
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.to_path_buf())
+                .with_feedback(feedback),
+        );
         let task = TaskDef {
             id: "T01".to_string(),
             title: "Read the notes".to_string(),
@@ -2991,6 +3019,83 @@ sleep 30
         )
         .await
         .expect("the task completes");
+    }
+
+    /// gap-4d5e2d: the efficiency row of a Graph attempt on an API model lists
+    /// the tool calls roko's tool loop made, each with the outcome the tool
+    /// audit recorded: a read that worked and one of a missing file.
+    #[tokio::test]
+    async fn efficiency_tool_calls_record_outcome_of_an_audited_graph_run() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), "notes\n").expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            tool_call_turn(
+                "call-missing",
+                "read_file",
+                serde_json::json!({ "path": "missing.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        let efficiency_path = workdir.join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        run_audited_api_task(&workdir, base_url, feedback).await;
+
+        let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && !row["attempt_id"].as_str().unwrap_or("/").contains('/')
+        })
+        .await;
+        let calls: Vec<(&str, Option<bool>)> = rows[0]["tool_calls"]
+            .as_array()
+            .expect("tool calls")
+            .iter()
+            .map(|call| {
+                (
+                    call["tool_name"].as_str().unwrap_or_default(),
+                    call["succeeded"].as_bool(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [("read_file", Some(true)), ("read_file", Some(false))],
+            "{:#}",
+            rows[0]
+        );
+        assert_eq!(rows[0]["tools_used"], 2, "{:#}", rows[0]);
+    }
+
+    /// find-f489db: a Graph run attaches its tool observability to the agent
+    /// factory. A tool call an API model makes then leaves a scrubbed admit
+    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
+    /// run and task, a closed trace under `.roko/traces/` and a metrics
+    /// record.
+    #[tokio::test]
+    async fn graph_run_writes_tool_audit_admit_and_result() {
+        // A GitHub token, which the scrubber's built-in patterns catch.
+        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
+        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        run_audited_api_task(&workdir, base_url, GraphFeedbackContext::default()).await;
 
         let roko_dir = workdir.join(".roko");
         let audit =

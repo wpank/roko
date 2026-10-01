@@ -9,9 +9,9 @@ size = "M"
 goal = "tooling"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 message 2026-09-28 (commit 725f21e05)"
 discovered_from = "item:bug-f7943a"
 anchors = ["crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/runner/cargo_command.rs::cargo_profile_available", "dev.sh:225"]
@@ -152,3 +152,9 @@ CLAUDE.md's FAST paragraph still describes the full set, so it overstates what F
 Done when each feature works on the Graph path and has a test, or is dropped from dev.sh's help and CLAUDE.md.
 
 Re-verified 2026-09-29 at d9e79e9d8: unchanged. None of the five missing FAST features (patch-only prompt section, 90 s attempt/silence clamp, 6-turn cap, dev-fast gate profile, no-autofix) has a reader on the Graph path. CLAUDE.md's FAST paragraph now points at this item (4bc92ff7a), but it still lists the full feature set.
+
+2026-10-01 (wk-planrun): implemented on work/gap-dd4826; cargo verification deferred to the batch check.
+`graph_execution/fast_lane.rs` gains `FastAttemptBounds`, which `run_graph_plan_body` reads once from the environment (`FastAttemptBounds::from_env`) and hands the dispatcher (`with_fast_bounds`). A new `graph_task_dispatch/fast.rs` applies it, keeping the hot dispatch files to one-line hooks. Both the batch path (`dispatch`) and the streaming path (`dispatch_streaming`) bound the request before the prompt-treatment bind: `--max-turns` is at most `ROKO_FAST_MAX_AGENT_TURNS` (default 6), the attempt timeout is at most 90 s, and the `## FAST implementation mode` section is appended to the system prompt. Both caps apply after the turn-cap and timeout retry escalation, so a retry never exceeds them. In verification, the step gate runs `verify_command`: a simple `cargo check|clippy|test` gets `--profile dev-fast` when `Cargo.toml` declares that profile, and a composed command runs as authored. The auto-fix branch checks `auto_fix_enabled()`, which is false in FAST. `runner/cargo_command.rs`'s `cargo_command_with_profile` and `cargo_profile_available` are now `pub(crate)`.
+Silence: the 90 s attempt cap also bounds silence. The stall watchdog's own thresholds are left as configured. Verify step timeouts stay as authored.
+Docs: dev.sh's FAST help and the FAST paragraphs in CLAUDE.md and README.md now list what the Graph path does. The "partly ported" warnings and the stale "skips critical-path warmup/cleanup" claim are gone; `ROKO_SKIP_PREFLIGHT` has no reader.
+Tests: `graph_fast_mode_bounds_dispatch` and `graph_fast_mode_verify_uses_dev_fast_without_autofix` (graph_task_dispatch/fast.rs), plus `fast_attempts_are_capped_never_raised` and `fast_verify_commands_build_in_the_fast_profile` (fast_lane.rs). A FAST turn-cap or timeout resume note can still quote the uncapped escalated limit; `./dev.sh fast` runs with `--max-retries 0`, so it does not arise there.

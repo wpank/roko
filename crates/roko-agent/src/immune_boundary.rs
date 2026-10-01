@@ -861,7 +861,7 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
         StreamEventKind::ToolCallEnd { id, name, args } => {
             id.len() + name.len() + args.to_string().len()
         }
-        StreamEventKind::ToolResult { id, output } => id.len() + output.len(),
+        StreamEventKind::ToolResult { id, output, .. } => id.len() + output.len(),
         StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => 0,
     }
 }

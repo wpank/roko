@@ -11,6 +11,7 @@ subsystem = ["roko-serve", "roko-cli/serve_runtime"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "b181478bd"
 source = "agent:wk-gates find-4b4344"
 discovered_from = "item:find-4b4344"
 anchors = ["crates/roko-cli/src/serve_runtime.rs::run_plan_on_local_runtime", "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::record_gate_verdict_metrics", "crates/roko-core/src/obs/metrics.rs::register_standard_metrics", "crates/roko-agent/src/model_call_service.rs::ModelCallService::with_metrics"]
@@ -84,5 +85,21 @@ Recommend (A) for gate metrics now, and file (B) separately if the other emitter
 
 ## Notes
 
+- 2026-10-01 (wk-streams): implemented on work/gap-b35a57 (option A, on top of gate 6b); cargo verification deferred
+  to the batch check.
+  - `GraphPlanRunParams::metrics` carries serve's registry from `serve_runtime.rs::run_plan_on_local_runtime` (which
+    no longer drops it) into `GraphTaskDispatcher::with_metrics`; every other caller passes `None`.
+    `record_gate_verdict_metrics` keeps both tracing fields and, with a registry, increments
+    `roko_gate_verdicts_total` and observes `roko_gate_duration_seconds` (`LLM_LATENCY_BUCKETS`).
+  - Labels follow the canonical descriptor (`ROKO_GATE_VERDICTS_TOTAL_DESCRIPTOR`: `gate`, `verdict`), not the
+    tracing names `result`/`rung` this item's Done-when quotes: `gate` is the step's rung label (`compile`, `test`,
+    ...; `other` for a phase with no rung), `verdict` is `pass` or `fail`. So the series to check on `/metrics` is
+    `roko_gate_verdicts_total{gate="...",verdict="pass"}`.
+  - `MetricRegistry` gained a `Debug` impl (family count only), which the params' derive needs.
+  - Test: `graph_verify_increments_gate_verdict_metrics` (`plan_runner.rs`) runs a one-task plan whose verify step
+    passes, with a registry, and reads the passing series and the duration count from `render_prometheus`.
+  - Left: the live `/metrics` check during a served run (Done-when bullet 1) needs a running server. The other
+    tracing-only emitters (`roko_conductor_evaluations_total`, `roko_provider_failures_total`,
+    `roko_hdc_queries_total`) still reach no registry; option B would cover them.
 - Keep the tracing fields, which logs and any future layer still read.
 - Keep the metric labels low-cardinality (`result`, `rung`). Do not label by plan or task id.

@@ -133,7 +133,9 @@ async fn adaptive_thresholds(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AdaptiveThresholdsResponse>, ApiError> {
     let path = state.workdir.join(".roko/learn/gate-thresholds.json");
-    let thresholds = AdaptiveThresholds::load_or_new(&path);
+    let mut thresholds = AdaptiveThresholds::load_or_new(&path);
+    // The suggested retries follow `[gates]`, as the budgets of plan runs do.
+    thresholds.apply_gates_config(&state.roko_config.load().gates);
     Ok(Json(build_adaptive_thresholds_response(&path, &thresholds)))
 }
 
@@ -1405,5 +1407,33 @@ mod tests {
         assert_eq!(response.rungs[1].suggested_max_retries, 1);
         assert!((response.rungs[1].ema_pass_rate - 1.0).abs() < 1e-9);
         assert!(!response.rungs[1].should_skip_rung);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adaptive_thresholds_route_applies_gates_config() -> Result<(), Box<dyn Error>> {
+        let (dir, state) = test_state()?;
+        // A rung that always passes: the crate's built-in floor would
+        // suggest 1 retry.
+        let mut thresholds = AdaptiveThresholds::new();
+        for _ in 0..20 {
+            thresholds.observe(1, true);
+        }
+        thresholds.save(&dir.path().join(".roko/learn/gate-thresholds.json"))?;
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.gates.adaptive_min_retries = 4;
+        state.roko_config.store(Arc::new(config));
+
+        let response = adaptive_thresholds(State(Arc::clone(&state)))
+            .await
+            .expect("adaptive thresholds route")
+            .0;
+
+        let rung = response
+            .rungs
+            .iter()
+            .find(|rung| rung.rung == 1)
+            .expect("rung 1");
+        assert_eq!(rung.suggested_max_retries, 4, "a plan run's budget");
+        Ok(())
     }
 }

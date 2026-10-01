@@ -3,13 +3,14 @@ id = "bug-6052d8"
 kind = "bug"
 title = "roko chat's own CLI invocation still sends inert cache markers"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/dispatch_v2"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "find-6ee709"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs"]
@@ -35,3 +36,7 @@ Apply the same stripping on the dispatch_v2 path, and add a test named `chat_str
 ## Notes
 
 - Reported on 2026-10-01 by the worker on find-6ee709, during the evening close-out round.
+- 2026-10-01 (wk-model-truth): implemented on work/bug-3aa61f; cargo verification deferred to the batch check.
+  `CliProviderConfig::build_invocation` (dispatch_v2.rs) strips the cache markers from the request's system
+  prompt before the per-protocol builders see it, with `translate::claude::strip_cache_markers` (now `pub`).
+  Test: `chat_strips_cache_markers`.

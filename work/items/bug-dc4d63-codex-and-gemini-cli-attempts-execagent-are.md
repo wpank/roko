@@ -9,8 +9,8 @@ goal = "core"
 size = "M"
 subsystem = ["roko-agent/codex-cli", "roko-agent/providers"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
@@ -101,3 +101,14 @@ Checked statically at `33e107da1`.
 - `exec.rs` is shared by every exec-based provider and holds the Codex policy broker (`gap-baab0a` plans changes there).
   Do not run both at once.
 - `gap-552af4` (parked, unverified) is an older, broader claim that several CLI providers report zero tokens.
+- 2026-10-01 (wk-model-truth): implemented on work/bug-3aa61f; cargo verification deferred to the batch check.
+  Every `ExecAgent` path that ran its subprocess now carries a usage observation (`run_usage`): a Codex run's summed
+  `turn.completed` counts as provider-reported (input without its cached tokens, reasoning apart), else a chars/4
+  estimate of the stdin and the streamed text, marked `Estimated`. The timeout and wait-failure paths drain the
+  killed run's stdout first (`claude_cli_agent::drain_killed_output`, now `pub(crate)`). The success path's
+  unmarked chars/4 guess became the same observation. Cost is left to dispatch's pricing (profile or registry), as
+  for other estimated usage. Tests: `a_timed_out_exec_run_reports_estimated_usage`,
+  `codex_exec_reports_turn_completed_usage`.
+- 2026-10-01 (wk-model-truth): after gate 6b brought in the Codex policy broker's live stop (gap-baab0a), a run
+  it stops reports its usage the same way (`run_usage` after draining stdout) instead of none. Test:
+  `a_run_the_policy_broker_stops_reports_estimated_usage`.

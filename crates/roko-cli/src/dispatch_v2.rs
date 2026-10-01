@@ -49,7 +49,7 @@ use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores}
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
-use roko_core::agent::{ProviderKind, resolve_model};
+use roko_core::agent::{ProviderKind, resolve_model, try_resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
@@ -504,6 +504,15 @@ impl CliDispatchProvider for CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         request.validate()?;
+        // A CLI gets the system prompt's cache markers as inert text; only
+        // the Anthropic API translators turn them into `cache_control`
+        // (bug-6052d8).
+        let request = &CliDispatchRequest {
+            system_prompt: roko_agent::translate::claude::strip_cache_markers(
+                &request.system_prompt,
+            ),
+            ..request.clone()
+        };
         match self.descriptor.protocol {
             CliProtocol::ClaudeStreamJson => self.build_claude_invocation(request),
             CliProtocol::CodexExecJson => self.build_codex_invocation(request),
@@ -1317,6 +1326,9 @@ pub enum UnsupportedProviderReason {
     UnsupportedCliProvider,
     /// The command is not a known supported CLI protocol.
     UnsupportedCommand,
+    /// No `[models.*]` entry, configured slug or builtin model resolves the
+    /// key (bug-5cff57).
+    UnknownModel,
 }
 
 /// Fully resolved dispatch target for a model key.
@@ -1357,7 +1369,10 @@ impl ProviderDispatchResolver {
         Self { config }
     }
 
-    /// Resolve a model key into a dispatchable provider target.
+    /// Resolve a model key into a dispatchable provider target. A key that no
+    /// `[models.*]` entry, configured slug or builtin model resolves is
+    /// unsupported, with [`try_resolve_model`]'s reason, rather than sent to
+    /// whichever provider its name suggests (bug-5cff57).
     pub fn resolve(&self, model_key: &str) -> ProviderDispatchSpec {
         let resolved = resolve_model(&self.config, model_key);
         let models = self.config.effective_models();
@@ -1373,6 +1388,22 @@ impl ProviderDispatchResolver {
                     .find(|profile| profile.slug == resolved.slug)
                     .cloned()
             });
+        if model_profile.is_none()
+            && let Err(error) = try_resolve_model(&self.config, model_key)
+        {
+            return ProviderDispatchSpec {
+                model_key: model_key.to_string(),
+                model_slug: resolved.slug.clone(),
+                provider_id: resolved.provider_kind.label().to_string(),
+                provider_kind: resolved.provider_kind,
+                model_profile: None,
+                provider_config: None,
+                runtime: ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    detail: error.to_string(),
+                }),
+            };
+        }
 
         let model_slug = model_profile
             .as_ref()
@@ -2953,6 +2984,83 @@ mod tests {
         assert_eq!(invocation.turn_limit.effective_max_turns, None);
         assert!(invocation.args.iter().any(|arg| arg == "--model"));
         assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
+    }
+
+    /// bug-6052d8: `roko chat`'s own CLI invocation drops the system prompt's
+    /// cache markers, which only the Anthropic API reads.
+    #[test]
+    fn chat_strips_cache_markers() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let system_prompt = "Role\n\n<!-- cache:system -->\n\nWorkspace\n\n\
+                             <!-- cache:session -->\n\nTurn";
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: system_prompt.to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 50,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/t".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+
+        let invocation = provider.build_invocation(&request).unwrap();
+        let at = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .expect("the system prompt flag");
+        assert_eq!(invocation.args[at + 1], "Role\n\nWorkspace\n\nTurn");
+        assert!(!invocation.args.iter().any(|arg| arg.contains("<!-- cache:")));
+    }
+
+    /// bug-5cff57: a key nothing configures is unsupported, with the reason,
+    /// even when a provider of the kind its name suggests is configured; a
+    /// builtin model is not unknown.
+    #[test]
+    fn provider_dispatch_resolver_unknown_model_is_unsupported() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "claude_cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        let resolver = ProviderDispatchResolver::new(Arc::new(config));
+
+        let spec = resolver.resolve("mystery-model-9");
+        let ProviderRuntime::Unsupported(unsupported) = &spec.runtime else {
+            panic!("an unknown model must not dispatch: {:?}", spec.runtime);
+        };
+        assert_eq!(unsupported.reason, UnsupportedProviderReason::UnknownModel);
+        assert!(
+            unsupported.detail.contains("`mystery-model-9`"),
+            "{}",
+            unsupported.detail
+        );
+        assert!(spec.provider_config.is_none());
+        let builtin = resolver.resolve("claude-sonnet-4-6");
+        assert!(
+            !matches!(
+                &builtin.runtime,
+                ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    ..
+                })
+            ),
+            "{:?}",
+            builtin.runtime
+        );
     }
 
     #[test]

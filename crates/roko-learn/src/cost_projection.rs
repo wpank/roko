@@ -423,7 +423,7 @@ mod tests {
         let proj = project_task_cost(2_000, "claude-haiku-4-5");
         // P3-06: haiku uses model-aware output tokens (384).
         let output_tokens = model_aware_output_tokens("claude-haiku-4-5");
-        let expected = 2.0 * 0.0008 + output_tokens as f64 * 0.004 / 1_000.0;
+        let expected = 2.0 * 0.001 + output_tokens as f64 * 0.005 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 
@@ -467,7 +467,7 @@ mod tests {
         let proj = project_task_cost(1_000, "claude-opus-4-6");
         // P3-06: opus uses model-aware output tokens (1024).
         let output_tokens = model_aware_output_tokens("claude-opus-4-6");
-        let expected = 1.0 * 0.015 + output_tokens as f64 * 0.075 / 1_000.0;
+        let expected = 1.0 * 0.005 + output_tokens as f64 * 0.025 / 1_000.0;
         assert!((proj.estimated_cost_usd - expected).abs() < 1e-12);
     }
 

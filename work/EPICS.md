@@ -18,9 +18,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **36/39 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 3
-- next: none ready (3 unverified)
+- **37/39 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 2
+- next: none ready (2 unverified)
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
@@ -30,14 +30,14 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-e9d7ec](items/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end
 
-- **12/17 closed** · goal `truth` · severity p0
-- open by lane: rust-hot 3, frontend 1, rust-cold 1
-- next: none ready (5 unverified)
+- **16/17 closed** · goal `truth` · severity p0
+- open by lane: rust-hot 1
+- next: none ready (1 unverified)
 
 ## [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt
 
-- **34/37 closed** · goal `truth` · severity p0
-- open by lane: rust-hot 2, none 1
+- **35/37 closed** · goal `truth` · severity p0
+- open by lane: none 1, rust-hot 1
 - next: [gap-ad0d39](items/gap-ad0d39-cost-records-miss-claude-per-model-usage.md) Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet
 
 ## [spec-9230a9](items/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope
@@ -74,9 +74,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-edda86](items/spec-edda86-epic-watchdog-and-supervision.md) watchdog and supervision
 
-- **6/8 closed** · goal `golden-path` · severity p1
-- open by lane: rust-hot 2
-- next: none ready (2 unverified)
+- **7/8 closed** · goal `golden-path` · severity p1
+- open by lane: rust-hot 1
+- next: none ready (1 unverified)
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
@@ -86,8 +86,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **23/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 3, none 1, rust-cold 1
+- **24/28 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 3, none 1
 - next: [gap-644040](items/gap-644040-no-way-to-run-with-learning-frozen.md) No way to run with learning frozen: prompts and routing change from run to run
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -98,11 +98,11 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
-- **14/27 closed** · goal `tooling` · severity p2
-- open by lane: rust-cold 11, none 1, rust-hot 1
+- **15/27 closed** · goal `tooling` · severity p2
+- open by lane: rust-cold 10, none 1, rust-hot 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
-## [spec-f2463d](items/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
+## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
 
 - **14/14 closed** · goal `proof` · severity p1
 
@@ -112,10 +112,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 |---|---|---|---|
 | bench | 47 | 59 | 12 (0) |
 | docs | 14 | 15 | 1 (0) |
-| frontend | 0 | 1 | 1 (0) |
-| none | 170 | 390 | 220 (220) |
-| paper | 58 | 65 | 7 (3) |
-| rust-cold | 114 | 144 | 30 (1) |
-| rust-hot | 68 | 86 | 18 (0) |
+| frontend | 1 | 1 | 0 (0) |
+| none | 174 | 390 | 216 (216) |
+| paper | 59 | 65 | 6 (3) |
+| rust-cold | 117 | 144 | 27 (1) |
+| rust-hot | 72 | 86 | 14 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 19 | 23 | 4 (0) |

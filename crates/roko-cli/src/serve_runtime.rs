@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use roko_core::DashboardEvent;
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::playbook::PlaybookStore;
@@ -28,7 +29,6 @@ use crate::config::{Config, RepoRegistry};
 use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
 use crate::prd;
 use crate::runner::tui_bridge::TuiBridge;
-use crate::runner::types::{GateCompletionKind, RunnerEvent};
 use crate::state_hub::SharedStateHub;
 use crate::status::collect_session_status;
 use crate::tui::DashboardScaffold;
@@ -1311,15 +1311,6 @@ pub(crate) struct BenchDispatchResult {
     pub(crate) output_tokens: u64,
 }
 
-fn non_empty_string(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 fn runner_events_offset(workdir: &Path) -> u64 {
     std::fs::metadata(runner_events_path(workdir))
         .map(|metadata| metadata.len())
@@ -1330,121 +1321,38 @@ fn runner_events_path(workdir: &Path) -> PathBuf {
     RokoLayout::for_project(workdir).events_jsonl_path()
 }
 
+/// The gates a serve plan run ran: the `GateResult` events of `plan_ids` in
+/// the workspace event log after `offset`, the last result of each gate of
+/// each task, so a retried gate counts once. Graph runs record the hub's
+/// [`DashboardEvent`]s there (bug-230de6).
 fn collect_runner_gate_results(
     workdir: &Path,
     offset: u64,
     plan_ids: &BTreeSet<String>,
 ) -> anyhow::Result<Vec<RuntimeGateResult>> {
     let events = read_runner_events_since(&runner_events_path(workdir), offset)?;
-    if events.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let parsed = events
-        .lines()
-        .filter_map(|line| {
-            serde_json::from_str::<RunnerEvent>(line)
-                .map_err(|err| {
-                    tracing::debug!(error = %err, "skipping malformed runner event");
-                    err
-                })
-                .ok()
-        })
-        .collect::<Vec<_>>();
-    let run_ids = matching_run_ids(&parsed, plan_ids);
     let mut final_results = BTreeMap::new();
-
-    for event in parsed {
-        let RunnerEvent::GateCompleted {
-            run_id,
-            attempt,
-            kind,
-            rung,
+    for line in events.lines() {
+        let Ok(DashboardEvent::GateResult {
+            plan_id,
+            task_id,
+            gate,
             passed,
-            duration_ms,
-            output,
-            verdicts,
-            ..
-        } = event
+            output_text,
+        }) = serde_json::from_str::<DashboardEvent>(line)
         else {
             continue;
         };
-
-        if !run_ids.is_empty() && !run_ids.contains(&run_id) {
+        if !plan_ids.contains(&plan_id) {
             continue;
         }
-        if !plan_ids.contains(&attempt.plan_id) {
-            continue;
-        }
-
-        let kind_label = gate_kind_label(kind);
-        if verdicts.is_empty() {
-            let gate_name = "gate".to_string();
-            let key = gate_evidence_key(
-                &attempt.plan_id,
-                &attempt.task_id,
-                kind_label,
-                rung,
-                &gate_name,
-            );
-            final_results.insert(
-                key,
-                RuntimeGateResult {
-                    gate: gate_evidence_label(
-                        &attempt.plan_id,
-                        &attempt.task_id,
-                        kind_label,
-                        rung,
-                        &gate_name,
-                    ),
-                    passed,
-                    detail: gate_detail(
-                        kind_label,
-                        attempt.attempt,
-                        rung,
-                        duration_ms,
-                        None,
-                        None,
-                        &output,
-                    ),
-                },
-            );
-            continue;
-        }
-
-        for verdict in verdicts {
-            let key = gate_evidence_key(
-                &attempt.plan_id,
-                &attempt.task_id,
-                kind_label,
-                rung,
-                &verdict.gate_name,
-            );
-            final_results.insert(
-                key,
-                RuntimeGateResult {
-                    gate: gate_evidence_label(
-                        &attempt.plan_id,
-                        &attempt.task_id,
-                        kind_label,
-                        rung,
-                        &verdict.gate_name,
-                    ),
-                    passed: verdict.passed,
-                    detail: gate_detail(
-                        kind_label,
-                        attempt.attempt,
-                        rung,
-                        duration_ms,
-                        Some(verdict.summary.as_str()),
-                        verdict.error_digest.as_deref(),
-                        &output,
-                    ),
-                },
-            );
-        }
+        let result = RuntimeGateResult {
+            gate: format!("{plan_id}:{task_id}:{gate}"),
+            passed,
+            detail: gate_detail(passed, output_text.as_deref()),
+        };
+        final_results.insert((plan_id, task_id, gate), result);
     }
-
     Ok(final_results.into_values().collect())
 }
 
@@ -1467,86 +1375,24 @@ fn read_runner_events_since(path: &Path, offset: u64) -> anyhow::Result<String> 
     Ok(events)
 }
 
-fn matching_run_ids(events: &[RunnerEvent], plan_ids: &BTreeSet<String>) -> BTreeSet<String> {
-    events
-        .iter()
-        .filter_map(|event| {
-            let RunnerEvent::RunStarted {
-                run_id,
-                plan_ids: event_plan_ids,
-                ..
-            } = event
-            else {
-                return None;
-            };
-            let event_plan_ids = event_plan_ids.iter().cloned().collect::<BTreeSet<_>>();
-            (event_plan_ids.len() == plan_ids.len()
-                && event_plan_ids
-                    .iter()
-                    .all(|plan_id| plan_ids.contains(plan_id)))
-            .then(|| run_id.clone())
-        })
-        .collect()
-}
-
-fn gate_kind_label(kind: GateCompletionKind) -> &'static str {
-    match kind {
-        GateCompletionKind::Preflight => "preflight",
-        GateCompletionKind::Gate => "gate",
-        GateCompletionKind::PlanVerify => "plan_verify",
-        GateCompletionKind::Merge => "merge",
-    }
-}
-
-fn gate_evidence_key(
-    plan_id: &str,
-    task_id: &str,
-    kind: &str,
-    rung: u32,
-    gate_name: &str,
-) -> (String, String, String, u32, String) {
-    (
-        plan_id.to_string(),
-        task_id.to_string(),
-        kind.to_string(),
-        rung,
-        gate_name.to_string(),
-    )
-}
-
-fn gate_evidence_label(
-    plan_id: &str,
-    task_id: &str,
-    kind: &str,
-    rung: u32,
-    gate_name: &str,
-) -> String {
-    format!("{plan_id}:{task_id}:{kind}:{rung}:{gate_name}")
-}
-
-fn gate_detail(
-    kind: &str,
-    attempt: u32,
-    rung: u32,
-    duration_ms: u64,
-    summary: Option<&str>,
-    error_digest: Option<&str>,
-    output: &str,
-) -> String {
-    let evidence = summary
-        .and_then(non_empty_string)
-        .or_else(|| error_digest.and_then(non_empty_string))
-        .or_else(|| first_non_empty_line(output))
-        .unwrap_or_else(|| "gate completed".to_string());
-    format!("{kind} attempt {attempt}, rung {rung}, {duration_ms}ms: {evidence}")
-}
-
-fn first_non_empty_line(output: &str) -> Option<String> {
-    output
+/// A gate result's detail: the command its output leads with
+/// (`$ cargo check`), and for a failure its last line, which says how the
+/// command ended (`✗ exit status 101`).
+fn gate_detail(passed: bool, output: Option<&str>) -> String {
+    let mut lines = output
+        .unwrap_or_default()
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
+        .filter(|line| !line.is_empty());
+    let verdict = if passed { "passed" } else { "failed" };
+    let Some(command) = lines.next() else {
+        return format!("gate {verdict}");
+    };
+    let command = command.strip_prefix("$ ").unwrap_or(command);
+    match lines.last().filter(|_| !passed) {
+        Some(ending) => format!("{command}: {verdict}: {ending}"),
+        None => format!("{command}: {verdict}"),
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
@@ -1797,6 +1643,63 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    /// bug-230de6: a serve plan run's gate evidence is the `GateResult`
+    /// events of its plans that the run recorded in `.roko/events.jsonl`, a
+    /// line stamped with its `run_id` included: the last result of each gate
+    /// counts, and earlier runs' and other plans' results do not.
+    #[test]
+    fn serve_gate_evidence_reads_the_runs_gate_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = runner_events_path(tmp.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let gate = |plan_id: &str, task_id: &str, passed: bool, output: &str| {
+            serde_json::to_value(DashboardEvent::GateResult {
+                plan_id: plan_id.to_string(),
+                task_id: task_id.to_string(),
+                gate: "verify[0:compile]".to_string(),
+                passed,
+                output_text: Some(output.to_string()),
+            })
+            .unwrap()
+        };
+        let failed = "$ cargo check\nerror[E0308]: mismatched types\n✗ exit status 101";
+        std::fs::write(&log, format!("{}\n", gate("p1", "T1", false, failed))).unwrap();
+        let offset = runner_events_offset(tmp.path());
+
+        let mut stamped = gate("p1", "T2", false, failed);
+        stamped["run_id"] = serde_json::json!("graph-1");
+        let run = [
+            gate("p1", "T1", false, failed),
+            serde_json::json!({"type": "task_started", "plan_id": "p1", "task_id": "T1", "phase": "verify"}),
+            gate("p1", "T1", true, "$ cargo check"),
+            stamped,
+            gate("p2", "T1", true, "$ cargo check"),
+        ]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut file, run.as_bytes()).unwrap();
+
+        let plan_ids = BTreeSet::from(["p1".to_string()]);
+        let results = collect_runner_gate_results(tmp.path(), offset, &plan_ids).unwrap();
+        let summary: Vec<(&str, bool, &str)> = results
+            .iter()
+            .map(|result| (result.gate.as_str(), result.passed, result.detail.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("p1:T1:verify[0:compile]", true, "cargo check: passed"),
+                (
+                    "p1:T2:verify[0:compile]",
+                    false,
+                    "cargo check: failed: ✗ exit status 101"
+                ),
+            ]
         );
     }
 }

@@ -27,6 +27,7 @@ roko-graph = { path = "../roko-graph" }
 roko-std = { path = "../roko-std" }
 async-trait = "0.1"
 tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "rt", "macros"] }
+tokio-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

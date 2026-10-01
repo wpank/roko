@@ -97,7 +97,7 @@ This is the implementation plan.
 - [x] gap-00cc7f: TL;DR: re-pin tags and refresh statements to the whitepaper matrix after the 2026-09-29 merges
 - [x] gap-6e9e14: Research paper appendices A and B: re-pin as-built tags to the merged benchmark and spec-quality code
 - [x] gap-f052aa: Research paper: claims about cited works (216 keys, related work above all) have not been checked against the papers' full text
-- [ ] gap-38e925: Research paper: the ~190 lower-ranked cited keys have not been checked against their full texts
+- [x] gap-38e925: Research paper: the ~190 lower-ranked cited keys have not been checked against their full texts
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

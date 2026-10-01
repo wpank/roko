@@ -666,111 +666,6 @@ impl TaskDef {
                 .all(|dep| completed_plans.contains(dep))
     }
 
-    /// Build the agent prompt from task title + surgical context.
-    pub fn build_prompt(&self, plan_id: &str, workdir: &Path) -> String {
-        let mut prompt = String::new();
-        prompt.push_str(&format!("# Task: {}\n\n", self.title));
-        prompt.push_str(&format!("Plan: {plan_id}\nTask ID: {}\n", self.id));
-
-        if let Some(max) = self.max_loc {
-            prompt.push_str(&format!("Maximum lines of change: {max}\n"));
-        }
-
-        // Inject PRD excerpt when available so agents see the high-level
-        // requirements without having to locate the PRD file themselves.
-        let prd_base = workdir.join(".roko").join("prd");
-        let prd_candidates = [
-            prd_base.join("published").join(format!("{plan_id}.md")),
-            prd_base.join("draft").join(format!("{plan_id}.md")),
-        ];
-        for prd_path in &prd_candidates {
-            if prd_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(prd_path) {
-                    const PRD_BUILD_PROMPT_LIMIT: usize = 2_000;
-                    let excerpt = if content.len() > PRD_BUILD_PROMPT_LIMIT {
-                        let mut s = content
-                            .chars()
-                            .take(PRD_BUILD_PROMPT_LIMIT)
-                            .collect::<String>();
-                        s.push_str("\n[truncated]");
-                        s
-                    } else {
-                        content
-                    };
-                    prompt.push_str("\n## PRD Requirements\n");
-                    prompt.push_str(&excerpt);
-                    prompt.push('\n');
-                }
-                break;
-            }
-        }
-
-        if !self.files.is_empty() {
-            prompt.push_str("\n## Files to modify\n");
-            for f in &self.files {
-                prompt.push_str(&format!("- `{f}`\n"));
-            }
-        }
-
-        // Surgical context
-        if let Some(ref ctx) = self.context {
-            prompt.push_str("\n## Context (read these BEFORE making changes)\n");
-            for rf in &ctx.read_files {
-                prompt.push_str(&format!("\n### `{}`", rf.path));
-                if let Some(ref lines) = rf.lines {
-                    prompt.push_str(&format!(" (lines {lines})"));
-                }
-                prompt.push_str(&format!("\nWhy: {}\n", rf.why));
-                // Try to inline the file content
-                let full_path = workdir.join(&rf.path);
-                if full_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        let lines_to_show = if let Some(ref range) = rf.lines {
-                            extract_line_range(&content, range)
-                        } else {
-                            // Show first 100 lines max
-                            content.lines().take(100).collect::<Vec<_>>().join("\n")
-                        };
-                        prompt.push_str(&format!("```\n{lines_to_show}\n```\n"));
-                    }
-                }
-            }
-            if !ctx.symbols.is_empty() {
-                prompt.push_str("\n## Key symbols\n");
-                for sym in &ctx.symbols {
-                    prompt.push_str(&format!("- `{sym}`\n"));
-                }
-            }
-            if !ctx.anti_patterns.is_empty() {
-                prompt.push_str("\n## ⛔ Do NOT\n");
-                for ap in &ctx.anti_patterns {
-                    prompt.push_str(&format!("- {ap}\n"));
-                }
-            }
-        }
-
-        prompt.push_str(&self.specification_section());
-
-        // Verification info for the agent
-        if !self.verify.is_empty() {
-            prompt.push_str("\n## Verification (these commands must pass after your changes)\n");
-            for v in &self.verify {
-                prompt.push_str(&format!(
-                    "- `{}` — {}\n",
-                    v.command,
-                    v.fail_msg.as_deref().unwrap_or("must succeed")
-                ));
-            }
-        } else if !self.acceptance.is_empty() {
-            prompt.push_str("\n## Acceptance criteria\n");
-            for a in &self.acceptance {
-                prompt.push_str(&format!("- {a}\n"));
-            }
-        }
-
-        prompt
-    }
-
     /// Build a focused prompt asking the agent to fix a specific verify failure.
     ///
     /// # Arguments
@@ -1605,29 +1500,6 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
     Ok(issues)
 }
 
-/// Extract lines from content given a range like "40-80" or "10-".
-fn extract_line_range(content: &str, range: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let parts: Vec<&str> = range.split('-').collect();
-    let start = parts
-        .first()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .saturating_sub(1);
-    let end = parts
-        .get(1)
-        .and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                s.parse::<usize>().ok()
-            }
-        })
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    lines[start..end].join("\n")
-}
-
 fn extract_toml_payload(content: &str) -> String {
     let trimmed = content.trim();
     let Some(open_start) = trimmed.find("```") else {
@@ -2215,25 +2087,21 @@ test_invariants = ["an empty task sets no hint"]
         .expect("parse")
         .tasks
         .remove(0);
-        let prompt = task.build_prompt("hints", Path::new("/nonexistent"));
+        // The prompt builder appends this section to the task's prompt.
+        let section = task.specification_section();
         assert!(
-            prompt.contains(
+            section.contains(
                 "\n## Specification\n### Types to Define\n- pub struct TaskHints\n\n\
                  ### Example Pattern\ncrates/roko-core/src/task.rs\n\n\
                  ### Test Invariants\n- an empty task sets no hint\n"
             ),
-            "{prompt}"
+            "{section}"
         );
-        assert!(!prompt.contains("### Formulas"), "{prompt}");
+        assert!(!section.contains("### Formulas"), "{section}");
 
         let mut plain = task.clone();
         plain.hints = TaskHints::default();
         assert!(plain.specification_section().is_empty());
-        assert!(
-            !plain
-                .build_prompt("hints", Path::new("/nonexistent"))
-                .contains("## Specification")
-        );
     }
 
     #[test]
@@ -2816,13 +2684,6 @@ depends_on = []
             TaskQualityWarning::LongDescription { task_id, word_count }
                 if task_id == "T1" && *word_count == 501
         )));
-    }
-
-    #[test]
-    fn extract_line_range_works() {
-        let content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
-        assert_eq!(extract_line_range(content, "2-4"), "line 2\nline 3\nline 4");
-        assert_eq!(extract_line_range(content, "3-"), "line 3\nline 4\nline 5");
     }
 
     #[test]

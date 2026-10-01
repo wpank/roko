@@ -9,9 +9,9 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/tests", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 3e7552acd"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::dispatch_beside_editing_sibling", "crates/roko-cli/src/graph_task_dispatch/verification.rs::a_verify_failure_left_in_a_sibling_file_blames_the_sibling", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::begin_settle"]
@@ -69,3 +69,9 @@ with no writer, nothing re-runs the step and its `expect` fails.
 
 `graph_task_dispatch::tests::verified_outcome_drives_output_verdict_and_feedback`, in the same module, is a separate
 load flake reported from the same batch. Keep the two fixes apart.
+
+- 2026-10-01 (wk-honestbench): already fixed at BASE `ebdc0f5d5`, by `2c61e9053` (2026-09-30, for bug-779ae7). The
+  helper moved to `crates/roko-cli/src/graph_task_dispatch/verification.rs:1752`, and its fake sibling now waits on
+  `InFlightTasks::settling_began` (`#[cfg(test)]`, `sibling_settle.rs:394`, woken by the `changed` watch) before it
+  finishes (:1769). It no longer polls `failed_once`, which is only asserted to exist (:1770). The `[[verify]]`
+  grep finds no `while !failed_once.exists()`, and both tests (:1793, :1829) keep their assertions.

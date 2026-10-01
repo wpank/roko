@@ -2201,15 +2201,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
             verify_step_locked(
-                &gate,
-                &signal,
-                &ctx,
-                workdir,
-                1,
-                &step,
-                "plan",
-                "T1",
-                running,
+                &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", running,
             ),
         )
         .await
@@ -2218,15 +2210,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
         drop(held);
         let verdict = verify_step_locked(
-            &gate,
-            &signal,
-            &ctx,
-            workdir,
-            1,
-            &step,
-            "plan",
-            "T1",
-            running,
+            &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", running,
         )
         .await
         .expect("the run is not stopping");
@@ -2269,15 +2253,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                 .then(|| RokoError::cancelled("the plan run is stopping"))
         };
         let rerun = verify_step_locked(
-            &gate,
-            &signal,
-            &ctx,
-            workdir,
-            1,
-            &step,
-            "plan",
-            "T1",
-            stopped,
+            &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", stopped,
         );
         // The run begins to stop while the re-run waits for the lock, then the
         // lock frees.

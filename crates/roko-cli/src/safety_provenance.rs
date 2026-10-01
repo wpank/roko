@@ -272,7 +272,10 @@ impl GraphProvenanceSink {
                 continue;
             };
             chain.note(&provenance, vertex, record);
-            track(if index < committed { &proven } else { &taint }, &provenance);
+            track(
+                if index < committed { &proven } else { &taint },
+                &provenance,
+            );
         }
         for (hash, level) in proven.levels() {
             if taint.get_level(&hash).is_none_or(|kept| kept < level) {

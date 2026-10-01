@@ -108,8 +108,11 @@ pub struct AgentEfficiencyEvent {
     pub task_id: String,
     /// Unique identifier for this dispatch attempt.
     ///
-    /// Shared between the dispatch cost event and any gate-failure event for
-    /// the same attempt, enabling cross-event joins.
+    /// On the Graph path it is the attempt's durable key,
+    /// `run:plan:task:attempt`, so it never repeats across runs: a resumed run
+    /// continues the run's attempt ordinals. The attempt's gate rows extend
+    /// the key (`<key>/gate-pass`, `<key>/gate-fail`), so rows of one attempt
+    /// join on the key as a prefix.
     #[serde(default)]
     pub attempt_id: String,
 

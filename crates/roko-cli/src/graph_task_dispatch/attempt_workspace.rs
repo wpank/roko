@@ -524,7 +524,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
             .append(true)
             .open(log)
             .expect("review log");
-        writeln!(file, "{entry}").expect("record the decision");
+        file.write_all(format!("{entry}\n").as_bytes())
+            .expect("record the decision");
     }
 
     /// gap-0d64d5: with its plan holding tasks for approval, a verified

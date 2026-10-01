@@ -339,17 +339,7 @@ impl DreamJournal {
     ///
     /// Returns an error if directory creation or file I/O fails.
     pub fn append(&mut self, entry: &DreamJournalEntry) -> Result<(), std::io::Error> {
-        if let Some(parent) = self.journal_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.journal_path)?;
-        let line = serde_json::to_string(entry)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        use std::io::Write;
-        writeln!(file, "{line}")?;
+        roko_core::io::append_jsonl(&self.journal_path, entry)?;
         self.cycle_index.push(entry.cycle_id.clone());
         Ok(())
     }
@@ -643,18 +633,7 @@ impl DreamArchive {
     ///
     /// Creates parent directories if they do not exist.
     pub fn append(&self, entry: &DreamArchiveEntry) -> Result<(), std::io::Error> {
-        if let Some(parent) = self.archive_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.archive_path)?;
-        let line = serde_json::to_string(entry)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        use std::io::Write;
-        writeln!(file, "{line}")?;
-        Ok(())
+        roko_core::io::append_jsonl(&self.archive_path, entry)
     }
 
     /// Read all archive entries from disk.

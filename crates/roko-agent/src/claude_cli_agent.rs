@@ -1746,7 +1746,7 @@ const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
 /// open) is left behind, and its output is lost.
-async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
+pub(crate) async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
     timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
         .await
         .ok()

@@ -674,16 +674,25 @@ fn stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection() {
     place_lock(&lock, Duration::from_secs(5));
     assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
     assert_eq!(clear_stale_index_lock(&checkout, Duration::ZERO), None);
-    assert!(lock.exists(), "a fresh lock may belong to a live git process");
+    assert!(
+        lock.exists(),
+        "a fresh lock may belong to a live git process"
+    );
 
     place_lock(&lock, Duration::from_secs(120));
     assert_eq!(
         clear_stale_index_lock(&checkout, Duration::from_secs(600)),
         None
     );
-    assert!(lock.exists(), "younger than the shared checkout's threshold");
+    assert!(
+        lock.exists(),
+        "younger than the shared checkout's threshold"
+    );
     let removed = clear_stale_index_lock(&checkout.join("src"), worktree_threshold);
-    assert!(removed.is_some(), "the stale lock behind gitdir: is removed");
+    assert!(
+        removed.is_some(),
+        "the stale lock behind gitdir: is removed"
+    );
     assert!(!lock.exists());
     assert_eq!(clear_stale_index_lock(&checkout, worktree_threshold), None);
 

@@ -1606,7 +1606,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "episode_count_trigger"]
         | ["tools", "mcp_timeout_secs"]
         | ["prompt", "token_budget"]
-        | ["executor", "max_concurrent_plans"]
         | ["executor", "max_concurrent_tasks"]
         | ["executor", "max_auto_fix_iterations"]
         | ["executor", "max_merge_attempts"]
@@ -2036,9 +2035,6 @@ pub struct PromptLayer {
 /// Partial `ExecutorConfig` — every field optional.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExecutorLayer {
-    /// Maximum number of plans executing concurrently.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_plans: Option<usize>,
     /// Maximum number of tasks executing concurrently within a plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_tasks: Option<usize>,
@@ -2298,7 +2294,6 @@ impl ExecutorLayer {
     #[must_use]
     pub fn merge(self, overlay: Self) -> Self {
         Self {
-            max_concurrent_plans: overlay.max_concurrent_plans.or(self.max_concurrent_plans),
             max_concurrent_tasks: overlay.max_concurrent_tasks.or(self.max_concurrent_tasks),
             max_auto_fix_iterations: overlay
                 .max_auto_fix_iterations

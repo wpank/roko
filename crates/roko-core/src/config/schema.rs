@@ -553,8 +553,29 @@ fn synthesize_standard_providers_with_env(
 
 impl RokoConfig {
     /// Parse from a TOML string.
+    ///
+    /// A key the schema no longer has is an error, except one that roko
+    /// removed ([`super::loader::drop_removed_config_keys`]): that is dropped
+    /// with a warning, as loading drops it, so an old file still parses.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        let config: Self = toml::from_str(s)?;
+        let config: Self = match toml::from_str(s) {
+            Ok(config) => config,
+            Err(err) => {
+                let mut value: toml::Value = toml::from_str(s)?;
+                let removed = super::loader::drop_removed_config_keys(&mut value);
+                if removed.is_empty() {
+                    return Err(err);
+                }
+                for diagnostic in &removed {
+                    tracing::warn!(
+                        config_key = %diagnostic.key,
+                        "config warning: {}",
+                        diagnostic.message
+                    );
+                }
+                value.try_into()?
+            }
+        };
         // Only warn when the TOML text explicitly sets config_version to a value
         // below CURRENT_CONFIG_VERSION. Skip if:
         //   - The field is absent (serde default kicks in; not a real v1 config)
@@ -2525,9 +2546,6 @@ pub struct CoreRunnerConfig {
     /// Defaults to 4. A value of 1 preserves sequential execution.
     #[serde(default = "CoreRunnerConfig::default_max_concurrent_tasks")]
     pub max_concurrent_tasks: Option<usize>,
-    /// Maximum number of plans executing concurrently.
-    #[serde(default)]
-    pub max_concurrent_plans: Option<usize>,
     /// Wall-clock timeout for the entire plan execution, in seconds.
     /// Defaults to 3600 (1 hour).
     #[serde(default = "CoreRunnerConfig::default_plan_timeout_secs")]
@@ -2615,7 +2633,6 @@ impl Default for CoreRunnerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: None,
-            max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
             sandbox_level: RunnerSandboxLevel::default(),

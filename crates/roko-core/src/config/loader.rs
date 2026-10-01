@@ -1493,6 +1493,45 @@ const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Config keys removed from the schema because nothing read them, each with
+/// the reason. Validation reports one as removed rather than unknown.
+/// Loading, and a strict parse ([`RokoConfig::from_toml`]), drop it with that
+/// warning, so an old roko.toml that still sets one keeps working.
+const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[(
+    "runner.max_concurrent_plans",
+    "runner.max_concurrent_plans was removed because nothing read it; \
+     conductor.max_parallel_plans (or `roko plan run --max-parallel-plans`) \
+     sets how many plans run at once",
+)];
+
+/// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
+/// for each key removed.
+pub fn drop_removed_config_keys(value: &mut toml::Value) -> Vec<ConfigDiagnostic> {
+    let mut removed = Vec::new();
+    for (key, message) in REMOVED_CONFIG_KEYS {
+        if remove_dotted_key(value, key) {
+            removed.push(ConfigDiagnostic {
+                key: (*key).to_string(),
+                message: (*message).to_string(),
+            });
+        }
+    }
+    removed
+}
+
+/// Remove the dotted `path`, below the top level, from `tree`, and return
+/// whether the tree had it.
+fn remove_dotted_key(tree: &mut toml::Value, path: &str) -> bool {
+    let Some((parent, leaf)) = path.rsplit_once('.') else {
+        return false;
+    };
+    parent
+        .split('.')
+        .try_fold(tree, |node, key| node.get_mut(key))
+        .and_then(toml::Value::as_table_mut)
+        .is_some_and(|table| table.remove(leaf).is_some())
+}
+
 /// Validate every path in the input TOML against the `RokoConfig` schema.
 ///
 /// Builds an allowed-key tree by serializing a default `RokoConfig` to a
@@ -1813,7 +1852,6 @@ fn build_schema_tree() -> toml::Value {
     relay.workspace_name = Some(String::new());
     relay.public_url = Some(String::new());
     config.runner.max_concurrent_tasks = Some(0);
-    config.runner.max_concurrent_plans = Some(0);
     config.resources.per_plan_disk_budget_mb = Some(0);
     config.dreams.scheduled_cron = Some(String::new());
     // `role_token_budgets` maps roles to budgets (a dynamic map section).
@@ -1962,9 +2000,10 @@ fn walk_config_paths(
             format!("{prefix}.{key}")
         };
 
-        // Check for legacy removed sections first.
+        // Check for legacy removed sections and keys first.
         if let Some((_, message)) = LEGACY_REMOVED_SECTIONS
             .iter()
+            .chain(REMOVED_CONFIG_KEYS)
             .find(|(section, _)| *section == dotted)
         {
             diagnostics.push(ConfigDiagnostic {
@@ -4420,9 +4459,6 @@ scheduled_cron = "0 0 3 * * * *"
 
 [learning]
 override_learning_dampening = 0.5
-
-[runner]
-max_concurrent_plans = 3
 "#,
         )
         .expect("write config");
@@ -4465,7 +4501,29 @@ max_concurrent_plans = 3
         let cron = config.dreams.scheduled_cron.as_deref();
         assert_eq!(cron, Some("0 0 3 * * * *"));
         assert_eq!(config.learning.override_learning_dampening, Some(0.5));
-        assert_eq!(config.runner.max_concurrent_plans, Some(3));
+    }
+
+    /// gap-6bc156: `runner.max_concurrent_plans` was removed. Validation
+    /// names it as removed, and an old file that sets it still loads and
+    /// still parses strictly, with a warning.
+    #[test]
+    fn removed_runner_max_concurrent_plans_still_loads() {
+        let text = "[runner]\nmax_concurrent_plans = 3\nplan_timeout_secs = 99\n";
+        let value: toml::Value = text.parse().expect("parse runner toml");
+        let diags = validate_known_config_paths(&value);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].key, "runner.max_concurrent_plans");
+        assert!(diags[0].message.contains("removed"));
+        assert!(diags[0].message.contains("max_parallel_plans"));
+
+        let loaded = deserialize_migrated_toml(text).expect("load the old file");
+        assert_eq!(loaded.runner.plan_timeout_secs, 99);
+        let parsed = RokoConfig::from_toml(text).expect("parse the old file");
+        assert_eq!(parsed.runner.plan_timeout_secs, 99);
+
+        // A key that was never in the schema is still an error.
+        let typo = RokoConfig::from_toml("[runner]\nmax_concurrent_plan = 3\n");
+        assert!(typo.is_err());
     }
 
     /// gap-e9660f: agents can read roko.toml, so a grep of the project would

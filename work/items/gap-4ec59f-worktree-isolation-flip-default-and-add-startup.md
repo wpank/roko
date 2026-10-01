@@ -11,7 +11,7 @@ subsystem = ["roko-cli/orchestrator"]
 created = 2026-09-21
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "32938ad4b"
+last_verified_rev = "c58c7c2ba"
 source = "tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 discovered_from = "audit:tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 anchors = ["crates/roko-cli/src/orchestrator/executor/mod.rs::ExecutorConfig::default_use_worktrees", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-cli/src/graph_execution/plan_runner.rs:1155", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::with_workspace_provider", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/commands/plan.rs::cmd_resume", "crates/roko-cli/src/main.rs:2138", "crates/roko-cli/src/serve_runtime.rs:888", "crates/roko-cli/src/serve_client.rs:560", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::prune"]
@@ -215,6 +215,24 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
        default?).
     2. Fall back to shared mode in non-git workdirs.
     3. Then do steps 2 and 5 together.
+- 2026-10-01 (wk-tiers): step 2 (config plumbing) on work/gap-4ec59f; cargo verification deferred to the batch check.
+  - The setting lives in the core schema as `[runner] worktree_per_task` (default `false`, from
+    `CoreRunnerConfig::default_worktree_per_task`). It is not under `[executor]`: wk-cfg removes `ExecutorConfig`
+    and puts `[executor]` in `REMOVED_CONFIG_KEYS` (gap-666ab3).
+  - `roko plan run` takes the new `--no-worktree-per-task` (it conflicts with `--worktree-per-task`). With neither
+    flag, `commands/plan.rs::resolve_worktree_per_task` reads the config.
+  - `--promote` no longer needs the flag: config can turn worktrees on. It conflicts with the opt-out, and is refused
+    at run time when the resolved mode is shared.
+  - `cmd_resume` passes neither flag, so it follows the config. Serve-started runs use the server's
+    `roko_config.runner.worktree_per_task`.
+  - `serve_client` still refuses both flags when it delegates, and says the server's config decides.
+  - `roko config set runner.worktree_per_task` is accepted.
+  - Tests: `cli_parses_the_worktree_per_task_opt_out` and `worktree_per_task_follows_the_flag_then_the_runner_config`.
+  - Checkpoint fingerprint: worktree mode is not part of it. Only the exclusive paths change, and
+    `roko-graph/src/fingerprint.rs::NodeFingerprint` leaves them out. So flipping the default does not invalidate
+    in-flight checkpoints.
+  - `roko run`, `roko do`, PRD runs and the cloud worker still run shared on purpose: they are one-shot runs into the
+    user's tree.
 
 ## Original notes
 

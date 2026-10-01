@@ -1593,7 +1593,8 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["serve", "auth", "enabled"]
         | ["learning", "replan_on_gate_failure"]
         | ["learning", "auto_playbook_refresh"]
-        | ["learning", "use_lookahead_router"] => {
+        | ["learning", "use_lookahead_router"]
+        | ["runner", "worktree_per_task"] => {
             let b = value
                 .parse::<bool>()
                 .with_context(|| format!("parse {key} as bool"))?;

@@ -507,12 +507,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             screenshot_dir,
             batch_size,
             worktree_per_task,
+            no_worktree_per_task,
             rich_topology,
             promote,
             max_parallel_plans,
             fail_fast,
         } => {
             let _t_setup = std::time::Instant::now();
+            // `--worktree-per-task` / `--no-worktree-per-task`; neither leaves
+            // it to `[runner] worktree_per_task` (gap-4ec59f).
+            let worktree_flag = match (worktree_per_task, no_worktree_per_task) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            };
 
             // The global `--model` flag (with `--force-model` and
             // `--force-backend` as aliases) is the single model override.
@@ -643,7 +651,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.clone(),
-                    worktree_per_task,
+                    worktree_flag.is_some(),
                     rich_topology,
                     resume_plan.clone(),
                 )
@@ -672,7 +680,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
-                    worktree_per_task,
+                    worktree_flag,
                     rich_topology,
                     promote.clone(),
                     no_tui,
@@ -1696,7 +1704,9 @@ pub(crate) async fn cmd_resume(
         screenshot_interval: 60,
         screenshot_dir: None,
         batch_size: None,
+        // Neither flag: the resumed run follows `[runner] worktree_per_task`.
         worktree_per_task: false,
+        no_worktree_per_task: false,
         rich_topology: false,
         promote: None,
         max_parallel_plans: None,
@@ -2364,7 +2374,7 @@ async fn cmd_plan_run_engine(
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
-    worktree_per_task: bool,
+    worktree_flag: Option<bool>,
     rich_topology: bool,
     promote: Option<String>,
     no_tui: bool,
@@ -2375,6 +2385,14 @@ async fn cmd_plan_run_engine(
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
     };
+
+    let worktree_per_task = resolve_worktree_per_task(worktree_flag, workdir);
+    if promote.is_some() && !worktree_per_task {
+        anyhow::bail!(
+            "--promote needs per-task worktrees: pass --worktree-per-task or set \
+             [runner] worktree_per_task = true"
+        );
+    }
 
     // SIGINT/SIGTERM stop this run gracefully (cancel, finalize checkpoints,
     // restore the terminal, exit 130/143) for as long as the guard lives.
@@ -2431,6 +2449,18 @@ async fn cmd_plan_run_engine(
     .await
 }
 
+/// Whether a plan run in `workdir` isolates each task in its own git
+/// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
+/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f).
+fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
+    flag.unwrap_or_else(|| {
+        roko_core::config::loader::load_config_unified(workdir)
+            .unwrap_or_default()
+            .runner
+            .worktree_per_task
+    })
+}
+
 /// Resolve the effective per-plan USD ceiling from CLI flags and config.
 ///
 /// Priority order (highest to lowest):
@@ -2462,6 +2492,21 @@ pub(crate) fn resolve_budget_ceiling(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
+    /// `[runner] worktree_per_task` otherwise.
+    #[test]
+    fn worktree_per_task_follows_the_flag_then_the_runner_config() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[runner]\nworktree_per_task = true\n",
+        )
+        .expect("write roko.toml");
+        assert!(resolve_worktree_per_task(None, dir.path()));
+        assert!(!resolve_worktree_per_task(Some(false), dir.path()));
+        assert!(resolve_worktree_per_task(Some(true), dir.path()));
+    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {

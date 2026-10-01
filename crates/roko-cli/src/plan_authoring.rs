@@ -406,9 +406,10 @@ fn last_run_failure(workdir: &Path, plan_id: &str) -> Option<String> {
 /// Reads the current `tasks.toml`, invokes the strategist agent on the planner
 /// model ([`resolve_planner_model`]) with the revision prompt, then calls
 /// [`apply_revision_output`]. The prompt carries how the plan's last run failed
-/// when it did ([`build_revision_prompt`]).  On a validation rejection the agent is retried
-/// once with the diagnostics appended to the feedback before the final outcome
-/// is returned.
+/// when it did ([`build_revision_prompt`]). On a validation rejection the agent
+/// is asked again, with the diagnostics appended to the feedback, up to
+/// `[serve] revision_max_retries` times (once by default) before the final
+/// outcome is returned.
 ///
 /// Every agent call's spend is recorded against the plan through
 /// [`AuthoringSpend::revision`], and published on `live` when given.
@@ -425,6 +426,7 @@ pub async fn revise_plan_source(
         .with_context(|| format!("read {}", tasks_path.display()))?;
 
     let resolved = crate::load_resolved_config(workdir)?;
+    let max_retries = resolved.config.serve.revision_max_retries;
     let planner_model = resolve_planner_model(workdir, None, "plan revision")?;
     let system_prompt = crate::plan_generate::build_generator_system_prompt(workdir);
     let spend = AuthoringSpend::revision(workdir, plan_id, live);
@@ -460,28 +462,31 @@ pub async fn revise_plan_source(
         build_revision_prompt(plan_id, &current_toml, feedback, last_failure.as_deref());
     let output = run_agent(first_prompt).await?;
 
-    let outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
-    if outcome.written {
-        return Ok(outcome);
+    let mut outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
+
+    // Ask again while the revision is rejected, each time with the last
+    // rejection's diagnostics appended to the feedback (gap-b3e513).
+    for _ in 0..max_retries {
+        if outcome.written {
+            break;
+        }
+        let diag_text: String = outcome
+            .report
+            .diagnostics
+            .iter()
+            .map(|d| format!("- [{}] {}", d.rule_id, d.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let retry_feedback = format!(
+            "{feedback}\n\nThe previous revision was rejected with the following diagnostics:\n{diag_text}\n\
+             Please fix these issues in the revised plan."
+        );
+        let retry_prompt =
+            build_revision_prompt(plan_id, &current_toml, &retry_feedback, last_failure.as_deref());
+        let output = run_agent(retry_prompt).await?;
+        outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
     }
-
-    // Retry once with diagnostics appended to the feedback.
-    let diag_text: String = outcome
-        .report
-        .diagnostics
-        .iter()
-        .map(|d| format!("- [{}] {}", d.rule_id, d.message))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let retry_feedback = format!(
-        "{feedback}\n\nThe previous revision was rejected with the following diagnostics:\n{diag_text}\n\
-         Please fix these issues in the revised plan."
-    );
-    let retry_prompt =
-        build_revision_prompt(plan_id, &current_toml, &retry_feedback, last_failure.as_deref());
-    let output2 = run_agent(retry_prompt).await?;
-
-    apply_revision_output(workdir, plan_id, tasks_path, &output2, models)
+    Ok(outcome)
 }
 
 // ─── Spend accounting ─────────────────────────────────────────────────────────

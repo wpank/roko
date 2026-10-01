@@ -18,7 +18,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **35/38 closed** · goal `whitepaper` · severity p1
+- **36/39 closed** · goal `whitepaper` · severity p1
 - open by lane: paper 3
 - next: none ready (3 unverified)
 
@@ -102,7 +102,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: rust-cold 11, none 1, rust-hot 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
-## [spec-f2463d](items/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
+## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
 
 - **14/14 closed** · goal `proof` · severity p1
 
@@ -114,7 +114,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | docs | 14 | 15 | 1 (0) |
 | frontend | 0 | 1 | 1 (0) |
 | none | 170 | 390 | 220 (220) |
-| paper | 57 | 64 | 7 (3) |
+| paper | 58 | 65 | 7 (3) |
 | rust-cold | 114 | 144 | 30 (1) |
 | rust-hot | 68 | 86 | 18 (0) |
 | tests | 1 | 1 | 0 (0) |

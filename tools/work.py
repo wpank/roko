@@ -11,6 +11,7 @@ Usage:
   work.py status [--json]                                                # open, claimed and done counts by goal, lane and epic
   work.py park <id>… --reason "…"                                        # not planned: move to parked/
   work.py unpark <id>…                                                   # restore status, move back to items/
+  work.py tidy                                                           # move each item to its status's folder
 
 Picking up work (work/README.md, "For agents"):
   work.py next [--n 4] [--goal G] [--max-size M] [--json] [--ignore-worktrees]   # top unclaimed items that don't touch
@@ -50,6 +51,14 @@ ROOTS = {"work": REPO / "work", "local": REPO / ".roko" / "work-local"}
 PREFIX = {"gap": "gap", "bug": "bug", "regression": "reg", "finding": "find", "decision": "dec", "spec": "spec", "question": "q"}
 STATUSES = {"open", "in_progress", "blocked", "done", "wontfix", "superseded", "parked"}
 OPEN = {"open", "in_progress", "blocked"}
+# Where an item's file lives, by status: open work in items/, finished work in done/, won't-fix and superseded items in
+# closed/, parked items in parked/. `close`, `park`, `unpark` and `apply-verdicts` move the file; `tidy` fixes strays.
+ITEM_DIRS = ("items", "done", "closed", "parked")
+
+
+def home_dir(status) -> str:
+    return {"done": "done", "wontfix": "closed", "superseded": "closed", "parked": "parked"}.get(status, "items")
+
 TRIAGE = {"verified", "unverified"}
 SEV = ["p0", "p1", "p2", "p3"]
 REQUIRED = ["id", "kind", "title", "status", "triage", "severity", "subsystem", "created", "source"]
@@ -134,7 +143,7 @@ def parse(path: Path):
 
 def load(root_key: str):
     items, errors = [], []
-    for sub in ("items", "parked"):
+    for sub in ITEM_DIRS:
         d = ROOTS[root_key] / sub
         if not d.exists():
             continue
@@ -210,8 +219,10 @@ def validate(items):
         errs += [f"{p}: {e}" for e in check_closed(it.get("closed") or {})]
         if it.get("triage") == "verified" and not it.get("last_verified"):
             errs.append(f"{p}: triage=verified needs last_verified")
-        if (it.get("status") == "parked") != (it.get("_dir") == "parked"):
-            errs.append(f"{p}: parked items live in parked/, all other items in items/")
+        if it.get("_dir") != home_dir(it.get("status")):
+            errs.append(f"{p}: a {it.get('status')} item lives in {home_dir(it.get('status'))}/ "
+                        "(open items in items/, done in done/, won't-fix and superseded in closed/, parked in parked/); "
+                        "run `work.py tidy`")
         if it.get("status") == "parked" and not ((it.get("parked") or {}).get("at") and (it.get("parked") or {}).get("reason")):
             errs.append(f"{p}: status=parked needs [parked] at and reason")
     ids = {it.get("id") for it in items}
@@ -664,7 +675,7 @@ def prune_claims():
     gone = []
     for f in d.glob("*.json"):
         iid = f.stem
-        hits = [p for sub in ("work/items", "work/parked", ".roko/work-local/items") for p in (main / sub).glob(f"{iid}-*.md")]
+        hits = [p for root in ("work", ".roko/work-local") for sub in ITEM_DIRS for p in (main / root / sub).glob(f"{iid}-*.md")]
         try:
             status = tomllib.loads(re.match(r"\+\+\+\n(.*?)\n\+\+\+", hits[0].read_text(), re.S).group(1)).get("status") if hits else None
         except Exception:  # noqa: BLE001
@@ -1113,7 +1124,8 @@ def render_root(root_key: str, items):
     for it in verified:
         by_sub[it["subsystem"][0]].append(it)
     out = [f"# roko work status{' (local)' if root_key == 'local' else ''}", "", GEN_NOTE, "",
-           f"As of {today} (newest item update), from `{root.relative_to(REPO)}/items/`. "
+           f"As of {today} (newest item update), from `{root.relative_to(REPO)}/` (open items in `items/`, done in "
+           "`done/`, won't-fix and superseded in `closed/`). "
            f"{len(opened)} open ({len(verified)} verified, {len(unverified)} unverified imports) · {len(closed)} closed · "
            f"{len(parked)} parked (not planned; in `parked/`, revive with `work.py unpark <id>`). "
            "Format and rules: `work/README.md`.", "",
@@ -1383,6 +1395,7 @@ def move(it, text: str, sub: str):
     dest.write_text(text)
     if dest != it["_path"]:
         it["_path"].unlink()
+    it["_path"], it["_dir"] = dest, sub
 
 
 def split_front(fm: str):
@@ -1488,7 +1501,7 @@ def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=N
               "assist": assist, "forced": forced, "evidence": evidence}
     text = rewrite_item(it, status=status, closed=closed, duplicate_of=duplicate_of, verified=True,
                         rev=head_rev() or None, note=note, today=today)
-    it["_path"].write_text(text)
+    move(it, text, home_dir(status))
     log_event("closed", it["id"], session=session or session_name(None, claim.get("session"), claim.get("by")),
               executor=executor, via=via, branch=claim.get("branch"), source=source, status=status, commit=commit,
               run_id=run_id, forced=forced)
@@ -1834,7 +1847,7 @@ def cmd_apply_verdicts(a):
                             verified=v != "unclear", rev=seen.get("head"), note="\n\n".join(notes) or None)
         stats[v] += 1
         if not a.dry_run:
-            it["_path"].write_text(text)
+            move(it, text, home_dir(status or it["status"]))
     print(("would apply " if a.dry_run else "applied ") + json.dumps(stats))
 
 
@@ -1873,7 +1886,7 @@ Constraints (files not to touch, decisions already made, risky areas), and anyth
 def cmd_new(a):
     created = a.created or dt.date.today().isoformat()
     iid = make_id(a.kind, a.title, created, a.source)
-    root = ROOTS[a.root] / "items"
+    root = ROOTS[a.root] / home_dir(a.status)
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{iid}-{slug(a.title)}.md"
     if path.exists():
@@ -1924,8 +1937,21 @@ def cmd_unpark(a):
             fm = re.sub(r"^updated = .*$", f"updated = {today}", fm, count=1, flags=re.M)
             return re.sub(r"\n{3,}", "\n\n", fm).rstrip("\n")
 
-        move(it, edit_front(it["_path"], edit), "items")
+        move(it, edit_front(it["_path"], edit), home_dir(prev))
     print(f"unparked {len(a.ids)}")
+
+
+def cmd_tidy(a):
+    """Move every item whose file is not in its status's folder (for example an item closed by an older work.py, or on
+    a branch merged from before the folders existed)."""
+    moved = []
+    for key in ROOTS:
+        for it in load(key)[0]:
+            home = home_dir(it.get("status"))
+            if it["_dir"] != home:
+                move(it, it["_path"].read_text(), home)
+                moved.append(f"{it['id']} → {key}/{home}/")
+    print("\n".join(moved + [f"tidy: moved {len(moved)}"]))
 
 
 def main():
@@ -1939,6 +1965,7 @@ def main():
     p.add_argument("--status", default="open", choices=sorted(STATUSES - {"parked"})); p.add_argument("--triage", default="unverified", choices=sorted(TRIAGE))
     p = sp.add_parser("park"); p.add_argument("ids", nargs="+"); p.add_argument("--reason", required=True)
     p = sp.add_parser("unpark"); p.add_argument("ids", nargs="+")
+    sp.add_parser("tidy")
     p = sp.add_parser("close"); p.add_argument("id"); p.add_argument("--evidence", required=True)
     p.add_argument("--status", default="done", choices=["done", "wontfix", "superseded"]); p.add_argument("--commit")
     p.add_argument("--run-id"); p.add_argument("--by"); p.add_argument("--duplicate-of"); p.add_argument("--force", action="store_true")
@@ -1986,7 +2013,7 @@ def main():
     p = sp.add_parser("status", help="open, claimed and done counts by goal, lane and epic (read-only)")
     p.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
+    simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "tidy": cmd_tidy, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
               "touched": cmd_touched, "verify": cmd_verify, "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
               "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event,
               "list": cmd_list, "show": cmd_show, "status": cmd_status}

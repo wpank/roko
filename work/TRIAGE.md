@@ -105,9 +105,6 @@
 ### roko-acp (1)
 - **P2** [bug-31bca6](items/bug-31bca6-nothing-reads-learning-dreams-max-concurrent-so.md) Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs [bug] · size S
 
-### tmp/cybernetic-harness/paper (1)
-- **P2** [gap-f052aa](items/gap-f052aa-research-paper-claims-about-cited-works-216.md) Research paper: claims about cited works (216 keys, related work above all) have not been checked against the papers' full text · size L
-
 ### roko-cli/deployment (1)
 - **P2** [dec-648cce](items/dec-648cce-should-roko-deploy-railway-forward-roko-serve.md) Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys? [decision] · size S
 
@@ -138,6 +135,9 @@
 
 ### roko-learn/runtime_feedback (1)
 - **P3** [gap-d0f52f](items/gap-d0f52f-learningruntime-discover-cross-episode.md) LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader · size S
+
+### tmp/cybernetic-harness/paper (1)
+- **P3** [gap-38e925](items/gap-38e925-research-paper-the-190-lower-ranked-cited.md) Research paper: the ~190 lower-ranked cited keys have not been checked against their full texts · size M
 
 ### .github/workflows (1)
 - **P3** [dec-50192e](items/dec-50192e-should-the-plan-validate-ci-job-run.md) Should the plan-validate CI job run roko plan validate --strict? [decision] · size S

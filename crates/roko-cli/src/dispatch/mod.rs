@@ -253,6 +253,20 @@ impl Dispatcher {
         self.router.routing_ladder()
     }
 
+    /// Weigh the durable knowledge `store` into the cascade router's pick
+    /// ([`ModelRouter::with_knowledge_store`]).
+    #[must_use]
+    pub fn with_knowledge_store(mut self, store: roko_neuro::KnowledgeStore) -> Self {
+        self.router = self.router.with_knowledge_store(store);
+        self
+    }
+
+    /// The knowledge store the inner [`ModelRouter`] weighs, if any.
+    #[must_use]
+    pub fn knowledge_store(&self) -> Option<&roko_neuro::KnowledgeStore> {
+        self.router.knowledge_store()
+    }
+
     /// Read-only access to the prompt assembler -- exposed for bidder
     /// persistence and diagnostic endpoints.
     #[must_use]

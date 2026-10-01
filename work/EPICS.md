@@ -50,9 +50,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-a0e40a](items/spec-a0e40a-epic-integration-and-a-whole-plan-check.md) integration and a whole-plan check
 
-- **16/17 closed** · goal `golden-path` · severity p1
-- open by lane: none 1
-- next: [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair
+- **17/17 closed** · goal `golden-path` · severity p1
 
 ## [spec-a78d57](items/spec-a78d57-epic-scheduler.md) scheduler
 
@@ -107,9 +105,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 47 | 59 | 12 (0) |
 | docs | 17 | 19 | 2 (0) |
 | frontend | 2 | 2 | 0 (0) |
-| none | 303 | 391 | 88 (88) |
+| none | 305 | 391 | 86 (86) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 156 | 178 | 22 (0) |
-| rust-hot | 103 | 117 | 14 (0) |
+| rust-cold | 164 | 185 | 21 (1) |
+| rust-hot | 105 | 123 | 18 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

@@ -1464,13 +1464,8 @@ async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
             let manifest =
                 roko_cli::runner::queue_manifest::QueueManifest::from_file(&manifest_path)?;
 
-            // Collect completed plan IDs from executor state.
-            let completed: std::collections::HashSet<String> = read_executor_state(&wd)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(_, done, total)| *total > 0 && done == total)
-                .map(|(id, _, _)| id)
-                .collect();
+            // Graph runs write checkpoints, not the old executor snapshot.
+            let completed = manifest.completed_plans(&wd);
 
             if cli.json {
                 let milestones: Vec<serde_json::Value> = manifest

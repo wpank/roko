@@ -744,7 +744,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `Ctrl+A` | Approve all pending commands |
 | `Ctrl+T` | Toggle agent topology panel |
 | `Ctrl+X` | Force advance (with confirmation) |
-| `Ctrl+D` | Reset selected plan state (with confirmation) |
+| `Ctrl+D` | Cancel selected plan (with confirmation) |
 | `Ctrl+E` | Toggle full-screen post-processing effects |
 | `v` | Cycle visual effects preset |
 | `Ctrl+G` | Reconcile git state (with confirmation) |
@@ -809,10 +809,13 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `s` | Soft retry plan |
 | `z` | Diagnose plan |
 | `S` | Repair plan (preserve) |
-| `R` | Repair plan (clean) |
+| `R` | Cancel plan (with confirmation) |
 | `c` | Reverify plan |
 | `F` | Force advance |
 | `V` | Reverify plan |
+
+During `roko plan run`, only pause (`p`) and cancel (`R`, `Ctrl+D`) act on the run. The other
+recovery keys are rejected with a reason until the Graph engine supports them.
 
 </details>
 

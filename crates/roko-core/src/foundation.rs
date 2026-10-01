@@ -634,6 +634,11 @@ pub enum FeedbackEvent {
         /// (`"{run}:{plan}:{task}:{attempt}"`), when the caller has one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt_key: Option<String>,
+        /// True when the response came from a response cache: no provider
+        /// was called, so the call cost nothing. The usage fields repeat
+        /// the cached call's.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cache_hit: bool,
     },
     /// Feedback from a gate execution.
     GateResult {

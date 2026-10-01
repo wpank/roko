@@ -81,6 +81,8 @@ pub struct ModelCallFeedbackRecorder {
     cascade_journal: Arc<ModelCallJournal>,
     cascade_router: Option<Arc<CascadeRouter>>,
     save_cascade_router: bool,
+    /// Whether each call is also recorded in `costs.jsonl` (bug-c1f6b8).
+    record_costs: bool,
 }
 
 impl ModelCallFeedbackRecorder {
@@ -107,6 +109,7 @@ impl ModelCallFeedbackRecorder {
             cascade_journal: Arc::new(cascade_journal),
             cascade_router,
             save_cascade_router: true,
+            record_costs: false,
         }
     }
 
@@ -121,6 +124,7 @@ impl ModelCallFeedbackRecorder {
             learn_dir,
             cascade_router: Some(cascade_router),
             save_cascade_router: true,
+            record_costs: false,
         }
     }
 
@@ -132,7 +136,17 @@ impl ModelCallFeedbackRecorder {
             learn_dir,
             cascade_router: None,
             save_cascade_router: false,
+            record_costs: false,
         }
+    }
+
+    /// Also record each call as a cost record in `costs.jsonl`
+    /// ([`FeedbackService::with_cost_records`]), for a caller whose calls
+    /// nothing else costs (bug-c1f6b8).
+    #[must_use]
+    pub const fn with_cost_records(mut self) -> Self {
+        self.record_costs = true;
+        self
     }
 
     /// Record model-call feedback, provider health, and cascade observation.
@@ -148,6 +162,9 @@ impl ModelCallFeedbackRecorder {
         self.record_provider_health(&feedback)?;
 
         let mut feedback_service = FeedbackService::new(self.learn_dir.clone());
+        if self.record_costs {
+            feedback_service = feedback_service.with_cost_records();
+        }
         if let Some(router) = &self.cascade_router {
             feedback_service = feedback_service
                 .with_cascade_router(Arc::clone(router))
@@ -174,6 +191,7 @@ impl ModelCallFeedbackRecorder {
                 error_class: feedback.error_class.clone(),
                 model_reported: feedback.model_reported,
                 attempt_key: feedback.attempt_key,
+                cache_hit: false,
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -539,6 +557,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         }
     }
 

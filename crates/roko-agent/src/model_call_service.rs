@@ -707,6 +707,7 @@ impl ModelCallService {
         success: bool,
         error_class: Option<&str>,
         model_reported: Option<&str>,
+        cache_hit: bool,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -733,6 +734,7 @@ impl ModelCallService {
             // The service serves callers outside Graph attempts (serve,
             // chat, CLI), so no call it makes belongs to one.
             attempt_key: None,
+            cache_hit,
         })
         .await
     }
@@ -2344,6 +2346,7 @@ impl ModelCaller for ModelCallService {
                         true,
                         None,
                         None,
+                        true,
                     )
                     .await?;
                     self.emit_call_metrics(
@@ -2565,6 +2568,7 @@ impl ModelCaller for ModelCallService {
                     false,
                     Some(provider_error_kind(&message)),
                     None,
+                    false,
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2628,6 +2632,7 @@ impl ModelCaller for ModelCallService {
                 false,
                 Some("convergence_failure"),
                 output.model_reported.as_deref(),
+                false,
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2696,6 +2701,7 @@ impl ModelCaller for ModelCallService {
             true,
             None,
             output.model_reported.as_deref(),
+            false,
         )
         .await?;
         self.emit_call_metrics(

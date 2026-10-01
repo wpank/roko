@@ -2,14 +2,16 @@
 id = "bug-a05c53"
 kind = "bug"
 title = "ViabilityBench's Roko arm fails plan validate --strict on PLAN_041 since gap-dbf2a6, so every Roko-arm task ends infra_error"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "3c90c3151"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tamper's report, 2026-10-01, real_roko tests run against the batch binary at 1ce6526f8)"
 anchors = ["benchmarks/viabilitybench/driver/planemit.py", "benchmarks/viabilitybench/driver/run_roko.py", "crates/roko-cli/src/plan_validate.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-c33709", "gap-327242"], 
 
 [[verify]]
 command = "test -x target/debug/roko && cd benchmarks/viabilitybench && VB_TEST_ROKO_BIN=$PWD/../../target/debug/roko .venv/bin/python -m pytest -q -p no:cacheprovider driver/test_run_roko.py -k 'real_roko or refuses_a_binary' -rs"
+
+[closed]
+at = 2026-10-01
+commit = "b167a45d8"
+evidence = "The emitted roko.toml turns the routing ladder off ([routing.ladder] enabled = false, planemit-2), so PLAN_041 does not apply and plan validate --strict passes with the pin unchanged. vb run calls the runner's preflight before the first task: the Roko arm validates a stand-in plan with its binary and refuses the run if it is rejected. The real_roko skip reason is explicit and the documented test commands pass -rs. Verify: against a cp -c of roko-batch-target/debug/roko (git fcdaf32ae), the 3 real_roko tests and the refusal test pass (4 passed); the full bench suite passed 371, skipped 2."
 +++
 
 ## Problem

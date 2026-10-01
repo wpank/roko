@@ -619,6 +619,14 @@ impl TuiState {
             .collect();
 
         let mut plan_ids: Vec<String> = snap.plans.keys().cloned().collect();
+        // While a plan set is announced, list its plans and any other plan
+        // that is running. A long-lived hub (`roko serve`, or a dashboard that
+        // replayed `.roko/events.jsonl`) still holds the plans of earlier
+        // runs, which have nothing to do with this one.
+        if let Some(set) = &snap.plan_set {
+            plan_ids
+                .retain(|plan_id| set.position(plan_id).is_some() || snap.plans[plan_id].active);
+        }
         // Announced plan-set members keep their execution order.
         let plan_set_position = |plan_id: &str| {
             snap.plan_set
@@ -692,6 +700,8 @@ impl TuiState {
             })
             .collect();
 
+        // Tasks of the plans left out above are not orphans.
+        tasks_by_plan.retain(|plan_id, _| !snap.plans.contains_key(plan_id));
         let mut orphaned_plan_ids: Vec<String> = tasks_by_plan.keys().cloned().collect();
         orphaned_plan_ids.sort();
         for plan_id in orphaned_plan_ids {

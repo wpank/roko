@@ -2077,6 +2077,62 @@ mod tests {
     }
 
     #[test]
+    fn f2_lists_the_plan_set_not_earlier_runs() {
+        use roko_core::DashboardEvent;
+        use roko_core::dashboard_snapshot::{DashboardSnapshot, PlanSetEntry};
+
+        let started = |plan_id: &str| DashboardEvent::PlanStarted {
+            plan_id: plan_id.to_string(),
+            tasks_total: 1,
+        };
+        let mut snap = DashboardSnapshot::default();
+        // An earlier run, as a replayed `.roko/events.jsonl` or a long-lived
+        // serve hub still holds it.
+        snap.apply_with_ts(&started("old-run"), 1_000);
+        snap.apply_with_ts(
+            &DashboardEvent::TaskStarted {
+                plan_id: "old-run".to_string(),
+                task_id: "T1".to_string(),
+                title: String::new(),
+                phase: "graph-executing".to_string(),
+            },
+            1_100,
+        );
+        snap.apply_with_ts(
+            &DashboardEvent::PlanCompleted {
+                plan_id: "old-run".to_string(),
+                success: true,
+            },
+            1_200,
+        );
+        // Another runner's plan, still running.
+        snap.apply_with_ts(&started("other-live"), 1_300);
+        let entry = |plan_id: &str| PlanSetEntry {
+            plan_id: plan_id.to_string(),
+            tasks_total: 1,
+            ..PlanSetEntry::default()
+        };
+        snap.apply_with_ts(
+            &DashboardEvent::PlanSetLoaded {
+                plans: vec![entry("01-api"), entry("02-portal")],
+            },
+            2_000,
+        );
+
+        let mut state = TuiState::default();
+        state.update_from_dashboard_snapshot(&snap);
+
+        let ids: Vec<&str> = state.plans.iter().map(|plan| plan.id.as_str()).collect();
+        assert_eq!(ids, ["01-api", "02-portal", "other-live"]);
+        let listed: Vec<&str> = state
+            .plan_summaries
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect();
+        assert_eq!(listed, ids);
+    }
+
+    #[test]
     fn plan_rows_say_why_a_plan_waits() {
         use roko_core::dashboard_snapshot::PlanSetEntry;
 

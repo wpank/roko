@@ -463,6 +463,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Prepare {
             plan_dir,
+            full,
             force,
             workdir,
         } => {
@@ -473,7 +474,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 workdir.join(plan_dir)
             };
             let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
-            let prepared = roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?;
+            let prepared = if full {
+                let model = cli.model.clone();
+                roko_cli::plan_brief::prepare_full(&plan_dir, &workdir, force, model).await?
+            } else {
+                roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?
+            };
             if !cli.quiet {
                 for path in &prepared.written {
                     println!("wrote {}", path.display());

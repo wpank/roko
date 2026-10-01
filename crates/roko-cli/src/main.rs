@@ -2161,10 +2161,15 @@ enum PlanCmd {
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
     /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
-    /// PRD. No model runs. Documents that exist are kept unless `--force`.
+    /// PRD. No model runs unless `--full`. Documents that exist are kept
+    /// unless `--force`.
     Prepare {
         /// The plan directory, holding `tasks.toml`.
         plan_dir: PathBuf,
+        /// Also have the planner model write `decomposition.md` (numbered
+        /// steps with checkpoints) and `rubric.md` (review criteria).
+        #[arg(long)]
+        full: bool,
         /// Overwrite companion documents that exist.
         #[arg(long)]
         force: bool,

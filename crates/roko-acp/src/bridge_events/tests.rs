@@ -2239,6 +2239,116 @@ async fn resolve_context_items_resolves_resource_and_path_mentions() {
 }
 
 #[test]
+fn prompt_resource_blocks_parse_spec_shapes() {
+    use crate::types::ResourceRef;
+
+    // A spec prompt with a resource link and embedded text and binary resources.
+    let prompt = json!({
+        "sessionId": "sess-1",
+        "prompt": [
+            { "type": "text", "text": "Explain these" },
+            {
+                "type": "resource_link",
+                "uri": "file:///repo/src/lib.rs",
+                "name": "lib.rs",
+                "mimeType": "text/x-rust"
+            },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///repo/notes.md",
+                    "text": "# Notes",
+                    "mimeType": "text/markdown"
+                }
+            },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///repo/logo.png",
+                    "blob": "aGVsbG8=",
+                    "mimeType": "image/png"
+                }
+            }
+        ]
+    });
+    let schema = acp_schema();
+    let defs = &schema["$defs"];
+    let errors = acp_schema_errors(&prompt, &defs["PromptRequest"], defs, "params");
+    assert!(errors.is_empty(), "spec-shaped samples: {errors:?}");
+
+    let params: SessionPromptParams = serde_json::from_value(prompt).expect("parse prompt");
+    let ContentBlock::ResourceLink { uri, name, .. } = &params.prompt[1] else {
+        panic!("expected a resource link, got {:?}", params.prompt[1]);
+    };
+    assert_eq!(
+        (uri.as_str(), name.as_str()),
+        ("file:///repo/src/lib.rs", "lib.rs")
+    );
+    assert!(matches!(
+        &params.prompt[2],
+        ContentBlock::Resource {
+            resource: ResourceRef::Text { text, .. }
+        } if text == "# Notes"
+    ));
+    assert!(matches!(
+        &params.prompt[3],
+        ContentBlock::Resource {
+            resource: ResourceRef::Blob { .. }
+        }
+    ));
+    // None of these blocks gets the prompt refused as unknown content.
+    let capabilities = crate::types::advertised_prompt_capabilities(false);
+    assert!(unsupported_prompt_content(&params.prompt, &capabilities).is_none());
+}
+
+#[test]
+fn prompt_resource_blocks_parse_legacy_file_ref_and_feed_context() {
+    use crate::types::ResourceRef;
+
+    // roko's own file reference still parses.
+    let legacy: ContentBlock = serde_json::from_value(json!({
+        "type": "resource",
+        "resource": { "type": "file", "uri": "file:///repo/a.rs" }
+    }))
+    .expect("parse roko file resource");
+    assert!(matches!(
+        legacy,
+        ContentBlock::Resource {
+            resource: ResourceRef::File { ref uri }
+        } if uri == "file:///repo/a.rs"
+    ));
+
+    // A linked workspace file is read from disk, embedded text is used as sent,
+    // and the link stays visible in the prompt text.
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("lib.rs"), "fn linked() {}").expect("write linked file");
+    let link_uri = format!("file://{}", tmp.path().join("lib.rs").display());
+    let prompt = vec![
+        ContentBlock::Text {
+            text: "Explain".to_owned(),
+        },
+        ContentBlock::ResourceLink {
+            uri: link_uri.clone(),
+            name: "lib.rs".to_owned(),
+            mime_type: None,
+        },
+        ContentBlock::Resource {
+            resource: ResourceRef::Text {
+                uri: "file:///repo/notes.md".to_owned(),
+                text: "# Notes".to_owned(),
+                mime_type: None,
+            },
+        },
+    ];
+    let uris = extract_resource_uris(&prompt);
+    assert_eq!(uris, vec![link_uri.clone()]);
+    assert!(read_file_context(&uris, tmp.path()).contains("fn linked() {}"));
+    let embedded = embedded_resource_context(&prompt);
+    assert!(embedded.contains("<file path=\"/repo/notes.md\">\n# Notes\n</file>"));
+    assert!(extract_prompt_text(&prompt).contains(&format!("[lib.rs]({link_uri})")));
+}
+
+#[test]
 fn truncate_with_limit_is_char_safe() {
     let text = "é".repeat(20_000);
     let truncated = truncate_with_limit(&text, 32_768, "... [truncated]");

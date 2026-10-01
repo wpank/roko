@@ -559,10 +559,21 @@ pub enum ContentBlock {
         /// Text body.
         text: String,
     },
-    /// A resource reference content block.
+    /// A resource content block: content the client embedded, or a workspace file.
     Resource {
         /// Referenced resource.
         resource: ResourceRef,
+    },
+    /// A link to a resource the agent can read, such as a workspace file. ACP
+    /// agents must accept these in prompts.
+    ResourceLink {
+        /// Resource URI (`file://…` for a workspace file).
+        uri: String,
+        /// Display name.
+        name: String,
+        /// Optional MIME type.
+        #[serde(default, rename = "mimeType", skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
     },
     /// An inline image content block (base64-encoded).
     Image {
@@ -600,6 +611,16 @@ impl std::fmt::Debug for ContentBlock {
                 .debug_struct("Resource")
                 .field("resource", resource)
                 .finish(),
+            Self::ResourceLink {
+                uri,
+                name,
+                mime_type,
+            } => formatter
+                .debug_struct("ResourceLink")
+                .field("uri", uri)
+                .field("name", name)
+                .field("mime_type", mime_type)
+                .finish(),
             Self::Image { data, mime_type } => formatter
                 .debug_struct("Image")
                 .field("mime_type", mime_type)
@@ -622,15 +643,141 @@ impl std::fmt::Debug for ContentBlock {
     }
 }
 
-/// Reference to an ACP resource.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type")]
+/// The resource in a `resource` prompt block. ACP clients embed its content,
+/// `{uri, text}` or `{uri, blob}` with an optional `mimeType`; roko's original
+/// form names a workspace file for roko to read, `{"type": "file", uri}`.
+#[derive(Clone, PartialEq)]
 pub enum ResourceRef {
-    /// A file resource reference.
+    /// A workspace file that roko reads itself.
     File {
         /// File URI.
         uri: String,
     },
+    /// Text content the client embedded.
+    Text {
+        /// Resource URI.
+        uri: String,
+        /// The resource's text.
+        text: String,
+        /// Optional MIME type.
+        mime_type: Option<String>,
+    },
+    /// Binary content the client embedded, base64-encoded.
+    Blob {
+        /// Resource URI.
+        uri: String,
+        /// Base64-encoded bytes.
+        blob: String,
+        /// Optional MIME type.
+        mime_type: Option<String>,
+    },
+}
+
+impl ResourceRef {
+    /// The resource's URI.
+    #[must_use]
+    pub fn uri(&self) -> &str {
+        match self {
+            Self::File { uri } | Self::Text { uri, .. } | Self::Blob { uri, .. } => uri,
+        }
+    }
+}
+
+impl std::fmt::Debug for ResourceRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File { uri } => formatter.debug_struct("File").field("uri", uri).finish(),
+            Self::Text {
+                uri,
+                text,
+                mime_type,
+            } => formatter
+                .debug_struct("Text")
+                .field("uri", uri)
+                .field("mime_type", mime_type)
+                .field("text_len", &text.len())
+                .finish(),
+            Self::Blob {
+                uri,
+                blob,
+                mime_type,
+            } => formatter
+                .debug_struct("Blob")
+                .field("uri", uri)
+                .field("mime_type", mime_type)
+                .field("encoded_len", &blob.len())
+                .finish(),
+        }
+    }
+}
+
+/// Wire form of [`ResourceRef`], covering both the spec's and roko's shapes.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawResourceRef {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blob: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+}
+
+impl Serialize for ResourceRef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (kind, uri, text, blob, mime_type) = match self {
+            Self::File { uri } => (Some("file".to_owned()), uri, None, None, None),
+            Self::Text {
+                uri,
+                text,
+                mime_type,
+            } => (None, uri, Some(text.clone()), None, mime_type.clone()),
+            Self::Blob {
+                uri,
+                blob,
+                mime_type,
+            } => (None, uri, None, Some(blob.clone()), mime_type.clone()),
+        };
+        RawResourceRef {
+            kind,
+            uri: uri.clone(),
+            text,
+            blob,
+            mime_type,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawResourceRef::deserialize(deserializer)?;
+        match (raw.kind.as_deref(), raw.text, raw.blob) {
+            (Some("file"), _, _) => Ok(Self::File { uri: raw.uri }),
+            (Some(kind), _, _) => Err(serde::de::Error::unknown_variant(kind, &["file"])),
+            (None, Some(text), _) => Ok(Self::Text {
+                uri: raw.uri,
+                text,
+                mime_type: raw.mime_type,
+            }),
+            (None, None, Some(blob)) => Ok(Self::Blob {
+                uri: raw.uri,
+                blob,
+                mime_type: raw.mime_type,
+            }),
+            // A bare URI names a workspace file, as roko's own form does.
+            (None, None, None) => Ok(Self::File { uri: raw.uri }),
+        }
+    }
 }
 
 /// A `session/update` notification payload.

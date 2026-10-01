@@ -24,8 +24,8 @@ mod tests;
 
 pub(crate) use context::resolve_context_items;
 pub(crate) use context::{
-    extract_prompt_text, extract_resource_uris, inject_image_parts, model_input_blocks_from_prompt,
-    model_input_messages_from_wire, read_file_context,
+    embedded_resource_context, extract_prompt_text, extract_resource_uris, inject_image_parts,
+    model_input_blocks_from_prompt, model_input_messages_from_wire, read_file_context,
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
@@ -492,11 +492,11 @@ where
             resolve_context_items(&params.prompt, workdir).await
         } else {
             let uris = extract_resource_uris(&params.prompt);
-            if uris.is_empty() {
-                String::new()
-            } else {
-                read_file_context(&uris, workdir)
+            let mut context = embedded_resource_context(&params.prompt);
+            if !uris.is_empty() {
+                context.push_str(&read_file_context(&uris, workdir));
             }
+            context
         }
     } else {
         String::new()

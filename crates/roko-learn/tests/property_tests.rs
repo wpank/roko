@@ -66,7 +66,7 @@ fn arb_tool_call() -> impl Strategy<Value = ToolCallMeta> {
             tool_name,
             duration_ms,
             result_tokens,
-            succeeded,
+            succeeded: Some(succeeded),
             advanced_task: false,
             was_redundant: false,
             error_category: None,

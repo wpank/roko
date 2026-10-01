@@ -8,7 +8,7 @@
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::process::{
-    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub,
+    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
     benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
     register_spawned_pid, set_process_group, unregister_pid,
 };
@@ -740,7 +740,34 @@ impl Agent for ExecAgent {
         heartbeat_handle.abort();
         let elapsed_secs = started.elapsed().as_secs();
 
-        let raw_stdout = stdout_handle.await.unwrap_or_default();
+        // A process the agent started and left running can hold the output
+        // pipes open, so the readers would never see EOF and the run would
+        // hang after the agent exited (gap-5d3b82). Give them
+        // `EXITED_OUTPUT_DRAIN_MS`, then end the run's process group and keep
+        // what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (raw_stdout, raw_stderr) = match drained {
+            Ok((stdout, stderr)) => (stdout.unwrap_or_default(), stderr.unwrap_or_default()),
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "agent exited, a process it started still holds its output; ending its group"
+                );
+                // The root was reaped, so only its process group is
+                // signalled: SIGTERM, then SIGKILL.
+                let mut group = KillTreeOnDrop::new(pid);
+                group.root_reaped();
+                drop(group);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
 
         // ── Codex operation policy broker ────────────────────────────────────
         // Scan the raw JSONL before extracting text.  The live check above
@@ -770,7 +797,7 @@ impl Agent for ExecAgent {
         } else {
             self.scrub_text(&raw_stdout)
         };
-        let stderr = self.scrub_text(&stderr_handle.await.unwrap_or_default());
+        let stderr = self.scrub_text(&raw_stderr);
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         if !status.success() {
@@ -902,6 +929,29 @@ const fn track_pids() -> bool {
     !cfg!(test)
 }
 
+/// How long a run's output readers may take to reach EOF after the agent
+/// exited, before the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
+
+/// How long the readers of an ended process group may take to finish.
+const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// What `reader` collected from an ended run's pipe. A reader still blocked
+/// after [`KILLED_OUTPUT_DRAIN_MS`] is left behind, and its output is lost.
+async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
+    timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+}
+
 fn maybe_warn_and_filter_benign(name: &str, line: &str) -> bool {
     if let Some(benign) = classify_benign_stderr(line) {
         if benign_stderr_warn_once(benign.key) {
@@ -1013,6 +1063,50 @@ mod tests {
             alive = metrics.num_alive_tasks();
         }
         assert_eq!(alive, 0, "a task of the dropped run outlived it");
+    }
+
+    /// gap-5d3b82: the agent exits while a process it started still holds
+    /// its output open. The run ends soon after the exit with what the agent
+    /// printed, and that process is killed.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn exited_exec_agent_with_open_stdout_does_not_hang() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let holder = temp.path().join("holder.pid");
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("sleep 600 & echo $! > '{}'; echo done", holder.display()),
+            ],
+        );
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("x"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.body.as_text().unwrap().trim(), "done");
+
+        let pid = std::fs::read_to_string(&holder)
+            .expect("the holder's pid")
+            .trim()
+            .to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
     }
 
     #[tokio::test]
@@ -1288,7 +1382,10 @@ mod tests {
             "\n",
         );
         let violation = check_codex_output_against_policy(output, &policy).unwrap_err();
-        assert_eq!(violation, "file_change denied by policy: src/a.rs, src/b.rs");
+        assert_eq!(
+            violation,
+            "file_change denied by policy: src/a.rs, src/b.rs"
+        );
 
         let allow_all = CodexOperationPolicy::allow_all();
         assert!(check_codex_output_against_policy(output, &allow_all).is_ok());
@@ -1313,7 +1410,10 @@ mod tests {
         output.extend_from_slice(&line.as_bytes()[20..]);
         output.push(b'\n');
         broker.check(&output);
-        assert_eq!(denied_rx.try_recv().unwrap(), "file_change denied by policy");
+        assert_eq!(
+            denied_rx.try_recv().unwrap(),
+            "file_change denied by policy"
+        );
         assert_eq!(broker.checked, output.len());
         assert!(broker.denied.is_none());
     }

@@ -1279,6 +1279,22 @@ impl CascadeRouter {
         }
     }
 
+    /// Re-rank `route`, which another selector picked among `candidates`,
+    /// with knowledge `advice`: the knowledge step of
+    /// [`Self::route_with_knowledge_among`], for a route a health- or
+    /// bias-aware selector produced (reg-ff6e1a). A candidate that beats the
+    /// pick by more than 0.1 once the advice is counted replaces it.
+    #[must_use]
+    pub fn apply_knowledge_among(
+        &self,
+        ctx: &RoutingContext,
+        route: CascadeModel,
+        candidates: &[String],
+        advice: Option<&KnowledgeRoutingAdvice>,
+    ) -> CascadeModel {
+        self.apply_knowledge_to_route(ctx, route, candidates, advice)
+    }
+
     /// Route a context through the cascade over a candidate subset with knowledge hints.
     pub fn route_with_knowledge_among(
         &self,

@@ -66,6 +66,35 @@ fn tui_command_pause_toggle_sends_execution_commands() {
     );
 }
 
+/// gap-c002bb: the reset keys cancel the selected plan, and their
+/// confirmation says so; a Graph run cannot reset a plan yet.
+#[test]
+fn reset_plan_key_confirms_and_sends_a_cancel() {
+    let dir = tempdir().unwrap();
+    let (sender, mut cmd_rx, _ack_tx, ack_rx) =
+        crate::execution_control::ExecutionCommandSender::channel("test-run");
+    let ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+    let mut app = App::new(dir.path()).with_execution_command_sender(sender, ack_receiver);
+    app.tui_state.plans = vec![super::super::state::PlanEntry {
+        id: "plan-7".to_string(),
+        ..Default::default()
+    }];
+
+    app.dispatch_action(TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(
+        String::new(),
+    )));
+    let pending = app.tui_state.pending_confirm.clone().unwrap();
+    assert_eq!(pending.to_string(), "Cancel plan plan-7?");
+    app.dispatch_action(TuiAction::ConfirmYes);
+
+    let sent = cmd_rx.try_recv().unwrap();
+    assert_eq!(
+        sent.kind,
+        crate::execution_control::ExecutionCommandKind::Cancel
+    );
+    assert_eq!(sent.plan_id.as_deref(), Some("plan-7"));
+}
+
 #[test]
 fn tui_standalone_pause_toggle_shows_notification() {
     let dir = tempdir().unwrap();

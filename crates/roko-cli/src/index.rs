@@ -49,7 +49,10 @@ pub fn rebuild_prd_index(workdir: &Path) -> Result<()> {
     let mut out = String::new();
     let _ = writeln!(out, "# PRD Index");
     let _ = writeln!(out, "\n> Auto-generated. Do not edit manually.");
-    let _ = writeln!(out, "> Rebuilt on every `roko prd` command.\n");
+    let _ = writeln!(
+        out,
+        "> Rebuilt after successful mutating `roko prd` commands.\n"
+    );
 
     // Ideas count
     let ideas = ideas_path(workdir);

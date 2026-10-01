@@ -1,8 +1,11 @@
 //! `roko show` state inspection command.
 
 use crate::*;
+use chrono::{DateTime, NaiveDate, Utc};
 use roko_cli::DashboardData;
+use roko_cli::tui::dashboard::AgentSummary;
 use roko_fs::RokoLayout;
+use roko_learn::efficiency::AgentEfficiencyEvent;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -46,12 +49,98 @@ impl ShowTarget {
     }
 }
 
+/// Default `--since` span of the activity views.
+const DEFAULT_ACTIVITY_WINDOW: &str = "7d";
+
+/// The efficiency events the activity views count, from `--since`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityWindow {
+    /// Every recorded event (`--since all`).
+    All,
+    /// Events at or after this time.
+    Since(DateTime<Utc>),
+}
+
+impl ActivityWindow {
+    /// Parse `--since`: `all`, a span back from `now` (`30m`, `24h`, `7d`, `2w`), a
+    /// `YYYY-MM-DD` date (its midnight UTC) or an RFC 3339 time. `None` is the default span.
+    fn parse(value: Option<&str>, now: DateTime<Utc>) -> Result<Self> {
+        let value = value.unwrap_or(DEFAULT_ACTIVITY_WINDOW).trim();
+        if value.eq_ignore_ascii_case("all") {
+            return Ok(Self::All);
+        }
+        if let Some(span) = parse_span(value) {
+            // A span reaching past the earliest representable time covers everything.
+            return Ok(now.checked_sub_signed(span).map_or(Self::All, Self::Since));
+        }
+        if let Ok(time) = DateTime::parse_from_rfc3339(value) {
+            return Ok(Self::Since(time.with_timezone(&Utc)));
+        }
+        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .map(|midnight| Self::Since(midnight.and_utc()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--since {value}: expected a span such as 24h or 7d, YYYY-MM-DD, an RFC 3339 \
+                     time, or all"
+                )
+            })
+    }
+
+    /// Whether an event stamped `timestamp` is in the window.
+    fn contains(self, timestamp: &str) -> bool {
+        self.includes(event_time(timestamp))
+    }
+
+    /// Whether an event at `time` is in the window. Under a cutoff, an event whose time is
+    /// unknown is out: nothing shows that it is recent.
+    fn includes(self, time: Option<DateTime<Utc>>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Since(cutoff) => time.is_some_and(|time| time >= cutoff),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::All => String::from("all time"),
+            Self::Since(cutoff) => format!("since {}", cutoff.format("%Y-%m-%d %H:%M UTC")),
+        }
+    }
+}
+
+/// A `--since` span such as `30m`, `24h`, `7d` or `2w`.
+fn parse_span(value: &str) -> Option<chrono::Duration> {
+    let unit = value.chars().last()?;
+    let count = value[..value.len() - unit.len_utf8()]
+        .parse::<i64>()
+        .ok()
+        .filter(|count| *count > 0)?;
+    match unit {
+        'm' => chrono::Duration::try_minutes(count),
+        'h' => chrono::Duration::try_hours(count),
+        'd' => chrono::Duration::try_days(count),
+        'w' => chrono::Duration::try_weeks(count),
+        _ => None,
+    }
+}
+
+/// The time of an efficiency event (its RFC 3339 `timestamp`), if it parses.
+fn event_time(timestamp: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|time| time.with_timezone(&Utc))
+}
+
 #[derive(Debug)]
 struct ShowState {
     workdir: PathBuf,
     layout: RokoLayout,
     data: DashboardData,
     work_items: Vec<WorkItemSummary>,
+    /// The `--since` window of the activity views.
+    window: ActivityWindow,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +163,22 @@ struct CostAggregate {
     input_tokens: u64,
     output_tokens: u64,
     cost_usd: f64,
+    /// Turns that carry a gate verdict, and how many of those passed.
+    verdicts: usize,
+    passed: usize,
+}
+
+impl CostAggregate {
+    fn record(&mut self, event: &AgentEfficiencyEvent) {
+        self.turns += 1;
+        self.input_tokens += event.input_tokens;
+        self.output_tokens += event.output_tokens;
+        self.cost_usd += event.cost_usd;
+        if let Some(passed) = event.gate_passed {
+            self.verdicts += 1;
+            self.passed += usize::from(passed);
+        }
+    }
 }
 
 pub(crate) async fn cmd_show(
@@ -83,6 +188,7 @@ pub(crate) async fn cmd_show(
     follow: bool,
     serve_url: String,
     subject: Option<String>,
+    since: Option<String>,
 ) -> Result<i32> {
     if live {
         return super::dashboard::cmd_dashboard(cli, workdir, None, false, false, None).await;
@@ -110,11 +216,12 @@ pub(crate) async fn cmd_show(
     }
 
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    let window = ActivityWindow::parse(since.as_deref(), Utc::now())?;
     // Read-only state inspection: shared lock allows coexistence with an
     // active plan runner (which holds only the runner lock, not the workspace
     // lock).
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
-    let state = load_show_state(&workdir);
+    let state = load_show_state(&workdir, window);
     let output = match ShowTarget::parse(subject) {
         ShowTarget::Subject(ShowSubject::Overview) => render_overview(&state),
         ShowTarget::Subject(ShowSubject::Costs) => render_costs(&state),
@@ -130,7 +237,7 @@ pub(crate) async fn cmd_show(
     Ok(EXIT_SUCCESS)
 }
 
-fn load_show_state(workdir: &Path) -> ShowState {
+fn load_show_state(workdir: &Path, window: ActivityWindow) -> ShowState {
     let layout = RokoLayout::for_project(workdir);
     let data = DashboardData::load_best_effort(workdir);
     let work_items = collect_work_items(workdir, &layout, &data);
@@ -139,11 +246,13 @@ fn load_show_state(workdir: &Path) -> ShowState {
         layout,
         data,
         work_items,
+        window,
     }
 }
 
 fn render_overview(state: &ShowState) -> String {
     let mut out = header(state, "overview");
+    push_window(&mut out, state.window);
     push_section(&mut out, "work items");
     if state.work_items.is_empty() {
         push_empty(
@@ -157,27 +266,28 @@ fn render_overview(state: &ShowState) -> String {
     }
 
     push_section(&mut out, "agents");
-    let agent_rows = agent_rows(state);
-    if agent_rows.is_empty() {
+    let agents = agent_rows(state);
+    if agents.rows.is_empty() && agents.stale == 0 {
         push_empty(
             &mut out,
             "No agents found in the durable Runner projection or efficiency events.",
         );
     } else {
-        for row in agent_rows.iter().take(6) {
+        for row in agents.rows.iter().take(6) {
             push_kv(&mut out, &row.id, &row.summary);
         }
+        push_stale_agents(&mut out, &agents, state.window);
     }
 
     push_section(&mut out, "costs");
-    let efficiency = &state.data.efficiency;
+    let total = cost_total(window_events(state));
     push_kv(
         &mut out,
         "total",
         &format!(
             "{} across {} turn(s)",
-            format_cost(efficiency.total_cost_usd),
-            efficiency.event_count
+            format_cost(total.cost_usd),
+            total.turns
         ),
     );
     push_kv(
@@ -185,8 +295,8 @@ fn render_overview(state: &ShowState) -> String {
         "tokens",
         &format!(
             "{} input, {} output",
-            format_count(efficiency.total_input_tokens),
-            format_count(efficiency.total_output_tokens)
+            format_count(total.input_tokens),
+            format_count(total.output_tokens)
         ),
     );
 
@@ -202,36 +312,39 @@ fn render_overview(state: &ShowState) -> String {
 
 fn render_costs(state: &ShowState) -> String {
     let mut out = header(state, "costs");
-    let efficiency = &state.data.efficiency;
+    push_window(&mut out, state.window);
+    let events = window_events(state);
+    let total = cost_total(events.iter().copied());
     push_section(&mut out, "summary");
-    push_kv(&mut out, "turns", &efficiency.event_count.to_string());
-    push_kv(
-        &mut out,
-        "total cost",
-        &format_cost(efficiency.total_cost_usd),
-    );
+    push_kv(&mut out, "turns", &total.turns.to_string());
+    push_kv(&mut out, "total cost", &format_cost(total.cost_usd));
     push_kv(
         &mut out,
         "avg turn cost",
-        &format_cost(if efficiency.event_count == 0 {
+        &format_cost(if total.turns == 0 {
             0.0
         } else {
-            efficiency.total_cost_usd / efficiency.event_count as f64
+            total.cost_usd / total.turns as f64
         }),
     );
-    push_kv(
-        &mut out,
-        "pass rate",
-        &format_percent(ratio(efficiency.passed_count, efficiency.event_count)),
-    );
+    push_kv(&mut out, "gate pass rate", &format_pass_rate(&total));
+    if state.window != ActivityWindow::All {
+        let all_time = cost_total(&state.data.efficiency_events);
+        push_kv(
+            &mut out,
+            "all time",
+            &format!(
+                "{} across {} turn(s)",
+                format_cost(all_time.cost_usd),
+                all_time.turns
+            ),
+        );
+    }
 
-    let by_model = cost_by_model(state);
+    let by_model = cost_by_model(&events);
     push_section(&mut out, "by model");
     if by_model.is_empty() {
-        push_empty(
-            &mut out,
-            "No model cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("model", state.window));
     } else {
         for (model, aggregate) in by_model {
             push_kv(
@@ -248,13 +361,10 @@ fn render_costs(state: &ShowState) -> String {
         }
     }
 
-    let by_task = cost_by_task(state);
+    let by_task = cost_by_task(&events);
     push_section(&mut out, "by task");
     if by_task.is_empty() {
-        push_empty(
-            &mut out,
-            "No task cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("task", state.window));
     } else {
         for (task, aggregate) in by_task.into_iter().take(12) {
             push_kv(
@@ -269,13 +379,10 @@ fn render_costs(state: &ShowState) -> String {
         }
     }
 
-    let by_day = cost_by_day(state);
+    let by_day = cost_by_day(&events);
     push_section(&mut out, "by day");
     if by_day.is_empty() {
-        push_empty(
-            &mut out,
-            "No dated cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("dated", state.window));
     } else {
         for (day, aggregate) in by_day {
             push_kv(
@@ -294,17 +401,19 @@ fn render_costs(state: &ShowState) -> String {
 
 fn render_agents(state: &ShowState) -> String {
     let mut out = header(state, "agents");
-    let rows = agent_rows(state);
+    push_window(&mut out, state.window);
+    let agents = agent_rows(state);
     push_section(&mut out, "agents");
-    if rows.is_empty() {
+    if agents.rows.is_empty() && agents.stale == 0 {
         push_empty(
             &mut out,
             "No agents found in the durable Runner projection or .roko/learn/efficiency.jsonl.",
         );
     } else {
-        for row in rows {
+        for row in &agents.rows {
             push_kv(&mut out, &row.id, &row.summary);
         }
+        push_stale_agents(&mut out, &agents, state.window);
     }
     out
 }
@@ -787,31 +896,63 @@ fn read_json_paths(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn cost_by_model(state: &ShowState) -> BTreeMap<String, CostAggregate> {
+/// The efficiency events in the `--since` window.
+fn window_events(state: &ShowState) -> Vec<&AgentEfficiencyEvent> {
+    state
+        .data
+        .efficiency_events
+        .iter()
+        .filter(|event| state.window.contains(&event.timestamp))
+        .collect()
+}
+
+fn cost_total<'a>(events: impl IntoIterator<Item = &'a AgentEfficiencyEvent>) -> CostAggregate {
+    let mut total = CostAggregate::default();
+    for event in events {
+        total.record(event);
+    }
+    total
+}
+
+/// The gate pass rate over the turns that carry a verdict. Most turns carry none (a task's
+/// earlier turns, provider failures, ungated runs), so dividing by every turn understates it.
+fn format_pass_rate(total: &CostAggregate) -> String {
+    if total.verdicts == 0 {
+        return String::from("no gate verdicts");
+    }
+    format!(
+        "{} ({} of {} gate verdict(s))",
+        format_percent(ratio(total.passed, total.verdicts)),
+        total.passed,
+        total.verdicts
+    )
+}
+
+fn no_cost_events(kind: &str, window: ActivityWindow) -> String {
+    format!(
+        "No {kind} cost events in .roko/learn/efficiency.jsonl ({}).",
+        window.label()
+    )
+}
+
+fn cost_by_model(events: &[&AgentEfficiencyEvent]) -> BTreeMap<String, CostAggregate> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let aggregate = rows.entry(non_empty(&event.model, "unknown")).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        aggregate.record(event);
     }
     rows
 }
 
-fn cost_by_task(state: &ShowState) -> Vec<(String, CostAggregate)> {
+fn cost_by_task(events: &[&AgentEfficiencyEvent]) -> Vec<(String, CostAggregate)> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let task = if event.plan_id.is_empty() {
             non_empty(&event.task_id, "unknown-task")
         } else {
             format!("{}:{}", event.plan_id, non_empty(&event.task_id, "task"))
         };
-        let aggregate = rows.entry(task).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        rows.entry(task).or_default().record(event);
     }
     let mut rows = rows.into_iter().collect::<Vec<_>>();
     rows.sort_by(|left, right| {
@@ -825,19 +966,15 @@ fn cost_by_task(state: &ShowState) -> Vec<(String, CostAggregate)> {
     rows
 }
 
-fn cost_by_day(state: &ShowState) -> BTreeMap<String, CostAggregate> {
+fn cost_by_day(events: &[&AgentEfficiencyEvent]) -> BTreeMap<String, CostAggregate> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let day = if event.timestamp.len() >= 10 {
             event.timestamp[..10].to_string()
         } else {
             String::from("undated")
         };
-        let aggregate = rows.entry(day).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        rows.entry(day).or_default().record(event);
     }
     rows
 }
@@ -858,11 +995,33 @@ struct AgentRow {
     summary: String,
 }
 
-fn agent_rows(state: &ShowState) -> Vec<AgentRow> {
-    let mut by_agent = BTreeMap::<String, AgentRow>::new();
-    for agent in &state.data.agents {
+/// The agents an activity view lists, and how many it leaves out.
+#[derive(Debug, Default)]
+struct AgentRows {
+    /// Agents in the durable Runner projection, then agents whose last efficiency event is in
+    /// the window, most recently active first.
+    rows: Vec<AgentRow>,
+    /// Agents whose last efficiency event is before the window.
+    stale: usize,
+}
+
+fn agent_rows(state: &ShowState) -> AgentRows {
+    agent_rows_in_window(
+        &state.data.agents,
+        &state.data.efficiency_events,
+        state.window,
+    )
+}
+
+fn agent_rows_in_window(
+    agents: &[AgentSummary],
+    events: &[AgentEfficiencyEvent],
+    window: ActivityWindow,
+) -> AgentRows {
+    let mut projected = BTreeMap::<String, AgentRow>::new();
+    for agent in agents {
         let scope = agent.plan_id.as_deref().unwrap_or("workspace");
-        by_agent.insert(
+        projected.insert(
             agent.id.clone(),
             AgentRow {
                 id: agent.id.clone(),
@@ -871,22 +1030,64 @@ fn agent_rows(state: &ShowState) -> Vec<AgentRow> {
         );
     }
 
-    for event in &state.data.efficiency_events {
-        by_agent
-            .entry(event.agent_id.clone())
-            .or_insert_with(|| AgentRow {
-                id: event.agent_id.clone(),
-                summary: format!(
-                    "{} | {} | {} | last {}",
-                    non_empty(&event.role, "agent"),
-                    non_empty(&event.model, "unknown-model"),
-                    non_empty(&event.plan_id, "workspace"),
-                    non_empty(&event.timestamp, "unknown-time")
-                ),
-            });
+    // Each other agent's most recent event; of two with the same time, the later line wins.
+    let mut latest = BTreeMap::<&str, (Option<DateTime<Utc>>, &AgentEfficiencyEvent)>::new();
+    for event in events {
+        if projected.contains_key(event.agent_id.as_str()) {
+            continue;
+        }
+        let time = event_time(&event.timestamp);
+        let entry = latest
+            .entry(event.agent_id.as_str())
+            .or_insert((time, event));
+        if time >= entry.0 {
+            *entry = (time, event);
+        }
     }
 
-    by_agent.into_values().collect()
+    let mut active = Vec::new();
+    let mut stale = 0;
+    for (agent_id, (time, event)) in latest {
+        if !window.includes(time) {
+            stale += 1;
+            continue;
+        }
+        let row = AgentRow {
+            id: agent_id.to_string(),
+            summary: format!(
+                "{} | {} | {} | last {}",
+                non_empty(&event.role, "agent"),
+                non_empty(&event.model, "unknown-model"),
+                non_empty(&event.plan_id, "workspace"),
+                non_empty(&event.timestamp, "unknown-time")
+            ),
+        };
+        active.push((time, row));
+    }
+    // `latest` iterates in id order and the sort is stable, so equal times stay in id order.
+    active.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+
+    AgentRows {
+        rows: projected
+            .into_values()
+            .chain(active.into_iter().map(|(_, row)| row))
+            .collect(),
+        stale,
+    }
+}
+
+/// Count the agents the window leaves out, so they are hidden rather than lost.
+fn push_stale_agents(out: &mut String, agents: &AgentRows, window: ActivityWindow) {
+    if agents.stale > 0 {
+        push_empty(
+            out,
+            &format!(
+                "{} older agent(s) hidden (no activity {}); use --since all to list them.",
+                agents.stale,
+                window.label()
+            ),
+        );
+    }
 }
 
 fn push_learning_summary(state: &ShowState, out: &mut String) {
@@ -956,6 +1157,11 @@ fn header(state: &ShowState, title: &str) -> String {
         let _ = writeln!(out, "runner error: {error}");
     }
     out
+}
+
+/// The header line naming the `--since` window of an activity view.
+fn push_window(out: &mut String, window: ActivityWindow) {
+    let _ = writeln!(out, "window: {}", window.label());
 }
 
 fn push_section(out: &mut String, title: &str) {
@@ -1124,4 +1330,175 @@ fn truncate(value: &str, max_chars: usize) -> String {
         .collect::<String>();
     out.push('.');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(text: &str) -> DateTime<Utc> {
+        event_time(text).expect("an RFC 3339 test time")
+    }
+
+    fn since(text: &str) -> ActivityWindow {
+        ActivityWindow::Since(at(text))
+    }
+
+    fn efficiency_event(agent_id: &str, timestamp: &str) -> AgentEfficiencyEvent {
+        AgentEfficiencyEvent {
+            agent_id: agent_id.to_string(),
+            role: String::from("implementer"),
+            model: String::from("claude-sonnet-4-6"),
+            plan_id: String::from("plan-a"),
+            task_id: String::from("T01"),
+            timestamp: timestamp.to_string(),
+            ..AgentEfficiencyEvent::default()
+        }
+    }
+
+    fn live_agent(id: &str) -> AgentSummary {
+        AgentSummary {
+            id: id.to_string(),
+            label: id.to_string(),
+            plan_id: Some(String::from("plan-a")),
+            status: String::from("agent_running"),
+        }
+    }
+
+    fn row_ids(agents: &AgentRows) -> Vec<&str> {
+        agents.rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    fn show_state(events: &[AgentEfficiencyEvent], window: ActivityWindow) -> ShowState {
+        let mut data = DashboardData::default();
+        data.efficiency_events = events.to_vec();
+        ShowState {
+            workdir: PathBuf::from("/workspace"),
+            layout: RokoLayout::for_project("/workspace"),
+            data,
+            work_items: Vec::new(),
+            window,
+        }
+    }
+
+    /// One `push_kv` line, as the views print it.
+    fn kv(key: &str, value: &str) -> String {
+        let mut out = String::new();
+        push_kv(&mut out, key, value);
+        out
+    }
+
+    #[test]
+    fn show_costs_excludes_events_outside_window() {
+        let now = at("2026-10-01T12:00:00Z");
+        let window = ActivityWindow::parse(None, now).expect("default");
+        let events = [
+            AgentEfficiencyEvent {
+                cost_usd: 100.0,
+                gate_passed: Some(false),
+                ..efficiency_event("H11:12", "2026-05-10T09:00:00+00:00")
+            },
+            // A task's earlier turn carries no verdict, so it leaves the pass rate alone.
+            AgentEfficiencyEvent {
+                cost_usd: 0.75,
+                ..efficiency_event("T02:1", "2026-09-30T09:00:00+00:00")
+            },
+            AgentEfficiencyEvent {
+                cost_usd: 0.25,
+                gate_passed: Some(true),
+                ..efficiency_event("T02:1", "2026-09-30T10:00:00+00:00")
+            },
+        ];
+
+        let costs = render_costs(&show_state(&events, window));
+        assert!(
+            costs.contains("window: since 2026-09-24 12:00 UTC\n"),
+            "{costs}"
+        );
+        for (key, value) in [
+            ("turns", "2"),
+            ("total cost", "$1.0000"),
+            ("gate pass rate", "100.0% (1 of 1 gate verdict(s))"),
+            ("all time", "$101.0000 across 3 turn(s)"),
+            ("plan-a:T01", "$1.0000 | 2 turn(s)"),
+            ("2026-09-30", "$1.0000 | 2 turn(s)"),
+        ] {
+            assert!(costs.contains(&kv(key, value)), "{key}: {costs}");
+        }
+        assert!(!costs.contains("2026-05-10"), "{costs}");
+        let overview = render_overview(&show_state(&events, window));
+        assert!(
+            overview.contains(&kv("total", "$1.0000 across 2 turn(s)")),
+            "{overview}"
+        );
+
+        let costs = render_costs(&show_state(&events, ActivityWindow::All));
+        for (key, value) in [
+            ("turns", "3"),
+            ("total cost", "$101.0000"),
+            ("gate pass rate", "50.0% (1 of 2 gate verdict(s))"),
+            ("2026-05-10", "$100.0000 | 1 turn(s)"),
+        ] {
+            assert!(costs.contains(&kv(key, value)), "{key}: {costs}");
+        }
+        assert!(!costs.contains("all time  "), "{costs}");
+    }
+
+    #[test]
+    fn show_since_parses_spans_dates_times_and_all() {
+        let now = at("2026-10-01T12:00:00Z");
+        let parse = |value| ActivityWindow::parse(Some(value), now).expect(value);
+        assert_eq!(
+            ActivityWindow::parse(None, now).expect("default"),
+            since("2026-09-24T12:00:00Z")
+        );
+        assert_eq!(parse("all"), ActivityWindow::All);
+        assert_eq!(parse("24h"), since("2026-09-30T12:00:00Z"));
+        assert_eq!(parse("2w"), since("2026-09-17T12:00:00Z"));
+        assert_eq!(parse("2026-09-29"), since("2026-09-29T00:00:00Z"));
+        assert_eq!(
+            parse("2026-09-29T06:30:00+02:00"),
+            since("2026-09-29T04:30:00Z")
+        );
+        for bad in ["yesterday", "0d", "-7d", "7y", ""] {
+            assert!(ActivityWindow::parse(Some(bad), now).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn show_agents_marks_or_omits_stale_agents() {
+        let now = at("2026-10-01T12:00:00Z");
+        let window = ActivityWindow::parse(None, now).expect("default");
+        let live = [live_agent("live-agent")];
+        let events = [
+            efficiency_event("H11:12", "2026-05-10T09:00:00+00:00"),
+            efficiency_event("T02:1", "2026-09-29T08:00:00+00:00"),
+            efficiency_event("T02:1", "2026-09-30T10:00:00+00:00"),
+            // An older event later in the file does not replace the latest one.
+            efficiency_event("T02:1", "2026-09-28T07:00:00+00:00"),
+            efficiency_event("undated", ""),
+        ];
+
+        let agents = agent_rows_in_window(&live, &events, window);
+        assert_eq!(row_ids(&agents), ["live-agent", "T02:1"]);
+        let summary = &agents.rows[1].summary;
+        assert!(
+            summary.ends_with("| last 2026-09-30T10:00:00+00:00"),
+            "{summary}"
+        );
+        assert_eq!(agents.stale, 2, "the May and undated agents");
+        let mut out = String::new();
+        push_stale_agents(&mut out, &agents, window);
+        assert!(
+            out.contains("2 older agent(s) hidden (no activity since 2026-09-24 12:00 UTC)"),
+            "{out}"
+        );
+
+        let everything = agent_rows_in_window(&live, &events, ActivityWindow::All);
+        assert_eq!(
+            row_ids(&everything),
+            ["live-agent", "T02:1", "H11:12", "undated"]
+        );
+        assert_eq!(everything.stale, 0);
+    }
 }

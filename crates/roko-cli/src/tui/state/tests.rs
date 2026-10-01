@@ -2630,6 +2630,139 @@ fn settle_screened_transcript_noop_when_no_unscreened() {
     assert_eq!(history.len("a"), 2);
 }
 
+/// gap-836ae9: a tool stream published through the StateHub, the way a Graph
+/// run publishes it, gives the TUI the same records whether it watched the
+/// stream live or replays it later: from the hub's retained events, as on a
+/// reconnect, or from a snapshot's output tail, as when it attaches mid-run.
+/// The records show each step with its content.
+#[test]
+fn live_and_replayed_tool_streams_are_identical() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::state_hub::StateHub;
+    use crate::tui::widgets::stream_output::{
+        RenderOptions, display_text, render_output_records_styled,
+    };
+    use roko_core::DashboardEvent;
+
+    const AGENT: &str = "p1/t1";
+    let hub = StateHub::default_capacity();
+    let bridge = TuiBridge::new(hub.sender());
+    let mut live = hub.subscribe_events();
+
+    // A trusted turn: a live step and unscreened output while it runs, then
+    // the screened transcript.
+    bridge.agent_spawned(AGENT, "p1", "t1", 0, "impl", "sonnet", "claude_cli");
+    bridge.tool_step(AGENT, "p1", "t1", 0, "call-1", "Bash", "cat src/main.rs");
+    let unscreened = |kind: &str, payload: serde_json::Value| {
+        bridge.publish_unscreened_stream_record(AGENT, "p1", "t1", 0, kind, payload);
+    };
+    unscreened("text", serde_json::json!({ "text": "Reading the file" }));
+    unscreened(
+        "tool_result",
+        serde_json::json!({ "tool_id": "call-1", "output": "fn main() {}" }),
+    );
+    bridge.agent_text_delta(AGENT, "p1", "t1", 0, "Reading the file");
+    bridge.tool_call(AGENT, "p1", "t1", 0, "call-1", "Bash");
+    bridge.tool_output(AGENT, "p1", "t1", 0, "call-1", "fn main() {}");
+    bridge.agent_reasoning_delta(AGENT, "p1", "t1", 0, "It is empty");
+    bridge.agent_text_delta(AGENT, "p1", "t1", 0, "Done.");
+    bridge.agent_completed(AGENT, "p1", "t1", 0);
+
+    let mut live_events = Vec::new();
+    while let Ok(envelope) = live.try_recv() {
+        live_events.push((envelope.seq, envelope.payload));
+    }
+    let replayed_events: Vec<_> = hub
+        .subscribe_events_from(0)
+        .replay
+        .into_iter()
+        .map(|envelope| (envelope.seq, envelope.payload))
+        .collect();
+    assert_eq!(live_events, replayed_events, "hub replay matches live");
+
+    // The TUI's records: from events, as `drain_state_events` makes them,
+    // and from a snapshot, as `update_from_dashboard_snapshot` backfills them.
+    let records_from = |events: &[(u64, DashboardEvent)]| {
+        let mut state = TuiState::default();
+        for (_, event) in events {
+            match event {
+                DashboardEvent::AgentOutput {
+                    agent_id, content, ..
+                } => state.ingest_agent_output(agent_id, content),
+                _ => {}
+            }
+        }
+        Vec::from(state.agent_output_history.records_for(AGENT).clone())
+    };
+    let live_records = records_from(&live_events);
+    let replayed_records = records_from(&replayed_events);
+    let mut attached = TuiState::default();
+    attached.update_from_dashboard_snapshot(&hub.snapshot().borrow().clone());
+    let backfilled_records = Vec::from(attached.agent_output_history.records_for(AGENT).clone());
+
+    // Records compare without their timestamps.
+    let untimed = |records: &[AgentOutputRecord]| {
+        records
+            .iter()
+            .map(|record| AgentOutputRecord {
+                timestamp_ms: 0,
+                ..record.clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(untimed(&live_records), untimed(&replayed_records));
+    assert_eq!(untimed(&live_records), untimed(&backfilled_records));
+
+    let kinds: Vec<_> = live_records.iter().map(|record| record.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            OutputRecordKind::ToolCall,
+            OutputRecordKind::Text,
+            OutputRecordKind::ToolResult,
+            OutputRecordKind::Text,
+            OutputRecordKind::ToolCall,
+            OutputRecordKind::ToolResult,
+            OutputRecordKind::Reasoning,
+            OutputRecordKind::Text,
+        ]
+    );
+    let texts: Vec<_> = live_records
+        .iter()
+        .map(|record| display_text(&record.text))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Bash cat src/main.rs",
+            "Reading the file",
+            "fn main() {}",
+            "Reading the file",
+            "Bash",
+            "fn main() {}",
+            "It is empty",
+            "Done.",
+        ]
+    );
+
+    // Rendered, both read alike, the live step's target and the unscreened
+    // marker included.
+    let render = |records: &[AgentOutputRecord]| {
+        render_output_records_styled(records, &Theme::dark(), &RenderOptions::default())
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect::<Vec<String>>()
+    };
+    let lines = render(&live_records);
+    assert_eq!(lines, render(&backfilled_records));
+    for expected in [
+        "\u{25b8} Bash cat src/main.rs",
+        "[unscreened] Reading the file",
+    ] {
+        assert!(lines.contains(&expected.to_string()), "{lines:?}");
+    }
+}
+
 /// gap-f59fe9: a task blocked by a failed one, which never started, is
 /// listed in its plan's rows as blocked and names the task that blocked it.
 /// It is not counted as done.

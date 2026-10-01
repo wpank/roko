@@ -9,9 +9,9 @@ size = "L"
 goal = "features"
 subsystem = ["roko-cli/inject"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/361-inject-acknowledged-control-transport.md#361 — Deliver `roko inject` Through the Canonical Acknowledged Control Transport"
 discovered_from = "audit:tmp/backlog/archive/361-inject-acknowledged-control-transport.md#361 — Deliver `roko inject` Through the Canonical Acknowledged Control Transport"
 anchors = ["crates/roko-cli/src/commands/util.rs::cmd_inject", "crates/roko-cli/src/inject.rs::InjectRequest", "crates/roko-cli/src/execution_control.rs::ExecutionCommandKind", "crates/roko-cli/src/graph_execution/control_adapter.rs", "crates/roko-cli/src/runner/types.rs::ControlCommand", "crates/roko-cli/src/main.rs:5105"]
@@ -129,6 +129,15 @@ server-owned run).
 - Step 1 is safe to do now and in parallel with anything outside `commands/util.rs`/`main.rs` tests.
   Steps 2-5 should be coordinated with `bug-8208a6` so the plan control commands and inject share one
   transport.
+- 2026-10-01 (wk-childenv): partial on work/gap-1555ac (Plan step 1); cargo verification deferred to the batch
+  check. `cmd_inject` (commands/util.rs) fails closed again after validation: exit 1 with
+  `inject_transport_unavailable` and the hint (with `--json`, one object with `code`, `message`, `hint`), and it
+  writes neither `.roko/state/control.json` nor `inject.json`. The `inject_fail_closed_*` tests in main.rs assert
+  that; new test `inject_fails_without_executor_ack`. Surface inventory says Stub; docs/v2 and inject.rs updated.
+- The `[[verify]]` covers only the first Done-when bullet, so it passes now: do not close on it. Left: steps 2-5
+  (a transport to a live run, shared with bug-8208a6; `ExecutionCommandKind::Inject` and its prompt delivery;
+  dedup). The `i` key in the TUI has the same false success: it appends `roko.inject.directive` to
+  `.roko/signals.jsonl` and toasts "Injected", but nothing reads that kind.
 
 ## Original notes
 

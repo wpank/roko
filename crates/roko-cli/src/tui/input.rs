@@ -256,6 +256,8 @@ impl FocusZone {
 pub enum ConfirmAction {
     RestartAllPlans,
     RestartPhase,
+    /// Cancel the selected plan. A Graph run cannot reset a plan yet, so the
+    /// reset keys (`R`, `Ctrl-d`) cancel it, and say so (gap-c002bb).
     ResetSelectedPlan(String),
     ForceAdvance(String),
     ReverifyPlan(String),
@@ -279,7 +281,9 @@ pub enum ConfirmAction {
     MergeAllDone {
         branches: Vec<String>,
     },
-    /// Cancel (skip) a specific running agent's task (P3-TUI-4).
+    /// Cancel (skip) a specific running agent's task (P3-TUI-4). A Graph run
+    /// rejects it, with its reason, until it can stop a single task
+    /// (gap-c002bb).
     ///
     /// `plan_id` and `task_id` are empty when fired from the key handler and
     /// are filled in by `resolve_confirm_action` from the selected agent row.
@@ -294,7 +298,7 @@ impl std::fmt::Display for ConfirmAction {
         match self {
             Self::RestartAllPlans => write!(f, "Restart all plans?"),
             Self::RestartPhase => write!(f, "Restart current phase?"),
-            Self::ResetSelectedPlan(id) => write!(f, "Reset plan {id}?"),
+            Self::ResetSelectedPlan(id) => write!(f, "Cancel plan {id}?"),
             Self::ForceAdvance(id) => write!(f, "Force-advance plan {id}?"),
             Self::ReverifyPlan(id) => write!(f, "Re-verify plan {id}?"),
             Self::DiagnosePlan(id) => write!(f, "Diagnose plan {id}?"),
@@ -940,7 +944,7 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::ForceAdvance)
         }
-        // Ctrl-d: reset selected plan (confirm)
+        // Ctrl-d: cancel selected plan (confirm)
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::ResetPlanState)
         }
@@ -1073,7 +1077,7 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('S') => TuiAction::RepairWithContext, // repair with error context
         KeyCode::Char('R') => {
             TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(String::new()))
-        } // reset plan (confirm)
+        } // cancel plan (confirm)
         KeyCode::Char('c') => TuiAction::ReverifyGatesOnly, // reverify gates only
         KeyCode::Char('F') => TuiAction::ForceAdvance,
         KeyCode::Char('V') => TuiAction::ReverifyPlan,

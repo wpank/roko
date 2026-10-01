@@ -9,9 +9,9 @@ size = "L"
 goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/386-tui-recovery-keybindings-runner-channel.md#386 — Wire TUI Recovery Keybindings to Runner Command Channel"
 discovered_from = "audit:tmp/backlog/archive/386-tui-recovery-keybindings-runner-channel.md#386 — Wire TUI Recovery Keybindings to Runner Command Channel"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::route_execution_commands", "crates/roko-cli/src/graph_execution/plan_runner.rs::PlanControl", "crates/roko-cli/src/graph_execution/plan_runner.rs::terminate_in_flight_agents", "crates/roko-cli/src/tui/app/modals.rs::send_tui_command_for_confirm", "crates/roko-cli/src/tui/app/channels.rs::drain_execution_acks", "crates/roko-cli/src/execution_control.rs::ExecutionCommandKind", "crates/roko-graph/src/engine.rs::FlowHandle"]
@@ -134,6 +134,18 @@ No command may be acked `Accepted` and then dropped.
   first or together.
 - Conflicts with other work in `graph_execution/plan_runner.rs` (plan loop, scheduler) and
   `graph_task_dispatch.rs`; do not run in parallel with items touching those.
+- 2026-10-01 (wk-childenv): partial on work/gap-1555ac (Plan steps 1, 4, 5 and 6); cargo verification deferred
+  to the batch check. `route_execution_commands` (plan_runner.rs) rejects, with a reason (`reject_command`),
+  every command a Graph run does not carry out (soft retry, repair, reset, re-verify, skip, approve/reject) and
+  a cancel naming a plan that is neither running nor waiting; the post-run drain rejects late commands. No
+  `Accepted`-then-dropped path is left. `R` and `Ctrl-d` still send `Cancel`, the TUI's only plan cancel, and
+  now say "Cancel plan" (confirm text, help, docs/v2). Tests: `unsupported_tui_commands_are_rejected_with_a_reason`,
+  `tui_cancel_reaches_a_running_plan_and_drops_a_waiting_one`, `reset_plan_key_confirms_and_sends_a_cancel`.
+- Left (steps 2, 3 and the verify test): a per-task stop for `Skip` (`GraphConductor::supervise` in
+  `graph_task_dispatch/supervision.rs` already keeps a cancel token per running attempt, but only while the
+  conductor is on, and `run_watched` is where an operator stop would end the provider call), then
+  `tui_skip_command_skips_the_running_task`; re-admitting a plan that failed earlier in the run for retry,
+  repair and reset. Once reset works, `R` can send `Reset` again and cancel needs a key of its own.
 
 ## Original notes
 

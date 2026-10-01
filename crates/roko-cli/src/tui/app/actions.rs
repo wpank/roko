@@ -1072,7 +1072,7 @@ impl App {
                     self.tui_state.pending_confirm =
                         Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Restart plan '{plan_id}'?"),
+                        message: format!("Cancel plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,
@@ -1100,7 +1100,7 @@ impl App {
                     self.tui_state.pending_confirm =
                         Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Reset state for plan '{plan_id}'?"),
+                        message: format!("Cancel plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,

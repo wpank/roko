@@ -89,13 +89,6 @@ pub struct AgentConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
 
-    /// Reserved for future CaMeL dual-LLM isolation. The DataLlmConfig
-    /// type and DataLlmRouter implementation are substantial enough to
-    /// keep around, but no production dispatch path currently consults
-    /// this field. See audit T2-21 / 39-config-schema-phantom-fields.md.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_llm: Option<DataLlmConfig>,
-
     /// Default agent mode: how long the agent lives.
     #[serde(default)]
     pub mode: AgentMode,
@@ -192,7 +185,6 @@ impl Default for AgentConfig {
             fallback_model: None,
             roles: HashMap::new(),
             defaults: AgentDefaults::default(),
-            data_llm: None,
             mode: AgentMode::default(),
             extensions: Vec::new(),
             mcp_config: None,
@@ -293,13 +285,10 @@ pub struct RoutingOverrides {
 /// 2. Data LLM isolation (no tools, schema-constrained output)
 /// 3. Output validation (schema check + anomaly detection)
 ///
-/// ```toml
-/// [agent.data_llm]
-/// model = "claude-haiku-4-5"
-/// max_tokens = 4096
-/// temperature = 0.0
-/// strip_tool_calls = true
-/// ```
+/// Reserved for future CaMeL work: `DataLlmRouter` takes this type, but no
+/// dispatch path builds one, so no `roko.toml` key sets it. The
+/// `agent.data_llm` key was removed (gap-7a3527) because it suggested an
+/// isolation that nothing applied.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

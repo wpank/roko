@@ -2,7 +2,7 @@
 id = "bug-661796"
 kind = "bug"
 title = "The route-inventory doc still cites 376 canonical routes; the tree has 402"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["docs"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "60426839b"
+last_verified_rev = "bc5d93e79"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-d1dea8"
 anchors = ["docs/v3/depth/26-http/01-route-inventory.md"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-d1dea8"], supersedes = [
 
 [[verify]]
 command = "test -f docs/v3/depth/26-http/01-route-inventory.md && ! grep -nE '376|421' docs/v3/depth/26-http/01-route-inventory.md && grep -q 'http_route_inventory.snapshot.json' docs/v3/depth/26-http/01-route-inventory.md && ! git grep -n '01-route-inventory-376' -- docs/v3 && python3 tools/docs_integrity/check_markdown_links.py docs/v3/depth/26-http"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T19:08:04Z"
+commit = "bc5d93e79"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T19:02:24Z"
+forced = false
+evidence = "Renamed docs/v3/depth/26-http/01-route-inventory-376.md to 01-route-inventory.md; it no longer quotes a route count and points at tools/http_route_inventory.py and tools/http_route_inventory.snapshot.json (CI --check-snapshot); nav updated; the 26-http depth pages' chapter link fixed. The verify (renamed page, no 376/421, snapshot named, no links to the old name, check_markdown_links.py docs/v3/depth/26-http) passes at bc5d93e79."
 +++
 
 ## Problem

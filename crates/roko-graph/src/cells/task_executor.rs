@@ -124,6 +124,11 @@ pub const TASK_GATE_VERDICT_TAG: &str = "roko.gate.verdict";
 pub enum TaskGateVerdict {
     /// Every authored `[[task.verify]]` step passed.
     Passed,
+    /// Every authored verify step passed, or failed only on tests that also
+    /// failed on the plan run's start commit, which the attempt neither
+    /// caused nor was asked to fix. Replayed like a pass, but its own
+    /// outcome, so it never looks like a clean pass.
+    PassedWithPreexistingFailures,
     /// Every authored verify step passed on a tree the attempt left
     /// unchanged: the task's work was already there, as on a `--fresh`
     /// rerun of a finished task. Replayed like a pass, but its own outcome,
@@ -144,6 +149,7 @@ impl TaskGateVerdict {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::PassedWithPreexistingFailures => "passed_with_preexisting_failures",
             Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
@@ -155,6 +161,7 @@ impl TaskGateVerdict {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "passed_with_preexisting_failures" => Some(Self::PassedWithPreexistingFailures),
             "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
@@ -180,9 +187,10 @@ impl TaskGateVerdict {
             .filter_map(|signal| signal.tag(TASK_GATE_VERDICT_TAG).and_then(Self::parse))
             .max_by_key(|verdict| match verdict {
                 Self::Passed => 0,
-                Self::AlreadySatisfied => 1,
-                Self::Unverified => 2,
-                Self::ForcedAccept => 3,
+                Self::PassedWithPreexistingFailures => 1,
+                Self::AlreadySatisfied => 2,
+                Self::Unverified => 3,
+                Self::ForcedAccept => 4,
             })
     }
 
@@ -816,21 +824,40 @@ impl Cell for TaskExecutorCell {
             TaskExecutionMode::Live(dispatcher) => {
                 let mut retry = 0_u32;
                 loop {
+                    // A cancelled run starts no further attempt (bug-ceb581).
+                    if ctx.is_cancelled() {
+                        tracing::info!(
+                            plan = %self.spec.plan_id,
+                            task = %self.spec.title,
+                            attempt = retry + 1,
+                            "TaskExecutorCell: the run was cancelled; starting no further attempt"
+                        );
+                        return Err(roko_core::error::RokoError::cancelled(format!(
+                            "the run was cancelled before task `{}` started attempt {}",
+                            self.spec.title,
+                            retry + 1
+                        )));
+                    }
                     match dispatcher.dispatch(&self.spec, input.clone(), ctx).await {
                         Ok(output) => return Ok(output),
                         // A non-retryable gateway error (e.g. every candidate
                         // provider is out of usage) fails identically on an
                         // immediate retry, and so does a gate's rejection
                         // (e.g. a plan branch that refused the attempt's
-                        // work), so surface them at once.
+                        // work), so surface them at once. A cancellation
+                        // means the run is stopping, which a retry would
+                        // only delay, and so does a run cancelled while the
+                        // attempt ran (bug-ceb581).
                         Err(error)
                             if retry < self.spec.max_retries
+                                && !ctx.is_cancelled()
                                 && !matches!(
                                     error,
                                     roko_core::error::RokoError::Gateway {
                                         retryable: false,
                                         ..
                                     } | roko_core::error::RokoError::Rejected(_)
+                                        | roko_core::error::RokoError::Cancelled(_)
                                 ) =>
                         {
                             retry = retry.saturating_add(1);
@@ -1025,6 +1052,100 @@ task_def_json = "{}"
                 ..
             }
         ));
+    }
+
+    #[derive(Default)]
+    struct StoppedDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for StoppedDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::cancelled(
+                "its plan run is stopping",
+            ))
+        }
+    }
+
+    /// An attempt its stopping run cancelled is not retried (bug-2b1ddc).
+    #[tokio::test]
+    async fn a_cancelled_dispatch_is_not_retried() {
+        let dispatcher = Arc::new(StoppedDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("a stopped attempt fails the task");
+
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(error, roko_core::error::RokoError::Cancelled(_)));
+    }
+
+    /// Fails its attempt and cancels its run while the attempt runs, as an
+    /// interrupt does.
+    #[derive(Default)]
+    struct CancelsItsRunDispatcher {
+        calls: AtomicUsize,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for CancelsItsRunDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Agent {
+                backend: "test".to_string(),
+                message: "the agent was killed".to_string(),
+            })
+        }
+    }
+
+    /// bug-ceb581: once its run is cancelled a task starts no further
+    /// attempt, though the failed one has retries left, and a task of a run
+    /// cancelled before it started dispatches nothing.
+    #[tokio::test]
+    async fn a_cancelled_run_starts_no_further_attempt() {
+        let dispatcher = Arc::new(CancelsItsRunDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let ctx = CellContext::new().with_cancel_flag(Arc::clone(&dispatcher.cancel));
+        let error = cell
+            .execute(Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt failed");
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(error, roko_core::error::RokoError::Agent { .. }),
+            "{error:?}"
+        );
+
+        let run = tokio_util::sync::CancellationToken::new();
+        run.cancel();
+        let error = cell
+            .execute(Vec::new(), &CellContext::new().with_run_cancel(run))
+            .await
+            .expect_err("a cancelled run starts nothing");
+        assert_eq!(
+            dispatcher.calls.load(Ordering::SeqCst),
+            1,
+            "no attempt started"
+        );
+        assert!(
+            matches!(error, roko_core::error::RokoError::Cancelled(_)),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]
@@ -1294,6 +1415,27 @@ task_def_json = "{}"
         ];
         verdict.stamp(&mut satisfied);
         let mixed: Vec<Signal> = passed.into_iter().chain(satisfied).collect();
+        assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
+    }
+
+    /// gap-161be1: a pass over pre-existing failures replays like a pass but
+    /// never hides behind a clean one.
+    #[test]
+    fn passed_with_preexisting_failures_is_replayable_and_ranks_below_passed() {
+        let verdict = TaskGateVerdict::PassedWithPreexistingFailures;
+        assert_eq!(verdict.as_str(), "passed_with_preexisting_failures");
+        assert_eq!(TaskGateVerdict::parse(verdict.as_str()), Some(verdict));
+        assert!(verdict.is_replayable());
+
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut filtered = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("old failures only"))
+                .build(),
+        ];
+        verdict.stamp(&mut filtered);
+        let mixed: Vec<Signal> = passed.into_iter().chain(filtered).collect();
         assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
     }
 

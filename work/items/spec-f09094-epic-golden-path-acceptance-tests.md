@@ -74,7 +74,7 @@ This is the implementation plan. These are tests of Roko, not the way the backlo
 
 ## Done when
 
-- [ ] gap-3aa9cb: One CI suite for the golden-path integration tests C1–C8, with a shared scripted fake provider
+- [x] gap-3aa9cb: One CI suite for the golden-path integration tests C1–C8, with a shared scripted fake provider
 - [ ] gap-f30b8e: End-to-end acceptance test: a fixture plan runs through the ladder on real cheap models and merges
       green
 - [ ] The epic's two `[[verify]]` commands pass on the merged branch, and gap-f30b8e's closing evidence records 3 of

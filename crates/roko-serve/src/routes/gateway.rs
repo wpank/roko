@@ -29,6 +29,7 @@ use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_gateway::{BatchResult as PipelineBatchResult, InferenceRequest as PipelineRequest};
 use roko_learn::bandits::UcbBandit;
 use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::model_call_feedback::load_recovered_router;
 use roko_learn::model_router::RoutingContext;
 
 use crate::error::ApiError;
@@ -832,6 +833,7 @@ fn model_call_request(
         tools: Vec::new(),
         generation_settings: None,
         mcp_config: None,
+        thinking: None,
     }
 }
 
@@ -1032,7 +1034,10 @@ async fn select_model_via_router(state: &AppState, hints: &RoutingHints) -> Stri
             let mut guard = state.cascade_router.write().await;
             if guard.is_none() {
                 let cascade_path = state.workdir.join(".roko/learn/cascade-router.json");
-                let router = CascadeRouter::load_or_new(&cascade_path, all_model_slugs.clone());
+                // Loaded once the snapshot holds a crashed writer's journal
+                // (bug-8a78e1).
+                let router: CascadeRouter =
+                    load_recovered_router(&cascade_path, all_model_slugs.clone());
                 *guard = Some(Arc::new(router));
             }
             let router = guard.as_ref().unwrap_or_else(|| unreachable!());

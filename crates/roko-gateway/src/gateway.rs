@@ -1267,6 +1267,62 @@ mod tests {
         assert_eq!(observed.run_id.as_deref(), Some("live-boundary"));
     }
 
+    /// bug-b9cb83: a request's thinking setting reaches the live caller on
+    /// the complete and the stream path, and through the gateway with the
+    /// budget its ThinkingCap stage filled in.
+    #[tokio::test]
+    async fn model_caller_backend_forwards_thinking_config() {
+        use crate::{ThinkingConfig, ThinkingMode};
+
+        let caller = Arc::new(LiveCallerBoundary::default());
+        let live: Arc<dyn ModelCaller> = caller.clone();
+        let backend = ModelCallerBackend::anthropic(Arc::clone(&live));
+        let thinking = ThinkingConfig {
+            kind: ThinkingMode::Enabled,
+            budget_tokens: Some(2_048),
+        };
+        let mut inference = request("claude-sonnet-4-6", "thinking");
+        inference.thinking = Some(thinking.clone());
+
+        backend.complete(&inference).await.unwrap();
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(observed.thinking, Some(thinking.clone()));
+        let chunks = backend
+            .stream(&inference)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(chunks.iter().all(Result::is_ok));
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(observed.thinking, Some(thinking));
+
+        let gateway = InferenceGateway::new(GatewayConfig::from_model_caller(
+            Arc::new(CascadeRouter::new(vec!["claude-opus-4-1".into()])),
+            live,
+            CostTable {
+                models: HashMap::new(),
+            },
+        ));
+        let mut inference = request("claude-opus-4-1", "thinking-default");
+        inference.thinking = Some(ThinkingConfig {
+            kind: ThinkingMode::Enabled,
+            budget_tokens: None,
+        });
+        gateway
+            .process_request(inference, "thinking-agent", &AtomicU64::new(1_000_000))
+            .await
+            .unwrap();
+        let observed = caller.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            observed.thinking,
+            Some(ThinkingConfig {
+                kind: ThinkingMode::Enabled,
+                budget_tokens: Some(32_768),
+            })
+        );
+    }
+
     #[tokio::test]
     async fn gateway_persists_attributed_cost_event_after_provider_success() {
         let directory = tempfile::tempdir().unwrap();

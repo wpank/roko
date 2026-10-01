@@ -638,6 +638,7 @@ fn provider_test_request(model_key: &str, provider_id: &str) -> ModelCallRequest
         tools: Vec::new(),
         generation_settings: None,
         mcp_config: None,
+        thinking: None,
     }
 }
 
@@ -788,6 +789,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -894,6 +897,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -990,6 +995,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1069,6 +1076,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1203,6 +1212,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
         config.models.insert(
@@ -1241,6 +1252,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 
@@ -1452,6 +1465,8 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
+                temperature: None,
+                seed: None,
             },
         );
 

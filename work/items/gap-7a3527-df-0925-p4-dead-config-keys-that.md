@@ -9,16 +9,16 @@ size = "M"
 goal = "tooling"
 subsystem = ["roko-core/config"]
 created = 2026-09-25
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -qE '\"(gates\\.domain_gates|learning\\.replan_max_per_plan|learning\\.replan_gate_attempts|agent\\.data_llm)\"' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn from_gates_config' crates/roko-gate/src/adaptive_threshold.rs || grep -rn --include='*.rs' 'from_gates_config' crates/ | grep -v 'crates/roko-gate/src/adaptive_threshold.rs' | grep -q .; }"
+command = "! grep -rqE '\"(gates\\.domain_gates|learning\\.replan_max_per_plan|learning\\.replan_gate_attempts|agent\\.data_llm)\"' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch/ && ! grep -qE 'pub (domain_gates|replan_max_per_plan|replan_gate_attempts|data_llm):' crates/roko-core/src/config/gates.rs crates/roko-core/src/config/learning.rs crates/roko-core/src/config/agent.rs && { ! grep -q 'fn from_gates_config' crates/roko-gate/src/adaptive_threshold.rs || grep -rn --include='*.rs' 'from_gates_config' crates/ | grep -v 'crates/roko-gate/src/adaptive_threshold.rs' | grep -q .; } && grep -rqw 'fn dead_config_keys_are_removed_and_old_files_still_load' crates/roko-core/src/ && cargo test -p roko-core --lib dead_config_keys_are_removed_and_old_files_still_load"
 +++
 
 ## Problem
@@ -168,6 +168,30 @@ on the Graph path.
   Graph threshold update in `graph_task_dispatch.rs`. Do not run the two in parallel. Parallel work
   on other items is safe.
 - Size is M: several small deletions, one wiring change, and the docs and test updates.
+
+- 2026-10-01 (wk-cfg): PARTIAL, implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  Landed plan steps 3, 4(a), 5, 6 and 7 for the four keys of the first Done-when bullet. `gates.domain_gates`,
+  `learning.replan_max_per_plan`, `learning.replan_gate_attempts` and `agent.data_llm` are gone from `GatesConfig`,
+  `LearningConfig` and `AgentConfig`, and from their defaults, the presets, the example renderer, the schema
+  sentinels (and `DYNAMIC_MAP_SECTIONS`), the CLI `LearningLayer`, the `config set` arms, `roko.toml` and the
+  inert-settings list (whose test now uses `gates.max_rung`, and whose stale "--engine legacy" wording is fixed).
+  `DataLlmConfig` and `DataLlmRouter` stay. Each key has a `REMOVED_CONFIG_KEYS` entry in `loader.rs` (added for
+  gap-6bc156): validation reports it as removed, with the reason; loading strips it with a warning; and
+  `RokoConfig::from_toml` drops it with a warning, so old files still load and still parse. Test
+  `dead_config_keys_are_removed_and_old_files_still_load`. Docs: `docs/v2/19-CONFIG.md`, `docs/v2/INTEGRATION-GUIDE.md`
+  and a new "Removed keys" table in `docs/v3/depth/21-config/01-schema-sections.md`. The ignored e2e test
+  `config_with_domain_gates_parses` is deleted.
+- The verify is re-pointed: its first clause grepped `graph_task_dispatch.rs`, but the inert list moved to
+  `graph_task_dispatch/inert_settings.rs`, so that clause passed at BASE without any change. The new verify also checks
+  that the four fields are gone and runs the new test. It still fails on `from_gates_config`, which is the work left.
+- Left (plan steps 1 and 2): wire `gates.ema_alpha` into `GateThresholds::observe` on the Graph path, and delete
+  `AdaptiveThresholds::from_gates_config` (a duplicate of `new()` + `apply_gates_config`, called only by its own tests),
+  then decide `skip_streak_threshold` and `convergence_min_observations`, which only `should_skip_rung` and the
+  convergence check read and the Graph path never calls. Not done this round: `adaptive_threshold.rs` is under
+  wk-tuiv's bug-d74b6b (`apply_gates_config`, next to `from_gates_config`), `runner/persist.rs` and
+  `graph_task_dispatch/verification.rs` are under wk-honestbench's bug-e0f472 and reg-c7ecf6, and `plan_runner.rs` is
+  under wk-planrun's gap-7c9e48, and this item asks to coordinate with find-4b4344 (open, unclaimed). Next step: once
+  those land, do steps 1-2 in one change.
 
 ## Original notes
 

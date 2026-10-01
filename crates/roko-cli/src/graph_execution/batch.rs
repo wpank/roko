@@ -30,6 +30,10 @@ pub const BATCH_BRANCH_PREFIX: &str = "roko/batch/";
 /// Namespace of the tags on promoted runs: `roko/run/<run-id>`.
 pub const RUN_TAG_PREFIX: &str = "roko/run/";
 
+/// Receipt extension recording what a delivered plan's attempt cleanup did
+/// (gap-415c54): the checkouts it removed and the branches it kept.
+pub const ATTEMPT_CLEANUP_EXTENSION: &str = "roko.attempt_cleanup";
+
 /// What promoting a run's batch did (see [`BatchIntegration::promote`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Promotion {
@@ -128,6 +132,31 @@ impl BatchIntegration {
     #[must_use]
     pub fn store(&self) -> &DeliveryReceiptStore {
         &self.store
+    }
+
+    /// [`Self::record`] of `receipt`, with what the delivered plan's attempt
+    /// cleanup did, for the run summary (gap-415c54).
+    #[must_use]
+    pub fn summary_record(&self, receipt: &CompletionDeliveryReceiptV1) -> serde_json::Value {
+        let mut record = self.record(receipt);
+        if let Some(cleanup) = receipt.extensions.get(ATTEMPT_CLEANUP_EXTENSION) {
+            record["attempt_cleanup"] = cleanup.clone();
+        }
+        record
+    }
+
+    /// The receipt of each delivery into the batch in this process, by plan
+    /// id, for the run summary (gap-415c54).
+    #[must_use]
+    pub fn receipts(&self) -> Vec<CompletionDeliveryReceiptV1> {
+        let mut receipts: Vec<_> = self
+            .store
+            .delivery_ids()
+            .iter()
+            .filter_map(|id| self.store.get(id))
+            .collect();
+        receipts.sort_by(|left, right| left.request.plan_id.cmp(&right.request.plan_id));
+        receipts
     }
 
     /// The request that delivers plan `plan_id`'s branch at `verified`, the

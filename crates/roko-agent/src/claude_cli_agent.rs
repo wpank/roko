@@ -135,8 +135,14 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
 ];
 
 /// Claude Code's managed-settings directory, where an administrator puts
-/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it. This
+/// crate's tests look in a directory that never exists instead, so that they
+/// do not depend on the host's managed config; a test that wants one passes
+/// its own directory ([`ClaudeIsolation::with_managed_settings_dir`]).
 fn claude_managed_settings_dir() -> PathBuf {
+    if cfg!(test) {
+        return PathBuf::from("/nonexistent/roko-tests/claude-code-managed-settings");
+    }
     PathBuf::from(if cfg!(target_os = "macos") {
         "/Library/Application Support/ClaudeCode"
     } else if cfg!(windows) {
@@ -326,6 +332,12 @@ pub struct ClaudeCliAgent {
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
     resource_limits: Option<ResourceLimits>,
+    /// The provider whose `max_concurrent` caps this agent's runs, with the
+    /// shared semaphores that enforce it (bug-eba31d).
+    provider_id: Option<String>,
+    provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
+    /// Where a run reports that it waits for its provider's permit.
+    live_output: Option<crate::live_output::LiveOutput>,
     name: String,
 }
 
@@ -363,6 +375,9 @@ impl ClaudeCliAgent {
             dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
+            provider_id: None,
+            provider_semaphores: None,
+            live_output: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -386,6 +401,57 @@ impl ClaudeCliAgent {
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
         self
+    }
+
+    /// Attach shared provider semaphores, so that no more `claude` processes
+    /// run at once than `[providers.<provider_id>] max_concurrent` allows: a
+    /// run waits for a permit before it spawns and holds it until it ends.
+    #[must_use]
+    pub fn with_provider_semaphores(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_semaphores: Arc<crate::provider::ProviderSemaphores>,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_semaphores = Some(provider_semaphores);
+        self
+    }
+
+    /// Report on `live_output` when a run has to wait for its provider's
+    /// concurrency permit, and when it gets it, so that a stall watchdog
+    /// counts the wait as queued rather than silent.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: crate::live_output::LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Wait for this provider's concurrency permit when a cap applies
+    /// (bug-eba31d). A run that has to wait reports it on its live output,
+    /// and reports again once it has the permit and starts.
+    async fn provider_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let (Some(provider_id), Some(provider_semaphores)) =
+            (&self.provider_id, &self.provider_semaphores)
+        else {
+            return None;
+        };
+        if let Some(permit) = provider_semaphores.try_acquire(provider_id) {
+            return Some(permit);
+        }
+        self.report_queued(true).await;
+        let permit = provider_semaphores.acquire(provider_id).await.ok();
+        self.report_queued(false).await;
+        permit
+    }
+
+    /// Tell the live output, if any, whether the run waits for its permit.
+    async fn report_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .send(crate::live_output::LiveAgentEvent::Queued { waiting })
+                .await;
+        }
     }
 
     /// Override the reasoning-effort label passed to Claude.
@@ -802,6 +868,34 @@ impl ClaudeCliAgent {
                     ),
                 );
             }
+            // `usage` counts only the main model; `modelUsage` counts every
+            // model the session used, background turns and subagents
+            // included, as `total_cost_usd` does, and its thinking tokens
+            // (gap-ad0d39).
+            if let Some(per_model) = event.get("modelUsage").and_then(Value::as_object)
+                && !per_model.is_empty()
+            {
+                let total = |key: &str| {
+                    per_model
+                        .values()
+                        .filter_map(|entry| entry.get(key).and_then(Value::as_u64))
+                        .reduce(|sum, count| sum + count)
+                };
+                Self::update_stream_usage_field(&mut usage.input_tokens, total("inputTokens"));
+                Self::update_stream_usage_field(&mut usage.output_tokens, total("outputTokens"));
+                Self::update_stream_usage_field(
+                    &mut usage.cache_creation_tokens,
+                    total("cacheCreationInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.cache_read_tokens,
+                    total("cacheReadInputTokens"),
+                );
+                Self::update_stream_usage_field(
+                    &mut usage.reasoning_tokens,
+                    total("thinkingTokens"),
+                );
+            }
         }
         if usage.source == UsageSource::Unknown {
             return streamed.stream_usage(fallback_model);
@@ -819,7 +913,7 @@ impl ClaudeCliAgent {
             output_tokens: stream_usage.output_tokens,
             cache_creation_tokens: stream_usage.cache_creation_tokens,
             cache_read_tokens: stream_usage.cache_read_tokens,
-            reasoning_tokens: None,
+            reasoning_tokens: stream_usage.reasoning_tokens,
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
             model: stream_usage.model.clone(),
@@ -1052,9 +1146,14 @@ impl ClaudeCliAgent {
     /// - `tool` events (subtype `result`) → `ToolResult`.
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
+    /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
+    ///   `ReasoningDelta`.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
         let mut events = Vec::new();
         match event.get("type").and_then(Value::as_str) {
+            Some("content_block_delta" | "stream_event") => {
+                events.extend(Self::delta_kind(event));
+            }
             Some("assistant") => {
                 let Some(content) = event
                     .get("message")
@@ -1148,6 +1247,45 @@ impl ClaudeCliAgent {
         events
     }
 
+    /// The text or reasoning a partial-message delta carries: a bare
+    /// `content_block_delta` line, or one wrapped in the `stream_event` of
+    /// `--include-partial-messages`. Deltas are progress, which the stall
+    /// watchdog reads (bug-2aa55f).
+    fn delta_kind(event: &Value) -> Option<StreamEventKind> {
+        let event = match event.get("type").and_then(Value::as_str) {
+            Some("stream_event") => event.get("event")?,
+            _ => event,
+        };
+        if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+            return None;
+        }
+        let delta = event.get("delta")?;
+        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+            return Some(StreamEventKind::TextDelta(text.to_string()));
+        }
+        delta
+            .get("thinking")
+            .and_then(Value::as_str)
+            .map(|thinking| StreamEventKind::ReasoningDelta(thinking.to_string()))
+    }
+
+    /// Whether `stdout` is a stream-json run that never reached its final
+    /// `result` event, on either stream. Output that is not stream-json has
+    /// no `result` event to miss.
+    fn stream_without_result(stdout: &str, stderr: &str) -> bool {
+        let is_result = |event: &Value| event.get("type").and_then(Value::as_str) == Some("result");
+        let mut events = stdout
+            .lines()
+            .filter_map(Self::parse_stream_event)
+            .peekable();
+        events.peek().is_some()
+            && !events.any(|event| is_result(&event))
+            && !stderr
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .any(|event| is_result(&event))
+    }
+
     /// Core subprocess runner shared by [`run`](Self::run) and
     /// [`run_streaming`](Self::run_streaming).
     ///
@@ -1170,6 +1308,9 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, "claude run not started: {reason}");
             return self.failure(input, &reason, started);
         }
+        // The provider's concurrency cap (bug-eba31d): wait for a permit
+        // before spawning, and hold it until the run ends.
+        let _permit = self.provider_permit().await;
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -1384,9 +1525,35 @@ impl ClaudeCliAgent {
 
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = stdout_handle.await.unwrap_or_default();
-        let stderr = stderr_handle.await.unwrap_or_default();
-        tree_guard.disarm();
+        // A process the run started and left running (a backgrounded shell,
+        // a dev server) can hold the output pipes open, so the readers would
+        // never see EOF and the run would hang after `claude` exited
+        // (gap-5d3b82). Give them `EXITED_OUTPUT_DRAIN_MS`, then end the
+        // run's process group and keep what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (stdout, stderr) = match drained {
+            Ok((stdout, stderr)) => {
+                tree_guard.disarm();
+                (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "claude exited but a process it started holds its output open; ending its group"
+                );
+                // The armed guard signals the run's process group: SIGTERM,
+                // then SIGKILL.
+                drop(tree_guard);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1405,6 +1572,23 @@ impl ClaudeCliAgent {
             return self.failure_with_stream_usage(
                 input,
                 &format!("exit {code}: {reason}"),
+                started,
+                &stream_usage,
+            );
+        }
+
+        // The final `result` event reports the run's completion, usage and
+        // cost: a run that exits without it was cut short, so the call failed
+        // and keeps the usage it streamed (bug-acab47).
+        if Self::stream_without_result(&stdout, &stderr) {
+            tracing::warn!(
+                agent = %self.name,
+                elapsed_s = elapsed_secs,
+                "agent exited without its final result event"
+            );
+            return self.failure_with_stream_usage(
+                input,
+                "claude exited without its final `result` event (truncated output)",
                 started,
                 &stream_usage,
             );
@@ -1502,6 +1686,8 @@ struct StreamUsage {
     output_tokens: Option<u64>,
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
+    /// Thinking tokens, a part of `output_tokens`, from `modelUsage`.
+    reasoning_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
     /// Agent turns the CLI reported in its final `result` event, or the
@@ -1523,6 +1709,7 @@ impl StreamUsage {
                 self.cache_creation_tokens =
                     self.cache_creation_tokens.or(other.cache_creation_tokens);
                 self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.reasoning_tokens = self.reasoning_tokens.or(other.reasoning_tokens);
                 self.cost_usd = self.cost_usd.or(other.cost_usd);
                 self.model = self.model.or(other.model);
                 self.num_turns = self.num_turns.or(other.num_turns);
@@ -1639,6 +1826,7 @@ impl StreamedMessages {
             output_tokens: Some(output),
             cache_creation_tokens: Some(cache_creation),
             cache_read_tokens: Some(cache_read),
+            reasoning_tokens: None,
             cost_usd,
             model: top_level().rev().find_map(|message| message.model.clone()),
             num_turns: Some(top_level().count() as u64),
@@ -1649,6 +1837,16 @@ impl StreamedMessages {
 
 /// Longest wait for a killed run's output readers to reach end of file.
 const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// How long a run's output readers may take to reach EOF after `claude`
+/// exited, before the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
 
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
@@ -1862,6 +2060,9 @@ mod tests {
             "find . -execdir sudo rm {} +",
             "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
             "find . -exec git checkout {} \\;",
+            // Quoted or escaped parentheses group find's tests.
+            "find . \\( -name '*.o' -o -name '*.a' \\) -exec rm -f {} +",
+            "find . '(' -name x ')' -exec rm {} \\;",
             "sudo find . -delete",
             // rm on what find or fd lists, however it gets there.
             "find . -name x | xargs rm",
@@ -2210,7 +2411,8 @@ mod tests {
     }
 
     /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
-    /// holding a secret, from the table roko-std's bash tool checks too.
+    /// holding a secret, or a key file in .roko, from the table roko-std's
+    /// bash tool checks too, and the Grep calls only this guard checks.
     #[test]
     fn settings_hook_refuses_every_search_that_reaches_a_secret() {
         let workdir = tempdir().unwrap();
@@ -2219,20 +2421,39 @@ mod tests {
         fs::create_dir(&src).unwrap();
         fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
         fs::write(root.join("roko.lock"), "lock\n").unwrap();
+        for key in [
+            ".roko/.env",
+            ".roko/secrets.toml",
+            "vendor/pkg/.roko/credentials.json",
+        ] {
+            let key = root.join(key);
+            fs::create_dir_all(key.parent().unwrap()).unwrap();
+            fs::write(&key, "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        }
         fs::write(
             root.join("roko.toml"),
             "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
         )
         .unwrap();
         let bash_hook = bash_hook_command();
-        let bash_code = |command: &str, cwd: &std::path::Path| {
-            let payload = serde_json::json!({
-                "cwd": cwd,
-                "tool_input": { "command": command },
-            });
-            run_hook(&bash_hook, &payload.to_string(), &[])
-                .status
-                .code()
+        let file_hook = file_hook_command();
+        // A "Grep:" row is a Grep call, with its input as JSON.
+        let hook_code = |command: &str, cwd: &std::path::Path| {
+            let (hook, payload) = match command.strip_prefix("Grep: ") {
+                Some(input) => (
+                    &file_hook,
+                    serde_json::json!({
+                        "cwd": cwd,
+                        "tool_name": "Grep",
+                        "tool_input": serde_json::from_str::<Value>(input).unwrap(),
+                    }),
+                ),
+                None => (
+                    &bash_hook,
+                    serde_json::json!({ "cwd": cwd, "tool_input": { "command": command } }),
+                ),
+            };
+            run_hook(hook, &payload.to_string(), &[]).status.code()
         };
 
         let cases = include_str!("../../roko-std/src/tool/builtin/sandbox/secret_read_cases.txt");
@@ -2246,12 +2467,114 @@ mod tests {
                 .map_or((root, rest), |command| (src.as_path(), command));
             let want = if verdict == "deny" { Some(2) } else { Some(0) };
             assert_eq!(
-                bash_code(command, cwd),
+                hook_code(command, cwd),
                 want,
                 "`{command}` in {}",
                 cwd.display()
             );
         }
+    }
+
+    /// bug-6af02b: Claude Code runs Grep as `rg --hidden`. The Read deny
+    /// rules in the settings keep the key files out of it (Claude Code turns
+    /// them into `--iglob` exclusions for its Grep and Glob), so the guard
+    /// lets such a Grep run. It refuses a Grep that would read a roko.toml
+    /// holding a secret, unless the Grep's path, glob or type leaves the file
+    /// out or git ignores it.
+    #[test]
+    fn grep_tool_at_a_workspace_root_cannot_read_a_key_file() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
+        let workdir = tempdir().unwrap();
+        let root = workdir.path();
+        fs::create_dir_all(root.join(".roko")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".roko/.env"), "OPENAI_API_KEY=sk-test-not-real\n").unwrap();
+        fs::write(root.join("src/a.rs"), "fn main() {}\n").unwrap();
+        let file_hook = file_hook_command();
+        let code = |tool: &str, tool_input: Value| {
+            let payload =
+                serde_json::json!({ "cwd": root, "tool_name": tool, "tool_input": tool_input });
+            run_hook(&file_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+        let grep = |extra: Value| {
+            let mut tool_input = serde_json::json!({ "pattern": "OPENAI" });
+            tool_input
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            code("Grep", tool_input)
+        };
+
+        // The deny rules keep the key files out of a Grep at the root, so it
+        // runs; a Grep rooted at .roko, and a Read of a key file, do not.
+        assert_eq!(grep(serde_json::json!({})), Some(0));
+        assert_eq!(grep(serde_json::json!({ "path": ".roko" })), Some(2));
+        assert_eq!(
+            code("Read", serde_json::json!({ "file_path": ".roko/.env" })),
+            Some(2)
+        );
+
+        // No deny rule covers a roko.toml that holds a secret.
+        fs::write(
+            root.join("roko.toml"),
+            "[serve.auth]\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "glob": "*.toml" }),
+            serde_json::json!({ "glob": "*.rs *.toml" }),
+            serde_json::json!({ "type": "toml" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(2),
+                "Grep {extra} should be denied"
+            );
+        }
+        for extra in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "glob": "*.rs" }),
+            serde_json::json!({ "glob": "!roko.toml" }),
+            serde_json::json!({ "type": "rust" }),
+        ] {
+            assert_eq!(
+                grep(extra.clone()),
+                Some(0),
+                "Grep {extra} should be allowed"
+            );
+        }
+
+        // rg skips what git ignores.
+        let git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(git(&["init", "-q"]), "git init");
+        assert_eq!(
+            grep(serde_json::json!({})),
+            Some(2),
+            "a config git does not ignore"
+        );
+        fs::write(root.join(".gitignore"), "roko.toml\n").unwrap();
+        assert_eq!(grep(serde_json::json!({})), Some(0), "a config git ignores");
     }
 
     #[test]
@@ -2316,6 +2639,15 @@ mod tests {
             .to_string()
     }
 
+    fn file_hook_command() -> String {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command")
+            .to_string()
+    }
+
     fn bash_payload(bash_command: &str) -> String {
         serde_json::json!({
             "tool_input": {
@@ -2371,6 +2703,27 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, Some(44));
         assert_eq!(usage.cost_usd, Some(0.25));
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    /// gap-ad0d39: `modelUsage` counts every model the session used, so the
+    /// background turns on a small model count with the main model's, and
+    /// its thinking tokens are the output's reasoning part.
+    #[test]
+    fn parse_stream_usage_counts_every_model_in_model_usage() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","model":"claude-sonnet-4-6","total_cost_usd":0.2791,"usage":{"input_tokens":38,"output_tokens":3120,"cache_creation_input_tokens":21904,"cache_read_input_tokens":186112},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":38,"outputTokens":3120,"thinkingTokens":1450,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costUSD":0.2756},"claude-haiku-4-5":{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.0035}}}"#,
+            "claude-test-model",
+        );
+
+        assert_eq!(usage.source, UsageSource::ProviderReported);
+        assert_eq!(usage.input_tokens, Some(38 + 2_513));
+        assert_eq!(usage.output_tokens, Some(3_120 + 196));
+        assert_eq!(usage.cache_read_tokens, Some(186_112));
+        assert_eq!(usage.cache_creation_tokens, Some(21_904));
+        assert_eq!(usage.reasoning_tokens, Some(1_450));
+        assert_eq!(usage.cost_usd, Some(0.2791));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.reasoning_tokens, Some(1_450));
     }
 
     #[test]
@@ -2704,6 +3057,29 @@ mod tests {
         assert_eq!(args[mcp + 1], own.to_string_lossy());
     }
 
+    /// bug-a70def: the isolation tests read no managed MCP config from the
+    /// host, so they pass whether or not it has one; a test that wants one
+    /// points the isolation at its own directory.
+    #[test]
+    fn mcp_isolation_tests_ignore_the_hosts_managed_mcp_json() {
+        let host_dir = claude_managed_settings_dir();
+        assert!(!host_dir.exists(), "{} exists", host_dir.display());
+        let strict = |args: &[String]| args.iter().any(|arg| arg == "--strict-mcp-config");
+        let workdir = tempdir().unwrap();
+        let isolation = ClaudeIsolation::new(workdir.path());
+        assert_eq!(isolation.managed_mcp_config(), None);
+        assert!(strict(&isolation.args()));
+        assert_eq!(isolation.mcp_config_refusal(), None);
+
+        let tmp = tempdir().unwrap();
+        let managed = tmp.path();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let isolation = isolation.with_managed_settings_dir(managed);
+        assert!(isolation.managed_mcp_config().is_some());
+        assert!(!strict(&isolation.args()));
+        assert!(isolation.mcp_config_refusal().is_some());
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn a_managed_mcp_config_is_reported_before_the_run() {
@@ -2719,6 +3095,7 @@ mod tests {
 touch "{started}"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             started = started.display(),
         );
@@ -2777,6 +3154,7 @@ cat >/dev/null
 printf '%s\n' "${{CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}}" > "{env_file}"
 printf '%s\n' "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-unset}}" >> "{env_file}"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             env_file = capture_env.display(),
         );
@@ -2821,6 +3199,7 @@ prompt_file="{prompt_file}"
 printf '%s\n' "$@" > "$args_file"
 cat > "$prompt_file"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
             prompt_file = capture_prompt.display(),
@@ -2885,6 +3264,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -2921,6 +3301,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -2957,6 +3338,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -3133,6 +3515,182 @@ sleep 30
         panic!("no run was killed after both messages arrived");
     }
 
+    /// A run that exits 0 without its final `result` event was cut short
+    /// (bug-acab47): a failed call that keeps the usage it streamed. Output
+    /// that is not stream-json has no `result` event to miss.
+    #[tokio::test]
+    async fn a_run_without_a_result_line_is_a_provider_failure() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let write = |body: &str| {
+            fs::write(&script, body).unwrap();
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        };
+        let streamed = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-t","model":"claude-sonnet-4-6"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+"#;
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        write(streamed);
+        let truncated = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(
+            !truncated.success,
+            "a truncated run is not a completed call"
+        );
+        let text = truncated.output.body.as_text().expect("failure text");
+        assert!(text.contains("without its final `result` event"), "{text}");
+        assert_eq!(truncated.usage.input_tokens, 1_000);
+        assert_eq!(truncated.usage.output_tokens, 200);
+        let observation = truncated.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::Estimated);
+
+        write(&format!(
+            "{streamed}printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.01}}'\n"
+        ));
+        let complete = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(
+            complete.success,
+            "with its `result` event the run completes"
+        );
+
+        write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
+        let plain = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
+    /// bug-eba31d: a run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`, and says
+    /// on its live output that it is queued, then that it got the permit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_cli_waits_for_provider_permit() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+touch "$(dirname "$0")/launched"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut configs = indexmap::IndexMap::new();
+        configs.insert(
+            "capped".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: Some(1),
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
+        let held = semaphores.acquire("capped").await.expect("the only permit");
+        let (sink, mut events) = mpsc::channel(8);
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+            .with_provider_semaphores("capped", Arc::clone(&semaphores))
+            .with_live_output(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            });
+        let launched = tmp.path().join("launched");
+
+        let input = prompt("go");
+        let ctx = Context::now();
+        let run = agent.run(&input, &ctx);
+        tokio::pin!(run);
+        assert!(
+            timeout(Duration::from_millis(100), &mut run).await.is_err(),
+            "the run waits while the provider's only permit is held"
+        );
+        assert!(!launched.exists(), "claude is not spawned before a permit");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
+
+        drop(held);
+        let result = timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends once the permit is free");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert!(launched.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: false })
+        ));
+    }
+
+    /// gap-5d3b82: `claude` exits while a process it started still holds its
+    /// output open. The run ends soon after the exit with what `claude`
+    /// printed, and that process is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_agent_with_open_stdout_does_not_hang() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let holder = tmp.path().join("holder.pid");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+sleep 600 &
+echo $! > '{holder}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                holder = holder.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("go"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let pid = fs::read_to_string(&holder).unwrap().trim().to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = StdCommand::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
+    }
+
     /// Dropping a run's future, which is how a cancel or the stall watchdog
     /// stops it, kills the subprocesses `claude` started, not only `claude`
     /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
@@ -3250,6 +3808,7 @@ set -eu
 cat >/dev/null
 echo 'Claude CLI is starting up...' 1>&2
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#;
         fs::write(&script, script_body).unwrap();
         #[cfg(unix)]
@@ -3346,6 +3905,34 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(matches!(&kinds[0], StreamEventKind::TextDelta(t) if t == "hello"));
+    }
+
+    /// Partial-message deltas, bare or wrapped in a `stream_event`, reach a
+    /// streaming receiver as text and reasoning deltas (bug-2aa55f).
+    #[test]
+    fn event_kinds_partial_message_deltas() {
+        let cases = [
+            serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}}),
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}
+            }),
+        ];
+        for event in cases {
+            let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+            assert!(
+                matches!(kinds.as_slice(), [StreamEventKind::TextDelta(t)] if t == "hi"),
+                "{event}"
+            );
+        }
+        let thinking = serde_json::json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&thinking);
+        assert!(matches!(kinds.as_slice(), [StreamEventKind::ReasoningDelta(t)] if t == "hmm"));
+        let start = serde_json::json!({"type": "stream_event", "event": {"type": "message_start"}});
+        assert!(ClaudeCliAgent::event_kinds_from_value(&start).is_empty());
     }
 
     #[test]

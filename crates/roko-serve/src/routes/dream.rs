@@ -13,7 +13,8 @@ use serde_json::json;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson};
-use crate::state::{AppState, OperationHandle, OperationStatus};
+use crate::operations::spawn_operation;
+use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -47,11 +48,11 @@ async fn dream_run(
     let workdir = state.workdir.clone();
     let mode = body.mode.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: format!("dream_run:{mode}"),
             });
 
@@ -80,31 +81,26 @@ async fn dream_run(
             let mut runner = roko_dreams::DreamRunner::new(workdir, config);
             let result: Result<roko_dreams::DreamReport, _> = runner.consolidate_async().await;
 
-            let success = match result {
-                Ok(_report) => true,
+            match result {
+                Ok(_report) => Ok(None),
                 Err(err) => {
+                    let message = format!("dream run failed: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("dream run failed: {err}"),
+                        message: message.clone(),
                     });
-                    false
+                    Err(message)
                 }
-            };
-
-            bus.publish(ServerEvent::OperationCompleted {
-                op_id,
-                kind: "dream_run".into(),
-                success,
-            });
+            }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: "dream_run".into(),
-        status: OperationStatus::Running,
-        handle,
     };
-    state.operations.write().await.insert(op_id.clone(), op);
+    spawn_operation(
+        &state,
+        op_id.clone(),
+        "dream_run".to_string(),
+        "dream_run",
+        work,
+    )
+    .await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,

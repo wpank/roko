@@ -2188,6 +2188,68 @@ async fn accept_folds_sibling_attempts_into_the_plan_branch() {
     assert!(next.path.join("first.txt").exists() && next.path.join("sibling.txt").exists());
 }
 
+/// gap-415c54: once its plan is delivered, an accepted attempt's checkout is
+/// removed and its branch kept, unless branch deletion is asked for. An
+/// attempt that was never accepted keeps its checkout and its work.
+#[tokio::test]
+async fn release_accepted_removes_checkouts_and_keeps_branches_unless_asked() {
+    let Some((_tmp, manager)) = make_manager() else {
+        return;
+    };
+    let repo = manager.config.repo_root.clone();
+    let accepted = attempt_with_file(&manager, "first", "first.txt", "first\n").await;
+    let failed = attempt_with_file(&manager, "failed", "failed.txt", "failed\n").await;
+    let first = manager
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+
+    let released = manager.release_accepted("plan", false).await.unwrap();
+    assert_eq!(released.removed_checkouts, vec![accepted.path.clone()]);
+    assert_eq!(released.kept_branches, vec![accepted.branch.clone()]);
+    assert!(released.deleted_branches.is_empty());
+    assert!(!accepted.path.exists());
+    assert_eq!(
+        git_in(&repo, &["rev-parse", &accepted.branch]),
+        first.attempt_commit
+    );
+    assert!(failed.path.join("failed.txt").exists());
+    // Nothing is left to release.
+    assert_eq!(
+        manager.release_accepted("plan", false).await.unwrap(),
+        Default::default()
+    );
+
+    // Asked to, it deletes the branch as well; the plan branch still holds
+    // the attempt's commit.
+    let other = manager
+        .create_for_attempt("other", "task", 0)
+        .await
+        .unwrap();
+    std::fs::write(other.path.join("other.txt"), "other\n").unwrap();
+    let accepted_other = manager
+        .accept_attempt("other", "task", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap();
+    let released = manager.release_accepted("other", true).await.unwrap();
+    assert_eq!(released.deleted_branches, vec![other.branch.clone()]);
+    assert!(released.kept_branches.is_empty());
+    assert!(!other.path.exists());
+    assert_eq!(
+        git_in(
+            &repo,
+            &["for-each-ref", &format!("refs/heads/{}", other.branch)]
+        ),
+        ""
+    );
+    let plan_tip = git_in(&repo, &["rev-parse", &format_branch_name("other")]);
+    assert_eq!(plan_tip, accepted_other.commit_oid);
+    assert_eq!(
+        git_in(&repo, &["show", &format!("{plan_tip}:other.txt")]),
+        "other"
+    );
+}
+
 /// gap-3b5361: a sibling whose work conflicts with what the plan branch
 /// already holds is refused, and no ref moves.
 #[tokio::test]

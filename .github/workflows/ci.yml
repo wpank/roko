@@ -23,6 +23,33 @@ jobs:
       - run: cargo clippy --workspace --no-deps -- -D warnings
       - run: cargo test --workspace
 
+  golden-path:
+    name: Golden-path canaries (C1-C8)
+    runs-on: ubuntu-latest
+    # Building roko-cli's test targets takes most of this; the canaries
+    # themselves get ten minutes.
+    timeout-minutes: 45
+    env:
+      # One `--test` per canary target, C1 to C8 in order, as
+      # tests/golden_path_suite.rs lists them; C3 and C4 share one.
+      CANARIES: >-
+        --test honest_verdicts_canary
+        --test secrets_and_git_guard_canary
+        --test plan_branch_integration
+        --test attempt_diff_canary
+        --test scheduler_canary
+        --test supervision_canary
+        --test tier_ladder_canary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the canaries
+        run: cargo test -p roko-cli --no-run $CANARIES
+      - name: Run the canaries
+        timeout-minutes: 10
+        run: cargo test -p roko-cli $CANARIES
+
   fmt:
     name: Formatting
     runs-on: ubuntu-latest

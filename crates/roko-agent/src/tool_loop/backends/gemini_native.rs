@@ -8,7 +8,8 @@ use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use serde_json::Value;
 
 use crate::gemini::native::{
-    build_generate_content_request, build_generation_config, system_instruction_from_segments,
+    build_generate_content_request, build_generation_config, gemini_observation,
+    system_instruction_from_segments,
 };
 use crate::gemini::types::{
     Content, GeminiTool, GenerateContentRequest, GenerateContentResponse, GenerationConfig,
@@ -294,7 +295,7 @@ impl LlmBackend for GeminiNativeBackend {
             }
         };
 
-        let json: Value = match serde_json::from_str(&raw) {
+        let mut json: Value = match serde_json::from_str(&raw) {
             Ok(json) => json,
             Err(err) => {
                 let mapped = LlmError::Backend(format!("parse response: {err}"));
@@ -303,10 +304,20 @@ impl LlmBackend for GeminiNativeBackend {
             }
         };
 
-        if let Err(err) = serde_json::from_value::<GenerateContentResponse>(json.clone()) {
-            let mapped = LlmError::Backend(format!("validate response: {err}"));
-            self.record_failure(&mapped);
-            return Err(mapped);
+        let parsed = match serde_json::from_value::<GenerateContentResponse>(json.clone()) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                let mapped = LlmError::Backend(format!("validate response: {err}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
+        // The tool loop reads a turn's usage from an OpenAI-shaped `usage`
+        // block, which Gemini does not send: add one from its `usageMetadata`,
+        // counted as a streamed turn counts it (bug-3aa61f).
+        if let Some(usage_metadata) = parsed.usage_metadata.as_ref() {
+            let usage: Usage = gemini_observation(Some(usage_metadata), 0, None).into();
+            json["usage"] = crate::translate::openai::usage_to_wire(&usage);
         }
 
         let response = BackendResponse::Json(json);
@@ -385,6 +396,8 @@ impl LlmBackend for GeminiNativeBackend {
             let mut acc_input: u64 = 0;
             let mut acc_output: u64 = 0;
             let mut acc_cache_read: Option<u64> = None;
+            // Thinking tokens, reported apart from the candidates (find-af6b7f).
+            let mut acc_thoughts: Option<u64> = None;
             // The model version the chunks name (bug-a5f181).
             let mut acc_model: Option<String> = None;
 
@@ -414,6 +427,7 @@ impl LlmBackend for GeminiNativeBackend {
                                     acc_input,
                                     acc_output,
                                     acc_cache_read,
+                                    acc_thoughts,
                                     acc_model.clone(),
                                     &tx,
                                 )
@@ -457,6 +471,11 @@ impl LlmBackend for GeminiNativeBackend {
                                 {
                                     acc_cache_read = Some(cache);
                                 }
+                                if let Some(thoughts) =
+                                    usage.get("thoughtsTokenCount").and_then(Value::as_u64)
+                                {
+                                    acc_thoughts = Some(thoughts);
+                                }
                             }
 
                             // Check for finish reason.
@@ -478,6 +497,7 @@ impl LlmBackend for GeminiNativeBackend {
                                     acc_input,
                                     acc_output,
                                     acc_cache_read,
+                                    acc_thoughts,
                                     acc_model.clone(),
                                     &tx,
                                 )
@@ -503,6 +523,7 @@ impl LlmBackend for GeminiNativeBackend {
                             acc_input,
                             acc_output,
                             acc_cache_read,
+                            acc_thoughts,
                             acc_model.clone(),
                             &tx,
                         )
@@ -604,18 +625,22 @@ async fn emit_accumulated_usage(
     input: u64,
     output: u64,
     cache_read: Option<u64>,
+    thoughts: Option<u64>,
     model: Option<String>,
     tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
 ) {
-    if input == 0 && output == 0 {
+    let thoughts = thoughts.unwrap_or(0);
+    if input == 0 && output == 0 && thoughts == 0 {
         return;
     }
     // `promptTokenCount` includes the cached content; input is the uncached
-    // part, so each cached token counts once (bug-afcf63).
+    // part, so each cached token counts once (bug-afcf63). Thinking is billed
+    // as output and counted as its reasoning part (find-af6b7f).
     let cache_read = cache_read.unwrap_or(0);
     let usage = Usage {
         input_tokens: input.saturating_sub(cache_read) as u32,
-        output_tokens: output as u32,
+        output_tokens: (output + thoughts) as u32,
+        reasoning_tokens: thoughts as u32,
         cache_read_tokens: cache_read as u32,
         cache_create_tokens: 0,
         ..Default::default()
@@ -639,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn streamed_gemini_usage_counts_cached_tokens_once() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        emit_accumulated_usage(1_000, 50, Some(600), None, &tx).await;
+        emit_accumulated_usage(1_000, 50, Some(600), None, None, &tx).await;
         let event = rx.recv().await.expect("a usage event").expect("no error");
         let StreamEventKind::Usage(usage) = event.kind else {
             panic!("expected usage, got {:?}", event.kind);
@@ -652,6 +677,19 @@ mod tests {
             ),
             (400, 600, 50)
         );
+    }
+
+    /// A streamed call's thinking tokens are billed output, as its reasoning
+    /// part (find-af6b7f).
+    #[tokio::test]
+    async fn streamed_gemini_usage_counts_thoughts_as_output() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_accumulated_usage(10, 120, None, Some(900), None, &tx).await;
+        let event = rx.recv().await.expect("a usage event").expect("no error");
+        let StreamEventKind::Usage(usage) = event.kind else {
+            panic!("expected usage, got {:?}", event.kind);
+        };
+        assert_eq!((usage.output_tokens, usage.reasoning_tokens), (1_020, 900));
     }
 
     #[derive(Debug)]
@@ -732,6 +770,8 @@ mod tests {
             cost_per_request: None,
             use_max_completion_tokens: false,
             tier: None,
+            temperature: None,
+            seed: None,
         }
     }
 
@@ -893,5 +933,62 @@ mod tests {
             err.to_string().contains("blocked by safety layer"),
             "unexpected error: {err}"
         );
+    }
+
+    /// A non-streamed turn's `usageMetadata` reaches the tool loop, counted
+    /// as a streamed turn's is: cached tokens once, thinking as output
+    /// (bug-3aa61f). A response without it reports no usage.
+    #[tokio::test]
+    async fn a_non_streamed_gemini_turn_records_its_usage() {
+        let send = |response: Value| async move {
+            let backend = GeminiNativeBackend::new(
+                "test-key".to_string(),
+                "https://generativelanguage.googleapis.com".to_string(),
+                tool_model(),
+                &AgentOptions::default(),
+                SafetyLayer::with_defaults(),
+            )
+            .with_poster(Box::new(MockPoster::new(
+                response.to_string(),
+                Arc::new(Mutex::new(Vec::new())),
+            )));
+            backend
+                .send_turn(
+                    &[json!({ "role": "user", "content": "hello" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                )
+                .await
+                .expect("send turn")
+        };
+        let candidates = json!([{
+            "content": { "role": "model", "parts": [{ "text": "done" }] },
+            "finishReason": "STOP"
+        }]);
+
+        let reported = send(json!({
+            "candidates": candidates.clone(),
+            "usageMetadata": {
+                "promptTokenCount": 1_000,
+                "candidatesTokenCount": 50,
+                "cachedContentTokenCount": 600,
+                "thoughtsTokenCount": 300,
+                "totalTokenCount": 1_350
+            }
+        }))
+        .await
+        .extract_usage();
+        assert_eq!(
+            (
+                reported.input_tokens,
+                reported.cache_read_tokens,
+                reported.output_tokens,
+                reported.reasoning_tokens
+            ),
+            (400, 600, 350, 300)
+        );
+
+        let unreported = send(json!({ "candidates": candidates })).await;
+        assert_eq!(unreported.extract_usage(), Usage::default());
     }
 }

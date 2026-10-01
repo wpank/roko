@@ -393,6 +393,38 @@ impl Settlement {
         }
     }
 
+    /// An attempt the stall watchdog cancelled, failed with `message`: a
+    /// timeout, whatever its message says (bug-4c553b). After its first token
+    /// the timeout is the agent's, before it the provider's.
+    pub(super) fn stalled(message: &str, first_token_seen: bool) -> Self {
+        Self {
+            outcome: AttemptOutcome::Timeout,
+            gate_verdict: None,
+            first_token_seen,
+            failure_reason: Some(super::turn_policy::stall_failure_reason(message)),
+            rung: None,
+        }
+    }
+
+    /// A provider call that ended in `error` before returning a result. A
+    /// stop the plan run asked for is a cancellation, which teaches nothing
+    /// (bug-2b1ddc); anything else is [`Self::provider_failure`].
+    pub(super) fn provider_call_error(error: &RokoError) -> Self {
+        match error {
+            RokoError::Cancelled(reason) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: false,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
+            _ => Self::provider_failure(&error.to_string(), false),
+        }
+    }
+
     /// The harness failed the attempt outside its provider call and verify
     /// steps: prompt assembly, or recording its spend in the cost ledger.
     pub(super) fn harness_failure(error: &RokoError) -> Self {
@@ -536,6 +568,9 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
 const fn gate_verdict_tag(verdict: TaskGateVerdict) -> GateVerdictTag {
     match verdict {
         TaskGateVerdict::Passed => GateVerdictTag::Passed,
+        TaskGateVerdict::PassedWithPreexistingFailures => {
+            GateVerdictTag::PassedWithPreexistingFailures
+        }
         TaskGateVerdict::AlreadySatisfied => GateVerdictTag::AlreadySatisfied,
         TaskGateVerdict::Unverified => GateVerdictTag::Unverified,
         TaskGateVerdict::ForcedAccept => GateVerdictTag::ForcedAccept,
@@ -588,8 +623,25 @@ fn executed_model(
         executed.models_reported = served.all_reported;
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
+        executed.sampling = request_sampling(&dispatch.target);
     }
     executed
+}
+
+/// The sampling parameters the attempt's requests carried, from the
+/// provider and model that ran (gap-13bbbd); empty when the provider's
+/// defaults applied, or the target named no provider config or profile.
+fn request_sampling(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())
+        .map(|(provider, model)| {
+            roko_agent::provider::openai_compat::request_sampling(provider, model)
+        })
+        .unwrap_or_default()
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
@@ -843,6 +895,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
                 );
             }
         }
+    }
+
+    /// gap-2e69b2: an efficiency row's attempt id is the attempt's durable
+    /// key, so the same task's first attempt in two runs has two ids.
+    #[tokio::test]
+    async fn attempt_id_is_unique_across_runs() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        for run in ["run-a", "run-b"] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the attempt completes");
+        }
+
+        let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+        })
+        .await;
+        let mut ids = field(&rows, "attempt_id");
+        ids.sort_unstable();
+        let key = |run: &str| format!("{run}:{}:{}:1", spec.plan_id, task.id);
+        assert_eq!(ids, [key("run-a"), key("run-b")]);
     }
 
     /// Provider whose first call hangs until the attempt is killed; later

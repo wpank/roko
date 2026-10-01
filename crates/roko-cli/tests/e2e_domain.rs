@@ -35,6 +35,7 @@ fn write_domain_config(workdir: &Path, default_domain: Option<&str>, extra_gates
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"mock-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
     )
     .unwrap();
@@ -104,27 +105,6 @@ fn config_with_default_domain_parses() {
     write_domain_config(workdir, Some("research"), "");
 
     // `roko config show` should succeed — the config is valid.
-    roko(workdir, &["config", "show"]).success();
-}
-
-// -----------------------------------------------------------------------
-// Test 2: roko.toml with domain_gates parses correctly
-// -----------------------------------------------------------------------
-
-#[test]
-#[ignore = "config schema changed: [prompt].role removed in engine-convergence; fixtures need update"]
-fn config_with_domain_gates_parses() {
-    let tmp = TempDir::new().unwrap();
-    let workdir = tmp.path();
-
-    roko(workdir, &["init", &workdir.display().to_string()]).success();
-    write_domain_config(
-        workdir,
-        Some("research"),
-        "[gates.domain_gates]\nresearch = [\"shell:true\"]\ndocs = [\"shell:markdownlint .\"]\n",
-    );
-
-    // Config should parse without errors.
     roko(workdir, &["config", "show"]).success();
 }
 

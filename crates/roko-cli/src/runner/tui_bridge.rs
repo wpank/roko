@@ -105,6 +105,30 @@ impl TuiBridge {
         );
     }
 
+    /// A task will not run: a task it depends on failed (`blocked_by` names
+    /// it), or it did not start for `reason` (gap-f59fe9).
+    pub fn task_blocked(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        title: &str,
+        blocked_by: Option<&str>,
+        reason: &str,
+    ) {
+        self.sender.publish(DashboardEvent::TaskBlocked {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            title: title.to_string(),
+            blocked_by: blocked_by.map(str::to_string),
+            reason: reason.to_string(),
+        });
+        self.capture(
+            "task_blocked",
+            Some(format!("{plan_id}/{task_id}")),
+            &[Tab::Dashboard, Tab::Plans],
+        );
+    }
+
     /// An agent has been spawned.
     pub fn agent_spawned(
         &self,
@@ -581,6 +605,18 @@ impl TuiBridge {
             active_biases,
             cognitive_energy,
             efe_tier,
+        });
+    }
+
+    /// A task failed a gate rung below the highest one it had already
+    /// passed: the gate ratchet's regression notice (P1-11).
+    pub fn gate_regression(&self, plan_id: &str, task_id: &str, rung: u32, highest_passed: u8) {
+        self.sender.publish(DashboardEvent::EventLogEntry {
+            timestamp_ms: timestamp_now_ms(),
+            event_type: "gate_regression".to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            message: format!("failed rung {rung} after passing rung {highest_passed}"),
         });
     }
 

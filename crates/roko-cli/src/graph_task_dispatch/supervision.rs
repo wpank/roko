@@ -715,7 +715,7 @@ impl AttemptFeed {
             LiveAgentEvent::Unscreened(StreamEventKind::TextDelta(text)) => {
                 GraphTaskEvent::Text { text: text.clone() }
             }
-            LiveAgentEvent::Unscreened(_) => return,
+            LiveAgentEvent::Unscreened(_) | LiveAgentEvent::Queued { .. } => return,
         };
         self.push(&event);
     }
@@ -881,6 +881,7 @@ mod tests {
             plan_id: "p1",
             task_id: "T01",
             attempt_key: "run-1/p1/T01/1",
+            stop: None,
         }
     }
 

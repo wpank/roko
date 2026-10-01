@@ -176,6 +176,25 @@ pub(crate) fn inject_cache_markers_into_content(content: &mut Value) -> bool {
     }
 }
 
+/// `text` without its cache markers, for a provider that does not turn them
+/// into `cache_control` blocks (find-6ee709): the segments between them are
+/// joined by a blank line. Text without a marker is returned unchanged.
+pub(crate) fn strip_cache_markers(text: &str) -> String {
+    let mut remaining = text;
+    let mut saw_marker = false;
+    let mut segments = Vec::new();
+    while let Some((index, marker_len)) = next_cache_marker(remaining) {
+        saw_marker = true;
+        segments.extend(normalized_segment(&remaining[..index]));
+        remaining = &remaining[index + marker_len..];
+    }
+    if !saw_marker {
+        return text.to_string();
+    }
+    segments.extend(normalized_segment(remaining));
+    segments.join("\n\n")
+}
+
 pub(crate) fn inject_cache_markers(messages: &mut Vec<Value>) {
     for message in messages {
         if let Some(content) = message.get_mut("content") {
@@ -498,6 +517,18 @@ mod tests {
         assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
         assert_eq!(blocks[2]["text"], "Task details");
         assert!(blocks[2].get("cache_control").is_none());
+    }
+
+    /// find-6ee709: other providers get the prompt without its markers.
+    #[test]
+    fn strip_cache_markers_joins_the_segments_between_them() {
+        let marked = "Role instructions\n\n<!-- cache:system -->\n\nWorkspace context\n\n\
+                      <!-- cache:session -->\n\nTask details";
+        assert_eq!(
+            strip_cache_markers(marked),
+            "Role instructions\n\nWorkspace context\n\nTask details"
+        );
+        assert_eq!(strip_cache_markers("No markers\n\n"), "No markers\n\n");
     }
 
     #[test]

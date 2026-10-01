@@ -621,6 +621,12 @@ pub(crate) async fn cmd_status(
             None
         }
     };
+    // The part of the total priced from estimated usage (gap-288e38).
+    let estimated_cost_usd = if total_cost_usd.is_some() {
+        costs_log.estimated_cost().await.ok()
+    } else {
+        None
+    };
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -752,6 +758,7 @@ pub(crate) async fn cmd_status(
         status.last_episode_passed = last_passed;
         status.cfactor = cfactor_snapshot;
         status.total_cost_usd = total_cost_usd;
+        status.estimated_cost_usd = estimated_cost_usd;
         status.today_cost_usd = today_cost_usd;
         status.diagnostics.extend(cost_diagnostics.iter().cloned());
 
@@ -1004,6 +1011,9 @@ pub(crate) async fn cmd_status(
         println!("Cost Summary:");
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
+        }
+        if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
+            println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");
         }
         if let Some(today_cost_usd) = today_cost_usd {
             println!("  Today:    ${:.4}", today_cost_usd.max(0.0));
@@ -1472,6 +1482,10 @@ pub(crate) async fn cmd_replay(
     }
 }
 
+/// What `roko inject` tells the operator while no transport delivers it.
+const INJECT_UNAVAILABLE_HINT: &str =
+    "No live command transport is installed; use plan pause/cancel controls where applicable.";
+
 pub(crate) async fn cmd_inject(
     cli: &Cli,
     session: String,
@@ -1479,87 +1493,34 @@ pub(crate) async fn cmd_inject(
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
-    use roko_cli::runner::types::{ControlAction, ControlCommand};
-
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(
-        session.clone(),
-        inject_kind.clone(),
-        payload.clone(),
-        wd.clone(),
-    );
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload, wd);
 
     // Validation errors (empty session, empty payload for directive/context) remain
     // more specific than the transport-unavailable error below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // #361: Wire inject through the file-based ControlCommand transport.
-    // Map InjectKind to ControlAction: abort maps to cancel, directive/context
-    // map to resume (as a trigger to re-read context). The control file is
-    // picked up by the Graph engine's control-file poll loop.
-    let control_action = match inject_kind {
-        InjectKind::Abort => ControlAction::Cancel,
-        InjectKind::Directive | InjectKind::Context => {
-            // For directive and context injections, write the payload to
-            // the inject signal file and send a resume control action so
-            // the running session picks up the new context.
-            let inject_dir = wd.join(".roko").join("state");
-            std::fs::create_dir_all(&inject_dir)?;
-            let inject_file = inject_dir.join("inject.json");
-            let inject_payload = serde_json::json!({
+    // No transport reaches a live executor yet, and nothing reads a file
+    // written here, so a valid request fails closed and writes nothing: a
+    // command that delivered nothing never reports success (#325). Delivery
+    // that waits for the executor's acknowledgement is gap-f118b3.
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "code": "inject_transport_unavailable",
+                "message": "no live command transport is installed",
+                "hint": INJECT_UNAVAILABLE_HINT,
                 "kind": inject_kind.as_str(),
                 "session": session,
-                "payload": payload,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            });
-            std::fs::write(&inject_file, serde_json::to_string_pretty(&inject_payload)?)?;
-            // Resume to wake the executor and consume the injected signal.
-            ControlAction::Resume
-        }
-    };
-
-    let state_dir = wd.join(".roko").join("state");
-    let control_cmd = ControlCommand {
-        command: control_action.clone(),
-        plan_id: None,
-        task_id: None,
-    };
-
-    match control_cmd.write(&state_dir) {
-        Ok(()) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_delivered","kind":"{}","session":"{}","action":"{}"}}"#,
-                    inject_kind,
-                    session,
-                    match control_action {
-                        ControlAction::Cancel => "cancel",
-                        ControlAction::Resume => "resume",
-                        ControlAction::Pause => "pause",
-                        ControlAction::Retry => "retry",
-                    },
-                );
-            } else {
-                println!(
-                    "Injected {} -> session {} (control action: {:?})",
-                    inject_kind, session, control_action,
-                );
-            }
-            Ok(EXIT_SUCCESS)
-        }
-        Err(e) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_write_failed","message":"{}","kind":"{}","session":"{}"}}"#,
-                    e, inject_kind, session,
-                );
-            } else {
-                tracing::error!(inject_kind = %inject_kind, %session, error = %e, "failed to write control command for inject");
-            }
-            Ok(EXIT_FAILURE)
-        }
+            })
+        );
+    } else {
+        eprintln!("Error: inject {inject_kind} -> session {session} was not delivered");
+        eprintln!("Hint: {INJECT_UNAVAILABLE_HINT}");
     }
+    Ok(EXIT_FAILURE)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
@@ -2412,6 +2373,9 @@ pub(crate) fn build_capture_episode(
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
     episode.duration_secs = wall_time_ms as f64 / 1000.0;
     episode.usage.wall_ms = wall_time_ms;
+    // A capture carries no tokens or cost, so its cost is a 0 placeholder and
+    // no $0 cost record is derived from it (bug-ac5432).
+    episode.mark_cost_unknown();
     episode.success = success;
     episode.turns = 1;
     if !success {
@@ -2511,15 +2475,11 @@ pub(crate) async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = roko_cli::learning_helpers::distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(std::sync::Arc::clone(&distillation_caller)),
-        );
-    });
+    roko_cli::learning_helpers::install_capture_distillation(
+        &mut runtime,
+        workdir,
+        roko_cli::learning_helpers::distillation_model_caller(workdir),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = Some(provider);

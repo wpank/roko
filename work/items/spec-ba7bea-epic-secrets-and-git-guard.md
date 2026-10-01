@@ -103,9 +103,9 @@ This is the implementation plan.
 - [x] bug-69a002: The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory
 - [x] bug-cef888: Every .env value of 8 or more characters counts as a secret, so non-secret settings kept in .env are redacted from records
 - [x] bug-77413c: roko-std's refuse_key_file_in_command has none of the guard's search checks (grep -r, rg, git grep, ag/ack, find/xargs reads, brace globs, cd)
-- [ ] bug-fa1537: A recursive search reaches .roko key files: grep -r OPENAI . with a .roko/.env present passes both guards
-- [ ] bug-bb3262: The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases
-- [ ] bug-6af02b: Claude Code's Grep tool runs rg --hidden, so a Grep at a workspace root reads .roko/.env unless .gitignore covers it; the guard's Grep rule doesn't apply the tree check
+- [x] bug-fa1537: A recursive search reaches .roko key files: grep -r OPENAI . with a .roko/.env present passes both guards
+- [x] bug-bb3262: The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases
+- [x] bug-6af02b: Claude Code's Grep tool runs rg --hidden, so a Grep at a workspace root reads .roko/.env unless .gitignore covers it; the guard's Grep rule doesn't apply the tree check
 - [x] gap-18d1a7: The Claude CLI settings roko writes for agents have no Read deny rules for key files, which Claude Code would turn into Grep exclusions
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 

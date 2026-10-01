@@ -553,8 +553,29 @@ fn synthesize_standard_providers_with_env(
 
 impl RokoConfig {
     /// Parse from a TOML string.
+    ///
+    /// A key the schema no longer has is an error, except one that roko
+    /// removed ([`super::loader::drop_removed_config_keys`]): that is dropped
+    /// with a warning, as loading drops it, so an old file still parses.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        let config: Self = toml::from_str(s)?;
+        let config: Self = match toml::from_str(s) {
+            Ok(config) => config,
+            Err(err) => {
+                let mut value: toml::Value = toml::from_str(s)?;
+                let removed = super::loader::drop_removed_config_keys(&mut value);
+                if removed.is_empty() {
+                    return Err(err);
+                }
+                for diagnostic in &removed {
+                    tracing::warn!(
+                        config_key = %diagnostic.key,
+                        "config warning: {}",
+                        diagnostic.message
+                    );
+                }
+                value.try_into()?
+            }
+        };
         // Only warn when the TOML text explicitly sets config_version to a value
         // below CURRENT_CONFIG_VERSION. Skip if:
         //   - The field is absent (serde default kicks in; not a real v1 config)
@@ -1406,16 +1427,6 @@ impl RokoConfig {
         );
         let _ = writeln!(
             out,
-            "replan_max_per_plan = {}",
-            c.learning.replan_max_per_plan
-        );
-        let _ = writeln!(
-            out,
-            "replan_gate_attempts = {}",
-            c.learning.replan_gate_attempts
-        );
-        let _ = writeln!(
-            out,
             "dream_on_completion = {}",
             c.learning.dream_on_completion
         );
@@ -1773,9 +1784,11 @@ pub struct ConductorConfig {
     // `silence_timeout_secs` and `task_stall_secs` drive the Graph
     // dispatcher's per-attempt stall watchdog. An agent is silent while it
     // waits on its model without reporting progress: silence starts counting
-    // once the attempt has reported something, and pauses while a tool call
-    // it made runs. `0` turns a threshold off; with both off a Graph run is
-    // not supervised at all. The hard `timeout_secs` stays the outer bound.
+    // when its provider call starts for a provider that streams as it goes
+    // (the Claude CLI), else once the attempt has reported something, and
+    // pauses while a tool call it made runs. `0` turns a threshold off; with
+    // both off a Graph run is not supervised at all. The hard `timeout_secs`
+    // stays the outer bound.
     /// Seconds of agent silence before its task gets a warning diagnosis
     /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]
@@ -2523,9 +2536,6 @@ pub struct CoreRunnerConfig {
     /// Defaults to 4. A value of 1 preserves sequential execution.
     #[serde(default = "CoreRunnerConfig::default_max_concurrent_tasks")]
     pub max_concurrent_tasks: Option<usize>,
-    /// Maximum number of plans executing concurrently.
-    #[serde(default)]
-    pub max_concurrent_plans: Option<usize>,
     /// Wall-clock timeout for the entire plan execution, in seconds.
     /// Defaults to 3600 (1 hour).
     #[serde(default = "CoreRunnerConfig::default_plan_timeout_secs")]
@@ -2567,6 +2577,12 @@ pub struct CoreRunnerConfig {
     /// files (by mtime) are removed. Defaults to 100.
     #[serde(default = "CoreRunnerConfig::default_prompt_log_retention")]
     pub prompt_log_retention: usize,
+    /// When `true`, a `--worktree-per-task` run deletes the `roko/attempt/*`
+    /// branches of a delivered plan's attempts, along with their checkouts
+    /// (gap-415c54). Defaults to `false`: the checkouts, which hold the disk,
+    /// are removed, and the branches stay for inspection and history.
+    #[serde(default)]
+    pub delete_attempt_branches: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2607,7 +2623,6 @@ impl Default for CoreRunnerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: None,
-            max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
             sandbox_level: RunnerSandboxLevel::default(),
@@ -2616,6 +2631,7 @@ impl Default for CoreRunnerConfig {
             warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
+            delete_attempt_branches: false,
         }
     }
 }

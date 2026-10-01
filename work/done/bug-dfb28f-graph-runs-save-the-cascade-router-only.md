@@ -73,3 +73,12 @@ Checked on `work/bug-8da8ba` (`26947cd62`, not merged at BASE `2a9312985`): `pla
   `LearningRuntime` WAL recovery first.
 - Not journaled: per-category stats, which the snapshot does not persist either. Also not journaled: the routing
   sink of the receipt settler (`graph_execution/feedback.rs`), because `build_settler` has no production caller.
+- 2026-09-30 (wk-settle, `work/bug-dfb28f-flake`): `graph_run_routing_observations_survive_a_crash` failed now and
+  then under parallel load because recovery skipped the gone writer's segment. A child process forked while the
+  segment was open shares the open file until its exec, and closing the file does not release the flock while the
+  child shares it, so the segment looked like a live writer's. A journal, drop and recover loop run beside threads
+  that spawn `true` measured it. Before an explicit unlock on drop, 134 to 233 of 400 recoveries skipped the segment
+  with fork-and-exec spawns, 55 of 400 with posix_spawn, and none of 400 with no spawns; every skipped segment was
+  still on disk. After it, none of 1000 skipped under either kind of spawn. The unlock lands with bug-779ae7
+  (`2c61e9053`); this branch adds a deterministic test (a child holds the segment as its stdin) and makes the crash
+  test prove the writer is gone (`Arc::try_unwrap` on the journal) before it recovers.

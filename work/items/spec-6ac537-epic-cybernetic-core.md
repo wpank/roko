@@ -131,9 +131,9 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
 - [x] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
 - [x] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
-- [ ] bug-8a78e1: chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens
+- [x] bug-8a78e1: chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens
 - [ ] dec-af63cc: Should T0 reflexes serve tasks that something verifies, running verification on their cached output?
-- [ ] gap-d65a17: build_settler's RoutingSink updates the router without journaling, and build_settler still has no production caller
+- [x] gap-d65a17: build_settler's RoutingSink updates the router without journaling, and build_settler still has no production caller
 - [x] gap-1a7f9c: The conductor's test and compile watchers get no gate signal on the Graph path, so RG2 stays PARTIAL
 - [x] bug-386c9b: classify_gate_failure marks a test failure only when the gate's name starts with "test", so Graph verify and rung failures classify as unknown
 - [x] bug-4aa696: The composer's foraging pre-pass keeps at most three optional sections, so domain_context (knowledge, episodes, playbooks) is silently dropped from real prompts

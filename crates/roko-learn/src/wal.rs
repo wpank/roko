@@ -671,6 +671,36 @@ mod tests {
         assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0);
     }
 
+    /// bug-779ae7: a child process that shares a segment's open file (one
+    /// forked while the segment was open, until its exec) does not keep the
+    /// segment locked once its writer drops it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_writers_segment_is_an_orphan_while_a_child_shares_its_file() {
+        let dir = TempDir::new().unwrap();
+        let segments = dir.path().join(SEGMENTS_DIR);
+        let entry = WalEntry::GateThresholdUpdate {
+            rung: 1,
+            passed: true,
+            ts_ms: 1,
+        };
+        let mut segment = WalSegment::create(&segments).unwrap();
+        segment.append(&entry).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(segment.file.try_clone().unwrap())
+            .spawn()
+            .unwrap();
+
+        drop(segment);
+        let orphans = orphaned_segments(&segments);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let orphans = orphans.unwrap();
+        assert_eq!(orphans.len(), 1, "the writer is gone");
+        assert_eq!(orphans[0].entries().len(), 1);
+    }
+
     #[test]
     fn a_gone_writer_leaves_no_lock_in_a_descriptor_that_outlives_it() {
         // bug-779ae7: a child process spawned while the writer lived holds a

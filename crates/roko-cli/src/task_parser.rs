@@ -72,6 +72,11 @@ pub struct TaskMeta {
     /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalMode>,
+    /// Whether the plan's implementer tasks may have no verify step. Such a
+    /// task runs and ends unverified, and its plan does not succeed. `roko
+    /// run` sets it in a workspace that no gate can check (bug-1410e8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unverified: bool,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -223,11 +228,6 @@ impl TaskDef {
     pub fn unused_hints(&self) -> Vec<&'static str> {
         let hints = &self.hints;
         [
-            ("quality_profile", hints.quality_profile.is_some()),
-            ("context_weight", hints.context_weight.is_some()),
-            ("skills", hints.skills.is_some()),
-            ("plan_section", hints.plan_section.is_some()),
-            ("research_before_edit", hints.research_before_edit.is_some()),
             ("parallel_group", hints.parallel_group.is_some()),
             ("exclusive_files", hints.exclusive_files.is_some()),
             ("tags", hints.tags.is_some()),
@@ -666,40 +666,6 @@ impl TaskDef {
                 .all(|dep| completed_plans.contains(dep))
     }
 
-    /// Build a focused prompt asking the agent to fix a specific verify failure.
-    ///
-    /// # Arguments
-    /// * `original_prompt` – the full prompt that was sent for the original task run
-    /// * `failing_phase`   – phase string of the step that failed ("compile", "test", …)
-    /// * `failing_command` – the shell command that failed
-    /// * `error_output`    – captured stdout+stderr (will be truncated to 4000 chars)
-    pub fn build_fix_prompt(
-        &self,
-        original_prompt: &str,
-        failing_phase: &str,
-        failing_command: &str,
-        error_output: &str,
-    ) -> String {
-        let truncated = if error_output.len() > 4000 {
-            &error_output[..4000]
-        } else {
-            error_output
-        };
-
-        format!(
-            "## Auto-fix request\n\n\
-            ## Original task\n\n\
-            {}\n\n\
-            ## Failing verification step\n\n\
-            Phase: {}, Command: `{}`\n\n\
-            ## Error output\n\n\
-            ```\n{}\n```\n\n\
-            ## Instructions\n\n\
-            Fix the code so that `{}` exits 0. Do not change other behaviour.",
-            original_prompt, failing_phase, failing_command, truncated, failing_command
-        )
-    }
-
     /// Apply role-specific tool defaults after TOML parsing.
     ///
     /// Explicit task settings take precedence over role defaults.
@@ -714,7 +680,10 @@ impl TaskDef {
     }
 }
 
-/// Roles a plan task may declare in `role`.
+/// Roles a plan task may declare in `role`: those with a bundled safety
+/// contract, as a role without one gets no tools at dispatch. Plan
+/// validation, plan generation, PRD planning and `roko run --role` all read
+/// this one list (bug-db607b).
 pub const PLAN_TASK_ROLES: &[&str] = &[
     "implementer",
     "researcher",
@@ -723,6 +692,8 @@ pub const PLAN_TASK_ROLES: &[&str] = &[
     "reviewer",
     "quick-reviewer",
     "scribe",
+    "auditor",
+    "auto-fixer",
 ];
 
 /// What a task in `role` may do when it does not narrow its own tools.
@@ -1085,7 +1056,11 @@ impl TasksFile {
             if role == "implementer" {
                 for &field in IMPLEMENTER_REQUIRED {
                     let missing = match field {
-                        "verify" => task.verify.is_empty() && !task.has_accept_tests(),
+                        "verify" => {
+                            task.verify.is_empty()
+                                && !task.has_accept_tests()
+                                && !self.meta.allow_unverified
+                        }
                         "files" => task.files.is_empty(),
                         _ => false,
                     };
@@ -1154,7 +1129,9 @@ impl TasksFile {
             .collect()
     }
 
-    /// Validate that the raw `tasks.toml` still carries the modern task fields.
+    /// Validate that the raw `tasks.toml` still carries the modern task
+    /// fields: `tier`, `context.read_files`, `verify` and `depends_on`. A
+    /// `model_hint` is not one: role and tier route a task.
     pub fn validate_modern_fields(path: &Path) -> Result<Vec<ModernFieldIssue>> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1449,7 +1426,7 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
         let Some(table) = task_table else {
             issues.push(ModernFieldIssue {
                 task_id,
-                missing_fields: vec!["tier", "model_hint", "read_files", "verify", "depends_on"],
+                missing_fields: vec!["tier", "read_files", "verify", "depends_on"],
             });
             continue;
         };
@@ -1462,14 +1439,6 @@ fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>
             .is_none_or(|tier| tier.trim().is_empty());
         if tier_missing {
             missing_fields.push("tier");
-        }
-
-        let model_hint_missing = table
-            .get("model_hint")
-            .and_then(toml::Value::as_str)
-            .is_none_or(|hint| hint.trim().is_empty());
-        if model_hint_missing {
-            missing_fields.push("model_hint");
         }
 
         let read_files_missing = table
@@ -2616,6 +2585,7 @@ depends_on = []
                 workspace_rungs: None,
                 verify: Vec::new(),
                 approval: None,
+                allow_unverified: false,
             },
             tasks: Vec::new(),
         };
@@ -2706,94 +2676,6 @@ depends_on = ["other-plan:T3"]
     }
 
     #[test]
-    fn build_fix_prompt_includes_error_output() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original task prompt";
-        let error_msg = "compilation failed: undefined symbol";
-        let prompt = task.build_fix_prompt(original, "compile", "cargo check", error_msg);
-
-        assert!(prompt.contains(original));
-        assert!(prompt.contains(error_msg));
-        assert!(prompt.contains("compile"));
-        assert!(prompt.contains("cargo check"));
-    }
-
-    #[test]
-    fn build_fix_prompt_truncates_long_error() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original prompt";
-        let long_error = "x".repeat(5000);
-        let prompt = task.build_fix_prompt(original, "test", "cargo test", &long_error);
-
-        // The prompt should contain truncated error (4000 chars max)
-        assert!(prompt.contains(original));
-        // Should not contain the full 5000-char string
-        assert!(!prompt.contains(&long_error));
-        // But should contain a 4000-char substring of it
-        assert!(prompt.contains(&"x".repeat(4000)));
-    }
-
-    #[test]
     fn explicit_denied_tools_override_role_defaults() {
         let toml = r#"
 [meta]
@@ -2833,10 +2715,11 @@ depends_on = []
         assert_eq!(issues.len(), 1);
         assert_eq!(
             issues[0].missing_fields,
-            vec!["tier", "model_hint", "read_files", "verify"]
+            vec!["tier", "read_files", "verify"]
         );
     }
 
+    /// A modern task names no model: role and tier route it (bug-a5cd6b).
     #[test]
     fn validate_modern_fields_accepts_full_metadata() {
         let content = r#"
@@ -2852,7 +2735,6 @@ id = "T1"
 title = "Modern task"
 status = "ready"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 depends_on = []
 verify = [{ phase = "compile", command = "cargo check" }]
 
@@ -3565,6 +3447,31 @@ depends_on = ["T2"]
         assert_eq!(role_capabilities("quick-reviewer"), caps(true, false, true));
     }
 
+    /// bug-db607b: an `auditor` task is a plan task like any other role with
+    /// a bundled contract, so schema validation accepts it.
+    #[test]
+    fn an_auditor_task_passes_schema_validation() {
+        let file = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "roles"
+
+[[task]]
+id = "T1"
+title = "Audit the parser"
+role = "auditor"
+"#,
+        )
+        .expect("parse");
+
+        let issues = file.validate_against_schema();
+
+        assert!(
+            !issues.iter().any(|issue| issue.contains("unknown role")),
+            "{issues:?}"
+        );
+    }
+
     #[test]
     fn every_plan_role_has_a_contract_that_agrees_on_write() {
         for role in PLAN_TASK_ROLES {
@@ -3630,6 +3537,9 @@ files = ["README.md"]
         let message = issues[0].to_string();
         assert!(message.contains("docs/design.md"), "{message}");
         assert!(message.contains("cannot write files"), "{message}");
-        assert!(message.contains("(implementer, scribe)"), "{message}");
+        assert!(
+            message.contains("(implementer, scribe, auto-fixer)"),
+            "{message}"
+        );
     }
 }

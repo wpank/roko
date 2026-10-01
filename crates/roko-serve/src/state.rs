@@ -34,7 +34,7 @@ use roko_core::{
 use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::latency::LatencyRegistry;
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use roko_learn::provider_health::{ProviderHealthRegistry, ProviderHealthTracker};
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::process::{ProcessId, ProcessSupervisor};
@@ -1054,7 +1054,7 @@ impl AppState {
                 gateway_models.push("configured".to_string());
             }
             Arc::new(
-                CascadeRouter::load_or_new(cascade_journal.snapshot_path(), gateway_models)
+                load_recovered_router(cascade_journal.snapshot_path(), gateway_models)
                     .with_model_tiers(&effective_models),
             )
         });

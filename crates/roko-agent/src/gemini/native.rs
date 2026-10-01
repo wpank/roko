@@ -396,7 +396,7 @@ impl GeminiNativeAgent {
         let metadata = GeminiMetadata {
             grounding_metadata: candidate.grounding_metadata.clone(),
             code_execution_results: code_results.clone(),
-            thinking_tokens: usage_metadata.and_then(|usage| usage.thinking_token_count),
+            thinking_tokens: usage_metadata.and_then(|usage| usage.thoughts_token_count),
             cached_tokens,
             safety_ratings: candidate.safety_ratings.clone(),
         };
@@ -562,32 +562,42 @@ fn saturating_u64_to_u32(value: u64) -> u32 {
 /// `cached_content_token_count` is already optional in the wire shape and
 /// becomes the cache reads. `prompt_token_count` includes the cached
 /// content, while the canonical classes are disjoint, so input is only its
-/// uncached part and each cached token is priced once (bug-afcf63).
-fn gemini_observation(
+/// uncached part and each cached token is priced once (bug-afcf63). The
+/// tool loop's non-streamed Gemini turns count their usage with it too
+/// (bug-3aa61f).
+pub(crate) fn gemini_observation(
     usage_metadata: Option<&super::types::UsageMetadata>,
     wall_ms: u64,
     model: Option<String>,
 ) -> UsageObservation {
-    let (input_tokens, output_tokens, cache_read_tokens, source) = match usage_metadata {
-        Some(usage) => (
-            Some(
-                usage
-                    .prompt_token_count
-                    .saturating_sub(usage.cached_content_token_count.unwrap_or(0)),
+    let (input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, source) =
+        match usage_metadata {
+            Some(usage) => (
+                Some(
+                    usage
+                        .prompt_token_count
+                        .saturating_sub(usage.cached_content_token_count.unwrap_or(0)),
+                ),
+                // Thinking is billed at the output rate but reported apart from
+                // the candidates; reasoning stays a part of output, as the
+                // canonical usage counts it (find-af6b7f).
+                match (usage.candidates_token_count, usage.thoughts_token_count) {
+                    (None, None) => None,
+                    (candidates, thoughts) => Some(candidates.unwrap_or(0) + thoughts.unwrap_or(0)),
+                },
+                usage.cached_content_token_count,
+                usage.thoughts_token_count,
+                UsageSource::ProviderReported,
             ),
-            usage.candidates_token_count,
-            usage.cached_content_token_count,
-            UsageSource::ProviderReported,
-        ),
-        None => (None, None, None, UsageSource::Unknown),
-    };
+            None => (None, None, None, None, UsageSource::Unknown),
+        };
 
     UsageObservation {
         input_tokens,
         output_tokens,
         cache_creation_tokens: None,
         cache_read_tokens,
-        reasoning_tokens: None,
+        reasoning_tokens,
         cost_usd: None,
         source,
         model,
@@ -680,6 +690,8 @@ mod tests {
             cost_per_request: None,
             use_max_completion_tokens: false,
             tier: None,
+            temperature: None,
+            seed: None,
         }
     }
 
@@ -889,6 +901,7 @@ mod tests {
                 "candidatesTokenCount": 8,
                 "totalTokenCount": 29,
                 "cachedContentTokenCount": 5,
+                // The name older fixtures used; it still reads.
                 "thinkingTokenCount": 3
             },
             "modelVersion": "gemini-2.5-pro-002"
@@ -902,7 +915,8 @@ mod tests {
         assert_eq!(parsed.content, "Grounded answer. Done.");
         // 5 of the 21 prompt tokens were cached (bug-afcf63).
         assert_eq!(parsed.usage.input_tokens, 16);
-        assert_eq!(parsed.usage.output_tokens, 8);
+        // 8 candidate tokens and 3 thinking tokens (find-af6b7f).
+        assert_eq!(parsed.usage.output_tokens, 11);
         assert_eq!(parsed.usage.cache_read_tokens, 5);
         assert_eq!(parsed.finish_reason, FinishReason::Stop);
         assert_eq!(parsed.tool_calls.len(), 1);
@@ -1175,6 +1189,41 @@ mod tests {
             output.contains("blocked by safety layer"),
             "unexpected output: {output}"
         );
+    }
+
+    /// Thinking tokens (`thoughtsTokenCount`) are billed output: they count
+    /// in output, as its reasoning part, and a response without them counts
+    /// as before (find-af6b7f).
+    #[test]
+    fn gemini_observation_counts_thoughts_as_output() {
+        let usage = |json: Value| -> crate::gemini::types::UsageMetadata {
+            serde_json::from_value(json).expect("usage metadata")
+        };
+        let thinking = gemini_observation(
+            Some(&usage(json!({
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 120,
+                "thoughtsTokenCount": 900,
+                "totalTokenCount": 1_030
+            }))),
+            0,
+            None,
+        );
+        assert_eq!(thinking.input_tokens, Some(10));
+        assert_eq!(thinking.output_tokens, Some(1_020));
+        assert_eq!(thinking.reasoning_tokens, Some(900));
+
+        let plain = gemini_observation(
+            Some(&usage(json!({
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 120,
+                "totalTokenCount": 130
+            }))),
+            0,
+            None,
+        );
+        assert_eq!(plain.output_tokens, Some(120));
+        assert_eq!(plain.reasoning_tokens, None);
     }
 
     /// `promptTokenCount` includes the cached content: a cached call's input

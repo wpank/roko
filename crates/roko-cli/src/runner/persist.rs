@@ -10,10 +10,6 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
-use roko_core::defaults::{
-    DEFAULT_GATE_RETRY_COLD_START, DEFAULT_GATE_RETRY_MAX, DEFAULT_GATE_RETRY_MIN,
-    DEFAULT_GATE_RETRY_MIN_OBSERVATIONS,
-};
 use roko_fs::RokoLayout;
 use roko_runtime::StateSnapshot;
 use serde::{Deserialize, Serialize};
@@ -427,8 +423,9 @@ impl GateThresholds {
     /// P1-10: Apply a domain-specific threshold profile.
     ///
     /// Sets rung priors from the profile when the rung has no prior
-    /// observations, giving domain-appropriate initial expectations.
-    #[allow(dead_code)] // wired in tests; production caller not yet connected
+    /// observations, giving domain-appropriate initial expectations. Graph
+    /// verify runs apply their task's profile before observing. A rung's
+    /// first observation replaces its prior ([`Self::observe`]).
     pub(crate) fn apply_profile(
         &mut self,
         profile: &roko_gate::adaptive_threshold::ThresholdProfile,
@@ -443,32 +440,16 @@ impl GateThresholds {
         }
     }
 
-    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
-    pub(crate) fn suggested_max_retries(&self, rung: u32) -> u32 {
-        let Some(stats) = self.rungs.get(&rung) else {
-            return DEFAULT_GATE_RETRY_COLD_START;
-        };
-
-        if stats.total_count < DEFAULT_GATE_RETRY_MIN_OBSERVATIONS {
-            return DEFAULT_GATE_RETRY_COLD_START;
-        }
-
-        let max_f = f64::from(DEFAULT_GATE_RETRY_MAX);
-        let range_f = f64::from(DEFAULT_GATE_RETRY_MAX - DEFAULT_GATE_RETRY_MIN);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let retries = stats.ema_pass_rate.mul_add(-range_f, max_f).round() as u32;
-
-        retries.clamp(DEFAULT_GATE_RETRY_MIN, DEFAULT_GATE_RETRY_MAX)
-    }
-
     /// P1-12: Check whether a rung should be skipped based on its pass
-    /// streak, modulated by the current daimon temperament.
+    /// streak, modulated by the temperament.
     ///
     /// - Conservative: never skip.
     /// - Balanced / Exploratory: skip if consecutive passes exceed
     ///   `SKIP_STREAK_THRESHOLD` (20, matching `AdaptiveThresholds`).
     /// - Aggressive: skip at half the threshold (10).
-    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
+    ///
+    /// Advisory only: Graph verify runs log what it would skip and run every
+    /// step.
     pub(crate) fn should_skip_rung_for_temperament(
         &self,
         _rung: u32,
@@ -522,6 +503,26 @@ impl GateThresholds {
         thresholds.fill_default_rungs();
         Ok(thresholds)
     }
+
+    /// Update the thresholds at `path` in one read-modify-write under the
+    /// file's sibling lock: load them (defaults when the file is missing,
+    /// every canonical rung filled in, as [`Self::load_or_default`] does),
+    /// apply `update`, and save them when it changed them. Updates that run
+    /// at once, from a run's parallel tasks or another roko process in the
+    /// workspace, each build on the one before, so none is lost
+    /// (bug-e0f472). A file that cannot be read is an error and is left as
+    /// it is. Returns the thresholds as saved and what `update` returned.
+    pub(crate) fn update_locked<R>(
+        path: &Path,
+        update: impl FnOnce(&mut Self) -> R,
+    ) -> Result<(Self, R)> {
+        roko_fs::with_locked_json_transaction::<Self, _, std::io::Error, _>(path, |thresholds| {
+            thresholds.fill_default_rungs();
+            let result = update(thresholds);
+            Ok((thresholds.clone(), result))
+        })
+        .with_context(|| format!("updating {}", path.display()))
+    }
 }
 
 /// Load persisted gate thresholds from disk, or create a fresh default set.
@@ -531,24 +532,7 @@ impl GateThresholds {
 /// rungs have been exercised in past runs.  If the file does not exist yet
 /// (fresh workspace), a fully defaulted set is returned.
 pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
-    let mut thresholds = match GateThresholds::load(&paths.gate_thresholds_json) {
-        Ok(t) => t,
-        Err(err)
-            if err.chain().any(|e| {
-                e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-            }) =>
-        {
-            tracing::debug!(
-                path = %paths.gate_thresholds_json.display(),
-                "gate-thresholds.json not found; starting from defaults"
-            );
-            GateThresholds::default()
-        }
-        Err(err) => return Err(err),
-    };
-    thresholds.fill_default_rungs();
-    Ok(thresholds)
+    GateThresholds::load_or_default(&paths.gate_thresholds_json)
 }
 
 /// Atomically write the adaptive gate thresholds to the standalone
@@ -818,8 +802,15 @@ fn append_buffered_run_index(
         );
     }
     if let Some(writer) = cache.writers.get_mut(&run_path) {
+        // The per-run index is a second copy of the event log, so it gets the
+        // redaction the global log's writer applies (roko_fs::log_rotation):
+        // agent output can quote a provider key.
+        let scrubbed = match std::str::from_utf8(line).map(roko_core::obs::scrub_secrets_in_jsonl) {
+            Ok(std::borrow::Cow::Owned(text)) => std::borrow::Cow::Owned(text.into_bytes()),
+            _ => std::borrow::Cow::Borrowed(line),
+        };
         writer
-            .write_all(line)
+            .write_all(&scrubbed)
             .with_context(|| format!("buffering run index {}", run_path.display()))?;
         if flush {
             writer
@@ -866,12 +857,6 @@ pub fn save_orchestrator_snapshot(
         .to_json()
         .context("serializing orchestrator snapshot")?;
     atomic_write(&paths.orchestrator_json, json.as_bytes())
-}
-
-/// Save the set of live agent PIDs.
-pub fn save_agent_pids(paths: &PersistPaths, pids: &[u32]) -> Result<()> {
-    let json = serde_json::to_string_pretty(&pids).context("serializing agent PIDs")?;
-    atomic_write(&paths.agent_pids_json, json.as_bytes())
 }
 
 /// Atomically write the runner-owned [`RunStateSnapshot`].
@@ -1296,34 +1281,6 @@ pub fn section_outcomes_path(workdir: &Path) -> PathBuf {
         .join("section-outcomes.jsonl")
 }
 
-/// Read previously-saved agent PIDs and kill any that are still alive.
-pub fn cleanup_orphaned_agents(paths: &PersistPaths) {
-    let Ok(content) = fs::read_to_string(&paths.agent_pids_json) else {
-        return;
-    };
-    let pids = match serde_json::from_str::<Vec<u32>>(&content) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                path = %paths.agent_pids_json.display(),
-                err = %e,
-                "malformed agent PID file — removing"
-            );
-            let _ = fs::remove_file(&paths.agent_pids_json);
-            return;
-        }
-    };
-
-    for pid in pids {
-        // Delegate to roko-agent's registry-based cleanup.
-        roko_agent::process::register_spawned_pid(pid);
-    }
-    roko_agent::process::cleanup_orphaned_agents();
-
-    // Clean up the PID file.
-    let _ = fs::remove_file(&paths.agent_pids_json);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1400,17 +1357,6 @@ mod tests {
             }
         );
         assert_eq!(fs::read(&path).unwrap(), b"");
-    }
-
-    #[test]
-    fn save_agent_pids_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
-        save_agent_pids(&paths, &[1234, 5678]).unwrap();
-
-        let content = fs::read_to_string(&paths.agent_pids_json).unwrap();
-        let pids: Vec<u32> = serde_json::from_str(&content).unwrap();
-        assert_eq!(pids, vec![1234, 5678]);
     }
 
     #[test]
@@ -1726,6 +1672,39 @@ mod tests {
             assert!(gt.rungs.contains_key(&rung_idx));
             assert_eq!(gt.rungs[&rung_idx].total_count, 0);
         }
+    }
+
+    /// bug-e0f472: verify runs that update gate-thresholds.json at once each
+    /// read what the others saved, so every observation reaches the EMA.
+    #[test]
+    fn concurrent_verify_updates_keep_every_gate_observation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("learn").join("gate-thresholds.json");
+        let updates: Vec<_> = (0..16_u32)
+            .map(|index| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let steps = [("test".to_string(), index % 2 == 0)];
+                    GateThresholds::update_locked(&path, |thresholds| {
+                        thresholds.observe_verify_steps(&steps, None)
+                    })
+                    .expect("locked update");
+                })
+            })
+            .collect();
+        for update in updates {
+            update.join().expect("update thread");
+        }
+
+        let thresholds = GateThresholds::load_or_default(&path).expect("load thresholds");
+        let test = &thresholds.rungs[&2];
+        assert_eq!(test.total_count, 16, "{thresholds:?}");
+        assert_eq!(test.pass_count, 8, "{thresholds:?}");
+        assert_eq!(
+            thresholds.rungs.len(),
+            7,
+            "every canonical rung is filled in"
+        );
     }
 
     /// Audit #80: `load_gate_thresholds` on a fresh workspace (no file)

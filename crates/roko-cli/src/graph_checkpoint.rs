@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
 use roko_graph::replay::{RecordEntry, retain_recorded_activities};
@@ -34,11 +35,13 @@ use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
     plan_graph_fingerprint,
 };
+use roko_learn::telemetry::report::RunRecords;
+use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
 use crate::task_accept;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{TaskDef, TasksFile};
 
 /// Current host checkpoint schema version. V2 manifests are migrated in-memory
 /// to v3 with empty extensions and receipts; other versions fail closed.
@@ -75,6 +78,10 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// Known extension namespace for the plan's whole-plan check (`[meta]
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
+/// Known extension namespace for the tasks whose latest attempt a stop cut
+/// off, as the last resume found them (gap-36f3fb).
+pub const INTERRUPTED_ATTEMPT_EXTENSION: &str = "roko.attempt.interrupted@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +252,34 @@ pub struct TaskOutcomeSummary {
     pub not_started: BTreeMap<String, String>,
 }
 
+/// Value stored under [`INTERRUPTED_ATTEMPT_EXTENSION`]: the tasks whose
+/// latest attempt a stop cut off, read on resume from the run's attempt log
+/// (`.roko/runs/<run_id>/attempts.jsonl`). Anything such an attempt wrote is
+/// still in the task's checkout, and no Activity records it; the task runs
+/// again on top of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempts {
+    /// One entry per task, in task id order.
+    #[serde(default)]
+    pub attempts: Vec<InterruptedAttempt>,
+}
+
+/// A task's latest attempt, which a stop cut off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempt {
+    /// The task the attempt ran.
+    pub task_id: String,
+    /// The attempt's S01 key, `{chain_key}:{attempt}`.
+    pub attempt_key: String,
+    /// When the attempt started (Unix ms), when its open line says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// The run cancelled the attempt. Otherwise it never settled: the
+    /// process stopped while it ran.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
 /// they may be replayed: every task with authored verify steps. A task whose
 /// definition cannot be decoded is treated as verify-bearing (fail closed).
@@ -269,8 +304,13 @@ fn replay_refusal(signals: &[roko_core::Signal], verify_required: bool) -> Optio
         Some(verdict) if !verdict.is_replayable() => {
             Some(format!("recorded gate verdict is `{}`", verdict.as_str()))
         }
-        // Its verify steps passed, on a tree that already held its work.
-        Some(TaskGateVerdict::Passed | TaskGateVerdict::AlreadySatisfied) => None,
+        // Its verify steps passed, on a tree that already held its work, or
+        // failed only on tests that failed before its run.
+        Some(
+            TaskGateVerdict::Passed
+            | TaskGateVerdict::PassedWithPreexistingFailures
+            | TaskGateVerdict::AlreadySatisfied,
+        ) => None,
         Some(verdict) if verify_required => Some(format!(
             "verify steps are authored but the recorded gate verdict is `{}`",
             verdict.as_str()
@@ -327,6 +367,83 @@ fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
         .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
         .filter_map(|entry| {
             TaskGateVerdict::from_signals(&entry.signals).map(|verdict| (entry.node_id, verdict))
+        })
+        .collect()
+}
+
+/// The nodes whose output the Activity log at `path` records.
+fn recorded_nodes(path: &Path) -> BTreeSet<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return BTreeSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+        .map(|entry| entry.node_id)
+        .collect()
+}
+
+/// The tasks of plan `plan_id` whose latest attempt in `run_dir`'s attempt
+/// log a stop cut off: it never settled, or the run cancelled it. A task in
+/// `recorded`, whose output the Activity log holds, is left out: its attempt
+/// finished, even if the process stopped before its verdict line was written.
+fn interrupted_attempts(
+    run_dir: &Path,
+    plan_id: &str,
+    recorded: &BTreeSet<String>,
+) -> Vec<InterruptedAttempt> {
+    let records = match RunRecords::load(run_dir) {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(
+                run_dir = %run_dir.display(),
+                %error,
+                "resume: the run's attempt log is unreadable; interrupted attempts go unrecorded"
+            );
+            return Vec::new();
+        }
+    };
+    let outcomes: BTreeMap<&str, AttemptOutcome> = records
+        .verdicts
+        .iter()
+        .map(|verdict| {
+            (
+                verdict.record.identity.attempt_key.as_str(),
+                verdict.record.outcome,
+            )
+        })
+        .collect();
+    let mut latest: BTreeMap<&str, &AttemptOpenRecord> = BTreeMap::new();
+    for open in records.opens.iter().map(|open| &open.record) {
+        let identity = &open.identity;
+        if identity.plan_id != plan_id {
+            continue;
+        }
+        let newer = latest
+            .get(identity.task_id.as_str())
+            .is_none_or(|seen| seen.identity.attempt < identity.attempt);
+        if newer {
+            latest.insert(identity.task_id.as_str(), open);
+        }
+    }
+    latest
+        .into_values()
+        .filter(|open| {
+            let node = open.identity.node_id.as_deref();
+            !recorded.contains(node.unwrap_or(&open.identity.task_id))
+        })
+        .filter_map(|open| {
+            let cancelled = match outcomes.get(open.identity.attempt_key.as_str()) {
+                None => false,
+                Some(AttemptOutcome::Cancelled) => true,
+                Some(_) => return None,
+            };
+            Some(InterruptedAttempt {
+                task_id: open.identity.task_id.clone(),
+                attempt_key: open.identity.attempt_key.clone(),
+                started_at_ms: open.attempt_started_at,
+                cancelled,
+            })
         })
         .collect()
 }
@@ -843,6 +960,38 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record under [`INTERRUPTED_ATTEMPT_EXTENSION`] the tasks whose latest
+    /// attempt of this run a stop cut off, read from the run's attempt log in
+    /// `workdir`, replacing the previous resume's record (gap-36f3fb).
+    fn record_interrupted_attempts(&mut self, workdir: &Path) -> Result<()> {
+        let layout = RokoLayout::for_project(workdir);
+        let run_dir = layout.run_dir(&self.manifest.run_id);
+        let recorded = recorded_nodes(&self.paths.activities);
+        let attempts = interrupted_attempts(&run_dir, &self.manifest.plan_id, &recorded);
+        if attempts.is_empty() {
+            self.manifest
+                .extensions
+                .remove(INTERRUPTED_ATTEMPT_EXTENSION);
+            return Ok(());
+        }
+        for attempt in &attempts {
+            tracing::warn!(
+                task_id = %attempt.task_id,
+                attempt_key = %attempt.attempt_key,
+                cancelled = attempt.cancelled,
+                "resume: the task's last attempt stopped before it settled; anything it wrote \
+                 is still in the task's checkout, and the task runs again on top of it"
+            );
+        }
+        let value = serde_json::to_value(InterruptedAttempts { attempts })
+            .context("serialize interrupted attempts")?;
+        self.manifest.extensions.insert(
+            INTERRUPTED_ATTEMPT_EXTENSION.to_string(),
+            host_extension(INTERRUPTED_ATTEMPT_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
     // ---- Extension registration ----
 
     /// Register a namespaced extension in the checkpoint manifest.
@@ -1149,7 +1298,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         "resuming Graph checkpoint"
                     );
                 }
-                return resume_checkpoint(paths, manifest, cost_ledger, plan_id, graph);
+                return resume_checkpoint(workdir, paths, manifest, cost_ledger, plan_id, graph);
             }
         }
     } else if !fresh && (paths.activities.exists() || paths.costs.exists()) {
@@ -1168,6 +1317,7 @@ pub fn prepare_graph_checkpoint_for_run(
 
 /// Reopen a validated checkpoint for another run of the same plan graph.
 fn resume_checkpoint(
+    workdir: &Path,
     paths: GraphCheckpointPaths,
     mut manifest: GraphCheckpointManifest,
     cost_ledger: GraphCostLedgerCheckpoint,
@@ -1203,6 +1353,7 @@ fn resume_checkpoint(
         invalidated_on_resume,
     };
     prepared.refresh_gate_verdicts()?;
+    prepared.record_interrupted_attempts(workdir)?;
     prepared.manifest.updated_at_ms = unix_ms();
     write_manifest_atomic(&prepared.paths.manifest, &prepared.manifest)?;
     Ok(prepared)
@@ -1566,6 +1717,32 @@ pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutc
     .ok()
 }
 
+/// Every canonical checkpoint under `.roko/state/graph/`: the plan id its
+/// manifest records, with the manifest's path. Unreadable manifests are left
+/// out. `roko backlog audit` finds checkpoints whose plan is gone with this.
+#[must_use]
+pub fn canonical_checkpoint_plans(workdir: &Path) -> Vec<(String, PathBuf)> {
+    #[derive(Deserialize)]
+    struct PlanIdOnly {
+        plan_id: String,
+    }
+
+    let Ok(entries) = std::fs::read_dir(workdir.join(".roko/state/graph")) else {
+        return Vec::new();
+    };
+    let mut plans: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path().join("checkpoint.json"))
+        .filter_map(|manifest| {
+            let bytes = std::fs::read(&manifest).ok()?;
+            let plan = serde_json::from_slice::<PlanIdOnly>(&bytes).ok()?;
+            Some((plan.plan_id, manifest))
+        })
+        .collect();
+    plans.sort();
+    plans
+}
+
 // ---------------------------------------------------------------------------
 // Inspection
 // ---------------------------------------------------------------------------
@@ -1670,13 +1847,29 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
         .max()
 }
 
+/// Mark the checkpoint whose manifest is `manifest` `interrupted` if it still
+/// reads `running`, as a plan run forced out before it could write its own
+/// terminal status does on its way out (bug-4641e3), so the checkpoint does
+/// not look alive afterwards. A checkpoint its run already finalized keeps
+/// its status. Returns whether it was marked.
+pub fn mark_running_checkpoint_interrupted(manifest: &Path) -> Result<bool> {
+    let mut recorded = read_manifest(manifest)?;
+    if recorded.status != GraphCheckpointStatus::Running {
+        return Ok(false);
+    }
+    recorded.status = GraphCheckpointStatus::Interrupted;
+    recorded.updated_at_ms = unix_ms();
+    write_manifest_atomic(manifest, &recorded)?;
+    Ok(true)
+}
+
 /// Start `plan`'s canonical checkpoint the way a default `plan run` does.
 #[cfg(test)]
 pub(crate) fn start_plan_checkpoint(
     workdir: &Path,
     plan: &Plan,
 ) -> Result<PreparedGraphCheckpoint> {
-    let graph = convert_plan(plan, &ResumeOptions::default())?;
+    let graph = convert_plan(plan, &plan_task_infos(plan, |task| task.max_retries))?;
     prepare_graph_checkpoint(workdir, None, &plan.id, 1, &graph, false, false)
 }
 
@@ -1694,6 +1887,8 @@ pub struct ResumeOptions<'a> {
     /// `--force-resume`: archive an unusable checkpoint instead of stopping.
     pub force_resume: bool,
     /// `--max-tasks`: concurrency override; 0 keeps `[meta] max_parallel`.
+    /// It caps the run without changing its checkpoint identity
+    /// (gap-7147bb), so the preview converts the plan without it.
     pub max_tasks: usize,
     /// `--max-retries`: per-task retry override.
     pub max_retries: Option<u32>,
@@ -1827,7 +2022,10 @@ pub fn preview_plan_resume(
     if options.rich_topology {
         bail!("the checkpoint preview does not support --rich-topology");
     }
-    let graph = convert_plan(plan, options)?;
+    // A run's retry budgets come from its dispatcher's gate thresholds. They
+    // live in the node configs, which the plan fingerprint leaves out.
+    let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+    let graph = convert_plan(plan, &tasks)?;
     let mut preview = preview_graph_checkpoint(
         workdir,
         options.resume_plan,
@@ -1850,11 +2048,15 @@ pub fn preview_plan_resume(
     Ok(preview)
 }
 
-/// Convert `plan` as `graph_execution::plan_runner::run_one_plan` does with
-/// the default topology, so the preview fingerprints the graph a run executes.
-fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
+/// `plan`'s tasks as the Graph converters take them, each with the retry
+/// budget `max_retries` gives it. `run_one_plan` and the resume preview both
+/// build their graphs from this list, so the preview fingerprints the graph a
+/// run executes (gap-be7368).
+pub(crate) fn plan_task_infos(
+    plan: &Plan,
+    mut max_retries: impl FnMut(&TaskDef) -> u32,
+) -> Vec<(String, PlanTaskInfo)> {
+    plan.tasks
         .tasks
         .iter()
         .map(|task| {
@@ -1868,26 +2070,33 @@ fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
                 depends_on: task.depends_on.clone(),
                 depends_on_plan: task.depends_on_plan.clone(),
                 timeout_secs: task.timeout_secs,
-                max_retries: options.max_retries.unwrap_or(task.max_retries),
+                max_retries: max_retries(task),
                 domain: task.domain.as_ref().map(|domain| format!("{domain:?}")),
                 sequence: task.sequence,
                 full_config_json: serde_json::to_value(task).unwrap_or_default(),
             };
             (task.id.clone(), info)
         })
-        .collect();
-    // An omitted `max_parallel` converts as 1, as `run_one_plan` does; the
-    // run widens the graph only after its identity is taken.
-    let max_parallel = if options.max_tasks > 0 {
-        u32::try_from(options.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+        .collect()
+}
+
+/// The concurrency `plan` converts at: its own `max_parallel`, and 1 when it
+/// omits it, as before that meant "as wide as the DAG allows" (gap-272448).
+/// The checkpoint identity hashes the converted concurrency, so a run applies
+/// `--max-tasks` and the DAG width only after taking it (gap-7147bb).
+pub(crate) fn converted_max_parallel(plan: &Plan) -> u32 {
+    plan.tasks.meta.max_parallel.unwrap_or(1)
+}
+
+/// Convert `plan`'s `tasks` ([`plan_task_infos`]) with the default topology,
+/// at [`converted_max_parallel`]: the graph `run_one_plan` runs, and the one
+/// the resume preview fingerprints.
+pub(crate) fn convert_plan(plan: &Plan, tasks: &[(String, PlanTaskInfo)]) -> Result<Graph> {
     plan_to_graph(
         &plan.id,
         &plan.dir.display().to_string(),
-        &tasks,
-        max_parallel,
+        tasks,
+        converted_max_parallel(plan),
     )
     .with_context(|| format!("convert plan '{}' to a Graph", plan.id))
 }
@@ -2212,7 +2421,8 @@ depends_on = ["T1"]
     }
 
     fn plan_graph(plan: &Plan, options: &ResumeOptions<'_>) -> Graph {
-        convert_plan(plan, options).expect("convert plan")
+        let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+        convert_plan(plan, &tasks).expect("convert plan")
     }
 
     /// Start a run of plan `p`, record T1's output, and stop it as failed.
@@ -2528,6 +2738,60 @@ depends_on = ["T1"]
         assert!(error.to_string().contains("graph has changed"));
     }
 
+    /// gap-7147bb: `--max-tasks` caps a run's concurrency without changing
+    /// its checkpoint identity, so a run started with one value resumes with
+    /// another, or with none.
+    #[test]
+    fn resume_accepts_a_different_max_tasks() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let with = |max_tasks| ResumeOptions {
+            max_tasks,
+            ..ResumeOptions::default()
+        };
+        record_first_task(dir.path(), &plan_graph(&plan, &with(2)));
+
+        for max_tasks in [0, 5] {
+            let preview =
+                preview_plan_resume(dir.path(), &plan, 1, &with(max_tasks)).expect("preview");
+            assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::New));
+            assert_eq!(
+                preview.action,
+                ResumeAction::Resume,
+                "--max-tasks {max_tasks}"
+            );
+            assert_eq!(preview.restored_tasks, ["T1"]);
+        }
+        let resumed = prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "p",
+            1,
+            &plan_graph(&plan, &with(5)),
+            false,
+            false,
+        )
+        .expect("resume with another --max-tasks");
+        assert_eq!(resumed.replayed_entries(), 1);
+    }
+
+    /// gap-be7368: a run and the resume preview convert a plan with one
+    /// mapping ([`plan_task_infos`], [`convert_plan`]). Only their retry
+    /// budgets differ, and those are not part of the plan's identity.
+    #[test]
+    fn retry_budgets_leave_the_preview_identity_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let identity = |budget: u32| {
+            let graph =
+                convert_plan(&plan, &plan_task_infos(&plan, |_| budget)).expect("convert plan");
+            GraphIdentity::of(dir.path(), &graph)
+                .expect("identity")
+                .current
+        };
+        assert_eq!(identity(0), identity(4));
+    }
+
     #[test]
     fn fresh_checkpoint_then_resume_roundtrips_run_identity() {
         let dir = tempdir().expect("tempdir");
@@ -2709,6 +2973,34 @@ depends_on = ["T1"]
             .expect("resume interrupted checkpoint");
         assert_eq!(resumed.run_id(), checkpoint.run_id());
         assert_eq!(resumed.status(), GraphCheckpointStatus::Running);
+    }
+
+    /// bug-4641e3: a forced exit marks a checkpoint that still reads
+    /// `running` as `interrupted`, and leaves one its run finalized alone.
+    #[test]
+    fn a_running_checkpoint_is_marked_interrupted_and_a_finished_one_kept() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+
+        assert!(mark_running_checkpoint_interrupted(&manifest).expect("mark"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark again"));
+
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish");
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark finished"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Failed)
+        );
     }
 
     // ─── v3 extension and receipt tests ──────────────────────────────────
@@ -3055,6 +3347,93 @@ depends_on = ["T1"]
         let receipt = resumed.receipt("r1").expect("receipt survived resume");
         assert_eq!(receipt.state, ReceiptState::Committed);
         assert_eq!(receipt.evidence_ref.as_deref(), Some("evidence-1"));
+    }
+
+    #[test]
+    fn resume_records_the_attempts_a_stop_cut_off() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        // task-1 recorded its output, but the process stopped before its
+        // verdict line was written.
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let identity = |plan: &str, task: &str, attempt: u32| {
+            AttemptIdentity::new(&AttemptKey::new(run_id.as_str(), plan, task, attempt))
+        };
+        let open = |plan: &str, task: &str, attempt: u32| {
+            AttemptOpenRecord::new(identity(plan, task, attempt), 1_000 * i64::from(attempt))
+        };
+        let settle = |task: &str, attempt: u32, outcome: AttemptOutcome| {
+            AttemptVerdictRecord::settle(identity("p", task, attempt), outcome, true)
+        };
+        let run_dir = RokoLayout::for_project(dir.path()).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        for (plan, task, attempt) in [
+            ("p", "task-1", 1),
+            ("p", "task-2", 1),
+            ("p", "task-2", 2),
+            ("p", "task-3", 1),
+            ("p", "task-4", 1),
+            ("q", "task-5", 1),
+        ] {
+            assert!(writer.submit(open(plan, task, attempt)));
+        }
+        assert!(writer.submit(settle("task-2", 1, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 1, AttemptOutcome::Cancelled)));
+        assert!(writer.submit(settle("task-4", 1, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 9);
+
+        // task-2's second attempt never settled, and the run cancelled
+        // task-3's; task-4's attempt failed, and task-5 is another plan's.
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let value = resumed
+            .extension(INTERRUPTED_ATTEMPT_EXTENSION)
+            .expect("the interrupted attempts are recorded")
+            .value
+            .clone();
+        let recorded: InterruptedAttempts = serde_json::from_value(value).expect("attempts");
+        let expected = |task: &str, attempt: u32, cancelled: bool| InterruptedAttempt {
+            task_id: task.to_string(),
+            attempt_key: identity("p", task, attempt).attempt_key,
+            started_at_ms: Some(1_000 * i64::from(attempt)),
+            cancelled,
+        };
+        assert_eq!(
+            recorded.attempts,
+            [expected("task-2", 2, false), expected("task-3", 1, true)]
+        );
+        let persisted = read_manifest(&resumed.paths().manifest).expect("manifest");
+        assert!(
+            persisted
+                .extensions
+                .contains_key(INTERRUPTED_ATTEMPT_EXTENSION)
+        );
+
+        // Once every task's latest attempt has settled, the next resume drops
+        // the record.
+        resumed.finish(false).expect("finish");
+        let writer = TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(open("p", "task-3", 2)));
+        assert!(writer.submit(settle("task-2", 2, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 2, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 3);
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("second resume");
+        assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
     }
 
     #[test]

@@ -18,12 +18,13 @@ pub struct InertGraphSetting {
 /// `roko config doctor`, so operators stop relying on them.
 #[must_use]
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
-    const LEGACY_GATES: &str = "only the legacy Runner-v2 gate pipeline (--engine legacy) reads it";
+    const LEGACY_GATES: &str = "only the deleted Runner-v2 gate pipeline read it";
     const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
                             adaptive_min_retries and adaptive_max_retries (task retry budgets); \
                             its gate EMA uses a fixed alpha";
-    const NOT_ENFORCED: &str = "not enforced by the Graph engine";
-    const NO_READER: &str = "no production code reads it";
+    const NO_LONG_LIVED_AGENT: &str = "no production code reads it: each plan-run attempt is a \
+                                       fresh provider session, bounded by budget.max_task_usd and \
+                                       budget.max_task_retry_usd";
     const DISPLAY_ONLY: &str = "shown by config views; no routing decision reads it";
     const LADDER: &str = "deprecated: no routing decision reads it; [routing.ladder] picks \
                           plan-task models";
@@ -71,11 +72,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.domain_gates != default_gates.domain_gates,
-            "gates.domain_gates",
-            NO_READER,
-        ),
-        (
             gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
             "gates.ema_alpha",
             ADAPTIVE,
@@ -91,27 +87,11 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             ADAPTIVE,
         ),
         (
-            config.budget.max_daily_usd.to_bits() != defaults.budget.max_daily_usd.to_bits(),
-            "budget.max_daily_usd",
-            NOT_ENFORCED,
-        ),
-        (
             config.budget.max_agent_lifetime_usd.to_bits()
                 != defaults.budget.max_agent_lifetime_usd.to_bits(),
             "budget.max_agent_lifetime_usd",
-            NOT_ENFORCED,
+            NO_LONG_LIVED_AGENT,
         ),
-        (
-            config.learning.replan_max_per_plan != defaults.learning.replan_max_per_plan,
-            "learning.replan_max_per_plan",
-            NO_READER,
-        ),
-        (
-            config.learning.replan_gate_attempts != defaults.learning.replan_gate_attempts,
-            "learning.replan_gate_attempts",
-            NO_READER,
-        ),
-        (config.agent.data_llm.is_some(), "agent.data_llm", NO_READER),
         (
             routing.algorithm != default_routing.algorithm,
             "routing.algorithm",
@@ -227,14 +207,12 @@ mod tests {
         assert!(graph_engine_inert_settings(&RokoConfig::default()).is_empty());
 
         let mut config = RokoConfig::default();
-        config
-            .gates
-            .domain_gates
-            .insert("docs".to_string(), vec!["shell:true".to_string()]);
+        config.gates.max_rung = Some(2);
         config.runner.warm_pool_size = 4;
         // Wired keys are never reported.
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
+        config.budget.max_daily_usd = 20.0;
         config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
         // Every plan task runs the workspace's required rungs.
@@ -249,13 +227,26 @@ mod tests {
             .iter()
             .map(|setting| setting.key)
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["gates.domain_gates", "runner.warm_pool_size"]);
+        assert_eq!(keys, ["gates.max_rung", "runner.warm_pool_size"]);
 
         config.pipeline.focused.strategist = true;
         assert!(
             graph_engine_inert_settings(&config)
                 .iter()
                 .any(|setting| setting.key == "pipeline.focused")
+        );
+
+        // No agent outlives one attempt: the lifetime cap is not a plan-run
+        // control (bug-ae28ac).
+        config.budget.max_agent_lifetime_usd = 10.0;
+        let lifetime = graph_engine_inert_settings(&config)
+            .into_iter()
+            .find(|setting| setting.key == "budget.max_agent_lifetime_usd")
+            .expect("the lifetime cap is reported");
+        assert!(
+            lifetime.reason.contains("fresh provider session"),
+            "{}",
+            lifetime.reason
         );
     }
 }

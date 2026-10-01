@@ -26,7 +26,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use roko_core::obs::LogScrubber;
-use roko_core::tool::{ToolCall, ToolResult};
+use roko_core::tool::{CorrelationEnvelope, ToolCall, ToolResult};
 
 /// The default audit-log path relative to the worktree.
 pub const DEFAULT_AUDIT_PATH: &str = ".roko/tool_audit.jsonl";
@@ -34,6 +34,9 @@ pub const DEFAULT_AUDIT_PATH: &str = ".roko/tool_audit.jsonl";
 /// Maximum byte length for serialized tool arguments in audit records.
 /// Arguments exceeding this are truncated with a `[truncated]` marker.
 const MAX_ARGUMENTS_BYTES: usize = 4096;
+
+/// Maximum byte length of each correlation id in an audit record.
+const MAX_CORRELATION_ID_BYTES: usize = 256;
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 
@@ -53,6 +56,10 @@ pub enum AuditLine {
         call_name: String,
         /// Scrubbed argument summary.
         arguments_scrubbed: String,
+        /// The run, task, attempt and agent the call belongs to; omitted
+        /// when the dispatcher knew none.
+        #[serde(default, skip_serializing_if = "is_uncorrelated")]
+        correlation: CorrelationEnvelope,
     },
     /// A tool call completed with a result.
     Result {
@@ -66,7 +73,16 @@ pub enum AuditLine {
         ok: bool,
         /// Scrubbed result content.
         content_scrubbed: String,
+        /// The run, task, attempt and agent the call belongs to; omitted
+        /// when the dispatcher knew none.
+        #[serde(default, skip_serializing_if = "is_uncorrelated")]
+        correlation: CorrelationEnvelope,
     },
+}
+
+/// Whether `correlation` names nothing, so a line can leave it out.
+fn is_uncorrelated(correlation: &CorrelationEnvelope) -> bool {
+    *correlation == CorrelationEnvelope::empty()
 }
 
 /// A single raw (unscrubbed) audit-log line — internal only.
@@ -269,12 +285,17 @@ impl ScrubAuditAdapter {
         Self { log, scrubber }
     }
 
-    /// Record an admitted call with scrubbed arguments.
+    /// Record an admitted call with scrubbed arguments, joined to the run
+    /// by `correlation`.
     ///
     /// # Errors
     ///
     /// Returns an error if the write fails.
-    pub async fn record_admit(&self, call: &ToolCall) -> std::io::Result<()> {
+    pub async fn record_admit(
+        &self,
+        call: &ToolCall,
+        correlation: &CorrelationEnvelope,
+    ) -> std::io::Result<()> {
         let ts_ms = chrono::Utc::now().timestamp_millis();
         let arguments_raw = serde_json::to_string(&call.arguments).unwrap_or_default();
         let arguments_bounded = truncate_str(&arguments_raw, MAX_ARGUMENTS_BYTES);
@@ -285,16 +306,23 @@ impl ScrubAuditAdapter {
             call_id: call.id.clone(),
             call_name: call.name.clone(),
             arguments_scrubbed,
+            correlation: bounded_correlation(correlation),
         };
         self.log.record_scrubbed(&line).await
     }
 
-    /// Record a terminal result with scrubbed content.
+    /// Record a terminal result with scrubbed content, joined to the run by
+    /// `correlation`.
     ///
     /// # Errors
     ///
     /// Returns an error if the write fails.
-    pub async fn record_result(&self, call: &ToolCall, result: &ToolResult) -> std::io::Result<()> {
+    pub async fn record_result(
+        &self,
+        call: &ToolCall,
+        result: &ToolResult,
+        correlation: &CorrelationEnvelope,
+    ) -> std::io::Result<()> {
         let ts_ms = chrono::Utc::now().timestamp_millis();
         let (ok, raw_content) = match result {
             ToolResult::Ok { .. } => (true, result.text_content()),
@@ -309,6 +337,7 @@ impl ScrubAuditAdapter {
             call_name: call.name.clone(),
             ok,
             content_scrubbed,
+            correlation: bounded_correlation(correlation),
         };
         self.log.record_scrubbed(&line).await
     }
@@ -317,6 +346,21 @@ impl ScrubAuditAdapter {
     #[must_use]
     pub fn inner(&self) -> &Arc<ToolAuditLog> {
         &self.log
+    }
+}
+
+/// `correlation` with each id cut to [`MAX_CORRELATION_ID_BYTES`], so an
+/// oversized id cannot bloat the audit record.
+fn bounded_correlation(correlation: &CorrelationEnvelope) -> CorrelationEnvelope {
+    fn bound(id: &str) -> String {
+        truncate_str(id, MAX_CORRELATION_ID_BYTES).to_string()
+    }
+    CorrelationEnvelope {
+        run_id: bound(&correlation.run_id),
+        task_id: bound(&correlation.task_id),
+        attempt_id: bound(&correlation.attempt_id),
+        turn_id: bound(&correlation.turn_id),
+        agent_id: bound(&correlation.agent_id),
     }
 }
 
@@ -667,7 +711,17 @@ mod tests {
             1_700_000_000_000,
         );
 
-        adapter.record_admit(&call).await.expect("scrub admit");
+        let correlation = CorrelationEnvelope {
+            run_id: "run-1".to_string(),
+            task_id: "T01".to_string(),
+            attempt_id: "run-1:p:T01:1".to_string(),
+            turn_id: String::new(),
+            agent_id: "a".repeat(1_000),
+        };
+        adapter
+            .record_admit(&call, &correlation)
+            .await
+            .expect("scrub admit");
 
         let lines = read_lines(log.path()).await;
         assert_eq!(lines.len(), 1);
@@ -675,6 +729,14 @@ mod tests {
         assert_eq!(json["kind"], "admit");
         assert_eq!(json["call_id"], "s1");
         assert_eq!(json["call_name"], "bash");
+        // The line names its run, task and attempt, with each id bounded.
+        assert_eq!(json["correlation"]["run_id"], "run-1");
+        assert_eq!(json["correlation"]["task_id"], "T01");
+        assert_eq!(json["correlation"]["attempt_id"], "run-1:p:T01:1");
+        assert_eq!(
+            json["correlation"]["agent_id"].as_str().map(str::len),
+            Some(MAX_CORRELATION_ID_BYTES)
+        );
         // The Bearer token must be redacted.
         let args = json["arguments_scrubbed"]
             .as_str()
@@ -702,7 +764,7 @@ mod tests {
         let result = ToolResult::text("config: my-api-key-12345678901234567890\nhost: localhost");
 
         adapter
-            .record_result(&call, &result)
+            .record_result(&call, &result, &CorrelationEnvelope::empty())
             .await
             .expect("scrub result");
 
@@ -711,6 +773,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
         assert_eq!(json["kind"], "result");
         assert!(json["ok"].as_bool().unwrap());
+        // An uncorrelated line leaves the field out.
+        assert!(json.get("correlation").is_none(), "{json}");
         let content = json["content_scrubbed"].as_str().expect("content_scrubbed");
         assert!(
             !content.contains("my-api-key-12345678901234567890"),
@@ -740,7 +804,10 @@ mod tests {
             1_700_000_000_000,
         );
 
-        adapter.record_admit(&call).await.expect("admit big");
+        adapter
+            .record_admit(&call, &CorrelationEnvelope::empty())
+            .await
+            .expect("admit big");
 
         let lines = read_lines(log.path()).await;
         let json: serde_json::Value = serde_json::from_str(&lines[0]).expect("parse JSON");
@@ -787,7 +854,7 @@ mod tests {
         let result = ToolResult::err(roko_core::tool::ToolError::Cancelled);
 
         adapter
-            .record_result(&call, &result)
+            .record_result(&call, &result, &CorrelationEnvelope::empty())
             .await
             .expect("err result");
 
@@ -809,6 +876,7 @@ mod tests {
             call_id: "c1".to_string(),
             call_name: "bash".to_string(),
             arguments_scrubbed: r#"{"x":1}"#.to_string(),
+            correlation: CorrelationEnvelope::empty(),
         };
         let json = serde_json::to_string(&line).expect("serialize");
         let decoded: AuditLine = serde_json::from_str(&json).expect("deserialize");

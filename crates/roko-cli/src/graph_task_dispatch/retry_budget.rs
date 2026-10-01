@@ -3,7 +3,8 @@
 //! The Graph engine retries a failed task up to its `max_retries`. A task that
 //! authors `max_retries` in `tasks.toml` keeps exactly that: the thresholds
 //! never lower an author's budget, and never raise one either (fixtures and
-//! tests author `max_retries = 0` to fail fast). For the other tasks, each
+//! tests author `max_retries = 0` to fail fast). The log only says when the
+//! thresholds suggest another budget for it (P3-15). For the other tasks, each
 //! verify step that maps to a canonical gate rung (compile, clippy, test)
 //! suggests a budget from its rung's pass-rate EMA in
 //! `.roko/learn/gate-thresholds.json`, which Graph verify runs keep current: a
@@ -20,6 +21,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use roko_core::config::GatesConfig;
+use roko_core::defaults::DEFAULT_GATE_RETRY_MIN_OBSERVATIONS;
 use roko_gate::AdaptiveThresholds;
 use roko_gate::rung_for_gate_name;
 
@@ -160,7 +162,8 @@ impl TaskRetryBudgets {
         }
     }
 
-    /// `task`'s retry budget, logging where an adaptive one came from.
+    /// `task`'s retry budget, logging where an adaptive one came from, and
+    /// what the thresholds would suggest instead of an authored one.
     pub(crate) fn max_retries(&self, plan_id: &str, task: &TaskDef) -> u32 {
         let budget = self.for_task(task);
         if let RetryBudgetSource::Adaptive {
@@ -188,7 +191,45 @@ impl TaskRetryBudgets {
                 "retry budget raised so the task can climb the model ladder"
             );
         }
+        if let Some(advice) = self.authored_budget_advice(task)
+            && let RetryBudgetSource::Adaptive {
+                rung,
+                ema_pass_rate,
+                observations,
+            } = advice.source
+        {
+            tracing::info!(
+                plan_id,
+                task_id = %task.id,
+                max_retries = budget.max_retries,
+                suggested_max_retries = advice.max_retries,
+                rung,
+                ema_pass_rate,
+                observations,
+                "P3-15: the authored retry budget differs from what the gate thresholds suggest"
+            );
+        }
         budget.max_retries
+    }
+
+    /// The budget the thresholds would give a task that authors another one
+    /// (P3-15). The authored budget is kept either way. A rung with under
+    /// five observations suggests only the midpoint of the range, so it gives
+    /// no advice.
+    fn authored_budget_advice(&self, task: &TaskDef) -> Option<RetryBudget> {
+        if !self.authored.contains(&task.id) {
+            return None;
+        }
+        let suggested = self.suggested(task);
+        match suggested.source {
+            RetryBudgetSource::Adaptive { observations, .. }
+                if observations >= DEFAULT_GATE_RETRY_MIN_OBSERVATIONS
+                    && suggested.max_retries != task.max_retries =>
+            {
+                Some(suggested)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -287,6 +328,32 @@ command = "true"
         let budget = budgets(dir.path(), &GatesConfig::default()).for_task(&task("AUTHORED"));
         assert_eq!(budget.max_retries, 0);
         assert_eq!(budget.source, RetryBudgetSource::Authored);
+    }
+
+    /// P3-15: an authored budget is kept, and the thresholds' advice names
+    /// the budget they would set once its rung has enough observations.
+    #[test]
+    fn an_authored_budget_gets_advice_only_from_a_warm_rung() {
+        let dir = tempdir().expect("tempdir");
+        let budgets = budgets(dir.path(), &GatesConfig::default());
+        let authored = task("AUTHORED");
+        assert_eq!(budgets.for_task(&authored).max_retries, 0);
+        let advice = budgets
+            .authored_budget_advice(&authored)
+            .expect("advice from the warm test rung");
+        assert!(
+            matches!(advice.source, RetryBudgetSource::Adaptive { rung: 2, .. }),
+            "{advice:?}"
+        );
+        assert!(advice.max_retries > 0, "{advice:?}");
+        assert_eq!(budgets.authored_budget_advice(&task("TEST")), None);
+
+        let cold = TaskRetryBudgets::load(
+            Some(&dir.path().join("missing.json")),
+            &GatesConfig::default(),
+            &dir.path().join("tasks.toml"),
+        );
+        assert_eq!(cold.authored_budget_advice(&authored), None);
     }
 
     #[test]

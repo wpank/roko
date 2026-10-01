@@ -51,9 +51,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Budget reservation ───────────────────────────────────────────
+        self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
-            .reserve(&spec.plan_id, self.budget_policy)?;
+            .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
+            .await?;
 
         // ── Attempt identity ─────────────────────────────────────────────
         let attempt_id = format!(
@@ -179,6 +181,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
+            concurrent_plans: self.concurrent_plans(&spec.plan_id),
         };
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
@@ -231,28 +234,31 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &attempt_key,
+            stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
+        // Tracked even with both stall thresholds off (bug-3a3b0f).
+        let progress = stall_watch
+            .as_ref()
+            .map_or_else(AttemptProgress::default, StallWatch::progress);
         let supervised = self.supervise_attempt(&watched);
         request.live_output = self.live_output_tap(
             &watched,
-            stall_watch.as_ref().map(StallWatch::progress),
+            Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
         );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let progress = stall_watch.as_ref().map(StallWatch::progress);
-        if let Some(progress) = &progress {
-            progress.call_started(
-                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
-                    .resolve(&request.model_key),
-                Default::default(),
-            );
-        }
+        progress.call_started(
+            crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                .resolve(&request.model_key),
+            Default::default(),
+        );
         let watched_result = self
             .run_watched(
                 self.factory.run_shared_agent_bridge(request),
+                &progress,
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -261,18 +267,17 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         attempt.dispatch_ended();
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
-            // The stall watchdog or the conductor cancelled the provider
-            // call: the attempt ends timed out or cancelled, and the engine
-            // retries it.
+            // The stall watchdog, the conductor or a stopping plan run
+            // cancelled the provider call: the attempt ends timed out or
+            // cancelled, and the engine retries it unless its run is
+            // stopping.
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement =
+                    watchdog::failed_call_settlement(Some(&interrupted), &error, Some(&progress));
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
-                let streamed = match progress
-                    .as_ref()
-                    .and_then(|progress| progress.interrupted_call())
-                {
+                let streamed = match progress.interrupted_call() {
                     Some(call) => {
                         let wall_duration = started_at.elapsed();
                         let (dispatch, _) = call.into_dispatch(
@@ -280,8 +285,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.task_spend
-                            .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -411,8 +415,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.task_spend
-                    .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -526,7 +529,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             }
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
-                // attempt's verdict is recorded.
+                // attempt's verdict is recorded. A DispatchV2Error is a setup
+                // failure before any call, never a cancellation.
                 let settlement = Settlement::provider_failure(&error.to_string(), false);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;

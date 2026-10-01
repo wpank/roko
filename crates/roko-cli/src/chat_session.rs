@@ -37,7 +37,7 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -81,12 +81,10 @@ impl ChatFeedbackRuntime {
             .join("learn")
             .join("cascade-router.json");
         let cascade_model_slugs = capture_runtime_model_slugs(config, model_slug);
-        let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-            Arc::new(CascadeRouter::load_or_new(
-                &cascade_path,
-                cascade_model_slugs,
-            ))
-        });
+        // The snapshot first takes what a crashed writer journaled and never
+        // saved (bug-8a78e1).
+        let cascade_router = (!cascade_model_slugs.is_empty())
+            .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
         // Observations are journaled in the learning WAL until `flush` saves
         // them (find-0dc1d5).
         let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
@@ -277,6 +275,41 @@ pub fn accumulate_tool_event(
     }
 }
 
+/// Start a new paragraph in a text delta that follows a tool event.
+///
+/// Claude's stream-json output gives each assistant message's text as one
+/// `MessageDelta` with no message boundary, and tool calls are what separate
+/// the messages of a turn. Without a separator, the text written before and
+/// after a tool call runs together ("…the repository.No `Cargo.toml`…").
+/// `streamed` is the turn's text so far, and `after_tool` records a tool
+/// event since the last text delta. The streaming turn rewrites each event
+/// before it keeps or forwards it, so the reply, the terminal and the live
+/// view show the same text.
+fn separate_assistant_messages(
+    event: &mut AgentRuntimeEvent,
+    streamed: &str,
+    after_tool: &mut bool,
+) {
+    match event {
+        AgentRuntimeEvent::ToolCall { .. } | AgentRuntimeEvent::ToolOutput { .. } => {
+            *after_tool = true;
+        }
+        AgentRuntimeEvent::MessageDelta { text } if !text.is_empty() => {
+            if std::mem::take(after_tool) && !streamed.is_empty() {
+                let separator = if streamed.ends_with("\n\n") {
+                    ""
+                } else if streamed.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+                text.insert_str(0, separator);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn write_stdout_bytes(bytes: &[u8]) {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -408,6 +441,9 @@ pub struct ChatAgentSession {
     pub provider_base_url: Option<String>,
     /// Env var name for the provider's API key (e.g. `ANTHROPIC_API_KEY`).
     pub provider_api_key_env: Option<String>,
+    /// `[agent] env_passthrough`: variables the chat's Claude CLI keeps
+    /// although roko loaded them from a `.env` file (`AWS_*`).
+    pub env_passthrough: Vec<String>,
     /// Run Claude with `--dangerously-skip-permissions`. Mirrors the
     /// workspace's `runner.dangerously_skip_permissions`, which is off by
     /// default, so skipping Claude's permission checks is an explicit opt-in.
@@ -470,16 +506,19 @@ impl ChatAgentSession {
             timeout,
             provider_base_url,
             provider_api_key_env,
+            env_passthrough: config.agent.env_passthrough.clone(),
             dangerously_skip_permissions: config.runner.dangerously_skip_permissions,
         })
     }
 
     /// Which inherited credentials the chat's Claude CLI loses: those of
-    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env` and
-    /// the variables the MCP config refers to.
+    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env`,
+    /// `[agent] env_passthrough` and the variables the MCP config refers to,
+    /// as for the provider CLIs of plan runs.
     fn credential_scrub(&self) -> CredentialScrub {
         CredentialScrub::for_kind(ProviderKind::ClaudeCli)
             .keep_all(self.provider_api_key_env.iter().cloned())
+            .keep_all(self.env_passthrough.iter().cloned())
             .keep_all(
                 self.mcp_config
                     .as_deref()
@@ -717,6 +756,7 @@ impl ChatAgentSession {
             tools: Vec::new(),
             generation_settings: None,
             mcp_config: None,
+            thinking: None,
         }
     }
 
@@ -1216,6 +1256,7 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            env_passthrough: self.env_passthrough.clone(),
             dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
@@ -1393,6 +1434,7 @@ async fn send_turn_streaming_with_program(
 
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut accumulated_text = String::new();
+    let mut after_tool = false;
     let mut tool_calls = Vec::new();
     let mut pending_ids = Vec::new();
     let mut final_session_id: Option<String> = None;
@@ -1427,7 +1469,8 @@ async fn send_turn_streaming_with_program(
                     continue;
                 }
 
-                for event in parse_stream_line(&line) {
+                for mut event in parse_stream_line(&line) {
+                    separate_assistant_messages(&mut event, &accumulated_text, &mut after_tool);
                     accumulate_tool_event(&mut tool_calls, &mut pending_ids, &event);
 
                     match &event {
@@ -2056,6 +2099,28 @@ mod tests {
         }
     }
 
+    /// bug-8a78e1: chat routes with what a crashed writer journaled and
+    /// never saved, replayed into the snapshot before chat loads it.
+    #[test]
+    fn chat_routes_with_what_a_crashed_writer_journaled() {
+        let workdir = tempdir().unwrap();
+        let learn_dir = workdir.path().join(".roko").join("learn");
+        let model = "chat-journal-model";
+        {
+            let router = CascadeRouter::new(vec![model.to_string()]);
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, model, "implementer", true, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let feedback = ChatFeedbackRuntime::new(workdir.path(), &RokoConfig::default(), model);
+        let router = feedback.cascade_router.as_ref().expect("chat's router");
+        assert_eq!(
+            router.confidence_snapshot().get(model).copied(),
+            Some((1, 1))
+        );
+    }
+
     /// bug-a9a251: a chat session takes the workspace's MCP config or roko's
     /// own, never the user's Claude one. HOME is process-wide, so the check
     /// runs in a child test whose HOME holds that config.
@@ -2116,6 +2181,7 @@ mod tests {
             timeout: Some(Duration::from_secs(30)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
     }
@@ -2137,8 +2203,31 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             provider_base_url: None,
             provider_api_key_env: None,
+            env_passthrough: Vec::new(),
             dangerously_skip_permissions: false,
         }
+    }
+
+    /// bug-76dc76: `[agent] env_passthrough` keeps a `.env`-loaded variable
+    /// in the chat's Claude CLI, as in the provider CLIs of plan runs.
+    #[test]
+    fn chat_credential_scrub_keeps_agent_env_passthrough() {
+        let mut core = RokoConfig::default();
+        core.agent.env_passthrough = vec!["AWS_*".to_string()];
+        let config = Config::from_roko_config(&core).expect("convert config");
+        assert_eq!(config.agent.env_passthrough, ["AWS_*"]);
+
+        // The process-wide startup record is write-once, so build one here.
+        let mut dotenv = roko_core::child_env::DotenvNames::new();
+        dotenv.insert("AWS_PROFILE", true);
+        dotenv.insert("OPENAI_API_KEY", true);
+
+        let mut session = test_session();
+        assert!(session.credential_scrub().strips("AWS_PROFILE", &dotenv));
+        session.env_passthrough = config.agent.env_passthrough;
+        let scrub = session.credential_scrub();
+        assert!(!scrub.strips("AWS_PROFILE", &dotenv));
+        assert!(scrub.strips("OPENAI_API_KEY", &dotenv));
     }
 
     fn write_fake_claude_script(tmp: &tempfile::TempDir, body: &str) -> PathBuf {
@@ -2479,6 +2568,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"chat feedback ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
         std::fs::write(
@@ -2653,6 +2743,47 @@ printf '%s\n' '{"type":"result","session_id":"","model":"claude-sonnet-4-6","tot
         assert_eq!(result.input_tokens, 9);
         assert_eq!(result.output_tokens, 10);
         assert_eq!(result.text, "partial");
+    }
+
+    /// bug-6ae24e: the text of assistant messages split by tool calls does
+    /// not run together, in the reply or in the forwarded deltas.
+    #[tokio::test]
+    async fn streaming_turn_separates_assistant_messages() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-split","model":"claude-sonnet-4-6","tools":[]}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Looking at the repository."},{"type":"tool_use","id":"tool-1","name":"Glob","input":{"pattern":"Cargo.toml"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Glob","tool_use_id":"tool-1","content":"no matches"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"No Cargo.toml exists yet.\n"},{"type":"tool_use","id":"tool-2","name":"Read","input":{"path":"README.md"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_name":"Read","tool_use_id":"tool-2","content":"readme"}'
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"Done."}]}}'
+printf '%s\n' '{"type":"result","session_id":"sess-split","model":"claude-sonnet-4-6","total_cost_usd":0.01,"is_error":false}'
+"#,
+        );
+
+        let mut session = streaming_test_session(tmp.path().to_path_buf());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let result = send_turn_streaming_with_program(&mut session, "hi", tx, &script)
+            .await
+            .expect("streaming turn");
+
+        let mut streamed = String::new();
+        while let Some(event) = rx.recv().await {
+            if let AgentRuntimeEvent::MessageDelta { text } = event {
+                streamed.push_str(&text);
+            }
+        }
+
+        assert_eq!(
+            result.text,
+            "Looking at the repository.\n\nNo Cargo.toml exists yet.\n\nDone."
+        );
+        assert_eq!(streamed, result.text);
+        assert_eq!(result.tool_calls.len(), 2);
     }
 
     #[tokio::test]

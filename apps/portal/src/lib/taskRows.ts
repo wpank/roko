@@ -6,6 +6,7 @@
  */
 
 import type { WirePlanTask } from '@/api/contracts';
+import { TASK_OUTCOME_BLOCKED } from '@/api/contracts';
 import type { RunState, TaskStatus, CheckRun } from '@/lib/runState';
 import { taskKey } from '@/lib/runState';
 import type { GlyphState } from '@/lib/glyphs';
@@ -38,6 +39,11 @@ export interface TaskRowModel {
    * unverified, skipped, or marked done.
    */
   waitingOn: string[];
+  /**
+   * For a blocked task (shown as skipped): what blocked it, from blockedLabel, such as "blocked by T1: T1 failed".
+   * null for every other task.
+   */
+  blocked: string | null;
   files: string[];
   description: string | null;
   verify: { phase: string; command: string }[];
@@ -47,12 +53,14 @@ export interface TaskRowModel {
 
 /**
  * Statuses that are "done" for waitingOn and focusTaskId purposes:
- * passed, already_satisfied, accepted_with_failures, unverified, skipped, marked_done.
+ * passed, passed_with_preexisting_failures, already_satisfied, accepted_with_failures,
+ * unverified, skipped, marked_done.
  *
  * Note: 'cancelled' is NOT included — a cancelled dep still blocks.
  */
 const FINISHED_STATUSES: ReadonlySet<TaskRowModel['status']> = new Set([
   'passed',
+  'passed_with_preexisting_failures',
   'already_satisfied',
   'accepted_with_failures',
   'unverified',
@@ -154,6 +162,12 @@ export function buildTaskRows(
           ? wireTask.verify.map((v) => ({ phase: v.phase, command: v.command }))
           : wireTask.verify_phases.map((phase) => ({ phase, command: '' }));
 
+      // ── blocked: a blocked task looks merely skipped, so say what blocked it ──
+      const blocked =
+        liveTask?.phase === TASK_OUTCOME_BLOCKED
+          ? blockedLabel(liveTask.blockedBy, liveTask.blockedReason)
+          : null;
+
       rows.push({
         id,
         title: wireTask.title,
@@ -168,6 +182,7 @@ export function buildTaskRows(
         checks,
         dependsOn: wireTask.depends_on,
         waitingOn: [], // filled in below after all rows are built
+        blocked,
         files: wireTask.files,
         description: wireTask.description ?? null,
         verify,
@@ -191,6 +206,18 @@ export function buildTaskRows(
   }
 
   return { rows, waves: waveResult };
+}
+
+// ── blockedLabel ───────────────────────────────────────────────────────────────
+
+/**
+ * What a blocked task's row says: "blocked by T1", "blocked by T1: <reason>", "blocked: <reason>", or just
+ * "blocked" when the event named neither.
+ */
+export function blockedLabel(by: string | null | undefined, reason: string | null | undefined): string {
+  const why = reason?.trim();
+  if (by) return why ? `blocked by ${by}: ${why}` : `blocked by ${by}`;
+  return why ? `blocked: ${why}` : 'blocked';
 }
 
 // ── focusTaskId ────────────────────────────────────────────────────────────────

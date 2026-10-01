@@ -63,7 +63,6 @@ pub mod production_safety_chain;
 /// control, screening, finalization, and terminal audit state.
 pub mod result_cache;
 pub mod timeout;
-pub mod tool_selector;
 pub mod truncate;
 pub mod validate;
 
@@ -276,8 +275,6 @@ pub struct EffectiveCatalogSnapshot {
     pub execution_owner: String,
     /// The entity (role, profile, contract) that owns policy authority.
     pub policy_owner: String,
-    /// Whether a profile-based tool selector was active.
-    pub selector_active: bool,
     /// Whether an extension hook chain was active.
     pub hook_chain_active: bool,
     /// Whether the production (IFC/corrigibility) hook chain was active.
@@ -290,9 +287,32 @@ impl Default for EffectiveCatalogSnapshot {
             tool_count: 0,
             execution_owner: "unknown".to_string(),
             policy_owner: "unknown".to_string(),
-            selector_active: false,
             hook_chain_active: false,
             production_hooks_active: false,
+        }
+    }
+}
+
+/// What a dispatcher's per-call traces and metrics are keyed on besides the
+/// tool: the model, role and tool format of the agent whose loop it serves
+/// (find-f489db). A provider's tool loop sets it. The default names an
+/// unknown model and format, and the implementer, roko's default task role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallIdentity {
+    /// Slug of the agent's model.
+    pub model: String,
+    /// Role of the agent.
+    pub role: roko_core::AgentRole,
+    /// Tool format of the agent's translator.
+    pub format: roko_core::tool::ToolFormat,
+}
+
+impl Default for ToolCallIdentity {
+    fn default() -> Self {
+        Self {
+            model: "unknown".to_string(),
+            role: roko_core::AgentRole::Implementer,
+            format: roko_core::tool::ToolFormat::Custom("unknown".to_string()),
         }
     }
 }
@@ -317,11 +337,6 @@ pub struct ToolDispatcher {
     /// Kept separate from the extension hook chain so callers cannot replace
     /// production safety hooks by attaching a custom chain.
     production_safety_chain: Option<production_safety_chain::ProductionSafetyChain>,
-    /// Optional profile-based tool selector (TOOL-03).
-    ///
-    /// When set, tool calls are filtered against the selector before dispatch.
-    /// Tools not allowed by the selector are rejected with `PermissionDenied`.
-    tool_selector: Option<tool_selector::ToolSelector>,
     /// Optional callback invoked when the safety layer denies a tool call.
     ///
     /// See [`SafetyDenialCallback`] for the argument signature. Wire this up
@@ -334,6 +349,8 @@ pub struct ToolDispatcher {
     /// [`roko_fs::tool_audit::ScrubAuditAdapter`]. The adapter scrubs
     /// secrets before persistence so raw arguments never land on disk.
     file_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// What per-call traces and metrics are keyed on.
+    call_identity: ToolCallIdentity,
 }
 
 impl ToolDispatcher {
@@ -355,9 +372,9 @@ impl ToolDispatcher {
             safety,
             hook_chain: None,
             production_safety_chain: Some(chain),
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
+            call_identity: ToolCallIdentity::default(),
         }
     }
 
@@ -380,9 +397,9 @@ impl ToolDispatcher {
             safety: SafetyLayer::permissive(),
             hook_chain: None,
             production_safety_chain: None,
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
+            call_identity: ToolCallIdentity::default(),
         }
     }
 
@@ -427,25 +444,9 @@ impl ToolDispatcher {
         self
     }
 
-    /// Attach a profile-based tool selector (TOOL-03).
-    ///
-    /// When attached, every dispatched tool call is checked against the
-    /// selector. Tools not allowed are rejected with `PermissionDenied`.
-    #[must_use]
-    pub fn with_tool_selector(mut self, selector: tool_selector::ToolSelector) -> Self {
-        self.tool_selector = Some(selector);
-        self
-    }
-
-    /// Returns the attached tool selector, if any.
-    #[must_use]
-    pub const fn tool_selector(&self) -> Option<&tool_selector::ToolSelector> {
-        self.tool_selector.as_ref()
-    }
-
     /// Snapshot the effective catalog state for audit/replay provenance.
     ///
-    /// The snapshot captures the tool count, whether selectors/hooks are
+    /// The snapshot captures the tool count, whether hook chains are
     /// active, and the execution/policy owner identifiers. Callers embed
     /// this in dispatch results so that offline replay can reconstruct
     /// exactly what authorization state applied.
@@ -459,7 +460,6 @@ impl ToolDispatcher {
             tool_count: self.registry.all().len(),
             execution_owner: execution_owner.into(),
             policy_owner: policy_owner.into(),
-            selector_active: self.tool_selector.is_some(),
             hook_chain_active: self.hook_chain.is_some(),
             production_hooks_active: self.production_safety_chain.is_some(),
         }
@@ -486,6 +486,14 @@ impl ToolDispatcher {
     #[must_use]
     pub fn with_file_audit(mut self, adapter: Arc<roko_fs::tool_audit::ScrubAuditAdapter>) -> Self {
         self.file_audit = Some(adapter);
+        self
+    }
+
+    /// Key this dispatcher's per-call traces and metrics on `identity`: the
+    /// model, role and tool format of the agent whose loop it serves.
+    #[must_use]
+    pub fn with_call_identity(mut self, identity: ToolCallIdentity) -> Self {
+        self.call_identity = identity;
         self
     }
 
@@ -527,8 +535,9 @@ impl ToolDispatcher {
         &self.registry
     }
 
-    /// Dispatch a single tool call end-to-end.
+    /// Dispatch a single tool call end-to-end, as a turn of its own.
     pub async fn dispatch(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
+        crate::safety::contract::begin_tool_turn(ctx, std::slice::from_ref(&call));
         self.dispatch_with_result_limit(call, ctx, self.max_result_bytes)
             .await
     }
@@ -547,34 +556,27 @@ impl ToolDispatcher {
                 "invalid-tool-identity",
                 serde_json::json!({}),
             );
-            self.emit_terminal_audit(ctx, &placeholder, &result, timeout_ms);
+            self.emit_terminal_audit(ctx, &placeholder, &result, timeout_ms, 0);
             return result;
         }
         // Persistent file audit: record the admitted call before execution.
         if let Some(fa) = &self.file_audit
-            && let Err(e) = fa.record_admit(&call).await
+            && let Err(e) = fa.record_admit(&call, &ctx.correlation).await
         {
             tracing::warn!(err = %e, tool = %call.name, "file audit admit write failed");
         }
+        let started = std::time::Instant::now();
         let result = self
             .dispatch_unfinalized(&mut call, ctx, result_limit)
             .await;
         let result = self.finalize_result_with_limit(result, result_limit);
-        self.emit_terminal_audit(ctx, &call, &result, timeout_ms);
-        if result.is_ok() {
-            // Per-run tool history: lets `RequireToolBeforeEdit` see that
-            // `read_file` succeeded earlier in this agent run.
-            ctx.record_external_action(roko_core::tool::ExternalAction {
-                service: crate::safety::contract::TOOL_HISTORY_SERVICE.to_string(),
-                action_type: call.name.clone(),
-                resource_id: String::new(),
-                metadata: serde_json::json!({ "tool": call.name }),
-                performed_at: chrono::Utc::now(),
-            });
-        }
+        let elapsed_ms = duration_to_ms(started.elapsed());
+        self.emit_terminal_audit(ctx, &call, &result, timeout_ms, elapsed_ms);
+        // Per-run tool history, for the contract's count and history rules.
+        crate::safety::contract::record_tool_result(ctx, &call, result.is_ok());
         // Persistent file audit: record the terminal result after execution.
         if let Some(fa) = &self.file_audit
-            && let Err(e) = fa.record_result(&call, &result).await
+            && let Err(e) = fa.record_result(&call, &result, &ctx.correlation).await
         {
             tracing::warn!(err = %e, tool = %call.name, "file audit result write failed");
         }
@@ -670,27 +672,6 @@ impl ToolDispatcher {
             (timeout, "context")
         };
         let timeout_ms = duration_to_ms(timeout);
-        // 2b. Profile-based tool selector check (TOOL-03).
-        if let Some(ref selector) = self.tool_selector
-            && !selector.is_allowed(&call.name)
-        {
-            let err = ToolError::PermissionDenied(format!(
-                "tool `{}` not allowed by agent profile",
-                call.name
-            ));
-            self.emit_audit(
-                ctx,
-                call,
-                "tool_selector",
-                "denied",
-                &json!({
-                    "tool": call.name,
-                    "error": self.sanitize_audit_label(&err.to_string()),
-                    "error_kind": tool_error_kind(&err),
-                }),
-            );
-            return ToolResult::err(err);
-        }
         // 3. Apply task-level tool filters before capability checks.
         if let Some(reason) = tool_filter_block_reason(
             &call.name,
@@ -945,10 +926,12 @@ impl ToolDispatcher {
                 ))),
                 self.max_result_bytes.min(MAX_TOOL_BATCH_RESULT_BYTES),
             );
-            self.emit_terminal_audit(ctx, &synthetic, &result, timeout_ms);
+            self.emit_terminal_audit(ctx, &synthetic, &result, timeout_ms, 0);
             return vec![(synthetic, result)];
         }
 
+        // One batch is one model turn.
+        crate::safety::contract::begin_tool_turn(ctx, &calls);
         let (parallel, serial) = partition_by_concurrency(calls, self.registry.as_ref());
 
         // Parallel bucket: bounded concurrency to avoid spawning hundreds
@@ -1041,12 +1024,16 @@ impl ToolDispatcher {
         ctx.audit_sink.emit(signal);
     }
 
+    /// The one terminal observation of a call: an audit signal, a closed
+    /// trace and a metrics sample. `elapsed_ms` is the wall-clock time the
+    /// call took, 0 for a call rejected before it ran.
     fn emit_terminal_audit(
         &self,
         ctx: &ToolContext,
         call: &ToolCall,
         result: &ToolResult,
         timeout_ms: u64,
+        elapsed_ms: u64,
     ) {
         let execution_owner = &ctx.correlation.agent_id;
         let (phase_status, details) = match result {
@@ -1069,6 +1056,7 @@ impl ToolDispatcher {
                         "artifacts": artifacts.len(),
                         "is_structured": is_structured,
                         "timeout_ms": timeout_ms,
+                        "elapsed_ms": elapsed_ms,
                         "correlation": &ctx.correlation,
                         "execution_owner": execution_owner,
                     }),
@@ -1080,6 +1068,7 @@ impl ToolDispatcher {
                     "error": self.sanitize_audit_label(&err.to_string()),
                     "error_kind": tool_error_kind(err),
                     "timeout_ms": timeout_ms,
+                    "elapsed_ms": elapsed_ms,
                     "correlation": &ctx.correlation,
                     "execution_owner": execution_owner,
                 }),
@@ -1087,9 +1076,11 @@ impl ToolDispatcher {
         };
         // T030: Single emission point that fans out to audit, trace, and metrics sinks.
         self.emit_audit(ctx, call, "completion", phase_status, &details);
-        // Fan out the canonical terminal observation to trace and metrics sinks.
-        // The trace sink receives a HandlerFinished event; the metrics sink
-        // receives a tool-level completion observation keyed by tool name.
+        // Fan out the canonical terminal observation to the trace and metrics
+        // sinks (find-f489db). The trace sink receives the call's trace,
+        // closed with a HandlerFinished event and the outcome; the metrics
+        // sink receives a one-call sample. Both are keyed on the call's
+        // identity: its model, role and tool format.
         let (content_bytes, artifact_count) = match result {
             ToolResult::Ok {
                 content, artifacts, ..
@@ -1105,12 +1096,14 @@ impl ToolDispatcher {
             }
             ToolResult::Err(_) => (0, 0),
         };
-        let trace_event = roko_core::tool::ToolTraceEvent::HandlerFinished {
-            exit_ms: timeout_ms,
-            bytes_out: content_bytes,
-            artifacts_count: artifact_count,
-            at_ms: chrono::Utc::now().timestamp_millis(),
+        let failure = match result {
+            ToolResult::Ok { .. } => None,
+            ToolResult::Err(err) => Some(roko_core::tool::classify_tool_error(err)),
         };
+        let identity = &self.call_identity;
+        let ended_at_ms = chrono::Utc::now().timestamp_millis();
+        let started_at_ms =
+            ended_at_ms.saturating_sub(i64::try_from(elapsed_ms).unwrap_or(i64::MAX));
         // Generate a trace ID from timestamp + hash of call details.
         let trace_bytes = {
             let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64;
@@ -1127,17 +1120,34 @@ impl ToolDispatcher {
             b[8..16].copy_from_slice(&h.to_le_bytes());
             b
         };
-        ctx.trace_sink.append(
+        // Finishing the trace closes it: a sink keeps a writer per open trace.
+        let mut trace = roko_core::tool::TraceBuilder::start(
             roko_core::tool::TraceId::from_bytes(trace_bytes),
-            trace_event,
+            call.id.clone(),
+            identity.role,
+            identity.model.clone(),
+            identity.format.clone(),
+            started_at_ms,
+            Arc::clone(&ctx.trace_sink),
         );
+        trace.event(roko_core::tool::ToolTraceEvent::HandlerFinished {
+            exit_ms: elapsed_ms,
+            bytes_out: content_bytes,
+            artifacts_count: artifact_count,
+            at_ms: ended_at_ms,
+        });
+        trace.set_outcome(match failure {
+            None => roko_core::tool::ToolOutcome::success(elapsed_ms, 0.0),
+            Some(kind) => roko_core::tool::ToolOutcome::failure(kind, elapsed_ms, 0.0),
+        });
+        trace.finish(ended_at_ms);
         let metrics_key = roko_core::tool::MetricsKey::new(
             &call.name,
-            &ctx.correlation.agent_id,
-            roko_core::AgentRole::Implementer,
-            roko_core::tool::ToolFormat::OpenAiJson,
+            &identity.model,
+            identity.role,
+            identity.format.clone(),
         );
-        let metrics = roko_core::tool::ToolMetrics::empty();
+        let metrics = call_metrics(self.registry.get(&call.name).is_some(), failure);
         ctx.metrics_sink.record(&metrics_key, &metrics);
     }
 
@@ -1285,6 +1295,33 @@ fn bounded_utf8_prefix(value: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     value[..end].to_string()
+}
+
+/// A one-call metrics sample (find-f489db): the call picked a tool the
+/// registry knows, passed its schema check unless it failed one, and
+/// completed unless it failed. A hallucinated or missing parameter is not
+/// told apart from another schema failure, so neither rate counts one.
+fn call_metrics(
+    known_tool: bool,
+    failure: Option<roko_core::tool::FailureKind>,
+) -> roko_core::tool::ToolMetrics {
+    let schema_ok = known_tool && failure != Some(roko_core::tool::FailureKind::SchemaInvalid);
+    let score = |hit: bool| if hit { 1.0 } else { 0.0 };
+    let mut metrics = roko_core::tool::ToolMetrics::empty();
+    metrics.observe(
+        false,
+        false,
+        schema_ok,
+        schema_ok,
+        known_tool,
+        roko_core::tool::galileo_tsq(
+            score(known_tool),
+            score(schema_ok),
+            score(schema_ok),
+            score(failure.is_none()),
+        ),
+    );
+    metrics
 }
 
 const fn tool_error_kind(err: &ToolError) -> &'static str {
@@ -3393,5 +3430,107 @@ mod tests {
             }
             other => panic!("expected Other error for truncated args, got {other:?}"),
         }
+    }
+
+    /// find-f489db: a call's terminal observation carries the wall-clock time
+    /// the call took, not its timeout. It closes the call's trace with the
+    /// outcome and records a one-call metrics sample, both keyed on the
+    /// dispatcher's identity.
+    #[tokio::test]
+    async fn terminal_observation_records_elapsed_time_and_metrics() {
+        #[derive(Default)]
+        struct Traces {
+            events: Mutex<Vec<roko_core::tool::ToolTraceEvent>>,
+            finished: Mutex<Vec<roko_core::tool::ToolTrace>>,
+        }
+        impl roko_core::tool::TraceSink for Traces {
+            fn append(
+                &self,
+                _trace_id: roko_core::tool::TraceId,
+                event: roko_core::tool::ToolTraceEvent,
+            ) {
+                self.events.lock().expect("events").push(event);
+            }
+            fn finish(&self, trace: roko_core::tool::ToolTrace) {
+                self.finished.lock().expect("finished").push(trace);
+            }
+        }
+        #[derive(Default)]
+        struct Metrics(Mutex<Vec<(roko_core::tool::MetricsKey, roko_core::tool::ToolMetrics)>>);
+        impl roko_core::tool::MetricsSink for Metrics {
+            fn record(
+                &self,
+                key: &roko_core::tool::MetricsKey,
+                metrics: &roko_core::tool::ToolMetrics,
+            ) {
+                self.0
+                    .lock()
+                    .expect("metrics")
+                    .push((key.clone(), *metrics));
+            }
+        }
+
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+            "sleep",
+            ToolPermission::read_only(),
+            ToolConcurrency::Serial,
+        )]));
+        let resolver = resolver_from([(
+            "sleep",
+            Arc::new(SleepHandler { ms: 30 }) as Arc<dyn ToolHandler>,
+        )]);
+        let identity = ToolCallIdentity {
+            model: "model-1".to_string(),
+            role: roko_core::AgentRole::Researcher,
+            format: roko_core::tool::ToolFormat::AnthropicBlocks,
+        };
+        let dispatcher =
+            ToolDispatcher::new_unguarded(registry, resolver).with_call_identity(identity.clone());
+        let traces = Arc::new(Traces::default());
+        let metrics = Arc::new(Metrics::default());
+        let ctx = ToolContext::testing("/tmp")
+            .with_trace_sink(traces.clone())
+            .with_metrics_sink(metrics.clone());
+        let timeout_ms = duration_to_ms(ctx.timeout);
+
+        let result = dispatcher
+            .dispatch(
+                ToolCall::new("c-sleep", "sleep", serde_json::json!({})),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+
+        let events = traces.events.lock().expect("events").clone();
+        let [roko_core::tool::ToolTraceEvent::HandlerFinished { exit_ms, .. }] = events.as_slice()
+        else {
+            panic!("expected one HandlerFinished event, got {events:?}");
+        };
+        assert!(
+            *exit_ms >= 30 && *exit_ms != timeout_ms,
+            "exit_ms {exit_ms}, timeout {timeout_ms}"
+        );
+        let finished = traces.finished.lock().expect("finished").clone();
+        assert_eq!(finished.len(), 1, "the call's trace is closed");
+        assert_eq!(finished[0].call_id, "c-sleep");
+        assert!(finished[0].outcome.success);
+        assert_eq!(finished[0].outcome.latency_ms, *exit_ms);
+        assert_eq!(
+            (finished[0].role, finished[0].model.as_str()),
+            (identity.role, "model-1")
+        );
+
+        let records = metrics.0.lock().expect("metrics").clone();
+        assert_eq!(records.len(), 1);
+        let (key, sample) = &records[0];
+        assert_eq!(
+            *key,
+            roko_core::tool::MetricsKey::new("sleep", "model-1", identity.role, identity.format)
+        );
+        assert_eq!(sample.samples, 1);
+        assert!(
+            sample.tsq > 0.0 && sample.schema_compliance > 0.0,
+            "{sample:?}"
+        );
     }
 }

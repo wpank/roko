@@ -124,6 +124,12 @@ impl ProviderAdapter for AnthropicApiAdapter {
         TurnCapEnforcement::ToolLoop
     }
 
+    /// Only the tool-loop backend, which a model with tools gets, sends a
+    /// thinking block; the plain Messages agent sends none.
+    fn honours_thinking_config(&self, model: &ModelProfile) -> bool {
+        model.supports_tools
+    }
+
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         // Anthropic-specific: content policy via error type or stop_reason.
         if body

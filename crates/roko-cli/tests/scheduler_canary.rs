@@ -9,42 +9,35 @@
 //! - Tasks whose `files` overlap never run at the same time; tasks whose
 //!   `files` are disjoint do.
 //!
-//! The plan omits `max_parallel`, so it runs as wide as its DAG allows. A
-//! scripted fake Claude CLI reads the task id from its prompt, logs
-//! `start <id>` and `end <id>` around a second of work (two for T4), and
-//! leaves the marker each task's verify step checks, never for T1.
+//! The plan omits `max_parallel`, so it runs as wide as its DAG allows. The
+//! shared scripted provider plays each task's turn: a second of work (two for
+//! T4), logged as `start <id>` and `end <id>`, and the marker each task's
+//! verify step checks, never for T1.
+
+mod common;
 
 use assert_cmd::cargo::cargo_bin;
+use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-/// The fake agent. A task's prompt names the task on its `Task: <id>:`
-/// lines (it also quotes every sibling task's definition). The agent logs
-/// only the calls that name exactly one task; any other model call just gets
-/// a result. Log lines are appended in the order the calls happen, so their
-/// order is the timeline.
-const FAKE_AGENT: &str = r#"#!/bin/sh
-set -eu
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-prompt=$(cat; printf '%s\n' "$@")
-ids=$(printf '%s\n' "$prompt" | grep -o '^Task: T[0-9]*' | sort -u || true)
-count=$(printf '%s\n' "$ids" | grep -c . || true)
-if [ "$count" -eq 1 ]; then
-  id=${ids#Task: }
-  printf 'start %s\n' "$id" >> "$root/events"
-  if [ "$id" = T4 ]; then sleep 2; else sleep 1; fi
-  printf 'end %s\n' "$id" >> "$root/events"
-  if [ "$id" != T1 ]; then : > "$root/$id.done"; fi
-elif [ "$count" -gt 1 ]; then
-  printf 'ambiguous %s\n' "$(printf '%s' "$ids" | tr '\n' ' ')" >> "$root/events"
-fi
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '%s\n' '{"type":"result","session_id":"c6","model":"claude-sonnet-4-6","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5},"is_error":false}'
-"#;
+/// Each task's turn: T1 leaves no marker, T4 works for two seconds.
+fn script() -> Script {
+    ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"]
+        .into_iter()
+        .fold(Script::new(), |script, id| {
+            let work = Turn::reply().silent_for(if id == "T4" { 2.0 } else { 1.0 });
+            let turn = if id == "T1" {
+                work
+            } else {
+                work.write(&format!("{id}.done"), "")
+            };
+            script.task(id, [turn])
+        })
+}
 
 /// One `[[task]]` block. Its verify step passes once the fake agent has left
 /// `<id>.done`.
@@ -82,17 +75,15 @@ max_retries = 0
     )
 }
 
-/// The fake agent, a `roko.toml` that routes every task to it, and the plan:
+/// `provider`, a `roko.toml` in `workdir` that routes every task to it, and
+/// the plan:
 ///
 /// - T1 fails its verify step; T2 depends on T1.
 /// - T3 depends on T4, a slower root, so T3 becomes ready after T1 failed.
 /// - T5 and T6 are roots that write the same file; T7 and T8 are roots that
 ///   write different files.
-fn setup_workspace(workdir: &Path) {
-    let provider = workdir.join("fake-agent.sh");
-    fs::write(&provider, FAKE_AGENT).expect("write fake agent");
-    fs::set_permissions(&provider, fs::Permissions::from_mode(0o755))
-        .expect("make fake agent executable");
+fn setup_workspace(workdir: &Path, provider: &ScriptedProvider) {
+    let provider = provider.command();
     fs::write(
         workdir.join("roko.toml"),
         format!(
@@ -166,8 +157,10 @@ fn json(output: &Output, what: &str) -> Value {
 #[test]
 fn scheduler_canary() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let workdir = temp.path();
-    setup_workspace(workdir);
+    let workdir = &temp.path().join("work");
+    fs::create_dir_all(workdir).expect("create the workdir");
+    let provider = ScriptedProvider::install(&temp.path().join("provider"), &script());
+    setup_workspace(workdir, &provider);
 
     let started = Instant::now();
     let run = roko(
@@ -186,17 +179,23 @@ fn scheduler_canary() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let events = fs::read_to_string(workdir.join("events")).expect("fake agent events");
-    let events: Vec<&str> = events.lines().collect();
+    let events = provider.events();
+    let events: Vec<&str> = events.iter().map(String::as_str).collect();
     let at = |event: &str| {
         events
             .iter()
             .position(|seen| *seen == event)
             .unwrap_or_else(|| panic!("`{event}` never happened: {events:?}"))
     };
+    let ambiguous: Vec<Vec<String>> = provider
+        .calls()
+        .into_iter()
+        .filter(|call| call.task_ids.len() > 1)
+        .map(|call| call.task_ids)
+        .collect();
     assert!(
-        !events.iter().any(|event| event.starts_with("ambiguous")),
-        "{events:?}"
+        ambiguous.is_empty(),
+        "calls naming several tasks: {ambiguous:?}"
     );
 
     // T2 depends on the failed T1 and never starts. T3 does not, becomes

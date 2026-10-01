@@ -244,8 +244,11 @@ pub struct UsageMetadata {
     pub total_token_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_content_token_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_token_count: Option<u64>,
+    /// Thinking tokens (`thoughtsTokenCount`), billed at the output rate and
+    /// not part of `candidatesTokenCount` (find-af6b7f). Older fixtures used
+    /// `thinkingTokenCount`, a name the API never sends.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "thinkingTokenCount")]
+    pub thoughts_token_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,7 +348,7 @@ mod tests {
                 "candidatesTokenCount": 48,
                 "totalTokenCount": 168,
                 "cachedContentTokenCount": 12,
-                "thinkingTokenCount": 9
+                "thoughtsTokenCount": 9
             }
         })
     }
@@ -374,7 +377,7 @@ mod tests {
             parsed
                 .usage_metadata
                 .as_ref()
-                .and_then(|usage| usage.thinking_token_count),
+                .and_then(|usage| usage.thoughts_token_count),
             Some(9)
         );
 

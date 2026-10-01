@@ -111,7 +111,7 @@ This is the implementation plan.
 - [x] bug-c1b845: speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests
 - [x] gap-9ca898: plan_generator.rs's DefaultPlanGenerator doesn't know rung
 - [x] gap-f7ebd4: The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint
-- [ ] bug-009c0e: roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially
+- [x] bug-009c0e: roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially
 - [x] bug-880b37: PLAN_038 misses accept-test copies made through a variable or a loop (A=…/accept, cp $A/…, for p in …)
 - [ ] dec-50192e: Should the plan-validate CI job run roko plan validate --strict?
 - [ ] The epic's `[[verify]]` command (the weak and fixed fixture pair) passes on the merged branch.

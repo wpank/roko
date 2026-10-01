@@ -157,8 +157,11 @@ pub struct GatesConfig {
     /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
     /// each standard-tier Graph task dispatch.
     ///
-    /// Defaults to `false`: `plan run` never executes these files. Only the
-    /// legacy Runner-v2 generated-test rung reads them.
+    /// Defaults to `false`. The files are for manual inspection: nothing in
+    /// `plan run` executes them. Only evaluations that pass
+    /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
+    /// written, and the built-in template needs an assertion body that Graph
+    /// tasks do not author, so today none is.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.
@@ -184,6 +187,14 @@ pub struct GatesConfig {
     /// it starts editing.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// Whether a Graph verify step that runs cargo tests, and still fails
+    /// after sibling settlement, is run again on the plan run's start commit
+    /// to tell tests that failed before the run from new failures. A step
+    /// that fails only on the former passes, and its attempt is recorded as
+    /// `passed_with_preexisting_failures`. FAST mode never runs the baseline.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub baseline_filter: bool,
     /// Runaway-output guard for Graph task attempts: the most output tokens
     /// an attempt may report before it fails as a red flag, without running
     /// its verify steps. Keyed by task role, with `default` for roles not
@@ -213,10 +224,6 @@ pub struct GatesConfig {
     /// `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
-    /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
-    /// values are shell commands to run as gates (e.g. `["shell:true"]`).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -291,10 +298,10 @@ impl Default for GatesConfig {
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            baseline_filter: default_true(),
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
-            domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,
             ema_alpha: default_ema_alpha(),

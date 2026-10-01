@@ -209,6 +209,9 @@ impl DreamAgentConfig {
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            trace_sink: None,
+            metrics_sink: None,
+            tool_correlation: None,
             max_turns: None,
             live_output: None,
         }

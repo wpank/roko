@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-01T08:26:58Z", "event": "claim", "item": "bug-4aa696", "executor": null, "via": null, "session": "wk-childenv", "branch": "work/bug-86117a", "concurrency": 49, "source": "live", "by": "wk-childenv", "size": "S", "claimed_at": "2026-10-01T08:26:58Z"}

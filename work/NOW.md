@@ -38,13 +38,13 @@ _0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 17 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 16 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - nothing checked and open
 
-_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 7 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

@@ -550,6 +550,9 @@ pub struct AgentOutputHistory {
     /// transcript. They are removed (while preserving tool steps) when
     /// [`settle_screened_transcript`] is called.
     live_unscreened_seqs: HashMap<String, HashSet<u64>>,
+    /// Per agent whose output arrives only through task-output rings: the
+    /// ring last taken in, and the sequence number that followed it.
+    ring_tails: HashMap<String, (Vec<String>, u64)>,
 }
 
 impl AgentOutputHistory {
@@ -739,6 +742,32 @@ impl AgentOutputHistory {
         self.records.remove(agent_id);
         self.oldest_seq.remove(agent_id);
         self.next_seq.remove(agent_id);
+        self.ring_tails.remove(agent_id);
+    }
+
+    /// Take in the lines a task-output ring adds for an agent whose output
+    /// arrives only through such rings (#367).
+    ///
+    /// A ring slides: each one holds the task's latest lines, so the new
+    /// lines are those after its overlap with the ring taken in last. An
+    /// agent whose history holds records from another path (`AgentOutput`
+    /// events) is left to it, because the ring repeats what it delivers.
+    pub fn ingest_ring(&mut self, agent_id: &str, ring: &[String], role: &str) {
+        let next = self.next_sequence(agent_id);
+        let new_from = match self.ring_tails.get(agent_id) {
+            Some((tail, tail_next)) if *tail_next == next => ring_overlap(tail, ring),
+            // Another path pushed records since the last ring: it owns them.
+            Some(_) => {
+                self.ring_tails.remove(agent_id);
+                return;
+            }
+            None if self.len(agent_id) > 0 => return,
+            None => 0,
+        };
+        self.ingest_lines(agent_id, &ring[new_from..], role);
+        let next = self.next_sequence(agent_id);
+        self.ring_tails
+            .insert(agent_id.to_string(), (ring.to_vec(), next));
     }
 
     /// Convert raw output lines into records and populate the history for
@@ -822,6 +851,15 @@ impl AgentOutputHistory {
             );
         }
     }
+}
+
+/// How many leading lines of `ring` repeat the end of `previous`: the longest
+/// such overlap, so a ring that slid by `n` lines leaves its last `n` new.
+fn ring_overlap(previous: &[String], ring: &[String]) -> usize {
+    (0..=previous.len().min(ring.len()))
+        .rev()
+        .find(|&overlap| previous[previous.len() - overlap..] == ring[..overlap])
+        .unwrap_or(0)
 }
 
 /// Classify a raw output line into an `OutputRecordKind` with optional
@@ -1913,7 +1951,8 @@ pub struct TuiState {
     pub affect: Option<roko_core::AffectSnapshot>,
 
     // -- agents (Vec-based roster for widgets) --
-    /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
+    /// Ordered agent roster, read by the Agents, Dashboard and Atelier views
+    /// and the header_bar, status_bar, cost_by_model and token_sparkline widgets.
     pub agents: Vec<AgentRow>,
     /// Latest fetched agent-topology payload.
     pub agent_topology: roko_core::AgentTopology,

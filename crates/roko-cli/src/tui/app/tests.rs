@@ -1702,3 +1702,33 @@ fn tui_event_loop_current_tick_duration_matches_policy() {
         "dormant app should use 250ms tick"
     );
 }
+
+#[test]
+fn full_refresh_keeps_the_plan_set() {
+    let dir = tempdir().unwrap();
+    // A workspace plan outside the run's plan set: the disk loader lists it.
+    let unrelated = dir.path().join("plans").join("03-unrelated");
+    std::fs::create_dir_all(&unrelated).unwrap();
+    std::fs::write(
+        unrelated.join("tasks.toml"),
+        "[[task]]\nid = \"T1\"\ntitle = \"Task\"\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.path());
+    let hub = app._state_hub.clone().expect("hub");
+    publish_plan_set(&hub, &["01-first", "02-second"]);
+    app.drain_snapshot_channel();
+    let plan_ids = |app: &App| -> Vec<String> {
+        app.tui_state
+            .plans
+            .iter()
+            .map(|plan| plan.id.clone())
+            .collect()
+    };
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+
+    // An explicit full refresh reloads `DashboardData` from disk, which lists
+    // every workspace plan; the hub's plan set must still be what is shown.
+    app.refresh_snapshot();
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+}

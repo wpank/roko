@@ -884,14 +884,12 @@ impl TuiState {
                 (agent.id.clone(), metrics)
             })
             .collect();
-        // Ingest agent output lines into the structured history (#367).
-        // Only ingest when there are output_lines that haven't been seen yet,
-        // deduplicating against the history's existing records.
+        // Take each agent's task-output ring into the structured history
+        // (#367): only the lines it adds, and only for agents whose output
+        // does not also arrive as AgentOutput events.
         for agent in &self.agents {
-            if !agent.output_lines.is_empty() && self.agent_output_history.len(&agent.id) == 0 {
-                self.agent_output_history
-                    .ingest_lines(&agent.id, &agent.output_lines, "assistant");
-            }
+            self.agent_output_history
+                .ingest_ring(&agent.id, &agent.output_lines, "assistant");
         }
 
         self.prune_agent_output_cache();

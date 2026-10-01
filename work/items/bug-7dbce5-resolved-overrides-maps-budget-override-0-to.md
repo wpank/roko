@@ -3,13 +3,15 @@ id = "bug-7dbce5"
 kind = "bug"
 title = "resolved_overrides maps --budget-override 0 to BudgetPolicy::Disabled, unlike the live path"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "5b4ddc3db"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-d31457"
 anchors = ["crates/roko-cli/src/resolved_overrides.rs"]
@@ -35,3 +37,8 @@ Delete the field, or make it match the live path.
 ## Notes
 
 - Reported on 2026-10-01 by wk-childenv, working on gap-d31457, during the evening close-out round.
+- 2026-10-01 (wk-childenv): implemented on work/gap-1555ac; cargo verification deferred to the batch check.
+  Deleted the dead field rather than keep a second resolution of the budget flags: `BudgetPolicy`,
+  `ResolvedExecutionOverrides::budget`, the `PlanRunInput` budget inputs and their resolution in `for_plan_run`,
+  with their tests here and in main.rs. `plan_runner::resolve_budget_ceiling` stays the only resolution; a caller
+  that wires `for_plan_run` into `plan run` later can carry its result.

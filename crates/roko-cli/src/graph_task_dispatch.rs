@@ -551,7 +551,7 @@ impl GraphTaskDispatcher {
 
     /// Why no further task of `plan_id` may be dispatched in this run, when
     /// that is so: its settled spend reached the plan ceiling, or today's
-    /// reached `budget.max_daily_usd` (and no explicit override lets it
+    /// reached `budget.max_daily_usd` (unless `--no-budget` lets it
     /// continue), or its cost ledger cannot be persisted. In-flight
     /// reservations alone never stop a plan.
     #[must_use]
@@ -652,7 +652,7 @@ impl GraphTaskDispatcher {
     }
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
-    /// the plan ceiling: an explicit `--budget` override only warns, and
+    /// the plan ceiling: a policy that continues on exhaustion only warns, and
     /// `--no-budget` disables the check.
     fn admit_task_budget(
         &self,
@@ -674,7 +674,7 @@ impl GraphTaskDispatcher {
                 task_id = %task.id,
                 ceiling_usd,
                 %error,
-                "per-task budget exhausted; continuing under the explicit --budget override"
+                "per-task budget exhausted; continuing, as the plan's budget policy allows"
             );
             return Ok(());
         }

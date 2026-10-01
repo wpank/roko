@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// What the inject key says while no transport delivers a directive.
+const INJECT_UNAVAILABLE: &str =
+    "inject is not available: no live command transport reaches the run yet";
+
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         if key.code == crossterm::event::KeyCode::Esc {
@@ -655,56 +659,18 @@ impl App {
                     self.tui_state.pending_approval = None;
                 }
             }
+            // No transport reaches a live run yet, so inject fails closed, as
+            // `roko inject` does: no prompt for a directive nothing would
+            // read, and nothing written (bug-6c3491, gap-f118b3).
             TuiAction::StartInject => {
-                self.tui_state.input_mode = InputMode::Inject;
-                self.tui_state.message_input.clear();
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::SubmitInject => {
-                let msg = self.tui_state.message_input.clone();
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.message_input.clear();
-                if !msg.is_empty() {
-                    // Write inject signal to .roko/signals.jsonl for the plan runner
-                    let signal_path = self.workdir.join(".roko").join("signals.jsonl");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis();
-                    let entry = serde_json::json!({
-                        "id": format!("inject-{ts}"),
-                        "kind": "roko.inject.directive",
-                        "created_at_ms": ts,
-                        "payload": { "message": msg },
-                    });
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&signal_path)
-                        .inspect_err(|err| {
-                            tracing::warn!(
-                                error = %err,
-                                path = %signal_path.display(),
-                                "failed to open signal file for inject"
-                            );
-                        })
-                        .ok()
-                        .and_then(|mut f| {
-                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
-                                .inspect_err(|err| {
-                                    tracing::warn!(
-                                        error = %err,
-                                        path = %signal_path.display(),
-                                        "failed to append inject signal"
-                                    );
-                                })
-                                .ok()
-                        });
-                    self.notifications
-                        .push_back(super::super::modals::Notification::info(format!(
-                            "Injected: {}",
-                            truncate_str(&msg, 40)
-                        )));
-                }
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::CancelInject => {
                 self.tui_state.input_mode = InputMode::Normal;

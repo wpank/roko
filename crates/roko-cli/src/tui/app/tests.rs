@@ -95,6 +95,36 @@ fn reset_plan_key_confirms_and_sends_a_cancel() {
     assert_eq!(sent.plan_id.as_deref(), Some("plan-7"));
 }
 
+/// bug-6c3491: no transport reaches a live run yet, so the inject key says
+/// so and writes nothing, instead of reporting "Injected" for a directive
+/// nothing reads.
+#[test]
+fn inject_key_fails_closed_and_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let mut app = App::new(dir.path());
+
+    app.dispatch_action(TuiAction::StartInject);
+    assert_eq!(app.tui_state.input_mode, InputMode::Normal);
+    assert!(
+        app.notifications
+            .iter()
+            .any(|n| n.message.contains("not available"))
+    );
+
+    // Text typed into inject mode some other way is not sent either.
+    app.tui_state.input_mode = InputMode::Inject;
+    app.tui_state.message_input = "ship it".to_string();
+    app.dispatch_action(TuiAction::SubmitInject);
+    assert_eq!(app.tui_state.input_mode, InputMode::Normal);
+    assert!(app.tui_state.message_input.is_empty());
+    assert!(!dir.path().join(".roko/signals.jsonl").exists());
+    assert!(
+        app.notifications
+            .iter()
+            .all(|n| !n.message.starts_with("Injected"))
+    );
+}
+
 #[test]
 fn tui_standalone_pause_toggle_shows_notification() {
     let dir = tempdir().unwrap();

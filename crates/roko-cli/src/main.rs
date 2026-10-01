@@ -2243,13 +2243,14 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
         /// replacing whatever is configured in roko.toml. Once the plan has
         /// spent it, no further task starts, as with a configured ceiling.
-        /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
+        /// `--budget-override 0` removes the plan ceiling; the per-task and
+        /// daily ceilings still apply.
         #[arg(long, value_name = "AMOUNT")]
         budget_override: Option<f64>,
         /// Disable budget enforcement entirely for this run.
         ///
-        /// Equivalent to `--budget-override 0`: sets the per-plan ceiling to
-        /// unlimited (0.0) so `BudgetAction::Block` is never triggered.
+        /// No plan, per-task or daily ceiling stops a dispatch; spend is still
+        /// recorded.
         #[arg(long, conflicts_with = "budget_override")]
         no_budget: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
@@ -8392,9 +8393,9 @@ mod tests {
     // ── #262: CLI flag resolution contract tests ────────────────────
 
     use roko_cli::resolved_overrides::{
-        ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
-        DevelopInput, DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput,
-        PresentationMode, ResolvedExecutionOverrides, ServePolicy,
+        ApprovalPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput, DevelopInput,
+        DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode,
+        ResolvedExecutionOverrides, ServePolicy,
     };
 
     #[test]
@@ -8571,30 +8572,6 @@ mod tests {
         };
         let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
         assert_eq!(overrides.approval, ApprovalPolicy::AutoApprove);
-    }
-
-    #[test]
-    fn cli_flags_plan_run_budget_override() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            budget_override: Some(50.0),
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Override(50.0));
-    }
-
-    #[test]
-    fn cli_flags_plan_run_no_budget() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            no_budget: true,
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Disabled);
     }
 
     #[test]

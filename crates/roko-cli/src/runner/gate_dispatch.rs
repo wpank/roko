@@ -625,8 +625,9 @@ fn detect_workdir_build_system(workdir: &Path) -> Option<&'static str> {
 #[derive(Clone, Copy, Debug)]
 pub struct AutoFixBounds<'a> {
     /// Files the task owns. Cargo fixes run only for the packages owning
-    /// them (`-p`). When none resolves to a Cargo package, the Cargo fix is
-    /// skipped instead of running workspace-wide.
+    /// them (`-p`), and the other fixers only on those files in their
+    /// language. When none qualifies, the fix is skipped instead of running
+    /// on the whole tree.
     pub task_files: &'a [String],
     /// Wall-clock limit for each fix command and for acquiring compile
     /// ownership.
@@ -686,6 +687,33 @@ fn owning_cargo_packages(workdir: &Path, files: &[String]) -> Vec<String> {
     packages
 }
 
+/// The files of `task_files` a non-Cargo fixer may rewrite: regular files
+/// inside `workdir` with one of `extensions`, named as the task names them
+/// (gap-c08623).
+fn task_fix_targets(workdir: &Path, task_files: &[String], extensions: &[&str]) -> Vec<String> {
+    use std::path::Component;
+    let mut targets: Vec<String> = Vec::new();
+    for file in task_files {
+        let path = Path::new(file);
+        if path.is_absolute()
+            || file.starts_with('-')
+            || path.components().any(|part| part == Component::ParentDir)
+        {
+            continue;
+        }
+        let fixable = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extensions.contains(&extension));
+        let regular =
+            std::fs::symlink_metadata(workdir.join(path)).is_ok_and(|meta| meta.is_file());
+        if fixable && regular && !targets.contains(file) {
+            targets.push(file.clone());
+        }
+    }
+    targets
+}
+
 /// Run one auto-fix command, killing it when `limit` elapses.
 ///
 /// The command gets the gate environment (roko's allowlisted variables plus
@@ -718,13 +746,17 @@ async fn run_fix_command(
 /// Every fix command is killed after `bounds.timeout`.
 ///
 /// For npm (TypeScript/JavaScript) projects:
-/// - "lint" / "compile" gates: runs `npx eslint --fix .`.
+/// - "lint" / "compile" gates: runs `npx eslint --fix <files>`.
 ///
 /// For Go projects:
-/// - "compile" / "lint" / "format" gates: runs `gofmt -w .`.
+/// - "compile" / "lint" / "format" gates: runs `gofmt -w <files>`.
 ///
 /// For Python projects:
-/// - "lint" / "compile" gates: tries `ruff --fix .` first, falls back to `black .`.
+/// - "lint" / "compile" gates: tries `ruff --fix <files>` first, falls back to
+///   `black <files>`.
+///
+/// `<files>` are the task's own files in the fixer's language
+/// ([`task_fix_targets`]). A task with none skips the fix.
 ///
 /// Returns `Ok(AutoFixOutcome)` describing what happened. Returns `Err` only
 /// on internal failures (spawn error, etc).
@@ -861,17 +893,41 @@ pub async fn attempt_auto_fix(
     }
 
     let build_system = detect_workdir_build_system(workdir);
+    // A fixer rewrites only the task's own files of its language, never the
+    // whole tree: other tasks and plans may own the rest (gap-c08623).
+    let extensions: &[&str] = match build_system {
+        Some("npm") => &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"],
+        Some("go") => &["go"],
+        Some("python") => &["py", "pyi"],
+        _ => &[],
+    };
+    let targets = task_fix_targets(workdir, bounds.task_files, extensions);
+    if !extensions.is_empty() && targets.is_empty() {
+        info!(
+            gate = %gate_name,
+            build_system = ?build_system,
+            task_files = bounds.task_files.len(),
+            "no task file for the auto-fixer — skipping auto-fix"
+        );
+        return Ok(AutoFixOutcome {
+            was_candidate: true,
+            ..AutoFixOutcome::not_candidate(gate_name)
+        });
+    }
     match build_system {
         Some("npm") => {
-            // npx eslint --fix . — auto-fixes lint errors for JS/TS.
-            let command_str = "npx eslint --fix .".to_string();
+            // npx eslint --fix <files> — auto-fixes lint errors for JS/TS.
+            let command_str = format!("npx eslint --fix {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting npm/eslint auto-fix before agent retry"
             );
             let mut fix_cmd = Command::new("npx");
-            fix_cmd.args(["eslint", "--fix", "."]).current_dir(workdir);
+            fix_cmd
+                .args(["eslint", "--fix"])
+                .args(&targets)
+                .current_dir(workdir);
             let fix_status =
                 run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "npx").await?;
 
@@ -898,15 +954,15 @@ pub async fn attempt_auto_fix(
         }
 
         Some("go") => {
-            // gofmt -w . — reformats all Go source files in the tree.
-            let command_str = "gofmt -w .".to_string();
+            // gofmt -w <files> — reformats the task's Go source files.
+            let command_str = format!("gofmt -w {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting gofmt auto-fix before agent retry"
             );
             let mut fix_cmd = Command::new("gofmt");
-            fix_cmd.args(["-w", "."]).current_dir(workdir);
+            fix_cmd.arg("-w").args(&targets).current_dir(workdir);
             let fix_status =
                 run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "gofmt").await?;
 
@@ -934,14 +990,14 @@ pub async fn attempt_auto_fix(
 
         Some("python") => {
             // Try ruff --fix first; fall back to black.
-            let command_str = "ruff --fix .".to_string();
+            let command_str = format!("ruff --fix {}", targets.join(" "));
             info!(
                 gate = %gate_name,
                 command = %command_str,
                 "attempting ruff auto-fix before agent retry"
             );
             let mut ruff_cmd = Command::new("ruff");
-            ruff_cmd.args(["--fix", "."]).current_dir(workdir);
+            ruff_cmd.arg("--fix").args(&targets).current_dir(workdir);
             let ruff_status =
                 run_fix_command(ruff_cmd, bounds.timeout, bounds.env_passthrough, "ruff").await;
 
@@ -949,13 +1005,13 @@ pub async fn attempt_auto_fix(
                 Ok(Some(out)) if out.status.success() => (true, command_str),
                 _ => {
                     // ruff not available, failed, or timed out — try black.
-                    let black_cmd = "black .".to_string();
+                    let black_cmd = format!("black {}", targets.join(" "));
                     info!(
                         gate = %gate_name,
                         "ruff unavailable or failed, trying black"
                     );
                     let mut black = Command::new("black");
-                    black.arg(".").current_dir(workdir);
+                    black.args(&targets).current_dir(workdir);
                     let black_status =
                         run_fix_command(black, bounds.timeout, bounds.env_passthrough, "black")
                             .await;
@@ -3532,6 +3588,53 @@ path = "src/shared.rs"
             outcome.command.is_none(),
             "no workspace-wide cargo fix may run when no package owns the task files"
         );
+    }
+
+    /// gap-c08623: a non-Cargo fixer gets only the task's regular files in its
+    /// language, inside the workdir.
+    #[test]
+    fn non_cargo_fix_targets_are_the_task_files_in_the_language() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        for file in ["src/app.ts", "src/view.tsx", "README.md"] {
+            std::fs::write(dir.path().join(file), "x\n").unwrap();
+        }
+        let task_files = [
+            "src/app.ts",
+            "src/view.tsx",
+            "src/app.ts",
+            "README.md",
+            // Not created: nothing to fix.
+            "src/missing.ts",
+            // Outside the workdir: skipped.
+            "../outside.ts",
+            "/abs/root.ts",
+        ]
+        .map(String::from);
+
+        assert_eq!(
+            task_fix_targets(dir.path(), &task_files, &["ts", "tsx"]),
+            ["src/app.ts", "src/view.tsx"]
+        );
+        assert!(task_fix_targets(dir.path(), &task_files, &["go"]).is_empty());
+    }
+
+    /// gap-c08623: when none of the task's files is in the fixer's language,
+    /// the fixer doesn't run, rather than running on the whole tree.
+    #[tokio::test]
+    async fn non_cargo_auto_fix_skips_a_task_without_files_in_its_language() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("index.js"), "x\n").unwrap();
+        let task_files = vec!["README.md".to_string()];
+        let outcome =
+            attempt_auto_fix(dir.path(), "lint", "1 problem", test_fix_bounds(&task_files))
+                .await
+                .expect("skipping must not error");
+
+        assert!(outcome.was_candidate);
+        assert!(!outcome.fix_applied);
+        assert!(outcome.command.is_none(), "no fixer may run on the whole tree");
     }
 
     #[tokio::test]

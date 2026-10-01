@@ -430,8 +430,8 @@ impl UcbBandit {
 
     /// Record a reward for `arm`.
     ///
-    /// If `arm` is not recognised, a diagnostic is printed to stderr and
-    /// the call is ignored (no panic, no state mutation).
+    /// If `arm` is not recognised, a warning is logged and the call is
+    /// ignored (no panic, no state mutation).
     pub fn update(&self, arm: &str, reward: f64) {
         let mut arms = self.arms.write();
         match arms.iter_mut().find(|a| a.name == arm) {
@@ -445,7 +445,7 @@ impl UcbBandit {
                 self.total_pulls.fetch_add(1, Ordering::Relaxed);
             }
             None => {
-                eprintln!("UcbBandit::update: unknown arm {arm:?} — ignoring");
+                tracing::warn!(arm, "UcbBandit::update: unknown arm; ignoring");
             }
         }
     }

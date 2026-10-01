@@ -1954,17 +1954,14 @@ pub(crate) fn operator_facing_registry() -> Vec<EnvVarSpec> {
         .collect()
 }
 
-/// Emit a deprecation warning to stderr if `spec` is deprecated.
+/// Log a deprecation warning if `spec` is deprecated.
 pub(crate) fn warn_if_deprecated(spec: &EnvVarSpec) {
     if spec.stability == Stability::Deprecated {
         let replacement_msg = spec
             .replacement
             .map(|r| format!("; use {r} instead"))
             .unwrap_or_default();
-        eprintln!(
-            "warning: env var {} is deprecated{replacement_msg}",
-            spec.name
-        );
+        tracing::warn!("env var {} is deprecated{replacement_msg}", spec.name);
     }
 }
 

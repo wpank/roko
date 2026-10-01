@@ -2974,14 +2974,14 @@ fn validate_and_fix_generated_plan(
                 if !KNOWN_META_FIELDS.contains(&key.as_str()) {
                     if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
                         if let Some(value) = meta.remove(key.as_str()) {
-                            eprintln!(
-                                "warning: [meta] field '{key}' is unknown; \
+                            tracing::warn!(
+                                "prd plan: [meta] field '{key}' is unknown; \
                                  corrected to '{correction}'"
                             );
                             meta.insert(correction, value);
                         }
                     } else {
-                        eprintln!("warning: [meta] has unknown field '{key}'");
+                        tracing::warn!("prd plan: [meta] has unknown field '{key}'");
                     }
                 }
             }
@@ -3000,13 +3000,13 @@ fn validate_and_fix_generated_plan(
                 if let Some(plan_str) = plan_val.as_str() {
                     if plan_str != slug {
                         if slug.starts_with(plan_str) {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' appears truncated; \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' appears truncated; \
                                  corrected to '{slug}'"
                             );
                         } else {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' does not match \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' does not match \
                                  expected slug '{slug}'; corrected"
                             );
                         }
@@ -3041,14 +3041,14 @@ fn validate_and_fix_generated_plan(
                                 suggest_field_correction(key, KNOWN_TASK_FIELDS)
                             {
                                 if let Some(value) = task.remove(key.as_str()) {
-                                    eprintln!(
-                                        "warning: {task_id_label}: field '{key}' is unknown; \
+                                    tracing::warn!(
+                                        "prd plan: {task_id_label}: field '{key}' is unknown; \
                                          corrected to '{correction}'"
                                     );
                                     task.insert(correction, value);
                                 }
                             } else {
-                                eprintln!("warning: {task_id_label}: unknown field '{key}'");
+                                tracing::warn!("prd plan: {task_id_label}: unknown field '{key}'");
                             }
                         }
                     }
@@ -3079,8 +3079,8 @@ fn validate_and_fix_generated_plan(
                                 "skipped",
                             ];
                             if !VALID_STATUSES.contains(&s) {
-                                eprintln!(
-                                    "warning: {task_id_label}: status '{s}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: status '{s}' is invalid; \
                                      defaulting to 'ready'"
                                 );
                                 task.insert(
@@ -3096,8 +3096,8 @@ fn validate_and_fix_generated_plan(
                         if let Some(r) = role_val.as_str() {
                             const VALID_ROLES: &[&str] = crate::task_parser::PLAN_TASK_ROLES;
                             if !VALID_ROLES.contains(&r) {
-                                eprintln!(
-                                    "warning: {task_id_label}: role '{r}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: role '{r}' is invalid; \
                                      defaulting to 'implementer'"
                                 );
                                 task.insert(
@@ -3113,8 +3113,8 @@ fn validate_and_fix_generated_plan(
                     // role pick a model on this workspace's routing ladder.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
-                        eprintln!(
-                            "info: {task_id_label}: removing model_hint '{hint}' \
+                        tracing::info!(
+                            "prd plan: {task_id_label}: removing model_hint '{hint}' \
                              (tier and role pick the model; a task that needs a \
                              stronger one names a `rung`)"
                         );
@@ -3123,8 +3123,8 @@ fn validate_and_fix_generated_plan(
                     // gap-dbf2a6: keep a `rung` hint that names one of the
                     // task's ladder rungs; drop any other.
                     if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
-                        eprintln!(
-                            "warning: {task_id_label}: removing rung {rung}: no rung of the \
+                        tracing::warn!(
+                            "prd plan: {task_id_label}: removing rung {rung}: no rung of the \
                              routing ladder has that name"
                         );
                     }
@@ -3141,15 +3141,15 @@ fn validate_and_fix_generated_plan(
                                                 suggest_field_correction(key, KNOWN_VERIFY_FIELDS)
                                             {
                                                 if let Some(value) = step.remove(key.as_str()) {
-                                                    eprintln!(
-                                                        "warning: {task_id_label} verify[{si}]: \
+                                                    tracing::warn!(
+                                                        "prd plan: {task_id_label} verify[{si}]: \
                                                          field '{key}' corrected to '{correction}'"
                                                     );
                                                     step.insert(correction, value);
                                                 }
                                             } else {
-                                                eprintln!(
-                                                    "warning: {task_id_label} verify[{si}]: \
+                                                tracing::warn!(
+                                                    "prd plan: {task_id_label} verify[{si}]: \
                                                      unknown field '{key}'"
                                                 );
                                             }
@@ -3209,8 +3209,8 @@ fn validate_and_fix_generated_plan(
                             )];
 
                             task.insert("verify".to_string(), toml::Value::Array(auto_verify));
-                            eprintln!(
-                                "info: {task_id_label}: auto-added one focused compile verify"
+                            tracing::info!(
+                                "prd plan: {task_id_label}: auto-added one focused compile verify"
                             );
                         }
                     }
@@ -3249,8 +3249,8 @@ fn validate_and_fix_generated_plan(
     ];
     for &(placeholder, replacement) in replacements {
         if serialized.contains(placeholder) {
-            eprintln!(
-                "plan validation: replaced placeholder '{}' with '{}'",
+            tracing::info!(
+                "prd plan: replaced placeholder '{}' with '{}'",
                 placeholder, replacement
             );
             serialized = serialized.replace(placeholder, replacement);

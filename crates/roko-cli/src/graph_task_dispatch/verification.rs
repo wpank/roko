@@ -235,7 +235,7 @@ impl GraphTaskDispatcher {
                 let mut verdict = gate.verify(&gate_signal, &gate_ctx).await;
                 if !verdict.passed {
                     // A sibling editing this working tree may have caused the
-                    // failure: let it settle, then re-run the step once. The
+                    // failure: let it settle, then re-run the step. The
                     // compile lock is released meanwhile so the sibling's own
                     // cargo steps can finish.
                     drop(compile_permit);

@@ -670,40 +670,6 @@ impl TaskDef {
                 .all(|dep| completed_plans.contains(dep))
     }
 
-    /// Build a focused prompt asking the agent to fix a specific verify failure.
-    ///
-    /// # Arguments
-    /// * `original_prompt` – the full prompt that was sent for the original task run
-    /// * `failing_phase`   – phase string of the step that failed ("compile", "test", …)
-    /// * `failing_command` – the shell command that failed
-    /// * `error_output`    – captured stdout+stderr (will be truncated to 4000 chars)
-    pub fn build_fix_prompt(
-        &self,
-        original_prompt: &str,
-        failing_phase: &str,
-        failing_command: &str,
-        error_output: &str,
-    ) -> String {
-        let truncated = if error_output.len() > 4000 {
-            &error_output[..4000]
-        } else {
-            error_output
-        };
-
-        format!(
-            "## Auto-fix request\n\n\
-            ## Original task\n\n\
-            {}\n\n\
-            ## Failing verification step\n\n\
-            Phase: {}, Command: `{}`\n\n\
-            ## Error output\n\n\
-            ```\n{}\n```\n\n\
-            ## Instructions\n\n\
-            Fix the code so that `{}` exits 0. Do not change other behaviour.",
-            original_prompt, failing_phase, failing_command, truncated, failing_command
-        )
-    }
-
     /// Apply role-specific tool defaults after TOML parsing.
     ///
     /// Explicit task settings take precedence over role defaults.
@@ -2706,94 +2672,6 @@ depends_on = ["other-plan:T3"]
         .unwrap();
         tasks.update_cross_refs("other-plan:T3", "other-plan:T5");
         assert_eq!(tasks.tasks[0].depends_on[0], "other-plan:T5");
-    }
-
-    #[test]
-    fn build_fix_prompt_includes_error_output() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original task prompt";
-        let error_msg = "compilation failed: undefined symbol";
-        let prompt = task.build_fix_prompt(original, "compile", "cargo check", error_msg);
-
-        assert!(prompt.contains(original));
-        assert!(prompt.contains(error_msg));
-        assert!(prompt.contains("compile"));
-        assert!(prompt.contains("cargo check"));
-    }
-
-    #[test]
-    fn build_fix_prompt_truncates_long_error() {
-        let task = TaskDef {
-            id: "T1".into(),
-            title: "test task".into(),
-            description: Some("test task".into()),
-            role: None,
-            status: "ready".into(),
-            tier: "focused".into(),
-            frequency: None,
-            model_hint: None,
-            replan_strategy: None,
-            max_loc: None,
-            files: vec![],
-            allowed_tools: None,
-            denied_tools: None,
-            mcp_servers: None,
-            depends_on: vec![],
-            depends_on_plan: vec![],
-            split_into: None,
-            context: None,
-            verify: vec![],
-            timeout_secs: 600,
-            max_retries: 3,
-            acceptance: vec![],
-            acceptance_contract: None,
-            accept: None,
-            domain: None,
-            estimated_minutes: None,
-            crates_touched: None,
-            sequence: 0,
-            hints: TaskHints::default(),
-        };
-        let original = "Original prompt";
-        let long_error = "x".repeat(5000);
-        let prompt = task.build_fix_prompt(original, "test", "cargo test", &long_error);
-
-        // The prompt should contain truncated error (4000 chars max)
-        assert!(prompt.contains(original));
-        // Should not contain the full 5000-char string
-        assert!(!prompt.contains(&long_error));
-        // But should contain a 4000-char substring of it
-        assert!(prompt.contains(&"x".repeat(4000)));
     }
 
     #[test]

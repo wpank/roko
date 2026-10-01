@@ -108,7 +108,7 @@ use turn_policy::{
     provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit_with,
     timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
-use watchdog::{StallWatch, WatchedAttempt};
+use watchdog::{AttemptProgress, StallWatch, WatchedAttempt};
 
 #[cfg(test)]
 use turn_policy::task_turn_limit;
@@ -213,6 +213,8 @@ pub struct GraphTaskDispatcher {
     task_spend: GraphTaskSpendLedger,
     /// Today's spend before this process, for `budget.max_daily_usd`.
     daily_budget: GraphDailyBudget,
+    /// Set once the plan run began to stop ([`Self::begin_stop`]).
+    stopping: std::sync::atomic::AtomicBool,
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
@@ -298,6 +300,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
+            stopping: std::sync::atomic::AtomicBool::new(false),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -461,6 +464,16 @@ impl GraphTaskDispatcher {
                 "restored gate feedback for the next attempts of resumed tasks"
             );
         }
+        // The tasks' spend and turn-cap retries the earlier process kept
+        // (gap-34b2ed).
+        for (task_id, micro_usd) in self.gate_retry_context.kept_task_spend(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.task_spend.restore(&key, micro_usd);
+        }
+        for (task_id, retry) in self.gate_retry_context.kept_turn_caps(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.turn_cap_retries.lock().insert(key, retry);
+        }
     }
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
@@ -517,6 +530,26 @@ impl GraphTaskDispatcher {
         self.budget_ledger
             .dispatch_stop(plan_id, self.budget_policy)
             .or_else(|| self.daily_dispatch_stop())
+    }
+
+    /// The plan run began to stop (an interrupt), and is signalling its
+    /// agents. From now on a provider call that ends without a successful
+    /// result, an agent that exits on that SIGTERM included, settles as
+    /// cancelled rather than as a provider failure, and fails with
+    /// [`RokoError::Cancelled`], which the task executor does not retry
+    /// (bug-28b604).
+    pub fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    /// The cancellation a call of `plan_id/task_id` that ended with `cause`
+    /// becomes once its run began to stop ([`Self::begin_stop`]).
+    fn stopped_call(&self, plan_id: &str, task_id: &str, cause: &str) -> Option<RokoError> {
+        self.stopping.load(Ordering::Acquire).then(|| {
+            RokoError::cancelled(format!(
+                "agent for {plan_id}/{task_id} ended while its plan run was stopping: {cause}"
+            ))
+        })
     }
 
     /// Return aggregate token and dispatch counts accumulated across all
@@ -672,9 +705,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
         self.admit_daily_budget(spec).await?;
+        // A task that starts while another call holds the plan's remaining
+        // budget waits for it to settle (bug-0bc2b4).
         let budget_reservation = self
             .budget_ledger
-            .reserve(&spec.plan_id, self.budget_policy)?;
+            .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
+            .await?;
 
         let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
             RokoError::Planning(format!(
@@ -950,7 +986,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         );
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
-        let turn_cap_resume = self.turn_cap_retries.lock().remove(&task_spend_key);
+        let turn_cap_resume = self.take_turn_cap_retry(&spec.plan_id, &task.id);
         if let Some(previous) = turn_cap_resume {
             max_turns = max_turns.max(raised_turn_cap(previous.cap));
             tracing::info!(
@@ -1294,16 +1330,21 @@ impl TaskDispatcher for GraphTaskDispatcher {
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
+        // The attempt's progress, and so the usage its call streams, is
+        // tracked even with both stall thresholds off: a call that is stopped
+        // or cancelled then settles what it streamed (bug-3a3b0f).
+        let progress = stall_watch
+            .as_ref()
+            .map_or_else(AttemptProgress::default, StallWatch::progress);
         let supervised = self.supervise_attempt(&watched);
         request.live_output = self.live_output_tap(
             &watched,
-            stall_watch.as_ref().map(StallWatch::progress),
+            Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
         );
 
         attempt.dispatch_started();
         let started_at = Instant::now();
-        let progress = stall_watch.as_ref().map(StallWatch::progress);
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
         // While it runs, heartbeats keep the TUI's elapsed-time counter live.
@@ -1317,8 +1358,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     &task.id,
                     attempt.key.attempt_key(),
                     request,
-                    progress.as_ref(),
+                    Some(&progress),
                 ),
+                &progress,
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -1335,6 +1377,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,
             Err(error) => {
+                // A call that failed once the run began to stop, such as an
+                // agent that exited on the run's own SIGTERM, is a
+                // cancellation (bug-28b604).
+                let error = match error {
+                    RokoError::Cancelled(_) => error,
+                    error => self
+                        .stopped_call(&spec.plan_id, &task.id, &error.to_string())
+                        .unwrap_or(error),
+                };
                 // Best-effort release on dispatch failure when worktree isolation is active.
                 if let Some((provider, lease)) =
                     self.workspace_provider.as_ref().zip(lease.as_ref())
@@ -1358,18 +1409,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // A call the stall watchdog, the conductor or a stopping plan
                 // run cancelled is accounted like any failed call, with the
                 // usage it streamed (bug-aa2044, bug-2b1ddc).
-                if let Some(interrupted) = progress
-                    .as_ref()
-                    .and_then(|progress| progress.interrupted_call())
-                {
+                if let Some(interrupted) = progress.interrupted_call() {
                     let wall_duration = started_at.elapsed();
                     let (dispatch, failover) = interrupted.into_dispatch(
                         &error.to_string(),
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                    self.task_spend
-                        .record(&task_spend_key, &dispatch.result.usage);
+                    self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
                     if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                         tracing::warn!(
                             plan_id = %spec.plan_id,
@@ -1382,7 +1429,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     let settlement = watchdog::failed_call_settlement(
                         ended_by.as_ref(),
                         &error,
-                        progress.as_ref(),
+                        Some(&progress),
                     );
                     let settled =
                         attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -1401,7 +1448,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.
                 let settlement =
-                    watchdog::failed_call_settlement(ended_by.as_ref(), &error, progress.as_ref());
+                    watchdog::failed_call_settlement(ended_by.as_ref(), &error, Some(&progress));
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
                 return Err(error);
@@ -1418,8 +1465,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
-        self.task_spend
-            .record(&task_spend_key, &dispatch.result.usage);
+        self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
@@ -1465,10 +1511,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .as_text()
                 .unwrap_or("provider returned an unsuccessful result")
                 .to_string();
+            // An agent that exited on its run's SIGTERM was cancelled, not a
+            // failed provider (bug-28b604).
+            let stopped = self.stopped_call(&spec.plan_id, &task.id, &message);
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.
-            let settlement = Settlement::provider_failure(&message, first_token_seen(&dispatch));
+            let settlement = match &stopped {
+                Some(cancelled) => Settlement::provider_call_error(cancelled),
+                None => Settlement::provider_failure(&message, first_token_seen(&dispatch)),
+            };
             let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
             self.emit_feedback(
                 spec,
@@ -1488,6 +1540,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
                     )
                     .await;
+            }
+            if let Some(cancelled) = stopped {
+                return Err(cancelled);
             }
 
             // Detect billing/credit errors and log a clear warning so
@@ -1510,8 +1565,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
 
             if let Some(hit) = roko_agent::provider::error_classify::detect_turn_cap(&message) {
-                self.turn_cap_retries.lock().insert(
-                    task_spend_key.clone(),
+                self.keep_turn_cap_retry(
+                    &spec.plan_id,
+                    &task.id,
                     TurnCapRetry {
                         cap: max_turns,
                         num_turns: hit.num_turns,
@@ -2697,5 +2753,35 @@ sleep 30
             metrics.contains("read_file") && metrics.contains("api-model-1"),
             "{metrics}"
         );
+    }
+
+    /// bug-28b604: once the plan run began to stop, an agent that exits on
+    /// its SIGTERM within the drain settles as cancelled, not as a provider
+    /// failure, and fails with a cancellation, which the task executor does
+    /// not retry.
+    #[tokio::test]
+    async fn a_sigterm_exit_during_the_drain_settles_as_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        let script = "#!/bin/sh\ncat >/dev/null\nkill -TERM $$\n";
+        let (dispatcher, task) = make_scripted_batch_dispatcher(&temp, script, |_| {}).await;
+        let runs = temp.path().join(".roko/runs");
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        dispatcher.begin_stop();
+        let ctx = CellContext::new().with_run_id("stopping-run".to_string());
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the agent exited on SIGTERM");
+        assert!(matches!(error, RokoError::Cancelled(_)), "got {error:?}");
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+
+        let attempts = runs.join("stopping-run").join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
     }
 }

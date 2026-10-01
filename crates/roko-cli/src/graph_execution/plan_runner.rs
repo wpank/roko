@@ -867,7 +867,8 @@ async fn run_graph_plan_body(
         no_budget,
         cli_model_override,
         dangerously_skip_permissions,
-        log_file,
+        // `event_log::run_recorded` takes a `--log-file` run's path.
+        log_file: _,
         worktree_per_task,
         rich_topology,
         promote,
@@ -887,7 +888,6 @@ async fn run_graph_plan_body(
     let plans_dir: &Path = &plans_dir;
     let workdir: &Path = &workdir;
     let resume_plan: Option<PathBuf> = resume_plan;
-    let log_file: Option<PathBuf> = log_file;
     // Each task's plan gate judges the worktree its attempt ran in, never the
     // shared working tree (bug-50caf2), so the rich topology needs them.
     if rich_topology && !worktree_per_task {
@@ -1329,22 +1329,6 @@ async fn run_graph_plan_body(
         });
     }
 
-    // ── Canonical --log-file recorder for Graph Engine (#115) ──
-    let graph_event_logger: Option<Arc<dyn roko_graph::events::GraphEventSink>> =
-        match log_file.as_deref() {
-            Some(path) => {
-                let resolved = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    workdir.join(path)
-                };
-                let logger = crate::runner::structured_log::GraphEventLogger::open(&resolved)
-                    .map_err(|e| anyhow!("open --log-file {}: {e}", resolved.display()))?;
-                Some(Arc::new(logger))
-            }
-            None => None,
-        };
-
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
 
@@ -1415,7 +1399,6 @@ async fn run_graph_plan_body(
         plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
-        graph_event_logger: graph_event_logger.as_ref(),
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
         run_manifests: &run_manifests,
@@ -2164,7 +2147,6 @@ struct PlanRunContext<'a> {
     plan_failure_policy: roko_core::config::PlanFailurePolicy,
     graph_tui_bridge: &'a crate::runner::graph_tui_bridge::GraphTuiBridge,
     graph_telemetry: &'a Arc<dyn roko_core::TelemetryEventSink>,
-    graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
     shared_pause_flag: &'a Arc<AtomicBool>,
     interrupt: &'a PlanRunInterruptHandle,
     /// Each checkpoint run's `manifest.json` (S01 §5.1).
@@ -2685,11 +2667,6 @@ async fn run_one_plan(
         // PassthroughCell stubs; without this the engine rejects the graph
         // at validate_for_start time.
         .with_allow_test_stubs(ctx.rich_topology);
-    // Wire canonical --log-file recorder (#115): attach the event sink
-    // so every GraphExecutionEvent is written to JSONL.
-    if let Some(sink) = ctx.graph_event_logger {
-        engine = engine.with_event_sink(Arc::clone(sink));
-    }
     if let Some(replayer) = checkpoint.take_replayer() {
         engine = engine.with_replayer(replayer);
     }
@@ -2796,6 +2773,8 @@ async fn run_one_plan(
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
+            // An agent that exits on this SIGTERM settles as cancelled.
+            ctx.graph_task_dispatcher.begin_stop();
             let signalled = terminate_in_flight_agents();
             tracing::warn!(
                 plan_id = %plan.id,
@@ -4423,6 +4402,80 @@ exec sleep 60
         assert!(calls.exists(), "the provider started");
         // Let the streamed usage reach the attempt's live output.
         tokio::time::sleep(Duration::from_millis(500)).await;
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
+    /// Where [`interrupt_stops_running_gate_command`] tells
+    /// [`interrupted_gate_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_GATE_DIR: &str = "ROKO_INTERRUPTED_GATE_CHILD_DIR";
+
+    /// A verify command that runs until it is signalled, marking when it
+    /// starts and when it gets SIGTERM.
+    #[cfg(unix)]
+    const SIGNALLED_GATE: &str =
+        "trap 'echo > got-term; exit 143' TERM; echo > gate-started; sleep 60 & wait $!";
+
+    /// gap-b367bf: an interrupt stops a task's running verify command the way
+    /// it stops the run's agents, with SIGTERM, which the command here traps
+    /// into a marker file. The interrupt signals every registered process of
+    /// its process, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_stops_running_gate_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "gated", "", &[("T1", &[], SIGNALLED_GATE)]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_gate_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_GATE_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(
+            dir.path().join("got-term").exists(),
+            "the interrupt never sent the verify command SIGTERM"
+        );
+    }
+
+    /// The interrupted run of [`interrupt_stops_running_gate_command`]: it
+    /// interrupts the plan in that test's workspace once the task's verify
+    /// command runs. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_gate_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_GATE_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("gate-started");
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the verify command started");
 
         interrupt.request(PlanRunInterrupt::Interrupt);
         let (exit_code, _, _) = run.await.expect("the plan run");

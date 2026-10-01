@@ -104,6 +104,10 @@ impl GraphTaskDispatcher {
         let effective_workdir = effective_workdir.to_path_buf();
         let retry_key = retry_key.to_string();
         let steps = self.verify_steps(spec, task);
+        // `[gates] mode = "focused"` scopes authored Cargo tests (gap-1426e4).
+        let steps = self
+            .focus_verify_steps(&effective_workdir, task, steps)
+            .await;
         // A step passed only because what failed in it failed on the plan
         // run's start commit too (gap-161be1).
         let mut preexisting_filtered = false;

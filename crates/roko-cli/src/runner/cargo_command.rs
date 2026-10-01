@@ -620,7 +620,7 @@ pub(super) fn with_targeted_compile_rung(
 
 // ── Focused/scoped verify steps ─────────────────────────────────────────
 
-pub(super) fn scoped_test_command(
+pub(crate) fn scoped_test_command(
     workdir: &Path,
     command: &str,
     report: &super::impact_analysis::ImpactReport,

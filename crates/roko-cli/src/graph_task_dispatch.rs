@@ -77,6 +77,7 @@ mod supervision;
 mod tui_forward;
 mod turn_policy;
 mod verification;
+mod verify_focus;
 mod watchdog;
 mod wiring;
 

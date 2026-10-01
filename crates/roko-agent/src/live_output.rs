@@ -79,10 +79,12 @@ const TARGET_MAX_CHARS: usize = 120;
 /// 7. `query`
 /// 8. `description`
 ///
-/// An absolute path from one of the three path fields that lies inside
-/// `workspace_root` (the dispatch working directory) is shown relative to it,
-/// `.` for the root itself, so a step does not carry the absolute workspace
-/// path. Paths outside the root are kept as they are.
+/// An absolute path from one of the three path fields, or an absolute
+/// `pattern`, that lies inside `workspace_root` (the dispatch working
+/// directory) is shown relative to it, `.` for the root itself, so a step does
+/// not carry the absolute workspace path. In a `command`, each occurrence of
+/// the root as a whole path is rewritten the same way. Paths outside the root
+/// are kept as they are.
 ///
 /// The result is then:
 /// - scrubbed for secrets via [`scrub_secrets`] with the default [`ScrubPolicy`];
@@ -108,7 +110,8 @@ pub fn tool_step_target(
         "query",
         "description",
     ];
-    const PATH_FIELDS: &[&str] = &["file_path", "notebook_path", "path"];
+    // Fields holding one path; a Glob `pattern` may be an absolute one.
+    const PATH_FIELDS: &[&str] = &["file_path", "notebook_path", "path", "pattern"];
 
     let raw: Option<String> = FIELDS.iter().find_map(|&field| {
         let s = input.get(field)?.as_str()?;
@@ -117,8 +120,14 @@ pub fn tool_step_target(
         }
         // For `command`, keep only the first line.
         if field == "command" {
-            let first = s.lines().next().unwrap_or("").trim().to_string();
-            if first.is_empty() { None } else { Some(first) }
+            let first = s.lines().next().unwrap_or("").trim();
+            if first.is_empty() {
+                return None;
+            }
+            Some(match workspace_root {
+                Some(root) => command_workspace_relative(first, root),
+                None => first.to_string(),
+            })
         } else if PATH_FIELDS.contains(&field)
             && let Some(relative) = workspace_root.and_then(|root| workspace_relative(s, root))
         {
@@ -175,6 +184,65 @@ fn workspace_relative(path: &str, root: &Path) -> Option<String> {
         return Some(".".to_string());
     }
     Some(relative.to_string_lossy().into_owned())
+}
+
+/// `command` with each whole-path occurrence of `root` made relative to it:
+/// `<root>/rest` becomes `rest` and the bare root becomes `.`. An occurrence
+/// counts only when the start or a [`separates_path`] character comes before
+/// it, and `/`, a separator or the end comes after it, so a sibling sharing
+/// the root's name as a prefix (`<root>-other/…`) and a longer path that
+/// merely contains the root are left alone. The root matches as given or
+/// canonicalized, as in [`workspace_relative`].
+///
+/// The result is for display only and must never be run.
+fn command_workspace_relative(command: &str, root: &Path) -> String {
+    let canonical = root.canonicalize().ok().filter(|c| c != root);
+    let mut command = command.to_string();
+    for root in std::iter::once(root).chain(canonical.as_deref()) {
+        if !root.is_absolute() {
+            continue;
+        }
+        let Some(root) = root.to_str().map(|root| root.trim_end_matches('/')) else {
+            continue;
+        };
+        if !root.is_empty() {
+            command = relative_root_occurrences(&command, root);
+        }
+    }
+    command
+}
+
+/// One spelling of the root, rewritten as [`command_workspace_relative`]
+/// describes.
+fn relative_root_occurrences(command: &str, root: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut copied = 0;
+    for (at, _) in command.match_indices(root) {
+        // A match inside the slashes that the previous one consumed, or in
+        // the middle of a longer path.
+        if at < copied || command[..at].ends_with(|c: char| !separates_path(c)) {
+            continue;
+        }
+        let after = &command[at + root.len()..];
+        let rest = after.trim_start_matches('/');
+        let ends_path = rest.chars().next().is_none_or(separates_path);
+        // `<root>-other`, `<root>2`, …: another path.
+        if rest.len() == after.len() && !ends_path {
+            continue;
+        }
+        out.push_str(&command[copied..at]);
+        out.push_str(if ends_path { "." } else { "" });
+        copied = command.len() - rest.len();
+    }
+    out.push_str(&command[copied..]);
+    out
+}
+
+/// Whether `c` ends one path in a command and can start the next: whitespace,
+/// a quote, a shell operator (`;&|()<>`), or the `=` and `:` of `NAME=path`
+/// and `a:b` lists.
+fn separates_path(c: char) -> bool {
+    c.is_whitespace() || "'\";&|()<>=:".contains(c)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -333,11 +401,70 @@ mod tests {
             assert_eq!(step(json!({ "file_path": outside })), outside);
         }
 
-        // Only path fields are rewritten, and only when a root is known.
-        let command = "cat /private/tmp/roko-hello-JdC7dN/src/main.rs";
-        assert_eq!(step(json!({ "command": command })), command);
+        // An absolute Glob pattern and a command are rewritten too
+        // (`command_targets_are_workspace_relative` has the command cases),
+        // and nothing is rewritten when no root is known.
+        let glob = "/private/tmp/roko-hello-JdC7dN/src/**/*.rs";
+        assert_eq!(step(json!({ "pattern": glob })), "src/**/*.rs");
         let absolute = "/private/tmp/roko-hello-JdC7dN/src/main.rs";
+        let command = format!("cat {absolute}");
+        assert_eq!(step(json!({ "command": command })), "cat src/main.rs");
         assert_eq!(target(json!({ "file_path": absolute })), absolute);
+    }
+
+    // Helper: the target of a shell step, run in `root` when one is known.
+    fn command_target(command: &str, root: Option<&Path>) -> String {
+        tool_step_target("Bash", &json!({ "command": command }), root)
+    }
+
+    #[test]
+    fn command_targets_are_workspace_relative() {
+        const ROOT: &str = "/private/tmp/roko-hello-JdC7dN";
+        let root = Some(Path::new(ROOT));
+
+        let cases = [
+            (format!("cat {ROOT}/src/main.rs"), "cat src/main.rs"),
+            (format!("cd {ROOT} && cargo test"), "cd . && cargo test"),
+            (format!("cd {ROOT}/; ls"), "cd .; ls"),
+            (format!("ls \"{ROOT}\""), "ls \".\""),
+            (format!("diff {ROOT}/a '{ROOT}/b'"), "diff a 'b'"),
+            (format!("PATH={ROOT}/bin:{ROOT} x"), "PATH=bin:. x"),
+        ];
+        for (command, expected) in cases {
+            assert_eq!(command_target(&command, root), expected, "{command}");
+        }
+
+        // A sibling sharing the root's name as a prefix, a longer path that
+        // contains the root, and a path outside it are kept as they are.
+        for command in [
+            format!("ls {ROOT}-other/main.rs"),
+            format!("cat /mnt{ROOT}/main.rs"),
+            "cat /etc/hosts".to_string(),
+        ] {
+            assert_eq!(command_target(&command, root), command);
+        }
+
+        // With no root, nothing changes.
+        let command = format!("cat {ROOT}/src/main.rs");
+        assert_eq!(command_target(&command, None), command);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_targets_are_workspace_relative_under_the_canonical_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("mkdir");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let canonical = real.canonicalize().expect("canonicalize");
+
+        // The dispatch names the workspace through a symlink; the command
+        // may spell it either way.
+        for spelling in [&link, &canonical] {
+            let command = format!("cat {}/src/main.rs", spelling.display());
+            assert_eq!(command_target(&command, Some(&link)), "cat src/main.rs");
+        }
     }
 
     #[cfg(unix)]

@@ -2003,7 +2003,10 @@ mod tests {
     #[test]
     fn has_known_cost_reads_a_zero_after_tokens_as_unknown() {
         let mut event = AgentEfficiencyEvent::default_event();
-        assert!(event.has_known_cost(), "no tokens at $0 is a confirmed free turn");
+        assert!(
+            event.has_known_cost(),
+            "no tokens at $0 is a confirmed free turn"
+        );
         event.input_tokens = 10;
         assert!(!event.has_known_cost(), "tokens at $0 were never priced");
         event.cost_usd = 0.01;

@@ -2743,7 +2743,10 @@ mod tests {
 
         let bench = line("BenchAgent");
         assert!(bench.contains("avg_cost=unknown"), "{bench}");
-        assert!(!bench.contains('$'), "an unknown cost must not print as dollars: {bench}");
+        assert!(
+            !bench.contains('$'),
+            "an unknown cost must not print as dollars: {bench}"
+        );
         assert!(bench.contains("n=2"), "{bench}");
 
         // The one measured cost is averaged alone; the other is counted.

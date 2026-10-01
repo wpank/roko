@@ -1551,7 +1551,12 @@ mod tests {
             .expect("the accept fixture");
         let passing: BTreeMap<(String, String), RedOnBase> = ["T1", "T5", "T6"]
             .into_iter()
-            .map(|task| (("tasks.toml".to_string(), task.to_string()), RedOnBase::Pass))
+            .map(|task| {
+                (
+                    ("tasks.toml".to_string(), task.to_string()),
+                    RedOnBase::Pass,
+                )
+            })
             .collect();
         let report = lint_files_with(&[dir.join("tasks.toml")], &dir, &passing);
         let hf3 = |task_id| record(&report, task_id).hard_fail.contains(&"HF3");

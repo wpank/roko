@@ -295,7 +295,10 @@ mod tests {
             .map(|line| {
                 let row: serde_json::Value = serde_json::from_str(line)
                     .unwrap_or_else(|error| panic!("a whole row, not {line:?}: {error}"));
-                (row["writer"].as_u64().unwrap(), row["row"].as_u64().unwrap())
+                (
+                    row["writer"].as_u64().unwrap(),
+                    row["row"].as_u64().unwrap(),
+                )
             })
             .collect();
         rows.sort_unstable();

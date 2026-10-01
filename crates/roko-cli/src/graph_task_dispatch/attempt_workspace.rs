@@ -829,4 +829,42 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         assert_eq!(checkouts, [0, 1], "each retry gets a fresh checkout");
         assert!(git(repo.path(), &["branch", "--list", "roko/plan/*"]).is_empty());
     }
+
+    /// reg-7cf6f9: an attempt waits for disk headroom while another attempt
+    /// holds it, and its provider runs once that attempt ends.
+    #[tokio::test]
+    async fn an_attempt_waits_for_disk_headroom() {
+        use crate::graph_execution::disk_admission::{DiskAdmission, WORKTREE_GROWTH_ESTIMATE_MB};
+        use crate::graph_task_dispatch::tests::{batch_ctx, make_batch_dispatcher};
+
+        let temp = tempdir().expect("tempdir");
+        let resources = roko_core::config::ResourcesConfig {
+            min_free_disk_mb: 0,
+            ..roko_core::config::ResourcesConfig::default()
+        };
+        // Room for exactly one attempt.
+        let admission = DiskAdmission::new(temp.path(), &resources)
+            .with_free_space(|_| Ok(WORKTREE_GROWTH_ESTIMATE_MB));
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |_| {}).await;
+        let dispatcher = dispatcher.with_disk_admission(admission.clone());
+        let running = admission.admit().await;
+
+        let spec = make_spec(&task);
+        let ctx = batch_ctx();
+        let dispatch = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        tokio::pin!(dispatch);
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), &mut dispatch);
+        assert!(waited.await.is_err(), "the attempt waits for headroom");
+        assert!(
+            !temp.path().join("provider-args").exists(),
+            "its provider has not run"
+        );
+
+        drop(running);
+        tokio::time::timeout(std::time::Duration::from_secs(30), dispatch)
+            .await
+            .expect("the attempt runs once the other one ends")
+            .expect("dispatch");
+        assert!(temp.path().join("provider-args").exists());
+    }
 }

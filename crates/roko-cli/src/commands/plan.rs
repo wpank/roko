@@ -637,6 +637,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     no_tui,
                     max_parallel_plans.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
                     fail_fast,
+                    force,
                 )
                 .await;
             }
@@ -2322,11 +2323,11 @@ fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Res
 ///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 ///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`,
 ///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`,
-///   `--max-parallel-plans`, `--fail-fast`
+///   `--max-parallel-plans`, `--fail-fast`, `--force`
 ///
 /// Flags that ARE warned (silently dropped by the Graph Engine):
 ///   `--resume` (global session resume), `--effort`, `--skip-preflight`,
-///   `--force`, `--screenshots`, `--screenshot-interval` (non-default),
+///   `--screenshots`, `--screenshot-interval` (non-default),
 ///   `--screenshot-dir`, `--batch-size`
 #[allow(clippy::fn_params_excessive_bools)]
 fn warn_graph_unsupported_flags(
@@ -2365,12 +2366,9 @@ fn warn_graph_unsupported_flags(
              the graph engine runs its own provider preflight"
         );
     }
-    if force {
-        tracing::warn!(
-            "--force is not supported with --engine graph and will be ignored; \
-             the graph engine does not perform a disk-space pre-check"
-        );
-    }
+    // --force skips the Graph engine's disk-space pre-check (reg-7cf6f9) --
+    // no warning needed.
+    let _ = force;
     if screenshots {
         tracing::warn!("--screenshots is not supported with --engine graph and will be ignored");
         // Warn for companion flags only when --screenshots is set, since they
@@ -2428,6 +2426,7 @@ async fn cmd_plan_run_engine(
     no_tui: bool,
     max_parallel_plans: Option<usize>,
     fail_fast: bool,
+    force: bool,
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
@@ -2481,6 +2480,7 @@ async fn cmd_plan_run_engine(
         fail_fast,
         only_plans: None,
         live_agent_output,
+        force_disk_check: force,
     })
     .await
 }

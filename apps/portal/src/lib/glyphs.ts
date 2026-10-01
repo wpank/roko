@@ -16,6 +16,7 @@ export type GlyphState =
   | 'unverified'
   | 'accepted'
   | 'unchecked'
+  | 'marked'
   | 'failed'
   | 'queued'
   | 'pending'
@@ -45,6 +46,8 @@ export interface GlyphDef {
  * amber too, since green means verified. `satisfied` is a task whose work was
  * already there: its verify steps passed on the tree its attempt left
  * unchanged. It is verified, but not a pass of this attempt, so it is cyan.
+ * `marked` is a task its plan file marks done that the run holds no record
+ * of: done on paper, with nothing to show it passed, so it stays faint.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
@@ -53,6 +56,7 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
   unverified: { glyph: '▷', token: 'var(--state-accepted)', label: 'running, not verified' },
   accepted: { glyph: '⚠', token: 'var(--state-accepted)', label: 'accepted' },
   unchecked: { glyph: '?', token: 'var(--state-accepted)', label: 'done, not verified' },
+  marked:   { glyph: '☑', token: 'var(--state-pending)',  label: 'done without a run record' },
   failed:   { glyph: '✗', token: 'var(--state-failed)',   label: 'failed'   },
   queued:   { glyph: '◌', token: 'var(--state-queued)',   label: 'queued'   },
   pending:  { glyph: '·', token: 'var(--state-pending)',  label: 'pending'  },
@@ -71,11 +75,12 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
  *   accepted_with_failures → accepted  (NEVER done — amber, not green)
  *   already_satisfied    → satisfied (cyan: its verify steps passed, but it is not a pass)
  *   unverified           → unchecked (NEVER done — amber, not green)
+ *   marked_done          → marked (done in tasks.toml, no run record; never done)
  *   skipped              → skipped
  *   cancelled            → skipped
  *   pending              → pending
  */
-export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
+export function glyphStateForTask(status: TaskStatus | 'pending' | 'marked_done'): GlyphState {
   switch (status) {
     case 'active':
       return 'active';
@@ -90,6 +95,8 @@ export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
       return 'satisfied';
     case 'unverified':
       return 'unchecked';
+    case 'marked_done':
+      return 'marked';
     case 'skipped':
       return 'skipped';
     case 'cancelled':

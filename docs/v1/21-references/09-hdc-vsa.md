@@ -34,7 +34,7 @@ Roko uses 10,240-bit Binary Spatter Codes (BSC) as the universal representation 
 - Kleyko, D., Rachkovskij, D.A., Osipov, E., & Rahimi, A. (2022). A Survey on Hyperdimensional Computing aka Vector Symbolic Architectures. _ACM Computing Surveys_, 55(6), Article 130.
   *Grounds: BSC selection — the most comprehensive HDC/VSA survey. Covers all major VSA families (MAP-B, MAP-C, BSC, HRR, FHRR, VTB). Validates the bundle similarity formula and capacity bounds used in Roko's implementation.*
 
-- Neubert, P., Schubert, S., & Protzel, P. (2022). Vector Symbolic Architectures as a Computing Framework for Emerging Hardware. _Proceedings of the IEEE_. arXiv:2106.05268.
+- Kleyko et al. (2022). Vector Symbolic Architectures as a Computing Framework for Emerging Hardware. _Proceedings of the IEEE_. arXiv:2106.05268.
   *Grounds: BSC hardware — comprehensive VSA survey covering Binary Spatter Codes (BSC/MAP-B): XOR binding, majority-vote bundling, cyclic-shift permutation. Surveys FPGA and ASIC implementations achieving sub-microsecond operations.*
 
 ---
@@ -88,14 +88,12 @@ Roko uses 10,240-bit Binary Spatter Codes (BSC) as the universal representation 
 
 ## FPGA and Hardware Acceleration
 
-- Imani, M. et al. (2019). FloatHD: Integer-Based Training Framework for Hyperdimensional Computing. _IEEE/ACM ICCAD_, 2019.
-  *Grounds: Hardware HDC — FPGA implementations achieving ~3-5ns per comparison at 200 MHz. Referenced as the FPGA acceleration path for Roko's HDC similarity search.*
 
 ---
 
 ## Online and Streaming Hashing
 
-- Çakir, F., He, K., Bargal, S.A., & Sclaroff, S. (2017). MIHash: Online Hashing with Mutual Information. _NeurIPS_, 2017.
+- Çakir, F., He, K., Bargal, S.A., & Sclaroff, S. (2017). ICCV 2017
   *Grounds: Streaming adaptation — online hashing for synchronous binary code updates under continuous data arrival. Applicable to streaming knowledge ingestion in Roko.*
 
 ---
@@ -119,13 +117,13 @@ Roko uses 10,240-bit Binary Spatter Codes (BSC) as the universal representation 
 
 ## HDC Frameworks and Applications (2024-2025)
 
-- Rahimi, A. et al. (2024). Hyperdimensional Computing: A Framework for Stochastic Computation and Symbolic AI. _Journal of Big Data_, 2024.
+- Heddes et al. (2024). Hyperdimensional Computing: A Framework for Stochastic Computation and Symbolic AI. _Journal of Big Data_, 2024.
   *Grounds: Unified HDC framework — comprehensive treatment of HDC as both a stochastic computation framework and symbolic AI system. Covers GraphHD for graph classification and HD hashing for dynamic similarity search. Validates BSC as a general-purpose computation substrate for Roko's knowledge representation.*
 
 - FLASH (2024). Hyperdimensional Computing with Holographic and Adaptive Encoder. _Frontiers in AI_, 2024.
   *Grounds: Learnable HDC encoding — adaptive and learnable encoder design learning the encoder matrix distribution via gradient descent. Bridges fixed random projection (Phase 1) and fully learned encoding (Phase 2) in Roko's HDC pipeline.*
 
-- HPVM-HDC (2024). A Heterogeneous Programming System for Accelerating HDC. arXiv:2410.15179.
+- Arbore et al. (2024). HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing. arXiv:2410.15179.
   *Grounds: HDC systems programming — unified programming model (HDC++) for writing HDC applications across heterogeneous hardware (CPU/GPU/FPGA). Informs Roko's HDC implementation portability.*
 
 - Hyperdimensional Computing in Biomedical Sciences (2025). _PMC_, 2025.

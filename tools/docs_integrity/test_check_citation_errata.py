@@ -124,8 +124,8 @@ class CitationErrataTests(unittest.TestCase):
             self.assertEqual(cce.main(args), 0)
             self.assertEqual(cce.main(["--prose"] + args), 1)
 
-    def test_docs_v3_has_no_known_erratum_in_citations_or_prose(self):
-        self.assertEqual(cce.main(["--prose", "docs/v3"]), 0)
+    def test_docs_v3_and_v1_have_no_known_erratum_in_citations_or_prose(self):
+        self.assertEqual(cce.main(["--prose"]), 0)
 
 
 if __name__ == "__main__":

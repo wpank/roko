@@ -62,7 +62,7 @@ Roko's C-Factor metric — `Collective Performance / Sum(Individual Performances
 
 ## Representation Engineering
 
-- Turner, A. et al. (2024). Activation Addition: Steering Language Models Without Optimization. arXiv:2308.10248.
+- Turner, A. et al. (2024). Steering Language Models With Activation Engineering. arXiv:2308.10248.
   *Grounds: Steering vectors — activation addition steers model behavior without fine-tuning. Potential mechanism for collective knowledge injection into agent behavior.*
 
 - Zou, A. et al. (2023). Representation Engineering: A Top-Down Approach to AI Transparency. arXiv:2310.01405.

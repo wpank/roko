@@ -27,7 +27,7 @@ Memory consolidation research provides the theoretical foundation for Roko's Neu
 - Kumaran, D., Hassabis, D., & McClelland, J.L. (2016). What Learning Systems do Intelligent Agents Need? Complementary Learning Systems Theory Updated. _Trends in Cognitive Sciences_, 20(7), 512-534.
   *Grounds: Prioritized consolidation — updated CLS showing replay scheduling matters: high-surprise episodes should be replayed more often. Grounds prioritized consolidation replay in Dreams.*
 
-- O'Reilly, R.C., Bhatt, M.A., & Russin, J.L. (2014). Complementary Learning Systems. _Cognitive Science_, 38(Suppl 1).
+- O'Reilly et al. (2014). Complementary Learning Systems. _Cognitive Science_, 38(Suppl 1).
   *Grounds: Pattern separation and completion — hippocampal pattern separation and neocortical pattern completion as complementary operations. Grounds the episodic/semantic store duality.*
 
 - McCloskey, M. & Cohen, N.J. (1989). Catastrophic Interference in Connectionist Networks: The Sequential Learning Problem. _Psychology of Learning and Motivation_, 24, 109-165.
@@ -110,7 +110,7 @@ Memory consolidation research provides the theoretical foundation for Roko's Neu
 - Zhong, W. et al. (2024). MemoryBank: Enhancing Large Language Models with Long-Term Memory. _AAAI_, 2024.
   *Grounds: Persistent knowledge store design — long-term memory augmentation for LLMs. Grounds persistent NeuroStore design.*
 
-- arXiv:2505.16067 (2025). On the Self-Degradation of Agent Memory.
+- arXiv:2505.16067 (2025). How Memory Management Impacts LLM Agents: An Empirical Study of Experience-Following Behavior.
   *Grounds: Quality gate on episodic consolidation — naive add-all memory consistently degrades agent performance. Incorrect past executions propagate through retrieval. Grounds the mark_verified quality gate.*
 
 ---
@@ -126,7 +126,7 @@ Memory consolidation research provides the theoretical foundation for Roko's Neu
 - Memory for Autonomous LLM Agents (2026). Mechanisms, Evaluation, and Emerging Frontiers. arXiv:2603.07670.
   *Grounds: Agent memory formalization — formalizes agent memory as a write-manage-read loop coupled with perception and action. Five mechanism families: context-resident compression, retrieval-augmented stores, reflective self-improvement, hierarchical virtual context, and policy-learned management. Validates Roko's separation of memory management from inference.*
 
-- Yehudai, M. et al. (2025). Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture. _HAI_, 2025.
+- Honda et al. (2025). Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture. _HAI_, 2025.
   *Grounds: ACT-R memory for agents — implements ACT-R decay and retrieval functions in LLM agent memory. Validates the Ebbinghaus-based decay and retrieval-boost mechanisms in NeuroStore with a complementary cognitive-science-grounded approach.*
 
 ---

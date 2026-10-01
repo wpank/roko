@@ -26,15 +26,15 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 - Agentic AI: A Comprehensive Survey (2025). _Artificial Intelligence Review_, Springer.
   *Grounds: Architecture validation — unified taxonomy decomposes LLM agents into six modular dimensions (Core Components, Cognitive Architecture, Learning, Multi-Agent, Environments, Evaluation). Data shows paradigm shift from symbolic (2018-2021) to neural orchestration (post-2022). Validates Roko's neural-first design with structured cognitive overlays. See [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
 
-- Wu, S. et al. (2025). Cognitive LLMs: Integrating Cognitive Architectures and LLMs for Manufacturing Decision-Making. _SAGE Journals_.
+- Wu, S. et al. (2025). Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models for Manufacturing Decision-Making for Manufacturing Decision-Making. _Neurosymbolic Artificial Intelligence (SAGE Publications)_.
   *Grounds: ACT-R + LLM — integrates classical cognitive architectures (ACT-R, SOAR) with LLMs, demonstrating that cognitive architecture principles improve LLM reasoning for structured tasks. Validates layering cognitive architecture onto LLM agents. See [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
 
-- Agentic AI: Architectures, Taxonomies, and Evaluation (2025). arXiv:2601.12560.
+- Agentic Artificial Intelligence (AI): Architectures, Taxonomies, and Evaluation of Large Language Model Agents (2025). arXiv:2601.12560.
   *Grounds: Agent evaluation — 21,730 rollouts confirm scaffold choice matters as much as model choice, replicating and extending the HAL finding. See [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
 
 ### Cognitive Workspace
 
-- Cognitive Workspace (2025). Active Memory Management for LLMs. arXiv:2508.13171.
+- An (2025). Active Memory Management for LLMs. arXiv:2508.13171.
   *Grounds: Context-as-workspace — treats the context window as a cognitive workspace with explicit read/write/evict operations. Mirrors NeuroStore's approach to context as a managed resource, not a passive buffer. See [20-cognitive-architectures.md](./20-cognitive-architectures.md).*
 
 - Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents (2025). arXiv:2502.06975.
@@ -67,7 +67,7 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 - LLM-Coordination: Evaluating Multi-agent Coordination Abilities (2025). _NAACL_, 2025.
   *Grounds: Coordination evaluation — benchmark and evaluation framework specifically for multi-agent LLM coordination abilities.*
 
-- Agentic LLMs in the Supply Chain: Multi-Agent Consensus-Seeking (2025). _International Journal of Production Research_.
+- Agentic LLMs in the supply chain: towards autonomous multi-agent consensus-seeking (2025). _International Journal of Production Research_.
   *Grounds: Consensus mechanisms — multi-agent LLM consensus-seeking with transactive reasoning and balanced collective convergence. Applicable to Roko's multi-agent decision procedures.*
 
 ### Cooperation Game Theory
@@ -88,20 +88,20 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 - Stigmergy Facilitates Emergent Patterns in Academic Communication (2025). Research Square.
   *Grounds: Human stigmergy — citation patterns follow stigmergic dynamics; digital cues on platforms (wikis, blockchain) enable decentralized coordination. Validates digital stigmergy beyond biological and robotic domains.*
 
-- Enhancing Radioactive Environment Exploration with Stigmergy (2024). _Robotics and Autonomous Systems_.
+- Enhancing radioactive environment exploration with bio-inspired swarm robotics: A comparative analysis of Levy flight and stigmergy methods (2024). _Robotics and Autonomous Systems_.
   *Grounds: Stigmergy vs Levy flight — comparative analysis showing stigmergy outperforms random exploration in hazardous environments. See [05-biological-analogues.md](./05-biological-analogues.md).*
 
 ---
 
 ## 4. HDC and Vector Symbolic Architecture Applications
 
-- Rahimi, A. et al. (2024). HDC: A Framework for Stochastic Computation and Symbolic AI. _Journal of Big Data_.
+- Heddes et al. (2024). HDC: A Framework for Stochastic Computation and Symbolic AI. _Journal of Big Data_.
   *Grounds: Unified framework — HDC as both stochastic computation framework and symbolic AI system. See [09-hdc-vsa.md](./09-hdc-vsa.md).*
 
-- FLASH: Adaptive Encoder for HDC (2024). _Frontiers in AI_.
+- Hyperdimensional computing with holographic and adaptive encoder (2024). _Frontiers in AI_.
   *Grounds: Learnable encoding — gradient-descent-based encoder matrix learning bridges fixed and learned encoding phases. See [09-hdc-vsa.md](./09-hdc-vsa.md).*
 
-- HPVM-HDC: Heterogeneous Programming System (2024). arXiv:2410.15179.
+- HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing (2024). arXiv:2410.15179.
   *Grounds: HDC portability — unified programming model for CPU/GPU/FPGA HDC execution. See [09-hdc-vsa.md](./09-hdc-vsa.md).*
 
 - Hyperdimensional Computing in Biomedical Sciences (2025). PMC review.
@@ -120,7 +120,7 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 - Shafiei, A. et al. (2025). Distributionally Robust Free Energy Principle for Decision-Making. _Nature Communications_, 17, 707.
   *Grounds: Robust active inference — DR-FREE combines robust FEP extension with resolution engine. Agents complete tasks even when SOTA fails under model uncertainty. See [16-active-inference.md](./16-active-inference.md).*
 
-- Koudahl, M.T. et al. (2024). Active Inference for Self-Organizing Multi-LLM Systems. arXiv:2412.10425.
+- Prakki (2024). Active Inference for Self-Organizing Multi-LLM Systems. arXiv:2412.10425.
   *Grounds: Cognitive layer for LLMs — active inference framework as cognitive layer above LLM agents, dynamically adjusting prompts through information-seeking behavior. See [16-active-inference.md](./16-active-inference.md).*
 
 - Synthetic Active Inference Agents, Part II (2024). arXiv:2306.02733.
@@ -133,8 +133,6 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ## 6. Affective Computing and Emotion in Agents
 
-- Yin, Y. et al. (2025). Emotions in Artificial Intelligence. arXiv:2505.01462.
-  *Grounds: Teleology-driven affect — unifies emotion theories under adaptive, goal-directed premise. See [02-affective-computing.md](./02-affective-computing.md).*
 
 - Intelligent Agents with Emotional Intelligence (2025). arXiv:2511.20657.
   *Grounds: EI for agents — survey identifying emotional intelligence as architecturally vital for agent systems. See [02-affective-computing.md](./02-affective-computing.md).*
@@ -179,7 +177,7 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ### Human-Inspired Memory
 
-- Yehudai, M. et al. (2025). ACT-R-Inspired Memory for LLM Agents. _HAI_, 2025.
+- Honda et al. (2025). Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture. _HAI_, 2025.
   *Grounds: ACT-R decay — validates Ebbinghaus-based decay with cognitive science grounding. See [01-memory-consolidation.md](./01-memory-consolidation.md).*
 
 - Enhancing Memory Retrieval in Generative Agents (2025). _Frontiers in Psychology_.
@@ -192,8 +190,6 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ## 8. Formal Verification for AI Safety
 
-- Position: Formal Methods are the Principled Foundation of Safe AI (2025). _ICML_.
-  *Grounds: Formal safety mandate — model checking, theorem proving, and abstract interpretation for AI systems. See [08-security-and-provenance.md](./08-security-and-provenance.md).*
 
 - Towards Guaranteed Safe AI (2024). arXiv:2405.06624.
   *Grounds: Safety guarantee framework — world model + safety specification + verifier = quantitative safety guarantees. Maps to NeuroStore + Policy + Gate. See [08-security-and-provenance.md](./08-security-and-provenance.md).*
@@ -211,16 +207,16 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ## 9. TDA for Time Series and Anomaly Detection
 
-- TDA and Topological Deep Learning Beyond Persistent Homology (2025). _Artificial Intelligence Review_, Springer.
+- Topological data analysis and topological deep learning beyond persistent homology: a review (2025). _Artificial Intelligence Review_, Springer.
   *Grounds: TDA extensions — persistent topological Laplacians capture both topological invariants and homotopic shape evolution. See [12-signal-processing.md](./12-signal-processing.md).*
 
 - Persistent Homology-Based Unsupervised Anomaly Detection (2025). OpenReview.
   *Grounds: TDA anomaly detection — delay embeddings + distance-to-measure Rips filtration for univariate time series. See [12-signal-processing.md](./12-signal-processing.md).*
 
-- Multivariate Time-Series Anomaly Detection with Topological Analysis (2024). arXiv:2408.13082.
+- Multivariate Time-Series Anomaly Detection based on Enhancing Graph Attention Networks with Topological Analysis (2024). arXiv:2408.13082.
   *Grounds: Graph-TDA — enhanced GAT with persistent homology for inter-feature dependencies. See [12-signal-processing.md](./12-signal-processing.md).*
 
-- Change Point Detection in Financial Time Series Using TDA (2025). _Systems_, 13(10).
+- Change Point Detection in Financial Market Using Topological Data Analysis (2025). _Systems_, 13(10).
   *Grounds: TDA change points — Takens embedding + sliding window for topological change detection. See [12-signal-processing.md](./12-signal-processing.md).*
 
 - Machine Learning of Time Series Using Persistent Homology (2025). _Scientific Reports_, Nature.
@@ -246,7 +242,7 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ## 11. Self-Learning and Reflection
 
-- SAMULE: Multi-level Reflection for Self-Learning Agents (2025). _EMNLP_, 2025.
+- Ge et al., SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection (2025). _EMNLP_, 2025. arXiv:2509.20562.
   *Grounds: Multi-level reflection — reflection across trajectories outperforms single-trajectory Reflexion. Error clustering extracts insight from failures. See [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - MAR: Multi-Agent Reflexion (2025). arXiv:2512.20845.
@@ -280,7 +276,7 @@ The formal verification community (VNN-COMP, Formal Methods for Safe AI) is prod
 
 ### Theme 5: Active Inference Works for LLM Systems
 
-DR-FREE (Shafiei 2025, Nature Communications) and Active Inference for Multi-LLM Systems (Koudahl 2024) demonstrate that active inference is not just a theoretical framework but a practical cognitive layer for LLM agents. Roko's EFE-based tier routing and context selection are validated by production-quality research.
+DR-FREE (Shafiei 2025, Nature Communications) and Active Inference for Self-Organizing Multi-LLM Systems: A Bayesian Thermodynamic Approach to Adaptation (Koudahl 2024) demonstrate that active inference is not just a theoretical framework but a practical cognitive layer for LLM agents. Roko's EFE-based tier routing and context selection are validated by production-quality research.
 
 ---
 

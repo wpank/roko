@@ -246,8 +246,7 @@ Each step is independent and can be wired incrementally.
 
 1. Refactoring PRD §02-five-layers — Temperament Profiling table, Layer 2
    specification.
-2. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. — Principle #5: Graduate Autonomy.
+2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — Principle #5: Graduate Autonomy.
 3. Refactoring PRD §07-implementation-priorities — Tier 2: Temperament wiring.
 4. `crates/roko-core/src/config/schema.rs` — AgentConfig temperament field.
 5. `crates/roko-learn/` — CascadeRouter, adaptive gate thresholds.

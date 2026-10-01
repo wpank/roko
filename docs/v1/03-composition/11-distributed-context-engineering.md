@@ -160,7 +160,7 @@ This principle makes the system fully inspectable: if an agent produces bad outp
 
 ## 5. The CLEAR Framework Connection
 
-The CLEAR framework [2025] defines five evaluation dimensions for AI systems: Cost, Latency, Efficacy, Assurance, Reliability. Distributed context engineering maps to CLEAR:
+CLEAR (Mehta 2025, arXiv:2511.14136) is an evaluation framework for enterprise agent deployments with five dimensions: Cost, Latency, Efficacy, Assurance, Reliability. Distributed context engineering maps to CLEAR:
 
 | CLEAR Dimension | Context Engineering Impact |
 |----------------|--------------------------|
@@ -170,7 +170,7 @@ The CLEAR framework [2025] defines five evaluation dimensions for AI systems: Co
 | **Assurance** | Explicit context = inspectable, auditable |
 | **Reliability** | Deterministic assembly = reproducible prompts |
 
-CLEAR's most important finding: optimizing for efficacy alone produces systems 4.4-10.8× more expensive than co-optimizing for cost and efficacy. The four context engineering strategies naturally co-optimize: Select reduces both cost and noise, Compress reduces cost while preserving quality, Isolate improves reliability, Write invests cost where it produces the highest return.
+CLEAR's most important finding: across six agents on 300 enterprise tasks, optimizing for accuracy alone yields agents 4.4-10.8× more expensive than cost-aware alternatives with comparable performance. The four context engineering strategies naturally co-optimize: Select reduces both cost and noise, Compress reduces cost while preserving quality, Isolate improves reliability, Write invests cost where it produces the highest return.
 
 ---
 
@@ -225,7 +225,7 @@ This framework enables targeted pruning — removing sections that are redundant
 
 **ARES** [Saad-Falcon et al., NAACL 2024]. Statistical confidence intervals for RAG evaluation from minimal human labels via Prediction-Powered Inference.
 
-**CLEAR Framework** [2025]. Five-dimensional evaluation: Cost, Latency, Efficacy, Assurance, Reliability. Accuracy-only optimization is 4.4-10.8× more expensive.
+**CLEAR** [Mehta 2025, "Beyond Accuracy: A Multi-Dimensional Framework for Evaluating Enterprise Agentic AI Systems", arXiv:2511.14136]. Five-dimensional evaluation: Cost, Latency, Efficacy, Assurance, Reliability. Accuracy-only optimization is 4.4-10.8× more expensive.
 
 **AI Agents That Matter** [Kapoor et al., Princeton 2025]. Minimum evaluation bar: run each condition at least 5 times, report mean with confidence intervals. Use clustered standard errors.
 

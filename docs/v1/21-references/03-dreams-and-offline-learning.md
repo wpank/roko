@@ -21,10 +21,10 @@ The brain dedicates 25-33% of its runtime to a state that prevents environmental
 
 ## Hypnagogia and Creative Insight
 
-- Lacaux, C., Andrillon, T., Arnulf, I., & Oudiette, D. (2021). Sleeping on a Problem: Catching the Creative Spark During Sleep Onset. _Science Advances_, 7(50), eabj5866.
+- Lacaux, C., Andrillon, T., Arnulf, I., & Oudiette, D. (2021). Sleep onset is a creative sweet spot. _Science Advances_, 7(50), eabj5866.
   *Grounds: Hypnagogia engine — 83% of subjects discovered hidden rules during brief N1 (sleep onset) exposure vs. 30% staying awake. The foundational result for Roko's hypnagogia engine: the Alpha Convergence Problem (all agents converging to similar solutions) is solved by forcing divergent exploration during idle periods.*
 
-- Lacaux, C. et al. (2024). Sleep Onset Is Not a One-Way Trip: A Comprehensive Review of the N1 Stage. _Trends in Neurosciences_, 47(4), 273-288.
+- Lacaux, C. et al. (2024). Embracing sleep-onset complexity: A Comprehensive Review of the N1 Stage. _Trends in Neurosciences_, 47(4), 273-288.
   *Grounds: N1 stage dynamics — comprehensive review establishing the N1 stage as a unique cognitive state with creativity-enhancing properties distinct from both wakefulness and deeper sleep.*
 
 - Haar Horowitz, A. et al. (2020). Dormio: A Targeted Dream Incubation Device. _Consciousness and Cognition_, 83, 102938.
@@ -64,7 +64,7 @@ The brain dedicates 25-33% of its runtime to a state that prevents environmental
 - Wagner, U. et al. (2004). Sleep Inspires Insight. _Nature_, 427, 352-355.
   *Grounds: Dream-based insight generation — sleep is 2.6× more likely to produce insight on hidden rule problems. Dream cycles produce genuine insight, not just consolidation.*
 
-- Zhao, J. et al. (2024). BTP: Towards Efficient and Reliable Experience Replay for LLM-Based Agents. arXiv:2410.12236.
+- Chen et al. (2024). Enhancing LLM Agents for Code Generation with Possibility and Pass-rate Prioritized Experience Replay. arXiv:2410.12236.
   *Grounds: Replay prioritization — P2Value (Possibility and Pass-rate Prioritized Value) for prioritized experience replay in LLM agents. Dream replay prioritizes informative failures.*
 
 - Wang, X. et al. (2024). Prioritized Generative Replay. arXiv:2410.18082.

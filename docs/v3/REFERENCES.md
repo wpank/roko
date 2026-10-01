@@ -1099,6 +1099,9 @@ Brief annotation: Efficient tool selection from large toolsets.
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
 Brief annotation: 48.5% latency reduction via speculative tool execution.
 
+**[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
+Brief annotation: Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies.
+
 **[Anonymous, 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
 Brief annotation: 50.31% cost reduction via plan-level caching.
 

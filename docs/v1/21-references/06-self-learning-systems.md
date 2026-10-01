@@ -38,10 +38,10 @@ An agent that does not improve is an expensive cron job. The research here estab
 
 ## Meta-Harness and Scaffold Self-Improvement
 
-- Lee, H., Chen, M., Gupta, A., & Hashimoto, T. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
+- Lee et al. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
   *Grounds: "The scaffold IS the product" thesis — 6x performance gap from scaffold changes alone. +7.7 points on text classification, +4.7 on IMO math, at 4x fewer tokens. The foundational paper for Roko's harness engineering approach.*
 
-- Pan, J., Lin, Z., & Hashimoto, T. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
+- Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
   *Grounds: Natural-language scaffolds — scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable.*
 
 - Kapoor, S. et al. (2026). HAL: A Holistic Agent Leaderboard. _ICLR_, 2026.
@@ -104,11 +104,9 @@ An agent that does not improve is an expensive cron job. The research here estab
 - TensorZero (2025). Track-and-Stop Optimal Bandits in an LLM Gateway. 2025.
   *Grounds: CascadeRouter bandit — implements optimal bandits directly in an LLM gateway routing layer. Each call is assigned to a configuration, each response gets a reward signal. Grounds Roko's CascadeRouter model selection.*
 
-- MASPOB (2026). Multi-Agent System Prompt Optimization with Bandits. arXiv, 2026.
+- MASPOB (2026). MASPOB: Bandit-Based Prompt Optimization for Multi-Agent Systems with Graph Neural Networks. arXiv, 2026.
   *Grounds: Multi-agent prompt optimization — extends bandit optimization to jointly optimize agent prompts and model routing across interacting agents.*
 
-- Kong, D. et al. (2025). EXPO: Adversarial EXP3 Bandits for Prompt Selection. 2025.
-  *Grounds: Adversarial bandits — EXP3 bandits handle worst-case (non-stochastic) reward sequences, appropriate when task distribution shifts over time.*
 
 ---
 

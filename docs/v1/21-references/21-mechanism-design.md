@@ -61,7 +61,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 - Glickman, M.E. (1999). Parameter Estimation in Large Dynamic Paired Comparison Experiments. _Journal of the Royal Statistical Society, Series C_, 48(3), 377-394.
   *Grounds: Glicko-2 — dynamic rating system that accounts for rating reliability (RD) and volatility. Grounds the reputation tracking in ERC-8004 agent identity, where reputation is not just a number but includes confidence intervals.*
 
-- Meritrank (2022). Nasrulin, B. et al. MeritRank: Sybil Tolerant Reputation. arXiv:2207.09950.
+- Nasrulin et al. (2022). Nasrulin, B. et al. MeritRank: Sybil Tolerant Reputation. arXiv:2207.09950.
   *Grounds: Sybil-tolerant reputation — reputation system resistant to Sybil attacks. Informs the on-chain reputation registry design.*
 
 - Soulbound Tokens (2022). Weyl, E.G., Ohlhaver, P., & Buterin, V. Decentralized Society: Finding Web3's Soul. _SSRN_.
@@ -104,7 +104,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 - Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW Best Paper_, 2024. arXiv:2310.10826.
   *Grounds: LLM mechanism design — token auction model operating on a token-by-token basis for joint output generation through multiple LLM agents. Validates applying auction theory to LLM-level resource allocation, extending VCG from context to token granularity.*
 
-- Deep Mechanism Design (2024). Learning Social and Economic Policies for Human Benefit. _PNAS_, 2024.
+- Tacchetti et al. (2024). Learning Social and Economic Policies for Human Benefit. _PNAS_, 2024.
   *Grounds: Neural mechanism design — deep neural networks trained with RL create desirable mechanisms for multi-agent coordination. Validates the feasibility of learning optimal allocation mechanisms rather than hand-designing them.*
 
 ---

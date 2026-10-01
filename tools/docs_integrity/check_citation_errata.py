@@ -31,7 +31,8 @@ mention.
 Usage:
   python3 tools/docs_integrity/check_citation_errata.py [--prose] [--summary] [--manifest FILE] [PATH ...]
 
-PATH is a file or a directory (default docs/v3). Exit status: 0 clean, 1 errata found, 2 bad input.
+PATH is a file or a directory (default docs/v3 and docs/v1; docs/v1 is deprecated but still published, so its
+citations get the same minimal corrections). Exit status: 0 clean, 1 errata found, 2 bad input.
 """
 from __future__ import annotations
 
@@ -176,23 +177,21 @@ class Errata:
             for t in w.anchor_titles:
                 by_title.setdefault(fold(t), []).append(w)
         self.by_title = by_title
-        self.title_rx = trie_regex(sorted(by_title))
+        trie = trie_regex(sorted(by_title))
+        # a zero-width match at every word start where some title begins; the regex engine does the scanning
+        self.title_scan = re.compile(rf"(?<![a-z0-9])(?=({trie.pattern}))") if trie else None
 
     def about(self, window: str) -> list[Work]:
         found: dict[str, Work] = {}
         for m in ARXIV_ID.finditer(window):
             for w in self.by_id.get(m.group(1), []):
                 found[w.key] = w
-        if self.title_rx:
+        if self.title_scan:
             text = fold(window)
-            for i in range(len(text)):
-                if i and text[i - 1].isalnum():
-                    continue
-                m = self.title_rx.match(text, i)
-                if not m:
-                    continue
+            for m in self.title_scan.finditer(text):
+                i = m.start()
                 # the trie matches the longest title; shorter titles that are prefixes of it are anchors too
-                for j in range(i + 8, m.end() + 1):
+                for j in range(i + 8, m.end(1) + 1):
                     for w in self.by_title.get(text[i:j], []):
                         found[w.key] = w
         return list(found.values())
@@ -325,7 +324,7 @@ def files(paths: list[str]) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("paths", nargs="*", default=["docs/v3"])
+    ap.add_argument("paths", nargs="*", default=["docs/v3", "docs/v1"])
     ap.add_argument("--manifest", default=str(MANIFEST))
     ap.add_argument("--summary", action="store_true", help="print counts by file and by class after the findings")
     ap.add_argument("--prose", action="store_true", help="also check how Markdown prose describes each work")

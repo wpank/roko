@@ -47,3 +47,11 @@ Supervision (epic spec-edda86): a provider can stall after streaming deltas, or 
   - The Claude CLI adapter now forwards partial-message deltas, bare `content_block_delta` lines and `stream_event` wrappers alike, as text or reasoning deltas, so they reach the watchdog as progress.
   - Silence counts from the call's start only for the Claude CLI (`streams_as_it_goes`). Providers that may report only at the end (the Codex CLI, the Cursor CLI, and for now the API and ACP kinds) keep the first-event rule, so a long Codex run is not cancelled after 300 s without events. The coordinator agreed this boundary.
   - Tests: `a_delta_only_stream_still_trips_the_watchdog`, `a_streaming_call_is_silent_from_its_start`.
+- 2026-10-01 (wk-tiers): the batch-20f gate showed a problem with the Claude-only "silent from its start" rule.
+  Under load, it cancelled calls that were only starting: providers never launched, and attempts that talked were
+  blamed on infra. Fixed at `fe853655e`:
+  - Before its first event, a streaming call's silence counts only once `FIRST_OUTPUT_GRACE` (30 s) has passed.
+    A call that never reports anything is still cancelled, after max(30 s, `task_stall_secs`).
+  - After the first event, silence counts from the last event, as before.
+  - Evidence: `cargo test -p roko-cli --lib graph_task_dispatch -- --test-threads=32` passed 10 of 10 runs (220 tests
+    each) in a cloned target at load average 36-62.

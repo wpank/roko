@@ -323,6 +323,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         cancel_token: None,
         tool_audit: None,
         max_turns: None,
+        thinking: None,
     };
 
     let agent = ClaudeCliAdapter

@@ -2210,7 +2210,8 @@ files = [
             "08g-first-run",
         ] {
             let report = validate_plans_dir(&portal.join(name), None).unwrap();
-            assert_eq!(report.plans.len(), 1, "{name}: {report:?}");
+            // A plan with no diagnostics at all is checked but not listed.
+            assert_eq!(report.totals.plans_checked, 1, "{name}: {report:?}");
             let accept: Vec<&str> = report
                 .plans
                 .iter()

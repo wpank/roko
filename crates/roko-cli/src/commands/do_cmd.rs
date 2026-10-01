@@ -559,7 +559,8 @@ async fn run_complex_path(
     _context: &[PathBuf],
 ) -> Result<i32> {
     use roko_cli::agent_config::{command_from_config, load_gateway_env};
-    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
+    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent_recorded};
+    use roko_cli::plan_authoring::AuthoringSpend;
 
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
     out.step(
@@ -648,17 +649,22 @@ async fn run_complex_path(
 
     let content_before = std::fs::read(&draft_path).ok();
     let started = Instant::now();
-    let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-        prompt: &task_prompt,
-        workdir,
-        model: Some(model_key.as_str()),
-        effort: effort_ref,
-        system_prompt: Some(&system),
-        resume_session,
-        env_vars: &gw.vars,
-        role: Some("scribe"),
-        allowed_tools: Some("none"),
-    })
+    let task_id = format!("do:prd:draft:{slug}");
+    let spend = AuthoringSpend::operation(workdir, &task_id, "scribe");
+    let (exit_code, output) = run_agent_capture_silent_recorded(
+        AgentExecOpts {
+            prompt: &task_prompt,
+            workdir,
+            model: Some(model_key.as_str()),
+            effort: effort_ref,
+            system_prompt: Some(&system),
+            resume_session,
+            env_vars: &gw.vars,
+            role: Some("scribe"),
+            allowed_tools: Some("none"),
+        },
+        &spend,
+    )
     .await?;
 
     // Handle agent output: check if it wrote the file or returned text.
@@ -689,7 +695,7 @@ async fn run_complex_path(
         &agent_command,
         Some(model_key.as_str()),
         "do-prd-draft",
-        &format!("do:prd:draft:{slug}"),
+        &task_id,
         &task_prompt,
         &output,
         draft_written,

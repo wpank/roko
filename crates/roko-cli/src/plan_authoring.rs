@@ -439,8 +439,8 @@ pub const REVISION_SPEND_TASK_ID: &str = "revise";
 /// Role that plan generation and revision run their agents as.
 const AUTHORING_ROLE: &str = "strategist";
 
-/// Records the provider spend of one plan generation or revision, one agent
-/// call at a time.
+/// Records the provider spend of one plan generation or revision, or of a
+/// one-off agent operation outside any plan, one agent call at a time.
 ///
 /// A task dispatch records its spend three ways: a cost record in
 /// `.roko/learn/costs.jsonl`, an efficiency row in
@@ -451,10 +451,14 @@ const AUTHORING_ROLE: &str = "strategist";
 /// instead: the same three records, attributed to the plan under a pseudo task
 /// id ([`GENERATION_SPEND_TASK_ID`] or [`REVISION_SPEND_TASK_ID`]). Each call
 /// is recorded as it returns, so a retry or a failed operation is counted too.
+/// Research, `roko do` and PRD drafting record through
+/// [`AuthoringSpend::operation`]: the same records, with no plan id, under the
+/// operation's own task id and role.
 pub struct AuthoringSpend {
     learn_dir: PathBuf,
     plan_id: String,
-    task_id: &'static str,
+    task_id: String,
+    role: String,
     live: Option<TuiBridge>,
     calls: AtomicU32,
 }
@@ -463,20 +467,35 @@ impl AuthoringSpend {
     /// Spend of generating the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn generation(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, GENERATION_SPEND_TASK_ID, live)
+        Self::new(workdir, plan_id, GENERATION_SPEND_TASK_ID, AUTHORING_ROLE, live)
     }
 
     /// Spend of revising the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn revision(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, REVISION_SPEND_TASK_ID, live)
+        Self::new(workdir, plan_id, REVISION_SPEND_TASK_ID, AUTHORING_ROLE, live)
     }
 
-    fn new(workdir: &Path, plan_id: &str, task_id: &'static str, live: Option<TuiBridge>) -> Self {
+    /// Spend of a one-off agent operation in `workdir` outside any plan, such
+    /// as research, `roko do` or PRD drafting, recorded under `task_id` and
+    /// `role` (bug-86ff56).
+    #[must_use]
+    pub fn operation(workdir: &Path, task_id: &str, role: &str) -> Self {
+        Self::new(workdir, "", task_id, role, None)
+    }
+
+    fn new(
+        workdir: &Path,
+        plan_id: &str,
+        task_id: &str,
+        role: &str,
+        live: Option<TuiBridge>,
+    ) -> Self {
         Self {
             learn_dir: roko_fs::RokoLayout::for_project(workdir).learn_dir(),
             plan_id: plan_id.to_string(),
-            task_id,
+            task_id: task_id.to_string(),
+            role: role.to_string(),
             live,
             calls: AtomicU32::new(0),
         }
@@ -494,14 +513,20 @@ impl AuthoringSpend {
         let cache_write_tokens = u64::from(usage.cache_create_tokens);
         let succeeded = call.exit_code == 0;
         let timestamp = chrono::Utc::now().to_rfc3339();
+        // The plan and its pseudo task, or an operation's task alone.
+        let scope = if self.plan_id.is_empty() {
+            self.task_id.clone()
+        } else {
+            format!("{}/{}", self.plan_id, self.task_id)
+        };
 
         let cost_record = CostRecord {
             timestamp: timestamp.clone(),
             model: call.model.clone(),
             provider: call.provider.clone(),
-            role: AUTHORING_ROLE.to_string(),
+            role: self.role.clone(),
             plan_id: self.plan_id.clone(),
-            task_id: self.task_id.to_string(),
+            task_id: self.task_id.clone(),
             complexity_band: "standard".to_string(),
             input_tokens,
             output_tokens,
@@ -516,13 +541,13 @@ impl AuthoringSpend {
         self.append("costs.jsonl", &cost_record).await;
 
         let efficiency_event = AgentEfficiencyEvent {
-            agent_id: format!("{}/{}", self.plan_id, self.task_id),
-            role: AUTHORING_ROLE.to_string(),
+            agent_id: scope.clone(),
+            role: self.role.clone(),
             backend: call.provider.clone(),
             model: call.model.clone(),
             plan_id: self.plan_id.clone(),
-            task_id: self.task_id.to_string(),
-            attempt_id: format!("{}/{}/a{attempt}", self.plan_id, self.task_id),
+            task_id: self.task_id.clone(),
+            attempt_id: format!("{scope}/a{attempt}"),
             input_tokens,
             output_tokens,
             reasoning_tokens: u64::from(usage.reasoning_tokens),
@@ -556,13 +581,13 @@ impl AuthoringSpend {
         if let Some(live) = &self.live {
             live.token_usage(
                 &self.plan_id,
-                self.task_id,
+                &self.task_id,
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
             );
-            live.efficiency_event(&self.plan_id, self.task_id, "cost_usd", cost_usd);
+            live.efficiency_event(&self.plan_id, &self.task_id, "cost_usd", cost_usd);
         }
     }
 
@@ -588,7 +613,7 @@ impl AuthoringSpend {
             tracing::warn!(
                 path = %path.display(),
                 plan_id = %self.plan_id,
-                task_id = self.task_id,
+                task_id = %self.task_id,
                 %error,
                 "authoring spend write failed (best-effort)"
             );

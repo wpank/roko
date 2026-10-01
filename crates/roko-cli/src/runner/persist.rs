@@ -532,24 +532,7 @@ impl GateThresholds {
 /// rungs have been exercised in past runs.  If the file does not exist yet
 /// (fresh workspace), a fully defaulted set is returned.
 pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
-    let mut thresholds = match GateThresholds::load(&paths.gate_thresholds_json) {
-        Ok(t) => t,
-        Err(err)
-            if err.chain().any(|e| {
-                e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-            }) =>
-        {
-            tracing::debug!(
-                path = %paths.gate_thresholds_json.display(),
-                "gate-thresholds.json not found; starting from defaults"
-            );
-            GateThresholds::default()
-        }
-        Err(err) => return Err(err),
-    };
-    thresholds.fill_default_rungs();
-    Ok(thresholds)
+    GateThresholds::load_or_default(&paths.gate_thresholds_json)
 }
 
 /// Atomically write the adaptive gate thresholds to the standalone

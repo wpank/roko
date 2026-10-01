@@ -2700,11 +2700,12 @@ async fn find_prd(
 /// name is found.
 async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
     let first_line = prompt.lines().next().unwrap_or("").trim();
-    let title = if first_line.len() > 80 {
-        &first_line[..80]
-    } else {
-        first_line
-    };
+    // At most 80 characters: cutting at byte 80 can split a multi-byte
+    // character, which panics (bug-7feee7).
+    let title = first_line
+        .char_indices()
+        .nth(80)
+        .map_or(first_line, |(end, _)| &first_line[..end]);
     let base = slug_from_title(title);
     let base = if base.is_empty() {
         "plan".to_string()
@@ -3280,6 +3281,18 @@ mod tests {
     }
 
     // ── slug_from_title unit tests ────────────────────────────────────────
+
+    /// bug-7feee7: a first line longer than 80 bytes whose byte 80 falls
+    /// inside a multi-byte character is cut at a character boundary, so the
+    /// slug is derived instead of the request panicking.
+    #[tokio::test]
+    async fn derive_unique_slug_cuts_a_multi_byte_first_line_at_a_char_boundary() {
+        let dir = tempdir().expect("tempdir");
+        let prompt = format!("a{}\nsecond line", "é".repeat(100));
+        assert!(!prompt.is_char_boundary(80));
+
+        assert_eq!(derive_unique_slug(dir.path(), &prompt).await, "a");
+    }
 
     #[test]
     fn slug_from_title_basic() {

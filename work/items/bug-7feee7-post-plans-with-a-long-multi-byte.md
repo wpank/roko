@@ -3,13 +3,15 @@ id = "bug-7feee7"
 kind = "bug"
 title = "POST /plans with a long multi-byte prompt panics: derive_unique_slug cuts the first line at byte 80"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-serve/routes"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "e8c5d3a27"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-1cb461"
 anchors = ["crates/roko-serve/src/routes/plans.rs::derive_unique_slug"]
@@ -48,3 +50,5 @@ Confirmed by reading the code at `ebdc0f5d5`: the slice uses a byte index withou
 ## Notes
 
 - Reported by wk-serve2 on 2026-10-01 while working on bug-1cb461. The file is wk-runstate's area in that round.
+
+2026-10-01 (wk-runstate): implemented on work/find-8872ad; cargo verification deferred to the batch check. `derive_unique_slug` now takes at most 80 characters of the first line (`char_indices().nth(80)`) instead of 80 bytes, so the cut always lands on a character boundary, as the draft writer's "≤80 chars" title rule says. No shared char-boundary helper exists in roko-serve to reuse. Test: `derive_unique_slug_cuts_a_multi_byte_first_line_at_a_char_boundary` (routes/plans.rs). Its first line is longer than 80 bytes, byte 80 falls inside an `é`, and the slug comes back as `a` without a panic.

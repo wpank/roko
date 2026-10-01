@@ -69,3 +69,5 @@ The pilots (gap-c33709, gap-327242) run the Roko arm. As it stands, every Roko-a
 - The `real_roko` skip reason now says the arm was not run against real Roko, and the documented test commands pass
   `-rs`. The `[[verify]]` now sets `VB_TEST_ROKO_BIN`, the variable the tests read (it said `ROKO_BIN`), and also
   runs the refusal test.
+- Re-verified after merging the working branch (1f2ed653f) into `work/bug-a05c53`, against the 1ce6526f8 snapshot
+  (which has 5b8efa148, where PLAN_041 arrived): 4 passed. It had passed against fcdaf32ae before the merge.

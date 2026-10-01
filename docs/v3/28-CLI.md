@@ -1338,7 +1338,7 @@ roko learn feedback-proof [--workdir <path>]
 
 ### `roko learn role-costs`
 
-Show per-role cost profiles (average cost, token budget, pass rate).
+Show per-role cost profiles (average and p95 cost, token budget, pass rate). Cost figures cover only turns whose cost was measured; turns with an unknown cost are counted in a "No Cost" column, and a role with none measured shows `unknown`.
 
 ```
 roko learn role-costs [--workdir <path>]

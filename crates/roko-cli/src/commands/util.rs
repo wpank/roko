@@ -487,37 +487,27 @@ pub(crate) async fn cmd_run(
     }
 }
 
-/// One `roko status` line per role. Cost figures come only from events whose
-/// cost was measured: an event that consumed tokens but recorded $0 (a bench
-/// run of an external agent, say) has an unknown cost, so it is counted as
-/// unknown rather than averaged in as free.
+/// One `roko status` line per role. The role profiles' cost figures come only
+/// from events whose cost was measured: an event that consumed tokens but
+/// recorded $0 (a bench run of an external agent, say) has an unknown cost,
+/// so it is counted as unknown rather than averaged in as free.
 fn efficiency_role_lines(events: &[AgentEfficiencyEvent]) -> Vec<String> {
-    let costed_events: Vec<AgentEfficiencyEvent> = events
-        .iter()
-        .filter(|event| event.has_known_cost())
-        .cloned()
-        .collect();
-    let costed_profiles = compute_role_profiles(&costed_events);
     compute_role_profiles(events)
         .iter()
         .map(|profile| {
-            let costed = costed_profiles
-                .iter()
-                .find(|costed| costed.role == profile.role);
-            let cost = match costed {
-                Some(costed) => {
+            let cost = match (profile.avg_cost_usd, profile.p95_cost_usd) {
+                (Some(avg_cost), Some(p95_cost)) => {
                     let mut cost = format!(
                         "avg_cost=${:.4}  p95_cost=${:.4}",
-                        costed.avg_cost_usd.max(0.0),
-                        costed.p95_cost_usd.max(0.0),
+                        avg_cost.max(0.0),
+                        p95_cost.max(0.0),
                     );
-                    let unknown = profile.observations.saturating_sub(costed.observations);
-                    if unknown > 0 {
-                        cost.push_str(&format!("  cost_unknown={unknown}"));
+                    if profile.cost_unknown > 0 {
+                        cost.push_str(&format!("  cost_unknown={}", profile.cost_unknown));
                     }
                     cost
                 }
-                None => "avg_cost=unknown  p95_cost=unknown".to_string(),
+                _ => "avg_cost=unknown  p95_cost=unknown".to_string(),
             };
             format!(
                 "  {:<16} {cost}  pass_rate={:.0}%  n={}",
@@ -2743,7 +2733,10 @@ mod tests {
 
         let bench = line("BenchAgent");
         assert!(bench.contains("avg_cost=unknown"), "{bench}");
-        assert!(!bench.contains('$'), "an unknown cost must not print as dollars: {bench}");
+        assert!(
+            !bench.contains('$'),
+            "an unknown cost must not print as dollars: {bench}"
+        );
         assert!(bench.contains("n=2"), "{bench}");
 
         // The one measured cost is averaged alone; the other is counted.

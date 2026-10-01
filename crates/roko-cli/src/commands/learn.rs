@@ -2750,23 +2750,28 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
         println!("Per-role cost profiles ({})", eff_path.display());
         println!();
         println!(
-            "  {:<16} {:>5} {:>10} {:>10} {:>8} {:>10} {:>8}",
-            "Role", "Obs", "Avg Cost", "P95 Cost", "Pass%", "Cost/Pass", "Avg Wall"
+            "  {:<16} {:>5} {:>8} {:>10} {:>10} {:>8} {:>10} {:>8}",
+            "Role", "Obs", "No Cost", "Avg Cost", "P95 Cost", "Pass%", "Cost/Pass", "Avg Wall"
         );
-        println!("  {}", "-".repeat(76));
+        println!("  {}", "-".repeat(85));
+        // Cost columns cover only turns whose cost was measured; "No Cost"
+        // counts the rest, and a role with no measured turn shows "unknown".
+        let usd =
+            |cost: Option<f64>| cost.map_or_else(|| "unknown".to_string(), |c| format!("${c:.4}"));
         for p in &profiles {
             let pass_pct = format!("{:.0}%", p.pass_rate * 100.0);
-            let cost_per_pass = if p.cost_per_successful_task().is_finite() {
-                format!("${:.4}", p.cost_per_successful_task())
-            } else {
-                "inf".to_string()
+            let cost_per_pass = match p.cost_per_successful_task() {
+                Some(cost) if cost.is_finite() => format!("${cost:.4}"),
+                Some(_) => "inf".to_string(),
+                None => "unknown".to_string(),
             };
             println!(
-                "  {:<16} {:>5} {:>10} {:>10} {:>8} {:>10} {:>8}",
+                "  {:<16} {:>5} {:>8} {:>10} {:>10} {:>8} {:>10} {:>8}",
                 truncate_str(&p.role, 16),
                 p.observations,
-                format!("${:.4}", p.avg_cost_usd),
-                format!("${:.4}", p.p95_cost_usd),
+                p.cost_unknown,
+                usd(p.avg_cost_usd),
+                usd(p.p95_cost_usd),
                 pass_pct,
                 cost_per_pass,
                 format!("{:.0}ms", p.avg_wall_time_ms),

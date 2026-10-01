@@ -57,7 +57,7 @@ use super::state::{PendingApproval, PlanEntry, TaskRowStatus, TuiState};
 use super::tabs::Tab;
 use super::verdicts::VerdictsAggregator;
 use super::views::{self, ViewState};
-use super::ws_client::{AgentStreamClient, StreamChunk};
+use super::ws_client::AgentStreamClient;
 
 pub use event_loop::run;
 

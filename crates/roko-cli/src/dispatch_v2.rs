@@ -49,7 +49,7 @@ use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores}
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
-use roko_core::agent::{ProviderKind, resolve_model};
+use roko_core::agent::{ProviderKind, resolve_model, try_resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
@@ -1326,6 +1326,9 @@ pub enum UnsupportedProviderReason {
     UnsupportedCliProvider,
     /// The command is not a known supported CLI protocol.
     UnsupportedCommand,
+    /// No `[models.*]` entry, configured slug or builtin model resolves the
+    /// key (bug-5cff57).
+    UnknownModel,
 }
 
 /// Fully resolved dispatch target for a model key.
@@ -1366,7 +1369,10 @@ impl ProviderDispatchResolver {
         Self { config }
     }
 
-    /// Resolve a model key into a dispatchable provider target.
+    /// Resolve a model key into a dispatchable provider target. A key that no
+    /// `[models.*]` entry, configured slug or builtin model resolves is
+    /// unsupported, with [`try_resolve_model`]'s reason, rather than sent to
+    /// whichever provider its name suggests (bug-5cff57).
     pub fn resolve(&self, model_key: &str) -> ProviderDispatchSpec {
         let resolved = resolve_model(&self.config, model_key);
         let models = self.config.effective_models();
@@ -1382,6 +1388,22 @@ impl ProviderDispatchResolver {
                     .find(|profile| profile.slug == resolved.slug)
                     .cloned()
             });
+        if model_profile.is_none()
+            && let Err(error) = try_resolve_model(&self.config, model_key)
+        {
+            return ProviderDispatchSpec {
+                model_key: model_key.to_string(),
+                model_slug: resolved.slug.clone(),
+                provider_id: resolved.provider_kind.label().to_string(),
+                provider_kind: resolved.provider_kind,
+                model_profile: None,
+                provider_config: None,
+                runtime: ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    detail: error.to_string(),
+                }),
+            };
+        }
 
         let model_slug = model_profile
             .as_ref()
@@ -2839,6 +2861,49 @@ mod tests {
             .expect("the system prompt flag");
         assert_eq!(invocation.args[at + 1], "Role\n\nWorkspace\n\nTurn");
         assert!(!invocation.args.iter().any(|arg| arg.contains("<!-- cache:")));
+    }
+
+    /// bug-5cff57: a key nothing configures is unsupported, with the reason,
+    /// even when a provider of the kind its name suggests is configured; a
+    /// builtin model is not unknown.
+    #[test]
+    fn provider_dispatch_resolver_unknown_model_is_unsupported() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "claude_cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        let resolver = ProviderDispatchResolver::new(Arc::new(config));
+
+        let spec = resolver.resolve("mystery-model-9");
+        let ProviderRuntime::Unsupported(unsupported) = &spec.runtime else {
+            panic!("an unknown model must not dispatch: {:?}", spec.runtime);
+        };
+        assert_eq!(unsupported.reason, UnsupportedProviderReason::UnknownModel);
+        assert!(
+            unsupported.detail.contains("`mystery-model-9`"),
+            "{}",
+            unsupported.detail
+        );
+        assert!(spec.provider_config.is_none());
+        let builtin = resolver.resolve("claude-sonnet-4-6");
+        assert!(
+            !matches!(
+                &builtin.runtime,
+                ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    ..
+                })
+            ),
+            "{:?}",
+            builtin.runtime
+        );
     }
 
     #[test]

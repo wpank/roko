@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use roko_core::dashboard_snapshot::{
-    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED,
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_PASSED,
+    TASK_OUTCOME_UNVERIFIED,
 };
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::cells::task_executor::TaskGateVerdict;
@@ -285,11 +286,16 @@ impl GraphTuiBridge {
 /// Dashboard outcome for a finished node.
 ///
 /// Only a completed node whose gate verdict is `passed` is reported as
-/// passed. A forced accept is accepted-with-failures, and a node that
-/// completed without a verify step judging it is unverified (bug-7e1b6b).
+/// passed. One whose work was already there, so its verify steps passed on a
+/// tree its attempt left unchanged, is `already_satisfied` (gap-9eb1e1). A
+/// forced accept is accepted-with-failures, and a node that completed without
+/// a verify step judging it is unverified (bug-7e1b6b).
 fn node_outcome(status: NodeStatus, verdict: Option<TaskGateVerdict>) -> &'static str {
     match (status, verdict) {
         (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => TASK_OUTCOME_PASSED,
+        (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
+            TASK_OUTCOME_ALREADY_SATISFIED
+        }
         (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept)) => {
             TASK_OUTCOME_ACCEPTED_WITH_FAILURES
         }
@@ -505,6 +511,18 @@ mod tests {
                 TASK_OUTCOME_UNVERIFIED
             );
         }
+    }
+
+    /// gap-9eb1e1: a task whose work was already there is its own outcome.
+    #[test]
+    fn already_satisfied_verdict_is_not_reported_as_passed() {
+        assert_eq!(
+            node_outcome(
+                NodeStatus::Complete,
+                Some(TaskGateVerdict::AlreadySatisfied),
+            ),
+            "already_satisfied"
+        );
     }
 
     #[test]

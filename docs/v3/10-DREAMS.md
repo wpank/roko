@@ -1463,7 +1463,7 @@ cargo run -p roko-cli -- knowledge dream schedule
 | Pearl (2009), Causality: Models, Reasoning, and Inference | Three-level SCM framework for counterfactual reasoning |
 | Boden (2004), The Creative Mind | Three creativity modes: combinational, exploratory, transformational |
 | Lin et al. (2025), arXiv:2504.13171 | Sleep-time compute: 5x test-time reduction via offline processing |
-| Auto-Dreamer (2026), arXiv:2605.20616 | Learned consolidator using CLS theory for schema distillation |
+| Auto-Dreamer (Ye et al. 2026), arXiv:2605.20616 | Learned consolidator using CLS theory for schema distillation |
 | Language Models Need Sleep (2026), arXiv:2606.03979 | Parametric distillation during offline phases |
 | Do LMs Need Sleep? (2026), arXiv:2605.26099 | Offline recurrence produces structured abstractions |
 | TiMem (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |

@@ -1,13 +1,16 @@
 #![cfg(unix)]
 
 //! Canary C5 (assessment W8, gate G5): a Graph run whose agent tampers with
-//! what checks it, or changes nothing, is stopped before its verify steps,
-//! and the plan's checkpoint and `roko plan status` agree that it failed.
+//! what checks it is stopped before its verify steps, one whose agent changes
+//! nothing on a tree that does not already pass its checks is rejected, and
+//! the plan's checkpoint and `roko plan status` agree that it failed. A
+//! `--fresh` rerun of a finished task, whose work is already there, completes
+//! as already satisfied (gap-9eb1e1).
 //!
 //! Each plan holds one task and runs on its own, in a git repository, with a
-//! scripted fake Claude CLI whose next action the test picks. Every verify
-//! step leaves a marker outside the repository, so the test can tell whether
-//! it ran.
+//! scripted fake Claude CLI whose next action the test picks. Each verify
+//! step checks for the helper its task adds, then leaves a marker outside the
+//! repository, so the test can tell whether it passed.
 
 use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
@@ -84,10 +87,17 @@ fn git(repo: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-/// One single-task plan: task `id`, named `plan`, asked to change `file`,
-/// whose verify step leaves `<root>/markers/<id>.ran`.
+/// One single-task plan: task `id`, named `plan`, asked to add a helper to
+/// `file`, whose verify step checks for it and then leaves
+/// `<root>/markers/<id>.ran`.
 fn plan(canary: &Canary, plan: &str, id: &str, file: &str, accept: bool) {
     let marker = canary.root.join("markers").join(format!("{id}.ran"));
+    // The helper the task asks for: `add3` in `src/add.rs`, and so on.
+    let helper = Path::new(file)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| format!("{stem}3"))
+        .expect("a file name");
     let accept = if accept {
         "\n[task.accept]\nfiles = [{ src = \"accept/add_accept.sh\", dest = \"tests/accept/add_accept.sh\", runner = \"sh {dest}\", count = 1 }]\n"
     } else {
@@ -126,7 +136,7 @@ mcp_servers = []
 depends_on = []
 depends_on_plan = []
 acceptance = []
-verify = [{{ phase = "structural", command = "touch {marker}", fail_msg = "the marker was not written" }}]
+verify = [{{ phase = "structural", command = "grep -q {helper} {file} && touch {marker}", fail_msg = "the helper is missing" }}]
 timeout_secs = 30
 max_retries = 0
 {accept}"#,
@@ -236,18 +246,26 @@ diff_scope = "{diff_scope}"
 
     /// Run `plan` with the fake agent set to `action`; returns roko's stderr.
     fn run(&self, plan: &str, action: &str) -> (Output, String) {
+        self.run_with(plan, action, &[])
+    }
+
+    /// [`Self::run`] with `extra` arguments to `roko plan run`.
+    fn run_with(&self, plan: &str, action: &str, extra: &[&str]) -> (Output, String) {
         fs::write(self.root.join("next-action"), action).expect("pick the agent's action");
         let repo = self.repo.display().to_string();
-        let output = self.roko(&[
+        let plan_dir = format!("plans/{plan}");
+        let mut args = vec![
             "--json",
             "plan",
             "run",
-            &format!("plans/{plan}"),
+            plan_dir.as_str(),
             "--engine",
             "graph",
             "--workdir",
-            &repo,
-        ]);
+            repo.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        let output = self.roko(&args);
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         (output, stderr)
     }
@@ -365,10 +383,11 @@ fn c5_tampering_attempt_is_flagged() {
 fn c5_empty_diff_is_rejected_before_verify() {
     let canary = Canary::new("record");
 
-    // T3's agent answers without changing anything.
+    // T3's agent answers without changing anything. Its verify steps run on
+    // the unchanged tree to see whether the task was already done, and fail.
     let (output, stderr) = canary.run("c5-empty", "none");
     assert!(!output.status.success(), "stderr: {stderr}");
-    assert!(!canary.verify_ran("T3"), "T3's verify steps must not run");
+    assert!(!canary.verify_ran("T3"), "T3's verify steps must not pass");
     assert!(stderr.contains("pre_verify:no_changes"), "stderr: {stderr}");
     canary.assert_outcome("c5-empty", &["T3"]);
 
@@ -378,4 +397,17 @@ fn c5_empty_diff_is_rejected_before_verify() {
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(canary.verify_ran("T4"));
     canary.assert_outcome("c5-honest", &[]);
+
+    // gap-9eb1e1: a `--fresh` rerun finds the work already there. The agent
+    // rightly changes nothing, and the task completes as already satisfied.
+    fs::remove_file(canary.root.join("markers/T4.ran")).expect("reset T4's marker");
+    let (output, stderr) = canary.run_with("c5-honest", "none", &["--fresh"]);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(canary.verify_ran("T4"), "T4's verify steps passed");
+    canary.assert_outcome("c5-honest", &[]);
+    let checkpoint = canary.checkpoint("c5-honest");
+    assert_eq!(
+        checkpoint["extensions"]["roko.gate.verdict@1"]["value"]["verdicts"]["T4"],
+        "already_satisfied"
+    );
 }

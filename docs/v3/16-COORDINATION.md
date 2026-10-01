@@ -1655,8 +1655,8 @@ This chapter decomposes into ~13 depth files in `docs/v3/depth/16-coordination/`
 - [Gierer & Meinhardt 1972] "A Theory of Biological Pattern Formation."
   *Kybernetik*, 12(1):30-39.
 - [Wilson, E.O. 1971] *The Insect Societies*. Belknap Press.
-- [Nealson, Platt & Hastings 1970] "Cellular Control of the Bacterial
-  Luminescent System." *J. Bacteriology*, 104(1):313-322. Quorum sensing.
+- [Nealson, Platt & Hastings 1970] "Cellular Control of the Synthesis and Activity
+  of the Bacterial Luminescent System." *J. Bacteriology*, 104(1):313-322. Quorum sensing.
 
 ### Multi-Agent Systems (2025-2026 Research)
 

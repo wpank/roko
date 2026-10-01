@@ -680,6 +680,12 @@ mod tests {
         assert!(detail.contains("crates/demo-crate/src/elsewhere.rs:1"));
     }
 
+    /// A crate named `crate_name` for the probe's nested `cargo test` to
+    /// build. Each test gives its crate its own name. The nested cargo
+    /// inherits `CARGO_TARGET_DIR`, and in a shared target dir cargo reuses a
+    /// same-named crate built from another directory whenever this crate's
+    /// sources are older than that build. A probe running beside another
+    /// test's would then run that test's binary (bug-779ae7).
     fn init_temp_crate(dir: &Path, crate_name: &str, lib_body: &str) {
         write_file(
             dir,
@@ -696,7 +702,7 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         init_temp_crate(
             tmp.path(),
-            "demo",
+            "tautology_demo",
             "pub fn always_true() -> bool { true }\npub fn implemented() -> bool { false }\n",
         );
 
@@ -705,16 +711,20 @@ mod tests {
                 name: "always_true".into(),
                 kind: "fn".into(),
                 visibility: "pub".into(),
-                module_path: "demo".into(),
+                module_path: "tautology_demo".into(),
             },
             GeneratedCheck::TestCase {
                 name: "gen_tautology".into(),
-                code: "#[test]\nfn gen_tautology() {\n    assert!(demo::always_true());\n}".into(),
+                code:
+                    "#[test]\nfn gen_tautology() {\n    assert!(tautology_demo::always_true());\n}"
+                        .into(),
                 rung: 3,
             },
             GeneratedCheck::TestCase {
                 name: "gen_meaningful".into(),
-                code: "#[test]\nfn gen_meaningful() {\n    assert!(demo::implemented());\n}".into(),
+                code:
+                    "#[test]\nfn gen_meaningful() {\n    assert!(tautology_demo::implemented());\n}"
+                        .into(),
                 rung: 3,
             },
         ];
@@ -743,11 +753,15 @@ mod tests {
     #[tokio::test]
     async fn tautology_filter_keeps_tests_when_probe_does_not_compile() {
         let tmp = TempDir::new().expect("tempdir");
-        init_temp_crate(tmp.path(), "demo", "pub fn present() -> bool { true }\n");
+        init_temp_crate(
+            tmp.path(),
+            "compile_error_demo",
+            "pub fn present() -> bool { true }\n",
+        );
 
         let checks = vec![GeneratedCheck::TestCase {
             name: "gen_compile_error".into(),
-            code: "#[test]\nfn gen_compile_error() {\n    let _ = demo::missing_symbol();\n}"
+            code: "#[test]\nfn gen_compile_error() {\n    let _ = compile_error_demo::missing_symbol();\n}"
                 .into(),
             rung: 3,
         }];

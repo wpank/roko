@@ -269,7 +269,8 @@ fn replay_refusal(signals: &[roko_core::Signal], verify_required: bool) -> Optio
         Some(verdict) if !verdict.is_replayable() => {
             Some(format!("recorded gate verdict is `{}`", verdict.as_str()))
         }
-        Some(TaskGateVerdict::Passed) => None,
+        // Its verify steps passed, on a tree that already held its work.
+        Some(TaskGateVerdict::Passed | TaskGateVerdict::AlreadySatisfied) => None,
         Some(verdict) if verify_required => Some(format!(
             "verify steps are authored but the recorded gate verdict is `{}`",
             verdict.as_str()

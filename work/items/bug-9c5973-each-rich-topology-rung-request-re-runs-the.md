@@ -2,14 +2,16 @@
 id = "bug-9c5973"
 kind = "bug"
 title = "Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-graph/cells/plan_gate", "roko-cli/runner/gate_adapter"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "a4298a644"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, checked on work/spec-f830c4 at 8268c7498)"
 anchors = ["crates/roko-graph/src/cells/plan_gate.rs", "crates/roko-cli/src/runner/gate_adapter.rs"]
@@ -19,6 +21,12 @@ links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4", "
 
 [[verify]]
 command = "grep -rqw 'fn a_gate_runs_each_rung_once' crates/roko-graph/src/ && cargo test -p roko-graph --lib a_gate_runs_each_rung_once"
+
+[closed]
+at = 2026-09-30
+commit = "953a302a0"
+by = "wk-integrate"
+evidence = "Fixed by 7920e6141 (an attempt's first shared-gate request runs the pipeline up to test, later rungs read that verdict). a_gate_runs_each_rung_once (roko-graph lib, 953a302a0) passes: one gate asks for compile, lint and test once each, for one attempt; an_attempts_rung_requests_run_the_pipeline_once_with_the_runs_gates (roko-cli lib) shows one pipeline run per attempt."
 +++
 
 ## Problem

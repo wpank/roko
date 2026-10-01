@@ -83,7 +83,7 @@ after the P0/P1 fixes (W12 Phase B).
 - [x] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are
 - [x] gap-568056: Graph runs write no .roko/state/status.json, so roko status and evidence status sampling see no live run
 - [x] bug-4c4eea: The --log-file event log copies agent output verbatim, so evidence bundles hold raw agent text
-- [ ] bug-f7f3bb: Under roko serve, status.json keeps showing a finished run as active, because the serve PID is still alive
+- [x] bug-f7f3bb: Under roko serve, status.json keeps showing a finished run as active, because the serve PID is still alive
 - [ ] The epic's `[[verify]]` command (the rollup test, with `DEFINITIONS.md` present) passes on the merged branch.
 
 ## Notes

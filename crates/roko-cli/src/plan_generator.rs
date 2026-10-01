@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, anyhow};
 use indexmap::IndexMap;
+use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::ModelProfile;
 
 use crate::plan_generate::PlanTemplateKind;
@@ -56,6 +57,10 @@ pub struct DefaultPlanGenerator {
     /// Default model from config (used in validate_raw_output, tested via #[cfg(test)]).
     #[allow(dead_code)]
     default_model: Option<String>,
+    /// `[routing.ladder]` whose rungs a generated task's `rung` must name
+    /// (used in validate_raw_output, tested via #[cfg(test)]).
+    #[allow(dead_code)]
+    ladder: LadderConfig,
 }
 
 impl DefaultPlanGenerator {
@@ -80,7 +85,16 @@ impl DefaultPlanGenerator {
             escalation_enabled,
             model_profiles,
             default_model,
+            ladder: LadderConfig::default(),
         }
+    }
+
+    /// Check generated `rung` hints against `ladder`, the workspace's
+    /// `[routing.ladder]`, instead of the default ladder.
+    #[must_use]
+    pub fn with_ladder(mut self, ladder: LadderConfig) -> Self {
+        self.ladder = ladder;
+        self
     }
 
     /// Validate raw TOML output from a generation agent.
@@ -90,7 +104,8 @@ impl DefaultPlanGenerator {
     /// 2. Apply deterministic TOML repair (`task_parser::repair_toml`)
     /// 3. Validate structural fields (meta, task, verify)
     /// 4. Fix known LLM artifacts (model_hint removal, placeholder replacement,
-    ///    auto-verify insertion)
+    ///    auto-verify insertion), and keep a task's `rung` only when it names
+    ///    a rung of the ladder
     /// 5. Validate against plan policy budgets
     ///
     /// Returns the validated TOML string on success, or an error description.
@@ -130,6 +145,7 @@ impl DefaultPlanGenerator {
             slug,
             &self.model_profiles,
             self.default_model.as_deref(),
+            &self.ladder,
             &mut repairs,
         )
         .map_err(|e| format!("{e:#}"))?;
@@ -246,6 +262,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "failure_policy",
     "workspace_rungs",
     "verify",
+    "approval",
 ];
 
 #[allow(dead_code)]
@@ -275,6 +292,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "accept",
     "domain",
     "gate_rung",
+    "rung",
 ];
 
 #[allow(dead_code)]
@@ -469,6 +487,7 @@ fn validate_and_fix_plan_toml(
     slug: &str,
     _models: &IndexMap<String, ModelProfile>,
     _default_model: Option<&str>,
+    ladder: &LadderConfig,
     repairs: &mut Vec<String>,
 ) -> Result<String> {
     // Pre-pass: fix the common LLM mistake of using `name = ` instead of
@@ -628,6 +647,14 @@ fn validate_and_fix_plan_toml(
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
                         repairs.push(format!("{task_id_label}: removed model_hint '{hint}'"));
+                    }
+
+                    // A rung the planner chose stays when it names a ladder rung.
+                    if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
+                        repairs.push(format!(
+                            "{task_id_label}: removed rung {rung}: no rung of the routing ladder \
+                             has that name"
+                        ));
                     }
 
                     // Validate [[task.verify]] sub-entries.
@@ -894,6 +921,100 @@ command = "cargo check -p roko-core"
             "model_hint key should be stripped from tasks_toml"
         );
         assert!(validated.repairs.iter().any(|r| r.contains("model_hint")));
+    }
+
+    /// gap-9ca898: a generated plan keeps the `rung` its planner set on a
+    /// task when it names one of the task's ladder rungs, and loses one that
+    /// names none, with a repair saying so.
+    #[test]
+    fn default_plan_generator_emits_task_rungs() {
+        use roko_core::config::routing::{LadderRoleConfig, LadderRung};
+
+        let plan = r#"```toml
+[meta]
+plan = "rungs"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "Rework the parser's error recovery"
+description = "A small change that is hard to get right."
+status = "ready"
+tier = "mechanical"
+rung = "strong"
+max_loc = 20
+files = ["crates/roko-core/src/lib.rs"]
+depends_on = []
+role = "implementer"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core"
+
+[[task]]
+id = "T2"
+title = "Rename a helper"
+description = "Names a rung no ladder has."
+status = "ready"
+tier = "mechanical"
+rung = "stronk"
+max_loc = 20
+files = ["crates/roko-cli/src/lib.rs"]
+depends_on = ["T1"]
+role = "implementer"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+
+[[task]]
+id = "T3"
+title = "Document the parser"
+description = "Uses the scribe's own rung."
+status = "ready"
+tier = "focused"
+rung = "docs"
+files = ["docs/parser.md"]
+depends_on = ["T1"]
+role = "scribe"
+
+[[task.verify]]
+phase = "structural"
+command = "test -f docs/parser.md"
+```
+"#;
+        let mut ladder = LadderConfig::default();
+        ladder.roles.push(LadderRoleConfig {
+            role: "scribe".to_string(),
+            rungs: Some(vec![LadderRung {
+                name: "docs".to_string(),
+                model: "gpt-4o-mini".to_string(),
+            }]),
+            ..LadderRoleConfig::default()
+        });
+        let validated = test_generator()
+            .with_ladder(ladder)
+            .validate_raw_output(plan, "rungs", PlanTemplateKind::Default)
+            .expect("the plan validates");
+
+        let tasks = TasksFile::parse_str(&validated.tasks_toml).expect("parse the plan");
+        let rungs: Vec<Option<&str>> = tasks
+            .tasks
+            .iter()
+            .map(|task| task.hints.rung.as_deref())
+            .collect();
+        assert_eq!(rungs, [Some("strong"), None, Some("docs")]);
+        assert!(
+            validated
+                .repairs
+                .iter()
+                .any(|repair| repair.starts_with("T2: removed rung \"stronk\"")),
+            "{:?}",
+            validated.repairs
+        );
     }
 
     #[test]

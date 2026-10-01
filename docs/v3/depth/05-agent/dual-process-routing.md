@@ -309,7 +309,7 @@ LLMs per query):
 | RouteLLM (2024) | Binary classifier for cheap/expensive routing | 85% cost reduction on MT Bench |
 | FrugalGPT (2023) | Cascade + caching | Cost-efficient LLM serving |
 | Router-R1 (2025) | RL-trained multi-round router | Open-sourced model weights |
-| xRouter (2025) | Cost-aware RL orchestration | 80--90% GPT-5 accuracy at <1/5 cost |
+| xRouter (2025) | Cost-aware RL orchestration | Substantial cost cuts at comparable task completion |
 | IRT-Router (2025) | Psychometric routing via Item Response Theory | Superior cold-start across 20 LLMs |
 | BEST-Route (2025) | Test-time compute allocation | 60% cost reduction |
 | PILOT (2025) | Offline preference priors + online bandits | Shared embedding space |
@@ -344,12 +344,16 @@ decision theory) then anomaly detection for robustness.
    of Physiology - Paris. -- Free Energy Principle.
 4. De Neys, W. & Pennycook, G. (2019). "Logic, Fast and Slow." Current
    Directions in Psychological Science. -- Competing intuitions.
-5. Chen, Z. et al. (2025). "Router-R1." arXiv:2506.09033. -- RL router.
+5. Zhang, H. et al. (2025). "Router-R1: Teaching LLMs Multi-Round Routing and
+   Aggregation via Reinforcement Learning." arXiv:2506.09033. -- RL router.
 6. Ong, I. et al. (2025). "RouteLLM." arXiv:2406.18665. -- Binary
    routing.
 7. Chen, L. et al. (2023). "FrugalGPT." -- Cascade routing.
-8. Qian, C. et al. (2025). "xRouter." arXiv:2510.08439. -- Cost-aware.
-9. Song, J. et al. (2025). "IRT-Router." arXiv:2506.01048. --
+8. Qian, C. et al. (2025). "xRouter: Training Cost-Aware LLMs Orchestration System
+   via Reinforcement Learning." arXiv:2510.08439. -- Cost-aware.
+9. Song, W. et al. (2025). "IRT-Router: Effective and Interpretable Multi-LLM Routing
+   via Item Response Theory." arXiv:2506.01048. --
    Psychometric routing.
-10. Ding, Y. et al. (2025). "BEST-Route." arXiv:2506.22716. --
+10. Ding, D. et al. (2025). "BEST-Route: Adaptive LLM Routing with Test-Time Optimal
+    Compute." arXiv:2506.22716. --
     Test-time compute allocation.

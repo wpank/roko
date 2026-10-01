@@ -348,7 +348,7 @@ memory in Layers 4/4b are the Reflexion mechanism.
 by splitting into plan then execute phases. The Strategist role's Layer 4
 embodies this.
 
-**Chain of Draft** [Zoom Research, arXiv:2502.18600]. 5-word-max intermediate
+**Chain of Draft** [Xu et al. 2025, arXiv:2502.18600]. 5-word-max intermediate
 reasoning steps match CoT accuracy at 7.6% of token cost. Applicable to role
 identity instructions for token-constrained contexts.
 

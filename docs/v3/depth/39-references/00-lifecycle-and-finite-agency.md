@@ -18,9 +18,6 @@ Complex features in Avida require generational turnover. Grounds Delta-frequency
 **[Vostinar et al., 2019]** *Suicidal Selection: Programmed Cell Death Evolves as Adaptive Behavior under Spatial Structure.* Evolution, 73(5).
 Programmed elimination is selected for under spatial structure. Validates the Curator's active pruning of low-confidence knowledge entries.
 
-**[Wensink et al., 2020]** *Death and Progress.* Evolutionary Biology, 47(4).
-Intrinsic resource constraints prevent premature convergence; an optimal rate balances stagnation and knowledge loss. Maps to calibrating Ebbinghaus half-life parameters per knowledge type.
-
 **[Werfel et al., 2017]** *How Short-Lived Agents Can Collectively Build Long-Lived Structures.* Artificial Life, 23(3).
 Short-lived agents produce durable artifacts. Grounds the separation between ephemeral agent sessions and persistent NeuroStore knowledge.
 
@@ -44,7 +41,7 @@ Factual knowledge decays at measurable rates. Directly informs per-type half-lif
 
 ## Resource-Bounded Cognition
 
-**[Ord, 2025]** *Agent Success Rates Decay Exponentially with Task Duration.* Working paper.
+**[Ord, 2025]** *Is there a half-life for the success rates of AI agents?* Working paper.
 Constant hazard rate means periodic checkpointing and task decomposition are more reliable than unbounded execution. Motivates the plan-execute-gate-persist loop.
 
 **[Sims, 2003]** *Implications of Rational Inattention.* Journal of Monetary Economics, 50(3), 665--690.
@@ -53,7 +50,7 @@ Rational finite-capacity agents optimally ignore some information. Motivates the
 **[Orseau & Ring, 2011]** *Self-Modification and Mortality in Artificial Agents.* AGI 2011.
 RL agents under survival pressure treat survival as sole goal. Roko agents must be goal-directed with external objectives, not self-preservation optimizers.
 
-**[Orseau & Armstrong, 2016]** *Safely Interruptible Agents.* UAI 2016. arXiv:1606.00813.
+**[Orseau & Armstrong, 2016]** *Safely Interruptible Agents.* UAI 2016.
 Safe interruption via off-policy learning. Grounds the corrigibility ordering in the five-head safety layer (`roko-agent/safety`).
 
 ---
@@ -95,19 +92,13 @@ The Baldwin Effect: learned behaviors that are consistently valuable become stru
 **[Heard & Martienssen, 2014]** *Transgenerational Epigenetic Inheritance: Myths and Mechanisms.* Cell, 157(1), 95--109.
 Most transgenerational inheritance is deleterious. Inherited knowledge entries receive 0.85x confidence multiplier per transfer cycle.
 
-**[Bhatt et al., 2023]** *Few-shot Imitation as Cultural Transmission.* Working paper.
+**[Bhoopchand et al., 2023]** *Learning few-shot imitation as cultural transmission.* Working paper.
 Cultural transmission produces cumulative learning. Grounds mesh-based knowledge sharing.
-
-**[Bourahla et al., 2022]** *Vertical Transmission Enables Agents to Exceed Performance Ceilings.* Working paper.
-Inter-generational knowledge transfer enables exceeding individual ceilings. Grounds NeuroStore backup/restore.
-
-**[Perez et al., 2024]** *Pure Imitation Leads to Stagnation.* AGI 2024.
-Novelty requires mixing inheritance and exploration. Motivates 15% contrarian retrieval.
 
 **[Martin et al., 2016]** *Death and Suicide in Universal Artificial Intelligence.* AGI 2016.
 RL agents learning only from survival histories develop overconfidence. Knowledge transfer includes failures and negative examples.
 
-**[Gerstgrasser et al., 2023]** *SUPER: Surprise-based Experience Sharing.* Working paper.
+**[Gerstgrasser et al., 2023]** *Selectively Sharing Experiences Improves Multi-Agent Reinforcement Learning.* Working paper.
 Rank shared knowledge by novelty relative to recipient. Mesh-based exchange prioritizes entries novel to the receiving agent.
 
 ---
@@ -129,7 +120,7 @@ Fractal pattern of programmed death: entry, store, and collective level pruning.
 **[Ramsdell & Fowlkes, 1990]** *Clonal Deletion versus Clonal Anergy.* Science, 248(4961).
 95--98% thymocyte death produces collectively intelligent immune repertoire. Grounds aggressive gate filtering.
 
-**[Simard, 2012]** *Mycorrhizal Networks Facilitate Tree Communication, Learning, and Memory.* In Memory and Learning in Plants, Springer.
+**[Simard, 2018]** *Mycorrhizal Networks Facilitate Tree Communication, Learning, and Memory.* In Memory and Learning in Plants, Springer.
 Fungal networks share resources underground. Biological analogue for the Agent Mesh knowledge relay.
 
 ---

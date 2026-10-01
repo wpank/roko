@@ -295,7 +295,8 @@ The server supports API-key, token, and browser-session authentication:
 ```toml
 [serve.auth]
 enabled = true
-api_key = "roko_sk_..."
+# The key goes in ROKO__SERVE__AUTH__API_KEY (for example in .roko/.env), never in
+# roko.toml: `roko config set serve.auth.api_key <key>` stores it there.
 ```
 
 Supported auth forms:

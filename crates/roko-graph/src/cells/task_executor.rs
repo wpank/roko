@@ -124,6 +124,11 @@ pub const TASK_GATE_VERDICT_TAG: &str = "roko.gate.verdict";
 pub enum TaskGateVerdict {
     /// Every authored `[[task.verify]]` step passed.
     Passed,
+    /// Every authored verify step passed on a tree the attempt left
+    /// unchanged: the task's work was already there, as on a `--fresh`
+    /// rerun of a finished task. Replayed like a pass, but its own outcome,
+    /// since no change of the agent earned it.
+    AlreadySatisfied,
     /// The task declares no verify steps; only the provider result is known.
     Unverified,
     /// Verification failed but a non-deterministic judge/review cap accepted
@@ -139,6 +144,7 @@ impl TaskGateVerdict {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
         }
@@ -149,6 +155,7 @@ impl TaskGateVerdict {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
             _ => None,
@@ -173,8 +180,9 @@ impl TaskGateVerdict {
             .filter_map(|signal| signal.tag(TASK_GATE_VERDICT_TAG).and_then(Self::parse))
             .max_by_key(|verdict| match verdict {
                 Self::Passed => 0,
-                Self::Unverified => 1,
-                Self::ForcedAccept => 2,
+                Self::AlreadySatisfied => 1,
+                Self::Unverified => 2,
+                Self::ForcedAccept => 3,
             })
     }
 
@@ -1269,6 +1277,24 @@ task_def_json = "{}"
         assert_eq!(TaskGateVerdict::from_signals(&unknown), None);
         assert!(TaskGateVerdict::Passed.is_replayable());
         assert!(TaskGateVerdict::Unverified.is_replayable());
+    }
+
+    #[test]
+    fn already_satisfied_is_replayable_and_ranks_below_passed() {
+        let verdict = TaskGateVerdict::AlreadySatisfied;
+        assert_eq!(TaskGateVerdict::parse(verdict.as_str()), Some(verdict));
+        assert!(verdict.is_replayable());
+
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut satisfied = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("already done"))
+                .build(),
+        ];
+        verdict.stamp(&mut satisfied);
+        let mixed: Vec<Signal> = passed.into_iter().chain(satisfied).collect();
+        assert_eq!(TaskGateVerdict::from_signals(&mixed), Some(verdict));
     }
 
     fn handed_on_attempt() -> TaskAttempt {

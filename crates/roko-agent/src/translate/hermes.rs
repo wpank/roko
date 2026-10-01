@@ -164,10 +164,12 @@ impl Translator for HermesXmlTranslator {
         RenderedResults::TextBlock(block)
     }
 
-    /// Hermes models produce text responses; there is no structured
-    /// assistant message to inject into conversation history.
-    fn render_assistant_message(&self, _response: &BackendResponse) -> Option<serde_json::Value> {
-        None
+    /// The model's own turn, `<tool_call>` text included, so that the next
+    /// request shows each call beside its `<tool_response>` (bug-318aab).
+    fn render_assistant_message(&self, response: &BackendResponse) -> Option<serde_json::Value> {
+        let text = extract_text(response);
+        (!text.trim().is_empty())
+            .then(|| serde_json::json!({ "role": "assistant", "content": text }))
     }
 }
 
@@ -778,12 +780,21 @@ mod tests {
 
     // ─── render_assistant_message ─────────────────────────────────────────
 
+    /// bug-318aab: the model's own turn, `<tool_call>` text included, goes
+    /// into the history; an empty turn adds nothing.
     #[test]
-    fn render_assistant_message_returns_none() {
-        let response = BackendResponse::Text("hello".into());
+    fn render_assistant_message_keeps_the_tool_call_hermes() {
+        let content = "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"x.rs\"}}\n</tool_call>";
+        let response = BackendResponse::Json(json!({
+            "choices": [{ "message": { "role": "assistant", "content": content } }]
+        }));
+        assert_eq!(
+            HermesXmlTranslator.render_assistant_message(&response),
+            Some(json!({ "role": "assistant", "content": content }))
+        );
         assert!(
             HermesXmlTranslator
-                .render_assistant_message(&response)
+                .render_assistant_message(&BackendResponse::Text("  ".into()))
                 .is_none()
         );
     }

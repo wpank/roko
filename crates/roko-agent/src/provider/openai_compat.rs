@@ -1358,16 +1358,22 @@ mod tests {
             "{first}"
         );
         let second = body(1);
-        assert!(
-            second["messages"]
-                .as_array()
-                .expect("second request messages")
-                .iter()
-                .any(|message| message["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains("<tool_response>"))),
-            "{second}"
-        );
+        let messages = second["messages"]
+            .as_array()
+            .expect("second request messages");
+        // The model's own call stays in the history (bug-318aab), followed by
+        // its result.
+        let turn = |role: &str, text: &str| {
+            messages.iter().position(|message| {
+                message["role"] == role
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains(text))
+            })
+        };
+        let call = turn("assistant", "<tool_call>").expect("the model's call turn");
+        let result = turn("user", "<tool_response>").expect("the call's result");
+        assert!(call < result, "{second}");
 
         handle.join().expect("server thread");
     }

@@ -90,10 +90,14 @@ impl Translator for ReActTranslator {
         Ok(vec![ToolCall::new("react-0", name, args)])
     }
 
-    /// ReAct reconstructs full conversation context from text prompts on each turn.
-    /// There is no structured assistant message to inject — returning `None` is intentional.
-    fn render_assistant_message(&self, _response: &BackendResponse) -> Option<serde_json::Value> {
-        None
+    /// The model's own turn, `Action:` text included, so that the next
+    /// request shows the call beside its `Observation:` (bug-318aab).
+    fn render_assistant_message(&self, response: &BackendResponse) -> Option<serde_json::Value> {
+        let BackendResponse::Text(text) = response else {
+            return None;
+        };
+        (!text.trim().is_empty())
+            .then(|| serde_json::json!({ "role": "assistant", "content": text }))
     }
 
     fn render_results(&self, results: &[(ToolCall, ToolResult)]) -> RenderedResults {
@@ -424,5 +428,21 @@ mod tests {
             panic!("expected TextBlock");
         };
         assert_eq!(text, "Observation: pub fn main() {}\n\n");
+    }
+
+    /// bug-318aab: the model's own turn, `Action:` text included, goes into
+    /// the history.
+    #[test]
+    fn render_assistant_message_keeps_the_tool_call_react() {
+        let text = "Thought: I need the file.\nAction: read_file\nAction Input: {\"path\": \"x.rs\"}";
+        assert_eq!(
+            ReActTranslator.render_assistant_message(&BackendResponse::Text(text.into())),
+            Some(json!({ "role": "assistant", "content": text }))
+        );
+        assert!(
+            ReActTranslator
+                .render_assistant_message(&BackendResponse::Text(String::new()))
+                .is_none()
+        );
     }
 }

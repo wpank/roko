@@ -25,11 +25,11 @@ pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {
             draft,
             plan,
             execute,
+            check,
             workdir,
-            ..
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_backlog_import(&wd, &path, draft, plan, execute).await
+            cmd_backlog_import(&wd, &path, draft, plan, execute, check).await
         }
         BacklogCmd::List { path, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -149,19 +149,49 @@ fn has_imported_idea(ideas: &str, backlog_num: u32) -> bool {
     ideas.contains(&format!("[backlog#{backlog_num}]"))
 }
 
-/// Import backlog spec(s) as PRD ideas.
+/// The PRD idea `backlog import` records for spec `num`; `backlog list`
+/// finds the import by its `[backlog#N]` marker.
+fn backlog_idea_text(num: u32, title: &str) -> String {
+    format!("[backlog#{num}] {title}")
+}
+
+/// Import backlog spec(s) as PRD ideas. With `check`, print the ideas an
+/// import would record and write nothing.
 async fn cmd_backlog_import(
     workdir: &Path,
     path: &Path,
     draft: bool,
     plan: bool,
     execute: bool,
+    check: bool,
 ) -> Result<i32> {
     let files = collect_backlog_files(workdir, path)?;
 
     if files.is_empty() {
         println!("No backlog spec files found at {}", path.display());
         return Ok(1);
+    }
+
+    if check {
+        let ideas_path = roko_cli::workspace_paths::ideas_path(workdir);
+        let ideas = std::fs::read_to_string(&ideas_path).unwrap_or_default();
+        println!(
+            "Would import {} backlog spec(s) as ideas in {} (--check: nothing written):\n",
+            files.len(),
+            ideas_path.display()
+        );
+        for (num, slug, filepath) in &files {
+            let content = std::fs::read_to_string(filepath)
+                .with_context(|| format!("read {}", filepath.display()))?;
+            let title = extract_title(&content).unwrap_or_else(|| slug.clone());
+            let note = if has_imported_idea(&ideas, *num) {
+                " (already imported)"
+            } else {
+                ""
+            };
+            println!("  #{num}: {}{note}", backlog_idea_text(*num, &title));
+        }
+        return Ok(0);
     }
 
     println!("Importing {} backlog spec(s)...\n", files.len());
@@ -176,7 +206,7 @@ async fn cmd_backlog_import(
         let title = extract_title(&content).unwrap_or_else(|| slug.clone());
 
         // Create the PRD idea
-        let idea_text = format!("[backlog#{}] {}", num, title);
+        let idea_text = backlog_idea_text(*num, &title);
         match roko_cli::prd::cmd_idea(workdir, &idea_text, false) {
             Ok(()) => {
                 imported += 1;
@@ -1035,15 +1065,57 @@ mod tests {
         std::fs::create_dir_all(&backlog_dir).unwrap();
         std::fs::write(backlog_dir.join("58-perf-hot-path.md"), "# Perf hot path\n").unwrap();
 
-        let code = cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false)
-            .await
-            .unwrap();
+        let code =
+            cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false, false)
+                .await
+                .unwrap();
         assert_eq!(code, 0);
 
         let ideas =
             std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(tmp.path())).unwrap();
         assert!(has_imported_idea(&ideas, 58), "{ideas}");
         assert!(!has_imported_idea(&ideas, 5), "{ideas}");
+    }
+
+    // ── Import tests ─────────────────────────────────────────────────
+
+    /// bug-255765: `backlog import --check` reports what it would import and
+    /// changes no file.
+    #[tokio::test]
+    async fn backlog_import_check_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(backlog_dir.join("58-perf-hot-path.md"), "# Perf hot path\n").unwrap();
+        let before = tree_snapshot(tmp.path());
+
+        let code =
+            cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false, true)
+                .await
+                .unwrap();
+
+        assert_eq!(code, 0);
+        assert_eq!(tree_snapshot(tmp.path()), before);
+        assert!(!tmp.path().join(".roko").exists());
+    }
+
+    /// Every file under `root` with its contents, by path.
+    fn tree_snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let content = std::fs::read(&path).unwrap();
+                    files.push((path, content));
+                }
+            }
+        }
+        files.sort();
+        files
     }
 
     // ── Audit tests ──────────────────────────────────────────────────

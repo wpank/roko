@@ -1185,9 +1185,8 @@ pub(crate) async fn dispatch_bench_prompt(
     use roko_core::foundation::{
         ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
     };
-    use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::feedback_service::FeedbackService;
-    use roko_learn::model_call_feedback::ModelCallJournal;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 
     // Build a RokoConfig from CLI config (same pattern as dispatch_v2.rs).
     let mut model_config = RokoConfig::default();
@@ -1220,12 +1219,10 @@ pub(crate) async fn dispatch_bench_prompt(
         .join("learn")
         .join("cascade-router.json");
     let cascade_model_slugs = capture_runtime_model_slugs(&model_config, &model);
-    let cascade_router = (!cascade_model_slugs.is_empty()).then(|| {
-        Arc::new(CascadeRouter::load_or_new(
-            &cascade_path,
-            cascade_model_slugs,
-        ))
-    });
+    // The snapshot first takes what a crashed writer journaled and never
+    // saved (bug-8a78e1).
+    let cascade_router = (!cascade_model_slugs.is_empty())
+        .then(|| Arc::new(load_recovered_router(&cascade_path, cascade_model_slugs)));
     // Observations are journaled in the learning WAL until the save below
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));

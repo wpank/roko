@@ -102,7 +102,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: rust-cold 11, none 1, rust-hot 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
-## [spec-f2463d](items/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
+## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
 
 - **14/14 closed** · goal `proof` · severity p1
 

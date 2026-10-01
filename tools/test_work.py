@@ -520,5 +520,42 @@ class TestExecutorFields(RepoTest):
         self.assertEqual([e for r in rows for e in work.check_event(r)], [])
 
 
+class TestFolders(RepoTest):
+    """Open items live in items/, done ones in done/, won't-fix and superseded ones in closed/, parked ones in parked/."""
+
+    def test_close_moves_the_item_to_done(self):
+        it = {i["id"]: i for i in self.items()}["gap-cccccc"]
+        work.close_item(it, evidence="done in test", commit="abc1234")
+        self.assertFalse((self.root / "work" / "items" / "gap-cccccc-x.md").exists())
+        self.assertTrue((self.root / "work" / "done" / "gap-cccccc-x.md").exists())
+        moved = {i["id"]: i for i in self.items()}["gap-cccccc"]
+        self.assertEqual((moved["status"], moved["_dir"]), ("done", "done"))
+        self.assertEqual(work.validate(self.items()), [])
+
+    def test_a_superseded_item_moves_to_closed(self):
+        self.run_work("close", "bug-bbbbbb", "--status", "superseded", "--evidence", "covered by bug-aaaaaa")
+        self.assertTrue((self.root / "work" / "closed" / "bug-bbbbbb-x.md").exists())
+        self.assertEqual(work.validate(self.items()), [])
+
+    def test_check_flags_and_tidy_moves_a_closed_item_left_in_items(self):
+        # An older work.py (or a branch merged from before the folders existed) closes an item in place.
+        self.write("gap-cccccc", item("gap-cccccc", "C", status="done",
+                                      extra='\n[closed]\nat = 2026-09-30\nevidence = "done elsewhere"'))
+        errs = work.validate(self.items())
+        self.assertTrue(any("run `work.py tidy`" in e for e in errs), errs)
+        out = self.run_work("tidy").stdout
+        self.assertIn("gap-cccccc → work/done/", out)
+        self.assertTrue((self.root / "work" / "done" / "gap-cccccc-x.md").exists())
+        self.assertEqual(work.validate(self.items()), [])
+        self.assertIn("tidy: moved 0", self.run_work("tidy").stdout)
+
+    def test_unpark_returns_an_item_to_items(self):
+        self.run_work("park", "gap-cccccc", "--reason", "not planned")
+        self.assertTrue((self.root / "work" / "parked" / "gap-cccccc-x.md").exists())
+        self.run_work("unpark", "gap-cccccc")
+        self.assertTrue((self.root / "work" / "items" / "gap-cccccc-x.md").exists())
+        self.assertEqual(work.validate(self.items()), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

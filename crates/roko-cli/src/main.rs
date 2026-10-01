@@ -1903,12 +1903,12 @@ enum BacklogCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Reconcile plan TOML status against durable runner state.
+    /// Reconcile plan TOML status against the Graph runs on record.
     ///
-    /// Scans plans/*/tasks.toml and compares declared task/meta status with
-    /// the executor snapshot and run-state in .roko/state/. Reports drift
-    /// such as tasks marked "done" in TOML but absent from runner completion
-    /// records, or runner-failed tasks whose TOML still says "ready".
+    /// Walks every tasks.toml in the plans directory, plan sets included, and
+    /// compares its task and meta statuses with the plan's Graph checkpoint in
+    /// .roko/state/graph/. Reports each mismatch with a stable code, such as
+    /// AUDIT_RUN_SUCCEEDED_TOML_READY, and exits 1 when any is an error.
     Audit {
         /// Working directory (default: cwd / --repo).
         #[arg(long)]

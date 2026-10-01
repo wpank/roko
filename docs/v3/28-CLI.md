@@ -878,7 +878,18 @@ recorded it as a PRD idea.
 
 #### `roko backlog audit`
 
-Reconcile plan TOML status against durable runner state.
+Reconcile plan TOML status against the Graph runs on record. The audit walks every `tasks.toml` in the plans
+directory, plan sets included, compares it with the plan's checkpoint under `.roko/state/graph/`, and reports each
+mismatch with a stable code. It exits 1 when any finding is an error.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `AUDIT_RUN_SUCCEEDED_TOML_READY` | error | A Graph run succeeded, or passed the task's gate, but `tasks.toml` still says `ready`. |
+| `AUDIT_PLAN_SKIPPED` | error | `tasks.toml` does not parse, or has no `plan` in `[meta]`. |
+| `AUDIT_CHECKPOINT_UNREADABLE` | error | The plan's checkpoint exists but cannot be read. |
+| `AUDIT_TASK_DONE_NOT_RECORDED` | warning | `tasks.toml` says `done`, but no Graph run records the task. |
+| `AUDIT_RUN_FAILED_TOML_READY` | info | The last run failed the task and `tasks.toml` still says `ready`. |
+| `AUDIT_ORPHAN_CHECKPOINT` | info | A checkpoint whose plan is not in the plans directory. |
 
 ```
 roko backlog audit [--workdir <path>] [--json] [--fix-safe]

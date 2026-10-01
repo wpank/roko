@@ -44,6 +44,18 @@ class TestVerifyCommands(unittest.TestCase):
         self.assertEqual(work.static_prefix("cd apps/portal && npx vitest run a.test.ts"), "")
         self.assertEqual(work.static_prefix("cargo test -p c t"), "")
 
+    def test_static_prefix_stops_at_a_heavy_command_anywhere_in_a_part(self):
+        for cmd in ("for i in $(seq 1 20); do cargo test -p roko-cli --lib x; done",
+                    "CARGO_TARGET_DIR=t cargo test -p c t",
+                    "bash -c 'cargo build -p c' && grep -q x f",
+                    'test -n "$(cargo --version)" && grep -q x f'):
+            self.assertEqual(work.static_prefix(cmd), "", cmd)
+        self.assertEqual(work.static_prefix("grep -q x f && ! grep -q s g || (grep -q z h && cargo test -p c t)"), "grep -q x f")
+        self.assertEqual(work.static_prefix("grep -q x f && (cd apps/portal && npx vitest run)"), "grep -q x f")
+        # A heavy word in a quoted pattern or a path is not a command.
+        quoted = "grep -q 'cargo test' f && grep -rq \"roko serve\" crates/roko-cli/src"
+        self.assertEqual(work.static_prefix(quoted), quoted)
+
     def test_lint_flags_head_pipeline_and_whole_suite(self):
         self.assertTrue(any("head" in w for w in work.lint_verify("grep -n 'x' f | head -5")))
         self.assertTrue(any("whole" in w for w in work.lint_verify("cargo test -p roko-acp")))

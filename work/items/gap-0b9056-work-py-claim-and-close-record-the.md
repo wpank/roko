@@ -27,6 +27,9 @@ at = 2026-10-01
 at_ts = "2026-10-01T08:14:57Z"
 commit = "6e90df1e0"
 by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+model = "claude-opus-5-5"
 forced = false
 evidence = "6e90df1e0: claim --executor/--via/--size (size defaults to the item's) stores them and claimed_at in the claim and the claim event; release --reason records the reason in the release event; close copies the claim's executor/via/size/claimed_at into [closed] (claim read from the main checkout, so a worktree close gets them) plus at_ts, forced, --model, --assist; sync closures get executor roko-plan (plan) or the claim's/unknown (commit) and a reconciled closed event; check validates the new optional fields (1498 items, 0 problems). tools/test_work.py: claim with the three flags then close in a second worktree fills the four claim fields and at_ts; release --reason blocked is recorded; sync executors; the [[verify]] command passes."
 +++

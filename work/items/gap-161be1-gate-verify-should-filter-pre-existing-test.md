@@ -9,12 +9,12 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "d7070e368"
 source = "tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
 discovered_from = "audit:tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks::settle_failed_step", "crates/roko-cli/src/runner/gate_dispatch.rs::run_focused_baseline_verify", "crates/roko-cli/src/runner/gate_report.rs::filter_preexisting_failures", "crates/roko-core/src/config/gates.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs::GraphTaskDispatcher::judge_against_baseline", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks::settle_failed_step", "crates/roko-cli/src/runner/gate_dispatch.rs::run_focused_baseline_verify", "crates/roko-cli/src/runner/gate_report.rs::filter_preexisting_failures", "crates/roko-core/src/config/gates.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-a534e4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -157,6 +157,19 @@ Entry point: `roko plan run <dir>` → Graph engine → `GraphTaskDispatcher` (b
   Coordinate with items touching the same file (for example `gap-4ec59f`, `gap-5d3b82`).
 - Options B (auto-scoped test commands) and C (`known_failures = [...]` per verify step) from the original
   spec remain possible follow-ups. C is a cheap escape hatch but needs manual upkeep.
+- Implemented on `work/gap-161be1` at `a8c93a596`; cargo verification deferred to the batch check. A failing
+  `cargo test` step is judged in `graph_task_dispatch/baseline_verify.rs` after sibling settlement: its tests
+  run again without fail-fast on the attempt's tree and on the run's start commit (manifest `base_commit`,
+  else `HEAD`) in a detached worktree with its own target dir, cached per (commit, command) for the run.
+  Libtest output is paired with cargo's stderr target headers and compared by test name. All failures
+  pre-existing: the gate becomes `pre-existing-filtered:<step>`, the output names them, and the attempt
+  settles as the new `passed_with_preexisting_failures` verdict (dashboard outcome of the same name, counted
+  as passed). New failures, or tests the task names or declares a file for, still fail, and the retry output
+  names them apart from the old. Anything not comparable by name fails as before. Deliberately no
+  whole-output fingerprint fallback: an unmet check of the task's own work fails identically on the base.
+  Read-only checks before the tests are dropped from both runs, and the parts after the tests must still
+  pass. `[gates] baseline_filter` (default on); FAST mode skips it. Not judged yet: commands that run tests
+  in more than one part, and `cargo nextest`.
 
 ## Original notes
 

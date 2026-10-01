@@ -152,10 +152,10 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ### Agent Memory Surveys
 
-- Liu, S. et al. (2025). Memory in the Age of AI Agents. arXiv:2512.13564.
+- Hu et al. (2025). Memory in the Age of AI Agents. arXiv:2512.13564.
   *Grounds: Memory taxonomy — factual, experiential, working memory distinguished. See [01-memory-consolidation.md](./01-memory-consolidation.md).*
 
-- Wang, Z. et al. (2025). Rethinking Memory in LLM-based Agents. arXiv:2505.00675.
+- Du et al. (2025). Rethinking Memory in LLM-based Agents. arXiv:2505.00675.
   *Grounds: Six memory operations — Consolidation, Updating, Indexing, Forgetting, Retrieval, Condensation. See [01-memory-consolidation.md](./01-memory-consolidation.md).*
 
 - Memory for Autonomous LLM Agents (2026). arXiv:2603.07670.
@@ -169,10 +169,10 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 - NeuroDream (2025). SSRN:5377250.
   *Grounds: Dream-phase consolidation — 38% forgetting reduction, 17.6% zero-shot transfer increase. See [03-dreams-and-offline-learning.md](./03-dreams-and-offline-learning.md).*
 
-- LightMem (2025). arXiv:2510.18866.
+- Fang et al. (2025). arXiv:2510.18866.
   *Grounds: Offline consolidation — 10.9% accuracy gain, 117x token reduction. See [03-dreams-and-offline-learning.md](./03-dreams-and-offline-learning.md).*
 
-- SleepGate (2025). arXiv:2603.14517.
+- Xie (2025). arXiv:2603.14517.
   *Grounds: Active forgetting — learned curation resolving proactive interference. See [03-dreams-and-offline-learning.md](./03-dreams-and-offline-learning.md).*
 
 ### Human-Inspired Memory
@@ -226,10 +226,10 @@ This document catalogs ~60 papers from the 2024-2025 research frontier that stre
 
 ## 10. Mechanism Design for AI Economies
 
-- Agent Exchange (AEX) (2025). arXiv:2507.03904.
+- Yang et al. (2025). arXiv:2507.03904.
   *Grounds: Agent marketplace — RTB-inspired auction engine with User-Side Platform, Agent-Side Platform, Agent Hubs, and Data Management Platform. See [21-mechanism-design.md](./21-mechanism-design.md).*
 
-- Duetting, P. et al. (2024). Mechanism Design for LLMs. _ACM WWW Best Paper_.
+- Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW Best Paper_.
   *Grounds: Token auctions — token-by-token mechanism design for multi-LLM output generation. See [21-mechanism-design.md](./21-mechanism-design.md).*
 
 - Deep Mechanism Design (2024). _PNAS_.

@@ -112,7 +112,7 @@ An agent that does not improve is an expensive cron job. The research here estab
 
 ## Multi-Level Reflection (2025)
 
-- SAMULE (2025). Self-Learning Agents Enhanced by Multi-level Reflection. _EMNLP_, 2025. arXiv:2509.20562.
+- Ge et al. (2025). Self-Learning Agents Enhanced by Multi-level Reflection. _EMNLP_, 2025. arXiv:2509.20562.
   *Grounds: Multi-level reflection — integrates self-reflection into post-training; reflection across trajectories substantially outperforms single-trajectory reflection (Reflexion). Error classification and clustering extract insight from failures. Validates Roko's Theta-frequency reflection operating across episodes, not just within single task runs.*
 
 - MAR (2025). Multi-Agent Reflexion Improves Reasoning Abilities in LLMs. arXiv:2512.20845.

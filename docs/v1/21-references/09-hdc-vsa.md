@@ -103,7 +103,7 @@ Roko uses 10,240-bit Binary Spatter Codes (BSC) as the universal representation 
 - Malkov, Y.A. & Yashunin, D.A. (2020). Efficient and Robust Approximate Nearest Neighbor using Hierarchical Navigable Small World Graphs. _IEEE TPAMI_, 2020.
   *Grounds: HNSW search — O(log N) search at 95-99% recall for billion-scale binary vectors. The production search infrastructure for Roko's HDC index.*
 
-- Zhang, L. et al. (2023). SPFresh: Incremental In-Place Update for Billion-Scale Vector Search. _SIGMOD_, 2023.
+- Xu et al. (2023). SPFresh: Incremental In-Place Update for Billion-Scale Vector Search. _SIGMOD_, 2023.
   *Grounds: Incremental index updates — LIRE (Lightweight Incremental RE-balancing) for incremental graph rebalancing under continuous insert/delete. Applicable to Roko's continuously-updated knowledge index.*
 
 ---
@@ -120,7 +120,7 @@ Roko uses 10,240-bit Binary Spatter Codes (BSC) as the universal representation 
 - Heddes et al. (2024). Hyperdimensional Computing: A Framework for Stochastic Computation and Symbolic AI. _Journal of Big Data_, 2024.
   *Grounds: Unified HDC framework — comprehensive treatment of HDC as both a stochastic computation framework and symbolic AI system. Covers GraphHD for graph classification and HD hashing for dynamic similarity search. Validates BSC as a general-purpose computation substrate for Roko's knowledge representation.*
 
-- FLASH (2024). Hyperdimensional Computing with Holographic and Adaptive Encoder. _Frontiers in AI_, 2024.
+- Hernández-Cano et al. (2024). Hyperdimensional Computing with Holographic and Adaptive Encoder. _Frontiers in AI_, 2024.
   *Grounds: Learnable HDC encoding — adaptive and learnable encoder design learning the encoder matrix distribution via gradient descent. Bridges fixed random projection (Phase 1) and fully learned encoding (Phase 2) in Roko's HDC pipeline.*
 
 - Arbore et al. (2024). HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing. arXiv:2410.15179.

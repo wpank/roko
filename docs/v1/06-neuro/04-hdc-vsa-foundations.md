@@ -1242,7 +1242,7 @@ pub struct HdcBackendConfig {
 - Thomas, A., Dasgupta, S., & Bhatt, T. (2021). "A Theoretical Perspective on Hyperdimensional Computing." *JAIR*, 72.
 - Kotsifakou, M. et al. (2024). "HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing." arXiv:2410.15179.
 - Karunaratne, G. et al. (2020). "In-memory hyperdimensional computing." *Nature Electronics*, 3, 327-337.
-- FLASH (2024). "Hyperdimensional computing with holographic and adaptive encoder." *Frontiers in AI*. DOI:10.3389/frai.2024.1371988.
+- Hernández-Cano et al. (2024). "Hyperdimensional computing with holographic and adaptive encoder." *Frontiers in AI*. DOI:10.3389/frai.2024.1371988.
 - HDC Graph ML (2024). "Hyperdimensional Computing for Node Classification and Link Prediction." arXiv:2402.17073.
 - FSL-HDnn (2024). "A 40nm Few-shot On-Device Learning Accelerator." arXiv:2512.11826.
 - "Hyperdimensional computing hardware: progress, trends and prospects." *ICES*, 2025.

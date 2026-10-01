@@ -37,7 +37,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 - Milgrom, P. (2004). _Putting Auction Theory to Work_. Cambridge University Press.
   *Grounds: Applied auction theory — comprehensive treatment of auction design for practical applications. Provides the theoretical foundation for implementing the attention auction efficiently.*
 
-- Duetting, P. et al. (2024). Mechanism Design for LLMs. _ACM WWW_, 2024. arXiv:2310.10826.
+- Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW_, 2024. arXiv:2310.10826.
   *Grounds: LLM mechanism design — applies mechanism design specifically to LLM systems. Validates applying auction theory to LLM context allocation.*
 
 ---
@@ -98,7 +98,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 
 ## Agent Marketplaces and AI Economies (2024-2025)
 
-- Agent Exchange (AEX) (2025). Agent Exchange: Shaping the Future of AI Agent Economics. arXiv:2507.03904.
+- Yang et al. (2025). Agent Exchange: Shaping the Future of AI Agent Economics. arXiv:2507.03904.
   *Grounds: Agent marketplace architecture — auction engine inspired by Real-Time Bidding for agent task allocation. Four ecosystem components: User-Side Platform, Agent-Side Platform, Agent Hubs for team coordination, and Data Management Platform for knowledge sharing. Directly informs Roko's agent job marketplace design.*
 
 - Duetting, P. et al. (2024). Mechanism Design for Large Language Models. _ACM WWW Best Paper_, 2024. arXiv:2310.10826.

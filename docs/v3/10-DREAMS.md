@@ -1466,7 +1466,7 @@ cargo run -p roko-cli -- knowledge dream schedule
 | Auto-Dreamer (Ye et al. 2026), arXiv:2605.20616 | Learned consolidator using CLS theory for schema distillation |
 | Language Models Need Sleep (2026), arXiv:2606.03979 | Parametric distillation during offline phases |
 | Do LMs Need Sleep? (2026), arXiv:2605.26099 | Offline recurrence produces structured abstractions |
-| TiMem (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
+| Li et al. (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
 | Phasor Agents (2025), arXiv:2601.04362 | Oscillatory sleep-staged learning validates NREM/REM distinction |
 | Ambrose et al. (2016), Science | Reverse replay of hippocampal place cells during sleep |
 | Byrne (2005), The Rational Imagination | Fault lines: controllable/recent/abnormal actions prioritized for counterfactuals |

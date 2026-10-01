@@ -132,7 +132,7 @@
     Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366. — 91% HumanEval.
 22. Zhou, A. et al. (2024). "LATS: Language Agent Tree Search." ICML 2024.
     arXiv:2310.04406. — 92.7% HumanEval, MCTS + LLM value functions.
-23. Sakana AI (2025). "Darwin Gödel Machine." arXiv:2505.22954. — SWE-bench
+23. Zhang et al. (2025). "Darwin Gödel Machine." arXiv:2505.22954. — SWE-bench
     20% → 50% via evolutionary self-improvement.
 24. Wang, G. et al. (2023). "Voyager." arXiv:2305.16291. — Lifelong skill
     learning, 3.3× more unique items, transferable skill library.

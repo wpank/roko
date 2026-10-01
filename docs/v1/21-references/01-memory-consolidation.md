@@ -117,10 +117,10 @@ Memory consolidation research provides the theoretical foundation for Roko's Neu
 
 ## Agent Memory Surveys and Taxonomies (2025)
 
-- Liu, S. et al. (2025). Memory in the Age of AI Agents: A Survey. arXiv:2512.13564.
+- Hu et al. (2025). Memory in the Age of AI Agents: A Survey. arXiv:2512.13564.
   *Grounds: Agent memory taxonomy — finer-grained taxonomy distinguishing factual, experiential, and working memory. Analyzes how memory is formed, evolved, and retrieved over time. Validates NeuroStore's multi-type knowledge architecture.*
 
-- Wang, Z. et al. (2025). Rethinking Memory in LLM-based Agents: Representations, Operations, and Emerging Topics. arXiv:2505.00675.
+- Du et al. (2025). Rethinking Memory in LLM-based Agents: Representations, Operations, and Emerging Topics. arXiv:2505.00675.
   *Grounds: Memory operations taxonomy — formalizes six core operations: Consolidation, Updating, Indexing, Forgetting, Retrieval, and Condensation. Directly maps to NeuroStore's Curator cycle (consolidation, indexing, pruning, retrieval).*
 
 - Memory for Autonomous LLM Agents (2026). Mechanisms, Evaluation, and Emerging Frontiers. arXiv:2603.07670.

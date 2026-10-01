@@ -489,7 +489,7 @@ This ensures safety constraints always appear (max-min floor) while maximizing t
 
 ---
 
-## 11. Mechanism Design for LLMs: The Token Auction
+## 11. Mechanism Design for Large Language Models: The Token Auction
 
 A landmark paper directly connecting mechanism design to LLM systems:
 

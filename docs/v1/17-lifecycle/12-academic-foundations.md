@@ -279,7 +279,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
   - **Use**: Vertical (inter-generational) transmission exceeds performance ceilings that horizontal cannot.
   - **Application unchanged**: Backup/restore (vertical) complements Mesh sharing (horizontal).
 
-- **[PEREZ-2024]** Perez, J. et al. "Artificial Generational Intelligence." arXiv:2406.00392, 2024.
+- **[PEREZ-2024]** Cook et al. "Artificial Generational Intelligence." arXiv:2406.00392, 2024.
 
 - **[WOOLLEY-2010]** Woolley, A.W. et al. "Evidence for a Collective Intelligence Factor." _Science_ 330(6004), 2010.
   - **Use**: C-Factor — collective intelligence exceeds individual intelligence.

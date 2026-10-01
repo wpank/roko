@@ -765,7 +765,7 @@ heuristic, and the week-by-week sequencing.
 
 ### Active Inference and Free Energy
 - Friston, K. (2010). "The free-energy principle: a unified brain theory?" Nature Reviews Neuroscience 11(2).
-- Parr, T. et al. (2024). "Active Inference: The Free Energy Principle in Mind, Brain, and Behavior." arXiv:2402.14460.
+- Parr, T. et al. (2022). "Active Inference: The Free Energy Principle in Mind, Brain, and Behavior."
 - VERSES AI (2025). "Genius: Renormalizing Generative Models." [verses.ai](https://www.verses.ai/active-inference-research)
 - Champion, T. et al. (2022). "pymdp: A Python library for active inference." arXiv:2201.03904.
 - Devillers, B. et al. (2024). "An Embodied Agent Inspired by Global Workspace Theory." Frontiers in Computational Neuroscience.

@@ -54,7 +54,7 @@ The brain dedicates 25-33% of its runtime to a state that prevents environmental
 
 ## Wake-Sleep Learning
 
-- WSCL (2024). Wake-Sleep Consolidated Learning. arXiv:2401.08623.
+- Sorrenti et al. (2024). Wake-Sleep Consolidated Learning. arXiv:2401.08623.
   *Grounds: Three-phase dreaming — Complementary Learning Systems three-phase cycle (wake/NREM/REM): 38% reduction in catastrophic forgetting, 17.6% increase in zero-shot transfer. Directly grounds the three-phase dream architecture.*
 
 ---
@@ -111,13 +111,13 @@ The brain dedicates 25-33% of its runtime to a state that prevents environmental
 - Tutuncuoglu, B.T. (2025). NeuroDream: A Sleep-Inspired Memory Consolidation Framework for Artificial Neural Networks. SSRN:5377250.
   *Grounds: Dream-phase framework — explicit dream phase where models disconnect from input and engage in internally generated simulations from stored latent embeddings. Up to 38% reduction in forgetting, 17.6% increase in zero-shot transfer. Validates Roko's REM counterfactual generation producing genuine knowledge recombination.*
 
-- LightMem (2025). Lightweight and Efficient Memory-Augmented Generation. arXiv:2510.18866.
+- Fang et al. (2025). Lightweight and Efficient Memory-Augmented Generation. arXiv:2510.18866.
   *Grounds: Sleep-time memory update — offline consolidation procedure decouples memory management from online inference; up to 10.9% accuracy improvement with 117x token reduction. Validates Delta-frequency consolidation operating asynchronously from Gamma-frequency execution.*
 
-- SleepGate (2025). Learning to Forget: Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in LLMs. arXiv:2603.14517.
+- Xie (2025). Learning to Forget: Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in LLMs. arXiv:2603.14517.
   *Grounds: Active learned forgetting — brain's solution to proactive interference is an active, learned curation process. Validates NeuroStore's Curator as an active forgetting agent, not a passive decay mechanism.*
 
-- CosmoCore (2025). Affective Dream-Replay Reinforcement Learning for Code Generation. arXiv:2510.18895.
+- Ravindran (2025). Affective Dream-Replay Reinforcement Learning for Code Generation. arXiv:2510.18895.
   *Grounds: Affect-modulated dreams — combines affective states with dream-replay RL for code generation. Validates the intersection of Daimon (affect) and Dreams (offline consolidation) subsystems.*
 
 ---

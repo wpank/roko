@@ -35,6 +35,7 @@ fn write_domain_config(workdir: &Path, default_domain: Option<&str>, extra_gates
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"mock-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
     )
     .unwrap();

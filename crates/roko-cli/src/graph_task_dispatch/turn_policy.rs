@@ -251,6 +251,12 @@ pub(super) fn provider_failure_outcome(message: &str) -> AttemptOutcome {
     }
 }
 
+/// [`attempt_failure_reason`] for an attempt the stall watchdog cancelled
+/// (bug-4c553b).
+pub(super) fn stall_failure_reason(message: &str) -> String {
+    attempt_failure_reason("timeout", message)
+}
+
 /// [`attempt_failure_reason`] for an unsuccessful provider result.
 pub(super) fn provider_failure_reason(message: &str) -> String {
     let class = match provider_failure_outcome(message) {

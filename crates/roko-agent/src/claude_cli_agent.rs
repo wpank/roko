@@ -1051,9 +1051,14 @@ impl ClaudeCliAgent {
     /// - `tool` events (subtype `result`) → `ToolResult`.
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
+    /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
+    ///   `ReasoningDelta`.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
         let mut events = Vec::new();
         match event.get("type").and_then(Value::as_str) {
+            Some("content_block_delta" | "stream_event") => {
+                events.extend(Self::delta_kind(event));
+            }
             Some("assistant") => {
                 let Some(content) = event
                     .get("message")
@@ -1145,6 +1150,45 @@ impl ClaudeCliAgent {
             _ => {}
         }
         events
+    }
+
+    /// The text or reasoning a partial-message delta carries: a bare
+    /// `content_block_delta` line, or one wrapped in the `stream_event` of
+    /// `--include-partial-messages`. Deltas are progress, which the stall
+    /// watchdog reads (bug-2aa55f).
+    fn delta_kind(event: &Value) -> Option<StreamEventKind> {
+        let event = match event.get("type").and_then(Value::as_str) {
+            Some("stream_event") => event.get("event")?,
+            _ => event,
+        };
+        if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+            return None;
+        }
+        let delta = event.get("delta")?;
+        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+            return Some(StreamEventKind::TextDelta(text.to_string()));
+        }
+        delta
+            .get("thinking")
+            .and_then(Value::as_str)
+            .map(|thinking| StreamEventKind::ReasoningDelta(thinking.to_string()))
+    }
+
+    /// Whether `stdout` is a stream-json run that never reached its final
+    /// `result` event, on either stream. Output that is not stream-json has
+    /// no `result` event to miss.
+    fn stream_without_result(stdout: &str, stderr: &str) -> bool {
+        let is_result = |event: &Value| event.get("type").and_then(Value::as_str) == Some("result");
+        let mut events = stdout
+            .lines()
+            .filter_map(Self::parse_stream_event)
+            .peekable();
+        events.peek().is_some()
+            && !events.any(|event| is_result(&event))
+            && !stderr
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .any(|event| is_result(&event))
     }
 
     /// Core subprocess runner shared by [`run`](Self::run) and
@@ -1403,6 +1447,23 @@ impl ClaudeCliAgent {
             return self.failure_with_stream_usage(
                 input,
                 &format!("exit {code}: {reason}"),
+                started,
+                &stream_usage,
+            );
+        }
+
+        // The final `result` event reports the run's completion, usage and
+        // cost: a run that exits without it was cut short, so the call failed
+        // and keeps the usage it streamed (bug-acab47).
+        if Self::stream_without_result(&stdout, &stderr) {
+            tracing::warn!(
+                agent = %self.name,
+                elapsed_s = elapsed_secs,
+                "agent exited without its final result event"
+            );
+            return self.failure_with_stream_usage(
+                input,
+                "claude exited without its final `result` event (truncated output)",
                 started,
                 &stream_usage,
             );
@@ -2717,6 +2778,7 @@ mod tests {
 touch "{started}"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             started = started.display(),
         );
@@ -2775,6 +2837,7 @@ cat >/dev/null
 printf '%s\n' "${{CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}}" > "{env_file}"
 printf '%s\n' "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-unset}}" >> "{env_file}"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             env_file = capture_env.display(),
         );
@@ -2819,6 +2882,7 @@ prompt_file="{prompt_file}"
 printf '%s\n' "$@" > "$args_file"
 cat > "$prompt_file"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
             prompt_file = capture_prompt.display(),
@@ -2883,6 +2947,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -2919,6 +2984,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -2955,6 +3021,7 @@ args_file="{args_file}"
 printf '%s\n' "$@" > "$args_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = capture_args.display(),
         );
@@ -3131,6 +3198,54 @@ sleep 30
         panic!("no run was killed after both messages arrived");
     }
 
+    /// A run that exits 0 without its final `result` event was cut short
+    /// (bug-acab47): a failed call that keeps the usage it streamed. Output
+    /// that is not stream-json has no `result` event to miss.
+    #[tokio::test]
+    async fn a_run_without_a_result_line_is_a_provider_failure() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let write = |body: &str| {
+            fs::write(&script, body).unwrap();
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        };
+        let streamed = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-t","model":"claude-sonnet-4-6"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+"#;
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        write(streamed);
+        let truncated = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(
+            !truncated.success,
+            "a truncated run is not a completed call"
+        );
+        let text = truncated.output.body.as_text().expect("failure text");
+        assert!(text.contains("without its final `result` event"), "{text}");
+        assert_eq!(truncated.usage.input_tokens, 1_000);
+        assert_eq!(truncated.usage.output_tokens, 200);
+        let observation = truncated.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::Estimated);
+
+        write(&format!(
+            "{streamed}printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.01}}'\n"
+        ));
+        let complete = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(
+            complete.success,
+            "with its `result` event the run completes"
+        );
+
+        write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
+        let plain = agent.run(&prompt("finish it"), &Context::now()).await;
+        assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
     /// Dropping a run's future, which is how a cancel or the stall watchdog
     /// stops it, kills the subprocesses `claude` started, not only `claude`
     /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
@@ -3196,6 +3311,7 @@ set -eu
 cat >/dev/null
 echo 'Claude CLI is starting up...' 1>&2
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#;
         fs::write(&script, script_body).unwrap();
         #[cfg(unix)]
@@ -3292,6 +3408,34 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(matches!(&kinds[0], StreamEventKind::TextDelta(t) if t == "hello"));
+    }
+
+    /// Partial-message deltas, bare or wrapped in a `stream_event`, reach a
+    /// streaming receiver as text and reasoning deltas (bug-2aa55f).
+    #[test]
+    fn event_kinds_partial_message_deltas() {
+        let cases = [
+            serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}}),
+            serde_json::json!({
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}
+            }),
+        ];
+        for event in cases {
+            let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+            assert!(
+                matches!(kinds.as_slice(), [StreamEventKind::TextDelta(t)] if t == "hi"),
+                "{event}"
+            );
+        }
+        let thinking = serde_json::json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&thinking);
+        assert!(matches!(kinds.as_slice(), [StreamEventKind::ReasoningDelta(t)] if t == "hmm"));
+        let start = serde_json::json!({"type": "stream_event", "event": {"type": "message_start"}});
+        assert!(ClaudeCliAgent::event_kinds_from_value(&start).is_empty());
     }
 
     #[test]

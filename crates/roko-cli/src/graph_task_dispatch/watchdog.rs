@@ -11,17 +11,23 @@
 //!   [`DiagnosisSummary`], once per silence;
 //! - silent for `[conductor] task_stall_secs`: it drops the dispatch future,
 //!   which cancels the provider call, publishes a diagnosis saying so, and the
-//!   attempt fails as stalled ([`AttemptInterrupted::error`]), so the Graph engine
-//!   retries it under the task's `max_retries`.
+//!   attempt fails as stalled ([`AttemptInterrupted::error`]) and settles as a
+//!   timeout ([`AttemptInterrupted::settlement`]), so the Graph engine retries
+//!   it under the task's `max_retries`.
 //!
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
 //! `timeout_secs` stays the outer bound either way.
 //!
 //! Silence counts only while the agent waits on its model:
 //!
-//! - some providers report nothing until they finish (the Codex CLI hands over
-//!   its whole answer at the end), so an attempt that has not reported
-//!   anything yet is left to its hard timeout;
+//! - every event the agent streams is progress, text and reasoning deltas
+//!   included;
+//! - a provider whose adapter streams as it goes (the Claude CLI) is silent
+//!   from the start of its call, so one that never reports anything is
+//!   cancelled too (bug-2aa55f);
+//! - other providers may report nothing until they finish (the Codex CLI hands
+//!   over its whole answer at the end), so their attempts are left to the hard
+//!   timeout until they first report something;
 //! - a tool call the agent made (a long `cargo test`, say) is bounded by the
 //!   provider's own tool timeout, so silence while one runs does not count.
 
@@ -86,6 +92,9 @@ pub(super) struct AttemptProgress {
 struct ProgressState {
     /// When the attempt last reported anything; `None` until it first does.
     last_event: Option<Instant>,
+    /// When the call in flight started, if its provider streams as it goes:
+    /// the start of its silence until it reports anything.
+    quiet_since: Option<Instant>,
     /// Tool calls the agent made whose results have not arrived yet.
     open_tool_calls: HashSet<String>,
     /// The provider call the attempt waits on, once one started.
@@ -215,9 +224,25 @@ impl AttemptProgress {
         target: crate::dispatch_v2::ProviderDispatchSpec,
         failover: FailoverChain,
     ) {
+        self.call_started_at(target, failover, Instant::now());
+    }
+
+    fn call_started_at(
+        &self,
+        target: crate::dispatch_v2::ProviderDispatchSpec,
+        failover: FailoverChain,
+        at: Instant,
+    ) {
         let mut state = self.inner.lock();
+        state.quiet_since = streams_as_it_goes(target.provider_kind).then_some(at);
         state.call = Some(CallInFlight { target, failover });
         state.usage = StreamedUsage::default();
+    }
+
+    /// Whether the attempt reported anything yet: after it did, a timeout is
+    /// the agent's, before it the provider's.
+    pub(super) fn reported_progress(&self) -> bool {
+        self.inner.lock().last_event.is_some()
     }
 
     /// The watchdog or the conductor cancelled the call in flight.
@@ -237,16 +262,26 @@ impl AttemptProgress {
     }
 
     /// How long, at `now`, the attempt has been waiting on its model without
-    /// reporting progress: `None` before it first reported anything and while
-    /// a tool call it made is still running.
+    /// reporting progress: since its last event, or since its call started
+    /// when its provider streams as it goes. `None` before a provider that
+    /// may report only at the end first reports anything, and while a tool
+    /// call the agent made is still running.
     fn silence(&self, now: Instant) -> Option<Duration> {
         let state = self.inner.lock();
-        let last_event = state.last_event?;
+        let quiet_since = state.last_event.or(state.quiet_since)?;
         state
             .open_tool_calls
             .is_empty()
-            .then(|| now.saturating_duration_since(last_event))
+            .then(|| now.saturating_duration_since(quiet_since))
     }
+}
+
+/// Whether the adapter of a `kind` provider streams the agent's events as it
+/// goes, so that a call reporting nothing for a while is silent. The Claude
+/// CLI does; providers that may report only at the end (the Codex CLI, the
+/// Cursor CLI) do not.
+const fn streams_as_it_goes(kind: roko_core::agent::ProviderKind) -> bool {
+    matches!(kind, roko_core::agent::ProviderKind::ClaudeCli)
 }
 
 /// One attempt's stall check.
@@ -352,6 +387,24 @@ impl AttemptInterrupted {
         }
     }
 
+    /// How the attempt settles, failed with `error` (its [`Self::error`]): a
+    /// stall as a timeout, whatever the error's text says (bug-4c553b), the
+    /// agent's once `progress` shows it reported anything and the provider's
+    /// before; a conductor restart as a provider failure.
+    pub(super) fn settlement(
+        &self,
+        error: &RokoError,
+        progress: Option<&AttemptProgress>,
+    ) -> Settlement {
+        match self {
+            Self::Stalled(_) => Settlement::stalled(
+                &error.to_string(),
+                progress.is_some_and(AttemptProgress::reported_progress),
+            ),
+            Self::Restarted(_) => Settlement::provider_failure(&error.to_string(), false),
+        }
+    }
+
     /// How the streaming path reports the attempt's end.
     pub(super) const fn outcome(&self) -> TaskDispatchOutcomeKind {
         match self {
@@ -359,6 +412,20 @@ impl AttemptInterrupted {
             Self::Restarted(_) => TaskDispatchOutcomeKind::Cancelled,
         }
     }
+}
+
+/// How an attempt whose provider call failed with `error` settles: as what
+/// `interrupted` it, when the watchdog or the conductor ended it, else as a
+/// provider failure.
+pub(super) fn failed_call_settlement(
+    interrupted: Option<&AttemptInterrupted>,
+    error: &RokoError,
+    progress: Option<&AttemptProgress>,
+) -> Settlement {
+    interrupted.map_or_else(
+        || Settlement::provider_failure(&error.to_string(), false),
+        |interrupted| interrupted.settlement(error, progress),
+    )
 }
 
 /// The dashboard diagnosis of a silent attempt, or of one the watchdog
@@ -1209,5 +1276,154 @@ exec sleep 60
         assert_eq!(cost["cached_tokens"], 4_000);
         let cost_usd = cost["cost_usd"].as_f64().expect("cost");
         assert!((cost_usd - expected).abs() < 1e-6, "{cost}");
+    }
+
+    /// Write `body` as an executable provider script at `path`.
+    fn write_provider(path: &Path, body: &str) {
+        std::fs::write(path, body).expect("write provider script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("make script executable");
+    }
+
+    /// Dispatch the stalled task of [`stalled_task_json`] once on `config`,
+    /// recording to `workdir/.roko`, in run `run`: the attempt's error and
+    /// its verdict line.
+    async fn dispatch_once(
+        workdir: &Path,
+        config: RokoConfig,
+        run: &str,
+    ) -> (RokoError, serde_json::Value) {
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, config, workdir.to_path_buf())
+            .with_feedback(crate::graph_task_dispatch::tests::recording_feedback(
+                workdir,
+            ));
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let error = dispatcher
+            .dispatch(
+                &spec,
+                Vec::new(),
+                &CellContext::new()
+                    .with_cell_id("T01".to_string())
+                    .with_run_id(run.to_string()),
+            )
+            .await
+            .expect_err("the attempt stalls");
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        (error, verdicts[0].clone())
+    }
+
+    /// bug-4c553b: an attempt the watchdog cancelled settles as a timeout,
+    /// not a provider error. Once it reported progress the timeout is the
+    /// agent's; a Claude CLI call that never reported anything is silent
+    /// from its start, and its timeout is the provider's.
+    #[tokio::test]
+    async fn a_stalled_attempt_settles_as_a_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let script = silent_provider_script(temp.path(), &temp.path().join("launches.log"));
+        let (error, verdict) = dispatch_once(temp.path(), watched_config(&script), "talked").await;
+        assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
+        assert_eq!(verdict["outcome"], "timeout", "{verdict}");
+        assert_eq!(verdict["failure_class"]["kind"], "timeout", "{verdict}");
+        assert_eq!(verdict["blame"], "agent", "{verdict}");
+        assert_eq!(verdict["learning_label"], 0, "{verdict}");
+
+        let mute = temp.path().join("mute-claude.sh");
+        write_provider(&mute, "#!/bin/sh\nset -eu\ncat >/dev/null\nexec sleep 60\n");
+        let (error, verdict) = dispatch_once(temp.path(), watched_config(&mute), "mute").await;
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert_eq!(verdict["outcome"], "timeout", "{verdict}");
+        assert_eq!(verdict["blame"], "infra", "{verdict}");
+        assert!(verdict["learning_label"].is_null(), "{verdict}");
+    }
+
+    /// bug-2aa55f: deltas are progress. A stream of deltas holds the
+    /// watchdog off, and once it goes silent the attempt is cancelled.
+    #[tokio::test]
+    async fn a_delta_only_stream_still_trips_the_watchdog() {
+        let temp = tempdir().expect("tempdir");
+        let deltas = temp.path().join("deltas.log");
+        let script = temp.path().join("delta-claude.sh");
+        write_provider(
+            &script,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+for i in 1 2 3 4 5; do
+  printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"thinking "}}}}'
+  echo "$i" >> '{deltas}'
+  sleep 1
+done
+exec sleep 60
+"#,
+                deltas = deltas.display()
+            ),
+        );
+        let mut config = watched_config(&script);
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 3;
+        let started = Instant::now();
+        let (error, verdict) = dispatch_once(temp.path(), config, "deltas").await;
+        let elapsed = started.elapsed();
+
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert_eq!(verdict["outcome"], "timeout", "{verdict}");
+        let streamed = std::fs::read_to_string(&deltas).expect("delta log");
+        assert_eq!(
+            streamed.lines().count(),
+            5,
+            "the deltas held the watchdog off until they stopped"
+        );
+        assert!(
+            elapsed < secs(30),
+            "the watchdog, not the 60 s timeout, ended the attempt after {elapsed:?}"
+        );
+    }
+
+    /// bug-2aa55f: a call whose provider streams as it goes is silent from
+    /// its start; one whose provider may report only at the end is not until
+    /// it reports something.
+    #[test]
+    fn a_streaming_call_is_silent_from_its_start() {
+        let config = Arc::new(watched_config(Path::new("/bin/true")));
+        let claude =
+            crate::dispatch_v2::ProviderDispatchResolver::new(config).resolve("graph-model");
+        assert_eq!(claude.provider_kind, ProviderKind::ClaudeCli);
+        let mut codex = claude.clone();
+        codex.provider_kind = ProviderKind::CodexCli;
+        let t0 = Instant::now();
+
+        let streaming = AttemptProgress::default();
+        streaming.call_started_at(claude, FailoverChain::default(), t0);
+        assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(5)));
+        assert!(!streaming.reported_progress());
+        streaming.observe_at(&text("working"), t0 + secs(4));
+        assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(1)));
+        assert!(streaming.reported_progress());
+
+        let at_the_end = AttemptProgress::default();
+        at_the_end.call_started_at(codex, FailoverChain::default(), t0);
+        assert_eq!(
+            at_the_end.silence(t0 + secs(600)),
+            None,
+            "a provider that may report only at the end is left to its timeout"
+        );
     }
 }

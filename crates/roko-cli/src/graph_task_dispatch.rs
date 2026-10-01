@@ -1263,9 +1263,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // provider fails over; `dispatch.target` names the model that ran.
         // While it runs, heartbeats keep the TUI's elapsed-time counter live.
         // The stall watchdog cancels an attempt that goes silent and the
-        // conductor one it restarts; either then fails like a provider error
-        // and retries under `max_retries`.
-        let dispatch_result = self
+        // conductor one it restarts; either then fails and retries under
+        // `max_retries`, settled as what ended it (bug-4c553b).
+        let watched_result = self
             .run_watched(
                 self.run_bridge_with_failover(
                     spec,
@@ -1278,8 +1278,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 supervised.as_ref(),
                 &watched,
             )
-            .await
-            .unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
+            .await;
+        let ended_by = watched_result.as_ref().err().cloned();
+        let dispatch_result =
+            watched_result.unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
         if let Some(supervised) = supervised {
             supervised
@@ -1331,7 +1333,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         );
                     }
                     attempt.record_failover(failover);
-                    let settlement = Settlement::provider_failure(&error.to_string(), false);
+                    let settlement = watchdog::failed_call_settlement(
+                        ended_by.as_ref(),
+                        &error,
+                        progress.as_ref(),
+                    );
                     let settled =
                         attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
                     self.emit_feedback(
@@ -1348,7 +1354,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 }
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement =
+                    watchdog::failed_call_settlement(ended_by.as_ref(), &error, progress.as_ref());
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
                 return Err(error);

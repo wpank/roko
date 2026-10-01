@@ -387,6 +387,7 @@ printf '%s\n' "$@" > "$args_file"
 printf '%s\n' "${{CLAUDE_TEST_ENV-}}" > "$env_file"
 cat > "$prompt_file"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = args_file.display(),
             prompt_file = prompt_file.display(),
@@ -523,6 +524,7 @@ printf '%s\n' "$@" > "$args_file"
 pwd > "$cwd_file"
 cat >/dev/null
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"worktree-ok"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
 "#,
             args_file = args_file.display(),
             cwd_file = cwd_file.display(),

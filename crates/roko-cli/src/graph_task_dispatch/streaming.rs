@@ -266,7 +266,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             // retries it.
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement = interrupted.settlement(&error, progress.as_ref());
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
                 let streamed = match progress

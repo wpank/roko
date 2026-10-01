@@ -2235,10 +2235,12 @@ mod tests {
         let script = tmp.path().join("claude");
         let prompt_file = tmp.path().join("prompt.txt");
         let response = r#"{"type":"content_block_delta","delta":{"text":"factory-claude-ok"}}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}"#;
         let script_body = format!(
-            "#!/bin/sh\nset -eu\ncat > \"{}\"\nprintf '%s\\n' '{}'\n",
+            "#!/bin/sh\nset -eu\ncat > \"{}\"\nprintf '%s\\n' '{}'\nprintf '%s\\n' '{}'\n",
             prompt_file.display(),
             response,
+            result,
         );
         write_script(&script, &script_body);
         let mut config = RokoConfig::default();

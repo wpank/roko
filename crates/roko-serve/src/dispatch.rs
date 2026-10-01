@@ -3425,6 +3425,7 @@ filter = { path = "src/*.rs" }
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 
@@ -3540,6 +3541,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 
@@ -3643,6 +3645,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
 set -eu
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
 "#,
         );
 

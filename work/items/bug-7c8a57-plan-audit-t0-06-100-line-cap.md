@@ -9,9 +9,9 @@ size = "S"
 goal = "core"
 subsystem = ["roko-cli/task_parser"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "faa378453"
 source = "tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-06: Remove 100-line file injection cap"
 discovered_from = "audit:tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-06: Remove 100-line file injection cap"
 anchors = ["crates/roko-cli/src/plan_policy.rs::render_declared_context", "crates/roko-cli/src/dispatch/prompt_builder.rs::build_runner_context", "crates/roko-cli/src/task_parser.rs::build_prompt", "crates/roko-neuro/src/context.rs::gather_read_files", "crates/roko-compose/src/context_provider.rs::add_inline_files"]
@@ -132,6 +132,7 @@ Steps (Option A):
 - Do not touch `summarize_content` in `roko-neuro/src/context.rs` (a log preview).
 - Safe to do in parallel with most work; conflicts only with other edits to `plan_policy.rs` or the
   prompt-assembly section of `dispatch/prompt_builder.rs`.
+- Implemented on `work/bug-7c8a57` at `feb21ddb1`; cargo verification deferred to the batch check. Option A: an un-ranged entry renders whole within `max_range_lines` and a fair share of the byte budget left after explicit ranges and anchors, else it is cut with the truncation marker and never fails the task; every tag carries `total`. The dead `TaskDef::build_prompt` and `extract_line_range` are deleted. Step 5 (the `roko-neuro` and `roko-compose` copies) is not done.
 
 ## Original notes
 

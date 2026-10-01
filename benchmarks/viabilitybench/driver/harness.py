@@ -13,6 +13,9 @@ A runner:
 - never commits in the agent's repo. `vb run` exports the final tree afterwards (`archive.commit_final`) and the
   census labels it.
 
+A runner may also define `preflight(arm, model, endpoint, caps, snapshot)`, which `vb run` calls once before the
+first task; anything it raises stops the run. The Roko arm checks there that its binary accepts the plans it emits.
+
 API:
     TaskContext(...)                  # frozen; see the fields
     Attempt(...); Attempt.as_record() -> dict          # one vb.run_record/1 execution.attempts[] entry

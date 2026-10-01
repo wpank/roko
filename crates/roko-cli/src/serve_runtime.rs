@@ -903,6 +903,8 @@ fn run_plan_on_local_runtime(
                 only_plans,
                 live_agent_output,
                 force_disk_check: false,
+                effort: None,
+                no_cascade: false,
             })
             .await?;
 

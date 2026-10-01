@@ -828,6 +828,14 @@ pub struct GraphPlanRunParams {
     /// Start the run even when the workdir has less free disk than
     /// `[resources] min_free_disk_mb` (`plan run --force`, reg-7cf6f9).
     pub force_disk_check: bool,
+    /// Reasoning effort of this run's dispatches in place of `[agent]
+    /// default_effort` (`roko run --effort`, gap-9980c6); `None` keeps the
+    /// config's.
+    pub effort: Option<String>,
+    /// Pick models without the cascade router (`roko do --no-cascade`,
+    /// gap-9980c6): the routing ladder, else the default model, routes each
+    /// task. The run's outcomes still teach the router.
+    pub no_cascade: bool,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -1009,6 +1017,8 @@ async fn run_graph_plan_body(
         only_plans,
         live_agent_output,
         force_disk_check,
+        effort,
+        no_cascade,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -1063,6 +1073,10 @@ async fn run_graph_plan_body(
     let mut roko_config = roko_core::config::loader::load_config_validated(workdir)
         .map_err(|error| anyhow!("load Graph runtime config: {error}"))?
         .into_config();
+    // `--effort` sets this run's reasoning effort (gap-9980c6).
+    if let Some(effort) = effort {
+        roko_config.agent.default_effort = effort;
+    }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
@@ -1109,10 +1123,17 @@ async fn run_graph_plan_body(
     // run's manifest records.
     let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
+    // `--no-cascade`: the router picks no model; the run's feedback still
+    // trains it.
+    let routing_cascade = if no_cascade {
+        None
+    } else {
+        graph_run_config.cascade_router.clone()
+    };
     let shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
         roko_config.agent.mcp_config.as_ref(),
-        graph_run_config.cascade_router.clone(),
+        routing_cascade,
         Some(prompt_cache),
     )
     .await
@@ -3596,6 +3617,8 @@ files = ["README.md"]
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect("run plan set");
@@ -3803,6 +3826,8 @@ max_retries = 0
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect("run plan set");
@@ -5217,11 +5242,47 @@ exec sleep 60
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
 
         assert!(error.to_string().contains("--worktree-per-task"), "{error}");
+    }
+
+    /// gap-9980c6: a run's `effort` replaces `[agent] default_effort`
+    /// (`medium` here) on its dispatches, as `roko run --effort low` asks.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_effort_reaches_the_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        // That workspace's provider, logging the arguments of each call.
+        std::fs::write(
+            dir.path().join("fake-provider.sh"),
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' "$*" >> "$(dirname "$0")/provider-args"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        write_verify_plan(dir.path(), "effort", "", &[("T1", &[], "true")]);
+
+        let exit_code = run_graph_plan(GraphPlanRunParams {
+            worktree_per_task: false,
+            effort: Some("low".to_string()),
+            ..worktree_run_params(dir.path())
+        })
+        .await
+        .expect("run the plan");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let args = std::fs::read_to_string(dir.path().join("provider-args")).expect("calls");
+        assert!(args.contains("--effort low"), "{args}");
     }
 
     /// A scripted provider: it writes `<name>.txt` for the "Write <name>.txt"
@@ -5325,6 +5386,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         }
     }
 

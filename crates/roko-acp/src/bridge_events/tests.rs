@@ -262,6 +262,7 @@ async fn anthropic_session_mcp_tools() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -468,6 +469,7 @@ async fn acp_conformance() {
         &mcp_session.session_id,
         &mcp_session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         mcp_tx,
     )
     .await;
@@ -2705,21 +2707,23 @@ async fn builtin_tool_permitted_in_default_code_mode() {
     assert_eq!(acp_contract_role_for_mode("unknown-mode"), "unknown-mode");
 }
 
-/// A stdio MCP server that lists one read-only `echo` tool and answers one call
-/// to it. It creates the file named by its first argument when the call arrives.
+/// A stdio MCP server that lists two read-only tools, `echo` and `web_search`,
+/// and answers one call. It creates the file named by its first argument when
+/// the call arrives.
 const MCP_ECHO_FIXTURE: &str = r#"
     IFS= read -r initialize
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
     IFS= read -r list_tools
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},{"name":"web_search","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
     IFS= read -r call || exit 0
     : > "$1"
     printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}'
 "#;
 
-/// Dispatches the fixture's `echo` tool through the dispatcher an ACP tool loop
-/// builds for `mode`. Returns the result and whether the server got the call.
-async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
+/// Dispatches one of the fixture's tools, by its exposed name, through the
+/// dispatcher an ACP tool loop builds for `mode`. Returns the result and whether
+/// the server got the call.
+async fn dispatch_fixture_mcp_tool(mode: &str, tool: &str) -> (ToolResult, bool) {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let marker = tmp.path().join("tools-call-received");
     let servers = vec![crate::types::McpServerConfig {
@@ -2735,24 +2739,25 @@ async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
         },
         discovery_timeout_ms: Some(1_000),
     }];
+    let role = acp_contract_role_for_mode(mode);
     let (event_sender, _event_receiver) = mpsc::channel(16);
     let (runtime, statuses) = setup_session_mcp_tools(
         "mcp-contract-session",
         &servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        &role,
         event_sender,
     )
     .await;
-    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 2)]);
 
     let registry = Arc::new(VecToolRegistry::from_tools(runtime.tools));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
         handlers: runtime.handlers,
     });
-    let role = acp_contract_role_for_mode(mode);
     let safety = acp_tool_safety(&RokoConfig::default(), &role);
     let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
-    let call = ToolCall::new("mcp-contract-call", "fixture_echo", json!({}));
+    let call = ToolCall::new("mcp-contract-call", tool, json!({}));
     let result = dispatcher
         .dispatch(call, &ToolContext::testing(tmp.path()))
         .await;
@@ -2762,7 +2767,7 @@ async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
 #[tokio::test]
 async fn mcp_tool_loop_allows_tool_permitted_by_role_contract() {
     // The default `code` mode loads the implementer contract, which permits the tool.
-    let (result, received) = dispatch_fixture_mcp_tool("code").await;
+    let (result, received) = dispatch_fixture_mcp_tool("code", "fixture_echo").await;
     assert!(
         result.is_ok(),
         "code mode must run the MCP tool, got {result:?}"
@@ -2806,9 +2811,42 @@ async fn acp_tool_dispatcher_runs_builtin_tool_in_code_mode() {
 }
 
 #[tokio::test]
+async fn remote_mcp_tools_respect_forbidden_tools() {
+    // The implementer contract forbids `web_search`. The server's tool is exposed
+    // as `fixture_web_search`, which the contract does not name, so only its
+    // remote name gives it away.
+    let (result, received) = dispatch_fixture_mcp_tool("code", "fixture_web_search").await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "a forbidden remote tool name must be denied, got {result:?}"
+    );
+    assert!(!received, "a denied call must never reach the MCP server");
+
+    // The session's pre- and post-dispatch checks hold the mode's contract too:
+    // plan mode's strategist may not write, so a plan turn that changed a file
+    // is blocked. Under the raw mode name it got the restricted contract, which
+    // has no such rule.
+    let layer = session_safety_layer(&RokoConfig::default(), "plan");
+    let changed = vec!["src/lib.rs".to_owned()];
+    let violations = layer.post_dispatch_check(
+        "sess-1",
+        "session-prompt",
+        "strategist",
+        "planned",
+        &changed,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.severity == ViolationSeverity::Block),
+        "plan mode must block a turn that changed files, got {violations:?}"
+    );
+}
+
+#[tokio::test]
 async fn mcp_tool_loop_denies_tool_outside_role_contract() {
     // A mode with no bundled contract gets the deny-all restricted fallback.
-    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode").await;
+    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode", "fixture_echo").await;
     assert!(
         matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
         "a tool outside the role contract must be denied, got {result:?}"
@@ -4009,6 +4047,7 @@ async fn mcp_server_crash_during_tools_list_produces_failed_status() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -4062,6 +4101,7 @@ async fn mcp_server_hang_during_initialize_times_out_gracefully() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -4179,6 +4219,7 @@ async fn mcp_setup_with_no_servers_returns_empty_runtime() {
         "empty-session",
         &[],
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -4207,6 +4248,7 @@ async fn mcp_server_immediate_exit_without_response_reports_failed_status() {
             discovery_timeout_ms: Some(1_000),
         }],
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;

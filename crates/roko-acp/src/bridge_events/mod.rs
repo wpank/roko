@@ -95,6 +95,13 @@ pub(crate) mod knowledge_helpers {
 
 // ── Core entry points ───────────────────────────────────────────────
 
+/// The safety layer for a prompt's pre- and post-dispatch checks: the configured
+/// policies plus the contract of the session mode's role. Missing contracts fall
+/// closed.
+fn session_safety_layer(roko_config: &RokoConfig, mode: &str) -> SafetyLayer {
+    SafetyLayer::from_config(roko_config).with_role(acp_contract_role_for_mode(mode))
+}
+
 /// Maps cognitive events to ACP `session/update` notifications and streams them to the editor.
 /// Returns both the prompt result and the accumulated assistant response text.
 pub async fn stream_events_to_editor<R, W>(
@@ -621,12 +628,11 @@ where
     let shared_run = session.shared_run.clone();
     // SP-1: build a restrictive layer per dispatch; missing contracts fall closed.
     let pre_dispatch_violation = {
-        let safety =
-            SafetyLayer::from_config(&roko_config).with_role(&session.config_state.agent_mode);
+        let safety = session_safety_layer(&roko_config, &session.config_state.agent_mode);
         match safety.pre_dispatch_check_with_context(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &session_agent_role,
             &workdir,
             &DispatchSafetyContext::for_local_action(&prompt_text).with_network_requirement(true),
         ) {
@@ -910,12 +916,12 @@ where
         && !sr.assistant_text.is_empty()
     {
         let changed_files = worktree_before.changed_files(&workdir_for_logging);
-        let safety = SafetyLayer::from_config(&roko_config_for_logging)
-            .with_role(&session.config_state.agent_mode);
+        let mode = &session.config_state.agent_mode;
+        let safety = session_safety_layer(&roko_config_for_logging, mode);
         let violations = safety.post_dispatch_check(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &acp_contract_role_for_mode(mode),
             &sr.assistant_text,
             &changed_files,
         );

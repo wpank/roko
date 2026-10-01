@@ -12,7 +12,8 @@ Usage:
 Picking up work (work/README.md, "For agents"):
   work.py next [--n 4] [--goal G] [--max-size M] [--json]   # top unclaimed items that don't touch the same files
   work.py claim <id>… --by "<who>" [--branch B] [--worktree PATH] [--session S]   # shared claim in the main tree's .roko/work-claims/
-  work.py release <id>… [--session S]        # drop a claim (the item stays open)
+        [--executor claude-agent|claude-session|roko-plan|human] [--via work-batch|work-next|manual|roko-plan] [--size S|M|L]
+  work.py release <id>… [--session S] [--reason verify-fail|blocked|decision-needed|conflict|timeout|session-limit]
   work.py claims                             # list live and stale claims
 
 The development record (work/telemetry/README.md; not for workers): claim and release, run in the main checkout, append
@@ -22,6 +23,7 @@ logs what happens after the work:
 
 Keeping the graph current (work/README.md, "Keeping the graph current"):
   work.py close <id> --evidence "…" [--commit REV] [--run-id RUN] [--status done|wontfix|superseded] [--duplicate-of ID]
+        [--model M] [--assist EXECUTOR]   # [closed] also gets the claim's executor, via, size and claimed_at
   work.py sync [--dry-run]                   # close items from `Closes: <id>` commit trailers and passed plan tasks with closes=[…]
   work.py drift [--json]                     # open items whose evidence may be out of date
   work.py touched [--rev REV|A..B]           # open items a commit (or range) touched or mentioned
@@ -147,6 +149,7 @@ def validate(items):
                 errs.append(f"{p}: status=done needs [closed] evidence/run_id/commit")
         if it.get("status") in ("wontfix", "superseded") and not (it.get("closed") or {}).get("evidence"):
             errs.append(f"{p}: status={it.get('status')} needs [closed].evidence")
+        errs += [f"{p}: {e}" for e in check_closed(it.get("closed") or {})]
         if it.get("triage") == "verified" and not it.get("last_verified"):
             errs.append(f"{p}: triage=verified needs last_verified")
         if (it.get("status") == "parked") != (it.get("_dir") == "parked"):
@@ -639,8 +642,11 @@ def cmd_claim(a):
         if iid in live and not a.force:
             c = load_claims()[iid]
             sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
-        rec = {"id": iid, "by": a.by, "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-               "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session}
+        now = dt.datetime.now().astimezone()
+        size = a.size or it.get("size")
+        rec = {"id": iid, "by": a.by, "at": now.isoformat(timespec="seconds"), "claimed_at": utc_ts(now),
+               "branch": a.branch, "worktree": a.worktree, "title": it["title"], "session": session,
+               "executor": a.executor, "via": a.via, "size": size}
         f = d / f"{iid}.json"
         try:
             fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
@@ -648,7 +654,8 @@ def cmd_claim(a):
             sys.exit(f"{iid}: claimed by someone else a moment ago")
         with os.fdopen(fd, "w") as fh:
             fh.write(json.dumps(rec, indent=1) + "\n")
-        log_event("claim", iid, session=session, branch=a.branch, by=a.by, force=True if a.force else None)
+        log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
+                  size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
         print(f"claimed {iid} for {a.by}")
 
 
@@ -660,7 +667,8 @@ def cmd_release(a):
             c = claims.get(iid) or {}
             # Logged before the claim goes: the event keeps what the claim knew.
             log_event("release", iid, session=session_name(a.session, c.get("session"), c.get("by")),
-                      branch=c.get("branch"), by=c.get("by"))
+                      executor=c.get("executor"), via=c.get("via"), branch=c.get("branch"), by=c.get("by"),
+                      reason=a.reason, size=c.get("size"), claimed_at=c.get("claimed_at"))
             f.unlink()
             print(f"released {iid}")
         else:
@@ -688,6 +696,12 @@ EVENT_SCHEMA = "roko.work_event/1"
 EVENTS = ("claim", "release", "closed", "merged", "post-verify", "escape", "intervention", "lane-start")
 EVENT_SOURCES = ("live", "harvest", "reconciled", "backfill")
 EVENT_FIELDS = ("schema", "ts", "event", "item", "executor", "via", "session", "branch", "concurrency", "source")
+EXECUTORS = ("claude-agent", "claude-session", "roko-plan", "human")
+VIAS = ("work-batch", "work-next", "manual", "roko-plan")
+RELEASE_REASONS = ("verify-fail", "blocked", "decision-needed", "conflict", "timeout", "session-limit")
+# Closures that sync reconciles from a commit with no claim have no known executor; a backfilled sweep or triage
+# closure checked an item rather than implementing it.
+CLOSED_EXECUTORS = EXECUTORS + ("unknown", "verification-only")
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
@@ -758,6 +772,31 @@ def log_event(event: str, item, **kw) -> dict | None:
     return row
 
 
+def item_claim(iid: str) -> dict:
+    """The claim on `iid` in the main checkout's claims directory, live or stale; {} when there is none."""
+    try:
+        return json.loads((claims_dir() / f"{iid}.json").read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def check_closed(closed: dict) -> list[str]:
+    """Why a [closed] block's executor fields (gap-0b9056) are malformed; every one of them is optional."""
+    errs = []
+    if closed.get("executor") is not None and closed["executor"] not in CLOSED_EXECUTORS:
+        errs.append(f"[closed].executor must be one of {CLOSED_EXECUTORS}")
+    if closed.get("via") is not None and closed["via"] not in VIAS:
+        errs.append(f"[closed].via must be one of {VIAS}")
+    if closed.get("size") is not None and closed["size"] not in SIZES:
+        errs.append(f"[closed].size must be one of {SIZES}")
+    if closed.get("forced") is not None and not isinstance(closed["forced"], bool):
+        errs.append("[closed].forced must be true or false")
+    for k in ("at_ts", "claimed_at"):
+        if closed.get(k) is not None and not TS_RE.match(str(closed[k])):
+            errs.append(f"[closed].{k} must be a UTC timestamp such as 2026-09-30T08:15:00Z")
+    return errs
+
+
 def cmd_event(a):
     """Log what happened to an item after its work: its merge, the post-merge verify, an escape, an intervention."""
     if not ID_RE.match(a.id):
@@ -772,7 +811,8 @@ def cmd_event(a):
     fields = {"merged": {"merge_sha": resolve_rev(a.merge_sha), "conflicts": a.conflicts, "fixups": a.fixups},
               "post-verify": {"rc": a.rc}, "escape": {"caused_by": a.caused_by}, "intervention": {}}[a.kind]
     session = session_name(a.session, a.by, c.get("session"), c.get("by"))
-    row = log_event(a.kind, a.id, session=session, branch=a.branch or c.get("branch"), **fields)
+    row = log_event(a.kind, a.id, session=session, executor=c.get("executor"), via=c.get("via"),
+                    branch=a.branch or c.get("branch"), **fields)
     if row is None:
         print("not logged: a worker in a linked worktree logs no events")
     else:
@@ -962,6 +1002,15 @@ def set_key(top, key: str, value: str, after: str | None = None):
     top.insert(idx, f"{key} = {value}")
 
 
+def closed_value(key: str, v) -> str:
+    """A [closed] value in TOML: `at` is a date, `forced` a boolean, everything else a string."""
+    if key == "at":
+        return str(v)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return tomlstr(str(v))
+
+
 def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, duplicate_of=None,
                  verified=False, rev=None, note=None, today=None):
     """Apply field changes to one item file; validates the result parses. Returns the new text."""
@@ -991,7 +1040,7 @@ def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, dup
     if closed:
         top = [ln for ln in top if not ln.startswith("hold = ")]  # a closed item is no longer on hold
         blocks = [b for b in blocks if b[0].strip() != "[closed]"]
-        blocks.append(["[closed]"] + [f"{k} = {v if k == 'at' else tomlstr(str(v))}" for k, v in closed.items() if v])
+        blocks.append(["[closed]"] + [f"{k} = {closed_value(k, v)}" for k, v in closed.items() if v is not None and v != ""])
     if note:
         body = body.rstrip("\n") + "\n\n" + note.strip() + "\n"
     fm = join_front(top, blocks)
@@ -999,15 +1048,26 @@ def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, dup
     return m.group(1) + fm + m.group(3) + body
 
 
-def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=None, duplicate_of=None, note=None):
+def close_item(it, *, status="done", evidence="", commit=None, run_id=None, by=None, duplicate_of=None, note=None,
+               executor=None, via=None, model=None, assist=None, forced=None, source="live", session=None):
+    """Close `it`. [closed] gets the claim's executor, via, size and claimed_at (read from the main checkout, so this
+    works in a worktree too); an `executor` or `via` given here wins over the claim's. In the main checkout the
+    closure is logged as a `closed` event and the claim is deleted."""
     today = dt.date.today().isoformat()
-    closed = {"at": today, "commit": commit, "run_id": run_id, "by": by, "evidence": evidence}
+    claim = item_claim(it["id"])
+    executor, via = executor or claim.get("executor"), via or claim.get("via")
+    closed = {"at": today, "at_ts": utc_ts(), "commit": commit, "run_id": run_id, "by": by, "executor": executor,
+              "via": via, "size": claim.get("size"), "claimed_at": claim.get("claimed_at"), "model": model,
+              "assist": assist, "forced": forced, "evidence": evidence}
     text = rewrite_item(it, status=status, closed=closed, duplicate_of=duplicate_of, verified=True,
                         rev=head_rev() or None, note=note, today=today)
     it["_path"].write_text(text)
-    claim = claims_dir() / f"{it['id']}.json"
-    if claim.exists() and REPO.resolve() == main_root().resolve():
-        claim.unlink()
+    log_event("closed", it["id"], session=session or session_name(None, claim.get("session"), claim.get("by")),
+              executor=executor, via=via, branch=claim.get("branch"), source=source, status=status, commit=commit,
+              run_id=run_id, forced=forced)
+    f = claims_dir() / f"{it['id']}.json"
+    if f.exists() and in_main_checkout():
+        f.unlink()
 
 
 def resolve_rev(rev: str | None) -> str | None:
@@ -1027,8 +1087,10 @@ def cmd_close(a):
             sys.exit(f"{a.id}: the static part of its [[verify]] fails; fix it or pass --force with a reason in --evidence")
     if a.status == "superseded" and not (a.duplicate_of or a.evidence):
         sys.exit("superseded needs --duplicate-of or --evidence")
+    claim = item_claim(a.id)
     close_item(it, status=a.status, evidence=a.evidence, commit=resolve_rev(a.commit), run_id=a.run_id,
-               by=a.by, duplicate_of=a.duplicate_of)
+               by=a.by, duplicate_of=a.duplicate_of, executor=a.executor, via=a.via, model=a.model, assist=a.assist,
+               forced=bool(a.force), session=session_name(a.session, a.by, claim.get("session"), claim.get("by")))
     print(f"{a.id}: {a.status}")
 
 
@@ -1059,6 +1121,8 @@ def cmd_sync(a, quiet=False):
     items = [i for k in ROOTS for i in load(k)[0]]
     if not a.dry_run:
         prune_claims()
+    # Its closures are logged as `reconciled`, under the syncing session (the commit hook passes its session id).
+    session = session_name(getattr(a, "session", None), getattr(a, "hook_session", None), "sync")
     closed, conflicts = [], []
     for it, kind, det in sync_candidates(items):
         state = static_verify_state(it)
@@ -1068,10 +1132,14 @@ def cmd_sync(a, quiet=False):
             continue
         if not a.dry_run:
             if kind == "commit":
-                close_item(it, commit=det[0], by="commit trailer", evidence=f"Closed by {det[0]}: {det[1]}")
+                # A commit closure keeps its claim's executor; without a claim, nobody knows who did the work.
+                close_item(it, commit=det[0], by="commit trailer", evidence=f"Closed by {det[0]}: {det[1]}",
+                           executor=item_claim(it["id"]).get("executor") or "unknown", forced=False,
+                           source="reconciled", session=session)
             else:
                 close_item(it, run_id=det[2], by=f"plan:{det[0]}#{det[1]}",
-                           evidence=f"Plan task {det[0]}#{det[1]} declares closes = [\"{it['id']}\"] and passed its gates (Graph checkpoint verdict: passed).")
+                           evidence=f"Plan task {det[0]}#{det[1]} declares closes = [\"{it['id']}\"] and passed its gates (Graph checkpoint verdict: passed).",
+                           executor="roko-plan", via="roko-plan", forced=False, source="reconciled", session=session)
         closed.append(f"{it['id']}: {'would close' if a.dry_run else 'closed'} ({where})")
     if not quiet or closed or conflicts:
         for s in closed + conflicts:
@@ -1187,7 +1255,8 @@ def cmd_hook(a):
             return  # no commit was made by this command: say nothing
         import contextlib, io
         with contextlib.redirect_stdout(io.StringIO()):
-            closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False), quiet=True)
+            closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False, hook_session=payload.get("session_id")),
+                                         quiet=True)
         report = touched_report(rev, [i for k in ROOTS for i in load(k)[0]])
         if not (closed or conflicts or report):
             return
@@ -1444,6 +1513,10 @@ def main():
     p = sp.add_parser("close"); p.add_argument("id"); p.add_argument("--evidence", required=True)
     p.add_argument("--status", default="done", choices=["done", "wontfix", "superseded"]); p.add_argument("--commit")
     p.add_argument("--run-id"); p.add_argument("--by"); p.add_argument("--duplicate-of"); p.add_argument("--force", action="store_true")
+    p.add_argument("--model", help="the model that did the work"); p.add_argument("--assist", help="a second executor that helped")
+    p.add_argument("--executor", choices=EXECUTORS, help="who executed it, when its claim does not say")
+    p.add_argument("--via", choices=VIAS, help="how it was picked up, when its claim does not say")
+    p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")
     p = sp.add_parser("sync"); p.add_argument("--dry-run", action="store_true")
     p = sp.add_parser("drift"); p.add_argument("--json", action="store_true"); p.add_argument("--stale-days", type=int, default=STALE_DAYS)
     p = sp.add_parser("touched"); p.add_argument("--rev", default="HEAD")
@@ -1456,7 +1529,11 @@ def main():
     p = sp.add_parser("claim"); p.add_argument("ids", nargs="+"); p.add_argument("--by", required=True); p.add_argument("--branch")
     p.add_argument("--worktree"); p.add_argument("--force", action="store_true")
     p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else --by)")
+    p.add_argument("--executor", choices=EXECUTORS, help="who executes the item")
+    p.add_argument("--via", choices=VIAS, help="how it was picked up")
+    p.add_argument("--size", choices=SIZES, help="the size judged before work starts (default: the item's size)")
     p = sp.add_parser("release"); p.add_argument("ids", nargs="+")
+    p.add_argument("--reason", choices=RELEASE_REASONS, help="why the item goes back unfinished")
     p.add_argument("--session", help="the events file to log to (default: $WORK_SESSION, else the claim's session)")
     sp.add_parser("claims")
     p = sp.add_parser("event", help="log a merge, post-merge verify, escape or intervention (main checkout only)")

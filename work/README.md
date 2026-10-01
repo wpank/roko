@@ -19,7 +19,8 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 3. **Claim it** before touching code:
    `python3 tools/work.py claim <id> --by "<who you are>" --branch work/<id>`.
    A claim is a small file in the main checkout's `.roko/work-claims/`. It is shared by every worktree and never
-   committed. Claims older than 24 hours count as stale. `tools/work.py claims` lists them.
+   committed. Claims older than 24 hours count as stale. `tools/work.py claims` lists them. The work skills also
+   pass `--executor`, `--via` and `--size`; `close` copies them into `[closed]`.
 4. **Work in your own worktree and branch**, never in the main checkout:
    `git worktree add ../roko-work-<id> -b work/<id>` (from the current working branch). If you were started in
    a worktree already, `git switch -c work/<id>` there. Rust: `export CARGO_TARGET_DIR=<main checkout>/target`
@@ -139,6 +140,8 @@ command = "grep -rqw 'fn cancel_from_assigned_state' crates/roko-serve/ && cargo
 
 [closed]                          # filled when status leaves open: evidence of the transition
 # at = 2026-10-02, commit = "abc1234", run_id = "graph-…", by = "plan:…#T03", evidence = "…"
+# optional, from the claim (gap-0b9056): at_ts = "2026-10-02T09:15:00Z", executor = "claude-agent",
+# via = "work-batch", size = "S", claimed_at = "…Z", model = "…", assist = "…", forced = false
 +++
 ```
 

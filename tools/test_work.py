@@ -221,5 +221,70 @@ class TestEvents(RepoTest):
         self.assertFalse((self.root / "work" / "telemetry").exists())
 
 
+class TestExecutorFields(RepoTest):
+    def test_close_copies_claim_fields_into_closed(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc",
+                      "--executor", "claude-agent", "--via", "work-batch", "--size", "S")
+        claim = work.item_claim("gap-cccccc")
+        self.assertEqual((claim["executor"], claim["via"], claim["size"]), ("claude-agent", "work-batch", "S"))
+        self.assertRegex(claim["claimed_at"], work.TS_RE)
+        # A worker closes the item in its own worktree: the claim is read from the main checkout.
+        wt = self.add_worktree("work/gap-cccccc")
+        env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
+        subprocess.run([sys.executable, str(Path(work.__file__)), "close", "gap-cccccc", "--evidence", "done in test",
+                        "--commit", "HEAD", "--model", "claude-opus-5-5"], cwd=wt, env={**env, "WORK_REPO": str(wt)},
+                       check=True, capture_output=True, text=True)
+        work.set_repo(wt)
+        closed = {i["id"]: i for i in self.items()}["gap-cccccc"]["closed"]
+        self.assertEqual({k: closed.get(k) for k in ("executor", "via", "size", "claimed_at", "model", "forced")},
+                         {"executor": "claude-agent", "via": "work-batch", "size": "S", "claimed_at": claim["claimed_at"],
+                          "model": "claude-opus-5-5", "forced": False})
+        self.assertRegex(closed["at_ts"], work.TS_RE)
+        self.assertEqual(work.validate(self.items()), [])
+        # The worker's close leaves the claim for the merge, and logs nothing.
+        self.assertTrue((self.root / ".roko" / "work-claims" / "gap-cccccc.json").exists())
+        self.assertEqual([r["event"] for r in self.events("s1")], ["claim"])
+
+    def test_release_records_its_reason(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--executor", "claude-agent",
+                      "--via", "work-next")
+        self.run_work("release", "gap-cccccc", "--reason", "blocked")
+        claim, release = self.events("s1")
+        self.assertEqual(work.check_event(release), [])
+        self.assertEqual((release["event"], release["reason"], release["executor"], release["via"]),
+                         ("release", "blocked", "claude-agent", "work-next"))
+        self.assertNotIn("size", release)  # the item has no size, and a field nobody gave is left out
+        self.assertEqual(release["claimed_at"], claim["claimed_at"])
+
+    def test_the_claim_size_defaults_to_the_items(self):
+        self.write("gap-cccccc", item("gap-cccccc", "C", severity="p3", anchors=["src/c.rs"], extra='size = "M"'))
+        self.commit("size C")
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1")
+        self.assertEqual(self.events("s1")[0]["size"], "M")
+
+    def test_sync_records_who_closed_an_item(self):
+        # A commit trailer closes C, which nobody claimed; a passed plan task closes B.
+        (self.root / "src" / "c.rs").write_text("fn fixed() {}\n")
+        self.commit("make c work\n\nCloses: gap-cccccc")
+        plan = self.root / "plans" / "p1"
+        plan.mkdir(parents=True)
+        (plan / "tasks.toml").write_text('[meta]\nplan = "p1"\n\n[[task]]\nid = "T1"\ncloses = ["bug-bbbbbb"]\n')
+        cp = self.root / ".roko" / "state" / "graph" / "p1"
+        cp.mkdir(parents=True)
+        (cp / "checkpoint.json").write_text(json.dumps(
+            {"run_id": "r1", "extensions": {"roko.gate.verdict@1": {"value": {"verdicts": {"T1": "passed"}}}}}))
+        closed, conflicts = work.cmd_sync(type("A", (), {"dry_run": False})(), quiet=True)
+        self.assertEqual((len(closed), conflicts), (2, []))
+        by_id = {i["id"]: i for i in self.items()}
+        self.assertEqual({k: by_id["gap-cccccc"]["closed"].get(k) for k in ("executor", "forced")},
+                         {"executor": "unknown", "forced": False})
+        self.assertEqual({k: by_id["bug-bbbbbb"]["closed"].get(k) for k in ("executor", "via", "run_id")},
+                         {"executor": "roko-plan", "via": "roko-plan", "run_id": "r1"})
+        rows = self.events("sync")
+        self.assertEqual(sorted((r["item"], r["event"], r["source"], r["executor"]) for r in rows),
+                         [("bug-bbbbbb", "closed", "reconciled", "roko-plan"), ("gap-cccccc", "closed", "reconciled", "unknown")])
+        self.assertEqual([e for r in rows for e in work.check_event(r)], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

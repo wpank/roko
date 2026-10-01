@@ -45,11 +45,23 @@ Fields of one event:
 
 | Event | Written by | Fields |
 |---|---|---|
-| `claim` | `work.py claim` | `by`; `force` when it took over a claim |
-| `release` | `work.py release`, before the claim is deleted | `by` (the claimant) |
+| `claim` | `work.py claim` | `by`, `size` (`--size`, else the item's), `claimed_at`; `force` when it took over a claim |
+| `release` | `work.py release`, before the claim is deleted | the claim's `by`, `size` and `claimed_at`; `reason` (`--reason`: `verify-fail`, `blocked`, `decision-needed`, `conflict`, `timeout` or `session-limit`) |
+| `closed` | `work.py close` (`live`) and `sync` (`reconciled`), in the main checkout | `status`, `commit`, `run_id`, `forced` |
 | `merged` | `work.py event merged <id> --merge-sha REV [--conflicts N] [--fixups N]` | `merge_sha`, `conflicts`, `fixups` |
 | `post-verify` | `work.py event post-verify <id> --rc N` | `rc`: the exit code of the item's `[[verify]]` on the merged tree |
 | `escape` | `work.py event escape <id> [--caused-by ID]` | `caused_by`: the item whose fix let the defect in |
 | `intervention` | `work.py event intervention <id>` | none |
 
-A field nobody gave is left out of the row. `work.py event` takes the branch from the item's claim when there is one.
+A field nobody gave is left out of the row. `release` and `work.py event` take `executor`, `via` and `branch` from the
+item's claim when there is one.
+
+## Executor fields
+
+`work.py claim --executor claude-agent|claude-session|roko-plan|human --via work-batch|work-next|manual|roko-plan
+--size S|M|L` stores the executor, the pick-up route, the size judged before work starts and `claimed_at` in the
+claim. `work.py close` copies them into the item's `[closed]` block, with `at_ts` (when it closed, in UTC),
+`forced` (whether `--force` overrode a failing verify), and `model` and `assist` (`--model`, `--assist`) when given.
+It reads the claim from the main checkout, so a worker closing in its worktree gets them too. `sync` closes an item
+from a passed plan task with executor `roko-plan`, and from a commit trailer with the claim's executor, or `unknown`
+when nobody claimed it.

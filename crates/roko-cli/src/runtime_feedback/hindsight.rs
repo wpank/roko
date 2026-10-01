@@ -11,6 +11,13 @@
 //! [`HindsightRelabeler`] over the plan's episodes and appends each new
 //! correction once to `.roko/learn/episode-adjustments.jsonl`.
 //!
+//! Episode readers apply the log as they load (the prompt caches and `roko
+//! learn episodes`, through `roko_learn::hindsight::apply_adjustments`). The
+//! credit the success gave its playbook at completion is retracted here,
+//! once per new correction. The router's observation is not: its counters
+//! have no retraction, and a failure observation on top of the success
+//! would count one attempt twice.
+//!
 //! Nothing else relabels. On the Graph path every episode is a fresh attempt
 //! that edits files, so a later failure of the same task, or of one that
 //! declares the same files, does not show that earlier work regressed.
@@ -19,8 +26,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use roko_learn::episode_logger::EpisodeLogger;
-use roko_learn::hindsight::{HindsightRelabeler, append_new_adjustments};
+use roko_learn::episode_logger::{Episode, EpisodeLogger};
+use roko_learn::hindsight::{
+    AdjustmentKind, EpisodeAdjustment, HindsightRelabeler, append_new_adjustments,
+};
+use roko_learn::playbook::PlaybookStore;
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -61,6 +71,9 @@ pub fn blamed_tasks(plan_id: &str, failure_reason: &str) -> Vec<String> {
 pub struct HindsightSink {
     episodes_path: PathBuf,
     adjustments_path: PathBuf,
+    /// The playbook store beside the adjustments log: `.roko/learn/playbooks/`
+    /// for `.roko/learn/episode-adjustments.jsonl`.
+    playbook_dir: PathBuf,
     /// Serializes appends so concurrent failures record a correction once.
     serial: Arc<tokio::sync::Mutex<()>>,
 }
@@ -69,10 +82,41 @@ impl HindsightSink {
     /// Sink scanning `episodes_path` and recording to `adjustments_path`.
     #[must_use]
     pub fn new(episodes_path: impl Into<PathBuf>, adjustments_path: impl Into<PathBuf>) -> Self {
+        let adjustments_path = adjustments_path.into();
+        let playbook_dir = adjustments_path.with_file_name("playbooks");
         Self {
             episodes_path: episodes_path.into(),
-            adjustments_path: adjustments_path.into(),
+            adjustments_path,
+            playbook_dir,
             serial: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// Move the credit each newly relabeled success gave its playbook
+    /// (`extra.playbook_id`) at completion to the playbook's failures.
+    /// Best-effort: a failed update is logged.
+    async fn retract_playbook_credit(&self, episodes: &[Episode], appended: &[EpisodeAdjustment]) {
+        let store = PlaybookStore::new(&self.playbook_dir);
+        let regressions = appended
+            .iter()
+            .filter(|adjustment| adjustment.adjustment_kind == AdjustmentKind::Regression);
+        for adjustment in regressions {
+            let Some(playbook_id) = episodes
+                .iter()
+                .find(|episode| episode.id == adjustment.original_episode_id)
+                .and_then(|episode| episode.extra.get("playbook_id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            if let Err(error) = store.relabel_success_as_failure(playbook_id).await {
+                tracing::warn!(
+                    %playbook_id,
+                    %error,
+                    "hindsight playbook retraction failed (best-effort)"
+                );
+            }
         }
     }
 }
@@ -128,13 +172,15 @@ impl FeedbackSink for HindsightSink {
             tokio::task::spawn_blocking(move || append_new_adjustments(&path, &adjustments))
                 .await
                 .map_err(|error| anyhow::anyhow!("hindsight append task join: {error}"))??;
-        if appended > 0 {
-            tracing::info!(
-                plan_id = %plan_id,
-                appended,
-                "hindsight relabeled earlier successes blamed by a later verify failure"
-            );
+        if appended.is_empty() {
+            return Ok(());
         }
+        tracing::info!(
+            plan_id = %plan_id,
+            appended = appended.len(),
+            "hindsight relabeled earlier successes blamed by a later verify failure"
+        );
+        self.retract_playbook_credit(&episodes, &appended).await;
         Ok(())
     }
 }
@@ -267,5 +313,54 @@ mod tests {
         assert_eq!(recorded.len(), 1, "{recorded:?}");
         assert_eq!(recorded[0].original_episode_id, sibling_success.id);
         assert_eq!(recorded[0].adjustment_kind, AdjustmentKind::Regression);
+    }
+
+    /// gap-5be28d: a success that a later verify failure blames stops
+    /// counting as one. The prompt cache reads it as a failure, and the
+    /// playbook it used moves that success to its failures.
+    #[tokio::test]
+    async fn a_relabeled_success_no_longer_counts_as_a_success() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path();
+        let layout = roko_fs::RokoLayout::for_project(workdir);
+        let episodes = layout.root_episodes_path();
+        let playbooks = PlaybookStore::new(layout.playbooks_dir());
+        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the module");
+        playbooks.save(&playbook).await.unwrap();
+        let adjustments = roko_learn::hindsight::workspace_adjustments_path(workdir);
+        let facade = FeedbackFacade::new()
+            .with_sink(Arc::new(EpisodeSink::at(&episodes)))
+            .with_sink(Arc::new(HindsightSink::new(&episodes, &adjustments)));
+
+        // T1 passes with the playbook, which dispatch credits at completion.
+        let mut success = completed("T1", true, None);
+        if let FeedbackEvent::TaskCompleted { playbook_ids, .. } = &mut success {
+            *playbook_ids = vec!["pb-wiring".to_string()];
+        }
+        facade.on_event(&success).await.unwrap();
+        playbooks.record_outcome("pb-wiring", true).await.unwrap();
+
+        // Then T2's verify failure is blamed on T1.
+        let blame = "verify: blocked_by_sibling = T1: 1/1 verify step(s) failed for task `T2`";
+        facade
+            .on_event(&completed("T2", false, Some(blame)))
+            .await
+            .unwrap();
+
+        let cache = crate::dispatch::PromptCache::load(workdir);
+        let relabeled = cache
+            .episodes
+            .iter()
+            .find(|episode| episode.task_id == "T1")
+            .expect("T1's episode");
+        assert!(!relabeled.success);
+        assert_eq!(relabeled.learning_success(), Some(false));
+        assert!(
+            relabeled
+                .extra
+                .contains_key(roko_learn::hindsight::HINDSIGHT_ADJUSTMENT_KEY)
+        );
+        let playbook = playbooks.load("pb-wiring").await.unwrap().unwrap();
+        assert_eq!((playbook.success_count, playbook.failure_count), (0, 1));
     }
 }

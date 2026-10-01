@@ -250,6 +250,10 @@ pub struct GraphTaskDispatcher {
     /// Failed test steps run again on the plan run's start commit, to tell
     /// pre-existing failures from new ones (gap-161be1).
     baselines: baseline_verify::Baselines,
+    /// Verify runs not yet written to `gate-thresholds.json`: written every
+    /// `[learning] gate_threshold_flush_interval` observations, and when the
+    /// dispatcher is dropped (reg-c7ecf6).
+    gate_threshold_writes: gate_learning::GateThresholdWrites,
     /// The run's conductor, which supervises running attempts (see
     /// [`Self::with_conductor`]).
     conductor: Option<supervision::GraphConductor>,
@@ -267,6 +271,7 @@ impl GraphTaskDispatcher {
         workdir: PathBuf,
     ) -> Self {
         warn_inert_graph_settings_once(&config);
+        let flush_interval = config.learning.effective_gate_threshold_flush_interval();
         Self {
             factory,
             config,
@@ -300,6 +305,7 @@ impl GraphTaskDispatcher {
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
+            gate_threshold_writes: gate_learning::GateThresholdWrites::new(flush_interval),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
         }
@@ -457,8 +463,11 @@ impl GraphTaskDispatcher {
 
     /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
     /// written, the rest set by `[gates]` and the adaptive gate thresholds
-    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]).
+    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]). The
+    /// verify runs held for the flush interval are written first, so the
+    /// budgets see every one so far.
     pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
+        self.gate_threshold_writes.flush();
         let tasks_toml = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
             .into_iter()
             .map(|dir| dir.join("tasks.toml"))

@@ -3184,6 +3184,49 @@ impl TuiState {
             })
     }
 
+    /// Why an announced plan has not started, as the plan-set scheduler
+    /// holds it back: prerequisites that have not succeeded yet, else a plan
+    /// it conflicts with that is running, or that comes earlier in the set
+    /// and has not started. `None` for a plan that started, finished, or is
+    /// waiting only for a free slot.
+    #[must_use]
+    pub fn plan_wait_reason(&self, plan_id: &str) -> Option<String> {
+        let phase = |id: &str| match self.plans.iter().find(|plan| plan.id == id) {
+            Some(plan) if plan.active => PlanPhase::Active,
+            Some(plan) => plan.status,
+            None => PlanPhase::Pending,
+        };
+        if phase(plan_id) != PlanPhase::Pending {
+            return None;
+        }
+        let position = self
+            .plan_set
+            .iter()
+            .position(|entry| entry.plan_id == plan_id)?;
+        let entry = &self.plan_set[position];
+        let unfinished: Vec<&str> = entry
+            .depends_on
+            .iter()
+            .map(String::as_str)
+            .filter(|prerequisite| !phase(prerequisite).is_done())
+            .collect();
+        if !unfinished.is_empty() {
+            return Some(format!("waiting on {}", unfinished.join(", ")));
+        }
+        self.plan_set
+            .iter()
+            .enumerate()
+            .find(|(index, other)| {
+                entry.conflicts_with.contains(&other.plan_id)
+                    && match phase(&other.plan_id) {
+                        PlanPhase::Active => true,
+                        PlanPhase::Pending => *index < position,
+                        PlanPhase::Done | PlanPhase::Failed => false,
+                    }
+            })
+            .map(|(_, other)| format!("conflicts with {}", other.plan_id))
+    }
+
     // -- config items cache (P3.2) ------------------------------------------
 
     /// How often to re-parse `roko.toml` for the config view.

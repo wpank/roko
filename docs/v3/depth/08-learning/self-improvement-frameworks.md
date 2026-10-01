@@ -184,23 +184,27 @@ model.
 The compile, test, and lint gates provide ground-truth feedback that is more
 reliable than LLM self-verification because gates are deterministic.
 
-### 3.4 Unified Routing (ETH Zurich, ICLR 2025)
+### 3.4 Cascade Routing (ETH Zurich; arXiv:2410.10347)
 
-**Insight:** Route across multiple providers simultaneously, treating cost,
-latency, and quality as a multi-objective optimization.
+**Insight:** Routing picks one model per query; cascading runs increasingly
+larger models until an answer is good enough. Dekoninck et al. derive optimal
+strategies for both and unify them into cascade routing, which outperforms
+either alone; good quality estimators are the critical factor.
 
 **Roko implementation:** `ProviderHealthRegistry` + `CascadeRouter` +
-`LatencyRegistry` together implement unified routing. Provider health
-filters degraded providers, the cascade router selects models, and latency
-statistics inform SLA compliance. These operate sequentially rather than
-jointly -- full unified routing would optimize across all three dimensions
-simultaneously.
+`LatencyRegistry` cover routing: provider health filters degraded providers and
+the cascade router selects models. Cascading happens twice: the fallback chain
+moves to another model when a call fails, and the model ladder
+(`[routing.ladder]`) moves a plan task one rung up after two failed gate
+verdicts. Cascade routing's finding applies to the second: the gate verdict is
+Roko's quality estimate, and the payoff depends on how good it is.
 
 ### 3.5 Router-R1
 
-A reinforcement-learning-trained router that uses chain-of-thought reasoning
-to make routing decisions. Unlike RouteLLM's classifier approach, Router-R1
-generates an explicit reasoning trace before making the routing decision.
+A router that is itself an LLM, trained with reinforcement learning to
+interleave reasoning ("think") with calls to other models ("route") over
+several rounds and to aggregate their answers. Unlike RouteLLM's classifier
+approach, Router-R1 reasons explicitly before and between routing decisions.
 
 **Roko relevance:** The cascade router's stage transitions (Static ->
 Confidence -> UCB) can be seen as a hardcoded reasoning chain. Router-R1

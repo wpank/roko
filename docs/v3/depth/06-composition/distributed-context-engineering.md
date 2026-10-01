@@ -196,7 +196,9 @@ expensive model. The 4x token reduction means better scaffolds are also cheaper.
 
 ## 5. The CLEAR Framework
 
-The CLEAR framework (2025) defines five evaluation dimensions for AI systems:
+CLEAR (Mehta 2025, arXiv:2511.14136) is an evaluation framework for enterprise
+agent deployments with five dimensions. The context-engineering column is Roko's
+reading, not the paper's:
 
 | CLEAR Dimension | Context Engineering Impact |
 |----------------|--------------------------|
@@ -206,8 +208,9 @@ The CLEAR framework (2025) defines five evaluation dimensions for AI systems:
 | **Assurance** | Explicit context = inspectable, auditable |
 | **Reliability** | Deterministic assembly = reproducible prompts |
 
-CLEAR's most important finding: optimizing for efficacy alone produces systems
-4.4-10.8x more expensive than co-optimizing for cost and efficacy. The four
+CLEAR's most important finding: across six agents on 300 enterprise tasks,
+optimizing for accuracy alone yields agents 4.4-10.8x more expensive than
+cost-aware alternatives with comparable performance. The four
 context engineering strategies naturally co-optimize: Select reduces both cost
 and noise, Compress reduces cost while preserving quality, Isolate improves
 reliability, Write invests cost where it produces the highest return.
@@ -332,9 +335,10 @@ Answer Relevance, Context Relevance.
 **ARES** (Saad-Falcon et al., NAACL 2024). Statistical confidence intervals
 for RAG evaluation from minimal human labels.
 
-**CLEAR Framework** (2025). Five-dimensional evaluation: Cost, Latency,
-Efficacy, Assurance, Reliability. Accuracy-only optimization is 4.4-10.8x
-more expensive.
+**CLEAR** (Mehta 2025, "Beyond Accuracy: A Multi-Dimensional Framework for
+Evaluating Enterprise Agentic AI Systems", arXiv:2511.14136). Five-dimensional
+evaluation: Cost, Latency, Efficacy, Assurance, Reliability. Accuracy-only
+optimization yields agents 4.4-10.8x more expensive at comparable performance.
 
 **AI Agents That Matter** (Kapoor et al., Princeton 2025). Minimum evaluation
 bar: run each condition at least 5 times, report mean with confidence intervals.

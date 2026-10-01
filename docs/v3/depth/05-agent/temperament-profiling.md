@@ -237,8 +237,8 @@ Each step is independent and can be wired incrementally.
 
 ## Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Principle 5: Graduate Autonomy.
+1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Principle 5: Graduate Autonomy.
 2. Friston, K. (2006). "A free energy principle for the brain." Journal
    of Physiology - Paris. -- Precision parameter and active inference.
 3. `crates/roko-core/src/config/schema.rs` -- AgentConfig temperament

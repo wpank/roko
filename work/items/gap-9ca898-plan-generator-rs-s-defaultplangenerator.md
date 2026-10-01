@@ -2,14 +2,16 @@
 id = "gap-9ca898"
 kind = "gap"
 title = "plan_generator.rs's DefaultPlanGenerator doesn't know rung"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_generator"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8768576d9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-taskdef's report, checked on work/gap-0f3980 at b27c02717)"
 anchors = ["crates/roko-cli/src/plan_generator.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-0f3980"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn default_plan_generator_emits_task_rungs' crates/roko-cli/src/ && cargo test -p roko-cli --lib default_plan_generator_emits_task_rungs"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged with bug-cae1e1. DefaultPlanGenerator keeps a planner's rung only when it names one of the task's ladder rungs (records a repair when it drops one); prd.rs uses the same plan_validate::drop_unknown_rung. DefaultPlanGenerator has no production caller, so no generated plan changes today. Batch 20a gate on 41194c6b3 (MAIN has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -D warnings clean; roko-cli lib 3255 passed (the one failure, gap-1920ba's a_scoped_verify_runs_beside_a_sibling_editing_elsewhere, races a 3 s wall clock and is being fixed on work/gap-1920ba-flake). Verify: default_plan_generator_emits_task_rungs passes."
 +++
 
 ## Problem
@@ -42,3 +49,13 @@ Specs a cheap model can execute (epic spec-e57870): the planner is where a task'
 
 - [ ] Generated plans carry a starting rung where the planner chose one.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-cae1e1` at `05fc821cc`; cargo verification deferred to the batch check.
+- `DefaultPlanGenerator` keeps a planner's `rung` when it names one of the task's ladder rungs (the default ladder, or
+  `with_ladder`'s) and records a repair when it drops one. prd.rs's fixer uses the same
+  `plan_validate::drop_unknown_rung`. The generation prompt already explains `rung` (gap-dbf2a6).
+- `DefaultPlanGenerator` has no production caller: only its tests construct it, and `roko prd plan`, auto-plan and serve
+  validate through prd.rs, which already keeps valid rungs. So this changes no generated plan today.
+- It derives no rung from a task's complexity: the tier already picks the start rung.

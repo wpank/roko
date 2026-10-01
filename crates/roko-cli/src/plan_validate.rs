@@ -274,6 +274,24 @@ pub fn workspace_ladder(workdir: &Path) -> LadderConfig {
         .unwrap_or_default()
 }
 
+/// Remove a generated `[[task]]` table's `rung` hint unless it names one of
+/// the task's `ladder` rungs, as plan generators must. Returns the value it
+/// removed.
+pub fn drop_unknown_rung(task: &mut toml::Table, ladder: &LadderConfig) -> Option<Value> {
+    let rung = task.get("rung")?;
+    let role = task
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("implementer");
+    if rung
+        .as_str()
+        .is_some_and(|name| ladder.has_rung(role, name))
+    {
+        return None;
+    }
+    task.remove("rung")
+}
+
 /// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs, and a
 /// task on the ladder that pins a model bypasses it.
 fn ladder_diagnostics(

@@ -119,7 +119,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] bug-bfd241: The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it
 - [x] bug-8417d9: Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows
 - [x] bug-9bffe2: roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown
-- [ ] bug-ea7723: The codex, cursor and openai_parity streaming tests stay ignored until testutil's stream events carry session ids
+- [x] bug-ea7723: The codex, cursor and openai_parity streaming tests stay ignored until testutil's stream events carry session ids
 - [x] bug-e35fdb: roko learn role-costs averages unknown costs as $0 through compute_role_profiles
 - [ ] bug-4c553b: A stall-watchdog timeout settles as provider_error with infra blame, because its error text lacks the "timed out after" marker the classifier keys on
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row

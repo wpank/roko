@@ -139,6 +139,18 @@ impl KnowledgeStore {
         self.query_hits_filtered(topic, limit, |_| true)
     }
 
+    /// Every entry a hot query considers, unranked. Prompt caches load these
+    /// once and rank them for each task (bug-86117a).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backing file cannot be read.
+    pub fn hot_entries(&self) -> Result<Vec<KnowledgeEntry>> {
+        let mut entries = self.read_all()?;
+        entries.retain(is_hot);
+        Ok(entries)
+    }
+
     /// Query the persisted HDC vectors directly, streaming the JSONL store.
     #[cfg(feature = "hdc")]
     pub fn query_hdc(
@@ -371,16 +383,7 @@ impl KnowledgeStore {
         let mut scored: Vec<KnowledgeQueryHit> = entries
             .into_iter()
             .filter_map(|entry| {
-                // NEURO-11: Frozen entries are excluded from hot queries.
-                if entry.frozen {
-                    return None;
-                }
-                // Audit #80: skip entries with empty or whitespace-only content
-                // to prevent noise from polluting query results.
-                if entry.content.trim().is_empty() {
-                    return None;
-                }
-                if !include(&entry) {
+                if !is_hot(&entry) || !include(&entry) {
                     return None;
                 }
                 score_entry_for_query(entry, &topic_terms, &topic_norm, topic, now)
@@ -501,4 +504,10 @@ impl KnowledgeStore {
             self.read_all()?,
         ))
     }
+}
+
+/// Whether hot queries consider `entry`. Frozen entries belong to the cold
+/// tier (NEURO-11), and entries with blank content are noise (Audit #80).
+fn is_hot(entry: &KnowledgeEntry) -> bool {
+    !entry.frozen && !entry.content.trim().is_empty()
 }

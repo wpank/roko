@@ -570,8 +570,15 @@ pub enum RuntimeEvent {
         run_id: String,
         plan_id: String,
         task_id: String,
+        /// Whether the task passed. With an `outcome`, true only for a
+        /// verified pass.
         passed: bool,
         duration_ms: u64,
+        /// The dashboard outcome the task settled with (`passed`,
+        /// `unverified`, `already_satisfied`, ...), when the producer knows
+        /// it (bug-71a5e6).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
     },
     /// The overall pipeline entered a new phase.
     PipelinePhase {
@@ -1283,6 +1290,7 @@ mod tests {
                     task_id: "task-1".into(),
                     passed: true,
                     duration_ms: 47200,
+                    outcome: None,
                 },
                 "task_completed",
             ),

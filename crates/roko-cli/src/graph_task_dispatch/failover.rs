@@ -624,8 +624,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        final_turn, jsonl_rows_where, make_spec, make_task_def, recording_feedback,
-        spawn_openai_mock, tool_call_turn,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, final_turn, jsonl_rows_where,
+        make_spec, make_task_def, recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
@@ -671,9 +671,9 @@ exit 1
                     api_key_env: key_env.map(str::to_string),
                     command,
                     args: None,
-                    timeout_ms: Some(15_000),
-                    ttft_timeout_ms: Some(15_000),
-                    connect_timeout_ms: Some(5_000),
+                    timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,
@@ -758,7 +758,7 @@ exit 1
             title: "Implement with failover".to_string(),
             description: Some("Edit notes and write hello.txt".to_string()),
             model_hint: Some(model_hint.to_string()),
-            timeout_secs: 30,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 2,
             ..make_task_def("focused")
         };
@@ -768,7 +768,10 @@ exit 1
                 toml::Value::String("p-failover".to_string()),
             ),
             ("title".to_string(), toml::Value::String(task.title.clone())),
-            ("timeout_secs".to_string(), toml::Value::Integer(30)),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
             ("max_retries".to_string(), toml::Value::Integer(2)),
             (
                 "task_def_json".to_string(),
@@ -931,7 +934,7 @@ exit 1
             id: "T08".to_string(),
             title: "Implement with failover".to_string(),
             model_hint: Some("claude-sonnet-4-6".to_string()),
-            timeout_secs: 30,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             ..make_task_def("focused")
         };
         let run = "graph-failover-run";
@@ -1145,9 +1148,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                 api_key_env: None,
                 command: Some(claude.display().to_string()),
                 args: None,
-                timeout_ms: Some(15_000),
-                ttft_timeout_ms: Some(15_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1180,9 +1183,9 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                     api_key_env: Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET".to_string()),
                     command: None,
                     args: None,
-                    timeout_ms: Some(15_000),
-                    ttft_timeout_ms: Some(15_000),
-                    connect_timeout_ms: Some(5_000),
+                    timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                    connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                     extra_headers: None,
                     max_concurrent: None,
                     limits: None,

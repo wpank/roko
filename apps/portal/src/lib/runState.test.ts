@@ -255,10 +255,36 @@ describe('task_completed', () => {
     expect(JSON.stringify(s)).toBe(before);
   });
 
-  it('ignores task_completed for unknown task', () => {
-    const s1 = startPlan('p1');
-    const s2 = applyEvent(s1, { type: 'task_completed', plan_id: 'p1', task_id: 'unknown', outcome: 'passed' }, 2000);
-    expect(s2).toBe(s1); // same reference since nothing changed
+  it('applies a task completion it never saw start', () => {
+    // Skipped tasks never start, and a page that joins mid-run or drops an
+    // event misses the start: the completion still counts, with no start time.
+    let s = apply([{ type: 'plan_started', plan_id: 'p1', tasks_total: 1 }]);
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'passed' }, 2000);
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't2', outcome: 'skipped' }, 2100);
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't3', outcome: 'gate_failed' }, 2200);
+    expect(s.tasks[taskKey('p1', 't1')]).toMatchObject({
+      planId: 'p1',
+      taskId: 't1',
+      status: 'passed',
+      phase: 'completed',
+      attempts: 1,
+      startedAtMs: null,
+      finishedAtMs: 2000,
+    });
+    expect(s.tasks[taskKey('p1', 't2')]!.status).toBe('skipped');
+    expect(s.tasks[taskKey('p1', 't3')]!.status).toBe('failed');
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 2, tasksFailed: 1, tasksTotal: 3 });
+
+    // A repeat is still ignored, and a retry takes the task out of its count.
+    expect(applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't3', outcome: 'passed' }, 2300)).toBe(s);
+    s = applyEvent(s, { type: 'task_started', plan_id: 'p1', task_id: 't3', phase: 'impl', title: 'Retry' }, 2400);
+    expect(s.tasks[taskKey('p1', 't3')]).toMatchObject({ status: 'active', attempts: 2 });
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 2, tasksFailed: 0 });
+
+    // With no plan record the task is still kept; there is no count to move.
+    const lone = applyEvent(initialRunState(), { type: 'task_completed', plan_id: 'p9', task_id: 't1', outcome: 'passed' }, 2000);
+    expect(lone.tasks[taskKey('p9', 't1')]!.status).toBe('passed');
+    expect(lone.plans['p9']).toBeUndefined();
   });
 });
 

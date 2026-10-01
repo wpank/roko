@@ -183,8 +183,9 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        final_turn, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def,
-        recording_feedback, spawn_openai_mock, spawn_openai_stream_mock, tool_call_turn,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, final_turn, jsonl_rows_where,
+        make_bare_dispatcher, make_spec, make_task_def, recording_feedback, spawn_openai_mock,
+        spawn_openai_stream_mock, tool_call_turn,
     };
 
     const RUN: &str = "graph-served-model-run";
@@ -219,9 +220,9 @@ mod tests {
                 api_key_env: Some("PATH".to_string()),
                 command: None,
                 args: None,
-                timeout_ms: Some(15_000),
-                ttft_timeout_ms: Some(15_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -272,7 +273,7 @@ mod tests {
         let (base_url, _requests) = spawn_openai_mock(vec![answer.clone(), answer]);
         let mut task = make_task_def("focused");
         task.model_hint = Some("gpt-oss-120b".to_string());
-        task.timeout_secs = 30;
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
         let spec = make_spec(&task);
         let ctx = CellContext::new().with_run_id(RUN.to_string());
 
@@ -376,7 +377,7 @@ mod tests {
         config.conductor = roko_core::config::schema::ConductorConfig::default();
         let mut task = make_task_def("focused");
         task.model_hint = Some("gpt-oss-120b".to_string());
-        task.timeout_secs = 30;
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
         let spec = make_spec(&task);
         let ctx = CellContext::new().with_run_id(RUN.to_string());
 
@@ -434,7 +435,7 @@ mod tests {
         ]);
         let mut task = make_task_def("focused");
         task.model_hint = Some("gpt-oss-120b".to_string());
-        task.timeout_secs = 30;
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
         let spec = make_spec(&task);
         let ctx = CellContext::new().with_run_id(RUN.to_string());
 

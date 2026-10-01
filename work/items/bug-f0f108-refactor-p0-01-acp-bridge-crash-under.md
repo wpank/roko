@@ -10,7 +10,7 @@ goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-15
 updated = 2026-09-29
-last_verified = 2026-09-29
+last_verified = 2026-10-01
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/refactoring-audit-2026-09-21/IMPLEMENTATION-CHECKLIST.md#p0-critical-data-loss-crashes-correctness"
 discovered_from = "audit:tmp/archive/refactoring-audit-2026-09-21/IMPLEMENTATION-CHECKLIST.md#p0-critical-data-loss-crashes-correctness"
@@ -117,6 +117,12 @@ permission code).
 - Do not change the `EventConsumer` trait in roko-core for this. Other implementors depend on it: `roko-serve` (`adapters.rs`, `lib.rs`), `roko-runtime` (`http_event_sink.rs`, `jsonl_logger.rs`) and `roko-agent` (`model_call_service.rs`).
 - Conflicts: `gap-ac78fb` extends `permissions.rs`, and `spec-704c28` edits `bridge_events/`. Do this item first
   or separately. Not safe to run in parallel with them.
+- 2026-10-01 (wk-specq): implemented on work/bug-8dbffd; cargo verification deferred to the batch check.
+  P0-A: `AcpAdapter::consume` still drops progress on a full channel, but a turn-ending event (`Complete`,
+  `Failure`, `MaxTokens`) is delivered by a task on the current runtime. P1-B: `request_permission_for_event` takes
+  the sender (`PermissionReplyChannel::take_sender`, replacing `receiver_is_closed`), selects on `closed()`,
+  cancellation and the editor round-trip, and sends the decision itself. P0-B: a failed experiment task is logged.
+  Plan step 5 (P1-A send timeouts, P2-A `assistant_text` cap, 4a concurrent requests) is not done.
 
 ## Original notes
 

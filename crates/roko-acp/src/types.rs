@@ -634,6 +634,9 @@ pub enum ResourceRef {
 }
 
 /// A `session/update` notification payload.
+///
+/// Every variant serializes to a spec `SessionUpdate`: spec clients drop updates they
+/// cannot parse, so roko-only data rides under `_meta` instead of in new variants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "sessionUpdate")]
 pub enum SessionUpdate {
@@ -662,7 +665,7 @@ pub enum SessionUpdate {
         /// Current tool status.
         status: ToolCallStatus,
         /// Optional rendered tool content.
-        #[serde(default)]
+        #[serde(default, with = "tool_call_content")]
         content: Vec<ContentBlock>,
         /// File locations for Follow Agent (auto-navigate to edited files).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -676,7 +679,7 @@ pub enum SessionUpdate {
         /// Current tool status.
         status: ToolCallStatus,
         /// Optional rendered tool content.
-        #[serde(default)]
+        #[serde(default, with = "tool_call_content")]
         content: Vec<ContentBlock>,
         /// File locations for Follow Agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -690,17 +693,14 @@ pub enum SessionUpdate {
     /// Updated slash commands available to the user.
     AvailableCommandsUpdate {
         /// Available slash commands.
+        #[serde(rename = "availableCommands")]
         available_commands: Vec<SlashCommand>,
     },
     /// Updated configuration options.
     ConfigOptionUpdate {
         /// Available config options.
+        #[serde(rename = "configOptions")]
         config_options: Vec<ConfigOption>,
-    },
-    /// MCP discovery status update.
-    McpStatusUpdate {
-        /// Per-server MCP initialization results.
-        statuses: Vec<McpServerStatus>,
     },
     /// Token and cost usage update.
     UsageUpdate {
@@ -712,36 +712,118 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost: Option<CostInfo>,
     },
-    /// Persisted session cost budget status after a paid turn.
-    BudgetStatusUpdate {
-        /// Configured session cost ceiling in USD.
-        cost_budget_usd: f64,
-        /// Cost accumulated by completed ACP efficiency events.
-        accumulated_cost_usd: f64,
-        /// Spend still available before new paid turns are rejected.
-        budget_remaining_usd: f64,
-    },
-    /// Session metadata update.
+    /// Session metadata update. It also carries roko's extensions, such as MCP startup
+    /// status and the cost budget, under `_meta.roko`.
     SessionInfoUpdate {
-        /// Session identifier.
-        session_id: String,
-        /// Optional session name.
+        /// Human-readable session title.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_name: Option<String>,
+        title: Option<String>,
+        /// Extension metadata.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        _meta: Option<serde_json::Value>,
     },
 }
 
-/// ACP tool call category.
+/// Serde adapter for a tool call's `content`. Roko builds [`ContentBlock`]s, while the
+/// ACP spec sends each item as a `ToolCallContent`: text is wrapped as
+/// `{"type": "content", "content": ...}`, and a diff with its new text becomes a spec
+/// `diff`. Deserialization also reads the bare blocks that roko used to send.
+mod tool_call_content {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::ContentBlock;
+
+    /// One spec `ToolCallContent` item.
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum ToolCallContent {
+        Content { content: ContentBlock },
+        Diff {
+            path: String,
+            #[serde(rename = "oldText", default, skip_serializing_if = "Option::is_none")]
+            old_text: Option<String>,
+            #[serde(rename = "newText")]
+            new_text: String,
+        },
+    }
+
+    pub(super) fn serialize<S>(blocks: &[ContentBlock], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(blocks.iter().filter_map(to_spec))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<ContentBlock>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<serde_json::Value>::deserialize(deserializer)?
+            .into_iter()
+            .map(|item| {
+                serde_json::from_value::<ToolCallContent>(item.clone())
+                    .map(from_spec)
+                    .or_else(|_| serde_json::from_value(item))
+            })
+            .collect::<Result<_, _>>()
+            .map_err(serde::de::Error::custom)
+    }
+
+    fn to_spec(block: &ContentBlock) -> Option<ToolCallContent> {
+        match block {
+            ContentBlock::Diff {
+                path,
+                old_text,
+                new_text: Some(new_text),
+                ..
+            } => Some(ToolCallContent::Diff {
+                path: path.clone(),
+                old_text: old_text.clone(),
+                new_text: new_text.clone(),
+            }),
+            // A unified diff without the new file text has no spec `diff` form.
+            ContentBlock::Diff {
+                diff: Some(diff),
+                ..
+            } => Some(ToolCallContent::Content {
+                content: ContentBlock::Text {
+                    text: format!("```diff\n{}\n```", diff.trim_end()),
+                },
+            }),
+            ContentBlock::Diff { .. } | ContentBlock::Unknown => None,
+            other => Some(ToolCallContent::Content {
+                content: other.clone(),
+            }),
+        }
+    }
+
+    fn from_spec(item: ToolCallContent) -> ContentBlock {
+        match item {
+            ToolCallContent::Content { content } => content,
+            ToolCallContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } => ContentBlock::Diff {
+                path,
+                old_text,
+                new_text: Some(new_text),
+                diff: None,
+            },
+        }
+    }
+}
+
+/// ACP tool call category. Each variant serializes to a spec `ToolKind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallKind {
-    /// A file edit action.
+    /// A file edit action, including creating a file.
     Edit,
-    /// A file creation action.
-    Create,
     /// A file deletion action.
     Delete,
-    /// A terminal command action.
+    /// A terminal command action (the spec's `execute` kind).
+    #[serde(rename = "execute", alias = "terminal")]
     Terminal,
     /// A file read action.
     Read,
@@ -775,31 +857,11 @@ pub enum ToolCallStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallLocation {
-    /// File URI (e.g. `file:///absolute/path`).
-    pub uri: String,
-    /// Optional range within the file.
+    /// Absolute path of the file.
+    pub path: String,
+    /// Optional line within the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<LocationRange>,
-}
-
-/// A range within a file (start and end positions).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocationRange {
-    /// Start position.
-    pub start: Position,
-    /// End position.
-    pub end: Position,
-}
-
-/// A position within a file (zero-indexed line and character).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Position {
-    /// Zero-indexed line number.
-    pub line: u32,
-    /// Zero-indexed character offset.
-    pub character: u32,
+    pub line: Option<u32>,
 }
 
 /// A configurable session option.
@@ -1171,17 +1233,51 @@ pub struct PermissionResponse {
 }
 
 /// Outcome of a permission request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+///
+/// Serializes in the ACP spec shape, with the discriminator in an `outcome`
+/// field: `{"outcome": "selected", "optionId": "allow_once"}` or
+/// `{"outcome": "cancelled"}`. Deserialization also accepts roko's legacy
+/// shape, which carried the discriminator in a `type` field.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PermissionOutcome {
     /// The user cancelled the permission dialog.
     Cancelled,
     /// The user selected an option.
     Selected {
         /// The selected option identifier.
-        #[serde(alias = "optionId")]
+        #[serde(rename = "optionId")]
         option_id: String,
     },
+}
+
+/// Wire form of [`PermissionOutcome`], read with either discriminator field.
+#[derive(Deserialize)]
+struct RawPermissionOutcome {
+    #[serde(alias = "type")]
+    outcome: String,
+    #[serde(rename = "optionId", alias = "option_id")]
+    option_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for PermissionOutcome {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawPermissionOutcome::deserialize(deserializer)?;
+        match raw.outcome.as_str() {
+            "selected" => raw
+                .option_id
+                .map(|option_id| Self::Selected { option_id })
+                .ok_or_else(|| serde::de::Error::missing_field("optionId")),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["selected", "cancelled"],
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1332,7 +1428,7 @@ mod tests {
             PermissionOutcome::Selected { .. }
         ));
 
-        // Verify wire-format deserialization (what Zed actually sends).
+        // Roko's legacy wire shape, with the discriminator in `type`, still parses.
         let wire_json = json!({ "outcome": { "type": "selected", "optionId": "allow_always" } });
         let from_wire: PermissionResponse =
             serde_json::from_value(wire_json).expect("deserialize wire format");
@@ -1342,6 +1438,53 @@ mod tests {
             }
             _ => panic!("expected Selected variant"),
         }
+    }
+
+    #[test]
+    fn permission_response_accepts_spec_outcome_shape() {
+        fn parse(outcome: serde_json::Value) -> serde_json::Result<PermissionOutcome> {
+            serde_json::from_value::<PermissionResponse>(json!({ "outcome": outcome }))
+                .map(|response| response.outcome)
+        }
+
+        // The ACP spec carries the discriminator in a field named `outcome`.
+        let selected = parse(json!({ "outcome": "selected", "optionId": "allow_once" }));
+        assert!(matches!(
+            selected,
+            Ok(PermissionOutcome::Selected { ref option_id }) if option_id == "allow_once"
+        ));
+        let cancelled = parse(json!({ "outcome": "cancelled" }));
+        assert!(matches!(cancelled, Ok(PermissionOutcome::Cancelled)));
+
+        // Roko's legacy `type` discriminator and a snake_case option id still parse.
+        let legacy = parse(json!({ "type": "selected", "option_id": "reject_once" }));
+        assert!(matches!(
+            legacy,
+            Ok(PermissionOutcome::Selected { ref option_id }) if option_id == "reject_once"
+        ));
+
+        // Anything else is an error, which the permission handler turns into a rejection.
+        assert!(parse(json!({ "outcome": "approved" })).is_err());
+        assert!(parse(json!({ "outcome": "selected" })).is_err());
+        assert!(parse(json!({ "optionId": "allow_once" })).is_err());
+
+        // Serialization uses the spec shape.
+        let response = PermissionResponse {
+            outcome: PermissionOutcome::Selected {
+                option_id: "allow_always".to_string(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("serialize selected response"),
+            json!({ "outcome": { "outcome": "selected", "optionId": "allow_always" } })
+        );
+        let response = PermissionResponse {
+            outcome: PermissionOutcome::Cancelled,
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("serialize cancelled response"),
+            json!({ "outcome": { "outcome": "cancelled" } })
+        );
     }
 
     #[test]

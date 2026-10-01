@@ -160,6 +160,11 @@ Checked at `a17d9d766`:
     - The same unbounded reader wait in the shared runner `exec.rs` (`stdout_handle.await`, :678 and :708),
       which the Codex and Gemini CLIs use.
     - The live closing proof of plan step 4, which needs a scratch-repo `roko plan run`.
+- 2026-10-01 (wk-tiers): the `exec.rs` part is done on work/bug-7cdce7; cargo verification deferred to the batch
+  check. The shared runner, used by the Codex and Gemini CLIs, now bounds its post-exit reader wait in the same way.
+  It allows `EXITED_OUTPUT_DRAIN_MS`, then signals the reaped root's process group with a `KillTreeOnDrop` guard and
+  drains for `KILLED_OUTPUT_DRAIN_MS`. Test: `exited_exec_agent_with_open_stdout_does_not_hang`. Only the live
+  closing proof (plan step 4) is left.
 
 ## Original notes
 

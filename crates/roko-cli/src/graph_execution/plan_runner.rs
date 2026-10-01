@@ -1226,6 +1226,9 @@ async fn run_graph_plan_body(
     .with_error_patterns_from_disk(workdir)
     .with_knowledge_routing(workdir);
     let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
+    // Each plan registers its run's safety provenance sink here (gap-ff95f5).
+    let provenance_sinks = crate::safety_provenance::ProvenanceSinks::default();
+    shared_factory = shared_factory.with_provenance_sinks(provenance_sinks.clone());
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
         &roko_config.agent.extensions,
@@ -1638,6 +1641,7 @@ async fn run_graph_plan_body(
     });
     let run_context = PlanRunContext {
         workdir,
+        provenance_sinks: &provenance_sinks,
         resume_plan: resume_plan.as_deref(),
         plan_count,
         fresh,
@@ -2385,6 +2389,9 @@ const PLAN_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 /// Run-wide state every plan of the set runs with.
 struct PlanRunContext<'a> {
     workdir: &'a Path,
+    /// Where each plan registers its run's safety provenance sink
+    /// (gap-ff95f5).
+    provenance_sinks: &'a crate::safety_provenance::ProvenanceSinks,
     resume_plan: Option<&'a Path>,
     plan_count: usize,
     fresh: bool,
@@ -2867,6 +2874,10 @@ async fn run_one_plan(
     // checkpoint `interrupted` (bug-4641e3).
     let _running = RunningPlanCheckpoint::register(&checkpoint.paths().manifest);
     let run_id = checkpoint.run_id().to_string();
+    // The run's tool calls leave durable safety provenance, and a resumed
+    // run's taint lineage comes back before any task runs (gap-ff95f5).
+    let provenance = checkpoint.open_safety_provenance(ctx.workdir)?;
+    let _provenance = ctx.provenance_sinks.register(&run_id, provenance);
     // A new run's manifest, or one more invocation of a resumed run; the
     // run's attempt records carry the invocation's ordinal.
     if let Some(inv) = ctx.run_manifests.open(&run_id, &plan.id) {

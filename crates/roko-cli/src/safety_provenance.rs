@@ -11,12 +11,14 @@
 //! The digest key lives in `.roko/state/safety-provenance.key`. The sink
 //! creates it on first use, readable by its owner only.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use roko_agent::safety::provenance::{Custody, CustodyLogger};
 use roko_agent::safety::provenance_sink::{track_intent, track_outcome};
 use roko_agent::safety::{
@@ -50,6 +52,46 @@ pub struct SafetyProvenanceSummary {
     pub custody_head: Option<String>,
     /// The taint index ([`TaintTracker::to_json`]).
     pub taint: serde_json::Value,
+}
+
+/// The safety provenance sinks of the runs in flight, by run id: a dispatch
+/// records its tool calls with its run's sink. Clones share one registry.
+#[derive(Debug, Clone, Default)]
+pub struct ProvenanceSinks {
+    runs: Arc<RwLock<HashMap<String, Arc<GraphProvenanceSink>>>>,
+}
+
+impl ProvenanceSinks {
+    /// Record run `run_id`'s tool calls with `sink` until the returned
+    /// registration drops.
+    #[must_use]
+    pub fn register(&self, run_id: &str, sink: Arc<GraphProvenanceSink>) -> ProvenanceRegistration {
+        self.runs.write().insert(run_id.to_string(), sink);
+        ProvenanceRegistration {
+            sinks: self.clone(),
+            run_id: run_id.to_string(),
+        }
+    }
+
+    /// The sink of run `run_id`, while it is registered.
+    #[must_use]
+    pub fn for_run(&self, run_id: &str) -> Option<Arc<dyn SafetyProvenanceSink>> {
+        let sink = self.runs.read().get(run_id).cloned()?;
+        Some(sink)
+    }
+}
+
+/// Keeps a run's sink registered with [`ProvenanceSinks`] until it drops.
+#[derive(Debug)]
+pub struct ProvenanceRegistration {
+    sinks: ProvenanceSinks,
+    run_id: String,
+}
+
+impl Drop for ProvenanceRegistration {
+    fn drop(&mut self) {
+        self.sinks.runs.write().remove(&self.run_id);
+    }
 }
 
 /// A [`SafetyProvenanceSink`] over the workspace's witness and custody logs.
@@ -525,6 +567,21 @@ mod tests {
         let reopened_summary = reopened.summary();
         assert_eq!(reopened_summary.witness_head, Some(head));
         assert_eq!(reopened_summary.custody_head, summary.custody_head);
+    }
+
+    #[test]
+    fn provenance_sinks_hold_a_runs_sink_while_it_is_registered() {
+        let dir = tempdir().expect("tempdir");
+        let sinks = ProvenanceSinks::default();
+        let sink = Arc::new(GraphProvenanceSink::open(dir.path()).expect("open the sink"));
+        assert!(sinks.for_run("run-1").is_none());
+        let registration = sinks.register("run-1", Arc::clone(&sink));
+        let shared = sinks.clone();
+        let found = shared.for_run("run-1").expect("the run's sink");
+        assert_eq!(found.digest_key(), sink.digest_key());
+        assert!(shared.for_run("run-2").is_none());
+        drop(registration);
+        assert!(shared.for_run("run-1").is_none());
     }
 
     #[test]

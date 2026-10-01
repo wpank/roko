@@ -156,6 +156,21 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
     `safety_provenance_restore_tracks_calls_after_the_last_save`, and the four fail-closed tests for a tampered
     custody log, a missing witness root, a taint downgrade and an unknown version.
   Still open: step 6 (no run opens the sink yet), step 5, and the policy fingerprints.
+- 2026-10-02 (wk-tamper): Plan step 6 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `AgentOptions::provenance_sink` (roko-agent) reaches `build_provider_tool_dispatcher`, which every API-provider
+    tool loop uses (Anthropic, OpenAI-compatible, Cerebras, Gemini, Perplexity). The exhaustive `AgentOptions`
+    literals in roko-agent, roko-cli tests, roko-dreams and roko-serve set it to `None`.
+  - `run_graph_plan_body` gives the shared factory a `ProvenanceSinks` registry, and the factory hands it to each
+    `AgentDispatcherV2`. `agent_options` picks the sink of the request's run (from its attempt key).
+  - `run_one_plan` calls `checkpoint.open_safety_provenance` right after the checkpoint is prepared, so a resumed
+    run's restore runs before any task. It registers the sink for the plan's lifetime, and a failed restore stops
+    the plan. Every Graph plan run now records its API-provider tool calls.
+  - CLI providers (Claude CLI, Codex CLI) run their own tool loops, so their calls are not recorded. Chat, serve and
+    ACP attach no sink.
+  - Tests: `agent_options_carry_the_runs_safety_provenance_sink` (roko-cli dispatch_v2) and
+    `provenance_sinks_hold_a_runs_sink_while_it_is_registered` (roko-cli lib).
+  Still open: step 5 (replay idempotency), the policy and contract fingerprints, and a live run showing
+  `roko knowledge custody list` records (Done when).
 
 ## Original notes
 

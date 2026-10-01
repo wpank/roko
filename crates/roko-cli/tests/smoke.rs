@@ -327,6 +327,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         trace_sink: None,
         metrics_sink: None,
         tool_correlation: None,
+        provenance_sink: None,
         max_turns: None,
         thinking: None,
     };

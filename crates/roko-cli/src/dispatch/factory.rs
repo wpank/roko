@@ -73,6 +73,8 @@ pub struct SharedAgentFactory {
     /// Per-call trace and metrics sinks shared across all dispatches
     /// (find-f489db).
     observability: Option<roko_fs::FsObservabilitySinks>,
+    /// The safety provenance sinks of the runs in flight (gap-ff95f5).
+    provenance: Option<crate::safety_provenance::ProvenanceSinks>,
     /// Runtime-scoped format selection bandit. Shared across all dispatches
     /// so tool-format selection learns from cumulative feedback within a run.
     pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
@@ -252,6 +254,7 @@ impl SharedAgentFactory {
             health_registry,
             tool_audit: None,
             observability: None,
+            provenance: None,
             format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
@@ -301,6 +304,18 @@ impl SharedAgentFactory {
     #[must_use]
     pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
         self.observability = Some(sinks);
+        self
+    }
+
+    /// Record each dispatch's tool calls with the safety provenance sink
+    /// `sinks` holds for its run (gap-ff95f5). A run registers its sink there
+    /// before its tasks run.
+    #[must_use]
+    pub fn with_provenance_sinks(
+        mut self,
+        sinks: crate::safety_provenance::ProvenanceSinks,
+    ) -> Self {
+        self.provenance = Some(sinks);
         self
     }
 
@@ -528,6 +543,9 @@ impl SharedAgentFactory {
         if let Some(sinks) = &self.observability {
             dispatcher = dispatcher.with_observability_sinks(sinks.clone());
         }
+        if let Some(sinks) = &self.provenance {
+            dispatcher = dispatcher.with_provenance_sinks(sinks.clone());
+        }
 
         dispatcher
             .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -568,6 +586,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
 
         tokio::spawn(async move {
             let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
@@ -581,6 +600,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             match dispatcher
                 .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -644,6 +666,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
 
         let mut handle = tokio::spawn(async move {
@@ -658,6 +681,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             if started_tx.send(()).is_err() {
                 return;

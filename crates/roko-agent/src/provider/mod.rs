@@ -546,10 +546,12 @@ pub fn build_provider_tool_dispatcher(
     }) {
         identity.role = role;
     }
-    Arc::new(
-        scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
-            .with_call_identity(identity),
-    )
+    let mut dispatcher = scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
+        .with_call_identity(identity);
+    if let Some(sink) = &options.provenance_sink {
+        dispatcher = dispatcher.with_provenance_sink(Arc::clone(sink));
+    }
+    Arc::new(dispatcher)
 }
 
 /// Attach `options`' per-call trace and metrics sinks and its tool
@@ -1095,6 +1097,12 @@ pub struct AgentOptions {
     /// to, carried into their audit, trace and metrics records
     /// (find-f489db).
     pub tool_correlation: Option<CorrelationEnvelope>,
+    /// Durable safety provenance for the tool loop's tool calls (gap-ff95f5).
+    ///
+    /// When set, the tool dispatcher records each call's intent with the sink
+    /// before its handler runs, and does not run a call whose intent the sink
+    /// refuses.
+    pub provenance_sink: Option<Arc<dyn crate::safety::SafetyProvenanceSink>>,
     /// Live output channel for forwarding provider events before screening.
     ///
     /// When set and the provider supports streaming, the immune boundary taps
@@ -1132,6 +1140,7 @@ impl std::fmt::Debug for AgentOptions {
             .field("trace_sink", &self.trace_sink.is_some())
             .field("metrics_sink", &self.metrics_sink.is_some())
             .field("tool_correlation", &self.tool_correlation)
+            .field("provenance_sink", &self.provenance_sink.is_some())
             .finish_non_exhaustive()
     }
 }

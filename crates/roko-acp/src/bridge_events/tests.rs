@@ -1488,6 +1488,52 @@ async fn request_permission_defaults_to_reject_on_malformed_response() {
 }
 
 #[tokio::test]
+async fn request_permission_accepts_spec_shaped_responses() {
+    let action = PermissionAction::FileEdit;
+    let cases = [
+        (
+            json!({ "outcome": "selected", "optionId": "allow_once" }),
+            PermissionDecision::Allow,
+        ),
+        (
+            json!({ "outcome": "selected", "optionId": "allow_always" }),
+            PermissionDecision::AlwaysAllow,
+        ),
+        (
+            json!({ "outcome": "cancelled" }),
+            PermissionDecision::Reject,
+        ),
+    ];
+    for (outcome, expected) in cases {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let mut session = test_session("test-model", "none");
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let ((), decision) = tokio::join!(
+            reply_to_permission_request(client, json!({ "outcome": outcome })),
+            request_permission(
+                &mut transport,
+                &mut session,
+                tmp.path(),
+                action.clone(),
+                "Allow code agent to edit files?",
+                "The code agent may read and modify files.",
+            ),
+        );
+
+        // Only `allow_always` records a session grant and a workspace trust entry.
+        let always = expected == PermissionDecision::AlwaysAllow;
+        assert_eq!(decision, expected);
+        assert_eq!(session.always_allowed.contains(&action), always);
+        assert_eq!(
+            AcpSession::load_workspace_trust(tmp.path()).contains(&action),
+            always
+        );
+    }
+}
+
+#[tokio::test]
 async fn append_acp_episode_records_single_dispatch_episode() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let workdir = tmp.path();

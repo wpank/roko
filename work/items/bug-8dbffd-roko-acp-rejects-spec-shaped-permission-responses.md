@@ -10,7 +10,7 @@ goal = "hermes"
 subsystem = ["roko-acp/permissions"]
 created = 2026-09-28
 updated = 2026-09-29
-last_verified = 2026-09-29
+last_verified = 2026-10-01
 last_verified_rev = "a17d9d766"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
@@ -126,6 +126,12 @@ Entry point: an ACP session prompt whose model calls a mutating builtin tool ->
 - Small, self-contained change in `types.rs` plus tests. Safe to run in parallel with most work. Expect a small
   merge overlap with `bug-426c9d` if both edit `crates/roko-acp/src/types.rs` at the same time.
 - The verify command is sound; no change needed.
+- 2026-10-01 (wk-specq): implemented on work/bug-8dbffd; cargo verification deferred to the batch check.
+  `PermissionOutcome` now serializes in the spec shape and has a manual `Deserialize` that reads the spec `outcome`
+  or the legacy `type` discriminator (`optionId` or `option_id`); unknown outcomes and a selection without an option
+  id are errors, so the handler still rejects. Tests: `types.rs::permission_response_accepts_spec_outcome_shape` and
+  `bridge_events/tests.rs::request_permission_accepts_spec_shaped_responses` (allow_once, allow_always with the trust
+  file, cancelled); the guide documents the response shape.
 
 ## Original notes
 

@@ -1170,17 +1170,51 @@ pub struct PermissionResponse {
 }
 
 /// Outcome of a permission request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+///
+/// Serializes in the ACP spec shape, with the discriminator in an `outcome`
+/// field: `{"outcome": "selected", "optionId": "allow_once"}` or
+/// `{"outcome": "cancelled"}`. Deserialization also accepts roko's legacy
+/// shape, which carried the discriminator in a `type` field.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PermissionOutcome {
     /// The user cancelled the permission dialog.
     Cancelled,
     /// The user selected an option.
     Selected {
         /// The selected option identifier.
-        #[serde(alias = "optionId")]
+        #[serde(rename = "optionId")]
         option_id: String,
     },
+}
+
+/// Wire form of [`PermissionOutcome`], read with either discriminator field.
+#[derive(Deserialize)]
+struct RawPermissionOutcome {
+    #[serde(alias = "type")]
+    outcome: String,
+    #[serde(rename = "optionId", alias = "option_id")]
+    option_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for PermissionOutcome {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawPermissionOutcome::deserialize(deserializer)?;
+        match raw.outcome.as_str() {
+            "selected" => raw
+                .option_id
+                .map(|option_id| Self::Selected { option_id })
+                .ok_or_else(|| serde::de::Error::missing_field("optionId")),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["selected", "cancelled"],
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1331,7 +1365,7 @@ mod tests {
             PermissionOutcome::Selected { .. }
         ));
 
-        // Verify wire-format deserialization (what Zed actually sends).
+        // Roko's legacy wire shape, with the discriminator in `type`, still parses.
         let wire_json = json!({ "outcome": { "type": "selected", "optionId": "allow_always" } });
         let from_wire: PermissionResponse =
             serde_json::from_value(wire_json).expect("deserialize wire format");
@@ -1341,6 +1375,53 @@ mod tests {
             }
             _ => panic!("expected Selected variant"),
         }
+    }
+
+    #[test]
+    fn permission_response_accepts_spec_outcome_shape() {
+        fn parse(outcome: serde_json::Value) -> serde_json::Result<PermissionOutcome> {
+            serde_json::from_value::<PermissionResponse>(json!({ "outcome": outcome }))
+                .map(|response| response.outcome)
+        }
+
+        // The ACP spec carries the discriminator in a field named `outcome`.
+        let selected = parse(json!({ "outcome": "selected", "optionId": "allow_once" }));
+        assert!(matches!(
+            selected,
+            Ok(PermissionOutcome::Selected { ref option_id }) if option_id == "allow_once"
+        ));
+        let cancelled = parse(json!({ "outcome": "cancelled" }));
+        assert!(matches!(cancelled, Ok(PermissionOutcome::Cancelled)));
+
+        // Roko's legacy `type` discriminator and a snake_case option id still parse.
+        let legacy = parse(json!({ "type": "selected", "option_id": "reject_once" }));
+        assert!(matches!(
+            legacy,
+            Ok(PermissionOutcome::Selected { ref option_id }) if option_id == "reject_once"
+        ));
+
+        // Anything else is an error, which the permission handler turns into a rejection.
+        assert!(parse(json!({ "outcome": "approved" })).is_err());
+        assert!(parse(json!({ "outcome": "selected" })).is_err());
+        assert!(parse(json!({ "optionId": "allow_once" })).is_err());
+
+        // Serialization uses the spec shape.
+        let response = PermissionResponse {
+            outcome: PermissionOutcome::Selected {
+                option_id: "allow_always".to_string(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("serialize selected response"),
+            json!({ "outcome": { "outcome": "selected", "optionId": "allow_always" } })
+        );
+        let response = PermissionResponse {
+            outcome: PermissionOutcome::Cancelled,
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("serialize cancelled response"),
+            json!({ "outcome": { "outcome": "cancelled" } })
+        );
     }
 
     #[test]

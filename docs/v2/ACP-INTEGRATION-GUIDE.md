@@ -807,7 +807,17 @@ The editor must answer with one of the advertised options:
 - `allow_once` runs this call only.
 - `allow_always` runs it, stores the action in `.roko/trust/permissions.json`, and
   suppresses later outbound prompts for that action in the workspace.
-- `reject_once` denies the call.
+- `reject_once` and `reject_always` deny the call.
+
+The response uses the ACP spec shape, with the discriminator in an `outcome` field:
+
+```json
+{"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+{"outcome": {"outcome": "cancelled"}}
+```
+
+A cancelled dialog denies the call. Roko still accepts its older shape, which carried
+the discriminator in a `type` field (`{"outcome": {"type": "selected", "optionId": ...}}`).
 
 Roko fails closed. A rejected or malformed response, client disconnect, matching
 `session/cancel`, transport failure, timeout, or dropped internal reply denies the

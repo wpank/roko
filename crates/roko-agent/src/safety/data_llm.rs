@@ -333,7 +333,9 @@ impl DataLlmExtraction {
         let extraction: Self = serde_json::from_value(output)
             .map_err(|_| "it is not an object with a string summary and string facts")?;
         if extraction.summary.len() > MAX_SUMMARY_BYTES {
-            return Err(format!("its summary is longer than {MAX_SUMMARY_BYTES} bytes"));
+            return Err(format!(
+                "its summary is longer than {MAX_SUMMARY_BYTES} bytes"
+            ));
         }
         if extraction.facts.len() > MAX_FACTS {
             return Err(format!("it lists more than {MAX_FACTS} facts"));
@@ -454,9 +456,7 @@ impl DataLlmBoundary {
         };
         let (text, dropped, is_error) = match &result {
             ToolResult::Ok {
-                content,
-                artifacts,
-                ..
+                content, artifacts, ..
             } => {
                 let blocks = content
                     .iter()
@@ -795,7 +795,9 @@ mod tests {
     #[tokio::test]
     async fn data_llm_boundary_sends_only_the_fixed_prompt_and_the_text() {
         let (boundary, backend) = scripted_boundary(
-            Ok(answer(r#"{"summary": "the weather", "facts": ["it rains"]}"#)),
+            Ok(answer(
+                r#"{"summary": "the weather", "facts": ["it rains"]}"#,
+            )),
             DataLlmConfig::default(),
         );
 

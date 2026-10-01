@@ -3199,6 +3199,40 @@ contxt_window = 8192
         );
     }
 
+    /// bug-9434c4: the opt-in learning flags are not in the hand-written key
+    /// list, so `config set` types them from the schema tree.
+    #[test]
+    fn config_set_accepts_learning_opt_in_keys() {
+        assert_eq!(
+            parse_value_for_key("learning.t0_reflexes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            parse_value_for_key("learning.dreams.trigger_on_acp_episodes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        for (key, value) in [
+            ("learning.t0_reflexes", "true"),
+            ("learning.dreams.trigger_on_plan_complete", "false"),
+            ("learning.dreams.trigger_on_acp_episodes", "true"),
+            ("learning.dreams.acp_episode_threshold", "4"),
+            ("learning.dreams.max_concurrent", "2"),
+        ] {
+            set_toml_dotted_key(&mut doc, key, value).unwrap();
+        }
+        let unknown = roko_core::config::loader::validate_known_config_paths(&doc);
+        assert!(unknown.is_empty(), "unknown keys: {unknown:?}");
+        let config: RokoConfig = doc.try_into().expect("the edited config loads");
+        assert!(config.learning.t0_reflexes);
+        let dreams = &config.learning.dreams;
+        assert!(!dreams.trigger_on_plan_complete);
+        assert!(dreams.trigger_on_acp_episodes);
+        assert_eq!(dreams.acp_episode_threshold, 4);
+        assert_eq!(dreams.max_concurrent, 2);
+    }
+
     #[test]
     fn global_path_ends_in_roko_config_toml() {
         if let Some(path) = global_config_path() {

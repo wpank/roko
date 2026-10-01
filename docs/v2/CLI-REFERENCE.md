@@ -2174,8 +2174,9 @@ roko replay <hash> [--workdir <path>] [--forensic] [--as-of <step>] [--format tr
 
 ### `roko inject`
 
-Inject a signal into a running session. Use `i` in the TUI dashboard for the interactive
-version; use this CLI command when scripting.
+Inject a signal into a running session. No transport reaches a running session yet, so the
+command validates its arguments, writes nothing, and exits non-zero with
+`inject_transport_unavailable` (with `--json`, one object with `code`, `message` and `hint`).
 
 ```
 roko inject <session> <payload> [--kind directive|abort|context] [--workdir <path>]

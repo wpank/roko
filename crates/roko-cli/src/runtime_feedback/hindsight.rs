@@ -260,7 +260,9 @@ impl FeedbackSink for HindsightSink {
 mod tests {
     use super::*;
     use crate::dispatch::{AgentOutcome, ModelChoiceSource};
-    use crate::runtime_feedback::{EpisodeSink, FeedbackFacade, RoutingObservationSink, settled_as};
+    use crate::runtime_feedback::{
+        EpisodeSink, FeedbackFacade, RoutingObservationSink, settled_as,
+    };
     use roko_learn::hindsight::{AdjustmentKind, BLAMED_TASKS_KEY, read_adjustments};
     use roko_learn::telemetry::AttemptOutcome;
     use tempfile::tempdir;

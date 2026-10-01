@@ -4833,7 +4833,10 @@ exec sleep 60
     #[cfg(unix)]
     fn scoped_gate_run(
         dir: &Path,
-    ) -> (tokio::sync::oneshot::Sender<()>, std::thread::JoinHandle<usize>) {
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        std::thread::JoinHandle<usize>,
+    ) {
         use roko_core::Verify as _;
 
         std::fs::create_dir_all(dir).expect("run dir");

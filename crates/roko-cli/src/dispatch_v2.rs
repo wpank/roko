@@ -3017,7 +3017,12 @@ mod tests {
             .position(|arg| arg == "--append-system-prompt")
             .expect("the system prompt flag");
         assert_eq!(invocation.args[at + 1], "Role\n\nWorkspace\n\nTurn");
-        assert!(!invocation.args.iter().any(|arg| arg.contains("<!-- cache:")));
+        assert!(
+            !invocation
+                .args
+                .iter()
+                .any(|arg| arg.contains("<!-- cache:"))
+        );
     }
 
     /// bug-5cff57: a key nothing configures is unsupported, with the reason,

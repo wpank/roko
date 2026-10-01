@@ -489,7 +489,10 @@ command = "true"
             panic!("expected an adaptive budget, got {hinted:?}");
         };
         assert_eq!((rung, observations), (0, 6));
-        assert_eq!(std::fs::read_to_string(&path).expect("reread thresholds"), saved);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("reread thresholds"),
+            saved
+        );
     }
 
     /// gap-460230: while the ladder is on, a task that does not author

@@ -560,8 +560,7 @@ impl GraphTaskDispatcher {
                             )
                             .await;
                             if !retry_verdict.passed {
-                                if let Some(cancelled) =
-                                    self.stopped_verify(spec, task, step_label)
+                                if let Some(cancelled) = self.stopped_verify(spec, task, step_label)
                                 {
                                     return Err(cancelled);
                                 }

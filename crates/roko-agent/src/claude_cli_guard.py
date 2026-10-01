@@ -264,8 +264,8 @@ SEPARATOR_CHARS = set(";&|()\n")
 OPERATOR_CHARS = SEPARATOR_CHARS | set("<>")
 FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 # Stand-ins for a quoted or escaped parenthesis while shlex splits a command.
-HIDDEN_PARENTHESES = {"(": "", ")": ""}
-SHOWN_PARENTHESES = str.maketrans({"": "(", "": ")"})
+HIDDEN_PARENTHESES = {"(": "\ue000", ")": "\ue001"}
+SHOWN_PARENTHESES = str.maketrans({"\ue000": "(", "\ue001": ")"})
 MAX_DEPTH = 8
 # The most words a brace expansion may make (roko-std's EXPANSION_LIMIT).
 BRACE_LIMIT = 4096

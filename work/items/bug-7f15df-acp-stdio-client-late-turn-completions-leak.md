@@ -3,13 +3,15 @@ id = "bug-7f15df"
 kind = "bug"
 title = "ACP stdio client: late turn completions leak into the next turn, and byte-slicing a log line panics on non-ASCII output"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "hermes"
 size = "S"
 subsystem = ["roko-agent/harness"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "c58c7c2ba"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-97c2dc"
 anchors = ["crates/roko-agent/src/harness/acp_client.rs"]
@@ -38,3 +40,6 @@ Tag queued completions and notifications with their turn, and drop stale ones at
 ## Notes
 
 - Reported on 2026-10-01 by the worker on bug-97c2dc, during the evening close-out round.
+- 2026-10-01 (wk-guard2): implemented on work/bug-7f15df; cargo verification deferred to the batch check.
+- The reader tags each queued notification with the latest prompt id, and each completion carries its request id. `take_notification_rx` and `take_turn_done_rx` now lend `AcpNotificationRx` and `AcpTurnDoneRx`, whose `recv` skips notifications queued before the latest `session/prompt` or naming another session, and completions of other prompts; `send_prompt` marks the turn before it writes the request. Log lines are cut with `floor_char_boundary`, and `Drop` now aborts the reader tasks, as its comment claimed. Tests: `acp_client_turn_skips_what_an_earlier_prompt_left` and `acp_client_logs_a_multibyte_line_without_panicking`. The Hermes and OpenClaw consumers compile unchanged.
+- Left as is: a late notification from an earlier prompt that names no session and arrives after the next prompt is sent still reaches the new turn. ACP's `session/update` carries `sessionId`, so compliant servers are covered.

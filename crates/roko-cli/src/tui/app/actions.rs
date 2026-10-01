@@ -261,7 +261,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_sub(1);
                         }
@@ -287,7 +286,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_add(1);
                         }

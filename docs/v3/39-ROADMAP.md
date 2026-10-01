@@ -448,7 +448,7 @@ artifact-bound acceptance. What remains as product work:
 | Item | Current State | What Remains |
 |------|---------------|--------------|
 | Graph approval channel | `--approval` fails before workspace lock | Interactive approval protocol for Graph engine |
-| AgentPool runtime instantiation | Pool/multi-pool management built, TUI modal exists | No runtime instantiation in runner |
+| AgentPool runtime instantiation | `AgentPool`, `MultiAgentPool` and their TUI modal were removed on 2026-10-01 (gap-ee8dc0, bug-2f33d6); `WarmPool` is the only pool | No runtime instantiation in runner |
 | Bus-reactive dream scheduling | Cron/idle/episode-count triggers live | Bus-reactive and intensive-backlog controls |
 | Event system unification | 47 event enums, 4 EventBus structs | Converge to single event system (four-phase migration plan at `tmp/refactoring-audit/P1-10-EVENTBUS-AUDIT.md`) |
 | StateHub cursor atomicity | `SnapshotRebased` event added | Cursor-atomic SSE typed capture, single immutable resume generation |

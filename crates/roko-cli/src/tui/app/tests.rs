@@ -965,8 +965,9 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
     ));
     assert_eq!(app.tui_state.plan_scroll_offset, 9);
 
-    app.tui_state.active_modal = Some(ModalState::AgentPool {
-        agents: Vec::new(),
+    app.tui_state.active_modal = Some(ModalState::BatchReview {
+        batch_name: "b".to_string(),
+        results: Vec::new(),
         scroll_offset: 4,
     });
 
@@ -974,7 +975,7 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
 
     assert!(matches!(
         app.tui_state.active_modal,
-        Some(ModalState::AgentPool {
+        Some(ModalState::BatchReview {
             scroll_offset: 3,
             ..
         })

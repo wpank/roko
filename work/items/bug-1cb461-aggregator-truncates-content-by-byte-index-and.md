@@ -9,9 +9,9 @@ size = "S"
 goal = "visibility"
 subsystem = ["roko-serve/aggregator"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/routes/aggregator.rs::list_knowledge_entries"]
@@ -85,6 +85,10 @@ Expected: a label of at most 80 characters plus `…`, and a 200 response.
   editing `aggregator.rs`.
 - Do not add a new workspace-wide helper for this; a local function is enough (and matches how other crates
   do it). A shared helper is a separate cleanup.
+- 2026-10-01 (wk-serve2): implemented on work/bug-1cb461; cargo verification deferred to the batch check.
+  `knowledge_label` in `routes/aggregator.rs` truncates at the 80th character via `char_indices().nth(80)`;
+  tests `knowledge_label_truncates_on_char_boundary` (unit) and `knowledge_entries_route_lists_multibyte_content`
+  (route returns 200 for an entry with `é` across byte 80).
 
 ## Original notes
 

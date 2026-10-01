@@ -3824,7 +3824,7 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     // Authentication hint: match specific auth-related terms, not substrings
     // like "authoritative" or "authorization policy", and 401 only as an HTTP
     // status, never inside a path, an id or a longer number.
-    if mentions_http_401(&lower)
+    if roko_agent::provider::error_classify::mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
@@ -3851,30 +3851,6 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
-}
-
-/// Whether a lower-cased error message reports HTTP status 401: a standalone
-/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
-/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
-/// `gap-e4019c`, `14015 bytes`) is not a status.
-fn mentions_http_401(lower: &str) -> bool {
-    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
-    let words: Vec<&str> = lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
-        .map(|word| word.trim_end_matches('.'))
-        .filter(|word| !word.is_empty())
-        .collect();
-    for (at, &word) in words.iter().enumerate() {
-        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
-        if word == "401" && near.iter().copied().any(is_http_status_word) {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_http_status_word(word: &str) -> bool {
-    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]

@@ -994,7 +994,8 @@ async fn run_graph_plan_body(
                 .join("provider-health.json"),
         ),
     ))
-    .with_error_patterns_from_disk(workdir);
+    .with_error_patterns_from_disk(workdir)
+    .with_knowledge_routing(workdir);
     let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,

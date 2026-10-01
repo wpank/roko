@@ -41,9 +41,9 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 8. **Commit on your branch** with `Closes: <id>` as the last line of the message. Then record the closure and
    commit the item file:
    `python3 tools/work.py close <id> --commit HEAD --evidence "what changed, where, and which check proves it"`.
-   Do not run `render` or commit the generated views (`NOW.md`, `STATUS.md`, …) on your branch: every branch
-   would conflict on them. They are regenerated in the main checkout after merging. Your claim stays until the
-   closed item is merged.
+   Do not run `render` or commit the generated views (`NOW.md`, `STATUS.md`, `EPICS.md`, …) on your branch:
+   every branch would conflict on them. They are regenerated in the main checkout after merging. Your claim stays
+   until the closed item is merged.
 9. **Merge.** In batch mode the orchestrator merges your branch (below). Working alone, merge it yourself the
    same way.
 
@@ -109,6 +109,7 @@ work/
   DRIFT.md                  GENERATED — open items whose recorded state may be out of date
   CLAUDE-OPEN.md            GENERATED — p0/p1 open items
   DECISIONS.md              GENERATED — open decisions and questions
+  EPICS.md                  GENERATED — per epic, its children closed out of total, open ones by lane, the next one
   TRIAGE.md                 GENERATED — imported items not yet verified against current code
   history/                  frozen records (old GAPS.md sections, migration summary)
   telemetry/                the development record: events, harvest, metric definitions, rollup and manifests
@@ -118,7 +119,10 @@ work/
 ```
 
 Regenerate the views with `python3 tools/work.py render` after changing items, and validate with
-`python3 tools/work.py check` (`check --lint` also lists weak verify commands).
+`python3 tools/work.py check` (`check --lint` also lists weak verify commands). To look without changing anything:
+`list [--goal G] [--lane L] [--kind K] [--status S] [--parent ID]` prints one line per item, `show <id>` an item with
+its children, dependents, claim and verify commands, and `status` the open, claimed and done counts by goal, lane and
+epic; each takes `--json`.
 
 ## Item format
 

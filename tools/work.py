@@ -5,7 +5,10 @@ Usage:
   work.py id --kind gap --title "…" --created 2026-09-28 --source "…"   # print a hash ID
   work.py new --kind gap --title "…" --source "…" [--root work|local] [--subsystem a,b] [--severity p2] [--triage verified]
   work.py check [--strict]                                               # validate both roots (+ verify-command lint)
-  work.py render                                                         # regenerate views, including DRIFT.md
+  work.py render                                                         # regenerate views, including DRIFT.md and EPICS.md
+  work.py list [--goal G] [--lane L] [--kind K] [--status open|all|<status>] [--parent ID] [--json]   # one line per item
+  work.py show <id> [--json]                                             # an item with its children, dependents and claim
+  work.py status [--json]                                                # open, claimed and done counts by goal, lane and epic
   work.py park <id>… --reason "…"                                        # not planned: move to parked/
   work.py unpark <id>…                                                   # restore status, move back to items/
 
@@ -744,7 +747,7 @@ def worktree_changes() -> dict[str, str]:
 
 
 def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None = None, claims=None, worktrees=None,
-              details: list | None = None, lane: str | None = None, mix: dict | None = None):
+              details: list | None = None, lane: str | None = None, mix: dict | None = None, among=None):
     """Top-priority open items that a worker can start now, pairwise free of file conflicts.
 
     Skips: claimed items (live claims), items on hold, unverified items, decisions/questions (they need a human), items whose
@@ -754,7 +757,8 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
     receives one dict per item skipped for a worktree.
 
     `lane` picks only that lane, and `mix` ({lane: quota}) fills each lane's quota in priority order. In both, a lane
-    takes no more than its `max` in work/lanes.toml, nor its pool more than the pool's cap, counting live claims."""
+    takes no more than its `max` in work/lanes.toml, nor its pool more than the pool's cap, counting live claims.
+    `among` (a set of ids) limits the candidates; dependencies are still judged on all of `items`."""
     claims = load_claims() if claims is None else claims
     worktrees = worktree_changes() if worktrees is None else worktrees
     by_id = {i["id"]: i for i in items}
@@ -772,7 +776,8 @@ def pick_next(items, n: int = 1, goal: str | None = None, max_size: str | None =
         taken_pool = Counter(pool_of(item_lane(by_id[k])) for k in live if k in by_id)
     cands = [i for i in items if i.get("status") == "open" and i.get("triage") == "verified" and not i.get("hold")
              and i.get("kind") not in ("decision", "question") and i["id"] not in live
-             and (goal is None or i.get("goal") == goal) and (quota is None or item_lane(i) in quota)]
+             and (goal is None or i.get("goal") == goal) and (quota is None or item_lane(i) in quota)
+             and (among is None or i["id"] in among)]
     picked, skipped = [], Counter()
     for it in sorted(cands, key=lambda i: pick_key(i, order, tuple(lanes.get("milestones") or ()))):
         if len(picked) >= n:
@@ -1158,7 +1163,168 @@ def render_root(root_key: str, items):
     (root / "DRIFT.md").write_text("\n".join(render_drift(root, items, drift, head_rev())) + "\n")
     if root_key == "work":
         render_now(root, opened, drift)
+        render_epics(root, items)
     return len(opened), len(verified), len(unverified), len(closed), len(parked)
+
+
+# ---------------------------------------------------------------- epics, list, show, status (read-only)
+
+CLOSED = {"done", "wontfix", "superseded"}
+
+
+def epics(items) -> list:
+    """The epics: spec items titled "Epic: …" (work/README.md, PLAN.md section 2)."""
+    return [i for i in items if i.get("kind") == "spec" and str(i.get("title", "")).startswith("Epic:")]
+
+
+def children(it, items) -> list:
+    """An item's children: the items whose `parent` is it, plus (for an epic) its depends_on; parked items excluded."""
+    by_id = {i["id"]: i for i in items}
+    ids = [i["id"] for i in items if i.get("parent") == it["id"]]
+    ids += [d for d in (it.get("links") or {}).get("depends_on", []) or [] if d in by_id and d not in ids]
+    return [by_id[i] for i in ids if i != it["id"] and by_id[i].get("status") != "parked"]
+
+
+def dependents(it, items) -> list:
+    """The items whose depends_on names `it`."""
+    return [i for i in items if it["id"] in ((i.get("links") or {}).get("depends_on", []) or [])]
+
+
+def lane_counts(items) -> str:
+    c = Counter(item_lane(i) for i in items)
+    return ", ".join(f"{k} {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))) or "none"
+
+
+def render_epics(root: Path, items):
+    """EPICS.md: per epic, its children closed out of total, its open children by lane, and the child to take next;
+    then the same counts per lane. It reads only the items (no claims), so the view changes only when they do."""
+    order = goal_order()
+    out = ["# Epics", "", GEN_NOTE, "",
+           "Progress per epic: its children (items whose `parent` is the epic, plus its `depends_on`) closed out of total, "
+           "its open children by lane, and the child `next` takes first when nothing is claimed. Then per lane. A closed "
+           "child is done, won't-fix or superseded; parked children are left out. Lanes: `lanes.toml`.", ""]
+    rows = sorted(epics(items), key=lambda e: (e.get("status") not in OPEN, order.get(e.get("goal"), len(order)), sev_key(e)))
+    for e in rows:
+        kids = children(e, items)
+        closed = [k for k in kids if k.get("status") in CLOSED]
+        open_kids = [k for k in kids if k.get("status") in OPEN]
+        state = "" if e.get("status") in OPEN else f" ({e['status']})"
+        out += [f"## [{e['id']}]({e['_path'].relative_to(root)}) {e['title'].removeprefix('Epic: ')}{state}", "",
+                f"- **{len(closed)}/{len(kids)} closed** · goal `{e.get('goal') or 'none'}` · severity {e.get('severity')}"]
+        if open_kids:
+            out.append(f"- open by lane: {lane_counts(open_kids)}")
+            first, _ = pick_next(items, n=1, claims={}, worktrees={}, among={k["id"] for k in kids})
+            if first:
+                out.append(f"- next: [{first[0]['id']}]({first[0]['_path'].relative_to(root)}) {first[0]['title']}")
+            else:
+                waiting = Counter("unverified" if k.get("triage") != "verified" else "on hold" if k.get("hold")
+                                  else "waiting on a dependency" for k in open_kids)
+                out.append("- next: none ready (" + ", ".join(f"{v} {k}" for k, v in sorted(waiting.items())) + ")")
+        out.append("")
+    if not rows:
+        out += ["No epics yet.", ""]
+    laned = [i for i in items if i.get("status") != "parked"]
+    out += ["## Lanes", "", "| Lane | Closed | Total | Open (verified) |", "|---|---|---|---|"]
+    for lane in sorted({item_lane(i) for i in laned}):
+        mine = [i for i in laned if item_lane(i) == lane]
+        opened = [i for i in mine if i.get("status") in OPEN]
+        out.append(f"| {lane} | {sum(i.get('status') in CLOSED for i in mine)} | {len(mine)} | "
+                   f"{len(opened)} ({sum(i.get('triage') == 'verified' for i in opened)}) |")
+    (root / "EPICS.md").write_text("\n".join(out) + "\n")
+
+
+def item_row(it) -> dict:
+    return {"id": it["id"], "kind": it.get("kind"), "status": it.get("status"), "triage": it.get("triage"),
+            "severity": it.get("severity"), "size": it.get("size"), "goal": it.get("goal"), "lane": it.get("lane"),
+            "parent": it.get("parent"), "title": it.get("title"), "path": str(it["_path"].relative_to(REPO))}
+
+
+def cmd_list(a):
+    items = [i for k in ROOTS for i in load(k)[0]]
+    want = OPEN if a.status == "open" else None if a.status == "all" else {a.status}
+    rows = [i for i in items if (want is None or i.get("status") in want) and (a.goal is None or i.get("goal") == a.goal)
+            and (a.lane is None or item_lane(i) == a.lane) and (a.kind is None or i.get("kind") == a.kind)
+            and (a.parent is None or i.get("parent") == a.parent)]
+    rows.sort(key=lambda i: (sev_key(i), i["id"]))
+    if a.json:
+        json.dump([item_row(i) for i in rows], sys.stdout, indent=1)
+        print()
+        return
+    for i in rows:
+        size = f"/{i['size']}" if i.get("size") else ""
+        print(f"{i['id']}  {i.get('status')} {i.get('severity')}{size} {item_lane(i)}  {i.get('title')}")
+    print(f"{len(rows)} items")
+
+
+def cmd_show(a):
+    items = [i for k in ROOTS for i in load(k)[0]]
+    it = next((i for i in items if i["id"] == a.id), None)
+    if it is None:
+        sys.exit(f"{a.id}: no such item")
+    kids, deps = children(it, items), dependents(it, items)
+    claim = load_claims().get(a.id)
+    if a.json:
+        out = {**item_row(it), "anchors": it.get("anchors") or [], "links": it.get("links") or {},
+               "milestone": it.get("milestone"), "closed": it.get("closed"),
+               "verify": [v.get("command") for v in it.get("verify") or []],
+               "children": [item_row(k) for k in kids], "dependents": [item_row(d) for d in deps],
+               "claim": {k: v for k, v in claim.items() if k != "title"} if claim else None}
+        json.dump(out, sys.stdout, indent=1, default=str)
+        print()
+        return
+    print(f"{it['id']}  {it.get('title')}")
+    for k in ("kind", "status", "triage", "severity", "size", "goal", "lane", "parent", "milestone", "created", "updated",
+              "last_verified"):
+        if it.get(k) is not None:
+            print(f"  {k}: {it[k]}")
+    print(f"  file: {it['_path'].relative_to(REPO)}")
+    for a_ in it.get("anchors") or []:
+        print(f"  anchor: {a_}")
+    if claim:
+        life = f"stale {claim['age_h']}h" if claim["stale"] else f"{claim['ttl_h'] - claim['age_h']:.1f}h left"
+        print(f"  claim: {claim.get('by')} · {claim.get('branch') or 'no branch'} · {life}")
+    for v in it.get("verify") or []:
+        print(f"  verify: {v.get('command')}")
+    if it.get("closed"):
+        print(f"  closed: {json.dumps(it['closed'], default=str)}")
+    print(f"children ({len(kids)}):" if kids else "children: none")
+    for k in kids:
+        print(f"  {k['id']}  {k.get('status')} {item_lane(k)}  {k.get('title')}")
+    print(f"dependents ({len(deps)}):" if deps else "dependents: none")
+    for d in deps:
+        print(f"  {d['id']}  {d.get('status')}  {d.get('title')}")
+
+
+def cmd_status(a):
+    items = load("work")[0]
+    claims = load_claims()
+    live = {k for k, c in claims.items() if not c["stale"]}
+
+    def counts(group):
+        return {"open": sum(i.get("status") in OPEN for i in group),
+                "claimed": sum(i.get("status") in OPEN and i["id"] in live for i in group),
+                "done": sum(i.get("status") == "done" for i in group)}
+
+    by_goal, by_lane = defaultdict(list), defaultdict(list)
+    for i in items:
+        by_goal[i.get("goal") or "none"].append(i)
+        by_lane[item_lane(i)].append(i)
+    out = {"all": counts(items),
+           "goal": {g: counts(v) for g, v in sorted(by_goal.items(), key=lambda kv: goal_order().get(kv[0], 10**6))},
+           "lane": {l_: counts(v) for l_, v in sorted(by_lane.items())},
+           "epic": {e["id"]: {"title": e["title"], **counts(children(e, items))} for e in epics(items)}}
+    if a.json:
+        json.dump(out, sys.stdout, indent=1)
+        print()
+        return
+    print(f"{out['all']['open']} open ({out['all']['claimed']} claimed) · {out['all']['done']} done")
+    for section in ("goal", "lane"):
+        print(f"by {section}:")
+        for k, c in out[section].items():
+            print(f"  {k}: {c['open']} open ({c['claimed']} claimed), {c['done']} done")
+    print("by epic:")
+    for k, c in out["epic"].items():
+        print(f"  {k}: {c['open']} open ({c['claimed']} claimed), {c['done']} done — {c['title']}")
 
 
 def now_key(it):
@@ -1812,10 +1978,18 @@ def main():
     p = sp.add_parser("check"); p.add_argument("--strict", action="store_true", help="treat verify-command lint warnings as errors")
     p.add_argument("--lint", action="store_true", help="list verify-command lint warnings")
     sp.add_parser("render")
+    p = sp.add_parser("list", help="one line per item (read-only)"); p.add_argument("--goal"); p.add_argument("--lane")
+    p.add_argument("--kind", choices=sorted(PREFIX)); p.add_argument("--parent"); p.add_argument("--json", action="store_true")
+    p.add_argument("--status", default="open", help="open (the default: open, in_progress or blocked), all, or one status")
+    p = sp.add_parser("show", help="an item with its children, dependents and claim (read-only)"); p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p = sp.add_parser("status", help="open, claimed and done counts by goal, lane and epic (read-only)")
+    p.add_argument("--json", action="store_true")
     a = ap.parse_args()
     simple = {"new": cmd_new, "park": cmd_park, "unpark": cmd_unpark, "close": cmd_close, "sync": cmd_sync, "drift": cmd_drift,
               "touched": cmd_touched, "verify": cmd_verify, "apply-verdicts": cmd_apply_verdicts, "hook": cmd_hook,
-              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event}
+              "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "claims": cmd_claims, "event": cmd_event,
+              "list": cmd_list, "show": cmd_show, "status": cmd_status}
     if a.cmd == "id":
         print(make_id(a.kind, a.title, a.created, a.source)); return
     if a.cmd in simple:

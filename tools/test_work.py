@@ -306,6 +306,50 @@ class TestLanes(RepoTest):
         self.assertEqual([(r["id"], r["lane"]) for r in out], [("gap-d00002", "x")])
 
 
+class TestEpicsAndViews(RepoTest):
+    """An epic with three children, one of them closed, in lanes x and y."""
+
+    def setUp(self):
+        super().setUp()
+        epic = item("bug-eeeeee", "Epic: E").replace("bug-eeeeee", "spec-eeeeee").replace('kind = "bug"', 'kind = "spec"')
+        self.write("spec-eeeeee", epic.replace("depends_on = []", 'depends_on = ["gap-333333"]'))
+        self.write("gap-111111", item("gap-111111", "One", status="done", anchors=["src/one.rs"], extra=(
+            'lane = "x"\nparent = "spec-eeeeee"\n\n[closed]\nat = 2026-09-02\nevidence = "done"')))
+        self.write("gap-222222", item("gap-222222", "Two", anchors=["src/two.rs"], extra='lane = "x"\nparent = "spec-eeeeee"'))
+        self.write("gap-333333", item("gap-333333", "Three", anchors=["src/three.rs"], extra='lane = "y"'))  # via depends_on
+        self.write("gap-444444", item("gap-444444", "Four", anchors=["src/four.rs"]).replace(
+            "depends_on = []", 'depends_on = ["gap-222222"]'))
+        self.commit("an epic")
+
+    def test_epics_view_counts_children(self):
+        work.render_root("work", self.items())
+        text = (self.root / "work" / "EPICS.md").read_text()
+        self.assertIn("## [spec-eeeeee](items/spec-eeeeee-x.md) E", text)
+        self.assertIn("- **1/3 closed** · goal `core` · severity p2", text)
+        self.assertIn("- open by lane: x 1, y 1", text)
+        self.assertIn("- next: [gap-333333](items/gap-333333-x.md) Three", text)  # p2 items by title: Three < Two
+        self.assertIn("| x | 1 | 2 | 1 (1) |", text)
+        self.assertIn("| y | 0 | 1 | 1 (1) |", text)
+
+    def test_show_lists_children_and_dependents(self):
+        self.run_work("claim", "gap-222222", "--by", "t", "--branch", "work/two", "--session", "s1")
+        epic = json.loads(self.run_work("show", "spec-eeeeee", "--json").stdout)
+        self.assertEqual(sorted(c["id"] for c in epic["children"]), ["gap-111111", "gap-222222", "gap-333333"])
+        two = json.loads(self.run_work("show", "gap-222222", "--json").stdout)
+        self.assertEqual([d["id"] for d in two["dependents"]], ["gap-444444"])
+        self.assertEqual((two["claim"]["by"], two["claim"]["branch"]), ("t", "work/two"))
+        text = self.run_work("show", "gap-222222").stdout
+        self.assertIn("claim: t · work/two", text)
+        self.assertIn("gap-444444  open  Four", text)
+        # list filters by lane, parent and status.
+        self.assertEqual([r["id"] for r in json.loads(self.run_work("list", "--lane", "x", "--json").stdout)], ["gap-222222"])
+        rows = json.loads(self.run_work("list", "--parent", "spec-eeeeee", "--status", "all", "--json").stdout)
+        self.assertEqual(sorted(r["id"] for r in rows), ["gap-111111", "gap-222222"])
+        status = json.loads(self.run_work("status", "--json").stdout)
+        self.assertEqual(status["epic"]["spec-eeeeee"], {"title": "Epic: E", "open": 2, "claimed": 1, "done": 1})
+        self.assertEqual(status["lane"]["x"], {"open": 1, "claimed": 1, "done": 1})
+
+
 class TestClaims(RepoTest):
     def claim_file(self, iid, **fields):
         d = work.claims_dir()

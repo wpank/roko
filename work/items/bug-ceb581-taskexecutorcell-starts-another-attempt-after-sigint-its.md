@@ -9,9 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-graph/cells", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops ea5cb31db"
 anchors = ["crates/roko-graph/src/cells/task_executor.rs::TaskExecutorCell", "crates/roko-graph/src/cell.rs::CellContext::is_cancelled", "crates/roko-graph/src/engine.rs::FlowHandle::cancel", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_execution/plan_runner.rs::terminate_in_flight_agents", "crates/roko-cli/src/graph_execution/plan_runner.rs:2074"]
@@ -96,3 +96,11 @@ The task's retry budget lives in `TaskExecutorCell`, so that loop is the one tha
 - Also check whether the SIGTERMed attempt is recorded as an ordinary failed attempt in `.roko/learn/costs.jsonl`
   and `.roko/episodes.jsonl`. If so, learning counts interrupts as failures. File that as its own item if it
   holds.
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  `CellContext` gains `run_cancel`, the graph run's `CancellationToken`. `GraphEngine::start` attaches it, so
+  `FlowHandle::cancel` reaches running cells, and `is_cancelled` is true once either it or the caller's cancel flag
+  is set. The plan runner's stop flag keeps its meaning: run_watched still drops calls only at the drain deadline.
+  `TaskExecutorCell` checks `is_cancelled` before each attempt (a `Cancelled` error) and after a failed one (no retry).
+  Tests: `a_cancelled_run_starts_no_further_attempt`, `flow_cancel_reaches_a_running_cell`. The Notes' learning
+  question is addressed by bug-28b604 on this branch: once the run began to stop, a SIGTERMed attempt settles as
+  cancelled, which teaches nothing.

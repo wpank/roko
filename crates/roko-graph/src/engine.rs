@@ -299,8 +299,10 @@ impl FlowHandle {
 
     /// Request cancellation of the running graph execution.
     ///
-    /// No further node starts. Nodes already running are not interrupted;
-    /// the background task stops once they complete.
+    /// No further node starts. Nodes already running are not interrupted:
+    /// they see the cancellation through [`CellContext::is_cancelled`] and
+    /// start no further work (bug-ceb581), and the background task stops
+    /// once they complete.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -1886,6 +1888,8 @@ impl GraphEngine {
         let started_at = Instant::now();
 
         let cancel = CancellationToken::new();
+        // Running cells see the cancellation (bug-ceb581).
+        let ctx = ctx.with_run_cancel(cancel.clone());
         let node_statuses: Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>> =
             Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let budget_consumed = Arc::new(AtomicU64::new(0));
@@ -6962,5 +6966,82 @@ to = "after-first"
                 }
             }
         }
+    }
+
+    /// Waits until its context reports its run cancelled, then succeeds,
+    /// recording that it saw the cancellation.
+    struct WaitsForCancelCell {
+        started: Arc<std::sync::atomic::AtomicBool>,
+        saw_cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for WaitsForCancelCell {
+        fn cell_id(&self) -> &str {
+            "waits-for-cancel"
+        }
+
+        fn cell_name(&self) -> &str {
+            "WaitsForCancelCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            self.started.store(true, Ordering::SeqCst);
+            for _ in 0..500 {
+                if ctx.is_cancelled() {
+                    self.saw_cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(input)
+        }
+    }
+
+    /// bug-ceb581: `FlowHandle::cancel` reaches a cell that is already
+    /// running, through its context, so it can start no further work.
+    #[tokio::test]
+    async fn flow_cancel_reaches_a_running_cell() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "cancel-reaches-cell"
+
+[[nodes]]
+id = "waiting"
+cell_type = "waits-for-cancel"
+"#,
+        )
+        .unwrap();
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut registry = noop_registry();
+        let cell_started = Arc::clone(&started);
+        let cell_saw_cancel = Arc::clone(&saw_cancel);
+        registry.register("waits-for-cancel", move |_| {
+            Box::new(WaitsForCancelCell {
+                started: Arc::clone(&cell_started),
+                saw_cancel: Arc::clone(&cell_saw_cancel),
+            })
+        });
+
+        let flow = GraphEngine::new(graph, registry).start(CellContext::new());
+        for _ in 0..500 {
+            if started.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(started.load(Ordering::SeqCst), "the cell is running");
+        flow.cancel();
+        let _output = flow.await_completion().await.expect("flow output");
+        assert!(
+            saw_cancel.load(Ordering::SeqCst),
+            "the running cell saw the cancellation"
+        );
     }
 }

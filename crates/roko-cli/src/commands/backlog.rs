@@ -1,8 +1,8 @@
 //! `roko backlog` — batch import, listing, and reconciliation audit.
 //!
-//! Reads markdown specs from `tmp/backlog/<N>-*.md` files and creates PRD
-//! ideas in `.roko/prd/ideas/`. Optionally chains through draft, plan, and
-//! execution steps.
+//! Reads markdown specs from `tmp/backlog/<N>-*.md` files and records each as
+//! a PRD idea in `.roko/prd/ideas.md`. Optionally chains through draft, plan,
+//! and execution steps.
 //!
 //! The `audit` subcommand reconciles plan TOML status against durable runner
 //! state, reporting drift between declared task status and actual runner
@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use roko_cli::plan_generate::DEFAULT_BACKLOG_DIR;
 use roko_fs::RokoLayout;
 
 use crate::{BacklogCmd, Cli, resolve_workdir};
@@ -30,9 +31,9 @@ pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_backlog_import(&wd, &path, draft, plan, execute).await
         }
-        BacklogCmd::List { workdir } => {
+        BacklogCmd::List { path, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_backlog_list(&wd)
+            cmd_backlog_list(&wd, path.as_deref())
         }
         BacklogCmd::Audit {
             workdir,
@@ -53,63 +54,99 @@ pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {
     }
 }
 
-/// List backlog items and their import status.
-fn cmd_backlog_list(workdir: &Path) -> Result<i32> {
-    let backlog_dir = workdir.join("tmp/backlog");
+/// The backlog directory: `path` (relative to `workdir`), or
+/// [`DEFAULT_BACKLOG_DIR`].
+fn resolve_backlog_dir(workdir: &Path, path: Option<&Path>) -> PathBuf {
+    workdir.join(path.unwrap_or(Path::new(DEFAULT_BACKLOG_DIR)))
+}
+
+/// One backlog spec as `backlog list` shows it.
+#[derive(Debug)]
+struct BacklogSpec {
+    id: u32,
+    slug: String,
+    /// Whether the spec sits in the backlog's `archive/`.
+    archived: bool,
+    /// The spec's `**Status**:` line, as `mark-done` writes it, without its
+    /// label.
+    status: Option<String>,
+}
+
+/// List backlog specs with their status and import state.
+fn cmd_backlog_list(workdir: &Path, path: Option<&Path>) -> Result<i32> {
+    let backlog_dir = resolve_backlog_dir(workdir, path);
     if !backlog_dir.is_dir() {
         println!("No backlog directory found at {}", backlog_dir.display());
         return Ok(0);
     }
 
-    let mut entries: Vec<(u32, String, PathBuf)> = Vec::new();
-    for entry in std::fs::read_dir(&backlog_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md")
-            && let Some(fname) = path.file_stem().and_then(|s| s.to_str())
-        {
-            // Skip the index file
-            if fname == "00-INDEX" {
-                continue;
-            }
-            // Parse leading number
-            if let Some(num) = fname.split('-').next().and_then(|n| n.parse::<u32>().ok()) {
-                entries.push((num, fname.to_string(), path.clone()));
-            }
-        }
-    }
+    let specs = list_backlog_specs(&backlog_dir)?;
+    // `backlog import` records each spec as an idea in the PRD ideas file.
+    let ideas = std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(workdir))
+        .unwrap_or_default();
 
-    entries.sort_by_key(|(num, _, _)| *num);
+    println!("Backlog specs ({} items):", specs.len());
+    println!("{:<6} {:<50} {:<9} {}", "ID", "Slug", "Imported", "Status");
+    println!("{}", "-".repeat(90));
 
-    // Check which have been imported
-    let ideas_dir = workdir.join(".roko/prd/ideas");
-    let ideas_exist = ideas_dir.is_dir();
-
-    println!("Backlog specs ({} items):", entries.len());
-    println!("{:<6} {:<50} {}", "ID", "Slug", "Status");
-    println!("{}", "-".repeat(70));
-
-    for (num, slug, _path) in &entries {
-        let imported = if ideas_exist {
-            // Check if an idea file references this backlog number
-            has_imported_idea(&ideas_dir, *num)
+    for spec in &specs {
+        let slug = if spec.archived {
+            format!("archive/{}", spec.slug)
         } else {
-            false
+            spec.slug.clone()
         };
-        let status = if imported { "imported" } else { "-" };
-        println!("#{:<5} {:<50} {}", num, slug, status);
+        let imported = if has_imported_idea(&ideas, spec.id) {
+            "imported"
+        } else {
+            "-"
+        };
+        let status = spec.status.as_deref().unwrap_or("-");
+        println!("#{:<5} {:<50} {:<9} {}", spec.id, slug, imported, status);
     }
 
     Ok(0)
 }
 
-/// Check if an idea referencing a backlog number already exists.
-fn has_imported_idea(ideas_dir: &Path, backlog_num: u32) -> bool {
-    if let Ok(content) = std::fs::read_to_string(ideas_dir.join("ideas.md")) {
-        let marker = format!("[backlog#{}]", backlog_num);
-        return content.contains(&marker);
+/// The specs in `backlog_dir` and its `archive/`, by id: the files whose
+/// name [`parse_backlog_filename`] accepts.
+fn list_backlog_specs(backlog_dir: &Path) -> Result<Vec<BacklogSpec>> {
+    let mut specs = Vec::new();
+    for (dir, archived) in [
+        (backlog_dir.to_path_buf(), false),
+        (backlog_dir.join("archive"), true),
+    ] {
+        if !dir.is_dir() {
+            continue;
+        }
+        for (id, slug, path) in backlog_files_in(&dir)? {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
+            specs.push(BacklogSpec {
+                id,
+                slug,
+                archived,
+                status: spec_status(&content),
+            });
+        }
     }
-    false
+    specs.sort_by(|a, b| (a.id, a.archived, &a.slug).cmp(&(b.id, b.archived, &b.slug)));
+    Ok(specs)
+}
+
+/// The text of `content`'s `**Status**:` line, the one `mark-done` writes. A
+/// blockquoted status line is prose, as in [`upsert_status_line`].
+fn spec_status(content: &str) -> Option<String> {
+    content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("**Status**:"))
+        .map(|status| status.trim().to_string())
+        .filter(|status| !status.is_empty())
+}
+
+/// Whether `ideas`, the PRD ideas file that `backlog import` appends to,
+/// holds the idea imported from backlog spec `backlog_num`.
+fn has_imported_idea(ideas: &str, backlog_num: u32) -> bool {
+    ideas.contains(&format!("[backlog#{backlog_num}]"))
 }
 
 /// Import backlog spec(s) as PRD ideas.
@@ -184,38 +221,48 @@ fn collect_backlog_files(workdir: &Path, path: &Path) -> Result<Vec<(u32, String
         path.to_path_buf()
     };
 
-    let mut files = Vec::new();
-
     if resolved.is_file() {
-        if let Some(parsed) = parse_backlog_filename(&resolved) {
+        return Ok(parse_backlog_filename(&resolved).into_iter().collect());
+    }
+    if resolved.is_dir() {
+        return backlog_files_in(&resolved);
+    }
+    Ok(Vec::new())
+}
+
+/// The backlog spec files directly in `dir`, by id.
+fn backlog_files_in(dir: &Path) -> Result<Vec<(u32, String, PathBuf)>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_file()
+            && path.extension().is_some_and(|ext| ext == "md")
+            && let Some(parsed) = parse_backlog_filename(&path)
+        {
             files.push(parsed);
         }
-    } else if resolved.is_dir() {
-        for entry in std::fs::read_dir(&resolved)? {
-            let entry = entry?;
-            let p = entry.path();
-            if p.extension().is_some_and(|e| e == "md")
-                && let Some(parsed) = parse_backlog_filename(&p)
-            {
-                files.push(parsed);
-            }
-        }
-        files.sort_by_key(|(num, _, _)| *num);
     }
-
+    files.sort();
     Ok(files)
 }
 
-/// Parse a backlog filename like `65-cli-verb-consolidation.md` -> (65, "cli-verb-consolidation", path).
+/// Parse a backlog spec's file name: a numeric id, then `-`, `_` or `.` and a
+/// slug (`65-cli-verb-consolidation.md`, `01_t0-reflex-store.md`), or the id
+/// alone (`65.md`). Id 0 is the prefix of the index and summary files
+/// (`00-INDEX.md`, `00-STATUS-SUMMARY.md`), not a spec's id.
 fn parse_backlog_filename(path: &Path) -> Option<(u32, String, PathBuf)> {
     let stem = path.file_stem()?.to_str()?;
-    if stem == "00-INDEX" {
+    let digits = stem.bytes().take_while(u8::is_ascii_digit).count();
+    let num: u32 = stem[..digits].parse().ok()?;
+    let slug = match stem[digits..].chars().next() {
+        None => "",
+        Some('-' | '_' | '.') => &stem[digits + 1..],
+        Some(_) => return None,
+    };
+    if num == 0 {
         return None;
     }
-    let dash_pos = stem.find('-')?;
-    let num: u32 = stem[..dash_pos].parse().ok()?;
-    let slug = stem[dash_pos + 1..].to_string();
-    Some((num, slug, path.to_path_buf()))
+    Some((num, slug.to_string(), path.to_path_buf()))
 }
 
 /// Extract the title from a markdown file (first # heading).
@@ -808,7 +855,7 @@ fn fix_duplicate_index_ids(content: &str) -> (String, Vec<SafeFix>) {
 
 /// `roko backlog mark-done <id> <evidence>` entry point.
 fn cmd_backlog_mark_done(workdir: &Path, id: u32, evidence: &str) -> Result<i32> {
-    let backlog_dir = workdir.join("tmp/backlog");
+    let backlog_dir = resolve_backlog_dir(workdir, None);
     if !backlog_dir.is_dir() {
         anyhow::bail!("No backlog directory found at {}", backlog_dir.display());
     }
@@ -832,25 +879,19 @@ fn cmd_backlog_mark_done(workdir: &Path, id: u32, evidence: &str) -> Result<i32>
     Ok(0)
 }
 
-/// Find the backlog spec file for a given numeric ID.
+/// Find the backlog spec file for a given numeric ID, with the file-name
+/// grammar of [`parse_backlog_filename`].
 fn find_backlog_spec(backlog_dir: &Path, id: u32) -> Result<PathBuf> {
-    let prefix = format!("{}-", id);
-
     // Search root backlog dir first, then archive/.
     for dir in [backlog_dir.to_path_buf(), backlog_dir.join("archive")] {
         if !dir.is_dir() {
             continue;
         }
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "md") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem.starts_with(&prefix) {
-                        return Ok(path);
-                    }
-                }
-            }
+        if let Some((_, _, path)) = backlog_files_in(&dir)?
+            .into_iter()
+            .find(|(num, _, _)| *num == id)
+        {
+            return Ok(path);
         }
     }
 
@@ -941,6 +982,68 @@ mod tests {
     fn test_extract_title_no_heading() {
         let content = "No heading here\nJust text";
         assert_eq!(extract_title(content), None);
+    }
+
+    // ── List tests ───────────────────────────────────────────────────
+
+    /// bug-053644: `backlog list` reads the backlog and its `archive/`, takes
+    /// ids with leading zeros or a `_`, leaves out `00-` index files and
+    /// other notes, and shows the status line `mark-done` writes.
+    #[test]
+    fn backlog_list_reads_archive_and_status_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(backlog_dir.join("archive")).unwrap();
+        std::fs::create_dir_all(backlog_dir.join("_archive")).unwrap();
+        for (path, content) in [
+            ("00-INDEX.md", "# Index\n"),
+            ("00-STATUS-SUMMARY.md", "# Summary\n"),
+            ("README.md", "# Backlog\n"),
+            ("58-perf-hot-path.md", "# 58\n\n**Status**: Done (2026-09-03) -- abc123\n"),
+            ("7_tier-ladder.md", "# 7\n\n> **Status**: quoted prose, not a status line\n"),
+            ("archive/01-t0-reflex-store.md", "# 1\n"),
+            ("_archive/README.md", "# Old\n"),
+        ] {
+            std::fs::write(backlog_dir.join(path), content).unwrap();
+        }
+
+        let specs = list_backlog_specs(&backlog_dir).unwrap();
+        let rows: Vec<(u32, &str, bool, Option<&str>)> = specs
+            .iter()
+            .map(|spec| (spec.id, spec.slug.as_str(), spec.archived, spec.status.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (1, "t0-reflex-store", true, None),
+                (7, "tier-ladder", false, None),
+                (58, "perf-hot-path", false, Some("Done (2026-09-03) -- abc123")),
+            ]
+        );
+        assert_eq!(
+            find_backlog_spec(&backlog_dir, 1).unwrap(),
+            backlog_dir.join("archive/01-t0-reflex-store.md")
+        );
+    }
+
+    /// bug-053644: `backlog list` finds an import where `backlog import`
+    /// writes it, the PRD ideas file.
+    #[tokio::test]
+    async fn backlog_list_sees_ideas_written_by_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backlog_dir = tmp.path().join("tmp/backlog");
+        std::fs::create_dir_all(&backlog_dir).unwrap();
+        std::fs::write(backlog_dir.join("58-perf-hot-path.md"), "# Perf hot path\n").unwrap();
+
+        let code = cmd_backlog_import(tmp.path(), Path::new("tmp/backlog"), false, false, false)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+
+        let ideas =
+            std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(tmp.path())).unwrap();
+        assert!(has_imported_idea(&ideas, 58), "{ideas}");
+        assert!(!has_imported_idea(&ideas, 5), "{ideas}");
     }
 
     // ── Audit tests ──────────────────────────────────────────────────

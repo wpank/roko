@@ -8,8 +8,8 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/backlog"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "d9e79e9d8"
 source = "tmp/work-management/03-roko-native-capabilities.md"
 discovered_from = "doc:tmp/work-management/03-roko-native-capabilities.md"
@@ -26,3 +26,11 @@ Fix: configurable source directories, a tolerant id grammar, and status/import d
 Verified 2026-09-28 (static check against 3d0ee4d02): cmd_backlog_list (crates/roko-cli/src/commands/backlog.rs:57-104) hard-codes workdir.join("tmp/backlog") (:58; DEFAULT_BACKLOG_DIR itself now at plan_generate.rs:651), reads only top-level *.md whose first '-' segment parses as u32 (:65-80), skips only 00-INDEX so 00-STATUS-SUMMARY.md lists as #0, never descends into archive/, and prints only 'imported'/'-' (never the **Status**: line mark-done writes at :819). has_imported_idea reads .roko/prd/ideas/ideas.md (:85,:107-113) while import writes through prd::cmd_idea to .roko/prd/ideas.md (workspace_paths.rs:29-30), so imports are never detected. No commit or uncommitted edit touches backlog.rs.
 
 Re-verified 2026-09-29: unchanged. The anchor plan_generate.rs:597 is stale: DEFAULT_BACKLOG_DIR is at plan_generate.rs:651, and cmd_backlog_list does not use it (it hard-codes tmp/backlog at backlog.rs:58).
+
+## Notes
+
+- 2026-10-01 (wk-taskdef): implemented on work/bug-e3df7d; cargo verification deferred to the batch check.
+- `backlog list [<path>]` reads `DEFAULT_BACKLOG_DIR` (or the given directory) and its `archive/`. An id may have leading
+  zeros and a `-`, `_` or `.` before the slug; `00-` index and summary files are not specs. Import and `mark-done`'s
+  lookup share that grammar. Each row shows the spec's `**Status**:` line, and imports are read from
+  `.roko/prd/ideas.md`, where `backlog import` writes them. main.rs gains one optional `path` on `BacklogCmd::List`.

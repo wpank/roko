@@ -191,7 +191,7 @@ fn cell(text: &str) -> String {
 #[must_use]
 pub fn prd_extract_md(plan_id: &str, slug: &str, prd: &str) -> String {
     format!(
-        "<!-- The source PRD of plan `{plan_id}`, copied from .roko/prd by `roko plan prepare`. \
+        "<!-- The source PRD of plan `{plan_id}` (PRD `{slug}`), copied from .roko/prd by `roko plan prepare`. \
          Edit the PRD, not this copy. -->\n\n{prd}"
     )
 }

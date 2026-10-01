@@ -2688,16 +2688,84 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 let Some(request) = read_mock_request(&mut stream) else {
                     return;
                 };
+                // A request that asks to stream gets the same answer as SSE
+                // chunks: an attempt streams whenever its progress is tracked
+                // (bug-3a3b0f), with or without the stall watchdog.
+                let streamed = request["stream"] == serde_json::Value::Bool(true);
                 requests.lock().push(request);
-                let body = response.to_string();
-                let wire = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let wire = if streamed {
+                    let mut body = String::new();
+                    for chunk in openai_stream_chunks(&response) {
+                        body.push_str(&format!("data: {chunk}\n\n"));
+                    }
+                    body.push_str("data: [DONE]\n\n");
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                    )
+                } else {
+                    let body = response.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
                 let _ = stream.write_all(wire.as_bytes());
             }
         });
         (base_url, captured)
+    }
+
+    /// A chat-completion `response` as the SSE chunks a streaming provider
+    /// sends for it: the message's content and tool calls as one delta, then
+    /// its finish reason, then its usage.
+    fn openai_stream_chunks(response: &serde_json::Value) -> Vec<serde_json::Value> {
+        let choice = &response["choices"][0];
+        let message = &choice["message"];
+        let mut delta = serde_json::json!({ "role": "assistant" });
+        let calls = message["tool_calls"]
+            .as_array()
+            .filter(|calls| !calls.is_empty());
+        if let Some(content) = message["content"]
+            .as_str()
+            .filter(|content| !content.is_empty())
+        {
+            delta["content"] = serde_json::json!(content);
+        }
+        if let Some(calls) = calls {
+            let calls: Vec<serde_json::Value> = calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    serde_json::json!({
+                        "index": index,
+                        "id": call["id"],
+                        "function": call["function"],
+                    })
+                })
+                .collect();
+            delta["tool_calls"] = serde_json::Value::Array(calls);
+        }
+        let chunk = |choices: serde_json::Value| {
+            let mut chunk = serde_json::json!({ "id": response["id"], "choices": choices });
+            if let Some(model) = response.get("model") {
+                chunk["model"] = model.clone();
+            }
+            chunk
+        };
+        let mut chunks = vec![
+            chunk(serde_json::json!([{ "index": 0, "delta": delta }])),
+            chunk(serde_json::json!([{
+                "index": 0,
+                "delta": {},
+                "finish_reason": choice["finish_reason"]
+            }])),
+        ];
+        if let Some(usage) = response.get("usage") {
+            let mut last = chunk(serde_json::json!([]));
+            last["usage"] = usage.clone();
+            chunks.push(last);
+        }
+        chunks
     }
 
     /// [`spawn_openai_mock`] answering over SSE: each request gets the next

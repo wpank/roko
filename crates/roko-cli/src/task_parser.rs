@@ -3537,6 +3537,9 @@ files = ["README.md"]
         let message = issues[0].to_string();
         assert!(message.contains("docs/design.md"), "{message}");
         assert!(message.contains("cannot write files"), "{message}");
-        assert!(message.contains("(implementer, scribe)"), "{message}");
+        assert!(
+            message.contains("(implementer, scribe, auto-fixer)"),
+            "{message}"
+        );
     }
 }

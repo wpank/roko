@@ -2519,7 +2519,10 @@ impl PlanCmd {
             | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
-            Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
+            Self::Create { .. }
+            | Self::Generate { .. }
+            | Self::Prepare { .. }
+            | Self::Shorthand(_) => true,
         }
     }
 

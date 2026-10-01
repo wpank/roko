@@ -341,7 +341,7 @@ fn hangup_ignored() -> bool {
     // disposition into `current`, a zero-initialized plain C struct.
     unsafe {
         let mut current: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut current) == 0
+        libc::sigaction(libc::SIGHUP, std::ptr::null(), &raw mut current) == 0
             && current.sa_sigaction == libc::SIG_IGN
     }
 }

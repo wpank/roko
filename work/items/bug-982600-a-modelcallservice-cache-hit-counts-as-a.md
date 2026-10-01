@@ -11,7 +11,7 @@ subsystem = ["roko-learn", "roko-serve"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c7560e213"
+last_verified_rev = "a788dfd8d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-c1f6b8"
 anchors = ["crates/roko-learn/src/feedback_service.rs", "crates/roko-serve/src/routes/gateway.rs", "crates/roko-agent/src/gateway_events.rs::GatewayEvent::billed_cost_usd"]
@@ -46,3 +46,6 @@ Skip cache hits in router learning and in the gateway's cost sums. Add a test na
   - Left: router learning. `FeedbackEvent::ModelCall` has no `cache_hit` at `c7560e213`; bug-c1f6b8 adds it in gate
     6d. Once that is on this branch, `FeedbackService::record` skips `observe_model_call` for a cache hit, with the
     test `cache_hits_are_not_router_trials` (this item's verify).
+- 2026-10-02 (wk-settle): implemented on work/bug-f9ae3e after merging gate 6d (`a788dfd8d`); cargo verification
+  deferred to the batch check. `FeedbackService::record` no longer observes a cache hit on the cascade router (cost
+  rows already skip one, bug-c1f6b8). Test: `cache_hits_are_not_router_trials`.

@@ -2,14 +2,16 @@
 id = "gap-38e925"
 kind = "gap"
 title = "Research paper: the ~190 lower-ranked cited keys have not been checked against their full texts"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "M"
 subsystem = ["tmp/cybernetic-harness/paper"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "0788572f6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's gap-f052aa result: top 95 keys ranked, 81 read, 9 minor corrections)"
 anchors = ["tmp/cybernetic-harness/paper/sections/", "tmp/cybernetic-harness/paper/bibliography/content-audit.json"]
@@ -19,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["gap-f052aa", "gap-6e0a95"], 
 
 [[verify]]
 command = "python3 -c \"import json;d=json.load(open('tmp/cybernetic-harness/paper/bibliography/content-audit.json'));assert len(d['works'])>=200\""
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:57:17Z"
+by = "coordinator (session 7622b882)"
+size = "M"
+claimed_at = "2026-10-01T09:08:48Z"
+forced = false
+evidence = "wk-rp-cite extended the research paper citation audit to ranks 1-201 (tmp/cybernetic-harness/paper/bibliography/content-audit.json, 201 keys): 172 read against full text, abstract or the cited page (161 supported, 11 corrected = 6.4%, none major), 29 unread (paywalled or books, recorded as unread). This round fixed Keramati & Gutkin (dead-zone form) and Lee et al. 5.37% (flipped outcomes) in sections 4, 7, App. D and claim C7.9. CLAIMS-EVIDENCE regenerated (432 claims, --check up to date); paperlint clean on all 18 sections. Ranks 202-286 (~85 classic references) not audited."
 +++
 
 ## Problem

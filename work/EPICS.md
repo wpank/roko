@@ -18,9 +18,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
-- **36/39 closed** · goal `whitepaper` · severity p1
-- open by lane: paper 3
-- next: none ready (3 unverified)
+- **37/39 closed** · goal `whitepaper` · severity p1
+- open by lane: paper 2
+- next: none ready (2 unverified)
 
 ## [spec-ce1484](items/spec-ce1484-epic-whitepaper-v1.md) whitepaper v1
 
@@ -114,7 +114,7 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | docs | 14 | 15 | 1 (0) |
 | frontend | 1 | 1 | 0 (0) |
 | none | 174 | 390 | 216 (216) |
-| paper | 58 | 65 | 7 (3) |
+| paper | 59 | 65 | 6 (3) |
 | rust-cold | 117 | 144 | 27 (1) |
 | rust-hot | 72 | 86 | 14 (0) |
 | tests | 1 | 1 | 0 (0) |

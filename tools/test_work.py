@@ -557,5 +557,66 @@ class TestFolders(RepoTest):
         self.assertEqual(work.validate(self.items()), [])
 
 
+class TestNew(RepoTest):
+    """`work.py new` with lanes, milestones and an epic to point at."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "work" / "lanes.toml").write_text('milestones = ["MS1"]\n\n[lane.x]\npaths = ["src/**"]\n')
+        epic = item("bug-eeeeee", "Epic: E").replace("bug-eeeeee", "spec-eeeeee").replace('kind = "bug"', 'kind = "spec"')
+        self.write("spec-eeeeee", epic)
+        self.commit("lanes and an epic")
+
+    def item_files(self):
+        return sorted(p.name for p in (self.root / "work" / "items").iterdir())
+
+    def test_new_writes_every_field_from_flags(self):
+        body = self.root / "body.md"
+        body.write_text("## Problem\n\nA written body.\n")
+        verify = "grep -rqw 'fn foo' src/ && cargo test -p x --lib foo"
+        args = ["new", "--kind", "gap", "--title", "Every field", "--source", "test", "--created", "2026-10-01",
+                "--subsystem", "a,b", "--severity", "p1", "--goal", "core", "--lane", "x", "--parent", "spec-eeeeee",
+                "--milestone", "MS1", "--size", "M", "--rank", "2", "--hold", "waiting for x", "--discovered-from", "W1 §1",
+                "--doc", "docs/x.md", "--anchor", "src/a.rs::foo", "--anchor", "src/c.rs", "--verify", verify,
+                "--depends-on", "bug-aaaaaa", "--related", "bug-bbbbbb, gap-cccccc", "--blocks", "bug-bbbbbb",
+                "--body-file", str(body)]
+        before = self.item_files()
+        dry = self.run_work(*args, "--dry-run").stdout
+        self.assertTrue(dry.startswith("+++\n") and "A written body." in dry)
+        self.assertEqual(self.item_files(), before, "--dry-run writes nothing")
+        path = self.root / self.run_work(*args).stdout.strip()
+        self.assertEqual(path.read_text(), dry)
+        it = next(i for i in self.items() if i["_path"].name == path.name)
+        want = {"kind": "gap", "title": "Every field", "severity": "p1", "goal": "core", "lane": "x", "parent": "spec-eeeeee",
+                "milestone": "MS1", "size": "M", "rank": 2, "hold": "waiting for x", "discovered_from": "W1 §1",
+                "doc": "docs/x.md", "subsystem": ["a", "b"], "anchors": ["src/a.rs::foo", "src/c.rs"], "source": "test",
+                "created": dt.date(2026, 10, 1), "verify": [{"command": verify}]}
+        self.assertEqual({k: it.get(k) for k in want}, want)
+        links = it["links"]
+        self.assertEqual((links["depends_on"], links["related"], links["blocks"]),
+                         (["bug-aaaaaa"], ["bug-bbbbbb", "gap-cccccc"], ["bug-bbbbbb"]))
+        self.assertIn("A written body.", it["_body"])
+        self.assertEqual(work.validate(self.items()), [])
+        self.assertEqual(self.run_work("check").returncode, 0)
+
+    def test_new_refuses_an_unguarded_verify(self):
+        before = self.item_files()
+        new = lambda *extra: self.run_work("new", "--kind", "bug", "--title", "T", "--source", "test", *extra, check=False)  # noqa: E731
+        unguarded = new("--anchor", "src/a.rs", "--verify", "cargo test -p roko-cli no_such_test")
+        self.assertNotEqual(unguarded.returncode, 0)
+        self.assertIn("does not exist yet", unguarded.stderr)
+        for extra, why in [(("--verify", "grep -q foo src/a.rs"), "needs at least one --anchor"),
+                           (("--anchor", "src/a.rs"), "needs a --verify"),
+                           (("--anchor", "src/missing.rs", "--no-verify-yet"), "does not exist"),
+                           (("--anchor", "src/a.rs", "--no-verify-yet", "--goal", "nope"), "not in work/goals.toml"),
+                           (("--anchor", "src/a.rs", "--no-verify-yet", "--parent", "bug-aaaaaa"), "not a spec item"),
+                           (("--anchor", "src/a.rs", "--no-verify-yet", "--depends-on", "gap-ffffff"), "not a known item")]:
+            refused = new(*extra)
+            self.assertNotEqual(refused.returncode, 0, extra)
+            self.assertIn(why, refused.stderr, extra)
+        self.assertEqual(self.item_files(), before, "a refused item is never written")
+        self.assertEqual(new("--anchor", "src/a.rs", "--no-verify-yet").returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

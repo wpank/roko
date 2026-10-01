@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #9-1
 anchors = ["crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_outcome", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/task_parser.rs::TaskDef"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["gap-853b31", "gap-2623b2", "gap-d14a43", "gap-1cd8d3", "gap-b3fa0a", "find-70edcb", "gap-a8d786", "gap-1d1fa6", "gap-46ab3f", "bug-477ede", "gap-1b5636", "gap-ba4d01", "bug-b0fd73", "bug-019f02", "bug-05d1ac", "bug-c1b845", "gap-9ca898", "gap-f7ebd4"], blocks = [], related = ["find-84bfa8", "bug-8b1bf8", "gap-b3e513", "gap-3bea93", "gap-0f3980", "gap-25065c"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-853b31", "gap-2623b2", "gap-d14a43", "gap-1cd8d3", "gap-b3fa0a", "find-70edcb", "gap-a8d786", "gap-1d1fa6", "gap-46ab3f", "bug-477ede", "gap-1b5636", "gap-ba4d01", "bug-b0fd73", "bug-019f02", "bug-05d1ac", "bug-c1b845", "gap-9ca898", "gap-f7ebd4", "bug-009c0e"], blocks = [], related = ["find-84bfa8", "bug-8b1bf8", "gap-b3e513", "gap-3bea93", "gap-0f3980", "gap-25065c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_validate spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin"
@@ -111,6 +111,7 @@ This is the implementation plan.
 - [x] bug-c1b845: speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests
 - [x] gap-9ca898: plan_generator.rs's DefaultPlanGenerator doesn't know rung
 - [ ] gap-f7ebd4: The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint
+- [ ] bug-009c0e: roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially
 - [ ] The epic's `[[verify]]` command (the weak and fixed fixture pair) passes on the merged branch.
 
 ## Notes

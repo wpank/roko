@@ -2,7 +2,7 @@
 id = "gap-785a4f"
 kind = "gap"
 title = "harness-engineering.md builds on six harness principles credited to Meta-Harness, which the paper's abstract doesn't name"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs/v3"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "014e73289"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report)"
 anchors = ["docs/v3/depth/05-agent/harness-engineering.md", "tools/docs_integrity/citation_errata.json"]
@@ -19,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-212b75", "gap-b23ebd"], 
 
 [[verify]]
 command = "! grep -qi 'six harness principles' docs/v3/depth/05-agent/harness-engineering.md || grep -iE 'six harness principles' docs/v3/depth/05-agent/harness-engineering.md | grep -qE '§|[Ss]ection [0-9]'"
+
+[closed]
+at = 2026-10-01
+commit = "014e73289"
+evidence = "full paper read (arXiv HTML): no principles; harness-engineering.md §1 rewritten with section refs, §2 marked Roko's own synthesis; attribution removed in 11 v3/v1 files; Meta-Harness prose phrases added to citation_errata.json; verify passes; checker --prose clean on 905 files; 13 tests pass"
 +++
 
 ## Problem

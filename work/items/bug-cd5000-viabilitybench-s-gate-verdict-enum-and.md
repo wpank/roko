@@ -20,7 +20,7 @@ parent = "spec-567e52"
 links = { depends_on = [], blocks = [], related = ["gap-9eb1e1"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -q 'already_satisfied' benchmarks/viabilitybench/schema/run-record.schema.json && grep -q 'already_satisfied' benchmarks/viabilitybench/analysis/metrics.py"
+command = "grep -q 'already_satisfied' benchmarks/viabilitybench/schema/run-record.schema.json && grep -q 'already_satisfied' benchmarks/viabilitybench/analysis/metrics.py && grep -qw 'def test_an_already_satisfied_run_is_counted_apart_and_never_as_a_pass' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest -q -p no:cacheprovider benchmarks/viabilitybench/analysis/test_analysis.py::test_an_already_satisfied_run_is_counted_apart_and_never_as_a_pass benchmarks/viabilitybench/schema/test_schemas.py::test_an_attempt_gate_verdict_is_one_of_s01s_tags benchmarks/viabilitybench/driver/test_run_roko.py::test_an_already_satisfied_plan_is_a_failed_run_with_its_own_verdict"
 
 [closed]
 at = 2026-10-01

@@ -39,19 +39,10 @@ pub struct ModelPricing {
 ```
 
 The cost table uses substring matching for model families (e.g., `"claude-sonnet"`
-matches `"claude-sonnet-4-20250514"`). Unknown models use a Sonnet-class fallback:
-
-```rust
-fn sonnet_fallback() -> ModelPricing {
-    ModelPricing {
-        input_per_m: 3.0,
-        output_per_m: 15.0,
-        cache_read_per_m: 0.30,
-        cache_write_per_m: 3.75,
-        tokenizer_ratio: 1.0,
-    }
-}
-```
+matches `"claude-sonnet-4-20250514"`). A model the table does not price has an
+unknown cost: `compute_cost` returns an all-zero result and logs the model once,
+as roko-learn's `CostTable::calculate` does, rather than pricing it at another
+model's rates (bug-39d15f).
 
 ---
 
@@ -64,14 +55,15 @@ Per request, the gateway computes six cost components:
 ```
 fresh_input   = (input_tokens - cache_read_tokens) * input_per_m / 1,000,000
 cached_input  = cache_read_tokens * cache_read_per_m / 1,000,000
-cache_write   = cache_creation_tokens * input_per_m * 1.25 / 1,000,000
+cache_write   = cache_creation_tokens * cache_write_per_m / 1,000,000
 regular_out   = (output_tokens - reasoning_tokens) * output_per_m / 1,000,000
 reasoning     = reasoning_tokens * output_per_m / 1,000,000
 thinking      = thinking_tokens * output_per_m / 1,000,000
 ```
 
-The **1.25 multiplier** on cache_write reflects the provider surcharge for populating
-prefix caches (25% over the base input rate).
+`cache_write_per_m` is the table's rate for populating prefix caches: Anthropic's
+5-minute write is 1.25x the base input rate, and a provider with no write
+surcharge bills a write as input (bug-0c0747).
 
 **Note:** The canonical `ModelPricing` does not yet have a separate `reasoning_per_m`
 rate. Both reasoning and thinking tokens use the `output_per_m` rate. When providers

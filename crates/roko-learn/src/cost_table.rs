@@ -210,8 +210,9 @@ impl CostTable {
 }
 
 /// Log, once per slug, that `model_slug` has no price row, so its usage is
-/// recorded with an unknown cost (gap-ad0d39).
-fn warn_unpriced_model(model_slug: &str) {
+/// recorded with an unknown cost (gap-ad0d39). The gateway's cost tracker
+/// logs through it too (bug-39d15f), so a model is reported once.
+pub fn warn_unpriced_model(model_slug: &str) {
     static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let first = WARNED
         .get_or_init(|| Mutex::new(HashSet::new()))

@@ -441,12 +441,116 @@ fn entry_problems(entry: &AcceptFile) -> Vec<String> {
 
 /// Whether `command` copies a file out of an `accept/` directory with `cp`,
 /// the hand convention `[task.accept]` replaces.
+///
+/// The path may be spelled out (`cp plans/p/accept/a.test.ts src/`) or reach
+/// `cp` through a shell variable the command sets to an accept path
+/// (`A=plans/p/accept && cp $A/a.test.ts src/`), including a `for` loop's
+/// variable and a `cp` in the loop's body
+/// (`for f in $A/*.test.ts; do cp "$f" src/; done`). A variable the command
+/// does not set is not followed. A generated acceptance step copies a pinned
+/// test, never a hand copy.
 fn copies_accept_test_by_hand(command: &str) -> bool {
-    command.split(['&', '|', ';', '\n']).any(|segment| {
-        let mut words = segment.split_whitespace();
-        words.next() == Some("cp")
-            && words.any(|word| word.starts_with("accept/") || word.contains("/accept/"))
+    if is_pinned_command(command) {
+        return false;
+    }
+    // The variables that hold an accept path at this point in the command.
+    let mut accept_vars: Vec<String> = Vec::new();
+    for segment in command.split(['&', '|', ';', '\n']) {
+        let words: Vec<String> = segment
+            .split_whitespace()
+            .map(|word| word.replace(['"', '\''], ""))
+            .collect();
+        let mut rest = words.as_slice();
+        // The keywords that can lead a command: `do cp …`, `if cp …`.
+        while let [keyword, tail @ ..] = rest
+            && matches!(
+                keyword.as_str(),
+                "do" | "then" | "else" | "elif" | "if" | "while" | "until" | "{" | "(" | "!"
+            )
+        {
+            rest = tail;
+        }
+        if let [keyword, tail @ ..] = rest
+            && matches!(
+                keyword.as_str(),
+                "export" | "local" | "readonly" | "declare"
+            )
+        {
+            rest = tail;
+        }
+        // Leading `NAME=VALUE` words set variables.
+        while let [word, tail @ ..] = rest
+            && let Some((name, value)) = word.split_once('=')
+            && is_shell_name(name)
+        {
+            let holds_accept_path = names_accept_path(value, &accept_vars);
+            set_accept_var(&mut accept_vars, name, holds_accept_path);
+            rest = tail;
+        }
+        match rest {
+            [keyword, var, separator, list @ ..] if keyword == "for" && separator == "in" => {
+                let holds_accept_path = list
+                    .iter()
+                    .any(|word| names_accept_path(word, &accept_vars));
+                set_accept_var(&mut accept_vars, var, holds_accept_path);
+            }
+            [program, args @ ..] if program == "cp" => {
+                if args
+                    .iter()
+                    .any(|word| names_accept_path(word, &accept_vars))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Record whether shell variable `name` now holds an accept path.
+fn set_accept_var(vars: &mut Vec<String>, name: &str, holds_accept_path: bool) {
+    vars.retain(|var| var != name);
+    if holds_accept_path {
+        vars.push(name.to_string());
+    }
+}
+
+/// Whether the unquoted shell word `word` names a path in an `accept/`
+/// directory, spelled out or through one of `vars`.
+fn names_accept_path(word: &str, vars: &[String]) -> bool {
+    word == "accept"
+        || word.starts_with("accept/")
+        || word.contains("/accept/")
+        || word.ends_with("/accept")
+        || vars.iter().any(|var| expands_variable(word, var))
+}
+
+/// Whether `word` expands variable `var`: `$var` not followed by another name
+/// character, or `${var}` and its `${var…}` forms.
+fn expands_variable(word: &str, var: &str) -> bool {
+    word.match_indices('$').any(|(at, _)| {
+        let after = &word[at + 1..];
+        after
+            .strip_prefix('{')
+            .unwrap_or(after)
+            .strip_prefix(var)
+            .is_some_and(|tail| !tail.starts_with(is_shell_name_char))
     })
+}
+
+/// Whether `name` is a shell variable name: a letter or `_`, then letters,
+/// digits and `_`.
+fn is_shell_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|first| !first.is_ascii_digit())
+        && name.chars().all(is_shell_name_char)
+}
+
+/// Whether `c` can appear in a shell variable name.
+const fn is_shell_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
 /// `raw` as a relative path that stays inside its base directory.
@@ -885,6 +989,56 @@ command = "true"
             )
             .is_err()
         );
+    }
+
+    /// bug-880b37: a copy out of `accept/` through a variable the step sets,
+    /// or through a `for` loop over one, is the hand copy a spelled-out path
+    /// is, so `plan validate` gives it the same PLAN_038 warning.
+    #[test]
+    fn variable_and_loop_accept_copies_are_plan_038() {
+        let hand_copies = [
+            "A=plans/x/accept && cp $A/foo.test.ts src/",
+            "ACC=$PLAN/accept; for p in a b; do cp \"$ACC/$p.test.ts\" src/; done",
+            // The form the portal plans used before gap-ba4d01.
+            "cd apps/portal && A=../../plans/p/accept && for p in lib/a.accept.test.ts; \
+             do cp $A/${p##*/} src/$p || exit 1; done",
+            "for f in accept/*.test.ts; do cp \"$f\" src/; done",
+            "export ACC='plans/x/accept'\nLIB=$ACC/lib\ncp \"${LIB}/x.test.ts\" src/x.test.ts",
+            "if cp accept/x.test.ts src/; then npm test; fi",
+            "cp plans/x/accept/x.test.ts src/",
+        ];
+        for command in hand_copies {
+            assert!(copies_accept_test_by_hand(command), "{command}");
+        }
+        let other_commands = [
+            "cp src/a.ts src/b.ts",
+            "A=src/lib && cp $A/x.ts src/",
+            "cp src/x.accept.test.ts out/",
+            "ACC=plans/x/accept && cp $ACCOUNT/x.ts src/",
+            "A=plans/x/accept && A=src && cp $A/x.ts out/",
+            "for f in accept/*.ts; do wc -l $f; done; for f in src/*.ts; do cp $f out/; done",
+        ];
+        for command in other_commands {
+            assert!(!copies_accept_test_by_hand(command), "{command}");
+        }
+
+        let fx = fixture();
+        let mut task = demo_task();
+        for command in [hand_copies[0], "npm test", hand_copies[1]] {
+            task.verify.push(VerifyStep {
+                phase: "test".to_string(),
+                command: command.to_string(),
+                fail_msg: None,
+                timeout_ms: 1_000,
+                scope: Vec::new(),
+            });
+        }
+        let issues = accept_issues(&task, &fx.plan_dir);
+        assert!(issues.iter().all(|issue| !issue.blocking), "{issues:?}");
+        let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("verify step 2 copies a test out of accept/"));
+        assert!(messages[1].contains("verify step 4 copies a test out of accept/"));
     }
 
     #[test]

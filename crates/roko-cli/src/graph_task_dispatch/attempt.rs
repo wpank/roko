@@ -393,6 +393,19 @@ impl Settlement {
         }
     }
 
+    /// An attempt the stall watchdog cancelled, failed with `message`: a
+    /// timeout, whatever its message says (bug-4c553b). After its first token
+    /// the timeout is the agent's, before it the provider's.
+    pub(super) fn stalled(message: &str, first_token_seen: bool) -> Self {
+        Self {
+            outcome: AttemptOutcome::Timeout,
+            gate_verdict: None,
+            first_token_seen,
+            failure_reason: Some(super::turn_policy::stall_failure_reason(message)),
+            rung: None,
+        }
+    }
+
     /// A provider call that ended in `error` before returning a result. A
     /// stop the plan run asked for is a cancellation, which teaches nothing
     /// (bug-2b1ddc); anything else is [`Self::provider_failure`].

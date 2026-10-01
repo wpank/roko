@@ -1887,8 +1887,9 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
-    /// Latest gate output retained per task by the live snapshot: a leading
-    /// `$ command` line (when published) plus the output tail.
+    /// Latest gate output retained per task and verify step by the live
+    /// snapshot: a leading `$ command` line (when published) plus the output
+    /// tail.
     pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
     /// Plan set of each plan id seen in the live snapshot, from disk
     /// discovery (`None` for top-level or undiscovered plans). The snapshot

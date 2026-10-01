@@ -386,7 +386,10 @@ mod tests {
 
         let (status, all) = post_query(&router, json!({ "query": "backoff" })).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(result_ids(&all), ["k-consolidated", "k-transient", "k-working"]);
+        assert_eq!(
+            result_ids(&all),
+            ["k-consolidated", "k-transient", "k-working"]
+        );
 
         let working_up = json!({ "query": "backoff", "min_tier": "Working" });
         let (status, durable) = post_query(&router, working_up).await;

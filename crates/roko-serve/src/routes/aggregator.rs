@@ -1492,7 +1492,7 @@ mod tests {
 
         for long in ["知識".repeat(60), "🦀".repeat(100)] {
             let label = knowledge_label(&long);
-            assert!(label.ends_with('…'), "label {label:?} should end with an ellipsis");
+            assert!(label.ends_with('…'), "no ellipsis: {label:?}");
             assert_eq!(label.chars().count(), 81);
         }
 

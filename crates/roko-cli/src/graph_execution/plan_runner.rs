@@ -688,6 +688,9 @@ pub struct GraphPlanRunParams {
     /// results and should only be used on loopback-bound servers or in
     /// standalone CLI runs where there is no remote attack surface.
     pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
+    /// Start the run even when the workdir has less free disk than
+    /// `[resources] min_free_disk_mb` (`plan run --force`, reg-7cf6f9).
+    pub force_disk_check: bool,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -822,6 +825,7 @@ async fn run_graph_plan_body(
         fail_fast,
         only_plans,
         live_agent_output,
+        force_disk_check,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -879,6 +883,8 @@ async fn run_graph_plan_body(
         .into_config();
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
+    // A run refuses to start on a nearly full disk (reg-7cf6f9).
+    super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
 
     // Merge CLI flag with config (same logic as runner-v2).
     let dangerously_skip_permissions =
@@ -1123,13 +1129,24 @@ async fn run_graph_plan_body(
             idle_ttl: std::time::Duration::from_hours(1),
         });
         worktrees = Some(worktree_manager.clone());
+        // Each attempt reserves its worktree's disk headroom before it
+        // starts, and attempts serialise under disk pressure (reg-7cf6f9).
+        let counted = worktree_manager.clone();
+        let mut disk_admission =
+            super::disk_admission::DiskAdmission::new(workdir, &roko_config.resources)
+                .with_worktree_count(move || counted.active_count());
+        if let Some(ring) = graph_run_config.conductor_ring.clone() {
+            disk_admission = disk_admission.with_ring(ring);
+        }
         let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
         if !quiet && !json {
             tracing::info!("per-task worktree isolation enabled (--worktree-per-task)");
         }
-        dispatcher_builder = dispatcher_builder.with_workspace_provider(provider.clone());
+        dispatcher_builder = dispatcher_builder
+            .with_workspace_provider(provider.clone())
+            .with_disk_admission(disk_admission);
         workspace_provider = Some(provider);
     }
     // The same provider settles the worktrees the rich topology's executors
@@ -3222,6 +3239,7 @@ files = ["README.md"]
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect("run plan set");
@@ -3429,6 +3447,7 @@ max_retries = 0
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect("run plan set");
@@ -4611,6 +4630,7 @@ max_retries = 0
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
@@ -4718,6 +4738,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             fail_fast: false,
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
         }
     }
 

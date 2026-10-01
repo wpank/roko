@@ -156,6 +156,9 @@ pub struct GraphTaskDispatcher {
     /// onto its plan branch (see [`Self::accept_attempt`]). When `None` (the
     /// default), all tasks share `self.workdir`.
     workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    /// Disk-headroom admission of attempts (reg-7cf6f9); see
+    /// [`Self::with_disk_admission`].
+    disk_admission: Option<crate::graph_execution::disk_admission::DiskAdmission>,
     /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
     /// [`Self::worktree_generation`].
     worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
@@ -266,6 +269,7 @@ impl GraphTaskDispatcher {
             dangerously_skip_permissions: false,
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
+            disk_admission: None,
             worktree_generations: parking_lot::Mutex::new(HashMap::new()),
             tui_bridge: None,
             live_agent_output: None,
@@ -332,6 +336,18 @@ impl GraphTaskDispatcher {
         provider: Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>,
     ) -> Self {
         self.workspace_provider = Some(provider);
+        self
+    }
+
+    /// Reserve each attempt's disk headroom before it starts, waiting under
+    /// disk pressure until running attempts end (reg-7cf6f9). `plan run`
+    /// sets it with `--worktree-per-task`.
+    #[must_use]
+    pub fn with_disk_admission(
+        mut self,
+        admission: crate::graph_execution::disk_admission::DiskAdmission,
+    ) -> Self {
+        self.disk_admission = Some(admission);
         self
     }
 
@@ -809,6 +825,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 "P2-01: shadow decision recorded (infrastructure-only)"
             );
         }
+
+        // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
+        //
+        // Reserve the space the attempt's worktree is expected to grow by,
+        // waiting under disk pressure until running attempts end. The
+        // reservation ends with this attempt.
+        let _disk_reservation = match &self.disk_admission {
+            Some(admission) => Some(admission.admit().await),
+            None => None,
+        };
 
         // ── Worktree isolation: acquire ─────────────────────────────────
         //

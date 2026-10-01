@@ -3907,6 +3907,13 @@ max_retries = 0
             }),
             "the block is reported"
         );
+        // The live task list shows T4 blocked by T1, and the plan does not
+        // count it as a skipped task that is done (gap-f59fe9).
+        let snapshot = hub.current_snapshot();
+        let blocked = snapshot.tasks.get("isolation/T4").expect("T4 is listed");
+        assert_eq!(blocked.outcome.as_deref(), Some("blocked"));
+        assert_eq!(blocked.blocked_by.as_deref(), Some("T1"));
+        assert_eq!(snapshot.plans["isolation"].tasks_skipped, 0);
     }
 
     /// `fail_fast`, from `[conductor] plan_failure_policy` or a plan's

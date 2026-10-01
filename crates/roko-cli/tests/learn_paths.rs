@@ -5,7 +5,6 @@
 //! read helpers and asserts the data is visible.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use roko_core::OperatingFrequency;
@@ -22,7 +21,7 @@ fn write_jsonl<T: serde::Serialize>(path: &Path, records: &[T]) {
     let mut file = fs::File::create(path).expect("create file");
     for record in records {
         let line = serde_json::to_string(record).expect("serialize record");
-        writeln!(file, "{line}").expect("write line");
+        roko_core::io::write_jsonl_line(&mut file, &line).expect("write line");
     }
 }
 

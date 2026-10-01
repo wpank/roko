@@ -1455,7 +1455,7 @@ fn record_held_review(
         .create(true)
         .append(true)
         .open(&log)?;
-    writeln!(file, "{entry}")?;
+    file.write_all(format!("{entry}\n").as_bytes())?;
     Ok(attempt_key)
 }
 

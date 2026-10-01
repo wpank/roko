@@ -9,16 +9,16 @@ size = "M"
 goal = "learning"
 subsystem = ["roko-gate/eval"]
 created = 2026-09-05
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/evals-audit/IMPLEMENTATION-CHECKLIST.md#P0 — Close Broken Eval Loops"
 discovered_from = "audit:tmp/archive/evals-audit/IMPLEMENTATION-CHECKLIST.md#P0 — Close Broken Eval Loops"
 anchors = ["crates/roko-gate/src/benchmark_gate.rs::BenchmarkRegressionGate", "crates/roko-gate/src/benchmark_gate.rs::compare_results", "crates/roko-cli/src/task_parser.rs::VerifyStep", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs:1005"]
 links = { depends_on = [], blocks = [], related = ["gap-6e970b", "bug-017c2d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rq 'BenchmarkRegressionGate\\|compare_results' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_execution && grep -rqw 'fn graph_bench_verify_step_fails_on_regression' crates/roko-cli/src/ && cargo test -p roko-cli graph_bench_verify_step_fails_on_regression"
+command = "grep -rq 'BenchmarkRegressionGate\\|compare_results' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_execution && grep -rqw 'fn graph_bench_verify_step_fails_on_regression' crates/roko-cli/src/ && cargo test -p roko-cli graph_bench_verify_step_fails_on_regression"
 +++
 
 ## Problem
@@ -134,6 +134,24 @@ to plug into.
 - The change is confined to the verify loop in `graph_task_dispatch.rs`. Coordinate with
   `find-4b4344` and `gap-7a3527`, which edit the same verify and feedback block, and do not run them
   in parallel.
+- 2026-10-01 (wk-learn2): implemented on work/gap-14f08e; cargo verification deferred to the batch check.
+  - P0-01 is wired as an opt-in verify phase. A `[[task.verify]]` step with `phase = "bench"` runs as usual; once it
+    passes, `graph_task_dispatch/bench_verify.rs::judge_bench_step` judges its output with the new
+    `BenchmarkRegressionGate::judge_output` (the gate's own `verify` now uses it too) against
+    `<workspace>/.roko/bench/baselines/<plan>-<task>.json`. The first run records the baseline, a later run more than
+    10% slower fails, and a `bench` step whose output holds no Criterion result fails. Both verify loops judge (the
+    first run and the re-run after an auto-fix). Tests: `graph_bench_verify_step_fails_on_regression` (a Graph dispatch
+    whose step prints canned Criterion JSON), `steps_of_other_phases_and_failed_steps_keep_their_verdict`, and roko-gate
+    `judge_output_records_a_baseline_then_fails_a_regression`.
+  - The `[[verify]]` grep now also searches `crates/roko-cli/src/graph_task_dispatch/`, where the verify loop moved
+    from `graph_task_dispatch.rs`. It still finds nothing at BASE.
+  - P2-02, decided: not applicable until LLM-authored test generation exists. bug-017c2d removed the empty templates,
+    and the property template needs an assertion body that no Graph task authors, so the pipeline would pay a
+    `cargo test` per task to register nothing. The deleted pipeline is recoverable with
+    `git show 6b5da8616^:crates/roko-cli/src/runner/eval_generation.rs`.
+  - P0-02, decided: `gates.write_eval_artifacts` writes, for manual inspection only, the evaluations that pass
+    `generate_checked`; nothing in `plan run` executes them, and the config doc says so. The stale "Runner-v2
+    generated-test rung" comment is gone. Both landed with bug-017c2d (`91deb4f3d`).
 
 ## Original notes
 

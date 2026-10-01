@@ -1101,6 +1101,26 @@ impl PlaybookStore {
         self.record_outcome(id, success).await
     }
 
+    /// Move one success recorded for the playbook `id` to its failures: a
+    /// later verdict showed that the attempt credited with it had failed
+    /// (hindsight relabeling). A playbook with no recorded success just gains
+    /// the failure. Returns `false` when no playbook has that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error raised while loading or updating the playbook.
+    pub async fn relabel_success_as_failure(&self, id: &str) -> io::Result<bool> {
+        let lock = self.id_lock(id);
+        let _guard = lock.lock().await;
+        let Some(mut pb) = self.load(id).await? else {
+            return Ok(false);
+        };
+        pb.success_count = pb.success_count.saturating_sub(1);
+        pb.failure_count = pb.failure_count.saturating_add(1);
+        self.save(&pb).await?;
+        Ok(true)
+    }
+
     /// Deprecate playbooks with high failure rates.
     ///
     /// Scans all playbooks. Those with at least `min_trials` total outcomes
@@ -1741,6 +1761,21 @@ mod tests {
         let pb = store.load("p2").await.expect("load").expect("some");
         assert_eq!(pb.success_count, 0);
         assert_eq!(pb.failure_count, 1);
+    }
+
+    #[tokio::test]
+    async fn relabel_success_as_failure_moves_one_success() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = PlaybookStore::new(tmp.path());
+        store.save(&sample_playbook("p3")).await.expect("save");
+        assert!(store.record_outcome("p3", true).await.expect("record"));
+
+        let relabeled = store.relabel_success_as_failure("p3").await;
+        assert!(relabeled.expect("relabel"));
+        let pb = store.load("p3").await.expect("load").expect("some");
+        assert_eq!((pb.success_count, pb.failure_count), (0, 1));
+        let missing = store.relabel_success_as_failure("missing").await;
+        assert!(!missing.expect("relabel"));
     }
 
     #[tokio::test]

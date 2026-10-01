@@ -3,13 +3,15 @@ id = "bug-aad63e"
 kind = "bug"
 title = "roko acp distils every episode with unrecorded spend, and roko serve's dispatch path is unchecked"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-acp"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "f4323cf9d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-0f8948"
 anchors = ["crates/roko-acp/src/bridge_events/cost.rs", "crates/roko-serve/src/dispatch.rs"]
@@ -35,3 +37,13 @@ Apply bug-0f8948's rule in both places: record the distillation call's spend, or
 ## Notes
 
 - Reported on 2026-10-01 by wk-learn2, working on bug-0f8948, during the evening close-out round.
+- 2026-10-01 (wk-learn2): implemented on work/gap-14f08e; cargo verification deferred to the batch check.
+  - bug-0f8948's `DistillationSpend` moved from roko-cli into roko-neuro (`episode_completion.rs`), next to
+    `spawn_episode_distillation`, with `spawn_recorded_episode_distillation`. The CLI's capture paths now use it from
+    there, and ACP distils through it via `bridge_events/cost.rs::spawn_acp_distillation`, so each ACP distillation call
+    writes one cost record and one efficiency row under role `episode-distiller`. The provider comes from
+    `roko_core::agent::resolve_model`. Test: `acp_distillation_records_spend`.
+  - Serve checked: `roko-serve/src/dispatch.rs` distils through `state.model_call_service`, which
+    `service_factory.rs` builds with a feedback sink, a gateway event writer, a runtime-event logger and, when serve
+    has one, an inference observer. The call is accounted like every other serve model call, so it stays on the plain
+    `spawn_episode_distillation`; wrapping it would count it twice.

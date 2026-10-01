@@ -142,6 +142,68 @@ impl BenchmarkRegressionGate {
         self
     }
 
+    /// Judge Criterion JSON `output` that the caller has already produced
+    /// against the baseline at `baseline_path`. With no baseline, the output
+    /// becomes the baseline and passes; otherwise any benchmark slower than
+    /// its baseline by more than the threshold fails. Output with no
+    /// `benchmark-complete` line is skipped.
+    ///
+    /// [`Verify::verify`] runs `cargo bench` itself, in the process's working
+    /// directory. A caller that runs the benchmark itself, as a plan task's
+    /// `bench` verify step does in the task's worktree, judges its output
+    /// here, so the threshold and the baseline format stay this gate's.
+    #[must_use]
+    pub fn judge_output(&self, output: &str, baseline_path: &Path) -> Verdict {
+        // Parse Criterion JSON output → benchmark name → nanosecond mean.
+        let current = parse_criterion_json(output);
+        if current.is_empty() {
+            return Verdict::skip(
+                &self.name,
+                format!(
+                    "no benchmark-complete messages found in cargo bench output \
+                     (threshold={:.1}%); output may be empty or non-JSON",
+                    self.threshold_pct
+                ),
+            );
+        }
+
+        // Read or establish baseline.
+        match read_baseline(baseline_path) {
+            None => {
+                // No baseline yet — write the current results as the first baseline.
+                if let Err(e) = write_baseline(baseline_path, &current) {
+                    tracing::warn!(
+                        gate = %self.name,
+                        path = %baseline_path.display(),
+                        error = %e,
+                        "failed to write benchmark baseline"
+                    );
+                }
+                let count = current.len();
+                Verdict::pass(&self.name).with_detail(format!(
+                    "baseline established with {count} benchmark(s); \
+                     future runs will compare against this baseline (threshold={:.1}%)",
+                    self.threshold_pct
+                ))
+            }
+            Some(baseline) => {
+                // Compare current results against baseline.
+                let comparisons = compare_results(&baseline, &current, self.threshold_pct);
+                let regressions: Vec<&BenchmarkComparison> = comparisons
+                    .iter()
+                    .filter(|c| c.change_pct > self.threshold_pct)
+                    .collect();
+                let detail = format_comparison_summary(&comparisons, self.threshold_pct);
+                if regressions.is_empty() {
+                    Verdict::pass(&self.name).with_detail(detail)
+                } else {
+                    let reason = format_regression_reason(&regressions, self.threshold_pct);
+                    Verdict::fail(&self.name, reason).with_detail(detail)
+                }
+            }
+        }
+    }
+
     /// Resolve the baseline file path for a given gate name.
     fn baseline_path(&self, working_dir: &Path) -> PathBuf {
         let dir = self
@@ -195,63 +257,8 @@ impl Verify for BenchmarkRegressionGate {
             }
         };
 
-        // Parse Criterion JSON output → benchmark name → nanosecond mean.
-        let current = parse_criterion_json(&bench_output);
-        if current.is_empty() {
-            return Verdict::skip(
-                &self.name,
-                format!(
-                    "no benchmark-complete messages found in cargo bench output \
-                     (threshold={:.1}%); output may be empty or non-JSON",
-                    self.threshold_pct
-                ),
-            )
-            .with_duration(elapsed_ms());
-        }
-
-        // Read or establish baseline.
-        match read_baseline(&baseline_path) {
-            None => {
-                // No baseline yet — write the current results as the first baseline.
-                if let Err(e) = write_baseline(&baseline_path, &current) {
-                    tracing::warn!(
-                        gate = %self.name,
-                        path = %baseline_path.display(),
-                        error = %e,
-                        "failed to write benchmark baseline"
-                    );
-                }
-                let count = current.len();
-                return Verdict::pass(&self.name)
-                    .with_detail(format!(
-                        "baseline established with {count} benchmark(s); \
-                         future runs will compare against this baseline (threshold={:.1}%)",
-                        self.threshold_pct
-                    ))
-                    .with_duration(elapsed_ms());
-            }
-            Some(baseline) => {
-                // Compare current results against baseline.
-                let comparisons = compare_results(&baseline, &current, self.threshold_pct);
-                let regressions: Vec<&BenchmarkComparison> = comparisons
-                    .iter()
-                    .filter(|c| c.change_pct > self.threshold_pct)
-                    .collect();
-
-                if regressions.is_empty() {
-                    let detail = format_comparison_summary(&comparisons, self.threshold_pct);
-                    Verdict::pass(&self.name)
-                        .with_detail(detail)
-                        .with_duration(elapsed_ms())
-                } else {
-                    let reason = format_regression_reason(&regressions, self.threshold_pct);
-                    let detail = format_comparison_summary(&comparisons, self.threshold_pct);
-                    Verdict::fail(&self.name, reason)
-                        .with_detail(detail)
-                        .with_duration(elapsed_ms())
-                }
-            }
-        }
+        self.judge_output(&bench_output, &baseline_path)
+            .with_duration(elapsed_ms())
     }
 
     fn name(&self) -> &str {
@@ -735,5 +742,27 @@ not json at all
 
         assert_eq!(regressions.len(), 1);
         assert!((regressions[0].change_pct - 15.0).abs() < 0.1);
+    }
+
+    /// One `benchmark-complete` line for `my_fn` at `ns` nanoseconds.
+    fn criterion_line(ns: f64) -> String {
+        let typical = format!(r#"{{"estimate":{ns},"unit":"ns"}}"#);
+        format!(r#"{{"reason":"benchmark-complete","id":"my_fn","typical":{typical}}}"#)
+    }
+
+    #[test]
+    fn judge_output_records_a_baseline_then_fails_a_regression() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let baseline = dir.path().join("baselines").join("plan-T1.json");
+        let gate = BenchmarkRegressionGate::new();
+
+        let first = gate.judge_output(&criterion_line(100.0), &baseline);
+        assert!(first.passed, "{first:?}");
+        assert!(baseline.exists());
+        assert!(gate.judge_output(&criterion_line(105.0), &baseline).passed);
+        let slower = gate.judge_output(&criterion_line(120.0), &baseline);
+        assert!(!slower.passed);
+        assert!(slower.reason.contains("my_fn"), "{}", slower.reason);
+        assert!(gate.judge_output("no benchmarks ran", &baseline).skipped);
     }
 }

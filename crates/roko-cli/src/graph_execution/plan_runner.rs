@@ -2262,7 +2262,8 @@ pub fn build_graph_feedback_facade(
             crate::runtime_feedback::HindsightSink::new(
                 &graph_episodes_path,
                 graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
-            ),
+            )
+            .with_router(cascade_router.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
         // progression included) under `.roko/neuro/`.

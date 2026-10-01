@@ -229,7 +229,6 @@ pub(crate) async fn append_acp_episode(
     }
 
     // Spawn background distillation so the knowledge store learns from each ACP interaction.
-    let distill_workdir = workdir.to_path_buf();
     let distill_model = roko_config.agent.default_model.clone();
     let distill_caller: Arc<dyn roko_core::foundation::ModelCaller> = Arc::new(
         ModelCallService::new(distill_model)
@@ -237,7 +236,7 @@ pub(crate) async fn append_acp_episode(
             .with_working_dir(workdir)
             .with_immune_root(workdir),
     );
-    roko_neuro::spawn_episode_distillation(distill_workdir, episode, Some(distill_caller));
+    spawn_acp_distillation(workdir, episode, distill_caller);
 
     // Auto-dream consolidation (opt-in): after enough episodes accumulate,
     // spawn a background dream cycle so patterns are extracted into
@@ -665,4 +664,71 @@ pub(crate) fn knowledge_tier_label(tier: KnowledgeTier) -> &'static str {
 pub(crate) fn score_to_confidence(score: f64) -> f64 {
     let score = score.max(0.0);
     score / (1.0 + score)
+}
+
+/// Distil a logged ACP `episode` into durable knowledge in the background,
+/// recording what the distillation call costs (bug-aad63e): the bare
+/// `ModelCallService` ACP distils through records nothing itself.
+pub(crate) fn spawn_acp_distillation(
+    workdir: &Path,
+    episode: Episode,
+    caller: Arc<dyn roko_core::foundation::ModelCaller>,
+) {
+    roko_neuro::spawn_recorded_episode_distillation(workdir.to_path_buf(), episode, caller);
+}
+
+#[cfg(test)]
+mod distillation_tests {
+    use async_trait::async_trait;
+    use roko_core::foundation::{ModelCallRequest, ModelCallResponse, ModelCaller, TokenUsage};
+
+    use super::*;
+
+    /// A distillation model that reports a known cost and distils nothing.
+    struct FakeDistiller;
+
+    #[async_trait]
+    impl ModelCaller for FakeDistiller {
+        async fn call(&self, _req: ModelCallRequest) -> roko_core::Result<ModelCallResponse> {
+            Ok(ModelCallResponse {
+                content: r#"{"entries": []}"#.to_string(),
+                model: "fake-distiller".to_string(),
+                usage: TokenUsage {
+                    input_tokens: 700,
+                    output_tokens: 30,
+                    total_tokens: 730,
+                    cost_usd: 0.125,
+                },
+                stop_reason: Some("end_turn".to_string()),
+                request_id: None,
+            })
+        }
+    }
+
+    /// bug-aad63e: the distillation call that follows each ACP episode
+    /// records its spend once, under the distiller's role and the episode's
+    /// task.
+    #[tokio::test]
+    async fn acp_distillation_records_spend() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let episode = Episode::new("acp", "acp-session-1");
+
+        spawn_acp_distillation(tmp.path(), episode, Arc::new(FakeDistiller));
+
+        // The distillation runs detached; the efficiency row is written last.
+        let learn = tmp.path().join(".roko").join("learn");
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !learn.join("efficiency.jsonl").exists() && Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let costs = std::fs::read_to_string(learn.join("costs.jsonl")).expect("cost log");
+        let rows: Vec<serde_json::Value> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSONL row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["role"], roko_neuro::DISTILLATION_ROLE);
+        assert_eq!(rows[0]["cost_usd"], 0.125);
+        assert_eq!(rows[0]["task_id"], "acp-session-1");
+    }
 }

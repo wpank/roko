@@ -55,6 +55,7 @@ use crate::task_parser::TaskDef;
 mod attempt;
 mod attempt_workspace;
 pub(crate) mod baseline_verify;
+mod bench_verify;
 mod budget;
 mod diff_snapshot;
 mod failover;
@@ -2424,12 +2425,13 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
     }
 
-    /// bug-017c2d: no placeholder test is written, and nothing reaches the
-    /// repo root. With `write_eval_artifacts` on, only checked evaluations
-    /// are written; the built-in template needs a property body that the
-    /// fixture task does not author, so none is.
+    /// bug-017c2d, bug-05a434: no placeholder test is written, and nothing
+    /// reaches the repo root. With `write_eval_artifacts` on, only checked
+    /// evaluations are written; the built-in template needs a property body
+    /// that no plan task authors, so none is, and `plan run` reports the key
+    /// as inert.
     #[tokio::test]
-    async fn eval_artifacts_never_hold_placeholder_tests_or_reach_the_repo_root() {
+    async fn write_eval_artifacts_writes_nothing_without_a_property_body() {
         for write_eval_artifacts in [false, true] {
             let temp = tempdir().expect("tempdir");
             let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
@@ -2456,21 +2458,19 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         }
     }
 
+    /// `[meta] skip_enrichment` is read once per plan, and a plan that sets it
+    /// still dispatches. What it skips leaves nothing to observe here: eval
+    /// artifacts need a property body (bug-05a434), and the fixture has no
+    /// dream routing advice.
     #[tokio::test]
-    async fn skip_enrichment_plan_meta_is_read_and_suppresses_eval_artifacts() {
+    async fn skip_enrichment_plan_meta_is_read_once_per_plan() {
         let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
-            config.gates.write_eval_artifacts = true;
-        })
-        .await;
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            eval_generation_enabled: true,
-            ..GraphFeedbackContext::default()
-        });
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |_| {}).await;
         let plan_dir = temp.path().join("plans/authored");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks_path = plan_dir.join("tasks.toml");
         std::fs::write(
-            plan_dir.join("tasks.toml"),
+            &tasks_path,
             "[meta]\nplan = \"authored\"\nskip_enrichment = true\n\n\
              [[task]]\nid = \"T-EXP\"\ntitle = \"Wire the batch fixture\"\n",
         )
@@ -2483,8 +2483,10 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         dispatcher
             .dispatch(&spec, Vec::new(), &batch_ctx())
             .await
-            .expect("dispatch");
-        assert!(!temp.path().join(".roko/generated-tests").exists());
+            .expect("a plan that skips enrichment still dispatches");
+        // Read once: removing the plan file afterwards changes nothing.
+        std::fs::remove_file(&tasks_path).expect("remove tasks.toml");
+        assert!(dispatcher.plan_skips_enrichment(&spec));
 
         let mut unflagged = make_spec(&task);
         unflagged.plan_id = "unflagged".to_string();

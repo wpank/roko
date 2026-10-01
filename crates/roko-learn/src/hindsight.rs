@@ -1,15 +1,15 @@
 //! Append-only hindsight relabeling for recent episode outcomes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::episode_logger::{Episode, EpisodeLogger, LoggerError};
+use crate::episode_logger::{Episode, EpisodeLogger, LEARNING_LABEL_KEY, LoggerError};
 use crate::playbook_rules::Rule;
 
 /// Episode `extra` key listing the tasks a failed gate blamed, as
@@ -18,6 +18,10 @@ pub const BLAMED_TASKS_KEY: &str = "blamed_tasks";
 
 /// Default file name for durable adjustments under `.roko/learn/`.
 pub const DEFAULT_ADJUSTMENTS_FILE: &str = "episode-adjustments.jsonl";
+
+/// Episode `extra` key holding the hindsight correction applied to the
+/// episode as it was read ([`apply_adjustments`]).
+pub const HINDSIGHT_ADJUSTMENT_KEY: &str = "hindsight_adjustment";
 
 /// Why a previous episode assessment changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -227,7 +231,8 @@ pub fn read_adjustments(path: &Path) -> io::Result<Vec<EpisodeAdjustment>> {
 
 /// Append to the JSONL log at `path` each adjustment it does not already
 /// hold for the same original episode and kind, so repeated scans of one
-/// history record every correction once. Returns how many were appended.
+/// history record every correction once. Returns the adjustments appended,
+/// so a caller can act on each correction once.
 ///
 /// Unlike [`HindsightRelabeler::append`], the log is kept apart from the
 /// episode log, whose readers would count correction records as episodes.
@@ -236,16 +241,19 @@ pub fn read_adjustments(path: &Path) -> io::Result<Vec<EpisodeAdjustment>> {
 /// # Errors
 ///
 /// Returns an error if the log cannot be read or written.
-pub fn append_new_adjustments(path: &Path, adjustments: &[EpisodeAdjustment]) -> io::Result<usize> {
+pub fn append_new_adjustments(
+    path: &Path,
+    adjustments: &[EpisodeAdjustment],
+) -> io::Result<Vec<EpisodeAdjustment>> {
     if adjustments.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let mut recorded: HashSet<(String, AdjustmentKind)> = read_adjustments(path)?
         .into_iter()
         .map(|adjustment| (adjustment.original_episode_id, adjustment.adjustment_kind))
         .collect();
     let mut lines = String::new();
-    let mut appended = 0;
+    let mut appended = Vec::new();
     for adjustment in adjustments {
         if !recorded.insert((
             adjustment.original_episode_id.clone(),
@@ -255,10 +263,10 @@ pub fn append_new_adjustments(path: &Path, adjustments: &[EpisodeAdjustment]) ->
         }
         lines.push_str(&serde_json::to_string(adjustment).map_err(io::Error::other)?);
         lines.push('\n');
-        appended += 1;
+        appended.push(adjustment.clone());
     }
-    if appended == 0 {
-        return Ok(0);
+    if appended.is_empty() {
+        return Ok(appended);
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -267,6 +275,79 @@ pub fn append_new_adjustments(path: &Path, adjustments: &[EpisodeAdjustment]) ->
     file.write_all(lines.as_bytes())?;
     file.flush()?;
     Ok(appended)
+}
+
+/// Apply recorded corrections to `episodes`, matched by episode id, and
+/// return how many episodes changed.
+///
+/// A [`AdjustmentKind::Regression`] marks its episode failed: `success` and
+/// any learning label become a failure, and the correction is kept under
+/// [`HINDSIGHT_ADJUSTMENT_KEY`]. The other kinds are audit records and
+/// change nothing: a later reuse of a failed attempt's approach does not
+/// make that attempt pass. The log is never rewritten; readers apply the
+/// corrections as they load episodes.
+pub fn apply_adjustments(episodes: &mut [Episode], adjustments: &[EpisodeAdjustment]) -> usize {
+    let regressions: HashMap<&str, &EpisodeAdjustment> = adjustments
+        .iter()
+        .filter(|adjustment| adjustment.adjustment_kind == AdjustmentKind::Regression)
+        .map(|adjustment| (adjustment.original_episode_id.as_str(), adjustment))
+        .collect();
+    if regressions.is_empty() {
+        return 0;
+    }
+    let mut applied = 0;
+    for episode in episodes {
+        let Some(adjustment) = regressions.get(episode.id.as_str()) else {
+            continue;
+        };
+        episode.success = false;
+        if episode.extra.contains_key(LEARNING_LABEL_KEY) {
+            episode
+                .extra
+                .insert(LEARNING_LABEL_KEY.to_string(), Value::from(0));
+        }
+        episode.extra.insert(
+            HINDSIGHT_ADJUSTMENT_KEY.to_string(),
+            serde_json::json!({
+                "kind": adjustment.adjustment_kind,
+                "reason": adjustment.reason,
+                "timestamp": adjustment.timestamp,
+            }),
+        );
+        applied += 1;
+    }
+    applied
+}
+
+/// The adjustments log of the workspace at `workdir`:
+/// `.roko/learn/episode-adjustments.jsonl`.
+#[must_use]
+pub fn workspace_adjustments_path(workdir: &Path) -> PathBuf {
+    roko_fs::RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join(DEFAULT_ADJUSTMENTS_FILE)
+}
+
+/// [`apply_adjustments`] with the corrections recorded for the workspace at
+/// `workdir`. An unreadable log applies none.
+pub fn apply_workspace_adjustments(episodes: &mut [Episode], workdir: &Path) -> usize {
+    apply_adjustments_from(episodes, &workspace_adjustments_path(workdir))
+}
+
+/// [`apply_adjustments`] with the corrections recorded in the log at `path`.
+/// An unreadable log applies none.
+pub fn apply_adjustments_from(episodes: &mut [Episode], path: &Path) -> usize {
+    match read_adjustments(path) {
+        Ok(adjustments) => apply_adjustments(episodes, &adjustments),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "hindsight adjustments unreadable; episodes read as logged"
+            );
+            0
+        }
+    }
 }
 
 fn episode_files(episode: &Episode) -> HashSet<String> {
@@ -446,6 +527,26 @@ mod tests {
     }
 
     #[test]
+    fn a_regression_relabels_the_episode_it_names_on_read() {
+        let mut labelled = plan_episode("p", "T12", true, 0);
+        labelled
+            .extra
+            .insert(LEARNING_LABEL_KEY.into(), Value::from(1));
+        let other = plan_episode("p", "T3", true, 1);
+        let blame = blaming(plan_episode("p", "T2", false, 2), &["p/T12"]);
+        let adjustments = HindsightRelabeler::new()
+            .attributed_only()
+            .scan(&[labelled.clone(), other.clone(), blame], &[]);
+
+        let mut episodes = vec![labelled, other];
+        assert_eq!(apply_adjustments(&mut episodes, &adjustments), 1);
+        assert!(!episodes[0].success);
+        assert_eq!(episodes[0].learning_success(), Some(false));
+        assert!(episodes[0].extra.contains_key(HINDSIGHT_ADJUSTMENT_KEY));
+        assert!(episodes[1].success);
+    }
+
+    #[test]
     fn durable_adjustments_are_recorded_once() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("learn").join(DEFAULT_ADJUSTMENTS_FILE);
@@ -454,9 +555,11 @@ mod tests {
         let relabeler = HindsightRelabeler::new().attributed_only();
 
         let first = relabeler.scan(&[success.clone(), blame.clone()], &[]);
-        assert_eq!(append_new_adjustments(&path, &first).expect("append"), 1);
+        let appended = append_new_adjustments(&path, &first).expect("append");
+        assert_eq!(appended, first);
         let again = relabeler.scan(&[success.clone(), blame], &[]);
-        assert_eq!(append_new_adjustments(&path, &again).expect("append"), 0);
+        let appended_again = append_new_adjustments(&path, &again).expect("append");
+        assert!(appended_again.is_empty(), "{appended_again:?}");
 
         let recorded = read_adjustments(&path).expect("read");
         assert_eq!(recorded.len(), 1);

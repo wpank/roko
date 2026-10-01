@@ -110,6 +110,9 @@ impl ProviderAdapter for ClaudeCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(provider_semaphores) = options.provider_semaphores.clone() {
+            agent = agent.with_provider_semaphores(model.provider.clone(), provider_semaphores);
+        }
 
         Ok(Box::new(agent))
     }

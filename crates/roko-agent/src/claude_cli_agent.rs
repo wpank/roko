@@ -326,6 +326,10 @@ pub struct ClaudeCliAgent {
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
     resource_limits: Option<ResourceLimits>,
+    /// The provider whose `max_concurrent` caps this agent's runs, with the
+    /// shared semaphores that enforce it (bug-eba31d).
+    provider_id: Option<String>,
+    provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
     name: String,
 }
 
@@ -363,6 +367,8 @@ impl ClaudeCliAgent {
             dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
+            provider_id: None,
+            provider_semaphores: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -385,6 +391,20 @@ impl ClaudeCliAgent {
     #[must_use]
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
+        self
+    }
+
+    /// Attach shared provider semaphores, so that no more `claude` processes
+    /// run at once than `[providers.<provider_id>] max_concurrent` allows: a
+    /// run waits for a permit before it spawns and holds it until it ends.
+    #[must_use]
+    pub fn with_provider_semaphores(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_semaphores: Arc<crate::provider::ProviderSemaphores>,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_semaphores = Some(provider_semaphores);
         self
     }
 
@@ -1214,6 +1234,14 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, "claude run not started: {reason}");
             return self.failure(input, &reason, started);
         }
+        // The provider's concurrency cap (bug-eba31d): wait for a permit
+        // before spawning, and hold it until the run ends.
+        let _permit = match (&self.provider_id, &self.provider_semaphores) {
+            (Some(provider_id), Some(provider_semaphores)) => {
+                provider_semaphores.acquire(provider_id).await.ok()
+            }
+            _ => None,
+        };
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -3380,6 +3408,68 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
         write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
         let plain = agent.run(&prompt("finish it"), &Context::now()).await;
         assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
+    /// bug-eba31d: a run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_cli_waits_for_provider_permit() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+touch "$(dirname "$0")/launched"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut configs = indexmap::IndexMap::new();
+        configs.insert(
+            "capped".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: Some(1),
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
+        let held = semaphores.acquire("capped").await.expect("the only permit");
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+            .with_provider_semaphores("capped", Arc::clone(&semaphores));
+        let launched = tmp.path().join("launched");
+
+        let input = prompt("go");
+        let ctx = Context::now();
+        let run = agent.run(&input, &ctx);
+        tokio::pin!(run);
+        assert!(
+            timeout(Duration::from_millis(100), &mut run).await.is_err(),
+            "the run waits while the provider's only permit is held"
+        );
+        assert!(!launched.exists(), "claude is not spawned before a permit");
+
+        drop(held);
+        let result = timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends once the permit is free");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert!(launched.exists());
     }
 
     /// Dropping a run's future, which is how a cancel or the stall watchdog

@@ -3543,8 +3543,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         assert_eq!(health.total_successes, 1);
 
         // The template's call is costed once, under its role (bug-c1f6b8).
-        let costs = std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl"))
-            .expect("read costs");
+        let costs =
+            std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl")).expect("read costs");
         let template_rows: Vec<CostRecord> = costs
             .lines()
             .filter_map(|line| serde_json::from_str::<CostRecord>(line).ok())

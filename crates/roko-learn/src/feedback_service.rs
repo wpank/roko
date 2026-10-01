@@ -1032,7 +1032,10 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 1, "{costs}");
         let row = &rows[0];
-        assert_eq!((row.model.as_str(), row.provider.as_str()), ("sonnet", "anthropic"));
+        assert_eq!(
+            (row.model.as_str(), row.provider.as_str()),
+            ("sonnet", "anthropic")
+        );
         assert_eq!((row.input_tokens, row.output_tokens), (1_000, 100));
         assert!((row.cost_usd - 0.02).abs() < 1e-12);
         assert_eq!(row.task_id, "serve-run:1000:false");

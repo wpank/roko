@@ -4322,10 +4322,7 @@ async fn bridge_under_load_drops_progress_but_keeps_turn_end() {
     };
     let ((), (first, second)) = tokio::join!(completion, reader);
     assert!(matches!(first, Some(CognitiveEvent::TokenChunk(text)) if text == "first"));
-    assert!(matches!(
-        second,
-        Ok(Some(CognitiveEvent::Complete { .. }))
-    ));
+    assert!(matches!(second, Ok(Some(CognitiveEvent::Complete { .. }))));
 }
 
 #[test]

@@ -9,7 +9,7 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-10-01
+updated = 2026-10-02
 last_verified = 2026-10-01
 last_verified_rev = "6531d787e"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
@@ -136,6 +136,26 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
   unknown version); step 5 (replay idempotency); step 6 (no run attaches the sink yet: thread it through
   `AgentOptions` into `build_provider_tool_dispatcher`, then `DispatchFactory`/`dispatch_v2` and `run_one_plan`,
   which should also call `attach_safety_provenance`); `safety_provenance_restores_taint_after_restart`.
+- 2026-10-02 (wk-tamper): Plan step 4 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `PreparedGraphCheckpoint::open_safety_provenance` decodes `roko.safety-provenance@1` through
+    `stored_safety_provenance`, which fails closed on another version of the namespace or an undecodable value. It
+    then restores the sink with `GraphProvenanceSink::resume`, attaches it and writes the manifest. A run calls it
+    before any task runs.
+  - `resume` fails closed when the custody chain does not verify (`custody::chain_violations`, which
+    `cmd_custody_verify` now shares), when a stored head is not in its log, or when a provenance custody record names
+    a missing or altered witness vertex, or one with a missing parent. It also fails when the stored taint index is
+    lower than what the run's records up to the stored custody head prove (`TaintTracker::levels`, new).
+  - The run's records after the stored head, written after the last save, are tracked on top, so a crash between
+    saves loses no taint. A checkpoint without the extension (fresh, or older) rebuilds the run's taint from the
+    logs. Nothing resets to trusted while records exist.
+  - Appends within one process are serialized (`APPEND_LOCK`). Two processes appending at once can still fork the
+    custody chain, and the next resume then fails closed.
+  - `register_known_namespaces` keeps the extension optional: older checkpoints have none, and the restore needs
+    none.
+  - Tests (roko-cli lib): `safety_provenance_restores_taint_after_restart`,
+    `safety_provenance_restore_tracks_calls_after_the_last_save`, and the four fail-closed tests for a tampered
+    custody log, a missing witness root, a taint downgrade and an unknown version.
+  Still open: step 6 (no run opens the sink yet), step 5, and the policy fingerprints.
 
 ## Original notes
 

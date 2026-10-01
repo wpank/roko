@@ -880,6 +880,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
         }
     }
 
+    /// gap-2e69b2: an efficiency row's attempt id is the attempt's durable
+    /// key, so the same task's first attempt in two runs has two ids.
+    #[tokio::test]
+    async fn attempt_id_is_unique_across_runs() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        for run in ["run-a", "run-b"] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the attempt completes");
+        }
+
+        let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+        })
+        .await;
+        let mut ids = field(&rows, "attempt_id");
+        ids.sort_unstable();
+        let key = |run: &str| format!("{run}:{}:{}:1", spec.plan_id, task.id);
+        assert_eq!(ids, [key("run-a"), key("run-b")]);
+    }
+
     /// Provider whose first call hangs until the attempt is killed; later
     /// calls answer at once.
     const HANGS_ONCE_PROVIDER: &str = r#"#!/bin/sh

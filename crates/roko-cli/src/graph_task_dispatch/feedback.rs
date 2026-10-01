@@ -325,24 +325,7 @@ impl GraphTaskDispatcher {
                 })
                 .collect();
             let eff_system_prompt_tokens = dispatch_plan.prompt.diagnostics.estimated_tokens;
-            let eff_tool_calls: Vec<roko_learn::efficiency::ToolCallMeta> = dispatch
-                .events
-                .iter()
-                .filter_map(|ev| match ev {
-                    roko_agent::AgentRuntimeEvent::ToolCall { name, .. } => {
-                        Some(roko_learn::efficiency::ToolCallMeta {
-                            tool_name: name.clone(),
-                            duration_ms: 0,
-                            result_tokens: 0,
-                            succeeded: true,
-                            advanced_task: false,
-                            was_redundant: false,
-                            error_category: None,
-                        })
-                    }
-                    _ => None,
-                })
-                .collect();
+            let eff_tool_calls = efficiency_tool_calls(&dispatch.events);
             let eff_tools_used = eff_tool_calls.len() as u32;
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
                 agent_id: format!("{}/{}", spec.plan_id, task.id),
@@ -581,6 +564,57 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// The tool calls a dispatch's events record, one per call (bug-f9ae3e).
+///
+/// A streaming provider sends a call's start, each argument delta and its
+/// end as separate tool-call events under one id, and a delta may name no
+/// tool; a call without an id counts once for each event that names a
+/// tool. A call's tool output gives its result size. Nothing on this path
+/// observes whether a call succeeded, so its outcome stays unknown.
+fn efficiency_tool_calls(
+    events: &[roko_agent::AgentRuntimeEvent],
+) -> Vec<roko_learn::efficiency::ToolCallMeta> {
+    let unobserved = |name: &str| roko_learn::efficiency::ToolCallMeta {
+        tool_name: name.to_string(),
+        duration_ms: 0,
+        result_tokens: 0,
+        succeeded: None,
+        advanced_task: false,
+        was_redundant: false,
+        error_category: None,
+    };
+    let mut calls: Vec<roko_learn::efficiency::ToolCallMeta> = Vec::new();
+    let mut by_id: HashMap<&str, usize> = HashMap::new();
+    for event in events {
+        match event {
+            roko_agent::AgentRuntimeEvent::ToolCall { id, name } if !id.is_empty() => {
+                match by_id.entry(id.as_str()) {
+                    Entry::Occupied(entry) => {
+                        let call = &mut calls[*entry.get()];
+                        if call.tool_name.is_empty() {
+                            call.tool_name.clone_from(name);
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(calls.len());
+                        calls.push(unobserved(name.as_str()));
+                    }
+                }
+            }
+            roko_agent::AgentRuntimeEvent::ToolCall { name, .. } if !name.is_empty() => {
+                calls.push(unobserved(name.as_str()));
+            }
+            roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
+                if let Some(&index) = by_id.get(id.as_str()) {
+                    calls[index].result_tokens += roko_compose::estimate_tokens(output) as u64;
+                }
+            }
+            _ => {}
+        }
+    }
+    calls
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -747,6 +781,42 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// efficiency row and the provider's health, but it no longer observes
     /// or saves `cascade-router.json` from the provider's own success,
     /// before any gate ran.
+    /// bug-f9ae3e: a streamed call's start, argument deltas and end make one
+    /// efficiency record, sized by its tool output and with its outcome
+    /// unknown; a call without an id counts once per event naming a tool.
+    #[test]
+    fn efficiency_counts_distinct_tool_call_ids() {
+        use roko_agent::AgentRuntimeEvent as Event;
+
+        let call = |id: &str, name: &str| Event::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let events = vec![
+            call("tu_1", "Read"),
+            call("tu_1", ""),
+            call("tu_1", ""),
+            call("tu_1", "Read"),
+            Event::ToolOutput {
+                id: "tu_1".to_string(),
+                output: "x".repeat(40),
+            },
+            call("tu_2", "Bash"),
+            call("", ""),
+            call("", "Grep"),
+            Event::MessageDelta {
+                text: "done".to_string(),
+            },
+        ];
+
+        let calls = efficiency_tool_calls(&events);
+        let names: Vec<&str> = calls.iter().map(|call| call.tool_name.as_str()).collect();
+        assert_eq!(names, ["Read", "Bash", "Grep"]);
+        assert_eq!(calls[0].result_tokens, 10, "40 bytes of tool output");
+        assert_eq!(calls[1].result_tokens, 0, "no output observed");
+        assert!(calls.iter().all(|call| call.succeeded.is_none()));
+    }
+
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");

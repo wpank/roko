@@ -1237,15 +1237,15 @@ impl GraphTaskDispatcher {
 }
 
 /// Queue a cargo verify step on the per-repository compile lock before its
-/// timeout starts, so a build by a plan running beside this one cannot time
-/// the step out. Other steps take no permit.
+/// timeout starts, so a build by a plan running beside this one, in this
+/// process or another, cannot time the step out. Other steps take no permit.
 pub(super) async fn verify_compile_permit(
     workdir: &Path,
     compile_concurrency: usize,
     step: &crate::task_parser::VerifyStep,
     plan_id: &str,
     task_id: &str,
-) -> Option<tokio::sync::OwnedSemaphorePermit> {
+) -> Option<crate::runner::gate_dispatch::CompileOwnership> {
     let runs_cargo = step
         .command
         .split(|c: char| c.is_whitespace() || "&|;({".contains(c))

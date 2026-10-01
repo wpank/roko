@@ -188,7 +188,10 @@ struct CompileCoordinatorRegistry {
 
 type CompileCoordinators = Mutex<CompileCoordinatorRegistry>;
 
-async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
+/// This process's compile semaphore for `workdir`'s repository, and the key
+/// of that repository: its canonical git common dir, or `workdir` itself
+/// outside git.
+async fn compile_coordinator(workdir: &Path, permits: usize) -> (Arc<Semaphore>, PathBuf) {
     static COORDINATORS: OnceLock<CompileCoordinators> = OnceLock::new();
     let coordinators =
         COORDINATORS.get_or_init(|| Mutex::new(CompileCoordinatorRegistry::default()));
@@ -203,7 +206,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
                 .get(repository)
                 .and_then(Weak::upgrade)
         {
-            return existing;
+            return (existing, repository.clone());
         }
     }
 
@@ -247,7 +250,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
         .get(&repository)
         .and_then(Weak::upgrade)
     {
-        return existing;
+        return (existing, repository);
     }
     coordinators
         .repositories
@@ -255,8 +258,86 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
     let coordinator = Arc::new(Semaphore::new(permits.max(1)));
     coordinators
         .repositories
-        .insert(repository, Arc::downgrade(&coordinator));
-    coordinator
+        .insert(repository.clone(), Arc::downgrade(&coordinator));
+    (coordinator, repository)
+}
+
+/// What a cargo command holds while it runs: this process's compile permit
+/// and, in a git repository whose slot files could be opened, one of the
+/// build slots the repository shares with other roko processes. Dropping it
+/// releases the slot, then the permit.
+#[derive(Debug)]
+pub(crate) struct CompileOwnership {
+    _slot: Option<BuildSlot>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// One cross-process build slot: an exclusive advisory lock on a lock file
+/// in [`build_slot_dir`], held until dropped (gap-c89b40).
+#[derive(Debug)]
+pub(crate) struct BuildSlot {
+    _lock: std::fs::File,
+}
+
+/// Where the roko processes that build in one repository take turns, like
+/// the in-process permits per repository: `roko-build-slots/` in its git
+/// common dir (`repository`), which all its worktrees share and no `git
+/// status` lists. `None` outside a git repository.
+fn build_slot_dir(repository: &Path) -> Option<PathBuf> {
+    (repository.join("HEAD").is_file() && repository.join("objects").is_dir())
+        .then(|| repository.join("roko-build-slots"))
+}
+
+/// Take one of `slots` build slots in `dir`, waiting up to `max_wait` for one
+/// to free up. `Ok(None)` when the slot files can't be opened or locked at
+/// all: the build then runs on this process's compile permit alone.
+async fn acquire_build_slot(
+    dir: &Path,
+    slots: usize,
+    max_wait: Duration,
+) -> Result<Option<BuildSlot>, String> {
+    use fs2::FileExt as _;
+    let unavailable = |error: std::io::Error| {
+        warn!(
+            dir = %dir.display(),
+            %error,
+            "build slots unavailable; using this process's compile permit alone"
+        );
+        Ok(None)
+    };
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        return unavailable(error);
+    }
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(25);
+    loop {
+        for slot in 0..slots.max(1) {
+            let lock = match std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.join(format!("slot-{slot}.lock")))
+            {
+                Ok(lock) => lock,
+                Err(error) => return unavailable(error),
+            };
+            match lock.try_lock_exclusive() {
+                Ok(()) => return Ok(Some(BuildSlot { _lock: lock })),
+                Err(error) if error.kind() == fs2::lock_contended_error().kind() => {}
+                Err(error) => return unavailable(error),
+            }
+        }
+        let waited = started.elapsed();
+        if waited >= max_wait {
+            return Err(format!(
+                "no build slot in {} freed up within {}s",
+                dir.display(),
+                max_wait.as_secs()
+            ));
+        }
+        tokio::time::sleep(pause.min(max_wait.saturating_sub(waited))).await;
+        pause = (pause * 2).min(Duration::from_secs(1));
+    }
 }
 
 pub(crate) async fn acquire_compile_ownership(
@@ -266,22 +347,36 @@ pub(crate) async fn acquire_compile_ownership(
     plan_id: &str,
     task_id: &str,
     command: &str,
-) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+) -> Result<CompileOwnership, String> {
     let started = Instant::now();
-    let coordinator = compile_coordinator(workdir, permits).await;
+    let (coordinator, repository) = compile_coordinator(workdir, permits).await;
     let permit = timeout(max_wait, coordinator.acquire_owned())
         .await
         .map_err(|_| format!("compile ownership timed out for `{command}`"))?
         .map_err(|_| "compile ownership semaphore closed".to_string())?;
+    // Then a slot shared with the other roko processes that build in this
+    // repository, in what is left of the wait (gap-c89b40).
+    let build_slot = match build_slot_dir(&repository) {
+        Some(dir) => {
+            acquire_build_slot(&dir, permits, max_wait.saturating_sub(started.elapsed()))
+                .await
+                .map_err(|error| format!("compile ownership timed out for `{command}`: {error}"))?
+        }
+        None => None,
+    };
     info!(
         plan_id,
         task_id,
         command,
         wait_ms = elapsed_millis(started),
         compile_concurrency = permits.max(1),
+        build_slot = build_slot.is_some(),
         "compile ownership acquired"
     );
-    Ok(permit)
+    Ok(CompileOwnership {
+        _slot: build_slot,
+        _permit: permit,
+    })
 }
 
 pub(super) fn elapsed_millis(started: Instant) -> u64 {
@@ -2867,6 +2962,46 @@ path = "src/shared.rs"
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(true));
+    }
+
+    /// gap-c89b40: processes that build in one repository take turns through
+    /// its build slots. A second holder of the only slot waits for it, a second
+    /// slot is free, and a released slot can be taken again.
+    #[tokio::test]
+    async fn build_slots_are_shared_through_lock_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let dir = tempdir.path().join(".roko-build-slots");
+        let first = acquire_build_slot(&dir, 1, Duration::from_secs(5))
+            .await
+            .expect("the first slot")
+            .expect("slot files open");
+        let error = acquire_build_slot(&dir, 1, Duration::from_millis(50))
+            .await
+            .expect_err("the only slot is held");
+        assert!(error.contains("no build slot"), "{error}");
+        let second = acquire_build_slot(&dir, 2, Duration::from_millis(50))
+            .await
+            .expect("the second slot")
+            .expect("slot files open");
+
+        drop(first);
+        drop(second);
+        let again = acquire_build_slot(&dir, 1, Duration::from_millis(50))
+            .await
+            .expect("the released slot");
+        assert!(again.is_some());
+    }
+
+    /// gap-c89b40: a repository's build slots live in its git common dir, which
+    /// every worktree shares and `git status` never lists; outside git there
+    /// are none.
+    #[test]
+    fn build_slots_live_in_the_git_common_dir() {
+        let repo = git_repo();
+        let common_dir = repo.path().join(".git");
+        assert_eq!(build_slot_dir(&common_dir), Some(common_dir.join("roko-build-slots")));
+        let plain = tempfile::tempdir().expect("tempdir should be created");
+        assert_eq!(build_slot_dir(plain.path()), None);
     }
 
     #[tokio::test]

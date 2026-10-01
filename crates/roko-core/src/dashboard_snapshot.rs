@@ -1229,7 +1229,7 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
     }
 }
 
-/// Latest gate output retained for one task.
+/// Latest output retained for one verify step (gate) of one task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskGateOutput {
     /// Parent plan identifier.
@@ -1407,9 +1407,10 @@ pub struct DashboardSnapshot {
     /// Gate output lines from rung executions (bounded to 500).
     #[serde(default)]
     pub gate_output_lines: VecDeque<String>,
-    /// Latest gate output retained per task (bounded), so a failure's detail
-    /// outlives later gates of other tasks. `gate_output_lines` remains the
-    /// live view of the most recent rung.
+    /// Latest output of each verify step, retained per task and gate
+    /// (bounded), so a failure's detail outlives later gates of the same task
+    /// and of other tasks. `gate_output_lines` remains the live view of the
+    /// most recent rung.
     #[serde(default)]
     pub task_gate_outputs: VecDeque<TaskGateOutput>,
     /// Gate pipeline currently in progress, cleared on the next verdict.
@@ -1496,9 +1497,11 @@ const MAX_EPISODES: usize = 128;
 const MAX_EVENT_LOG: usize = 200;
 const MAX_TASK_OUTPUT_LINES: usize = 50;
 const MAX_GATE_OUTPUT_LINES: usize = 500;
-/// Tasks whose latest gate output is retained in `task_gate_outputs`.
-const MAX_TASK_GATE_OUTPUTS: usize = 64;
-/// Output lines retained per task.
+/// Gate outputs retained in `task_gate_outputs`, one per task and verify step.
+const MAX_TASK_GATE_OUTPUTS: usize = 128;
+/// Verify steps whose output is retained per task.
+const MAX_TASK_GATE_STEPS: usize = 8;
+/// Output lines retained per verify step.
 const MAX_TASK_GATE_OUTPUT_LINES: usize = 60;
 /// Output tail lines folded into a failure summary.
 const FAILURE_SUMMARY_TAIL_LINES: usize = 3;
@@ -3918,7 +3921,7 @@ fn record_gate_trend(
 }
 
 impl DashboardSnapshot {
-    /// Latest retained gate output for `plan_id/task_id`, if any.
+    /// Latest retained gate output for `plan_id/task_id`, of any verify step.
     #[must_use]
     pub fn task_gate_output(&self, plan_id: &str, task_id: &str) -> Option<&TaskGateOutput> {
         self.task_gate_outputs
@@ -3926,12 +3929,27 @@ impl DashboardSnapshot {
             .rev()
             .find(|output| output.plan_id == plan_id && output.task_id == task_id)
     }
+
+    /// Retained output of the `gate` verify step of `plan_id/task_id`, if any.
+    #[must_use]
+    pub fn task_gate_step_output(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        gate: &str,
+    ) -> Option<&TaskGateOutput> {
+        self.task_gate_outputs.iter().rev().find(|output| {
+            output.plan_id == plan_id && output.task_id == task_id && output.gate == gate
+        })
+    }
 }
 
-/// Retain the latest gate output for one task, bounded in tasks and lines.
+/// Retain the latest output of one verify step of one task, bounded in steps
+/// per task, in entries overall and in lines.
 ///
-/// A leading `$ command` line survives truncation so the failing command
-/// stays attributable.
+/// A rerun of a step replaces that step's output; the task's other steps
+/// keep theirs. A leading `$ command` line survives truncation so the
+/// failing command stays attributable.
 fn retain_task_gate_output(
     snapshot: &mut DashboardSnapshot,
     plan_id: &str,
@@ -3940,9 +3958,20 @@ fn retain_task_gate_output(
     passed: bool,
     output: &str,
 ) {
+    let is_task = |entry: &TaskGateOutput| entry.plan_id == plan_id && entry.task_id == task_id;
     snapshot
         .task_gate_outputs
-        .retain(|entry| entry.plan_id != plan_id || entry.task_id != task_id);
+        .retain(|entry| !is_task(entry) || entry.gate != gate);
+    let task_steps = snapshot
+        .task_gate_outputs
+        .iter()
+        .filter(|&entry| is_task(entry))
+        .count();
+    if task_steps >= MAX_TASK_GATE_STEPS
+        && let Some(oldest) = snapshot.task_gate_outputs.iter().position(is_task)
+    {
+        snapshot.task_gate_outputs.remove(oldest);
+    }
     if snapshot.task_gate_outputs.len() >= MAX_TASK_GATE_OUTPUTS {
         snapshot.task_gate_outputs.pop_front();
     }
@@ -4018,8 +4047,8 @@ fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVer
         record_gate_trend(snapshot, &gate.gate, ts, gate.passed);
         if !gate.passed {
             let summary = snapshot
-                .task_gate_output(&gate.plan_id, &gate.task_id)
-                .filter(|output| !output.passed && output.gate == gate.gate)
+                .task_gate_step_output(&gate.plan_id, &gate.task_id, &gate.gate)
+                .filter(|output| !output.passed)
                 .map(|output| summarize_gate_lines(output.lines.iter().map(String::as_str)))
                 .unwrap_or_default();
             push_gate_failure(
@@ -5231,6 +5260,44 @@ mod tests {
         assert!(!retained.passed);
         assert_eq!(retained.lines[0], "$ grep -q PlanSource src/lib.rs");
         assert_eq!(gate_failure_summary(None), "");
+    }
+
+    #[test]
+    fn task_gate_outputs_keep_each_verify_step() {
+        let mut snap = DashboardSnapshot::default();
+        let gate_result = |gate: &str, passed: bool, output: &str| DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            gate: gate.into(),
+            passed,
+            output_text: Some(output.into()),
+        };
+        let step = |snap: &DashboardSnapshot, gate: &str| {
+            snap.task_gate_step_output("p1", "t1", gate).cloned()
+        };
+        snap.apply(&gate_result("compile", true, "$ cargo check\nFinished"));
+        snap.apply(&gate_result("test", false, "$ cargo test\n1 failed"));
+
+        // The failing step did not displace the earlier step's output.
+        let compile = step(&snap, "compile").expect("compile");
+        assert_eq!(compile.lines, ["$ cargo check", "Finished"]);
+        assert!(!step(&snap, "test").expect("test").passed);
+        let latest = snap.task_gate_output("p1", "t1").expect("latest");
+        assert_eq!(latest.gate, "test");
+
+        // A rerun replaces only that step's output.
+        snap.apply(&gate_result("test", true, "$ cargo test\nok"));
+        assert_eq!(snap.task_gate_outputs.len(), 2);
+        assert!(step(&snap, "test").expect("rerun").passed);
+        assert!(step(&snap, "compile").is_some());
+
+        // Steps are bounded per task; the oldest step's output goes first.
+        for extra in 2..=MAX_TASK_GATE_STEPS {
+            snap.apply(&gate_result(&format!("extra-{extra}"), true, "$ true"));
+        }
+        assert_eq!(snap.task_gate_outputs.len(), MAX_TASK_GATE_STEPS);
+        assert!(step(&snap, "compile").is_none());
+        assert!(step(&snap, "test").is_some());
     }
 
     #[test]

@@ -824,6 +824,20 @@ impl Cell for TaskExecutorCell {
             TaskExecutionMode::Live(dispatcher) => {
                 let mut retry = 0_u32;
                 loop {
+                    // A cancelled run starts no further attempt (bug-ceb581).
+                    if ctx.is_cancelled() {
+                        tracing::info!(
+                            plan = %self.spec.plan_id,
+                            task = %self.spec.title,
+                            attempt = retry + 1,
+                            "TaskExecutorCell: the run was cancelled; starting no further attempt"
+                        );
+                        return Err(roko_core::error::RokoError::cancelled(format!(
+                            "the run was cancelled before task `{}` started attempt {}",
+                            self.spec.title,
+                            retry + 1
+                        )));
+                    }
                     match dispatcher.dispatch(&self.spec, input.clone(), ctx).await {
                         Ok(output) => return Ok(output),
                         // A non-retryable gateway error (e.g. every candidate
@@ -832,9 +846,11 @@ impl Cell for TaskExecutorCell {
                         // (e.g. a plan branch that refused the attempt's
                         // work), so surface them at once. A cancellation
                         // means the run is stopping, which a retry would
-                        // only delay.
+                        // only delay, and so does a run cancelled while the
+                        // attempt ran (bug-ceb581).
                         Err(error)
                             if retry < self.spec.max_retries
+                                && !ctx.is_cancelled()
                                 && !matches!(
                                     error,
                                     roko_core::error::RokoError::Gateway {
@@ -1070,6 +1086,66 @@ task_def_json = "{}"
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
         assert!(matches!(error, roko_core::error::RokoError::Cancelled(_)));
+    }
+
+    /// Fails its attempt and cancels its run while the attempt runs, as an
+    /// interrupt does.
+    #[derive(Default)]
+    struct CancelsItsRunDispatcher {
+        calls: AtomicUsize,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for CancelsItsRunDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Agent {
+                backend: "test".to_string(),
+                message: "the agent was killed".to_string(),
+            })
+        }
+    }
+
+    /// bug-ceb581: once its run is cancelled a task starts no further
+    /// attempt, though the failed one has retries left, and a task of a run
+    /// cancelled before it started dispatches nothing.
+    #[tokio::test]
+    async fn a_cancelled_run_starts_no_further_attempt() {
+        let dispatcher = Arc::new(CancelsItsRunDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let ctx = CellContext::new().with_cancel_flag(Arc::clone(&dispatcher.cancel));
+        let error = cell
+            .execute(Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt failed");
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(error, roko_core::error::RokoError::Agent { .. }),
+            "{error:?}"
+        );
+
+        let run = tokio_util::sync::CancellationToken::new();
+        run.cancel();
+        let error = cell
+            .execute(Vec::new(), &CellContext::new().with_run_cancel(run))
+            .await
+            .expect_err("a cancelled run starts nothing");
+        assert_eq!(
+            dispatcher.calls.load(Ordering::SeqCst),
+            1,
+            "no attempt started"
+        );
+        assert!(
+            matches!(error, roko_core::error::RokoError::Cancelled(_)),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

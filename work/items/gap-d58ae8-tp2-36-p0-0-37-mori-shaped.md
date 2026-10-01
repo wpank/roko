@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/tui-parity2/36-OPEN-GAPS.md#P0 — operator truth and control"
 discovered_from = "audit:tmp/tui-parity2/36-OPEN-GAPS.md#P0 — operator truth and control"
 anchors = ["crates/roko-cli/src/runner/queue_manifest.rs::QueueManifest::eligible_plans", "crates/roko-cli/src/graph_execution/plan_set.rs::outside_plan_status", "crates/roko-cli/src/graph_execution/plan_set.rs::PlanSetScheduler", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/commands/plan.rs::read_executor_state"]
@@ -135,6 +135,18 @@ Runner-v2 `MergeQueue`/`ParallelExecutor` state machine, not a Graph run.
   slot and the compare-and-swap serialize merges. Row 4 of Current state and the `Where` bullet on `delivery.rs`
   describe the old code. What remains for row 4 is the wiring (spec-f830c4), plus bug-453481 (merge the verified
   `commit_oid`) and bug-aaa924 (a warm regression build).
+- 2026-10-01 (wk-childenv): partial on work/gap-1555ac (Plan step 3); cargo verification deferred to the batch
+  check. `roko plan queue show` now takes completion from Graph state: `QueueManifest::completed_plans`
+  (runner/queue_manifest.rs) counts a plan done when its Graph checkpoint succeeded or every task in its
+  `tasks.toml` is done (`plan_set::outside_plan_status`, the plan-set prerequisite check). It no longer reads the
+  Runner-v2 executor snapshot (`read_executor_state`), which Graph runs never write. Test:
+  `completed_plans_read_graph_checkpoints_and_task_status`.
+- State at BASE `ebdc0f5d5`: spec-f830c4 (done) wired delivery for `--worktree-per-task` runs, which deliver each
+  plan into the run's batch branch without touching the operator's checkout
+  (`a_worktree_run_delivers_each_plan_into_its_batch_branch`). Per-task worktrees are still opt-in (gap-4ec59f,
+  open); pause and `--batch-size` are still open (bug-8208a6, gap-d60281). Left here: the parity fixture (Plan
+  step 1) and queue-driven selection in `plan run` (step 2), which can build on `completed_plans` and
+  `eligible_plans`.
 
 ## Original notes
 

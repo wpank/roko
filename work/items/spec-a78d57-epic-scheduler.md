@@ -88,7 +88,7 @@ This is the implementation plan.
       `3e7552acd`)
 - [x] gap-439794: File-conflict detection before same-wave task dispatch (existing item)
 - [x] gap-272448: max_parallel defaults to the plan's DAG width when task write sets are disjoint
-- [ ] gap-c89b40: Nothing limits concurrent cargo builds across processes that share a target dir (existing item)
+- [x] gap-c89b40: Nothing limits concurrent cargo builds across processes that share a target dir (existing item)
 - [x] gap-987064: Integration test C6: independent tasks still run after a failure, and tasks with overlapping files
 - [x] gap-1920ba: File exclusion misses read-against-write races: a whole-project verify reads a sibling's half-written file
 - [x] gap-51deff: In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between

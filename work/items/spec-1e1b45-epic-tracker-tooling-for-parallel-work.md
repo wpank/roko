@@ -74,7 +74,7 @@ This is the implementation plan. One agent at a time works on `tools/work.py`.
 - [x] gap-d1f787: work.py next treats files changed in any other worktree as busy
 - [x] gap-823dce: work.py claim re-checks the footprint under a lock, can be renewed, and expires by size
 - [x] gap-c9e61b: work.py list, show and status, plus a generated EPICS.md with progress per epic and lane
-- [ ] gap-2bc1b9: work.py new accepts every item field as a flag
+- [x] gap-2bc1b9: work.py new accepts every item field as a flag
 - [ ] gap-25065c: Import the rest of the research programme's checklist as unverified work items
 - [x] dec-b75b96: Decide how the work skills reach sessions started inside worktrees
 - [ ] gap-d6fd3c: Install the work skills at user level so sessions in worktrees get them

@@ -44,6 +44,15 @@ pub enum LiveAgentEvent {
     /// Consumers that want to render live token output should handle this
     /// variant but must be prepared for it to contain sensitive content.
     Unscreened(StreamEventKind),
+
+    /// The run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) or, with `waiting: false`, has just
+    /// got it and starts. A run waiting on its provider is queued, not
+    /// silent.
+    Queued {
+        /// `true` while the run waits for the permit.
+        waiting: bool,
+    },
 }
 
 /// A cheap, cloneable handle that agent code holds to emit [`LiveAgentEvent`]s.

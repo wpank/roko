@@ -210,10 +210,52 @@ pub(crate) fn build_extra_body_params(
     model: &ModelProfile,
 ) -> Map<String, Value> {
     let mut extra_body_params = Map::new();
+    inject_sampling_params(&mut extra_body_params, provider, model);
     inject_glm_params(&mut extra_body_params, provider, model);
     inject_kimi_params(&mut extra_body_params, model);
     inject_provider_routing(&mut extra_body_params, provider, model);
     extra_body_params
+}
+
+/// The request-body keys that set sampling.
+const SAMPLING_PARAMS: [&str; 3] = ["temperature", "top_p", "seed"];
+
+/// The profile's sampling (gap-13bbbd). Cerebras's small models need
+/// temperature 0 for determinism, so it is their default.
+fn inject_sampling_params(
+    body: &mut Map<String, Value>,
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+) {
+    if let Some(temperature) = model.temperature {
+        body.insert("temperature".to_string(), json!(temperature));
+    } else if provider.kind == ProviderKind::CerebrasApi {
+        body.insert("temperature".to_string(), Value::from(0));
+    }
+    if let Some(seed) = model.seed {
+        body.insert("seed".to_string(), json!(seed));
+    }
+}
+
+/// The sampling parameters roko sends with each request to `model` on
+/// `provider`, by their request-body names, for an attempt's record
+/// (gap-13bbbd). Empty when the provider's defaults apply: roko sends
+/// sampling only to the OpenAI-compatible and Cerebras providers.
+#[must_use]
+pub fn request_sampling(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+) -> BTreeMap<String, Value> {
+    if !matches!(
+        provider.kind,
+        ProviderKind::OpenAiCompat | ProviderKind::CerebrasApi
+    ) {
+        return BTreeMap::new();
+    }
+    build_extra_body_params(provider, model)
+        .into_iter()
+        .filter(|(key, _)| SAMPLING_PARAMS.contains(&key.as_str()))
+        .collect()
 }
 
 /// Returns `true` for model slugs that require `max_completion_tokens`
@@ -1944,6 +1986,46 @@ done
                 "require_parameters": ["temperature"]
             })
         );
+    }
+
+    /// gap-13bbbd: a profile's temperature and seed reach the request body,
+    /// Cerebras defaults to temperature 0, and an attempt's record names
+    /// what was sent: nothing for a provider roko sends no sampling to.
+    #[test]
+    fn the_profile_sampling_reaches_the_request_and_its_record() {
+        let provider = |kind| ProviderConfig {
+            kind,
+            ..ProviderConfig::default()
+        };
+        let compat = provider(ProviderKind::OpenAiCompat);
+        let sampled = ModelProfile {
+            provider: "local".to_string(),
+            slug: "llama3".to_string(),
+            temperature: Some(0.2),
+            seed: Some(42),
+            ..ModelProfile::default()
+        };
+
+        let body = build_extra_body_params(&compat, &sampled);
+        assert_eq!(body["temperature"], json!(0.2));
+        assert_eq!(body["seed"], json!(42));
+        let sent = BTreeMap::from([
+            ("seed".to_string(), json!(42)),
+            ("temperature".to_string(), json!(0.2)),
+        ]);
+        assert_eq!(request_sampling(&compat, &sampled), sent);
+
+        let unset = ModelProfile {
+            temperature: None,
+            seed: None,
+            ..sampled.clone()
+        };
+        assert!(build_extra_body_params(&compat, &unset).is_empty());
+        let cerebras = provider(ProviderKind::CerebrasApi);
+        let default_temperature = BTreeMap::from([("temperature".to_string(), json!(0))]);
+        assert_eq!(request_sampling(&cerebras, &unset), default_temperature);
+        let anthropic = provider(ProviderKind::AnthropicApi);
+        assert!(request_sampling(&anthropic, &sampled).is_empty());
     }
 
     #[test]

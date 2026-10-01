@@ -9,9 +9,9 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/gate_dispatch", "roko-acp"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
 anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal", "crates/roko-acp/src/runner.rs::build_gate_signal", "crates/roko-gate/src/gate_service.rs:238"]
@@ -82,3 +82,20 @@ For each builder, choose between threading the setting and deleting the path:
 
 - Do not touch the Graph verify path; it is correct.
 - Deleting the legacy runner gate path also closes this item. Record which way it went in the closing evidence.
+
+2026-10-01 (wk-gates): partly implemented on work/bug-951930; cargo verification deferred to the batch check. The
+setting was threaded through, not the paths deleted:
+- `runner/gate_dispatch.rs::gate_signal` takes `env_passthrough`. `run_gate_once` and `run_focused_baseline_verify`
+  pass `gates_config.env_passthrough`, and `spawn_plan_verify` takes it as a new last parameter.
+- `roko-acp/src/runner.rs::build_gate_signal` reads it from the workspace config, the way `run_claude_cli_via_agent` reads
+  `runner.dangerously_skip_permissions`. That covers all three `ROKO_ACP_LEGACY` entry points without a
+  `PipelineConfig` field.
+- `ProductionGateService` applies `request.gates_config.env_passthrough` in `build_signal` and in its verify-step
+  payload.
+- Test: `gate_signal_payload_carries_env_passthrough`. The `[[verify]]` passes.
+Left open:
+- `GateService::run_gates` (roko-gate/src/gate_service.rs): `GateConfig` carries no passthrough, and adding a field
+  touches 19 literals in several crates.
+- `ProductionGateService::verify_rung`: `SharedGateRequest` carries no config.
+- `runner/merge.rs::CargoCheckRegressionGate`.
+None of these has a production caller. Thread them or delete them in a follow-up.

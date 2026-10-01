@@ -28,6 +28,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::graph_execution::plan_set::{OutsidePlanStatus, outside_plan_status};
+
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
@@ -278,6 +280,25 @@ impl QueueManifest {
         }
 
         eligible
+    }
+
+    /// The manifest's plans that are complete in the workspace at `workdir`:
+    /// those whose Graph checkpoint succeeded, or whose `tasks.toml` has
+    /// every task done. It is the evidence a plan set's prerequisites are
+    /// checked against ([`outside_plan_status`]) (gap-d58ae8).
+    pub fn completed_plans(&self, workdir: &Path) -> HashSet<String> {
+        let plans_dir = crate::plan::plans_dir(workdir);
+        self.milestones
+            .iter()
+            .flat_map(|milestone| &milestone.plans)
+            .filter(|plan_id| {
+                matches!(
+                    outside_plan_status(workdir, &plans_dir, plan_id),
+                    OutsidePlanStatus::Complete(_)
+                )
+            })
+            .cloned()
+            .collect()
     }
 
     /// Return the milestone a plan belongs to (if any).
@@ -651,6 +672,61 @@ depends_on = ["mvp"]
         let completed = HashSet::from(["a".to_string(), "b".to_string()]);
         let eligible = manifest.eligible_plans(&completed);
         assert_eq!(eligible, vec!["c"]);
+    }
+
+    /// gap-d58ae8: a plan is complete when its Graph checkpoint succeeded or
+    /// every task of its `tasks.toml` is done, as for a plan set's
+    /// prerequisites; the old executor snapshot no longer decides.
+    #[test]
+    fn completed_plans_read_graph_checkpoints_and_task_status() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let workdir = workspace.path();
+        for (plan_id, task_status) in [
+            ("01-done", "done"),
+            ("02-run", "ready"),
+            ("03-open", "ready"),
+        ] {
+            let plan_dir = workdir.join("plans").join(plan_id);
+            std::fs::create_dir_all(&plan_dir).expect("plan dir");
+            std::fs::write(
+                plan_dir.join("tasks.toml"),
+                format!(
+                    "[meta]\nplan = \"{plan_id}\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Task\"\n\
+                     status = \"{task_status}\"\nfiles = [\"{plan_id}.txt\"]\n\n\
+                     [[task.verify]]\nphase = \"structural\"\ncommand = \"true\"\n"
+                ),
+            )
+            .expect("tasks.toml");
+        }
+        let checkpoint_dir = workdir.join(".roko/state/graph/02-run");
+        std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir");
+        std::fs::write(
+            checkpoint_dir.join("checkpoint.json"),
+            "{\"status\": \"succeeded\"}",
+        )
+        .expect("checkpoint");
+        let toml = r#"
+[[milestone]]
+name = "one"
+plans = ["01-done", "02-run"]
+
+[[milestone]]
+name = "two"
+plans = ["03-open", "04-missing"]
+depends_on = ["one"]
+"#;
+        let manifest = QueueManifest::from_str(toml).expect("manifest");
+
+        let completed = manifest.completed_plans(workdir);
+
+        assert_eq!(
+            completed,
+            HashSet::from(["01-done".to_string(), "02-run".to_string()])
+        );
+        assert_eq!(
+            manifest.eligible_plans(&completed),
+            ["03-open", "04-missing"]
+        );
     }
 
     #[test]

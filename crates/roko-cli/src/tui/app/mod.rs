@@ -502,6 +502,10 @@ static TERMINAL_SIGNAL_CLEANUP_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// SIGINT/SIGTERM, so the terminal handler only claims SIGHUP.
 static HOST_HANDLES_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
 
+/// Set by [`App::with_host_hangup_signal`]: the host handles SIGHUP, so the
+/// terminal handler leaves it alone.
+static HOST_HANDLES_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
 /// Best-effort terminal reset for a host that must exit while a TUI thread
 /// may still own the terminal (e.g. a forced shutdown after a second signal).
 pub fn restore_terminal_for_forced_exit() {
@@ -566,7 +570,9 @@ fn install_terminal_signal_cleanup() {
             let _ = libc::signal(libc::SIGINT, handler);
             let _ = libc::signal(libc::SIGTERM, handler);
         }
-        let _ = libc::signal(libc::SIGHUP, handler);
+        if !HOST_HANDLES_HANGUP_SIGNAL.load(Ordering::SeqCst) {
+            let _ = libc::signal(libc::SIGHUP, handler);
+        }
     }
 }
 
@@ -1253,10 +1259,19 @@ impl App {
     /// Leave SIGINT/SIGTERM to the embedding host instead of the
     /// reset-and-reraise terminal handler. The host (e.g. `roko plan run`)
     /// cancels its work, stops this TUI through the shutdown receiver, and
-    /// exits with the signal's status; SIGHUP keeps the terminal handler.
+    /// exits with the signal's status; SIGHUP keeps the terminal handler
+    /// unless [`Self::with_host_hangup_signal`] hands it over too.
     #[must_use]
     pub fn with_host_termination_signals(self) -> Self {
         HOST_HANDLES_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+        self
+    }
+
+    /// Leave SIGHUP to the embedding host as well: `roko plan run` stops its
+    /// run on a hangup as on SIGTERM, finalizing its checkpoint (bug-4641e3).
+    #[must_use]
+    pub fn with_host_hangup_signal(self) -> Self {
+        HOST_HANDLES_HANGUP_SIGNAL.store(true, Ordering::SeqCst);
         self
     }
 

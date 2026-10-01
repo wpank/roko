@@ -1270,6 +1270,19 @@ async fn run_graph_plan_body(
         ExecutionCommandSender::channel("graph-engine");
     let tui_ack_receiver = CommandAckReceiver::new(tui_ack_rx);
 
+    // `roko plan pause/resume/cancel/retry` in another terminal write
+    // `.roko/state/control.json`; the plan-set driver routes what they write
+    // through this channel, like a TUI command (bug-8208a6). A command left
+    // from before this run is dropped.
+    let control_file_sender = tui_cmd_sender.clone();
+    let control_state_dir = RokoLayout::for_project(workdir).state_dir();
+    if let Some(stale) = crate::runner::types::ControlCommand::poll(&control_state_dir) {
+        tracing::warn!(
+            command = ?stale.command,
+            "dropping a plan control command written before this run"
+        );
+    }
+
     // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
     // Wired into each CellContext so the task executor cell can check it
     // between agent turns (cells check this flag between turns; a paused
@@ -1453,6 +1466,7 @@ async fn run_graph_plan_body(
             stopped_by = Some(reason);
             scheduler.stop();
         }
+        forward_control_file(&control_state_dir, &control_file_sender);
         for plan_id in route_execution_commands(
             &mut exec_cmd_rx,
             &tui_ack_tx,
@@ -2395,6 +2409,20 @@ fn route_execution_commands(
         let _ = acks.try_send(ack_for(&cmd, status, note));
     }
     cancelled_before_start
+}
+
+/// Forward the command `roko plan pause/resume/cancel/retry` wrote to
+/// `<state_dir>/control.json`, if any, into the run's command channel, where
+/// [`route_execution_commands`] routes it like a TUI command (bug-8208a6).
+/// The file is consumed.
+fn forward_control_file(state_dir: &Path, commands: &ExecutionCommandSender) {
+    let Some(control) = crate::runner::types::ControlCommand::poll(state_dir) else {
+        return;
+    };
+    let command = crate::execution_control::control_command_to_execution(&control, "graph-engine");
+    if let Err(error) = commands.try_send(command) {
+        tracing::warn!(%error, "could not route a plan control command to the run");
+    }
 }
 
 /// [`run_one_plan`], tagged with the plan's ID for the plan-set driver.
@@ -3385,6 +3413,31 @@ mod tests {
             tasks,
             prd_excerpt: String::new(),
         }
+    }
+
+    /// bug-8208a6: a command `roko plan cancel` writes to control.json reaches
+    /// the run's command channel, as a TUI command would, and is consumed.
+    #[test]
+    fn a_control_file_command_reaches_the_run() {
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        crate::runner::types::ControlCommand {
+            command: crate::runner::types::ControlAction::Cancel,
+            plan_id: Some("p1".to_string()),
+            task_id: None,
+        }
+        .write(state_dir.path())
+        .expect("write control.json");
+        let (sender, mut commands, _acks, _ack_rx) =
+            ExecutionCommandSender::channel("graph-engine");
+
+        forward_control_file(state_dir.path(), &sender);
+
+        let command = commands.try_recv().expect("the command is routed");
+        assert_eq!(command.kind, ExecutionCommandKind::Cancel);
+        assert_eq!(command.plan_id.as_deref(), Some("p1"));
+        assert!(!state_dir.path().join("control.json").exists());
+        forward_control_file(state_dir.path(), &sender);
+        assert!(commands.try_recv().is_err(), "nothing more to route");
     }
 
     #[test]

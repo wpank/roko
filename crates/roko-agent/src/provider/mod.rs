@@ -1259,7 +1259,7 @@ pub fn map_provider_error(
         return format!("{err_text} (provider '{provider_name}')");
     }
 
-    if err_lower.contains("401")
+    if error_classify::mentions_http_401(&err_lower)
         || err_lower.contains("authentication_error")
         || err_lower.contains("unauthorized")
     {
@@ -2673,6 +2673,28 @@ mod tests {
         assert!(msg.contains("API key invalid"), "got: {msg}");
         assert!(msg.contains("anthropic"), "got: {msg}");
         assert!(msg.contains("ANTHROPIC_API_KEY"), "got: {msg}");
+    }
+
+    /// bug-e03f92: a 401 inside a count is not an HTTP status, so it does
+    /// not blame the API key.
+    #[test]
+    fn http_401_inside_a_count_is_not_an_api_key_error() {
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"stream ended after 1401 tokens and 401 chunks",
+        );
+        assert!(!msg.contains("API key invalid"), "got: {msg}");
+        let msg = map_provider_error(
+            ProviderKind::OpenAiCompat,
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("https://api.openai.com/v1"),
+            &"http 401: bad key",
+        );
+        assert!(msg.contains("API key invalid"), "got: {msg}");
     }
 
     #[test]

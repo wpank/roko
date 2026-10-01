@@ -2164,7 +2164,7 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
         || lower.contains("forbidden")
         || lower.contains("permission denied")
         || lower.contains("authentication")
-        || lower.contains("401")
+        || crate::provider::error_classify::mentions_http_401(&lower)
         || lower.contains("403")
     {
         "auth_failure"
@@ -3243,6 +3243,17 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
             .expect("model call should succeed without router");
 
         assert_eq!(response.model, "ux34-model");
+    }
+
+    /// bug-e03f92: the circuit breaker counts a 401 as an auth failure only
+    /// when it is an HTTP status.
+    #[test]
+    fn http_401_is_an_auth_failure_only_as_a_status() {
+        assert_eq!(provider_error_kind("http 401: bad key"), "auth_failure");
+        assert_eq!(
+            provider_error_kind("stream ended after 1401 tokens and 401 chunks"),
+            "unknown"
+        );
     }
 
     #[tokio::test]

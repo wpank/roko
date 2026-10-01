@@ -3,6 +3,37 @@
 
 use super::*;
 
+/// Take up to `max` events from `subscription`: what is left of its replay
+/// first, then live ones. Replay events past `max` wait for the next call.
+///
+/// Also returns how many live events the subscription lagged past (gap-633184).
+/// Those are counted, never dropped silently, but not recovered: the hub's
+/// replay ring keeps no more events than its broadcast channel does, so it no
+/// longer holds them either. Plan, task and gate state come back from the
+/// snapshot (RC-1, see `drain_state_events`); transcript lines do not.
+pub(super) fn take_state_events(
+    subscription: &mut crate::state_hub::StateHubSubscription,
+    max: usize,
+) -> (Vec<roko_core::DashboardEvent>, u64) {
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let from_replay = subscription.replay.len().min(max);
+    let mut events: Vec<_> = subscription
+        .replay
+        .drain(..from_replay)
+        .map(|envelope| envelope.payload)
+        .collect();
+    let mut dropped = 0;
+    while events.len() < max {
+        match subscription.live.try_recv() {
+            Ok(envelope) => events.push(envelope.payload),
+            Err(TryRecvError::Lagged(missed)) => dropped += missed,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+    (events, dropped)
+}
+
 impl App {
     pub(super) fn drain_background_channels(&mut self) {
         const MAX_MESSAGES_PER_DRAIN: usize = 20;
@@ -247,22 +278,12 @@ impl App {
         let Some(subscription) = self.state_events.as_mut() else {
             return;
         };
-        let mut events = Vec::new();
-        for envelope in subscription.replay.drain(..).take(MAX_EVENTS) {
-            events.push(envelope.payload);
-        }
-        while events.len() < MAX_EVENTS {
-            match subscription.live.try_recv() {
-                Ok(envelope) => events.push(envelope.payload),
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
-                    self.tui_state.push_agent_chunk(
-                        "system",
-                        format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
-                    );
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-            }
+        let (events, dropped) = take_state_events(subscription, MAX_EVENTS);
+        if dropped > 0 {
+            self.tui_state.push_agent_chunk(
+                "system",
+                format!("[stream lagged: {dropped} StateHub events; snapshot resynced]"),
+            );
         }
         for event in events {
             // RC-1: Unified data model — the DashboardSnapshot (updated inside

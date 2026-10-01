@@ -9,9 +9,9 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-cli/dispatch", "roko-execution"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "faa378453"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-completion-loops 189a14e65"
 anchors = ["crates/roko-cli/src/dispatch/prompt_cache.rs::load_neuro_entries", "crates/roko-cli/src/dispatch/prompt_builder.rs::collect_neuro_knowledge_cached", "crates/roko-cli/src/dispatch/prompt_builder.rs::query_keywords", "crates/roko-cli/src/graph_execution/plan_runner.rs:867", "crates/roko-execution/src/prompt/cache.rs::load_neuro_entries", "crates/roko-neuro/src/knowledge_store/scoring.rs::score_entry_for_query"]
@@ -98,3 +98,22 @@ has no caller.
 - `prompt_builder.rs` and `graph_task_dispatch.rs` change often; keep the change small.
 - Check the result with a real `roko plan run`: the prompt, the episode's `knowledge_ids_injected`
   and `results_count` in `retrieval-outcomes.jsonl` (CLAUDE.md rule 3).
+- 2026-10-01 (wk-childenv): Premise re-checked at `faa378453`: both caches still loaded `query("", 500)`, and
+  `plan_runner.rs:923` (was :867) loads the cache for plan runs. Implemented on `work/bug-86117a` at `133c02093`;
+  cargo verification is deferred to the batch check, and no real `roko plan run` has been done.
+  - Load: both caches use the new `KnowledgeStore::hot_entries` (not frozen, non-blank content), which
+    `query_hits_filtered` now shares.
+  - Rank: per task, by the task's query text (id, title, role, description, acceptance, files). `query_keywords`
+    drops stopwords, the cached neuro section matches whole words, and it keeps three entries. The stopword list
+    also applies to the episode, playbook and group-knowledge scorers, which still match substrings.
+  - Ids: `PromptDiagnostics.knowledge_ids` holds only the neuro section's ids, and the episode section's ids go to
+    a new `episode_ids`.
+  - Not done: plan step 4 (refreshing the cache after a run admits knowledge); the uncached path still ranks with
+    `KnowledgeStore::query`.
+  - Found while checking the test: the prompt composer may still drop the knowledge. Since dc418ae0a (2026-09-06),
+    `foraging_prepass` (`roko-compose/src/prompt.rs`) keeps at most three optional sections: in density order,
+    a candidate's density is never above the running mean, so the stop rule fires at the third. An implementer
+    prompt has four (`conventions`, `tool_instructions`, `domain_context`, `anti_patterns`). Knowledge, episodes and
+    playbooks all ride in `domain_context`, which loses whenever it is longer than `conventions` (about 1,230
+    bytes), and the dropped section is missing from `dropped_sections` too. The test's domain context is about
+    250 bytes, so it keeps the section.

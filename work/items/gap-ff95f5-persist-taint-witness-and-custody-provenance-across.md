@@ -171,6 +171,17 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
     `provenance_sinks_hold_a_runs_sink_while_it_is_registered` (roko-cli lib).
   Still open: step 5 (replay idempotency), the policy and contract fingerprints, and a live run showing
   `roko knowledge custody list` records (Done when).
+- 2026-10-02 (wk-tamper): Plan step 5 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - A provenance record's identity is the hash of its canonical JSON (RFC 8785): call IDs (run, task, attempt,
+    turn, call), argument digest, taint, and for an outcome its verdict, reason and result digest.
+    `GraphProvenanceSink` acknowledges an intent it already holds with its first record's id, and skips an outcome
+    it already holds, so neither is written twice. On resume it loads the run's records from the logs.
+  - Whether an external effect happened stays with the activity and receipt ledger; an acknowledged intent does
+    not prove it. A Graph resume re-dispatches with new S01 attempt keys, so a replay of the same attempt's calls
+    only arises from a provider re-sending a call.
+  - Test: `graph_provenance_sink_records_a_replayed_record_once` (roko-cli lib).
+  Still open: the policy and contract fingerprints in the summary, and a live API-provider run showing
+  `roko knowledge custody list` records, as the Done when asks.
 
 ## Original notes
 

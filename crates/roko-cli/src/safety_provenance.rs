@@ -27,6 +27,7 @@ use roko_agent::safety::{
     WitnessVertex,
 };
 use roko_core::ContentHash;
+use roko_core::config::fingerprint::canonical_json;
 use roko_fs::RokoLayout;
 use serde::{Deserialize, Serialize};
 
@@ -112,12 +113,14 @@ impl std::fmt::Debug for GraphProvenanceSink {
     }
 }
 
-/// How many records the sink wrote, and where the logs' chains end.
+/// How many records the sink wrote, where the logs' chains end, and the
+/// witness vertex of each record of the run so far, by [`record_identity`].
 #[derive(Debug, Default)]
 struct Chain {
     records: u64,
     witness_head: Option<ContentHash>,
     custody_head: Option<String>,
+    recorded: HashMap<ContentHash, ContentHash>,
 }
 
 impl GraphProvenanceSink {
@@ -198,11 +201,13 @@ impl GraphProvenanceSink {
         // What the run's records up to the stored custody head prove.
         let proven = TaintTracker::new();
         let mut records = 0;
+        let mut recorded = HashMap::new();
         for (index, record) in custody.iter().enumerate() {
-            let Some(provenance) = run_record(record, &witness, run_id)? else {
+            let Some((vertex, provenance)) = run_record(record, &witness, run_id)? else {
                 continue;
             };
             records += 1;
+            recorded.insert(record_identity(&provenance), vertex);
             track(if index < committed { &proven } else { &taint }, &provenance);
         }
         for (hash, level) in proven.levels() {
@@ -213,7 +218,11 @@ impl GraphProvenanceSink {
                 );
             }
         }
-        sink.chain.lock().records = records;
+        {
+            let mut chain = sink.chain.lock();
+            chain.records = records;
+            chain.recorded = recorded;
+        }
         Ok(Self { taint, ..sink })
     }
 
@@ -284,8 +293,16 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
 
     fn record_intent(&self, intent: &ProvenanceIntent) -> Result<ProvenanceAck, ProvenanceError> {
         let mut chain = self.chain.lock();
-        let parents = chain.witness_head.into_iter().collect();
         let record = ProvenanceRecord::Intent(intent.clone());
+        // An intent recorded before, say by an earlier process of the run, is
+        // acknowledged again rather than written twice.
+        let identity = record_identity(&record);
+        if let Some(vertex) = chain.recorded.get(&identity) {
+            return Ok(ProvenanceAck {
+                record_id: vertex.to_hex(),
+            });
+        }
+        let parents = chain.witness_head.into_iter().collect();
         let digest = Some(intent.call.args_digest);
         let vertex = self
             .append(
@@ -297,6 +314,7 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
                 digest,
             )
             .map_err(|error| ProvenanceError(format!("record the intent: {error}")))?;
+        chain.recorded.insert(identity, vertex);
         drop(chain);
         track_intent(&self.taint, intent);
         Ok(ProvenanceAck {
@@ -306,6 +324,11 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
 
     fn record_outcome(&self, outcome: &ProvenanceOutcome) -> Result<(), ProvenanceError> {
         let mut chain = self.chain.lock();
+        let record = ProvenanceRecord::Outcome(outcome.clone());
+        let identity = record_identity(&record);
+        if chain.recorded.contains_key(&identity) {
+            return Ok(());
+        }
         let mut parents: Vec<ContentHash> = chain.witness_head.into_iter().collect();
         // An outcome follows its intent's vertex, whose id is the intent's
         // acknowledgement.
@@ -314,17 +337,18 @@ impl SafetyProvenanceSink for GraphProvenanceSink {
         {
             parents.push(intent);
         }
-        let record = ProvenanceRecord::Outcome(outcome.clone());
         let digest = outcome.result_digest;
-        self.append(
-            &mut chain,
-            VertexKind::Resolution,
-            &outcome.call,
-            parents,
-            &record,
-            digest,
-        )
-        .map_err(|error| ProvenanceError(format!("record the outcome: {error}")))?;
+        let vertex = self
+            .append(
+                &mut chain,
+                VertexKind::Resolution,
+                &outcome.call,
+                parents,
+                &record,
+                digest,
+            )
+            .map_err(|error| ProvenanceError(format!("record the outcome: {error}")))?;
+        chain.recorded.insert(identity, vertex);
         drop(chain);
         track_outcome(&self.taint, outcome);
         Ok(())
@@ -359,8 +383,8 @@ fn committed_records(
     Ok(index + 1)
 }
 
-/// The provenance record that the custody record `record` names, when it is
-/// one of run `run_id`'s.
+/// The provenance record that the custody record `record` names, with its
+/// witness vertex, when it is one of run `run_id`'s.
 ///
 /// # Errors
 ///
@@ -371,7 +395,7 @@ fn run_record(
     record: &Custody,
     witness: &WitnessDag,
     run_id: &str,
-) -> Result<Option<ProvenanceRecord>> {
+) -> Result<Option<(ContentHash, ProvenanceRecord)>> {
     let action = &record.action;
     let ours = ["tool_intent:", "tool_outcome:"];
     if !ours.iter().any(|prefix| action.starts_with(*prefix)) {
@@ -404,7 +428,15 @@ fn run_record(
         ProvenanceRecord::Outcome(outcome) => &outcome.call,
     };
     let mine = call.run_id == run_id;
-    Ok(mine.then_some(provenance))
+    Ok(mine.then_some((id, provenance)))
+}
+
+/// What makes two provenance records the same record: the hash of their
+/// canonical JSON (RFC 8785). Recording the same record again, as a replay
+/// would, then adds nothing to the logs.
+fn record_identity(record: &ProvenanceRecord) -> ContentHash {
+    let value = serde_json::to_value(record).unwrap_or_default();
+    ContentHash::of(canonical_json(&value).as_bytes())
 }
 
 /// Track `record` in `tracker`.
@@ -567,6 +599,44 @@ mod tests {
         let reopened_summary = reopened.summary();
         assert_eq!(reopened_summary.witness_head, Some(head));
         assert_eq!(reopened_summary.custody_head, summary.custody_head);
+    }
+
+    #[test]
+    fn graph_provenance_sink_records_a_replayed_record_once() {
+        let dir = tempdir().expect("tempdir");
+        let sink = GraphProvenanceSink::open(dir.path()).expect("open the sink");
+        let key = sink.digest_key();
+        let intent = ProvenanceIntent {
+            call: call(&key),
+            taint: CamelTaintLevel::Local,
+        };
+        let first = sink.record_intent(&intent).expect("record the intent");
+        assert_eq!(sink.record_intent(&intent).expect("record it again"), first);
+        let outcome = ProvenanceOutcome {
+            call: intent.call.clone(),
+            intent: Some(first.record_id.clone()),
+            verdict: ProvenanceVerdict::Failed,
+            reason: Some("timeout".to_string()),
+            result_digest: None,
+            taint: CamelTaintLevel::Local,
+        };
+        sink.record_outcome(&outcome).expect("record the outcome");
+        sink.record_outcome(&outcome).expect("record it again");
+        assert_eq!(sink.summary().records, 2);
+
+        // A later process of the run acknowledges the same intent with its
+        // first record, and writes nothing new.
+        let resumed = GraphProvenanceSink::resume(dir.path(), "run-1", None).expect("resume");
+        assert_eq!(
+            resumed.record_intent(&intent).expect("replayed intent"),
+            first
+        );
+        resumed.record_outcome(&outcome).expect("replayed outcome");
+        let custody = CustodyLogger::new(RokoLayout::for_project(dir.path()).custody_log())
+            .read_all()
+            .expect("custody log");
+        assert_eq!(custody.len(), 2);
+        assert_eq!(resumed.summary().records, 2);
     }
 
     #[test]

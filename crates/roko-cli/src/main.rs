@@ -5550,10 +5550,10 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Inject { .. })));
     }
 
-    // -- inject file-transport tests (#325, updated for #361) --
-    // With the file-based ControlCommand transport (#361), valid inject requests
-    // now succeed by writing a control.json file. The substrate (engrams.jsonl)
-    // must still NOT be written by the inject path itself.
+    // -- inject fails closed (#325, gap-f118b3) --
+    // No transport reaches a live executor yet, so a valid inject request exits
+    // non-zero and writes nothing: no control.json or inject.json that nothing
+    // reads, and no substrate (engrams.jsonl) entry.
 
     #[tokio::test]
     async fn inject_fail_closed_directive() {
@@ -5571,13 +5571,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject directive succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "no transport reaches a live executor, so a directive fails closed"
         );
-        // Control file should exist.
         assert!(
-            roko_dir.join("state/control.json").exists(),
-            "control file should be written"
+            !roko_dir.join("state").exists(),
+            "a request that delivered nothing writes no control or inject file"
         );
         // No signal log should be created.
         assert!(
@@ -5600,9 +5599,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject abort succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "an abort that reaches no executor fails closed"
         );
+        assert!(!tmp.path().join(".roko/state").exists());
     }
 
     #[tokio::test]
@@ -5619,9 +5619,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject context succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "context that reaches no executor fails closed"
         );
+        assert!(!tmp.path().join(".roko/state").exists());
     }
 
     #[tokio::test]
@@ -5664,9 +5665,33 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            code, EXIT_SUCCESS,
-            "inject JSON succeeds via file-based transport"
+            code, EXIT_FAILURE,
+            "inject --json reports inject_transport_unavailable and fails"
         );
+    }
+
+    /// gap-f118b3: success needs the addressed executor's acknowledgement,
+    /// and no transport carries one yet. Every kind exits non-zero and leaves
+    /// `.roko/state/` as it was.
+    #[tokio::test]
+    async fn inject_fails_without_executor_ack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join(".roko/state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let cli = Cli::try_parse_from(["roko", "inject", "run-1", "stop"]).unwrap();
+        for (kind, payload) in [("directive", "stop"), ("context", "ctx"), ("abort", "")] {
+            let code = commands::util::cmd_inject(
+                &cli,
+                "run-1".into(),
+                kind,
+                payload.into(),
+                Some(tmp.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(code, EXIT_FAILURE, "{kind} succeeded without an ack");
+        }
+        assert_eq!(std::fs::read_dir(&state_dir).unwrap().count(), 0);
     }
 
     #[test]

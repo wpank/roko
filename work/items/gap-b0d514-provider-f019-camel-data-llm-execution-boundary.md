@@ -18,7 +18,7 @@ anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/ro
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q '\"agent.data_llm\", NO_READER' crates/roko-cli/src/graph_task_dispatch.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
+command = "! grep -q '\"agent.data_llm\"' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
 +++
 
 ## Problem
@@ -167,6 +167,21 @@ LLM failure blocks the content instead of passing it through.
   that names no content. Building the backend from the provider factory belongs to step 6. Tests:
   `data_llm_boundary_sends_only_the_fixed_prompt_and_the_text`, `data_llm_boundary_withholds_what_it_cannot_validate`,
   `data_llm_boundary_bounds_its_input`, `data_llm_boundary_refuses_tools_and_unbounded_calls`.
+- 2026-10-01 (wk-childenv): Plan step 3 (tool loop) on work/gap-1555ac; cargo verification deferred to the batch
+  check. `ToolLoop::with_data_llm(Arc<DataLlmBoundary>)` (default: none) makes `run_inner` pass each
+  `dispatch_batch` result through `DataLlmBoundary::screen_result` before previews and `render_results`, by the
+  taint `tool_source_taint` gives the tool's registry source (MCP and plugin: third party; web search, retrieval
+  and network builtins: external fetch; other builtins: none). A routed result reaches the model only as
+  `[untrusted output (<reason>), read by the data model: ...]` plus the validated JSON, or as the tool error
+  `untrusted content withheld: <why>`. Images and artifacts are withheld, and a `ToolError::Other` message is
+  screened like text. Tests: `a_routed_tool_result_reaches_the_model_only_as_data_output`,
+  `a_withheld_tool_result_never_reaches_the_model_raw` (tool_loop/mod.rs).
+- Left (steps 4-8): the narrow output type (step 4; validation is still JSON plus the configured `required` keys);
+  a typed withheld error instead of `ToolError::Other` (step 5); building the boundary from `config.agent.data_llm`
+  through the provider factory for every roko-owned loop, including ACP's, and dropping the inert entry (step 6);
+  audit records (step 7); cancellation coverage (step 8). The verify now greps `inert_settings.rs`, where the inert
+  list moved. Its test, `untrusted_tool_result_never_reaches_main_model_raw`, is left for step 6, so that it covers
+  the boundary built from config; the step-3 tests use other names, so the verify does not pass early.
 
 ## Original notes
 

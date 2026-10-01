@@ -302,9 +302,10 @@ pub struct RoutingOverrides {
 ///
 /// It can only cover the tool loops roko drives itself (API providers): CLI
 /// providers (Claude CLI, Codex, Gemini CLI, Cursor) run their own tool
-/// loops, so roko never sees their tool results first. No dispatch path
-/// builds the boundary from this section yet, so `plan run` reports the key
-/// as inert (gap-b0d514).
+/// loops, so roko never sees their tool results first. A roko-agent
+/// `ToolLoop` applies the boundary when built `with_data_llm`, but no
+/// dispatch path builds one from this section yet, so `plan run` reports
+/// the key as inert (gap-b0d514).
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

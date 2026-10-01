@@ -10,9 +10,9 @@
 use crate::agent::{Agent, AgentResult};
 use crate::mcp::workspace_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
-    classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
+    benign_stderr_warn_once, classify_benign_stderr, config_file_env_names, confined_command,
+    kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
@@ -254,11 +254,24 @@ impl ClaudeIsolation {
         ISOLATION_ENV
     }
 
+    /// The keys of [`tags`](Self::tags). A Graph attempt's verdict copies
+    /// them from the run's output (gap-751ac9).
+    pub const TAG_KEYS: &'static [&'static str] = &[
+        "setting_sources",
+        "mcp_servers",
+        "auto_memory",
+        "config_dir",
+        "shell_snapshot",
+    ];
+
     /// What the run loads, as `(tag, value)` pairs. [`ClaudeCliAgent`] tags
     /// its output with them, and every spawn logs them with the MCP config
     /// it passes. `setting_sources` is `none` or the `--setting-sources`
     /// list; `mcp_servers` is `roko` (only those Roko passes) or `managed`
-    /// (the managed MCP config's); `shell_snapshot` is always `user`.
+    /// (the managed MCP config's); `auto_memory` is `off` while
+    /// [`ISOLATION_ENV`] switches it off; `config_dir` is `user`, since the
+    /// config directory is left alone ([`env`](Self::env)); `shell_snapshot`
+    /// is always `user`.
     #[must_use]
     pub fn tags(&self) -> Vec<(&'static str, String)> {
         let setting_sources: &str = if self.setting_sources.trim().is_empty() {
@@ -271,9 +284,19 @@ impl ClaudeIsolation {
         } else {
             "roko"
         };
+        let auto_memory = if self
+            .env()
+            .contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"))
+        {
+            "off"
+        } else {
+            "on"
+        };
         vec![
             ("setting_sources", setting_sources.to_string()),
             ("mcp_servers", mcp_servers.to_string()),
+            ("auto_memory", auto_memory.to_string()),
+            ("config_dir", "user".to_string()),
             ("shell_snapshot", "user".to_string()),
         ]
     }
@@ -780,7 +803,7 @@ impl ClaudeCliAgent {
             }
         }
         if usage.source == UsageSource::Unknown {
-            return streamed.into_stream_usage(fallback_model);
+            return streamed.stream_usage(fallback_model);
         }
         usage
     }
@@ -1164,6 +1187,10 @@ impl ClaudeCliAgent {
             }
         };
         let pid = child.id();
+        // `kill_on_drop` kills only `claude`: a run dropped by a cancel or the
+        // stall watchdog kills its tool subprocesses through this guard,
+        // declared after `child` so it drops first (bug-739dcc).
+        let mut tree_guard = KillTreeOnDrop::new(pid);
         if track_pids()
             && let Some(pid) = pid
         {
@@ -1176,6 +1203,7 @@ impl ClaudeCliAgent {
             && let Err(e) = stdin.write_all(prompt_text.as_bytes()).await
         {
             let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+            tree_guard.disarm();
             if track_pids()
                 && let Some(pid) = pid
             {
@@ -1200,6 +1228,7 @@ impl ClaudeCliAgent {
         let stdout_name = self.name.clone();
         let stdout_activity = has_activity.clone();
         let stdout_stream_tx = stream_tx;
+        let stdout_model = self.model.clone();
         let stdout_handle = tokio::spawn(async move {
             let Some(pipe) = stdout_pipe else {
                 return String::new();
@@ -1209,6 +1238,7 @@ impl ClaudeCliAgent {
             let mut collected = String::new();
             let mut text_bytes: usize = 0;
             let mut tool_count: usize = 0;
+            let mut streamed = StreamedMessages::default();
 
             while let Ok(Some(line)) = lines.next_line().await {
                 collected.push_str(&line);
@@ -1235,6 +1265,13 @@ impl ClaudeCliAgent {
                         for kind in Self::event_kinds_from_value(&event) {
                             // Ignore send errors: receiver may have dropped.
                             let _ = tx.send(StreamEvent::now(kind)).await;
+                        }
+                        // The run is one call to the stream: each `Usage`
+                        // is its estimated total so far.
+                        if let Some(usage) = streamed.observe_live(&event, &stdout_model) {
+                            let _ = tx
+                                .send(StreamEvent::now(StreamEventKind::Usage(usage)))
+                                .await;
                         }
                     }
                 }
@@ -1312,6 +1349,7 @@ impl ClaudeCliAgent {
             Ok(status) => status,
             Err(reason) => {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+                tree_guard.disarm();
                 if track_pids()
                     && let Some(pid) = pid
                 {
@@ -1334,6 +1372,8 @@ impl ClaudeCliAgent {
                 return self.failure_with_stream_usage(input, &reason, started, &stream_usage);
             }
         };
+        // Tool subprocesses can still hold the output pipes open.
+        tree_guard.root_reaped();
         if track_pids()
             && let Some(pid) = pid
         {
@@ -1344,6 +1384,7 @@ impl ClaudeCliAgent {
 
         let stdout = stdout_handle.await.unwrap_or_default();
         let stderr = stderr_handle.await.unwrap_or_default();
+        tree_guard.disarm();
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1551,10 +1592,23 @@ impl StreamedMessages {
             .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
     }
 
+    /// [`Self::observe`] `event` and, when it changed what the run streamed,
+    /// return the new totals for the live stream: the run's usage so far,
+    /// which the stall watchdog records for a run it drops (bug-aa2044).
+    fn observe_live(&mut self, event: &Value, fallback_model: &str) -> Option<Usage> {
+        if event.get("type").and_then(Value::as_str) != Some("assistant") {
+            return None;
+        }
+        let before = self.stream_usage(fallback_model);
+        self.observe(event);
+        let after = self.stream_usage(fallback_model);
+        (after != before).then(|| ClaudeCliAgent::usage_observation(&after, 0).into())
+    }
+
     /// The streamed totals as [`UsageSource::Estimated`] usage, each message
     /// priced from the model pricing table (`fallback_model` when it names
     /// none). Unknown when nothing was streamed.
-    fn into_stream_usage(self, fallback_model: &str) -> StreamUsage {
+    fn stream_usage(&self, fallback_model: &str) -> StreamUsage {
         if self.messages.is_empty() {
             return StreamUsage::default();
         }
@@ -2704,6 +2758,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
             result.output.body.as_text().unwrap_or("unknown")
         );
         assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+        assert_eq!(result.output.tag("auto_memory"), Some("off"));
         assert_eq!(result.output.tag("shell_snapshot"), Some("user"));
 
         // With one, Claude Code would refuse to start: the run fails with
@@ -3087,6 +3142,62 @@ sleep 30
             return;
         }
         panic!("no run was killed after both messages arrived");
+    }
+
+    /// Dropping a run's future, which is how a cancel or the stall watchdog
+    /// stops it, kills the subprocesses `claude` started, not only `claude`
+    /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    async fn cancelling_a_claude_run_kills_its_tool_subprocesses() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let pids = tmp.path().join("tool.pids");
+        let script_body = format!(
+            "#!/bin/sh\ncat >/dev/null\nsleep 30 &\necho $! >> '{pids}'\n\
+             (trap '' TERM; exec sleep 30) &\necho $! >> '{pids}'\nwait\n",
+            pids = pids.display()
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+        let run = tokio::spawn(async move {
+            let ctx = Context::now();
+            agent.run(&prompt("build it"), &ctx).await
+        });
+        let mut tool_pids: Vec<i32> = Vec::new();
+        for _ in 0..400 {
+            tool_pids = fs::read_to_string(&pids)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect();
+            if tool_pids.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(tool_pids.len(), 2, "the fake claude started its tools");
+
+        run.abort();
+        assert!(run.await.expect_err("the run is cancelled").is_cancelled());
+
+        for pid in tool_pids {
+            let mut alive = true;
+            for _ in 0..200 {
+                // SAFETY: signal 0 only checks that `pid` exists.
+                alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(!alive, "tool subprocess {pid} outlived its cancelled run");
+        }
     }
 
     #[tokio::test]

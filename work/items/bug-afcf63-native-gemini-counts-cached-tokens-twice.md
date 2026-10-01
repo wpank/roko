@@ -3,13 +3,15 @@ id = "bug-afcf63"
 kind = "bug"
 title = "Native Gemini counts cached tokens twice: promptTokenCount (which includes them) becomes input, and cachedContentTokenCount becomes cache reads"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/gemini"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "ac35c8cf4"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-runstate's report, checked on work/bug-4c4eea at 3cb4a818f)"
 anchors = ["crates/roko-agent/src/gemini/native.rs"]
@@ -46,3 +48,4 @@ The usage mapping in `gemini/native.rs`.
 ## Notes
 
 - bug-b72a37 is the same class of error for OpenAI-compatible providers.
+- Implemented on `work/bug-739dcc` at `ac35c8cf4`; cargo verification deferred to the batch check. `gemini_native_usage_counts_cached_tokens_once` and `streamed_gemini_usage_counts_cached_tokens_once` (targeted `cargo test` passed). Both native Gemini paths, the adapter's `gemini_observation` and the tool loop's streamed usage (`emit_accumulated_usage`, `tool_loop/backends/gemini_native.rs`), take input as `promptTokenCount` less `cachedContentTokenCount`. Related, not done: find-af6b7f (thinking tokens missing from output tokens).

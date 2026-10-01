@@ -196,6 +196,10 @@ pub struct StreamEvent {
     pub kind: StreamEventKind,
     /// Monotonic timestamp -- used to measure TTFT from first `TextDelta`.
     pub timestamp: std::time::Instant,
+    /// The model the provider named in the chunk or response this event
+    /// came from, when it named one. [`collect_stream_to_response`] keeps
+    /// the last one as the response's `model` (bug-bfd241).
+    pub model: Option<String>,
 }
 
 impl StreamEvent {
@@ -205,7 +209,15 @@ impl StreamEvent {
         Self {
             kind,
             timestamp: std::time::Instant::now(),
+            model: None,
         }
+    }
+
+    /// This event, from a chunk or response that named `model`.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 }
 
@@ -339,6 +351,8 @@ pub async fn collect_stream_to_response(
     let mut usage_reported = false;
     let mut finish_reason = "stop".to_string();
     let mut ttft_ms: Option<u64> = None;
+    // The model the stream's chunks last named (bug-bfd241).
+    let mut model: Option<String> = None;
     // Track in-progress tool calls: key -> (real_id, name, accumulated_args).
     //
     // The key is whatever `id` the stream events carry. For OpenAI SSE
@@ -350,6 +364,9 @@ pub async fn collect_stream_to_response(
 
     while let Some(event) = stream.next().await {
         let event = event?;
+        if event.model.is_some() {
+            model = event.model;
+        }
         match event.kind {
             StreamEventKind::TextDelta(delta) => {
                 if ttft_ms.is_none() {
@@ -456,6 +473,10 @@ pub async fn collect_stream_to_response(
     if usage_reported {
         json["usage"] = crate::translate::openai::usage_to_wire(&usage);
     }
+    // `extract_model` reads it back as the model that served the turn.
+    if let Some(model) = model {
+        json["model"] = serde_json::Value::String(model);
+    }
 
     // Mirror tool calls at the top level for translators that read
     // `v.get("tool_calls")` rather than `choices[0].message.tool_calls`.
@@ -493,6 +514,7 @@ pub fn response_to_synthetic_stream(
     let text = response.extract_text();
     let usage = response.extract_usage();
     let usage_reported = response.usage_source() == crate::usage::UsageSource::ProviderReported;
+    let model = response.extract_model();
     let finish_reason = response
         .extract_finish_reason_raw()
         .unwrap_or_else(|| "stop".to_string());
@@ -546,9 +568,11 @@ pub fn response_to_synthetic_stream(
     if usage_reported {
         events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
     }
+    // So is the model the response named (bug-bfd241).
     events.push(Ok(StreamEvent::now(StreamEventKind::Done {
         finish_reason,
-    })));
+    })
+    .with_model(model)));
 
     Box::pin(stream::iter(events))
 }
@@ -2934,6 +2958,45 @@ mod tests {
         let response = collect_stream_to_response(stream, start).await.unwrap();
         let text = response.extract_text();
         assert_eq!(text, "Hello, world!");
+    }
+
+    /// A collected stream names the model its chunks last named, and a
+    /// response turned into a stream and back keeps its model (bug-bfd241).
+    #[tokio::test]
+    async fn a_collected_stream_keeps_the_model_its_chunks_name() {
+        use futures::stream;
+        let named = |kind: StreamEventKind, model: &str| {
+            Ok(StreamEvent::now(kind).with_model(Some(model.to_string())))
+        };
+        let events = vec![
+            named(StreamEventKind::TextDelta("hi".to_string()), "glm-4.6"),
+            named(StreamEventKind::TextDelta("!".to_string()), "glm-4.7"),
+            Ok(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            })),
+        ];
+        let start = std::time::Instant::now();
+        let response = collect_stream_to_response(Box::pin(stream::iter(events)), start)
+            .await
+            .unwrap();
+        assert_eq!(response.extract_model().as_deref(), Some("glm-4.7"));
+
+        let answered = BackendResponse::Json(serde_json::json!({
+            "model": "glm-4.7",
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        }));
+        let round_trip = collect_stream_to_response(response_to_synthetic_stream(answered), start)
+            .await
+            .unwrap();
+        assert_eq!(round_trip.extract_model().as_deref(), Some("glm-4.7"));
+
+        let unnamed = BackendResponse::Json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        }));
+        let round_trip = collect_stream_to_response(response_to_synthetic_stream(unnamed), start)
+            .await
+            .unwrap();
+        assert_eq!(round_trip.extract_model(), None, "nobody named a model");
     }
 
     #[tokio::test]

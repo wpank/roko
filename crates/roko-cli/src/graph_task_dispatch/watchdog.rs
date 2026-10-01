@@ -16,12 +16,14 @@
 //!   the task's `max_retries`.
 //!
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
-//! `timeout_secs` stays the outer bound either way.
+//! `timeout_secs` stays the outer bound either way. The attempt's progress is
+//! kept either way, so a call that is stopped or cancelled settles the usage
+//! it streamed (bug-3a3b0f).
 //!
 //! A plan run that outlives its interrupt's drain asks its attempts to stop
 //! ([`WatchedAttempt::stop`]): `run_watched` drops the call within
 //! [`STOP_CHECK_INTERVAL`], and the attempt settles as cancelled with the usage
-//! its watch saw stream (bug-2b1ddc).
+//! its progress saw stream (bug-2b1ddc).
 //!
 //! Silence counts only while the agent waits on its model:
 //!
@@ -384,8 +386,8 @@ pub(super) struct WatchedAttempt<'a> {
     pub(super) attempt_key: &'a str,
     /// The plan run's request that its attempts stop (the cell context's
     /// cancel flag). Once set, the attempt's provider call is dropped and the
-    /// attempt settles with the usage its stall watch saw stream
-    /// (bug-2b1ddc).
+    /// attempt settles with the usage its progress saw stream (bug-2b1ddc,
+    /// bug-3a3b0f).
     pub(super) stop: Option<&'a AtomicBool>,
 }
 
@@ -575,12 +577,14 @@ impl GraphTaskDispatcher {
     /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, that the conductor
     /// restarts through `supervised`, or whose plan run asks it to stop
     /// ([`WatchedAttempt::stop`]) returns [`AttemptInterrupted`]; `dispatch`
-    /// is dropped with it, which cancels the provider call, and `watch`'s
-    /// progress then gives the call and what it streamed
-    /// ([`AttemptProgress::interrupted_call`]).
+    /// is dropped with it, which cancels the provider call, and `progress`
+    /// then gives the call and what it streamed
+    /// ([`AttemptProgress::interrupted_call`]), with or without a `watch`
+    /// (bug-3a3b0f).
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
+        progress: &AttemptProgress,
         mut watch: Option<StallWatch>,
         supervised: Option<&SupervisedAttempt>,
         attempt: &WatchedAttempt<'_>,
@@ -607,9 +611,7 @@ impl GraphTaskDispatcher {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
                 restart = &mut restarted => {
-                    if let Some(watch) = &watch {
-                        watch.progress.interrupted();
-                    }
+                    progress.interrupted();
                     return Err(AttemptInterrupted::Restarted(restart));
                 }
                 _ = heartbeat.tick() => {
@@ -624,9 +626,7 @@ impl GraphTaskDispatcher {
                 }
                 _ = stop_check.tick(), if attempt.stop.is_some() => {
                     if attempt.stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
-                        if let Some(watch) = &watch {
-                            watch.progress.interrupted();
-                        }
+                        progress.interrupted();
                         return Err(AttemptInterrupted::Stopped);
                     }
                 }
@@ -634,7 +634,7 @@ impl GraphTaskDispatcher {
                     if let Some(watch) = watch.as_mut()
                         && let Some(stalled) = self.check_stall(watch, attempt)
                     {
-                        watch.progress.interrupted();
+                        progress.interrupted();
                         return Err(stalled);
                     }
                 }
@@ -1323,6 +1323,89 @@ exec sleep 60
         assert_eq!(cost["cached_tokens"], 4_000);
         let cost_usd = cost["cost_usd"].as_f64().expect("cost");
         assert!((cost_usd - expected).abs() < 1e-6, "{cost}");
+    }
+
+    /// bug-3a3b0f: with both stall thresholds at 0 nothing is watched, but
+    /// the attempt's progress still is: a call its plan run stops settles the
+    /// usage it streamed, not an unknown one.
+    #[tokio::test]
+    async fn usage_is_tracked_with_the_watchdog_off() {
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("fake-claude.sh");
+        write_provider(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"reading the task"}],"usage":{"input_tokens":1000,"output_tokens":200}}}'
+echo streamed > "$(dirname -- "$0")/streamed"
+exec sleep 60
+"#,
+        );
+        let mut config = watched_config(&script);
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_feedback(crate::graph_task_dispatch::tests::recording_feedback(
+                    temp.path(),
+                ));
+        assert!(dispatcher.stall_watch().is_none(), "nothing is watched");
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let run = "stopped-run";
+        let stop = Arc::new(AtomicBool::new(false));
+        let ctx = CellContext::new()
+            .with_cell_id("T01".to_string())
+            .with_run_id(run.to_string())
+            .with_cancel_flag(Arc::clone(&stop));
+        let streamed = temp.path().join("streamed");
+        let stop_once_streamed = async {
+            for _ in 0..400 {
+                if streamed.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            // Time for the live-output tap to take in the message's usage.
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            stop.store(true, Ordering::Release);
+        };
+
+        let (result, ()) = tokio::join!(
+            dispatcher.dispatch(&spec, Vec::new(), &ctx),
+            stop_once_streamed
+        );
+        let error = result.expect_err("the plan run stopped the attempt");
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error}");
+        let roko = temp.path().join(".roko");
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["outcome"], "cancelled", "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "estimated", "{verdict}");
+        let costs = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &roko.join("learn/costs.jsonl"),
+            1,
+            |_| true,
+        )
+        .await;
+        assert_eq!(costs[0]["input_tokens"], 1_000, "{}", costs[0]);
+        assert_eq!(costs[0]["output_tokens"], 200, "{}", costs[0]);
     }
 
     /// Write `body` as an executable provider script at `path`.

@@ -235,26 +235,28 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
+        // Tracked even with both stall thresholds off (bug-3a3b0f).
+        let progress = stall_watch
+            .as_ref()
+            .map_or_else(AttemptProgress::default, StallWatch::progress);
         let supervised = self.supervise_attempt(&watched);
         request.live_output = self.live_output_tap(
             &watched,
-            stall_watch.as_ref().map(StallWatch::progress),
+            Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
         );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let progress = stall_watch.as_ref().map(StallWatch::progress);
-        if let Some(progress) = &progress {
-            progress.call_started(
-                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
-                    .resolve(&request.model_key),
-                Default::default(),
-            );
-        }
+        progress.call_started(
+            crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                .resolve(&request.model_key),
+            Default::default(),
+        );
         let watched_result = self
             .run_watched(
                 self.factory.run_shared_agent_bridge(request),
+                &progress,
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -270,13 +272,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
                 let settlement =
-                    watchdog::failed_call_settlement(Some(&interrupted), &error, progress.as_ref());
+                    watchdog::failed_call_settlement(Some(&interrupted), &error, Some(&progress));
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
-                let streamed = match progress
-                    .as_ref()
-                    .and_then(|progress| progress.interrupted_call())
-                {
+                let streamed = match progress.interrupted_call() {
                     Some(call) => {
                         let wall_duration = started_at.elapsed();
                         let (dispatch, _) = call.into_dispatch(

@@ -106,7 +106,7 @@ use turn_policy::{
     provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit_with,
     timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
-use watchdog::{StallWatch, WatchedAttempt};
+use watchdog::{AttemptProgress, StallWatch, WatchedAttempt};
 
 #[cfg(test)]
 use turn_policy::task_turn_limit;
@@ -1306,16 +1306,21 @@ impl TaskDispatcher for GraphTaskDispatcher {
             stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
+        // The attempt's progress, and so the usage its call streams, is
+        // tracked even with both stall thresholds off: a call that is stopped
+        // or cancelled then settles what it streamed (bug-3a3b0f).
+        let progress = stall_watch
+            .as_ref()
+            .map_or_else(AttemptProgress::default, StallWatch::progress);
         let supervised = self.supervise_attempt(&watched);
         request.live_output = self.live_output_tap(
             &watched,
-            stall_watch.as_ref().map(StallWatch::progress),
+            Some(progress.clone()),
             supervised.as_ref().map(SupervisedAttempt::feed),
         );
 
         attempt.dispatch_started();
         let started_at = Instant::now();
-        let progress = stall_watch.as_ref().map(StallWatch::progress);
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
         // While it runs, heartbeats keep the TUI's elapsed-time counter live.
@@ -1329,8 +1334,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     &task.id,
                     attempt.key.attempt_key(),
                     request,
-                    progress.as_ref(),
+                    Some(&progress),
                 ),
+                &progress,
                 stall_watch,
                 supervised.as_ref(),
                 &watched,
@@ -1379,10 +1385,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // A call the stall watchdog, the conductor or a stopping plan
                 // run cancelled is accounted like any failed call, with the
                 // usage it streamed (bug-aa2044, bug-2b1ddc).
-                if let Some(interrupted) = progress
-                    .as_ref()
-                    .and_then(|progress| progress.interrupted_call())
-                {
+                if let Some(interrupted) = progress.interrupted_call() {
                     let wall_duration = started_at.elapsed();
                     let (dispatch, failover) = interrupted.into_dispatch(
                         &error.to_string(),
@@ -1403,7 +1406,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     let settlement = watchdog::failed_call_settlement(
                         ended_by.as_ref(),
                         &error,
-                        progress.as_ref(),
+                        Some(&progress),
                     );
                     let settled =
                         attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
@@ -1422,7 +1425,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 // No provider result reached the sinks that predate S01, so
                 // they still see nothing; the attempt's verdict is recorded.
                 let settlement =
-                    watchdog::failed_call_settlement(ended_by.as_ref(), &error, progress.as_ref());
+                    watchdog::failed_call_settlement(ended_by.as_ref(), &error, Some(&progress));
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
                 return Err(error);

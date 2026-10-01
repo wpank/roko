@@ -259,10 +259,13 @@ pub trait DispatchLike: Send + Sync {
     async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError>;
 
     /// Dispatch a streaming message turn.
+    ///
+    /// `event_tx` is bounded: `send(..).await` waits while the stream's reader
+    /// is behind, and fails once the reader is gone, so it cannot deadlock.
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
-        event_tx: mpsc::UnboundedSender<StreamEvent>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> Result<ChatResponse, SidecarDispatchError> {
         let _ = event_tx;
         self.dispatch(request).await
@@ -303,7 +306,7 @@ impl DispatchLike for BackendMessageDispatcher {
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
-        _event_tx: mpsc::UnboundedSender<StreamEvent>,
+        _event_tx: mpsc::Sender<StreamEvent>,
     ) -> Result<ChatResponse, SidecarDispatchError> {
         let messages = request
             .messages

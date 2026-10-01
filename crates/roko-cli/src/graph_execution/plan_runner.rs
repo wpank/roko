@@ -485,16 +485,22 @@ fn mark_checkpoints_interrupted(
     .count()
 }
 
-/// Agent processes that are still descendants of this process, plus all
-/// of their descendants. Checking descendancy avoids signalling a PID that
-/// was recycled after its agent exited.
+/// This run's agent processes that are still descendants of this process,
+/// plus all of their descendants. Checking descendancy avoids signalling a PID
+/// that was recycled after its agent exited.
+///
+/// The run's agents are those registered in this thread's spawn scope: `roko
+/// serve` runs each plan on a thread it scopes, so stopping one run leaves the
+/// plan generation, revision and chat agents the server runs beside it alone
+/// (find-65ff6b). A CLI run has no scope and owns every unscoped agent.
 #[cfg(unix)]
 fn live_agent_process_trees() -> Vec<u32> {
     let ours = roko_agent::process::collect_descendants(std::process::id())
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    let scope = roko_agent::process::current_spawn_scope();
     let mut targets = Vec::new();
-    for pid in roko_agent::process::registered_pids() {
+    for pid in roko_agent::process::registered_pids_in_scope(scope) {
         if ours.contains(&pid) {
             targets.extend(roko_agent::process::collect_descendants(pid));
             targets.push(pid);
@@ -674,8 +680,9 @@ const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
 /// 3. `config_max_plan_usd` (from `roko.toml [budget].max_plan_usd`)
 ///
 /// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
-/// when the caller explicitly provided a ceiling via the CLI (so the runner
-/// warns on overage instead of hard-blocking).
+/// only under `--no-budget`, which also lets a spent day dispatch. An explicit
+/// CLI ceiling is a hard cap, as a configured one is: once the plan has spent
+/// it, no further task starts (gap-d31457).
 pub fn resolve_budget_ceiling(
     budget_override: Option<f64>,
     no_budget: bool,
@@ -684,7 +691,7 @@ pub fn resolve_budget_ceiling(
     if no_budget {
         (0.0, true)
     } else if let Some(ceiling) = budget_override {
-        (ceiling.max(0.0), true)
+        (ceiling.max(0.0), false)
     } else {
         (config_max_plan_usd, false)
     }
@@ -1138,7 +1145,7 @@ async fn run_graph_plan_body(
         );
     }
 
-    let (plan_budget_ceiling, budget_override_active) = resolve_budget_ceiling(
+    let (plan_budget_ceiling, budget_bypassed) = resolve_budget_ceiling(
         budget_override,
         no_budget,
         f64::from(roko_config.budget.max_plan_usd),
@@ -1182,7 +1189,8 @@ async fn run_graph_plan_body(
                 .join("provider-health.json"),
         ),
     ))
-    .with_error_patterns_from_disk(workdir);
+    .with_error_patterns_from_disk(workdir)
+    .with_knowledge_routing(workdir);
     let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
     let plugin_catalog = crate::runner::extension_loader::resolve_plugin_tool_catalog(
         workdir,
@@ -1295,7 +1303,7 @@ async fn run_graph_plan_body(
     .with_plan_budget(
         plan_budget_ceiling,
         f64::from(roko_config.budget.max_turn_usd),
-        budget_override_active,
+        budget_bypassed,
     )
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
@@ -1453,6 +1461,19 @@ async fn run_graph_plan_body(
     let (tui_cmd_sender, mut exec_cmd_rx, tui_ack_tx, tui_ack_rx) =
         ExecutionCommandSender::channel("graph-engine");
     let tui_ack_receiver = CommandAckReceiver::new(tui_ack_rx);
+
+    // `roko plan pause/resume/cancel/retry` in another terminal write
+    // `.roko/state/control.json`; the plan-set driver routes what they write
+    // through this channel, like a TUI command (bug-8208a6). A command left
+    // from before this run is dropped.
+    let control_file_sender = tui_cmd_sender.clone();
+    let control_state_dir = RokoLayout::for_project(workdir).state_dir();
+    if let Some(stale) = crate::runner::types::ControlCommand::poll(&control_state_dir) {
+        tracing::warn!(
+            command = ?stale.command,
+            "dropping a plan control command written before this run"
+        );
+    }
 
     // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
     // Wired into each CellContext so the task executor cell can check it
@@ -1626,6 +1647,7 @@ async fn run_graph_plan_body(
             stopped_by = Some(reason);
             scheduler.stop();
         }
+        forward_control_file(&control_state_dir, &control_file_sender);
         for plan_id in route_execution_commands(
             &mut exec_cmd_rx,
             &tui_ack_tx,
@@ -1669,6 +1691,10 @@ async fn run_graph_plan_body(
                 })?;
             let control = PlanControl::default();
             controls.insert(plan_id, control.clone());
+            // Agents of the run's other plans hear what this one writes (gap-c09fc7).
+            let footprint = super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref());
+            let writes = footprint.writes.iter().map(ToString::to_string).collect();
+            graph_task_dispatcher.plan_started(&plan.id, writes);
             running.push(run_admitted_plan(&run_context, plan, control));
         }
 
@@ -1700,6 +1726,7 @@ async fn run_graph_plan_body(
                 }
                 plan_outcomes.insert(plan_id.clone(), outcome.succeeded());
                 scheduler.finish(&plan_id, outcome);
+                graph_task_dispatcher.plan_finished(&plan_id);
                 if running.is_empty() {
                     // Clear any residual pause once no plan is running.
                     shared_pause_flag.store(false, Ordering::Release);
@@ -1710,12 +1737,13 @@ async fn run_graph_plan_body(
     }
     drop(running);
 
-    // Commands that arrived after the last plan finished.
+    // Commands that arrived after the last plan finished have nothing left
+    // to act on.
     while let Ok(cmd) = exec_cmd_rx.try_recv() {
         let ack = ack_for(
             &cmd,
-            CommandAckStatus::Accepted,
-            Some("plan finished — re-run to apply".into()),
+            CommandAckStatus::Rejected,
+            Some("the plan run has finished".into()),
         );
         let _ = tui_ack_tx.try_send(ack);
     }
@@ -2492,9 +2520,11 @@ fn report_blocked_plan(
 ///
 /// Cancel reaches the plan it names when that plan is running, drops it
 /// when it has not started, and reaches every running plan when it names
-/// none. Pause and resume set the pause flag every plan shares. Other
-/// commands are acknowledged and take effect only after the run. Returns
-/// the plans cancelled before they started.
+/// none. Pause and resume set the pause flag every plan shares. Every other
+/// command, and a cancel naming a plan that is neither running nor waiting,
+/// is rejected with the reason it cannot take effect ([`reject_command`]):
+/// none is acknowledged and then dropped (gap-c002bb). Returns the plans
+/// cancelled before they started.
 fn route_execution_commands(
     commands: &mut tokio::sync::mpsc::Receiver<crate::execution_control::ExecutionCommand>,
     acks: &tokio::sync::mpsc::Sender<crate::execution_control::CommandAck>,
@@ -2514,10 +2544,7 @@ fn route_execution_commands(
                         cancelled_before_start.push(plan_id.to_string());
                         (CommandAckStatus::Completed, None)
                     } else {
-                        (
-                            CommandAckStatus::Accepted,
-                            Some(format!("plan '{plan_id}' is not running")),
-                        )
+                        reject_command(&cmd, &format!("plan '{plan_id}' is not running"))
                     }
                 }
                 None => {
@@ -2540,21 +2567,27 @@ fn route_execution_commands(
                 tracing::info!(command_id = %cmd.command_id, "TUI resume: execution resumed");
                 (CommandAckStatus::Completed, None)
             }
-            // Post-execution commands: ack as accepted; the TUI can re-send
-            // after plan completion.
             ExecutionCommandKind::SoftRetry
             | ExecutionCommandKind::Repair { .. }
-            | ExecutionCommandKind::ReverifyGates
-            | ExecutionCommandKind::Skip
-            | ExecutionCommandKind::Approve { .. }
-            | ExecutionCommandKind::RejectApproval { .. }
-            | ExecutionCommandKind::Reset => {
-                tracing::debug!(
-                    command_id = %cmd.command_id,
-                    kind = %cmd.kind,
-                    "TUI command queued (post-execution; plan still running)"
-                );
-                (CommandAckStatus::Accepted, None)
+            | ExecutionCommandKind::Reset => reject_command(
+                &cmd,
+                "retry, repair and reset are not available during a Graph run; once it ends, \
+                 `roko plan run --resume-plan` re-runs the tasks that did not pass",
+            ),
+            ExecutionCommandKind::ReverifyGates => reject_command(
+                &cmd,
+                "re-verifying gates is not available during a Graph run",
+            ),
+            ExecutionCommandKind::Skip => reject_command(
+                &cmd,
+                "stopping or skipping one task is not available during a Graph run; cancel its \
+                 plan instead",
+            ),
+            ExecutionCommandKind::Approve { .. } | ExecutionCommandKind::RejectApproval { .. } => {
+                reject_command(
+                    &cmd,
+                    "a Graph run takes a held task's approval from `roko plan review`",
+                )
             }
         };
         if matches!(cmd.kind, ExecutionCommandKind::Cancel) {
@@ -2567,6 +2600,35 @@ fn route_execution_commands(
         let _ = acks.try_send(ack_for(&cmd, status, note));
     }
     cancelled_before_start
+}
+
+/// The acknowledgement of a TUI command that takes no effect: rejected with
+/// `reason`, which the TUI shows as a warning.
+fn reject_command(
+    cmd: &crate::execution_control::ExecutionCommand,
+    reason: &str,
+) -> (CommandAckStatus, Option<String>) {
+    tracing::info!(
+        command_id = %cmd.command_id,
+        kind = %cmd.kind,
+        reason,
+        "TUI command rejected"
+    );
+    (CommandAckStatus::Rejected, Some(reason.to_string()))
+}
+
+/// Forward the command `roko plan pause/resume/cancel/retry` wrote to
+/// `<state_dir>/control.json`, if any, into the run's command channel, where
+/// [`route_execution_commands`] routes it like a TUI command (bug-8208a6).
+/// The file is consumed.
+fn forward_control_file(state_dir: &Path, commands: &ExecutionCommandSender) {
+    let Some(control) = crate::runner::types::ControlCommand::poll(state_dir) else {
+        return;
+    };
+    let command = crate::execution_control::control_command_to_execution(&control, "graph-engine");
+    if let Err(error) = commands.try_send(command) {
+        tracing::warn!(%error, "could not route a plan control command to the run");
+    }
 }
 
 /// [`run_one_plan`], tagged with the plan's ID for the plan-set driver.
@@ -2633,7 +2695,6 @@ async fn run_one_plan(
     control: &PlanControl,
 ) -> anyhow::Result<PlanRunResult> {
     use roko_graph::cells::TaskExecutorCell;
-    use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
 
     let graph_tui_bridge = ctx.graph_tui_bridge;
@@ -2645,45 +2706,22 @@ async fn run_one_plan(
         );
     }
 
-    // Convert Runner v2 tasks into PlanTaskInfo for the converter. Each
-    // task's retry budget is `--max-retries`, else what it authors, else set
-    // by the adaptive gate thresholds.
+    // Convert Runner v2 tasks into PlanTaskInfo for the converter, with the
+    // mapping the resume preview uses (gap-be7368). Each task's retry budget
+    // is `--max-retries`, else what it authors, else set by the adaptive gate
+    // thresholds.
     let retry_budgets = ctx.graph_task_dispatcher.task_retry_budgets(&plan.dir);
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
-        .tasks
-        .iter()
-        .map(|t| {
-            let info = PlanTaskInfo {
-                title: t.title.clone(),
-                description: t.description.clone(),
-                role: t.role.clone(),
-                tier: t.tier.clone(),
-                model_hint: t.model_hint.clone(),
-                files: t.files.clone(),
-                depends_on: t.depends_on.clone(),
-                depends_on_plan: t.depends_on_plan.clone(),
-                timeout_secs: t.timeout_secs,
-                max_retries: ctx
-                    .max_retries
-                    .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t)),
-                domain: t.domain.as_ref().map(|d| format!("{d:?}")),
-                sequence: t.sequence,
-                full_config_json: serde_json::to_value(t).unwrap_or_default(),
-            };
-            (t.id.clone(), info)
-        })
-        .collect();
+    let tasks = crate::graph_checkpoint::plan_task_infos(plan, |t| {
+        ctx.max_retries
+            .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t))
+    });
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
-    // the converted concurrency. The width is applied once the identity is
-    // taken, below.
-    let max_parallel = if ctx.max_tasks > 0 {
-        u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+    // the converted concurrency. `--max-tasks` and the width are applied once
+    // the identity is taken, below, so a run resumes whatever `--max-tasks`
+    // it is given (gap-7147bb).
+    let max_parallel = crate::graph_checkpoint::converted_max_parallel(plan);
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
 
@@ -2745,7 +2783,7 @@ async fn run_one_plan(
         }
     } else {
         // ── Simple single-Activity-per-task converter (default) ─────────
-        match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
+        match crate::graph_checkpoint::convert_plan(plan, &tasks) {
             Ok(g) => {
                 let mut reg = roko_graph::default_registry();
                 let plan_dispatcher = Arc::clone(ctx.task_dispatcher);
@@ -2755,6 +2793,7 @@ async fn run_one_plan(
                 (g, reg)
             }
             Err(e) => {
+                let e = e.root_cause();
                 graph_tui_bridge.error(&format!(
                     "failed to convert plan '{}' to graph: {e}",
                     plan.id
@@ -2825,11 +2864,14 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
-    // A plan that omits `max_parallel` runs as wide as its DAG allows when
-    // every task that can write declares its files: the engine keeps tasks
-    // whose files overlap apart. Set after the identity is taken, like the
-    // failure strategy, so checkpoints of such plans keep resuming.
-    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+    // `--max-tasks` caps the run. Otherwise a plan that omits `max_parallel`
+    // runs as wide as its DAG allows when every task that can write declares
+    // its files: the engine keeps tasks whose files overlap apart. Both are
+    // set after the identity is taken, like the failure strategy, so
+    // checkpoints keep resuming.
+    if ctx.max_tasks > 0 {
+        graph.policy.max_concurrent_nodes = ctx.max_tasks;
+    } else if plan.tasks.meta.max_parallel.is_none() {
         let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
         if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
             tracing::info!(
@@ -2972,6 +3014,8 @@ async fn run_one_plan(
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
+            // An agent that exits on this SIGTERM settles as cancelled.
+            ctx.graph_task_dispatcher.begin_stop();
             let signalled = terminate_in_flight_agents();
             tracing::warn!(
                 plan_id = %plan.id,
@@ -3557,6 +3601,31 @@ mod tests {
             tasks,
             prd_excerpt: String::new(),
         }
+    }
+
+    /// bug-8208a6: a command `roko plan cancel` writes to control.json reaches
+    /// the run's command channel, as a TUI command would, and is consumed.
+    #[test]
+    fn a_control_file_command_reaches_the_run() {
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        crate::runner::types::ControlCommand {
+            command: crate::runner::types::ControlAction::Cancel,
+            plan_id: Some("p1".to_string()),
+            task_id: None,
+        }
+        .write(state_dir.path())
+        .expect("write control.json");
+        let (sender, mut commands, _acks, _ack_rx) =
+            ExecutionCommandSender::channel("graph-engine");
+
+        forward_control_file(state_dir.path(), &sender);
+
+        let command = commands.try_recv().expect("the command is routed");
+        assert_eq!(command.kind, ExecutionCommandKind::Cancel);
+        assert_eq!(command.plan_id.as_deref(), Some("p1"));
+        assert!(!state_dir.path().join("control.json").exists());
+        forward_control_file(state_dir.path(), &sender);
+        assert!(commands.try_recv().is_err(), "nothing more to route");
     }
 
     #[test]
@@ -4251,6 +4320,23 @@ max_retries = 0
         }
     }
 
+    /// gap-d31457: `--budget-override` is a hard plan ceiling, as a configured
+    /// one is; only `--no-budget` lets dispatch go on past a spent budget.
+    #[test]
+    fn a_budget_override_is_a_hard_ceiling() {
+        for (budget_override, no_budget, expected) in [
+            (Some(2.0), false, (2.0, false)),
+            (Some(-1.0), false, (0.0, false)),
+            (None, false, (25.0, false)),
+            (None, true, (0.0, true)),
+        ] {
+            assert_eq!(
+                resolve_budget_ceiling(budget_override, no_budget, 25.0),
+                expected
+            );
+        }
+    }
+
     /// Once a plan's settled spend reaches `[budget] max_plan_usd`, no further
     /// task starts, even under the default `skip_failed` policy: the tasks
     /// waiting on the spent one are recorded as not started, not failed.
@@ -4612,6 +4698,80 @@ exec sleep 60
         assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
     }
 
+    /// Where [`interrupt_stops_running_gate_command`] tells
+    /// [`interrupted_gate_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_GATE_DIR: &str = "ROKO_INTERRUPTED_GATE_CHILD_DIR";
+
+    /// A verify command that runs until it is signalled, marking when it
+    /// starts and when it gets SIGTERM.
+    #[cfg(unix)]
+    const SIGNALLED_GATE: &str =
+        "trap 'echo > got-term; exit 143' TERM; echo > gate-started; sleep 60 & wait $!";
+
+    /// gap-b367bf: an interrupt stops a task's running verify command the way
+    /// it stops the run's agents, with SIGTERM, which the command here traps
+    /// into a marker file. The interrupt signals every registered process of
+    /// its process, so the run happens in a child test process.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_stops_running_gate_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "gated", "", &[("T1", &[], SIGNALLED_GATE)]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_gate_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_GATE_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+        assert!(
+            dir.path().join("got-term").exists(),
+            "the interrupt never sent the verify command SIGTERM"
+        );
+    }
+
+    /// The interrupted run of [`interrupt_stops_running_gate_command`]: it
+    /// interrupts the plan in that test's workspace once the task's verify
+    /// command runs. Without the workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_gate_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_GATE_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let started = workdir.join("gate-started");
+        for _ in 0..400 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "the verify command started");
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
@@ -4952,6 +5112,97 @@ exec sleep 60
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// Route `commands`, each a kind and the plan it names, through
+    /// [`route_execution_commands`] while plan `01-run` runs and `02-wait`
+    /// waits to start. Returns the plans cancelled before they started, the
+    /// acknowledgements, and whether `01-run` was asked to cancel.
+    fn route_tui_commands(
+        commands: Vec<(ExecutionCommandKind, Option<&str>)>,
+    ) -> (Vec<String>, Vec<crate::execution_control::CommandAck>, bool) {
+        let (sender, mut receiver, ack_tx, ack_rx) = ExecutionCommandSender::channel("graph");
+        for (kind, plan_id) in commands {
+            let command = sender.build_command(
+                kind,
+                plan_id.map(str::to_string),
+                Some("T1".to_string()),
+                None,
+            );
+            sender.try_send(command).expect("queue the command");
+        }
+        let order = PlanSetOrder {
+            order: vec!["01-run".to_string(), "02-wait".to_string()],
+            ..PlanSetOrder::default()
+        };
+        let mut scheduler = PlanSetScheduler::new(&order, PlanConflicts::new(), 2, false);
+        let running = PlanControl::default();
+        let controls = HashMap::from([("01-run".to_string(), running.clone())]);
+        let pause = AtomicBool::new(false);
+        let cancelled =
+            route_execution_commands(&mut receiver, &ack_tx, &controls, &mut scheduler, &pause);
+        let acks = CommandAckReceiver::new(ack_rx).drain();
+        (cancelled, acks, running.cancel.load(Ordering::Acquire))
+    }
+
+    /// gap-c002bb: a Graph run carries out pause, resume and cancel. Every
+    /// other TUI command, and a cancel naming a plan that is neither running
+    /// nor waiting, is rejected with its reason, never accepted and dropped.
+    #[test]
+    fn unsupported_tui_commands_are_rejected_with_a_reason() {
+        let unsupported = [
+            ExecutionCommandKind::SoftRetry,
+            ExecutionCommandKind::Repair {
+                preserve_completed: true,
+            },
+            ExecutionCommandKind::Repair {
+                preserve_completed: false,
+            },
+            ExecutionCommandKind::ReverifyGates,
+            ExecutionCommandKind::Skip,
+            ExecutionCommandKind::Approve {
+                approval_id: "ap-1".to_string(),
+            },
+            ExecutionCommandKind::RejectApproval {
+                approval_id: "ap-1".to_string(),
+                reason: "not now".to_string(),
+            },
+            ExecutionCommandKind::Reset,
+        ];
+        let mut commands: Vec<_> = unsupported
+            .into_iter()
+            .map(|kind| (kind, Some("01-run")))
+            .collect();
+        commands.push((ExecutionCommandKind::Cancel, Some("03-gone")));
+        let sent = commands.len();
+
+        let (cancelled, acks, run_cancelled) = route_tui_commands(commands);
+
+        assert!(cancelled.is_empty());
+        assert!(!run_cancelled);
+        assert_eq!(acks.len(), sent);
+        for ack in &acks {
+            assert_eq!(ack.status, CommandAckStatus::Rejected, "{ack:?}");
+            assert!(
+                !ack.message.as_deref().unwrap_or_default().is_empty(),
+                "{ack:?}"
+            );
+        }
+    }
+
+    /// A TUI cancel stops the running plan it names and drops a waiting one
+    /// before it starts; both are acknowledged as done.
+    #[test]
+    fn tui_cancel_reaches_a_running_plan_and_drops_a_waiting_one() {
+        let (cancelled, acks, run_cancelled) = route_tui_commands(vec![
+            (ExecutionCommandKind::Cancel, Some("01-run")),
+            (ExecutionCommandKind::Cancel, Some("02-wait")),
+        ]);
+
+        assert_eq!(cancelled, vec!["02-wait".to_string()]);
+        assert!(run_cancelled);
+        let statuses: Vec<_> = acks.iter().map(|ack| ack.status).collect();
+        assert_eq!(statuses, vec![CommandAckStatus::Completed; 2]);
     }
 
     /// gap-19e596: with per-task worktrees no two tasks share a tree, so the

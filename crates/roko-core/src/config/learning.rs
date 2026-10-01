@@ -24,10 +24,12 @@ pub struct DreamsConfig {
     /// `roko knowledge dream run`.
     #[serde(default = "default_true")]
     pub trigger_on_plan_complete: bool,
-    /// Maximum number of concurrent dream consolidation runs.
+    /// Maximum number of dream consolidations that ACP sessions run at once
+    /// in one process. An ACP turn that finds this many running starts none.
+    /// The plan-completion trigger keeps its own limit of one.
     ///
-    /// Additional triggers are silently dropped while a run is in progress.
-    /// Defaults to `1`.
+    /// Defaults to `1`. Zero is normalized to one at the runtime boundary
+    /// (see [`Self::effective_max_concurrent`]).
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     /// Let ACP sessions trigger dream consolidation once
@@ -79,6 +81,16 @@ impl DreamsConfig {
             self.acp_episode_threshold
         }
     }
+
+    /// Return the runtime-safe limit on concurrent ACP dream consolidations.
+    #[must_use]
+    pub const fn effective_max_concurrent(&self) -> usize {
+        if self.max_concurrent == 0 {
+            1
+        } else {
+            self.max_concurrent
+        }
+    }
 }
 
 /// Learning subsystem configuration.
@@ -113,12 +125,6 @@ pub struct LearningConfig {
     /// Whether repeated gate failures should trigger a plan revision.
     #[serde(default = "default_true")]
     pub replan_on_gate_failure: bool,
-    /// Maximum number of gate-failure-triggered plan revisions per plan.
-    #[serde(default = "default_replan_max_per_plan")]
-    pub replan_max_per_plan: u32,
-    /// Consecutive gate failures required before emitting a plan revision.
-    #[serde(default = "default_replan_gate_attempts")]
-    pub replan_gate_attempts: u32,
     /// Run dream consolidation after a plan completes.
     ///
     /// Defaults to `false`: each automatic dream costs a model call, so dreams
@@ -234,14 +240,6 @@ const fn default_warning_max() -> usize {
     5
 }
 
-const fn default_replan_max_per_plan() -> u32 {
-    2
-}
-
-const fn default_replan_gate_attempts() -> u32 {
-    3
-}
-
 impl Default for LearningConfig {
     fn default() -> Self {
         Self {
@@ -254,8 +252,6 @@ impl Default for LearningConfig {
             file_intel_max_entries: default_file_intel_max(),
             warning_max_entries: default_warning_max(),
             replan_on_gate_failure: true,
-            replan_max_per_plan: default_replan_max_per_plan(),
-            replan_gate_attempts: default_replan_gate_attempts(),
             dream_on_completion: false,
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,

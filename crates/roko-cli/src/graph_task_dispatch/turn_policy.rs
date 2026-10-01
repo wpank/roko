@@ -64,7 +64,7 @@ pub(super) fn task_turn_limit_with(
 }
 
 /// An attempt that stopped at its turn cap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct TurnCapRetry {
     /// Cap the stopped attempt ran with.
     pub(super) cap: u32,
@@ -131,6 +131,27 @@ pub(super) fn base_attempt_timeout_ms_with(
 }
 
 impl GraphTaskDispatcher {
+    /// Owe `retry` to `plan_id/task_id`'s next attempt, kept with the run's
+    /// retry state so a resumed run raises the cap as well (gap-34b2ed).
+    pub(super) fn keep_turn_cap_retry(&self, plan_id: &str, task_id: &str, retry: TurnCapRetry) {
+        let key = format!("{plan_id}/{task_id}");
+        self.turn_cap_retries.lock().insert(key, retry);
+        self.gate_retry_context
+            .set_turn_cap(plan_id, task_id, Some(retry));
+    }
+
+    /// The turn-cap retry owed to `plan_id/task_id`'s next attempt, which
+    /// takes it.
+    pub(super) fn take_turn_cap_retry(&self, plan_id: &str, task_id: &str) -> Option<TurnCapRetry> {
+        let key = format!("{plan_id}/{task_id}");
+        let retry = self.turn_cap_retries.lock().remove(&key);
+        if retry.is_some() {
+            let kept = &self.gate_retry_context;
+            kept.set_turn_cap(plan_id, task_id, None);
+        }
+        retry
+    }
+
     /// The workspace's learned tier limits (gap-5a6e01), read on the first
     /// dispatch from the settled attempts under the feedback `runs_dir` and
     /// the tiers in its `costs_path`. None without a runs directory.
@@ -195,7 +216,7 @@ pub(super) fn attempt_failure_reason(class: &str, detail: &str) -> String {
 
 /// `text` when it fits in `max` bytes; otherwise its head and tail, cut at
 /// line breaks near the cut points, joined by `… N bytes omitted …`.
-fn head_and_tail(text: &str, max: usize) -> String {
+pub(super) fn head_and_tail(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }

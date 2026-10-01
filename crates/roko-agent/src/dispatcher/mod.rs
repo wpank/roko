@@ -63,7 +63,6 @@ pub mod production_safety_chain;
 /// control, screening, finalization, and terminal audit state.
 pub mod result_cache;
 pub mod timeout;
-pub mod tool_selector;
 pub mod truncate;
 pub mod validate;
 
@@ -276,8 +275,6 @@ pub struct EffectiveCatalogSnapshot {
     pub execution_owner: String,
     /// The entity (role, profile, contract) that owns policy authority.
     pub policy_owner: String,
-    /// Whether a profile-based tool selector was active.
-    pub selector_active: bool,
     /// Whether an extension hook chain was active.
     pub hook_chain_active: bool,
     /// Whether the production (IFC/corrigibility) hook chain was active.
@@ -290,7 +287,6 @@ impl Default for EffectiveCatalogSnapshot {
             tool_count: 0,
             execution_owner: "unknown".to_string(),
             policy_owner: "unknown".to_string(),
-            selector_active: false,
             hook_chain_active: false,
             production_hooks_active: false,
         }
@@ -341,11 +337,6 @@ pub struct ToolDispatcher {
     /// Kept separate from the extension hook chain so callers cannot replace
     /// production safety hooks by attaching a custom chain.
     production_safety_chain: Option<production_safety_chain::ProductionSafetyChain>,
-    /// Optional profile-based tool selector (TOOL-03).
-    ///
-    /// When set, tool calls are filtered against the selector before dispatch.
-    /// Tools not allowed by the selector are rejected with `PermissionDenied`.
-    tool_selector: Option<tool_selector::ToolSelector>,
     /// Optional callback invoked when the safety layer denies a tool call.
     ///
     /// See [`SafetyDenialCallback`] for the argument signature. Wire this up
@@ -381,7 +372,6 @@ impl ToolDispatcher {
             safety,
             hook_chain: None,
             production_safety_chain: Some(chain),
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
             call_identity: ToolCallIdentity::default(),
@@ -407,7 +397,6 @@ impl ToolDispatcher {
             safety: SafetyLayer::permissive(),
             hook_chain: None,
             production_safety_chain: None,
-            tool_selector: None,
             safety_denial_callback: None,
             file_audit: None,
             call_identity: ToolCallIdentity::default(),
@@ -455,25 +444,9 @@ impl ToolDispatcher {
         self
     }
 
-    /// Attach a profile-based tool selector (TOOL-03).
-    ///
-    /// When attached, every dispatched tool call is checked against the
-    /// selector. Tools not allowed are rejected with `PermissionDenied`.
-    #[must_use]
-    pub fn with_tool_selector(mut self, selector: tool_selector::ToolSelector) -> Self {
-        self.tool_selector = Some(selector);
-        self
-    }
-
-    /// Returns the attached tool selector, if any.
-    #[must_use]
-    pub const fn tool_selector(&self) -> Option<&tool_selector::ToolSelector> {
-        self.tool_selector.as_ref()
-    }
-
     /// Snapshot the effective catalog state for audit/replay provenance.
     ///
-    /// The snapshot captures the tool count, whether selectors/hooks are
+    /// The snapshot captures the tool count, whether hook chains are
     /// active, and the execution/policy owner identifiers. Callers embed
     /// this in dispatch results so that offline replay can reconstruct
     /// exactly what authorization state applied.
@@ -487,7 +460,6 @@ impl ToolDispatcher {
             tool_count: self.registry.all().len(),
             execution_owner: execution_owner.into(),
             policy_owner: policy_owner.into(),
-            selector_active: self.tool_selector.is_some(),
             hook_chain_active: self.hook_chain.is_some(),
             production_hooks_active: self.production_safety_chain.is_some(),
         }
@@ -700,27 +672,6 @@ impl ToolDispatcher {
             (timeout, "context")
         };
         let timeout_ms = duration_to_ms(timeout);
-        // 2b. Profile-based tool selector check (TOOL-03).
-        if let Some(ref selector) = self.tool_selector
-            && !selector.is_allowed(&call.name)
-        {
-            let err = ToolError::PermissionDenied(format!(
-                "tool `{}` not allowed by agent profile",
-                call.name
-            ));
-            self.emit_audit(
-                ctx,
-                call,
-                "tool_selector",
-                "denied",
-                &json!({
-                    "tool": call.name,
-                    "error": self.sanitize_audit_label(&err.to_string()),
-                    "error_kind": tool_error_kind(&err),
-                }),
-            );
-            return ToolResult::err(err);
-        }
         // 3. Apply task-level tool filters before capability checks.
         if let Some(reason) = tool_filter_block_reason(
             &call.name,

@@ -134,7 +134,6 @@ cmd_fast() {
   local max_tasks=1
   local plans_dir=""
   local show_fast_help=false
-  local collect_screenshots=false
   local extra_args=()
   # Always validate the structured runner lifecycle. Optional behavior probes
   # are appended only when the operator explicitly selects them.
@@ -181,7 +180,7 @@ cmd_fast() {
         evidence_args+=("$1")
         ;;
       --screenshots)
-        collect_screenshots=true
+        # Only the evidence import: `plan run` takes no --screenshots.
         evidence_args+=(--collect-roko-screenshots)
         ;;
       --require-status-sample|--require-cli-smoke-pass|--require-endpoints-pass|--require-screenshots|--allow-remote-endpoints|--no-openapi|--no-default-endpoints|--allow-low-disk)
@@ -322,9 +321,6 @@ HELP
     --log-file "{bundle}/events.jsonl"
   )
   command_args+=(--max-tasks "$max_tasks")
-  if $collect_screenshots; then
-    command_args+=(--screenshots)
-  fi
   # Bash 3.2 + `set -u` treats expansion of an empty array as unbound.
   if [ "${#extra_args[@]}" -gt 0 ]; then
     command_args+=("${extra_args[@]}")

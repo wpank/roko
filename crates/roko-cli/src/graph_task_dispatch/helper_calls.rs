@@ -273,7 +273,6 @@ impl GraphTaskDispatcher {
             .saturating_add(HELPER_SETTLE_GRACE);
         let calls = helpers.settle(limit).await;
         let mut totals = HelperCallsUsage::default();
-        let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
         for (index, call) in calls.iter().enumerate() {
             let cost_usd = f64::from(call.usage.cost_usd);
             totals.calls = totals.calls.saturating_add(1);
@@ -285,7 +284,7 @@ impl GraphTaskDispatcher {
                 totals.unpriced_calls = totals.unpriced_calls.saturating_add(1);
             }
 
-            self.task_spend.record(&task_spend_key, &call.usage);
+            self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
             if let Err(error) = self.budget_ledger.settle(&spec.plan_id, 0, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,

@@ -959,32 +959,32 @@ const MIN_THINKING_BUDGET: u32 = 1_024;
 /// The thinking budget of a call to `model` with `max_tokens` of output, or
 /// `None` for no thinking block. Without a request setting the profile
 /// decides, as before; a request can turn thinking off or on, at its own
-/// budget or the family default (bug-b9cb83). A requested budget is clamped
-/// to what the API accepts, at least [`MIN_THINKING_BUDGET`] and below
-/// `max_tokens`; when even that does not fit, the call runs without thinking.
+/// budget or the family default (bug-b9cb83). Either budget, the profile's
+/// default included (bug-53088d), is clamped to what the API accepts, at
+/// least [`MIN_THINKING_BUDGET`] and below `max_tokens`; when even that does
+/// not fit, the call runs without thinking.
 fn thinking_budget(
     model: &ModelProfile,
     thinking: Option<&roko_core::foundation::ThinkingConfig>,
     max_tokens: u32,
 ) -> Option<u32> {
-    let Some(thinking) = thinking else {
-        return model
-            .supports_thinking
-            .then(|| default_thinking_budget(&model.slug));
+    let requested = match thinking {
+        None if !model.supports_thinking => return None,
+        None => default_thinking_budget(&model.slug),
+        Some(thinking) if thinking.kind == roko_core::foundation::ThinkingMode::Disabled => {
+            return None;
+        }
+        Some(thinking) => thinking
+            .budget_tokens
+            .unwrap_or_else(|| default_thinking_budget(&model.slug)),
     };
-    if thinking.kind == roko_core::foundation::ThinkingMode::Disabled {
-        return None;
-    }
-    let requested = thinking
-        .budget_tokens
-        .unwrap_or_else(|| default_thinking_budget(&model.slug));
     let ceiling = max_tokens.saturating_sub(1);
     if ceiling < MIN_THINKING_BUDGET {
         tracing::debug!(
             model = %model.slug,
             max_tokens,
             requested,
-            "no room for the requested thinking below max_tokens; the call runs without it"
+            "no room for thinking below max_tokens; the call runs without it"
         );
         return None;
     }
@@ -995,7 +995,7 @@ fn thinking_budget(
             max_tokens,
             requested,
             budget,
-            "clamped the requested thinking budget to what the API accepts"
+            "clamped the thinking budget to what the API accepts"
         );
     }
     Some(budget)
@@ -2067,6 +2067,37 @@ data: {}\n\
         );
         assert_eq!(
             thinking_budget(&opus, Some(&enabled(Some(2_048))), 1_024),
+            None,
+            "no room below max_tokens"
+        );
+    }
+
+    /// A profile's default budget is clamped as a requested one is: without
+    /// a max output, Opus's 32768 and Sonnet's 16384 would reach the 16384
+    /// output cap, which the API rejects (bug-53088d).
+    #[test]
+    fn the_profile_thinking_budget_is_clamped_below_max_tokens() {
+        let opus = thinking_opus();
+        let sonnet = ModelProfile {
+            slug: "claude-sonnet-4-6".to_string(),
+            ..thinking_opus()
+        };
+
+        assert_eq!(
+            thinking_budget(&opus, None, DEFAULT_MAX_OUTPUT_TOKENS),
+            Some(DEFAULT_MAX_OUTPUT_TOKENS - 1)
+        );
+        assert_eq!(
+            thinking_budget(&sonnet, None, DEFAULT_MAX_OUTPUT_TOKENS),
+            Some(DEFAULT_MAX_OUTPUT_TOKENS - 1)
+        );
+        assert_eq!(
+            thinking_budget(&opus, None, 64_000),
+            Some(32_768),
+            "the default fits"
+        );
+        assert_eq!(
+            thinking_budget(&opus, None, 1_024),
             None,
             "no room below max_tokens"
         );

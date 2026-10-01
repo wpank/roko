@@ -454,12 +454,12 @@ async fn execute_plans(
 /// - Spawns a background task that calls `run_plan_with_options` with the
 ///   cancel token; `force_resume` and `fresh` are set from `resume`.
 ///
-/// Returns `run_id` on success.
+/// Returns the run it started.
 async fn start_plan_run(
     state: &Arc<AppState>,
     id: String,
     resume: bool,
-) -> Result<String, ApiError> {
+) -> Result<StartedPlanRun, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
     // Resolve the plan through the runtime so directory-layout plans are found.
@@ -488,6 +488,22 @@ async fn start_plan_run(
         )
         .join(&id);
     let plan_id = id.clone();
+
+    // What a resume replays, read before the run can touch the checkpoint
+    // (gap-b07969). It only informs the caller: a runtime that cannot tell,
+    // or a checkpoint it cannot read, leaves it unknown.
+    let skippable_task_ids = if resume {
+        state
+            .runtime
+            .resume_skippable_tasks(&state.workdir, &plan_dir)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(plan_id = %id, %error, "could not preview the resume");
+                None
+            })
+    } else {
+        Some(Vec::new())
+    };
 
     // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
     let mut active = state.active_plans.write().await;
@@ -576,7 +592,18 @@ async fn start_plan_run(
     active.insert(id, plan_handle);
     drop(active);
 
-    Ok(run_id)
+    Ok(StartedPlanRun {
+        run_id,
+        skippable_task_ids,
+    })
+}
+
+/// A run [`start_plan_run`] started.
+struct StartedPlanRun {
+    run_id: String,
+    /// Tasks the run replays from its checkpoint instead of running: none for
+    /// a fresh run, `None` when the runtime cannot tell (gap-b07969).
+    skippable_task_ids: Option<Vec<String>>,
 }
 
 /// Whether the hub carries a `PlanCompleted` for `plan_id` sequenced at or
@@ -615,11 +642,15 @@ async fn execute_plan(
     };
     let resume = req.resume;
 
-    let run_id = start_plan_run(&state, id, resume).await?;
+    let started = start_plan_run(&state, id, resume).await?;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id, "resume": resume })),
+        Json(json!({
+            "id": started.run_id,
+            "resume": resume,
+            "skippable_task_ids": started.skippable_task_ids,
+        })),
     ))
 }
 
@@ -767,11 +798,16 @@ async fn resume_plan(
 
     // Delegate to the shared helper (validates id, resolves plan dir from
     // group, checks for conflicts, spawns the run with force_resume: true).
-    let run_id = start_plan_run(&state, id, true).await?;
+    let started = start_plan_run(&state, id, true).await?;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id, "resumed": true, "resume": true })),
+        Json(json!({
+            "id": started.run_id,
+            "resumed": true,
+            "resume": true,
+            "skippable_task_ids": started.skippable_task_ids,
+        })),
     ))
 }
 
@@ -3514,6 +3550,106 @@ mod tests {
             plan_dir.to_string_lossy(),
             "plan_target must be the plan directory, not a flat file path"
         );
+    }
+
+    /// A runtime whose plan `demo` resumes by replaying `skippable`.
+    struct ResumableRuntime {
+        skippable: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl CliRuntime for ResumableRuntime {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            Ok(RunResult {
+                success: true,
+                output_text: None,
+                usage: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        async fn load_plan_summary(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            Ok(Some(crate::plan_types::PlanSummaryDto {
+                id: plan_id.to_string(),
+                title: "Resumable plan".to_string(),
+                task_count: 2,
+                tasks_done: 1,
+                tasks_failed: 0,
+                completed: false,
+                status: "ready".to_string(),
+                superseded_by: None,
+                old_format: false,
+                last_error: None,
+                group: None,
+                estimated_minutes: None,
+            }))
+        }
+
+        async fn resume_skippable_tasks(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_dir: &std::path::Path,
+        ) -> anyhow::Result<Option<Vec<String>>> {
+            Ok(Some(self.skippable.clone()))
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+            SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+            DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// gap-b07969: `POST /api/plans/{id}/execute` with `{ "resume": true }`
+    /// says in its 202 which tasks the resume replays instead of running, and
+    /// a fresh run replays none.
+    #[tokio::test]
+    async fn execute_resume_reports_skippable_tasks() {
+        let accepted = |body: &'static [u8]| async move {
+            let runtime = Arc::new(ResumableRuntime {
+                skippable: vec!["T1".to_string()],
+            });
+            let (_dir, state) = test_state_with_runtime(runtime);
+            let response = execute_plan(
+                State(state),
+                Path("demo".into()),
+                axum::body::Bytes::from_static(body),
+            )
+            .await
+            .expect("execute plan")
+            .into_response();
+            assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            serde_json::from_slice::<Value>(&body).expect("parse response body")
+        };
+
+        let resumed = accepted(br#"{"resume": true}"#).await;
+        assert_eq!(resumed["resume"], true);
+        assert_eq!(resumed["skippable_task_ids"], json!(["T1"]));
+        let fresh = accepted(b"").await;
+        assert_eq!(fresh["resume"], false);
+        assert_eq!(fresh["skippable_task_ids"], json!([]));
     }
 
     #[tokio::test]

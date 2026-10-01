@@ -310,6 +310,25 @@ impl CliRuntime for RokoCliRuntime {
         crate::graph_execution::compute_plan_run_order(&workdir, &plans_dir, only_plans.as_deref())
     }
 
+    async fn resume_skippable_tasks(
+        &self,
+        workdir: &Path,
+        plan_dir: &Path,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        let plans = crate::runner::plan_loader::load_plans(plan_dir)?;
+        let options = crate::graph_checkpoint::ResumeOptions {
+            force_resume: true,
+            ..crate::graph_checkpoint::ResumeOptions::default()
+        };
+        let mut skippable = Vec::new();
+        for plan in &plans {
+            let preview =
+                crate::graph_checkpoint::preview_plan_resume(workdir, plan, plans.len(), &options)?;
+            skippable.extend(preview.restored_tasks);
+        }
+        Ok(Some(skippable))
+    }
+
     async fn run_trigger_graph(
         &self,
         _workdir: &Path,

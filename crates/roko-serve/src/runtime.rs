@@ -376,6 +376,21 @@ pub trait CliRuntime: Send + Sync + 'static {
         self.run_plan(workdir, plan_target).await
     }
 
+    /// The tasks of the plan at `plan_dir` whose recorded outputs a resumed
+    /// run would replay instead of running, read from its checkpoint without
+    /// changing it, as a server resume runs it (`force_resume`). `POST
+    /// /api/plans/{id}/execute` with `{ "resume": true }` reports them before
+    /// the run starts (gap-b07969).
+    ///
+    /// The default returns `Ok(None)`: the runtime cannot tell.
+    async fn resume_skippable_tasks(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
     /// Return the ordered list of plan ids that would be executed for
     /// `plan_target`, respecting `only_plans` when provided.
     ///

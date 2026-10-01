@@ -10,6 +10,8 @@
 //!    subsequent `GET /api/plans/:id/status` reports HTTP 404.
 //! 5. The run id a 202 returns is the one the runtime runs the plan under,
 //!    for a single plan and for a plan set.
+//! 6. A plan that fails validation is refused with 422 and its report, and no
+//!    run starts.
 //!
 //! A stub `CliRuntime` is used so no real agent is dispatched.
 
@@ -23,7 +25,7 @@ use http_body_util::BodyExt;
 use roko_core::config::ServeAuthConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_serve::deploy::create_backend;
-use roko_serve::plan_types::{PlanSummaryDto, PlanTasksDto};
+use roko_serve::plan_types::{PlanDiagnosticDto, PlanSummaryDto, PlanTasksDto, PlanValidationDto};
 use roko_serve::routes::build_router;
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanRunOptions, RunResult, SessionStatusInfo,
@@ -35,6 +37,9 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------------------
 // Stub runtime
 // ---------------------------------------------------------------------------
+
+/// A plan the stub's validation refuses.
+const INVALID_PLAN_ID: &str = "invalid-plan";
 
 /// A minimal `CliRuntime` that:
 /// - returns a synthetic `PlanSummaryDto` for plan ids in `known_ids`
@@ -108,6 +113,27 @@ impl CliRuntime for StubRuntime {
         let run_id = options.run_id;
         self.run_ids.lock().expect("lock run ids").push(run_id);
         self.run_plan(workdir, plan_target).await
+    }
+
+    /// A run of [`INVALID_PLAN_ID`] fails validation with one blocking error.
+    async fn validate_plan_run(
+        &self,
+        _workdir: &Path,
+        plan_target: &Path,
+        only_plans: Option<&[String]>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let names_it = only_plans.is_some_and(|ids| ids.iter().any(|id| id == INVALID_PLAN_ID));
+        if !plan_target.ends_with(INVALID_PLAN_ID) && !names_it {
+            return Ok(None);
+        }
+        Ok(Some(PlanValidationDto::from_diagnostics(vec![
+            PlanDiagnosticDto {
+                severity: "error".to_string(),
+                rule_id: "PLAN_005".to_string(),
+                task_id: Some("T1".to_string()),
+                message: "task 'T1' depends on unknown task 'T9'".to_string(),
+            },
+        ])))
     }
 
     /// A set runs the plans it names, in the order given.
@@ -489,4 +515,33 @@ async fn execute_passes_run_id_to_runtime() {
         .expect("the run starts");
         assert_eq!(seen.as_deref(), Some(run_id), "{uri}");
     }
+}
+
+/// 6. gap-655d19: a plan `roko plan run` would refuse is refused with 422 and
+///    its validation report, through either route, and no run starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn execute_refuses_a_plan_that_fails_validation() {
+    let runtime = Arc::new(StubRuntime::new([INVALID_PLAN_ID]));
+    let (_dir, state) = make_state_with(INVALID_PLAN_ID, Arc::clone(&runtime)).await;
+    for (uri, body) in [
+        (format!("/api/plans/{INVALID_PLAN_ID}/execute"), String::new()),
+        ("/api/plans/execute".to_string(), format!(r#"{{"plans":["{INVALID_PLAN_ID}"]}}"#)),
+    ] {
+        let response = build_app(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&uri)
+                    .body(Body::from(body))
+                    .expect("build request"),
+            )
+            .await
+            .expect("send request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+        let payload = body_json(response).await;
+        let details = &payload["details"];
+        assert_eq!(details["valid"], false, "{uri}: {payload}");
+        assert_eq!(details["diagnostics"][0]["rule_id"], "PLAN_005", "{uri}: {payload}");
+    }
+    assert!(runtime.run_ids.lock().expect("lock run ids").is_empty(), "a run started");
 }

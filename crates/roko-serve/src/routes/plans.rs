@@ -372,6 +372,17 @@ async fn execute_plans(
         }
     };
 
+    // Refuse plans `roko plan run` would refuse, before the run takes the
+    // workspace (gap-655d19).
+    if let Some(validation) = state
+        .runtime
+        .validate_plan_run(&state.workdir, &plan_target, only_plans.as_deref())
+        .await
+        .map_err(|e| ApiError::internal(format!("validate plans: {e}")))?
+    {
+        return Err(plan_run_rejected("the plan set", &validation));
+    }
+
     // Effective parallelism: body value, else workspace [conductor] setting.
     let config = state.load_roko_config();
     let effective_max = req
@@ -491,6 +502,17 @@ async fn start_plan_run(
         .join(&id);
     let plan_id = id.clone();
 
+    // Refuse a plan `roko plan run` would refuse, before the run takes the
+    // workspace (gap-655d19).
+    if let Some(validation) = state
+        .runtime
+        .validate_plan_run(&state.workdir, &plan_dir, None)
+        .await
+        .map_err(|e| ApiError::internal(format!("validate plan '{id}': {e}")))?
+    {
+        return Err(plan_run_rejected(&format!("plan '{id}'"), &validation));
+    }
+
     // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
     let mut active = state.active_plans.write().await;
     if let Some(conflict_key) = active_run_conflict(&active) {
@@ -582,6 +604,17 @@ async fn start_plan_run(
     drop(active);
 
     Ok(run_id)
+}
+
+/// 422 for a run `roko plan run` would refuse: `details` is the validation
+/// report, shaped as `POST /api/plans/{id}/validate` returns it.
+fn plan_run_rejected(what: &str, validation: &PlanValidationDto) -> ApiError {
+    let mut error = ApiError::unprocessable_entity(format!(
+        "{what} failed validation with {} error(s); fix them before running it",
+        validation.errors.len()
+    ));
+    error.details = serde_json::to_value(validation).ok().map(Box::new);
+    error
 }
 
 /// Whether the hub carries a `PlanCompleted` for `plan_id` sequenced at or

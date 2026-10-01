@@ -282,6 +282,17 @@ impl CliRuntime for RokoCliRuntime {
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
     }
 
+    async fn validate_plan_run(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        only_plans: Option<&[String]>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        // The models the run itself would load, as `roko plan run` does.
+        let config = load_effective_roko_config(workdir, &self.repo_registry)?;
+        plan_run_validation(workdir, plan_target, only_plans, &config.effective_models())
+    }
+
     async fn plan_run_order(
         &self,
         workdir: &Path,
@@ -1519,6 +1530,62 @@ fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<
 
 /// Convert a [`crate::plan_authoring::PlanSourceReport`] to the wire-format
 /// [`PlanValidationDto`].
+/// The validation `roko plan run` does before it starts any agent
+/// (`validate_before_run` in `commands/plan.rs`), for a server run of
+/// `plan_target` (gap-655d19): `plan_validate::validate_plans_dir_with_workdir`,
+/// where an error-severity finding that is not advisory stops the run.
+/// `only_plans` keeps the plans the run names, by plan id or directory.
+///
+/// Returns the report of the plans that would run when one of them has such
+/// an error, and `None` when the run may start or there is nothing to check.
+fn plan_run_validation(
+    workdir: &Path,
+    plan_target: &Path,
+    only_plans: Option<&[String]>,
+    models: &indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
+) -> anyhow::Result<Option<PlanValidationDto>> {
+    use crate::plan_validate::{PlanDiagnostics, Severity};
+
+    if !plan_target.exists() {
+        return Ok(None);
+    }
+    let report = crate::plan_validate::validate_plans_dir_with_workdir(
+        plan_target,
+        Some(models),
+        Some(workdir),
+    )?;
+    let runs = |plan: &PlanDiagnostics| {
+        let Some(ids) = only_plans else {
+            return true;
+        };
+        let dir = Path::new(&plan.path)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str);
+        let named = |id: &String| *id == plan.plan_id || Some(id.as_str()) == dir;
+        ids.iter().any(named)
+    };
+    let diagnostics: Vec<PlanDiagnosticDto> = report
+        .plans
+        .iter()
+        .filter(|plan| runs(plan))
+        .flat_map(|plan| &plan.diagnostics)
+        .map(|d| PlanDiagnosticDto {
+            severity: match d.severity {
+                Severity::Error => "error".to_string(),
+                Severity::Warning => "warning".to_string(),
+            },
+            rule_id: d.rule_id.clone(),
+            task_id: d.task_id.clone(),
+            message: d.message.clone(),
+        })
+        .collect();
+    let blocks = diagnostics
+        .iter()
+        .any(|d| d.severity == "error" && !crate::plan_policy::is_advisory_code(&d.rule_id));
+    Ok(blocks.then(|| PlanValidationDto::from_diagnostics(diagnostics)))
+}
+
 fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) -> PlanValidationDto {
     use crate::plan_validate::Severity;
     PlanValidationDto::from_diagnostics(
@@ -1614,6 +1681,55 @@ mod tests {
             .unwrap()
             .expect("the directory plan is listed");
         assert_eq!((summary.task_count, summary.tasks_done, summary.tasks_failed), (9, 4, 1));
+    }
+
+    /// gap-655d19: a server run is validated as `roko plan run` validates it.
+    /// A plan with a blocking error is refused with its diagnostics, and a
+    /// run that names other plans does not check it.
+    #[tokio::test]
+    async fn server_plan_runs_are_validated_like_roko_plan_run() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plans_root = workdir.path().join("plans");
+        let plan_dir = plans_root.join("broken");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            r#"[meta]
+plan = "broken"
+
+[[task]]
+id = "T1"
+title = "Waits on a task the plan does not have"
+depends_on = ["T9"]
+"#,
+        )
+        .unwrap();
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+
+        let refused = runtime
+            .validate_plan_run(workdir.path(), &plan_dir, None)
+            .await
+            .unwrap()
+            .expect("an unknown dependency stops the run");
+        assert!(!refused.valid);
+        assert!(
+            refused.diagnostics.iter().any(|d| d.rule_id == "PLAN_005"),
+            "{:?}",
+            refused.diagnostics
+        );
+
+        let broken = vec!["broken".to_string()];
+        let named = runtime
+            .validate_plan_run(workdir.path(), &plans_root, Some(broken.as_slice()))
+            .await
+            .unwrap();
+        assert!(named.is_some(), "a set run of the broken plan is refused");
+        let others = vec!["other".to_string()];
+        let unrelated = runtime
+            .validate_plan_run(workdir.path(), &plans_root, Some(others.as_slice()))
+            .await
+            .unwrap();
+        assert!(unrelated.is_none(), "{unrelated:?}");
     }
 
     /// A plan-set directory (no top-level tasks.toml) must also be returned

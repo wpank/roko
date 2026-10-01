@@ -402,6 +402,22 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support plan run order")
     }
 
+    /// Check the plans a run of `plan_target` would start, as `roko plan run`
+    /// checks them before it starts any agent; `only_plans` limits a plan-set
+    /// directory to the plans the run names.
+    ///
+    /// Returns the validation report when an error stops the run, and `None`
+    /// when the run may start. The default admits every run: a runtime that
+    /// cannot validate plans leaves that to the run itself.
+    async fn validate_plan_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_target: &std::path::Path,
+        _only_plans: Option<&[String]>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        Ok(None)
+    }
+
     /// Execute the graph attached to a trigger firing.
     ///
     /// The default preserves compatibility with runtimes that only implement

@@ -14,6 +14,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::costs_db::CostRecord;
+use crate::telemetry::CostSource;
 
 /// Append-only JSONL log for [`CostRecord`] values.
 #[derive(Debug, Clone)]
@@ -159,6 +160,25 @@ impl CostsLog {
             .read_all()
             .await?
             .into_iter()
+            .map(|record| record.cost_usd)
+            .sum();
+        Ok(total.max(0.0))
+    }
+
+    /// The part of [`Self::total_cost`] priced from estimated usage
+    /// (`cost_source` `estimated`): usage a call streamed before it was
+    /// cancelled or timed out, which no provider reported. Totals show it
+    /// apart (gap-288e38).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying log cannot be read.
+    pub async fn estimated_cost(&self) -> io::Result<f64> {
+        let total: f64 = self
+            .read_all()
+            .await?
+            .into_iter()
+            .filter(|record| record.cost_source == CostSource::Estimated)
             .map(|record| record.cost_usd)
             .sum();
         Ok(total.max(0.0))
@@ -319,6 +339,7 @@ mod tests {
             duration_ms: 1234,
             success: true,
             session_id: "sess-1".to_string(),
+            cost_source: CostSource::Unknown,
         }
     }
 
@@ -418,6 +439,7 @@ mod tests {
                 duration_ms: 1234,
                 success: true,
                 session_id: "sess-1".to_string(),
+                cost_source: CostSource::Unknown,
             };
 
         let two_days_ago = today - ChronoDuration::days(2);
@@ -448,5 +470,51 @@ mod tests {
         assert!((daily[0].1 - 1.25).abs() < f64::EPSILON);
         assert!((daily[1].1 - 2.50).abs() < f64::EPSILON);
         assert!((daily[2].1 - 3.75).abs() < f64::EPSILON);
+    }
+
+    /// gap-288e38: a row says where its usage came from. A row from before the
+    /// field reads `unknown`, a Graph row's flattened `cost_source` is read
+    /// back, and estimated spend is summed apart from the total.
+    #[tokio::test]
+    async fn rows_carry_their_cost_source_and_estimates_are_summed_apart() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("costs.jsonl");
+        let mut old = serde_json::to_value(record("old", 0.5)).unwrap();
+        old.as_object_mut().unwrap().remove("cost_source");
+        let estimated = CostRecord {
+            cost_source: CostSource::Estimated,
+            ..record("timed-out", 0.25)
+        };
+        let mut graph = serde_json::to_value(&estimated).unwrap();
+        let fields = graph.as_object_mut().unwrap();
+        fields.insert("attempt_key".into(), "run:plan-1:timed-out:1".into());
+        fields.insert("outcome".into(), "timeout".into());
+        let reported = CostRecord {
+            cost_source: CostSource::CliUsage,
+            ..record("passed", 1.0)
+        };
+        let reported = serde_json::to_string(&reported).unwrap();
+        tokio::fs::write(&path, format!("{old}\n{graph}\n{reported}\n"))
+            .await
+            .unwrap();
+
+        let log = CostsLog::at(&path);
+        let sources: Vec<CostSource> = log
+            .read_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.cost_source)
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                CostSource::Unknown,
+                CostSource::Estimated,
+                CostSource::CliUsage
+            ]
+        );
+        assert!((log.total_cost().await.unwrap() - 1.75).abs() < 1e-9);
+        assert!((log.estimated_cost().await.unwrap() - 0.25).abs() < 1e-9);
     }
 }

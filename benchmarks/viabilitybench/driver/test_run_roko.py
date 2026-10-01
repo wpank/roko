@@ -488,6 +488,30 @@ def test_run_roko_reads_the_model_truth_fields(tmp_path):
     assert "model_unverified" in settle(model_truth_records(tmp_path / "twice", changes=twice))[1][0]
 
 
+def test_an_attempt_roko_priced_from_streamed_usage_is_estimated(tmp_path):
+    # gap-288e38: S01's verdict says where an attempt's usage came from. Usage a call streamed before Roko cut it off
+    # is `estimated`, and so is the attempt's cost, which its record and ledger row carry. When the proxy metered the
+    # attempts, it saw what the provider billed, so their cost is reported usage.
+    usage = {"tokens_in": 1000, "tokens_out": 200, "tokens_cache_read": 0}
+    executed = {"provider": "cerebras", "model_requested": PIN, "model_dispatched": PIN, "model_reported": PIN,
+                "models_reported": [PIN], "model_mismatch": False, "failover_chain": [], "failover_reason": None,
+                "turns": 3}
+    changes = {("verdict", number, "implementer"): {"executed": executed, "usage": usage, "cost": {"source": source}}
+               for number, source in ((2, "estimated"), (3, "provider_usage"))}
+    attempts, problems = settle(model_truth_records(tmp_path / "s01", changes=changes))
+    assert problems == []
+    assert [attempt.cost.source for attempt in attempts] == ["unknown", "estimated", "provider_usage"]
+    assert attempts[1].cost.api_equiv_usd == attempts[2].cost.api_equiv_usd > 0
+
+    proxy_usage = {"tokens_in": 1000, "tokens_cache_read": 0, "tokens_out": 50, "tokens_reasoning": 0}
+    found = model_truth_records(tmp_path / "proxied", changes=changes)
+    found.proxy_rows = [{"task": "F1-l1-0001.s1", "ordinal": ordinal, "ts": f"2026-09-30T07:46:0{second}.5Z",
+                         "model_requested": PIN, "model_reported": PIN, "usage": proxy_usage,
+                         "usage_source": "reported"} for ordinal, second in enumerate([1] * 5 + [2] * 4 + [3] * 3, 1)]
+    attempts, problems = settle(found)
+    assert problems == [] and [attempt.cost.source for attempt in attempts] == ["provider_usage"] * 3
+
+
 def test_a_declared_model_swap_passes_the_model_checks(places, tmp_path):
     # gap-8bdf5e: a model_swap disturbance has the metering proxy send another model (glm-4.7) in place of the pin, and
     # declares it. The model checks accept exactly that served model on the tasks it covers and mark the attempts it

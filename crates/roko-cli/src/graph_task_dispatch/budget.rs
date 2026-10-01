@@ -401,8 +401,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, batch_ctx, make_batch_dispatcher,
-        make_scripted_batch_dispatcher, make_spec, make_task_def,
+        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, VERIFY_PROVIDER, batch_ctx,
+        make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec, make_task_def,
     };
 
     #[test]
@@ -721,6 +721,66 @@ mod tests {
             assert_eq!(record["output_tokens"], 200, "{record}");
             let recorded_usd = record["cost_usd"].as_f64().expect("cost_usd");
             assert!((recorded_usd - streamed_usd).abs() < 1e-6, "{record}");
+            return;
+        }
+        panic!("no provider streamed its message before its time ran out");
+    }
+
+    /// gap-288e38: a timed-out attempt's `costs.jsonl` row says its cost was
+    /// priced from the usage it streamed (`estimated`), `CostRecord` reads
+    /// that back, and the log's totals show it apart. A row whose usage the
+    /// provider reported says so (`cli_usage` for the Claude CLI).
+    #[tokio::test]
+    async fn a_timed_out_attempt_cost_record_is_marked_estimated() {
+        let temp = tempdir().expect("tempdir");
+        let costs_path = temp.path().join("costs.jsonl");
+        let (dispatcher, task) =
+            make_scripted_batch_dispatcher(&temp, VERIFY_PROVIDER, |_| {}).await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            costs_path: Some(costs_path.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("the attempt completes");
+        let reported = first_cost_record(&costs_path).await;
+        assert_eq!(reported["cost_source"], "cli_usage", "{reported}");
+
+        for timeout_secs in TIMEOUT_SECS_UNDER_LOAD {
+            let temp = tempdir().expect("tempdir");
+            let costs_path = temp.path().join("costs.jsonl");
+            let (dispatcher, mut task) =
+                make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {})
+                    .await;
+            let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+                costs_path: Some(costs_path.clone()),
+                ..GraphFeedbackContext::default()
+            });
+            task.timeout_secs = timeout_secs;
+            let spec = make_spec(&task);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .expect_err("the attempt runs out of time");
+            if dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd <= 0.0 {
+                // The provider ran out of time before its message arrived.
+                continue;
+            }
+
+            let row = first_cost_record(&costs_path).await;
+            assert_eq!(row["cost_source"], "estimated", "{row}");
+            let record: roko_learn::costs_db::CostRecord =
+                serde_json::from_value(row).expect("the row is a CostRecord");
+            assert_eq!(
+                record.cost_source,
+                roko_learn::telemetry::CostSource::Estimated
+            );
+            let estimated = roko_learn::costs_log::CostsLog::at(&costs_path)
+                .estimated_cost()
+                .await
+                .expect("read the costs");
+            assert!(estimated > 0.0 && (estimated - record.cost_usd).abs() < 1e-9);
             return;
         }
         panic!("no provider streamed its message before its time ran out");

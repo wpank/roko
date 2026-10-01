@@ -163,6 +163,8 @@ impl SettlementSink for ActualCostSink {
             duration_ms: receipt.duration_ms(),
             success: receipt.succeeded(),
             session_id: receipt.run_id.clone(),
+            // A receipt does not say where its usage came from.
+            cost_source: roko_learn::telemetry::CostSource::Unknown,
         };
         let path = self.learn_dir.join("costs.jsonl");
         let line = serde_json::to_string(&record).map_err(|e| SinkError {

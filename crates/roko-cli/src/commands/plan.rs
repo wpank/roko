@@ -2451,14 +2451,26 @@ async fn cmd_plan_run_engine(
 
 /// Whether a plan run in `workdir` isolates each task in its own git
 /// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
-/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f).
+/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). Worktrees
+/// start from a commit, so the setting alone does not isolate a workdir that
+/// is not a git checkout with one; an explicit flag there fails the run.
 fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
-    flag.unwrap_or_else(|| {
-        roko_core::config::loader::load_config_unified(workdir)
-            .unwrap_or_default()
-            .runner
-            .worktree_per_task
-    })
+    if let Some(flag) = flag {
+        return flag;
+    }
+    let configured = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .runner
+        .worktree_per_task;
+    if configured && !roko_cli::graph_execution::batch::has_head_commit(workdir) {
+        tracing::warn!(
+            workdir = %workdir.display(),
+            "[runner] worktree_per_task is on, but the workdir is not a git checkout with a \
+             commit: the tasks run in the shared working tree"
+        );
+        return false;
+    }
+    configured
 }
 
 /// Resolve the effective per-plan USD ceiling from CLI flags and config.
@@ -2494,7 +2506,8 @@ mod tests {
     use tempfile::tempdir;
 
     /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
-    /// `[runner] worktree_per_task` otherwise.
+    /// `[runner] worktree_per_task` otherwise, which isolates only a git
+    /// checkout with a commit to start worktrees from.
     #[test]
     fn worktree_per_task_follows_the_flag_then_the_runner_config() {
         let dir = tempdir().expect("tempdir");
@@ -2503,9 +2516,39 @@ mod tests {
             "[runner]\nworktree_per_task = true\n",
         )
         .expect("write roko.toml");
+        assert!(
+            !resolve_worktree_per_task(None, dir.path()),
+            "not a git checkout: the setting falls back to the shared tree"
+        );
+        assert!(resolve_worktree_per_task(Some(true), dir.path()));
+
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
         assert!(resolve_worktree_per_task(None, dir.path()));
         assert!(!resolve_worktree_per_task(Some(false), dir.path()));
-        assert!(resolve_worktree_per_task(Some(true), dir.path()));
     }
 
     #[test]

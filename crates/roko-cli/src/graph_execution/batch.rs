@@ -388,6 +388,21 @@ pub fn new_batch_run_id() -> String {
     )
 }
 
+/// Whether `repo` is a git checkout with a commit at `HEAD`, which a run's
+/// batch branch and per-task worktrees start from (gap-4ec59f).
+#[must_use]
+pub fn has_head_commit(repo: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// The commit `rev` names in `repo`, if it names one.
 async fn commit_of(repo: &Path, rev: &str) -> Option<String> {
     let spec = format!("{rev}^{{commit}}");
@@ -424,6 +439,17 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// gap-4ec59f: a workdir can isolate its tasks only as a git checkout
+    /// with a commit for the batch and the worktrees to start from.
+    #[test]
+    fn has_head_commit_needs_a_checkout_with_a_commit() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert!(!has_head_commit(dir.path()), "not a git checkout");
+        git(dir.path(), &["init", "--quiet"]);
+        assert!(!has_head_commit(dir.path()), "no commit yet");
+        assert!(has_head_commit(repo_with_plan_branches().path()));
     }
 
     /// A repository on `main`, with plan branches `roko/plan/plan-a` and

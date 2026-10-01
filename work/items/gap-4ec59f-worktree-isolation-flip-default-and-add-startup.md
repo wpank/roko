@@ -239,6 +239,15 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
     `--no-worktree-per-task` / `[runner] worktree_per_task = false`.
   - Relaxing it looks possible. Deliveries into the batch take turns, and a dependent plan starts only after its
     prerequisite is delivered. That needs a live check of parallel plans in worktrees first, so it is left.
+- 2026-10-01 (wk-tiers): groundwork for step 5 on work/gap-4ec59f; cargo verification deferred to the batch check.
+  - Isolation that comes from config (and so from the default, once it flips) falls back to the shared working tree,
+    with a warning, when the workdir is not a git checkout with a commit (`batch::has_head_commit`). This is the
+    e2e/CI/scratch case. An explicit `--worktree-per-task` there still fails, as before.
+  - Serve applies the same check to its config value.
+  - Tests: `has_head_commit_needs_a_checkout_with_a_commit` and the extended
+    `worktree_per_task_follows_the_flag_then_the_runner_config`.
+  - Step 4 (results reaching the user's checkout) is waiting on a decision: the C3/C4 and proof-case-2 canaries
+    assert that the operator's checkout never changes.
 
 ## Original notes
 

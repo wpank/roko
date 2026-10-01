@@ -1695,9 +1695,14 @@ async fn run_agent_phase(
     output
 }
 
-/// Build a Signal with a GatePayload body pointing at `workdir`.
+/// Build a Signal with a GatePayload body pointing at `workdir`. Its gates get
+/// the workspace's `[gates] env_passthrough` on top of the gate allowlist, as
+/// plan-run verify steps do (gap-bbbfbc).
 fn build_gate_signal(workdir: &Path) -> Signal {
-    let payload = GatePayload::in_dir(workdir);
+    let env_passthrough = roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.gates.env_passthrough)
+        .unwrap_or_default();
+    let payload = GatePayload::in_dir(workdir).with_env_passthrough(env_passthrough);
     let body = Body::from_json(&payload).unwrap_or_else(|_| Body::empty());
     Signal::builder(Kind::Task).body(body).build()
 }

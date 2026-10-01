@@ -1190,6 +1190,7 @@ pub async fn run_gate_once(
         &workdir,
         &gate_target_crates,
         main_target_dir.as_deref(),
+        &gates_config.env_passthrough,
     );
 
     let execute_pipeline = gate_mode == GateMode::Full && (!task_verify_only || focused_fallback);
@@ -1467,6 +1468,7 @@ pub async fn run_gate_once(
                 &gate_target_crates,
                 main_target_dir.as_deref(),
                 gates_config.compile_concurrency,
+                &gates_config.env_passthrough,
             )
             .await
         } else {
@@ -1783,7 +1785,9 @@ pub async fn run_gate_once(
     }
 }
 
-/// Spawn plan-level verify steps as a background task.
+/// Spawn plan-level verify steps as a background task. Their commands get
+/// `env_passthrough` (`[gates] env_passthrough`) on top of the gate
+/// allowlist.
 pub fn spawn_plan_verify(
     effect: GateEffectRef,
     plan_id: String,
@@ -1795,6 +1799,7 @@ pub fn spawn_plan_verify(
     gate_sem: Arc<Semaphore>,
     main_target_dir: Option<PathBuf>,
     line_sink: Option<mpsc::UnboundedSender<String>>,
+    env_passthrough: Vec<String>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -1839,6 +1844,7 @@ pub fn spawn_plan_verify(
                         &workdir_for_run,
                         &[], // plan-level verify runs workspace-wide
                         main_target_dir.as_deref(),
+                        &env_passthrough,
                     );
                     all.extend(
                         run_verify_steps(
@@ -2119,6 +2125,9 @@ fn build_rung_execution_config(
     }
 }
 
+/// The gate payload signal of one rung. Its commands get `env_passthrough`
+/// (`[gates] env_passthrough`) on top of the gate allowlist, as Graph verify
+/// steps do (gap-bbbfbc).
 fn gate_signal(
     plan_id: &str,
     task_id: &str,
@@ -2126,6 +2135,7 @@ fn gate_signal(
     workdir: &std::path::Path,
     target_crates: &[String],
     main_target_dir: Option<&Path>,
+    env_passthrough: &[String],
 ) -> Signal {
     let attempt_sentinel = RokoLayout::for_project(workdir)
         .gate_attempts_dir()
@@ -2137,6 +2147,7 @@ fn gate_signal(
     let mut payload = GatePayload::in_dir(workdir)
         .with_label(format!("{plan_id}:{task_id}:rung-{rung}"))
         .with_target_crates(target_crates.to_vec())
+        .with_env_passthrough(env_passthrough.iter().cloned())
         .with_env("ROKO_GATE_PLAN_ID", plan_id)
         .with_env("ROKO_GATE_TASK_ID", task_id)
         .with_env("ROKO_GATE_RUNG", rung.to_string())
@@ -2275,6 +2286,7 @@ async fn run_focused_baseline_verify(
     target_crates: &[String],
     main_target_dir: Option<&Path>,
     compile_concurrency: usize,
+    env_passthrough: &[String],
 ) -> Option<Vec<GateVerdictSummary>> {
     let steps = steps
         .into_iter()
@@ -2294,6 +2306,7 @@ async fn run_focused_baseline_verify(
         baseline.path(),
         target_crates,
         main_target_dir,
+        env_passthrough,
     );
     let ctx = roko_core::Context::now();
     let verdicts = run_verify_steps(
@@ -2839,8 +2852,9 @@ path = "src/shared.rs"
             1,
             tx,
             Arc::new(Semaphore::new(1)),
-            None, // main_target_dir
-            None, // line_sink
+            None,       // main_target_dir
+            None,       // line_sink
+            Vec::new(), // env_passthrough
         );
         tokio::task::yield_now().await;
         assert!(matches!(
@@ -2876,8 +2890,9 @@ path = "src/shared.rs"
             1,
             tx,
             semaphore,
-            None, // main_target_dir
-            None, // line_sink
+            None,       // main_target_dir
+            None,       // line_sink
+            Vec::new(), // env_passthrough
         );
         start.send(()).unwrap();
         let completion = rx.recv().await.unwrap();
@@ -2987,7 +3002,7 @@ path = "src/shared.rs"
     #[tokio::test]
     async fn verify_steps_fail_when_a_piped_command_fails_before_tail() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &[]);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "test".to_string(),
@@ -3005,7 +3020,7 @@ path = "src/shared.rs"
     #[tokio::test]
     async fn verify_steps_pass() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &[]);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "structural".to_string(),
@@ -3058,6 +3073,17 @@ path = "src/shared.rs"
         assert_eq!(build_slot_dir(&common_dir), Some(common_dir.join("roko-build-slots")));
         let plain = tempfile::tempdir().expect("tempdir should be created");
         assert_eq!(build_slot_dir(plain.path()), None);
+    }
+
+    /// gap-bbbfbc: a runner gate payload hands its commands `[gates]
+    /// env_passthrough`, as Graph verify payloads do.
+    #[test]
+    fn gate_signal_payload_carries_env_passthrough() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let passthrough = vec!["DATABASE_URL".to_string()];
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None, &passthrough);
+        let payload: GatePayload = signal.body.as_json().expect("gate payload");
+        assert_eq!(payload.env_passthrough, ["DATABASE_URL"]);
     }
 
     #[tokio::test]

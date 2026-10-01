@@ -9,6 +9,7 @@ on:
       - "docs/v1/**/*.md"
       - "docs/v2/**"
       - "docs/v2-depth/**/*.md"
+      - "docs/v3/**"
       - "docker/README.md"
       - "tools/docs_integrity/**"
       - ".github/workflows/docs-lint.yml"
@@ -20,6 +21,7 @@ on:
       - "docs/v1/**/*.md"
       - "docs/v2/**"
       - "docs/v2-depth/**/*.md"
+      - "docs/v3/**"
       - "docker/README.md"
       - "tools/docs_integrity/**"
       - ".github/workflows/docs-lint.yml"
@@ -65,3 +67,7 @@ jobs:
             echo "executor.json mentions must be explicitly identified as legacy compatibility." >&2
             exit 1
           fi
+      - name: Check docs/v3 against the audited citation errata
+        run: |
+          python3 -m unittest tools.docs_integrity.test_check_citation_errata
+          python3 tools/docs_integrity/check_citation_errata.py --prose

@@ -236,20 +236,16 @@ impl RunScrubber {
     }
 
     /// Build the process's scrubber and install it as its secret scrubber
-    /// ([`roko_core::obs::install_secret_scrubber`]). Its secrets are
-    /// `env_file_secrets`, the `(name, value)` pairs loaded from `.env`
-    /// files, then the values of the provider key variables roko knows
+    /// ([`roko_core::obs::install_secret_scrubber`]). Its secrets are the
+    /// secrets among `env_file_entries`, the `(name, value)` pairs loaded
+    /// from `.env` files ([`RunScrubber::build_from_env_file`]), then the
+    /// values of the provider key variables roko knows
     /// ([`roko_core::child_env::PROVIDER_KEY_VARS`] and the provider
-    /// catalog's), so a key exported in the shell is scrubbed too. Every
-    /// `.env` value counts as a secret, as it does for child environments
-    /// ([`roko_core::child_env`]); a setting that is not a secret belongs in
-    /// `roko.toml`. Returns the scrubber for the log layers.
-    pub fn install(env_file_secrets: &[(String, String)]) -> Arc<LogScrubber> {
-        let secrets: Vec<(&str, &str)> = env_file_secrets
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect();
-        let scrubber = Self::build(&secrets);
+    /// catalog's), so a key exported in the shell is scrubbed too; each
+    /// config roko loads adds its own. Returns the scrubber for the log
+    /// layers.
+    pub fn install(env_file_entries: &[(String, String)]) -> Arc<LogScrubber> {
+        let scrubber = Self::build_from_env_file(env_file_entries);
         roko_core::obs::install_secret_scrubber(Some(Arc::clone(&scrubber)));
         roko_core::obs::add_secret_env_values(
             roko_core::child_env::PROVIDER_KEY_VARS
@@ -264,6 +260,36 @@ impl RunScrubber {
         );
         scrubber
     }
+
+    /// Build a scrubber from a `.env` file's `(name, value)` entries,
+    /// registering the secrets among them ([`is_env_file_secret`]). A
+    /// setting kept there, such as `ROKO_LOG=debug,roko=trace` or a model
+    /// name, stays readable in records.
+    #[must_use]
+    pub fn build_from_env_file(env_file_entries: &[(String, String)]) -> Arc<LogScrubber> {
+        let secrets: Vec<(&str, &str)> = env_file_entries
+            .iter()
+            .filter(|(name, value)| is_env_file_secret(name, value))
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        Self::build(&secrets)
+    }
+}
+
+/// Whether a `.env` entry holds a secret.
+///
+/// It does when its name looks like a credential's (`OPENAI_API_KEY`,
+/// `GITHUB_TOKEN`; see [`roko_core::child_env::is_secret_env_name`]), or when
+/// its value is a URL that carries credentials
+/// (`postgres://user:pass@host/db`, `https://token@host/repo`).
+#[must_use]
+pub fn is_env_file_secret(name: &str, value: &str) -> bool {
+    roko_core::child_env::is_secret_env_name(name)
+        || value.split_once("://").is_some_and(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .is_some_and(|authority| authority.contains('@'))
+        })
 }
 
 // ─── SinkTelemetry (T020) ───────────────────────────────────────────────────
@@ -743,6 +769,36 @@ mod tests {
             scrubber.scrub("port 8080 mode debug"),
             "port 8080 mode debug"
         );
+    }
+
+    /// bug-cef888: every `.env` value of 8 or more characters counted as a
+    /// secret, so a setting kept there was redacted from every record.
+    #[test]
+    fn non_secret_env_settings_are_not_redacted() {
+        let entries = [
+            ("OPENAI_API_KEY", "sk-test-cef888-secret"),
+            ("ROKO__SERVE__AUTH__API_KEY", "serve-key-cef888"),
+            ("DATABASE_URL", "postgres://roko:pw-cef888@db.internal/roko"),
+            ("ROKO_LOG", "debug,roko=trace"),
+            ("ROKO_MODEL", "claude-sonnet-4-6"),
+            ("REPO_URL", "https://github.com/nunchi/roko"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let scrubber = RunScrubber::build_from_env_file(&entries);
+        let record = "sk-test-cef888-secret serve-key-cef888 \
+                      postgres://roko:pw-cef888@db.internal/roko debug,roko=trace \
+                      claude-sonnet-4-6 https://github.com/nunchi/roko";
+        let scrubbed = scrubber.scrub_literals(record);
+        for secret in ["sk-test-cef888-secret", "serve-key-cef888", "pw-cef888"] {
+            assert!(!scrubbed.contains(secret), "{scrubbed}");
+        }
+        for setting in [
+            "debug,roko=trace",
+            "claude-sonnet-4-6",
+            "https://github.com/nunchi/roko",
+        ] {
+            assert!(scrubbed.contains(setting), "{scrubbed}");
+        }
     }
 
     #[test]

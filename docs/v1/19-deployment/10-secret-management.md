@@ -126,11 +126,11 @@ Keep `.env` files out of version control:
 Config files support `${VAR}` syntax so profile configuration can stay declarative:
 
 ```toml
-[agent.providers.anthropic]
-api_key = "${ANTHROPIC_API_KEY}"
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
 
-[agent.providers.openai]
-api_key = "${OPENAI_API_KEY}"
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
 
 [subscription.webhook]
 secret = "${ROKO_WEBHOOK_SECRET}"
@@ -174,8 +174,8 @@ supports live secret refresh.
 Secrets can be scoped per repository, per tenant, or per role.
 
 ```toml
-[credentials]
-anthropic_api_key = "${ANTHROPIC_API_KEY_TEAM}"
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY_TEAM"
 ```
 
 In a shared deployment, the same `roko.toml` can point to different sources for different

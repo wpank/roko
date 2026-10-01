@@ -2,14 +2,16 @@
 id = "gap-0d64d5"
 kind = "gap"
 title = "Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-serve/plans", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "1288aeb35"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:04); docs/whitepaper/data/mechanisms.toml (row SS6)"
 anchors = ["crates/roko-serve/src/routes/plans.rs::find_agent_branch", "crates/roko-serve/src/routes/plans.rs::list_reviews", "crates/roko-serve/src/routes/plans.rs::task_diff", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend"]
@@ -22,6 +24,11 @@ command = "grep -rqw 'fn approval_hold_blocks_merge_until_approved' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn task_diff_reads_the_graph_task_result' crates/roko-serve/ && cargo test -p roko-serve task_diff_reads_the_graph_task_result"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in e3267be54. [meta] approval = \"per_task\" holds each verified attempt before it joins the plan branch, writing its diff to .roko/state/review-holds/<plan>/<task>.json and waiting on a decision in reviews.jsonl; roko plan review <plan> <task> --approve|--reject [--note] and serve's submit_review record decisions, task_diff serves the held or accepted diff, list_reviews shows awaiting_approval. Batch 19 gate on 1ce6526f8, re-assembled as 65ce6d506 with only a rustfmt commit on bug-ba8d42's test (b3ccce141, made on a separate branch; MAIN 1288aeb35 has the same code): cargo check --workspace --tests and clippy -p roko-agent -p roko-cli -p roko-core -p roko-fs -p roko-gate -p roko-learn -p roko-serve --keep-going -D warnings clean; nightly fmt clean; lib tests: roko-cli 3254 passed with 0 failed (the first full run with no load flakes, after bug-779ae7), roko-agent 2271, roko-core 1956, roko-fs 260, roko-gate 690, roko-serve 989, roko-learn 1204 (one pre-existing sub-millisecond timestamp test, append_preserves_first_seen_timestamp, passes alone); --test tier_ladder_canary 1 passed; --test plan_branch_integration 2 passed. Verify: both of the item's verify commands pass (with the three new roko-cli tests)."
 +++
 
 ## Problem
@@ -88,3 +95,16 @@ gap-c3add8 (`--approval` on the Graph engine) and bug-619253.
   the serve-routes split (gap-a6de8d).
 - When this lands, supersede or close the parked approval items (gap-23fa38, gap-c3add8, bug-619253) with a pointer
   here.
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-4862cf` at `d2c7c86a6`; cargo verification deferred to the batch check.
+  - `[meta] approval = "per_task"` (`TaskMeta.approval`, `ApprovalMode`) holds each verified attempt before `accept_attempt` folds it into the plan branch (`GraphTaskDispatcher::await_review`). The attempt's change goes to `.roko/state/review-holds/<plan>/<task>.json` (`RokoLayout::review_hold`): its base commit, numstat and patch, built in a temporary index, so the checkout is untouched. The attempt then waits for a decision naming it in `.roko/state/reviews.jsonl` (`RokoLayout::reviews_log`).
+  - On a decision: approval accepts the attempt. A rejection or a skip fails it with `gate: "review"`, and the reviewer's note becomes the next attempt's retry feedback. A cancelled run ends the hold. The hold file is removed in every case.
+  - The run refuses a plan with a hold unless it runs with `--worktree-per-task` and the default topology: the rich topology's plan gate accepts on its own.
+  - roko serve: `task_diff` returns a held attempt's change, else the Graph task's recorded result (its `workspace.attempt_commit` in the plan's `activities.jsonl`, diffed against its parent), else the legacy `agent/*` branch. `list_reviews` shows held tasks as `awaiting_approval`, and `submit_review` on a held task records the decision with the attempt's key instead of merging.
+  - CLI: `roko plan review <plan> <task> --approve|--reject [--note]` records the same decision (`docs/v3/28-CLI.md`).
+  - Tests: `approval_hold_blocks_merge_until_approved`, `a_rejected_attempt_fails_with_the_reviewers_note`, `approval_needs_worktrees_and_the_default_topology` (roko-cli), and `task_diff_reads_the_graph_task_result` (roko-serve). Clippy with -D warnings on roko-cli, roko-serve and roko-fs is clean.
+  - Not done:
+    - A held task keeps its agent slot while it waits.
+    - The TUI shows the hold as a `review` gate result but has no approve or reject keys. `control_adapter` has an in-process approval API that is not wired to this.
+    - The portal's review view is unchanged.
+    - The legacy `submit_review` approve path still runs `git merge` in the server's checkout for `agent/*` branches.
+    - The parked items gap-23fa38, gap-c3add8 and bug-619253 are left for the coordinator to supersede.

@@ -24,6 +24,7 @@ CAPTURE_PID=""
 SSE_FILE=""
 PASSES=0
 FAILURES=0
+SKIPS=0
 
 # check NAME CMD...: run CMD and record PASS/FAIL; never aborts the check.
 check() {
@@ -38,14 +39,23 @@ check() {
     fi
 }
 
+# skip NAME REASON: record a check this build cannot run, and why. A skip is
+# neither a pass nor a failure; the verdict line counts it.
+skip() {
+    echo "SKIP $1 ($2)"
+    SKIPS=$((SKIPS + 1))
+}
+
 # finish TITLE: print the verdict line and exit non-zero on any failure.
 finish() {
+    local skipped=""
+    if [ "$SKIPS" -gt 0 ]; then skipped=", $SKIPS skipped"; fi
     if [ "$FAILURES" -eq 0 ]; then
-        echo "$1: PASS ($PASSES checks)"
+        echo "$1: PASS ($PASSES checks$skipped)"
         exit 0
     fi
     KEEP_WS=1
-    echo "$1: FAIL ($FAILURES of $((PASSES + FAILURES)) checks failed; workspace kept at $WS)"
+    echo "$1: FAIL ($FAILURES of $((PASSES + FAILURES)) checks failed$skipped; workspace kept at $WS)"
     exit 1
 }
 
@@ -122,7 +132,12 @@ make_workspace() {
     chmod +x "$WS/fake-claude"
     mkdir -p "$WS/.roko" "$WS/plans" "$WS/slow-plans" "$WS/par-plans"
     printf '# live-check workspace\n' >"$WS/README.md"
-    printf '.roko/\nout/\nhello/\n' >"$WS/.gitignore"
+    # Git sees what the tasks write (out/, hello/): the pre-verify screen
+    # rejects an implementer attempt that leaves the git-visible tree unchanged
+    # (gap-b72761). It does not see roko's state, nor the checks' own records
+    # at the workspace root, which change during every attempt and would pass
+    # for a task's work.
+    printf '.roko/\n/serve.log\n/*.sse\n/*.json\n/*.out\n/*.headers\n/portal-fixture/\n' >"$WS/.gitignore"
     cat >"$WS/roko.toml" <<EOF
 config_version = 2
 schema_version = 2
@@ -199,6 +214,16 @@ fail_msg = "out/legacy.txt was not written"
 EOF
     printf '# legacy-fixture\n\nAn old-format plan.\n' >"$WS/plans/legacy-fixture/plan.md"
     (cd "$WS" && git add -A && git -c user.email=live-check@roko -c user.name=live-check commit -qm legacy)
+}
+
+# clear_artifacts PATH...: delete what an earlier run wrote before a fresh rerun.
+# The fake agent rewrites identical bytes, so an attempt that finds its artifact
+# in place leaves the tree unchanged, and the pre-verify screen rejects it.
+clear_artifacts() {
+    local path
+    for path in "$@"; do
+        rm -f "$WS/$path"
+    done
 }
 
 # start_server: start `roko serve` in $WS on a free port; sets PORT, SERVER_PID.

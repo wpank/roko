@@ -1,0 +1,44 @@
++++
+id = "bug-02e264"
+kind = "bug"
+title = "After roko init, roko config providers add anthropic appends a duplicate [models.\"claude-sonnet-4-6\"] table, and the file stops parsing"
+status = "open"
+triage = "unverified"
+severity = "p2"
+goal = "release"
+size = "S"
+subsystem = ["roko-cli/commands/config_cmd"]
+created = 2026-09-30
+updated = 2026-09-30
+source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
+discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report, checked on work/bug-17f0e4 at 6b332b25f)"
+anchors = ["crates/roko-cli/src/commands/config_cmd.rs"]
+lane = "rust-cold"
+parent = "spec-ae5f94"
+links = { depends_on = [], blocks = [], related = ["bug-e2cfdf", "bug-e1327f"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn providers_add_after_init_keeps_the_config_parseable' crates/roko-cli/src/ && cargo test -p roko-cli providers_add_after_init_keeps_the_config_parseable"
++++
+
+## Problem
+
+`roko init` writes a `[models."claude-sonnet-4-6"]` table. `roko config providers add anthropic` then appends its own stanza with a `[models.{slug}]` table for each catalog model (`crates/roko-cli/src/commands/config_cmd.rs:608`), without checking which tables already exist. The second `[models."claude-sonnet-4-6"]` makes the TOML invalid, since a table can't be defined twice, so every command fails to load the config.
+
+## Why it matters
+
+Release blockers (epic spec-ae5f94): the two commands a new user runs first break the workspace. bug-e2cfdf covers the stanza's schema-invalid keys; this is the duplicate table.
+
+## Where
+
+The stanza rendering and appending in `config_cmd.rs`'s `providers add`.
+
+## Plan
+
+1. Edit the config structurally (`toml_edit`): add missing tables, and skip or merge existing ones, instead of appending text.
+2. Add `providers_add_after_init_keeps_the_config_parseable`: `init`, then `providers add anthropic`, then load.
+
+## Done when
+
+- [ ] `providers add` after `init` leaves a config that loads.
+- [ ] The `[[verify]]` command passes.

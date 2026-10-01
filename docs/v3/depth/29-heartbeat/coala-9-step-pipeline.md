@@ -375,7 +375,7 @@ invoke_agent {roko-agent}                          [CLIENT span]
 ### Agent efficiency and cost
 
 - **Chen et al. 2023** -- FrugalGPT (arXiv:2305.05176; published 2024 TMLR).
-- **Cognitive Workspace 2025** -- arXiv:2508.13171.
+- **Cognitive Workspace (An 2025)** -- arXiv:2508.13171.
 - **Lee et al. 2026** -- Meta-Harness (arXiv:2603.28052).
 - **Bower 1981** -- "Mood and Memory" (American Psychologist 36(2)).
 

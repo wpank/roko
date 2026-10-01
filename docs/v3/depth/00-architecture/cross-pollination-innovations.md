@@ -990,8 +990,8 @@ exploration history via the pheromone field -- no cold start.
   (ACO-ToT), arXiv:2501.19278. Pheromone reinforcement outperforms standard
   chain-of-thought on GSM8K, ARC, MATH.
 
-- **Li, Zhu et al. (2024)** "PooL: Pheromone-inspired Communication Framework for
-  Large-Scale MARL," arXiv:2202.09722.
+- **Cao et al. (2022)** "PooL: Pheromone-inspired Communication Framework for
+  Large Scale Multi-Agent Reinforcement Learning," arXiv:2202.09722.
 
 - **Dorigo & Stutzle (2004)** *Ant Colony Optimization*. The foundational framework.
 
@@ -1285,7 +1285,7 @@ because analytical reasoning is too slow for real-time choice.
   Intelligent Biometric Program Comprehension." AI predicts review quality from
   biomarkers with 87.77% accuracy.
 
-- **Kaur et al. (2025)** "Towards Decoding Developer Cognition in the Age of AI
+- **Al Haque et al. (2025)** "Towards Decoding Developer Cognition in the Age of AI
   Assistants," arXiv:2501.02684.
 
 - **Damasio (1994)** *Descartes' Error: Emotion, Reason, and the Human Brain*.
@@ -1451,7 +1451,7 @@ well earn the right to dream more.
 - **"INTUITOR" (2025)** "Learning to Reason without External Rewards,"
   arXiv:2505.19590. Uses model self-certainty as intrinsic reward.
 
-- **Burda et al. / DreamerV3-XP (2025)** "Optimizing Exploration Through Uncertainty
+- **Bierling et al. / DreamerV3-XP (2025)** "Optimizing Exploration Through Uncertainty
   Estimation," arXiv:2510.21418.
 
 - **Lin et al. (2025)** "Scaling LLM Test-Time Compute Optimally Can be More Effective

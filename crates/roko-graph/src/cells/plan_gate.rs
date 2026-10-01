@@ -744,6 +744,37 @@ mod tests {
         assert_eq!(output[0].tag("workspace.attempt"), Some("2"));
     }
 
+    /// bug-9c5973: one gate asks for each canonical rung once, every request
+    /// for the same attempt and checkout. An evaluator that runs its
+    /// pipeline on an attempt's first request (the CLI's gate adapter) then
+    /// answers the other rungs from that run instead of compiling again.
+    #[tokio::test]
+    async fn a_gate_runs_each_rung_once() {
+        let cell = make_cell();
+        let evaluator = RecordingEvaluator::default();
+        let ctx = ctx_with_gates(evaluator.clone());
+        let (_worktree, input) = gated_attempt();
+        cell.execute(input, &ctx).await.expect("the gate passes");
+
+        let requests = evaluator.requests.lock();
+        let rungs: Vec<&str> = requests
+            .iter()
+            .map(|request| request.rung.as_str())
+            .collect();
+        assert_eq!(rungs, CANONICAL_RUNGS);
+        let attempts: std::collections::BTreeSet<_> = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.attempt_id,
+                    request.worktree_path.clone(),
+                    request.context.get("attempt_key").cloned(),
+                )
+            })
+            .collect();
+        assert_eq!(attempts.len(), 1, "{attempts:?}");
+    }
+
     /// bug-8835bc: a failed rung fails the gate with an error that names
     /// the rung and its reasons.
     #[tokio::test]

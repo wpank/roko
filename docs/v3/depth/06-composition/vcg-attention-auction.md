@@ -635,7 +635,7 @@ dropping.
 cold-start phase, or when all subsystems are poorly calibrated). Proportional
 fairness is the safe default.
 
-Research: Regularized Proportional Fairness (RPF) (Zhu et al., ICLR 2025,
+Research: Regularized Proportional Fairness (RPF) (Zeng et al., ICLR 2025,
 arXiv:2501.01111) adds neural-network-learned regularization to standard PF,
 increasing robustness to misreported bids.
 
@@ -880,7 +880,7 @@ Language Models."** WWW 2024 Best Paper, arXiv:2310.10826. Token auction model
 for aggregating competing LLM agents. First clean extension of VCG to LLM
 systems. Monotonicity condition for incentive compatibility.
 
-**Zhu et al. (2025), "Regularized Proportional Fairness Mechanism for Resource
+**Zeng et al. (2025), "Regularized Proportional Fairness Mechanism for Resource
 Allocation Without Money."** ICLR 2025, arXiv:2501.01111. RPF-Net adds neural
 regularization to proportional fairness for robustness against misreports.
 

@@ -34,10 +34,10 @@ pub mod writer;
 pub use assign::{Arm, Assignment, AssignmentUnit, LayerSpec, assign};
 pub use manifest::AttemptTally;
 pub use records::{
-    AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptOpenRecord,
-    AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame, CostSource,
-    DecisionSource, ExecutedModel, FailoverRefusal, GateVerdictTag, HelperCallsUsage, RunFile,
-    RunProvenanceManifest, Stamped, TelemetryRecord, VerifyStepVerdict,
+    AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptLadder,
+    AttemptOpenRecord, AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame,
+    CostSource, DecisionSource, ExecutedModel, FailoverRefusal, GateVerdictTag, HelperCallsUsage,
+    LadderReason, RunFile, RunProvenanceManifest, Stamped, TelemetryRecord, VerifyStepVerdict,
 };
 pub use writer::{
     AttemptOrdinals, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,

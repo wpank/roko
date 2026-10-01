@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
 use axum::http::{HeaderMap, Method, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -623,17 +623,24 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
 /// Verify that a cookie-authenticated state-changing request satisfies the
 /// same-origin constraint.
 ///
-/// Safe methods (GET, HEAD, OPTIONS) always pass. For mutations the check
-/// fails with 403 when an `Origin` header is present but its host:port does
-/// not equal the request's `Host` header (or is the special value `"null"`
-/// produced by sandboxed iframes).
+/// Safe methods (GET, HEAD, OPTIONS) pass, except a WebSocket upgrade: it is
+/// a GET, but it opens a live session (a terminal shell, an event stream)
+/// that carries the cookie's authority, so a page on another origin must not
+/// open one (cross-site WebSocket hijacking). For mutations and upgrades the
+/// check fails with 403 when an `Origin` header is present but its host:port
+/// does not equal the request's `Host` header (or is the special value
+/// `"null"` produced by sandboxed iframes). Browsers always send `Origin` on
+/// a WebSocket handshake.
 ///
 /// `SameSite=Strict` prevents cookies from being sent on cross-site
 /// navigation, but a *different page on the same local host* is still
-/// same-site, so an explicit `Origin` comparison is the defense here.
+/// same-site, and the attribute could be relaxed later, so an explicit
+/// `Origin` comparison is the defense here.
 #[allow(clippy::result_large_err)]
 fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
-    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+        && !is_websocket_upgrade(req.headers())
+    {
         return Ok(());
     }
 
@@ -684,10 +691,24 @@ fn cookie_cross_origin_response() -> Response {
         StatusCode::FORBIDDEN,
         axum::Json(serde_json::json!({
             "code": "forbidden",
-            "message": "cross-origin cookie authentication is not permitted for state-changing requests"
+            "message": "cross-origin cookie authentication is not permitted for state-changing requests or WebSocket upgrades"
         })),
     )
         .into_response()
+}
+
+/// Whether the request asks to switch to the WebSocket protocol
+/// (`Upgrade: websocket`, matched case-insensitively among any listed
+/// protocols).
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|protocol| protocol.trim().eq_ignore_ascii_case("websocket"))
+        })
 }
 
 /// Require a matching API credential for the request to continue.
@@ -4739,6 +4760,56 @@ mod tests {
             .unwrap();
         // Must be 403 (cross-origin), not 401 (missing credentials).
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A WebSocket upgrade is a GET, but it opens a live session with the
+    /// cookie's authority, so a cookie-authenticated upgrade from another
+    /// origin is refused whatever the cookie's SameSite setting (bug-d6b0d9).
+    #[tokio::test]
+    async fn cookie_websocket_upgrades_are_origin_checked() {
+        const EVIL: &str = "http://evil.example.com";
+        const SAME: &str = "http://localhost:6677";
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+        let send = |upgrade: Option<&str>, origin: Option<&str>| {
+            let mut request = Request::builder()
+                .method(Method::GET)
+                .uri("/test")
+                .header("Host", "localhost:6677")
+                .header("Cookie", format!("roko_session={session_id}"));
+            if let Some(upgrade) = upgrade {
+                request = request
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", upgrade);
+            }
+            if let Some(origin) = origin {
+                request = request.header("Origin", origin);
+            }
+            app.clone()
+                .oneshot(request.body(Body::empty()).expect("build request"))
+        };
+
+        let (refused, allowed) = (StatusCode::FORBIDDEN, StatusCode::NO_CONTENT);
+        for (upgrade, origin, expected) in [
+            // Cross-origin upgrades are refused, however the header is spelled.
+            (Some("websocket"), Some(EVIL), refused),
+            (Some("WebSocket"), Some(EVIL), refused),
+            (Some("h2c, websocket"), Some(EVIL), refused),
+            (Some("websocket"), Some("null"), refused),
+            // Same-origin upgrades, and clients that send no Origin, pass.
+            (Some("websocket"), Some(SAME), allowed),
+            (Some("websocket"), None, allowed),
+            // A plain GET stays a read, whatever its Origin.
+            (None, Some(EVIL), allowed),
+        ] {
+            let response = send(upgrade, origin).await.expect("response");
+            assert_eq!(
+                response.status(),
+                expected,
+                "Upgrade: {upgrade:?}, Origin: {origin:?}"
+            );
+        }
     }
 
     #[tokio::test]

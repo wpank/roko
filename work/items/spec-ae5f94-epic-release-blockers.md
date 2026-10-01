@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (ยง2 goal order; ย
 anchors = ["crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-serve/src/routes/auth.rs::AuthRegistry", "README.md", "Cargo.toml", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185", "bug-e1327f", "bug-131421", "bug-8465a2", "bug-1c93b4", "bug-5c25e1", "bug-12153c", "bug-39d54c", "bug-8d7d18", "bug-367f33", "bug-647249", "bug-4e7d40", "bug-ab8118", "bug-524a3b", "bug-8f8704", "dec-648cce", "gap-ed511d", "bug-ba8d42"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185", "bug-e1327f", "bug-131421", "bug-8465a2", "bug-1c93b4", "bug-5c25e1", "bug-12153c", "bug-39d54c", "bug-8d7d18", "bug-367f33", "bug-647249", "bug-4e7d40", "bug-ab8118", "bug-524a3b", "bug-8f8704", "dec-648cce", "gap-ed511d", "bug-ba8d42", "bug-02e264"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -q 'env_clear()' crates/roko-gate/src/shell.rs && grep -rqw 'fn out_of_band_api_key_survives_server_write' crates/roko-serve/ && ! grep -q '124/124' README.md && grep -q '^repository = \"https://github.com/wpank/roko\"' Cargo.toml && test \"$(git grep -l /Users/will -- . ':!work/' | wc -l)\" -eq 0"
@@ -91,12 +91,13 @@ This is the implementation plan.
 - [x] bug-367f33: roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s
 - [x] bug-647249: About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them
 - [x] bug-4e7d40: roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists
-- [ ] bug-ab8118: A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning
+- [x] bug-ab8118: A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning
 - [x] bug-524a3b: serve's hints tell users to put serve.auth.api_key in roko.toml; point them, and config set, at ROKO__SERVE__AUTH__API_KEY in .roko/.env
 - [x] bug-8f8704: ${VAR} is expanded only in provider fields, so serve.auth.api_key = "${X}" loads as a literal key
 - [ ] dec-648cce: Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys?
 - [x] gap-ed511d: docs/v3's auth pages, docker/RAILWAY.md and config set --help still put secrets in roko.toml, which roko now refuses
-- [ ] bug-ba8d42: A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true
+- [x] bug-ba8d42: A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true
+- [ ] bug-02e264: After roko init, roko config providers add anthropic appends a duplicate [models."claude-sonnet-4-6"] table, and the file stops parsing
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

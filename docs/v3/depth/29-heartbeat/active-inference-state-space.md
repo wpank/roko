@@ -10,7 +10,7 @@
 
 Active inference promises principled, zero-hyperparameter compute allocation, but
 naive implementation is intractable. A real-world agent state space is effectively
-infinite. The key insight from Koudahl et al. (2024, arXiv:2412.10425) and VERSES
+infinite. The key insight from Prakki (2024, arXiv:2412.10425) and VERSES
 AI's Genius platform: **do not model the world -- model the agent's epistemic
 situation.**
 
@@ -221,7 +221,7 @@ All learning is Bayesian: count-based updates with Dirichlet priors.
 - **Friston 2010** -- "The free-energy principle" (Nature Reviews Neuroscience 11(2)).
 - **Friston et al. 2015** -- "Active inference and epistemic value" (Cognitive
   Neuroscience 6(4)).
-- **Koudahl et al. 2024** -- "Factorized discrete POMDP" (arXiv:2412.10425).
+- **Prakki 2024** -- "Factorized discrete POMDP" (arXiv:2412.10425).
 - **Heins et al. 2022** -- "pymdp" (JOSS). Reference active inference implementation.
 - **VERSES AI** -- Genius platform. Industrial active inference deployment.
 - **Parr & Friston 2017** -- "Working memory, attention, and salience" (Scientific

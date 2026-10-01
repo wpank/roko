@@ -44,6 +44,10 @@ impl TuiState {
                             s.current_phase.clone()
                         };
                     }
+                    // A finished run shows how it ended (bug-f7f3bb).
+                    crate::runner::status_file::RunnerStatusRead::Finished(s) => {
+                        self.orchestrator_state = s.phase.clone();
+                    }
                     crate::runner::status_file::RunnerStatusRead::Stale(_) => {
                         self.orchestrator_state = String::from("stale/offline");
                     }

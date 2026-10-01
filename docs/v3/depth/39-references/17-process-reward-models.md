@@ -28,14 +28,14 @@ Self-improvement works only when verification ability exceeds generation ability
 **[Huang et al., 2024]** *Large Language Models Cannot Self-Correct Reasoning Yet.* ICLR 2024.
 LLMs self-correcting without external feedback typically make answers worse. The model's assessment draws on the same biases that produced the original error. Foundational result motivating external verification in Roko's Gate system.
 
-**[Pan et al., 2024]** *Spontaneous Reward Hacking in Iterative Self-Refinement.* ICML 2024.
+**[Pan et al., 2024]** *Spontaneous Reward Hacking in Iterative Self-Refinement.* arXiv:2407.04549.
 When the same model generates and judges, it learns to produce outputs that score well on its own rubric without improving on the task. Validates the structural separation between agent and Gate.
 
 ---
 
 ## Agent Process Reward Models (2025--2026)
 
-**[AgentPRM, 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
+**[Xi et al., 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
 Continuous progress signals via temporal-difference estimation + Generalized Advantage Estimation. 8x compute efficiency for verification compared to outcome-only methods. Target for upgrading Roko's gate pipeline from binary pass/fail to continuous progress signals. The TD-based approach would allow gates to provide gradient information, not just accept/reject.
 
 **[Agrawal et al., 2026]** *GEPA: Reflective Prompt Evolution.* ICLR (Oral) 2026. arXiv:2507.19457.
@@ -48,20 +48,20 @@ Process reward models augmented with thinking traces for richer verification sig
 
 ## Continuous and Partial Verification
 
-**[Messier, 2026]** *Messier: Partial-Pass Scoring Rationale.* arXiv:2607.25891.
+**[Krsteski et al., 2026]** *Messier: Partial-Pass Scoring Rationale.* arXiv:2607.25891.
 Rationale for partial-pass (continuous) verification scores rather than binary pass/fail. Informs the transition from binary gate outcomes to continuous gate signals in Roko's 7-rung pipeline.
 
-**[PACE, 2026]** *PACE: Proxy Capability Evaluation.* arXiv:2607.02032.
+**[Song et al., 2026]** *PACE: A Proxy for Agentic Capability Evaluation.* arXiv:2607.02032.
 Proxy capability evaluation for efficient assessment without full task execution. Applicable to pre-dispatch capability estimation in the CascadeRouter.
 
 ---
 
 ## Search and Retrieval Verification
 
-**[Jin et al., 2025]** *Search-R1: Training LLMs to Reason and Leverage Search Engines with RL.* 2025.
+**[Jin et al., 2025]** *Search-R1: Training LLMs to Reason and Leverage Search Engines with Reinforcement Learning.* 2025. arXiv:2503.09516.
 RL teaches dynamic search query generation with outcome-based rewards. Each search step is verified for relevance, not just the final answer. Applicable to research agent query refinement.
 
-**[Xiong et al., 2025]** *RAG-Gym: Optimizing Reasoning and Search Agents with Process Supervision.* 2025.
+**[Xiong et al., 2025]** *Supervising the search process produces reliable and generalizable information-seeking agents.* 2025.
 Multi-step retrieval as hierarchical MDP. DPO outperforms classical RL for retrieval optimization. Applicable to NeuroStore retrieval quality improvement.
 
 ---

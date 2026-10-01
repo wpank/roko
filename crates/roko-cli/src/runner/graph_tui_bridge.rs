@@ -271,9 +271,12 @@ impl GraphTuiBridge {
 /// Dashboard outcome for a finished node.
 ///
 /// A completed node whose gate verdict is a forced accept is reported as
-/// accepted-with-failures, never as `passed`.
+/// accepted-with-failures, never as `passed`. One whose work was already
+/// there, so its verify steps passed on a tree its attempt left unchanged, is
+/// reported as `already_satisfied` (gap-9eb1e1).
 fn node_outcome(status: NodeStatus, verdict: Option<TaskGateVerdict>) -> &'static str {
     match (status, verdict) {
+        (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => "already_satisfied",
         (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept)) => {
             TASK_OUTCOME_ACCEPTED_WITH_FAILURES
         }
@@ -485,6 +488,18 @@ mod tests {
         assert_eq!(
             node_outcome(NodeStatus::Complete, Some(TaskGateVerdict::Unverified)),
             "passed"
+        );
+    }
+
+    /// gap-9eb1e1: a task whose work was already there is its own outcome.
+    #[test]
+    fn already_satisfied_verdict_is_not_reported_as_passed() {
+        assert_eq!(
+            node_outcome(
+                NodeStatus::Complete,
+                Some(TaskGateVerdict::AlreadySatisfied),
+            ),
+            "already_satisfied"
         );
     }
 

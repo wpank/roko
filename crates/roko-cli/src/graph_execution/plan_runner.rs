@@ -848,6 +848,22 @@ async fn run_graph_plan_body(
     // Pin planner-written acceptance tests outside the working tree and run
     // them first, before anything is dispatched (gap-d14a43).
     crate::task_accept::pin_plans(&mut plans, workdir)?;
+    // A plan that holds each verified task for a person's approval
+    // (gap-0d64d5) needs per-task worktrees: the hold sits between a task's
+    // verified attempt and its acceptance onto the plan branch. The rich
+    // topology's plan gate accepts on its own, so it cannot hold.
+    let held_plans: Vec<String> = plans
+        .iter()
+        .filter(|plan| plan.tasks.meta.holds_each_task_for_approval())
+        .map(|plan| plan.id.clone())
+        .collect();
+    if !held_plans.is_empty() && (!worktree_per_task || rich_topology) {
+        anyhow::bail!(
+            "plan(s) {} hold each task for approval ([meta] approval = \"per_task\"), which \
+             needs --worktree-per-task and the default topology",
+            held_plans.join(", ")
+        );
+    }
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
@@ -1135,6 +1151,9 @@ async fn run_graph_plan_body(
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    for plan_id in &held_plans {
+        graph_task_dispatcher.hold_for_approval(plan_id);
+    }
     let conductor_stop = Arc::new(parking_lot::Mutex::new(
         None::<crate::graph_task_dispatch::ConductorStop>,
     ));
@@ -1632,6 +1651,8 @@ async fn run_graph_plan_body(
         }
         .unwrap_or_else(|| format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)));
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
+        let tasks_already_satisfied: usize =
+            per_plan.iter().map(|p| p.tasks_already_satisfied).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
         let tasks_unverified: usize = per_plan.iter().map(|p| p.tasks_unverified).sum();
         let tasks_skipped: usize = per_plan.iter().map(|p| p.tasks_skipped).sum();
@@ -1646,6 +1667,7 @@ async fn run_graph_plan_body(
             duration_ms,
             total_tasks,
             tasks_completed,
+            tasks_already_satisfied,
             tasks_failed,
             tasks_unverified,
             tasks_skipped,
@@ -2035,12 +2057,29 @@ fn plan_cell_resources(
     gates: &roko_core::config::GatesConfig,
     workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
 ) -> roko_graph::cell::CellResources {
+    plan_cell_resources_with(
+        rich_topology,
+        gates,
+        workspaces,
+        Arc::new(roko_gate::production_service::ProductionGateService::new()),
+    )
+}
+
+/// [`plan_cell_resources`], with the gate pipeline `service` the rich
+/// topology's gates run on.
+fn plan_cell_resources_with(
+    rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
+    workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
+) -> roko_graph::cell::CellResources {
     if !rich_topology {
         return roko_graph::cell::CellResources::default();
     }
     roko_graph::cell::CellResources {
         gates: Some(Arc::new(
-            crate::runner::gate_adapter::default_gate_adapter().with_gates_config(gates.clone()),
+            crate::runner::gate_adapter::RunnerProductionGateAdapter::new(service)
+                .with_gates_config(gates.clone()),
         )),
         workspaces,
     }
@@ -2976,6 +3015,10 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 struct TaskVerdictCounts {
     /// Completed with a `passed` gate verdict: every verify step passed.
     passed: usize,
+    /// Completed with an `already_satisfied` gate verdict: the attempt
+    /// changed nothing, and every verify step passed on the tree as it was
+    /// (gap-9eb1e1). Verified, but not counted as passed.
+    already_satisfied: usize,
     /// Completed without a verify step running: the task declares none, its
     /// role is disabled, or its output carries no gate verdict.
     unverified: usize,
@@ -3000,6 +3043,9 @@ impl TaskVerdictCounts {
             let verdict = output.gate_verdicts.get(&result.node_id).copied();
             match (result.status, verdict) {
                 (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
+                    counts.already_satisfied += 1;
+                }
                 (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
                 | (NodeStatus::Failed, _) => counts.failed += 1,
                 (NodeStatus::Complete, _) => counts.unverified += 1,
@@ -3014,6 +3060,7 @@ impl TaskVerdictCounts {
     const fn not_run(task_count: usize) -> Self {
         Self {
             passed: 0,
+            already_satisfied: 0,
             unverified: 0,
             skipped: task_count,
             failed: 0,
@@ -3021,9 +3068,9 @@ impl TaskVerdictCounts {
     }
 
     /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
-    /// succeeded only when every task passed its verify steps, and is
-    /// unverified when the rest passed but some ran no verify step. Anything
-    /// else failed.
+    /// succeeded only when every task passed its verify steps (an
+    /// already-satisfied task did), and is unverified when the rest passed but
+    /// some ran no verify step. Anything else failed.
     const fn outcome(self) -> PlanOutcome {
         if self.failed > 0 || self.skipped > 0 {
             PlanOutcome::Failed
@@ -3046,6 +3093,7 @@ fn plan_metrics(
         plan_id: plan_id.to_string(),
         completed: succeeded,
         tasks_completed: tasks.passed,
+        tasks_already_satisfied: tasks.already_satisfied,
         tasks_failed: tasks.failed,
         tasks_unverified: tasks.unverified,
         tasks_skipped: tasks.skipped,
@@ -3206,7 +3254,8 @@ files = ["README.md"]
 
         let state_dir = RokoLayout::for_project(dir.path()).state_dir();
         let read = crate::runner::status_file::read_runner_status(&state_dir);
-        assert!(read.is_live(), "{read:?}");
+        // Finished, though this process, its writer, still runs (bug-f7f3bb).
+        assert!(read.is_finished(), "{read:?}");
         let status = read.status().expect("status.json after a Graph run");
         let expected_phase = if exit_code == EXIT_SUCCESS {
             "completed"
@@ -4069,6 +4118,7 @@ max_retries = 0
     fn plan_outcome_follows_task_verdicts() {
         let counts = |passed, unverified, skipped, failed| TaskVerdictCounts {
             passed,
+            already_satisfied: 0,
             unverified,
             skipped,
             failed,
@@ -4079,6 +4129,13 @@ max_retries = 0
         assert_eq!(counts(0, 1, 0, 0).outcome(), PlanOutcome::Unverified);
         assert_eq!(counts(2, 1, 1, 0).outcome(), PlanOutcome::Failed);
         assert_eq!(counts(2, 1, 0, 1).outcome(), PlanOutcome::Failed);
+
+        // gap-9eb1e1: a task whose work was already there was verified.
+        let rerun = TaskVerdictCounts {
+            already_satisfied: 2,
+            ..counts(1, 0, 0, 0)
+        };
+        assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not
@@ -4110,6 +4167,7 @@ max_retries = 0
                     blocked_by: Some("T3".to_string()),
                     ..node("T4", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Skipped)
                 },
+                node("T5", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Complete),
                 // A helper node of the rich topology is not a task.
                 node("task.T1.gate", "passthrough", NodeStatus::Complete),
             ],
@@ -4117,6 +4175,7 @@ max_retries = 0
             gate_verdicts: BTreeMap::from([
                 ("T1".to_string(), TaskGateVerdict::Passed),
                 ("T2".to_string(), TaskGateVerdict::Unverified),
+                ("T5".to_string(), TaskGateVerdict::AlreadySatisfied),
                 ("task.T1.gate".to_string(), TaskGateVerdict::Passed),
             ]),
         };
@@ -4126,11 +4185,16 @@ max_retries = 0
         assert!(!metrics.completed);
         let counts = [
             metrics.tasks_completed,
+            metrics.tasks_already_satisfied,
             metrics.tasks_unverified,
             metrics.tasks_skipped,
             metrics.tasks_failed,
         ];
-        assert_eq!(counts, [1, 1, 1, 1], "passed, unverified, skipped, failed");
+        assert_eq!(
+            counts,
+            [1, 1, 1, 1, 1],
+            "passed, already satisfied, unverified, skipped, failed"
+        );
     }
 
     fn wait_until_finished(session: &TuiSession) {
@@ -4336,6 +4400,56 @@ max_retries = 0
     /// manifest cargo cannot parse), fails its task, and keeps that worktree
     /// for post-mortem instead of accepting it. The default topology gets
     /// neither service.
+    /// Records the `[gates]` config of each gate pipeline it is asked to
+    /// run, and fails it.
+    #[derive(Default)]
+    struct GatesConfigRecorder(parking_lot::Mutex<Vec<roko_core::config::GatesConfig>>);
+
+    #[async_trait::async_trait]
+    impl roko_gate::production_service::ProductionGateRunner for GatesConfigRecorder {
+        async fn run(
+            &self,
+            request: roko_gate::ProductionGateRequest,
+            _progress_sink: Arc<dyn roko_gate::production_service::ProgressSink>,
+        ) -> roko_core::Result<roko_gate::ProductionGateVerdictV1> {
+            self.0.lock().push(request.gates_config);
+            Err(roko_core::RokoError::Invalid("recorded".to_string()))
+        }
+    }
+
+    /// bug-4862cf: the rich topology's gates run with the run's `[gates]`,
+    /// not `GatesConfig::default()`; the run's `max_rung` bounds each
+    /// pipeline.
+    #[tokio::test]
+    async fn rich_topology_gates_use_the_runs_gates_config() {
+        let mut gates = roko_core::config::GatesConfig::default();
+        gates.env_passthrough = vec!["FROM_THE_RUN".to_string()];
+        gates.max_rung = Some(1);
+        let recorder = Arc::new(GatesConfigRecorder::default());
+        let resources = plan_cell_resources_with(true, &gates, None, Arc::clone(&recorder) as _);
+        let evaluator = resources.gates.expect("the rich topology runs gates");
+        let request = roko_core::SharedGateRequest {
+            task_id: "T1".to_string(),
+            attempt_id: 1,
+            rung: "compile".to_string(),
+            plan_dir: "plans/p".to_string(),
+            worktree_path: PathBuf::from("/wt/attempt"),
+            changed_files: Vec::new(),
+            context: HashMap::new(),
+        };
+        assert!(evaluator.verify_rung(&request).await.is_err());
+
+        let configs = recorder.0.lock();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].env_passthrough, ["FROM_THE_RUN"]);
+        assert_eq!(configs[0].max_rung, Some(1));
+        assert!(
+            plan_cell_resources_with(false, &gates, None, Arc::clone(&recorder) as _)
+                .gates
+                .is_none()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rich_topology_gates_run_with_cell_resources() {
         use roko_graph::engine::{GraphEngine, NodeStatus};
@@ -4434,6 +4548,37 @@ max_retries = 0
             !plan_branch.status.success(),
             "a failed attempt was accepted"
         );
+    }
+
+    /// gap-0d64d5: a plan that holds its tasks for approval needs per-task
+    /// worktrees and the default topology, whose acceptance the hold sits
+    /// before; otherwise the run is refused before anything starts.
+    #[tokio::test]
+    async fn approval_needs_worktrees_and_the_default_topology() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = dir.path().join("plans").join("01-held");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"01-held\"\napproval = \"per_task\"\n\n[[task]]\nid = \"T1\"\n\
+             title = \"Write held.txt\"\nfiles = [\"held.txt\"]\n\n[[task.verify]]\n\
+             phase = \"structural\"\n\
+             command = \"test -f held.txt\"\n",
+        )
+        .expect("tasks.toml");
+        for (worktree_per_task, rich_topology) in [(false, false), (true, true)] {
+            let error = run_graph_plan(GraphPlanRunParams {
+                worktree_per_task,
+                rich_topology,
+                ..worktree_run_params(dir.path())
+            })
+            .await
+            .expect_err("the run is refused");
+            assert!(
+                error.to_string().contains("hold each task for approval"),
+                "{error}"
+            );
+        }
     }
 
     /// The rich topology's gates judge each attempt's own worktree, so a run

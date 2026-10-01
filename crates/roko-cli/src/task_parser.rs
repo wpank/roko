@@ -68,9 +68,32 @@ pub struct TaskMeta {
     /// lints and tests over the crates the plan affects.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify: Vec<VerifyStep>,
+    /// Whether a person approves each verified task before its work merges
+    /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalMode>,
+}
+
+/// When a plan's verified tasks wait for a person's approval before their
+/// work merges into the plan branch (`[meta] approval`, gap-0d64d5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Nothing waits: verified work merges at once.
+    None,
+    /// Each verified task waits, with its diff, until someone approves or
+    /// rejects it.
+    PerTask,
 }
 
 impl TaskMeta {
+    /// Whether each verified task of this plan waits for a person's
+    /// approval before its work merges.
+    #[must_use]
+    pub fn holds_each_task_for_approval(&self) -> bool {
+        self.approval == Some(ApprovalMode::PerTask)
+    }
+
     /// Whether this plan's tasks run the workspace's required
     /// `[[gates.rungs]]`: yes unless `[meta] workspace_rungs = false`.
     #[must_use]
@@ -2724,6 +2747,7 @@ depends_on = []
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
+                approval: None,
             },
             tasks: Vec::new(),
         };

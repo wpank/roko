@@ -836,6 +836,10 @@ fn run_plan_on_local_runtime(
     // active at a time.  If the lock is already held the error message names the
     // owning PID; return it immediately without retrying.
     let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+    // The run's agents are spawned on this thread: scope them so stopping the
+    // run signals them and not the server's other agents (find-65ff6b).
+    let _spawn_scope =
+        roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

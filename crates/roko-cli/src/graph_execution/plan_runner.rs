@@ -330,16 +330,22 @@ fn force_exit(interrupt: PlanRunInterrupt, reason: &str) -> ! {
     std::process::exit(interrupt.exit_code());
 }
 
-/// Agent processes that are still descendants of this process, plus all
-/// of their descendants. Checking descendancy avoids signalling a PID that
-/// was recycled after its agent exited.
+/// This run's agent processes that are still descendants of this process,
+/// plus all of their descendants. Checking descendancy avoids signalling a PID
+/// that was recycled after its agent exited.
+///
+/// The run's agents are those registered in this thread's spawn scope: `roko
+/// serve` runs each plan on a thread it scopes, so stopping one run leaves the
+/// plan generation, revision and chat agents the server runs beside it alone
+/// (find-65ff6b). A CLI run has no scope and owns every unscoped agent.
 #[cfg(unix)]
 fn live_agent_process_trees() -> Vec<u32> {
     let ours = roko_agent::process::collect_descendants(std::process::id())
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    let scope = roko_agent::process::current_spawn_scope();
     let mut targets = Vec::new();
-    for pid in roko_agent::process::registered_pids() {
+    for pid in roko_agent::process::registered_pids_in_scope(scope) {
         if ours.contains(&pid) {
             targets.extend(roko_agent::process::collect_descendants(pid));
             targets.push(pid);

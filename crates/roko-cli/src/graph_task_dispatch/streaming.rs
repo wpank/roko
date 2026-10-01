@@ -528,8 +528,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             }
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
-                // attempt's verdict is recorded.
-                let settlement = Settlement::provider_call_error(&error);
+                // attempt's verdict is recorded. A DispatchV2Error is a setup
+                // failure before any call, never a cancellation.
+                let settlement = Settlement::provider_failure(&error.to_string(), false);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
 

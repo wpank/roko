@@ -1386,7 +1386,7 @@ IDs for compatibility, but they are not currently advertised as editor options.
 pub struct ConfigOption {
     pub id: String,
     pub name: String,
-    pub option_type: ConfigOptionType,   // select | toggle
+    pub option_type: ConfigOptionType,   // select | boolean (spec names; roko sends selects)
     pub category: String,
     pub current_value: serde_json::Value,
     pub description: Option<String>,

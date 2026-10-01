@@ -1,5 +1,5 @@
 {
-  "$comment": "Subset of the Agent Client Protocol v1 stable schema (schema/v1/schema.json in agentclientprotocol/agent-client-protocol at release 1.24.1; the file last changed in c4137ab3b168), Apache-2.0: the definitions reachable from SessionNotification, with descriptions removed. roko-acp tests check session/update payloads against it.",
+  "$comment": "Subset of the Agent Client Protocol v1 stable schema (schema/v1/schema.json in agentclientprotocol/agent-client-protocol at release 1.24.1; the file last changed in c4137ab3b168), Apache-2.0: the definitions reachable from SessionNotification, NewSessionResponse, LoadSessionResponse, SetSessionConfigOptionResponse, RequestPermissionResponse, PromptRequest, with descriptions removed. roko-acp tests check its wire payloads against it.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Annotations": {
@@ -520,7 +520,94 @@
         "mimeType"
       ]
     },
+    "LoadSessionResponse": {
+      "type": "object",
+      "properties": {
+        "modes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionModeState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-deserialize-default-on-error": true
+        },
+        "configOptions": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/SessionConfigOption"
+          },
+          "x-deserialize-default-on-error": true,
+          "x-deserialize-skip-invalid-items": true
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "x-side": "agent",
+      "x-method": "session/load"
+    },
     "MessageId": {
+      "type": "string"
+    },
+    "NewSessionResponse": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            }
+          ]
+        },
+        "modes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionModeState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-deserialize-default-on-error": true
+        },
+        "configOptions": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/SessionConfigOption"
+          },
+          "x-deserialize-default-on-error": true,
+          "x-deserialize-skip-invalid-items": true
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "x-side": "agent",
+      "x-method": "session/new"
+    },
+    "PermissionOptionId": {
       "type": "string"
     },
     "Plan": {
@@ -614,6 +701,99 @@
         }
       ]
     },
+    "PromptRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            }
+          ]
+        },
+        "prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          }
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "sessionId",
+        "prompt"
+      ],
+      "x-side": "agent",
+      "x-method": "session/prompt"
+    },
+    "RequestPermissionOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "cancelled"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "selected"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/$defs/SelectedPermissionOutcome"
+            }
+          ]
+        }
+      ],
+      "discriminator": {
+        "propertyName": "outcome"
+      }
+    },
+    "RequestPermissionResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/RequestPermissionOutcome"
+            }
+          ]
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "x-side": "client",
+      "x-method": "session/request_permission"
+    },
     "ResourceLink": {
       "type": "object",
       "properties": {
@@ -687,6 +867,29 @@
           "type": "string",
           "const": "user"
         }
+      ]
+    },
+    "SelectedPermissionOutcome": {
+      "type": "object",
+      "properties": {
+        "optionId": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PermissionOptionId"
+            }
+          ]
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "optionId"
       ]
     },
     "SessionConfigBoolean": {
@@ -958,8 +1161,74 @@
         }
       }
     },
+    "SessionMode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionModeId"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
     "SessionModeId": {
       "type": "string"
+    },
+    "SessionModeState": {
+      "type": "object",
+      "properties": {
+        "currentModeId": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SessionModeId"
+            }
+          ]
+        },
+        "availableModes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionMode"
+          },
+          "x-deserialize-default-on-error": true,
+          "x-deserialize-skip-invalid-items": true
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "currentModeId",
+        "availableModes"
+      ]
     },
     "SessionNotification": {
       "type": "object",
@@ -1187,6 +1456,32 @@
       "discriminator": {
         "propertyName": "sessionUpdate"
       }
+    },
+    "SetSessionConfigOptionResponse": {
+      "type": "object",
+      "properties": {
+        "configOptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionConfigOption"
+          },
+          "x-deserialize-default-on-error": true,
+          "x-deserialize-skip-invalid-items": true
+        },
+        "_meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "x-deserialize-default-on-error": true,
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "configOptions"
+      ],
+      "x-side": "agent",
+      "x-method": "session/set_config_option"
     },
     "Terminal": {
       "type": "object",

@@ -1066,9 +1066,14 @@ async fn send_session_update_emits_wrapped_payload() {
     );
 }
 
-/// The ACP v1 schema's definitions reachable from `SessionNotification`.
-const ACP_SESSION_NOTIFICATION_SCHEMA: &str =
-    include_str!("../../tests/fixtures/acp-v1-session-notification.schema.json");
+/// A subset of the ACP v1 schema: the definitions behind session updates, the
+/// `session/new` and `session/load` results, config options, permission replies
+/// and prompt content.
+const ACP_V1_SCHEMA_SUBSET: &str = include_str!("../../tests/fixtures/acp-v1-subset.schema.json");
+
+fn acp_schema() -> serde_json::Value {
+    serde_json::from_str(ACP_V1_SCHEMA_SUBSET).expect("parse ACP schema subset")
+}
 
 /// Lists the ways `value` breaks `schema`, resolving `$ref`s against `defs`. Covers the
 /// JSON Schema keywords that the ACP session-update definitions use, except `format`
@@ -1159,8 +1164,7 @@ fn session_update_spec_conformance() {
         CostInfo, PlanEntry, PlanEntryStatus, Priority, SessionBudgetStatus, ToolCallLocation,
     };
 
-    let schema: serde_json::Value =
-        serde_json::from_str(ACP_SESSION_NOTIFICATION_SCHEMA).expect("parse ACP schema subset");
+    let schema = acp_schema();
     let defs = &schema["$defs"];
     // Checks one update as `session/update` params and returns the update's JSON.
     let conforming = |update: SessionUpdate| {
@@ -1292,6 +1296,82 @@ fn session_update_spec_conformance() {
         "update": { "sessionUpdate": "mcp_status_update", "statuses": [] }
     });
     assert!(!acp_schema_errors(&old, &defs["SessionNotification"], defs, "params").is_empty());
+}
+
+#[test]
+fn config_option_spec_conformance() {
+    use crate::types::{ConfigOption, ConfigOptionType};
+
+    let schema = acp_schema();
+    let defs = &schema["$defs"];
+    let config = RokoConfig::from_toml(
+        r#"
+config_version = 2
+schema_version = 2
+
+[agent]
+default_model = "model-a"
+
+[providers.provider-a]
+kind = "openai_compat"
+base_url = "https://a.example.test/v1"
+api_key_env = ""
+
+[models.model-a]
+provider = "provider-a"
+slug = "model-a-slug"
+context_window = 8192
+"#,
+    )
+    .expect("test config should parse");
+    let session = AcpSession::new_with_config(
+        SessionNewParams {
+            session_name: Some("config-options".to_string()),
+            client_capabilities: None,
+            model: None,
+            provider: None,
+            effort: None,
+            mcp_servers: Vec::new(),
+        },
+        &config,
+    );
+
+    // The session/new result carries the options; config_option_update and
+    // session/set_config_option send the same list.
+    let created = serde_json::to_value(session.new_result()).expect("serialize session/new");
+    let errors = acp_schema_errors(&created, &defs["NewSessionResponse"], defs, "result");
+    assert!(errors.is_empty(), "{created}: {errors:?}");
+    let options = created["configOptions"].clone();
+    assert!(options.as_array().is_some_and(|list| !list.is_empty()));
+    let update = json!({
+        "sessionId": "sess-1",
+        "update": { "sessionUpdate": "config_option_update", "configOptions": options }
+    });
+    let errors = acp_schema_errors(&update, &defs["SessionNotification"], defs, "params");
+    assert!(errors.is_empty(), "{update}: {errors:?}");
+    let set_result = json!({ "configOptions": options });
+    let errors = acp_schema_errors(
+        &set_result,
+        &defs["SetSessionConfigOptionResponse"],
+        defs,
+        "result",
+    );
+    assert!(errors.is_empty(), "{set_result}: {errors:?}");
+
+    // An on/off option uses the spec's `boolean` type with a bool value.
+    let boolean = ConfigOption {
+        id: "clippy".to_owned(),
+        name: "Clippy".to_owned(),
+        option_type: ConfigOptionType::Boolean,
+        category: "gates".to_owned(),
+        current_value: json!(true),
+        description: None,
+        options: None,
+    };
+    let boolean = serde_json::to_value(&boolean).expect("serialize boolean option");
+    assert_eq!(boolean["type"], json!("boolean"));
+    let errors = acp_schema_errors(&boolean, &defs["SessionConfigOption"], defs, "option");
+    assert!(errors.is_empty(), "{boolean}: {errors:?}");
 }
 
 #[tokio::test]

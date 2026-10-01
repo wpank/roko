@@ -887,14 +887,17 @@ pub struct ConfigOption {
     pub options: Option<Vec<ConfigOptionValue>>,
 }
 
-/// Config option control type.
+/// Config option control type: the kinds of an ACP `SessionConfigOption`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigOptionType {
-    /// A select/dropdown option.
+    /// A select/dropdown option; `currentValue` is one of the option values.
     Select,
-    /// A boolean toggle option.
-    Toggle,
+    /// An on/off option; `currentValue` is a JSON bool. Only clients that
+    /// advertise `session.configOptions.boolean` accept it, so roko's own on/off
+    /// settings are selects.
+    #[serde(alias = "toggle")]
+    Boolean,
 }
 
 /// One selectable config option value.

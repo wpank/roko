@@ -2,14 +2,16 @@
 id = "gap-130a3e"
 kind = "gap"
 title = "work.py: validate the lane, parent and milestone fields, and add next --lane and --mix"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "648ec3184"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R1–R3); W7-orchestration-model.md §2, §4"
 anchors = ["tools/work.py::validate", "tools/work.py::pick_next", "tools/work.py::cmd_next", "tools/test_work.py", "work/lanes.toml"]
@@ -19,6 +21,19 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f work/lanes.toml && grep -qw 'def test_check_rejects_unknown_lane_and_parent' tools/test_work.py && grep -qw 'def test_next_mix_respects_lane_caps' tools/test_work.py && python3 tools/test_work.py -k test_check_rejects_unknown_lane_and_parent -k test_next_mix_respects_lane_caps"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:50:40Z"
+commit = "648ec3184"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-01T08:36:20Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Premise re-checked at bdeaff586: validate accepted any lane, parent and milestone; next knew no lanes; no lanes.toml. 390 items set a lane (rust-cold 143, rust-hot 86, paper 62, bench 59, tracker 23, docs 15, frontend 1, tests 1), 343 set a parent (18 epics, all specs), none a milestone. 648ec3184: work/lanes.toml (proposed from PLAN.md section 2, upper end of each range; Will sets the caps; adds the tests lane bug-5f0604 uses); validate rejects unknown lane, non-spec parent, unknown milestone (no lanes.toml: parents only); check --lint lists anchors outside lane paths (12 items today, kept out of --strict); next --lane and next --mix fill quotas within lane max and pool caps counting live claims; pick order goal, milestone, rank, severity; items without lane are lane none (uncapped); plain next unchanged; next --json rows gain 'lane'. check: 1506 items, 0 problems. tools/test_work.py: unknown lane / non-spec parent / missing parent / unknown milestone rejected; a mix stops at lane caps and the pool counting a live claim; --lane within cap; milestone order; the [[verify]] command passes."
 +++
 
 ## Problem

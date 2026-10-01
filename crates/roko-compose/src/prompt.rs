@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::auction::{
     AffectModulation, AuctionDiagnostics, LearningBidder, VcgAllocation, VcgBid, vcg_allocate,
 };
-use crate::foraging::{MultiPatchForager, should_stop_searching};
+use crate::foraging::MultiPatchForager;
 use crate::strategy::{CompositionStrategy, DEFAULT_VCG_WARMUP_OBSERVATIONS};
 
 /// Estimate token count for a text blob.
@@ -639,9 +639,9 @@ pub struct PromptComposer {
     /// prior task outcomes. When populated, the composer multiplies each
     /// candidate's base bid by the bidder's learned section value.
     learning_bidders: HashMap<AttentionBidder, LearningBidder>,
-    /// COMP-03: MVT foraging pre-pass. When set, the composer uses the
-    /// foraging stopping rule to decide how many optional candidates to
-    /// evaluate before committing to the auction.
+    /// COMP-03: foraging pre-pass. When set, the composer sets aside the
+    /// optional candidates that cannot fit the remaining budget before the
+    /// auction. The forager's gain curves are not used yet.
     foraging: Option<MultiPatchForager>,
     /// COMP-04: HDC dedup similarity threshold. When > 0.0 and the `hdc`
     /// feature is enabled, candidates with content similarity above this
@@ -781,13 +781,13 @@ impl PromptComposer {
             .collect()
     }
 
-    // ── COMP-03: MVT foraging pre-pass ──────────────────────────────
+    // ── COMP-03: foraging pre-pass ──────────────────────────────────
 
-    /// Set a [`MultiPatchForager`] for context retrieval stopping decisions.
+    /// Set a [`MultiPatchForager`] for the foraging pre-pass.
     ///
-    /// When set, the composer uses the foraging stopping rule to limit how
-    /// many optional candidates are evaluated before committing to the
-    /// auction. This prevents wasting budget on diminishing-returns sources.
+    /// When set, the composer sets aside the optional candidates that cannot
+    /// fit the remaining budget before the auction, and the manifest lists
+    /// them as dropped. Every candidate that fits goes to the auction.
     #[must_use]
     pub fn with_foraging(mut self, forager: MultiPatchForager) -> Self {
         self.foraging = Some(forager);
@@ -916,11 +916,15 @@ impl Compose for PromptComposer {
             optional = hdc_dedup_candidates(optional, self.hdc_dedup_threshold);
         }
 
-        // COMP-03: MVT foraging pre-pass — limit candidates when foraging
-        // says sufficient context has been gathered.
-        if let Some(forager) = &self.foraging {
-            optional = foraging_prepass(optional, forager);
-        }
+        // COMP-03: the foraging pre-pass sets aside candidates that cannot
+        // fit the remaining budget; the manifest lists them as dropped.
+        let set_aside = if self.foraging.is_some() {
+            let (fitting, too_large) = foraging_prepass(optional, remaining_tokens);
+            optional = fitting;
+            too_large
+        } else {
+            Vec::new()
+        };
 
         let bidder_observations = self.bidder_observation_counts(&optional);
         let selected_strategy = self
@@ -994,6 +998,7 @@ impl Compose for PromptComposer {
             .collect::<HashSet<String>>();
         let dropped_section_action_ids = optional
             .iter()
+            .chain(&set_aside)
             .filter(|candidate| !kept_action_id_set.contains(&candidate.section.action_id()))
             .map(|candidate| candidate.section.action_id())
             .collect::<Vec<_>>();
@@ -1002,6 +1007,7 @@ impl Compose for PromptComposer {
             selected_strategy,
             &kept,
             &optional,
+            &set_aside,
             &allocation.selected,
             vcg_allocation.as_ref(),
             token_total,
@@ -1512,6 +1518,7 @@ fn build_composition_manifest(
     selected_strategy: CompositionStrategy,
     kept: &[(PromptSection, &Signal)],
     optional: &[AuctionCandidate<'_>],
+    set_aside: &[AuctionCandidate<'_>],
     selected: &[SelectedCandidate],
     vcg_allocation: Option<&VcgAllocation>,
     total_tokens: usize,
@@ -1585,28 +1592,23 @@ fn build_composition_manifest(
         })
         .collect::<Vec<_>>();
 
-    let excluded = optional
+    let exclusion_reason = if selected_strategy == CompositionStrategy::Vcg {
+        "excluded_by_vcg"
+    } else {
+        "dropped_by_density_budget"
+    };
+    let mut excluded = optional
         .iter()
         .enumerate()
         .filter(|(index, _)| !selected_indices.contains(index))
-        .map(|(_, candidate)| {
-            let section_id = candidate.section.stable_section_id();
-            ExcludedSectionMeta {
-                section_id,
-                action_id: candidate.section.action_id(),
-                name: candidate.section.name.clone(),
-                bidder: candidate.section.bidder,
-                estimated_tokens: candidate.section.estimated_tokens(),
-                score: candidate.score,
-                bid_value: candidate.bid_value,
-                reason: if selected_strategy == CompositionStrategy::Vcg {
-                    "excluded_by_vcg".to_string()
-                } else {
-                    "dropped_by_density_budget".to_string()
-                },
-            }
-        })
+        .map(|(_, candidate)| excluded_section_meta(candidate, exclusion_reason))
         .collect::<Vec<_>>();
+    // Candidates the foraging pre-pass set aside never reached the auction.
+    excluded.extend(
+        set_aside
+            .iter()
+            .map(|candidate| excluded_section_meta(candidate, "dropped_by_foraging_budget")),
+    );
 
     CompositionManifest {
         requested_strategy,
@@ -1617,6 +1619,19 @@ fn build_composition_manifest(
         vcg_diagnostics: vcg_allocation.map(|allocation| allocation.diagnostics.clone()),
         total_tokens,
         token_budget_limit,
+    }
+}
+
+fn excluded_section_meta(candidate: &AuctionCandidate<'_>, reason: &str) -> ExcludedSectionMeta {
+    ExcludedSectionMeta {
+        section_id: candidate.section.stable_section_id(),
+        action_id: candidate.section.action_id(),
+        name: candidate.section.name.clone(),
+        bidder: candidate.section.bidder,
+        estimated_tokens: candidate.section.estimated_tokens(),
+        score: candidate.score,
+        bid_value: candidate.bid_value,
+        reason: reason.to_string(),
     }
 }
 
@@ -1661,72 +1676,24 @@ fn fallback_section_score(section: &PromptSection, signal: &Signal, ctx: &Contex
     priority * (0.55 + 0.45 * cache) * recency
 }
 
-// ─── COMP-03: MVT foraging pre-pass ─────────────────────────────────────
+// ─── COMP-03: foraging pre-pass ─────────────────────────────────────────
 
-/// Apply the MVT foraging stopping rule to limit candidate evaluation.
+/// Split the optional candidates into those that fit `remaining_tokens` and
+/// those set aside because they cannot fit it on their own.
 ///
-/// Sorts candidates by bid density, then walks them in order. After each
-/// candidate, computes the marginal gain ratio (current candidate's density
-/// vs running average). When `should_stop_searching` returns true, the
-/// remaining lower-value candidates are dropped. This prevents wasting
-/// token budget on diminishing-returns context sections.
+/// The pre-pass used to stop by the MVT rule, comparing each candidate's bid
+/// density with the running mean. Walked in density order, a candidate is
+/// never above that mean, so the rule always stopped at the third candidate
+/// and dropped every other section that fit, unrecorded (bug-4aa696). That
+/// was usually `domain_context`, which carries the run's knowledge, episodes
+/// and playbooks. Selection now relies on the budget alone.
 fn foraging_prepass<'a>(
-    mut candidates: Vec<AuctionCandidate<'a>>,
-    forager: &MultiPatchForager,
-) -> Vec<AuctionCandidate<'a>> {
-    if candidates.is_empty() || forager.environment_rate <= 0.0 {
-        return candidates;
-    }
-
-    // Sort by bid density descending for MVT evaluation order.
-    candidates.sort_by(|a, b| {
-        b.bid_density
-            .partial_cmp(&a.bid_density)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut kept = Vec::with_capacity(candidates.len());
-    let mut running_sum = 0.0_f64;
-    let mut count = 0usize;
-    let mut total_content_tokens = 0usize;
-
-    for candidate in candidates {
-        count += 1;
-        running_sum += candidate.bid_density as f64;
-        let avg = running_sum / count as f64;
-
-        // MVT ratio: marginal gain of this candidate vs environment average.
-        let mvt_ratio = if avg > 0.0 {
-            candidate.bid_density as f64 / avg
-        } else {
-            1.0
-        };
-
-        total_content_tokens += candidate.section.estimated_tokens();
-
-        // Coverage sufficiency: approximate as the fraction of token budget
-        // that has been consumed. Once we have gathered many candidates,
-        // additional low-value ones are unlikely to help.
-        let sufficiency = if forager.environment_rate > 0.0 {
-            // Normalize to a [0, 1] range using the environment rate as proxy
-            // for the expected number of useful candidates.
-            let expected_useful = (1.0 / forager.environment_rate).max(3.0);
-            (count as f64 / expected_useful).min(1.0)
-        } else {
-            0.0
-        };
-
-        kept.push(candidate);
-
-        // Require at least 3 candidates before stopping to avoid premature
-        // cutoff on small input sets.
-        if should_stop_searching(mvt_ratio, sufficiency, 0.8) && count >= 3 {
-            break;
-        }
-    }
-
-    let _ = total_content_tokens; // Available for future cost tracking.
-    kept
+    candidates: Vec<AuctionCandidate<'a>>,
+    remaining_tokens: usize,
+) -> (Vec<AuctionCandidate<'a>>, Vec<AuctionCandidate<'a>>) {
+    candidates
+        .into_iter()
+        .partition(|candidate| candidate.section.estimated_tokens() <= remaining_tokens)
 }
 
 // ─── COMP-04: HDC-based deduplication ───────────────────────────────────
@@ -2160,6 +2127,83 @@ mod tests {
             .map(|scored| scored.signal_ref.as_str())
             .collect::<HashSet<_>>();
         assert_eq!(unique_refs.len(), manifest.scored_signals.len());
+    }
+
+    /// With a forager set, every optional section that fits the budget is
+    /// kept, including a `domain_context` longer than `conventions`, and one
+    /// that cannot fit is dropped and listed (bug-4aa696). The pre-pass used
+    /// to keep the three densest sections and drop the rest unlisted.
+    #[test]
+    fn foraging_keeps_every_section_that_fits() {
+        let composer = PromptComposer::new()
+            .without_headers()
+            .with_foraging(MultiPatchForager {
+                environment_rate: 0.1,
+                ..MultiPatchForager::default()
+            });
+        // 4 + 311 + 7 + 504 + 8 tokens fit the budget of 2,000; the last
+        // section's 2,100 do not.
+        let sections = [
+            section("role", "you are an agent", SectionPriority::Critical),
+            section(
+                "conventions",
+                &"follow the conventions ".repeat(54),
+                SectionPriority::High,
+            ),
+            section(
+                "tool_instructions",
+                "use only the granted tools",
+                SectionPriority::Normal,
+            ),
+            section(
+                "domain_context",
+                &"durable knowledge entry ".repeat(84),
+                SectionPriority::High,
+            ),
+            section(
+                "anti_patterns",
+                "do not push branches directly",
+                SectionPriority::Normal,
+            ),
+            section("too_large", &"filler ".repeat(1_200), SectionPriority::Low),
+        ];
+
+        let out = composer
+            .compose(
+                &sections,
+                &Budget::tokens(2_000),
+                &NoOpScorer,
+                &Context::at(0),
+            )
+            .unwrap();
+        let manifest = CompositionManifest::from_tag_value(
+            out.tag(COMPOSITION_MANIFEST_TAG)
+                .expect("composition manifest tag"),
+        )
+        .expect("manifest parses");
+
+        let included = manifest
+            .included
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect::<HashSet<_>>();
+        for name in [
+            "conventions",
+            "tool_instructions",
+            "domain_context",
+            "anti_patterns",
+        ] {
+            assert!(included.contains(name), "{name} fits: {included:?}");
+        }
+        let text = out.body.as_text().unwrap();
+        assert!(text.contains("durable knowledge entry"));
+        assert!(!text.contains("filler filler"));
+        let dropped = manifest
+            .excluded
+            .iter()
+            .map(|section| (section.name.as_str(), section.reason.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(dropped, [("too_large", "dropped_by_foraging_budget")]);
     }
 
     #[test]

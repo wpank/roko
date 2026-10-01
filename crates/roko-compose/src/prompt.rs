@@ -1687,10 +1687,10 @@ fn fallback_section_score(section: &PromptSection, signal: &Signal, ctx: &Contex
 /// and dropped every other section that fit, unrecorded (bug-4aa696). That
 /// was usually `domain_context`, which carries the run's knowledge, episodes
 /// and playbooks. Selection now relies on the budget alone.
-fn foraging_prepass<'a>(
-    candidates: Vec<AuctionCandidate<'a>>,
+fn foraging_prepass(
+    candidates: Vec<AuctionCandidate<'_>>,
     remaining_tokens: usize,
-) -> (Vec<AuctionCandidate<'a>>, Vec<AuctionCandidate<'a>>) {
+) -> (Vec<AuctionCandidate<'_>>, Vec<AuctionCandidate<'_>>) {
     candidates
         .into_iter()
         .partition(|candidate| candidate.section.estimated_tokens() <= remaining_tokens)

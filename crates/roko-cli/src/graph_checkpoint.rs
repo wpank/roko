@@ -1821,6 +1821,22 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
         .max()
 }
 
+/// Mark the checkpoint whose manifest is `manifest` `interrupted` if it still
+/// reads `running`, as a plan run forced out before it could write its own
+/// terminal status does on its way out (bug-4641e3), so the checkpoint does
+/// not look alive afterwards. A checkpoint its run already finalized keeps
+/// its status. Returns whether it was marked.
+pub fn mark_running_checkpoint_interrupted(manifest: &Path) -> Result<bool> {
+    let mut recorded = read_manifest(manifest)?;
+    if recorded.status != GraphCheckpointStatus::Running {
+        return Ok(false);
+    }
+    recorded.status = GraphCheckpointStatus::Interrupted;
+    recorded.updated_at_ms = unix_ms();
+    write_manifest_atomic(manifest, &recorded)?;
+    Ok(true)
+}
+
 /// Start `plan`'s canonical checkpoint the way a default `plan run` does.
 #[cfg(test)]
 pub(crate) fn start_plan_checkpoint(
@@ -2931,6 +2947,34 @@ depends_on = ["T1"]
             .expect("resume interrupted checkpoint");
         assert_eq!(resumed.run_id(), checkpoint.run_id());
         assert_eq!(resumed.status(), GraphCheckpointStatus::Running);
+    }
+
+    /// bug-4641e3: a forced exit marks a checkpoint that still reads
+    /// `running` as `interrupted`, and leaves one its run finalized alone.
+    #[test]
+    fn a_running_checkpoint_is_marked_interrupted_and_a_finished_one_kept() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+
+        assert!(mark_running_checkpoint_interrupted(&manifest).expect("mark"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark again"));
+
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish");
+        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark finished"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Failed)
+        );
     }
 
     // ─── v3 extension and receipt tests ──────────────────────────────────

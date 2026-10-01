@@ -3,13 +3,15 @@ id = "bug-6ea62d"
 kind = "bug"
 title = "plan_runner.rs's \"Run one admitted plan\" doc comment sits above drop_exclusion_for_worktrees instead of run_one_plan"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tiers' report on gap-4ec59f)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs"]
@@ -36,3 +38,8 @@ Move the comment to run_one_plan and give drop_exclusion_for_worktrees its own.
 
 - [ ] The comment documents the right function
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+2026-10-01 (wk-planrun): implemented on work/gap-dd4826; cargo verification deferred to the batch check.
+Comment-only change in `graph_execution/plan_runner.rs`: the "Run one admitted plan to a terminal checkpoint" paragraph now sits on `run_one_plan`, and `drop_exclusion_for_worktrees` keeps only its own `--worktree-per-task` paragraph. The `[[verify]]` script passes.

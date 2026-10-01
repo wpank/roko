@@ -2425,6 +2425,8 @@ async fn cmd_plan_run_engine(
         only_plans: None,
         live_agent_output,
         force_disk_check: force,
+        effort: None,
+        no_cascade: false,
     })
     .await
 }

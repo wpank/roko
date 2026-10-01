@@ -7,11 +7,11 @@
 //! safety wiring. This is the lowest-common-denominator LLM integration.
 
 use crate::agent::{Agent, AgentResult, derived_output};
-use crate::claude_cli_agent::drain_killed_output;
+use crate::claude_cli_agent::{EXITED_OUTPUT_DRAIN_MS, drain_killed_output};
 use crate::process::{
-    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub,
-    benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits,
+    apply_credential_scrub, benign_stderr_warn_once, classify_benign_stderr, confined_command,
+    kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::codex_cli::stream::parse_stream_line as parse_codex_line;
 use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
@@ -724,7 +724,34 @@ impl Agent for ExecAgent {
         heartbeat_handle.abort();
         let elapsed_secs = started.elapsed().as_secs();
 
-        let raw_stdout = stdout_handle.await.unwrap_or_default();
+        // A process the agent started and left running can hold the output
+        // pipes open, so the readers would never see EOF and the run would
+        // hang after the agent exited (gap-5d3b82). Give them
+        // `EXITED_OUTPUT_DRAIN_MS`, then end the run's process group and keep
+        // what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (raw_stdout, raw_stderr) = match drained {
+            Ok((stdout, stderr)) => (stdout.unwrap_or_default(), stderr.unwrap_or_default()),
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "agent exited, a process it started still holds its output; ending its group"
+                );
+                // The root was reaped, so only its process group is
+                // signalled: SIGTERM, then SIGKILL.
+                let mut group = KillTreeOnDrop::new(pid);
+                group.root_reaped();
+                drop(group);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
 
         // ── Codex operation policy broker ────────────────────────────────────
         // Scan the raw JSONL before extracting text.  This is the primary
@@ -754,7 +781,7 @@ impl Agent for ExecAgent {
         } else {
             self.scrub_text(&raw_stdout)
         };
-        let stderr = self.scrub_text(&stderr_handle.await.unwrap_or_default());
+        let stderr = self.scrub_text(&raw_stderr);
 
         if !status.success() {
             let code = status
@@ -1021,6 +1048,50 @@ mod tests {
             alive = metrics.num_alive_tasks();
         }
         assert_eq!(alive, 0, "a task of the dropped run outlived it");
+    }
+
+    /// gap-5d3b82: the agent exits while a process it started still holds
+    /// its output open. The run ends soon after the exit with what the agent
+    /// printed, and that process is killed.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn exited_exec_agent_with_open_stdout_does_not_hang() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let holder = temp.path().join("holder.pid");
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("sleep 600 & echo $! > '{}'; echo done", holder.display()),
+            ],
+        );
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("x"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.body.as_text().unwrap().trim(), "done");
+
+        let pid = std::fs::read_to_string(&holder)
+            .expect("the holder's pid")
+            .trim()
+            .to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
     }
 
     #[tokio::test]

@@ -788,6 +788,17 @@ impl ProviderSemaphores {
             ProviderError::Other(format!("provider semaphore for '{provider_id}' closed"))
         })
     }
+
+    /// A permit for `provider_id` when one is free now, without waiting.
+    #[must_use]
+    pub fn try_acquire(&self, provider_id: &str) -> Option<OwnedSemaphorePermit> {
+        let semaphore = self
+            .semaphores
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(Semaphore::new(self.default_permits)));
+        semaphore.try_acquire_owned().ok()
+    }
 }
 
 /// Adapter for a protocol family. Creates Agent instances configured for a

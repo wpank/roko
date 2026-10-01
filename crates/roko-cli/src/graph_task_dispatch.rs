@@ -734,9 +734,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
         self.admit_daily_budget(spec).await?;
+        // A task that starts while another call holds the plan's remaining
+        // budget waits for it to settle (bug-0bc2b4).
         let budget_reservation = self
             .budget_ledger
-            .reserve(&spec.plan_id, self.budget_policy)?;
+            .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
+            .await?;
 
         let task: TaskDef = serde_json::from_str(&spec.task_def_json).map_err(|error| {
             RokoError::Planning(format!(

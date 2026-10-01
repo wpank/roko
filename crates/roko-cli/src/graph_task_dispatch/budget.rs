@@ -38,7 +38,8 @@ impl GraphPlanBudgetPolicy {
                 } else {
                     // With no configured per-turn bound, conservatively reserve
                     // all remaining plan capacity so only one unknown-cost call
-                    // can be in flight at a time.
+                    // can be in flight at a time; the others wait for it to
+                    // settle (bug-0bc2b4).
                     ceiling
                 }
             }),
@@ -98,6 +99,31 @@ struct PlanBudgetState {
 #[derive(Debug, Default)]
 pub(super) struct GraphPlanBudgetLedger {
     plans: parking_lot::Mutex<HashMap<String, PlanBudgetState>>,
+    /// Woken whenever a reservation settles or is released, so a reservation
+    /// waiting for capacity tries again (bug-0bc2b4).
+    capacity: tokio::sync::Notify,
+}
+
+/// How often a reservation waiting for capacity checks again without a
+/// wake-up, and whether its run stopped.
+const RESERVE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Why [`GraphPlanBudgetLedger::try_reserve`] refused a reservation.
+struct ReserveRefusal {
+    error: RokoError,
+    /// Only reservations in flight hold the plan's remaining budget: it has
+    /// capacity again once they settle. Otherwise settled spend reached the
+    /// ceiling, or the ledger cannot be persisted.
+    blocked: bool,
+}
+
+impl ReserveRefusal {
+    const fn failed(error: RokoError) -> Self {
+        Self {
+            error,
+            blocked: false,
+        }
+    }
 }
 
 impl GraphPlanBudgetLedger {
@@ -171,17 +197,57 @@ impl GraphPlanBudgetLedger {
         })
     }
 
+    /// Reserve capacity for one provider call of `plan_id`, failing at once
+    /// when there is none.
+    #[cfg(test)]
     pub(super) fn reserve(
         &self,
         plan_id: &str,
         policy: GraphPlanBudgetPolicy,
     ) -> Result<GraphPlanBudgetReservation<'_>> {
+        self.try_reserve(plan_id, policy)
+            .map_err(|refusal| refusal.error)
+    }
+
+    /// [`Self::reserve`], waiting while only reservations in flight leave the
+    /// plan no capacity (bug-0bc2b4). Without `max_turn_usd` a call reserves
+    /// the plan's whole remaining budget, so a task that starts beside it
+    /// waits for it to settle instead of failing. It fails once settled spend
+    /// reaches the ceiling, and ends with a cancellation once `stopped`.
+    pub(super) async fn reserve_waiting(
+        &self,
+        plan_id: &str,
+        policy: GraphPlanBudgetPolicy,
+        stopped: impl Fn() -> bool,
+    ) -> Result<GraphPlanBudgetReservation<'_>> {
+        loop {
+            let capacity = self.capacity.notified();
+            match self.try_reserve(plan_id, policy) {
+                Ok(reservation) => return Ok(reservation),
+                Err(refusal) if !refusal.blocked => return Err(refusal.error),
+                Err(_) if stopped() => {
+                    return Err(RokoError::cancelled(format!(
+                        "the run stopped while a task of plan `{plan_id}` waited for its budget"
+                    )));
+                }
+                Err(_) => {
+                    let _ = tokio::time::timeout(RESERVE_RECHECK_INTERVAL, capacity).await;
+                }
+            }
+        }
+    }
+
+    fn try_reserve(
+        &self,
+        plan_id: &str,
+        policy: GraphPlanBudgetPolicy,
+    ) -> std::result::Result<GraphPlanBudgetReservation<'_>, ReserveRefusal> {
         let mut plans = self.plans.lock();
         let state = plans.entry(plan_id.to_string()).or_default();
         if let Some(error) = &state.persistence_error {
-            return Err(RokoError::Store(format!(
+            return Err(ReserveRefusal::failed(RokoError::Store(format!(
                 "Graph cost ledger for plan `{plan_id}` is unavailable: {error}"
-            )));
+            ))));
         }
 
         let mut reserved_micro_usd = 0;
@@ -196,10 +262,14 @@ impl GraphPlanBudgetLedger {
                     .saturating_add(state.reserved_micro_usd);
                 let available = ceiling.saturating_sub(committed);
                 if available == 0 {
-                    return Err(RokoError::BudgetExceeded {
+                    let exceeded = RokoError::BudgetExceeded {
                         dimension: "plan_cost_micro_usd",
                         used: micro_usd_to_usize(committed),
                         limit: micro_usd_to_usize(ceiling),
+                    };
+                    return Err(ReserveRefusal {
+                        error: exceeded,
+                        blocked: state.spent_micro_usd < ceiling,
                     });
                 }
                 reserved_micro_usd = policy
@@ -216,7 +286,7 @@ impl GraphPlanBudgetLedger {
                         state.reserved_micro_usd.saturating_sub(reserved_micro_usd);
                     let message = format!("persist provider-cost reservation: {error:#}");
                     state.persistence_error = Some(message.clone());
-                    return Err(RokoError::Store(message));
+                    return Err(ReserveRefusal::failed(RokoError::Store(message)));
                 }
                 Some(reserved_micro_usd)
             }
@@ -256,8 +326,12 @@ impl GraphPlanBudgetLedger {
         {
             let message = format!("persist actual provider cost: {error:#}");
             state.persistence_error = Some(message.clone());
+            drop(plans);
+            self.capacity.notify_waiters();
             return Err(RokoError::Store(message));
         }
+        drop(plans);
+        self.capacity.notify_waiters();
         Ok(())
     }
 
@@ -277,6 +351,8 @@ impl GraphPlanBudgetLedger {
                 ));
             }
         }
+        drop(plans);
+        self.capacity.notify_waiters();
     }
 
     #[cfg(test)]
@@ -871,6 +947,69 @@ mod tests {
             thread.join().expect("admission thread");
         }
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
+    }
+
+    /// bug-0bc2b4: with a plan budget and no `max_turn_usd` a call reserves
+    /// the plan's whole remaining budget. A task dispatched beside it waits
+    /// for that reservation to settle instead of failing, and both run.
+    #[tokio::test]
+    async fn concurrent_tasks_wait_for_a_reserved_plan_budget() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.10, |_| {}).await;
+        let dispatcher = dispatcher.with_plan_budget(1.0, 0.0, false);
+        let mut other = task.clone();
+        other.id = "T-OTHER".to_string();
+        let (spec, other_spec) = (make_spec(&task), make_spec(&other));
+        let ctx = batch_ctx();
+
+        let first = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        let second = dispatcher.dispatch(&other_spec, Vec::new(), &ctx);
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both tasks finish");
+        first.expect("the first task runs");
+        second.expect("the second waits for the budget, then runs");
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - 0.20).abs() < 1e-6, "{spent}");
+    }
+
+    /// A reservation waiting for capacity fails once settled spend reaches
+    /// the ceiling, and ends with a cancellation once its run stops.
+    #[tokio::test]
+    async fn a_waiting_reservation_ends_at_the_ceiling_or_a_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ledger = GraphPlanBudgetLedger::default();
+        let policy = GraphPlanBudgetPolicy::from_ceiling(0.50, false);
+        let first = ledger
+            .reserve_waiting("plan-a", policy, || false)
+            .await
+            .expect("capacity");
+        let stopped = AtomicBool::new(false);
+        let waiting = ledger.reserve_waiting("plan-a", policy, || stopped.load(Ordering::SeqCst));
+        let stop = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            stopped.store(true, Ordering::SeqCst);
+        };
+        let (waited, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(waiting, stop)
+        })
+        .await
+        .expect("the stop ends the wait");
+        assert!(matches!(waited.err(), Some(RokoError::Cancelled(_))));
+
+        first.settle(0.50).expect("settle at the ceiling");
+        let spent = ledger
+            .reserve_waiting("plan-a", policy, || false)
+            .await
+            .err()
+            .expect("the plan is spent");
+        assert!(
+            matches!(spent, RokoError::BudgetExceeded { .. }),
+            "{spent:?}"
+        );
     }
 
     #[test]

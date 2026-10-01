@@ -2,7 +2,7 @@
 id = "gap-2bc1b9"
 kind = "gap"
 title = "work.py new accepts every item field as a flag"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["tools/work"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "d6788bec9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (§1, R3)"
 anchors = ["tools/work.py::cmd_new", "tools/work.py::main", "tools/test_work.py"]
@@ -20,6 +21,16 @@ links = { depends_on = ["gap-130a3e"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_new_writes_every_field_from_flags' tools/test_work.py && grep -qw 'def test_new_refuses_an_unguarded_verify' tools/test_work.py && python3 tools/test_work.py -k test_new_writes_every_field_from_flags -k test_new_refuses_an_unguarded_verify"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T16:17:30Z"
+commit = "d6788bec9"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T16:12:50Z"
+forced = false
+evidence = "tools/work.py new takes every item field as a flag (new_problems, new_text), validates like check plus lint_verify/valid_anchor, refuses thin gap/bug/regression items; test_new_writes_every_field_from_flags and test_new_refuses_an_unguarded_verify pass, full tools/test_work.py passes (39)"
 +++
 
 ## Problem

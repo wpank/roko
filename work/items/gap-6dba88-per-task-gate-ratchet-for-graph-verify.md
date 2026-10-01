@@ -9,9 +9,9 @@ goal = "learning"
 size = "M"
 subsystem = ["roko-gate", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops 99adacd6d"
 anchors = ["crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::RetryFeedbackBook"]
@@ -90,3 +90,18 @@ history of which steps passed on earlier attempts.
 - Advisory only. Do not change which steps run or whether the task passes.
 - `graph_task_dispatch.rs` is large and heavily edited. Keep the logic in a small module, for example
   `graph_task_dispatch/step_ratchet.rs`.
+- 2026-10-01 (wk-gates): the premise held at BASE in a new form. find-4b4344 had wired `GateRatchet` per
+  `plan/task`, keyed by rung, into `gate_learning.rs`. That flags a step that never passed whenever a higher rung
+  passed on an earlier attempt: [compile, test, clippy] failing clippy twice reads as a regression on the second
+  attempt.
+- 2026-10-01 (wk-gates): implemented on work/bug-951930; cargo verification deferred to the batch check.
+  `graph_task_dispatch/step_ratchet.rs` identifies a step by its label (index and phase, or rung name) and a hash of
+  its command. `RetryFeedbackBook` keeps each task's passed step identities in `retry-feedback.json` (they survive
+  `--resume-plan`, `--fresh` drops them, and the task's pass clears them). After each verify,
+  `settle_step_regressions` reports the failing steps that an earlier attempt passed: a WARN, a `gate_regression`
+  dashboard entry, and a first line in the next attempt's diagnosis (`regression_note`). The rung ratchet is gone from
+  `gate_learning.rs`, and `gate-ratchet.json` is no longer written. Decision on `roko_gate::GateRatchet`: kept as it
+  was before find-4b4344, with no caller, because the v1–v3 gate docs describe it. Delete it in a cleanup if nothing
+  revives the rung pipeline. find-4b4344's verify now greps `settle_step_regressions` instead of `GateRatchet`.
+  Tests: `a_step_that_passed_on_an_earlier_attempt_and_fails_now_is_a_regression`,
+  `step_order_within_an_attempt_is_not_a_regression` and `passed_steps_survive_a_resume_and_a_pass_clears_them`.

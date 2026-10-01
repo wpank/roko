@@ -15,9 +15,12 @@
 //!
 //! The same file keeps each task's [`LadderStanding`] (gap-460230): the rungs
 //! it climbed on the model ladder and its agent-blamed failures on the
-//! current rung, so a resumed run routes where the last one stopped.
+//! current rung, so a resumed run routes where the last one stopped. It also
+//! keeps the verify steps each task passed on its earlier attempts
+//! (gap-6dba88), so a step that passed before and fails now reads as a
+//! regression in a resumed run too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -58,6 +61,18 @@ struct RetryFeedbackFile {
     tasks: BTreeMap<String, PendingFeedback>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     ladder: BTreeMap<String, LadderStanding>,
+    /// Identities of the verify steps each task passed on an earlier attempt
+    /// ([`super::step_ratchet::step_identity`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    passed_steps: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// What `retry-feedback.json` holds for one plan's checkpoint run, by task id.
+#[derive(Debug, Default)]
+struct RestoredFeedback {
+    tasks: BTreeMap<String, PendingFeedback>,
+    ladder: BTreeMap<String, LadderStanding>,
+    passed_steps: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A task's next dispatch: its attempt number and the feedback it starts with.
@@ -77,6 +92,8 @@ struct BookState {
     earlier_attempts: HashMap<TaskKey, u32>,
     /// Standings on the model ladder.
     ladder: HashMap<TaskKey, LadderStanding>,
+    /// Verify steps passed on earlier attempts, by step identity.
+    passed_steps: HashMap<TaskKey, BTreeSet<String>>,
     /// Per plan: the file its feedback is kept in, and the checkpoint run.
     files: HashMap<String, (PathBuf, String)>,
 }
@@ -92,7 +109,11 @@ impl RetryFeedbackBook {
     /// restoring what an earlier process of that run left there. Returns the
     /// ids of the tasks whose feedback was restored.
     pub(crate) fn attach(&self, plan_id: &str, path: PathBuf, run_id: &str) -> Vec<String> {
-        let (restored, standings) = read_feedback_file(&path, plan_id, run_id);
+        let RestoredFeedback {
+            tasks: restored,
+            ladder: standings,
+            passed_steps,
+        } = read_feedback_file(&path, plan_id, run_id);
         let mut state = self.state.lock();
         state.pending.retain(|(plan, _), _| plan != plan_id);
         state
@@ -103,6 +124,12 @@ impl RetryFeedbackBook {
             state
                 .ladder
                 .insert((plan_id.to_string(), task_id), standing);
+        }
+        state.passed_steps.retain(|(plan, _), _| plan != plan_id);
+        for (task_id, steps) in passed_steps {
+            state
+                .passed_steps
+                .insert((plan_id.to_string(), task_id), steps);
         }
         let mut task_ids = Vec::with_capacity(restored.len());
         for (task_id, entry) in restored {
@@ -199,21 +226,49 @@ impl RetryFeedbackBook {
         }
     }
 
-    /// Drop `task_id`'s feedback once it passes.
+    /// Identities of the verify steps `task_id` passed on its earlier
+    /// attempts of this checkpoint run (gap-6dba88).
+    pub(crate) fn passed_steps(&self, plan_id: &str, task_id: &str) -> BTreeSet<String> {
+        let key = (plan_id.to_string(), task_id.to_string());
+        let state = self.state.lock();
+        state.passed_steps.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Add `steps` to the verify steps `task_id` has passed, on disk as well
+    /// when the plan has a checkpoint.
+    pub(crate) fn record_passed_steps(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        steps: impl IntoIterator<Item = String>,
+    ) {
+        let key = (plan_id.to_string(), task_id.to_string());
+        let mut state = self.state.lock();
+        let passed = state.passed_steps.entry(key).or_default();
+        let before = passed.len();
+        passed.extend(steps);
+        if passed.len() > before {
+            persist(&state, plan_id);
+        }
+    }
+
+    /// Drop `task_id`'s feedback and the steps it passed once it passes.
     pub(crate) fn clear(&self, plan_id: &str, task_id: &str) {
         let key = (plan_id.to_string(), task_id.to_string());
         let mut state = self.state.lock();
         state.earlier_attempts.remove(&key);
-        if state.pending.remove(&key).is_some() {
+        let had_steps = state.passed_steps.remove(&key).is_some();
+        if state.pending.remove(&key).is_some() || had_steps {
             persist(&state, plan_id);
         }
     }
 }
 
 /// Rewrite `plan_id`'s file from `state`, removing it once nothing is
-/// pending and no task stands above its start rung. Returns the file on
-/// success. Gate output and diagnoses can quote a secret, so the process's
-/// secrets are redacted from the file; a resumed attempt sees the redaction.
+/// pending, no task stands above its start rung and no step history is kept.
+/// Returns the file on success. Gate output and diagnoses can quote a
+/// secret, so the process's secrets are redacted from the file; a resumed
+/// attempt sees the redaction.
 fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
     let (path, run_id) = state.files.get(plan_id)?;
     let tasks: BTreeMap<String, PendingFeedback> = state
@@ -228,7 +283,13 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
         .filter(|((plan, _), _)| plan == plan_id)
         .map(|((_, task_id), standing)| (task_id.clone(), *standing))
         .collect();
-    let written = if tasks.is_empty() && ladder.is_empty() {
+    let passed_steps: BTreeMap<String, BTreeSet<String>> = state
+        .passed_steps
+        .iter()
+        .filter(|((plan, _), steps)| plan == plan_id && !steps.is_empty())
+        .map(|((_, task_id), steps)| (task_id.clone(), steps.clone()))
+        .collect();
+    let written = if tasks.is_empty() && ladder.is_empty() && passed_steps.is_empty() {
         match std::fs::remove_file(path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -240,6 +301,7 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
             run_id: run_id.clone(),
             tasks,
             ladder,
+            passed_steps,
         };
         serde_json::to_string_pretty(&file)
             .map_err(std::io::Error::other)
@@ -263,31 +325,24 @@ fn persist(state: &BookState, plan_id: &str) -> Option<PathBuf> {
     }
 }
 
-/// Pending feedback and ladder standings `path` holds for `plan_id`'s
-/// checkpoint run `run_id`, keyed by task id. A missing, unreadable, or
-/// foreign file holds none.
-fn read_feedback_file(
-    path: &Path,
-    plan_id: &str,
-    run_id: &str,
-) -> (
-    BTreeMap<String, PendingFeedback>,
-    BTreeMap<String, LadderStanding>,
-) {
+/// Pending feedback, ladder standings and step history `path` holds for
+/// `plan_id`'s checkpoint run `run_id`, keyed by task id. A missing,
+/// unreadable, or foreign file holds none.
+fn read_feedback_file(path: &Path, plan_id: &str, run_id: &str) -> RestoredFeedback {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             if error.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!(path = %path.display(), %error, "retry feedback unreadable; ignored");
             }
-            return (BTreeMap::new(), BTreeMap::new());
+            return RestoredFeedback::default();
         }
     };
     let file: RetryFeedbackFile = match serde_json::from_slice(&bytes) {
         Ok(file) => file,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "retry feedback unparsable; ignored");
-            return (BTreeMap::new(), BTreeMap::new());
+            return RestoredFeedback::default();
         }
     };
     if file.schema_version != SCHEMA_VERSION || file.plan_id != plan_id {
@@ -298,7 +353,7 @@ fn read_feedback_file(
             plan_id,
             "retry feedback has another schema or plan; ignored"
         );
-        return (BTreeMap::new(), BTreeMap::new());
+        return RestoredFeedback::default();
     }
     if file.run_id != run_id {
         tracing::debug!(
@@ -307,9 +362,13 @@ fn read_feedback_file(
             run_id,
             "retry feedback belongs to an earlier checkpoint run; ignored"
         );
-        return (BTreeMap::new(), BTreeMap::new());
+        return RestoredFeedback::default();
     }
-    (file.tasks, file.ladder)
+    RestoredFeedback {
+        tasks: file.tasks,
+        ladder: file.ladder,
+        passed_steps: file.passed_steps,
+    }
 }
 
 #[cfg(test)]

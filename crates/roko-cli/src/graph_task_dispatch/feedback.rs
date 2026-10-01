@@ -51,8 +51,7 @@ pub struct GraphFeedbackContext {
     /// so the EMA pass-rate converges toward the workspace's real gate history.
     /// The file is written atomically after every task's verify sequence
     /// completes (both pass and fail), and a `GateThresholdsUpdated` event is
-    /// published to the TUI bridge. The gate ratchet, `gate-ratchet.json`,
-    /// is kept beside it (find-4b4344).
+    /// published to the TUI bridge.
     pub gate_thresholds_path: Option<PathBuf>,
 
     /// RAG-10: Path to `.roko/learn/retrieval-outcomes.jsonl`.

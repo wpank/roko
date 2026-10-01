@@ -71,6 +71,7 @@ mod retry_feedback;
 mod routing_context;
 mod served_model;
 mod sibling_settle;
+mod step_ratchet;
 mod streaming;
 mod supervision;
 mod tui_forward;

@@ -27,7 +27,7 @@ use crate::cell::CellContext;
 use crate::engine::{GraphEngine, GraphOutput};
 use crate::fingerprint::graph_execution_fingerprint;
 use crate::registry::CellRegistry;
-use crate::replay::{ActivityRecorder, ActivityReplayer};
+use crate::replay::{ActivityRecorder, ActivityReplayer, set_aside_uncommitted_activities};
 use crate::types::{ExecutionClass, Graph};
 
 const HOT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
@@ -652,6 +652,23 @@ fn load_hot_checkpoint(
             activities_path.display()
         )));
     }
+    // A record whose write did not finish, such as a line a crash tore, was
+    // never committed: set it aside rather than fail on it, as a plan resume
+    // does, so its node runs again (bug-403181).
+    let uncommitted = set_aside_uncommitted_activities(activities_path).map_err(|error| {
+        HotCheckpointError::new(format!(
+            "set aside the torn end of Hot Graph Activity log {}: {error}",
+            activities_path.display()
+        ))
+    })?;
+    if let Some(aside) = uncommitted {
+        warn!(
+            activities = %activities_path.display(),
+            set_aside = %aside.display(),
+            "Hot Graph resume: the Activity log ended in a record whose write did not finish; \
+             set it aside, and its node runs again"
+        );
+    }
 
     let replayer =
         ActivityReplayer::load_scoped(activities_path, &manifest.graph_id, &manifest.run_id)
@@ -1260,6 +1277,81 @@ cell_type = "noop"
         resumed.wait_result().await.expect("replay succeeds");
         assert_eq!(executions.load(Ordering::Relaxed), 0);
         assert_eq!(resumed.tick_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn hot_resume_sets_aside_a_torn_activity() {
+        let temp = tempdir().expect("tempdir");
+        let checkpoint_dir = temp.path().join("hot");
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(1),
+            persist_tick_state: false,
+            loop_level: None,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let initial = start_hot_resumable(
+            hot_graph("torn"),
+            counting_registry(Arc::new(AtomicU64::new(0)), None),
+            policy.clone(),
+            Some(cancelled),
+            HotCheckpointOptions::new(&checkpoint_dir),
+        )
+        .expect("create checkpoint");
+        initial.wait_result().await.expect("cancel cleanly");
+
+        // Tick 0's Activity completed, and the process died while it
+        // appended the next record.
+        let manifest = checkpoint_manifest(&checkpoint_dir);
+        let log = checkpoint_dir.join(HOT_ACTIVITY_LOG);
+        let mut recorder = ActivityRecorder::create(&manifest.run_id, &log).expect("recorder");
+        recorder
+            .record(
+                "torn",
+                "counter",
+                0,
+                vec![
+                    Signal::builder(Kind::Task)
+                        .body(Body::text("recorded"))
+                        .build(),
+                ],
+            )
+            .expect("record completed Activity");
+        drop(recorder);
+        let committed = std::fs::read(&log).expect("committed log");
+        let torn = b"{\"graph_id\":\"torn\",\"node_id\":\"coun";
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("open log");
+        file.write_all(torn).expect("tear the log");
+        drop(file);
+
+        let executions = Arc::new(AtomicU64::new(0));
+        let resumed = start_hot_resumable(
+            hot_graph("torn"),
+            counting_registry(executions.clone(), None),
+            policy,
+            None,
+            HotCheckpointOptions::new(&checkpoint_dir),
+        )
+        .expect("a torn record does not block resume");
+        resumed.wait_result().await.expect("replay succeeds");
+        assert_eq!(executions.load(Ordering::Relaxed), 0);
+        assert_eq!(resumed.tick_count(), 1);
+
+        let set_aside: Vec<Vec<u8>> = std::fs::read_dir(&checkpoint_dir)
+            .expect("checkpoint directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.contains(".uncommitted."))
+            .map(|name| std::fs::read(checkpoint_dir.join(name)).expect("set-aside bytes"))
+            .collect();
+        assert_eq!(set_aside, [torn.to_vec()]);
+        let log_bytes = std::fs::read(&log).expect("log");
+        assert!(log_bytes.starts_with(&committed));
+        assert_eq!(log_bytes.last(), Some(&b'\n'));
     }
 
     #[tokio::test]

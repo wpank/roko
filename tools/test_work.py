@@ -255,8 +255,12 @@ class TestClaims(RepoTest):
         self.write("gap-dddddd", item("gap-dddddd", "D", anchors=["src/d.rs"]).replace(
             "depends_on = []", 'depends_on = ["gap-cccccc"]'))
         self.commit("D waits on C")
-        refused = self.run_work("claim", "gap-dddddd", "--by", "t", check=False)
+        refused = self.run_work("claim", "gap-dddddd", "bug-aaaaaa", "--by", "t", check=False)
         self.assertIn("it depends on gap-cccccc, which is still open", refused.stderr)
+        # The other item of the same command is claimed all the same, and the command fails.
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(sorted(work.load_claims()), ["bug-aaaaaa"])
+        self.run_work("release", "bug-aaaaaa")
         # One worker may take both on one branch and do them in turn.
         self.run_work("claim", "gap-cccccc", "gap-dddddd", "--by", "t", "--branch", "work/cd")
         self.assertEqual(sorted(work.load_claims()), ["gap-cccccc", "gap-dddddd"])

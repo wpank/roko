@@ -767,16 +767,20 @@ def cmd_claim(a):
             return
         live = {k: c for k, c in claims.items() if not c["stale"]}
         worktrees = {} if a.ignore_worktrees else worktree_changes()
+        refused = []  # every claimable item is claimed; the refused ones are listed at the end
         for iid in a.ids:
             it = idx.get(iid)
             if it is None or it.get("status") not in OPEN:
-                sys.exit(f"{iid}: not found or not open")
+                refused.append(f"{iid}: not found or not open")
+                continue
             if iid in live and not a.force:
                 c = live[iid]
-                sys.exit(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
+                refused.append(f"{iid}: already claimed by {c.get('by')} {c['age_h']}h ago (use --force to take over a claim you know is dead)")
+                continue
             why = claim_conflicts(it, idx, live, a.branch, worktrees)
             if why and not a.force:
-                sys.exit(f"{iid}: not claimed: {'; '.join(why)} (use --force to claim it anyway)")
+                refused.append(f"{iid}: not claimed: {'; '.join(why)} (use --force to claim it anyway)")
+                continue
             overrode = why + ([f"the live claim of {live[iid].get('by')}"] if iid in live else [])
             if overrode:
                 print(f"{iid}: --force overrides: {'; '.join(overrode)}", file=sys.stderr)
@@ -789,13 +793,16 @@ def cmd_claim(a):
             try:
                 fd = os.open(f, os.O_WRONLY | os.O_CREAT | (0 if a.force else os.O_EXCL), 0o644)
             except FileExistsError:
-                sys.exit(f"{iid}: claimed by someone else a moment ago")
+                refused.append(f"{iid}: claimed by someone else a moment ago")
+                continue
             with os.fdopen(fd, "w") as fh:
                 fh.write(json.dumps(rec, indent=1) + "\n")
             live[iid] = rec  # the rest of this command's items see it
             log_event("claim", iid, session=session, executor=a.executor, via=a.via, branch=a.branch, by=a.by,
                       size=size, claimed_at=rec["claimed_at"], force=True if a.force else None)
             print(f"claimed {iid} for {a.by} ({size or 'unsized'}: live for {claim_ttl_hours(rec)} h unless renewed)")
+    if refused:
+        sys.exit("\n".join(refused))
 
 
 def renew_claims(a, claims, session):

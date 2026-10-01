@@ -220,9 +220,14 @@ impl ProviderHealth {
 
         if should_trip_billing || should_trip_consecutive || should_trip_rate {
             // When already Open, each additional failure extends the cooldown
-            // (original behaviour). When Closed or HalfOpen, transition to Open.
+            // (original behaviour), but never shortens one already running: a
+            // server error after a rate limit must not cut the provider's rate
+            // window short (find-cb5eeb). When Closed or HalfOpen, transition
+            // to Open.
             self.state = CircuitState::Open;
-            self.cooldown_until = Some(now_ms + self.cooldown_ms(error));
+            let until = now_ms + self.cooldown_ms(error);
+            self.cooldown_until =
+                Some(self.cooldown_until.map_or(until, |current| current.max(until)));
         }
     }
 
@@ -367,7 +372,10 @@ impl ProviderHealth {
     /// Error-class-specific cooldown in milliseconds.
     fn cooldown_ms(&self, error: ErrorClass) -> i64 {
         match error {
-            ErrorClass::RateLimit => 5_000,
+            // Providers meter requests and tokens per minute (Anthropic,
+            // OpenAI and Gemini alike), so a shorter cooldown only meets the
+            // next 429 (find-cb5eeb).
+            ErrorClass::RateLimit => 60_000,
             ErrorClass::Timeout => 10_000,
             ErrorClass::ServerError => 30_000,
             ErrorClass::AuthFailure => 300_000,
@@ -1567,7 +1575,7 @@ mod tests {
         health.record_failure(ErrorClass::RateLimit, 10);
         health.record_failure(ErrorClass::RateLimit, 20);
         health.record_failure(ErrorClass::RateLimit, 30);
-        assert_eq!(health.cooldown_until, Some(5_030));
+        assert_eq!(health.cooldown_until, Some(60_030));
 
         health.state = CircuitState::Closed;
         health.consecutive_failures = 0;
@@ -1734,29 +1742,33 @@ mod tests {
         assert!(h.cooldown_until.is_some());
     }
 
-    /// More than 3 consecutive failures keep the circuit Open and update
-    /// the cooldown based on the most recent error class.
+    /// More than 3 consecutive failures keep the circuit Open and extend
+    /// the cooldown by the most recent error class, but never shorten it.
     #[test]
     fn additional_failures_extend_cooldown() {
         let mut h = new_provider_health("test");
-        // First 3 with RateLimit (5s cooldown)
+        // First 3 with RateLimit (60s cooldown)
         h.record_failure(ErrorClass::RateLimit, 100);
         h.record_failure(ErrorClass::RateLimit, 200);
         h.record_failure(ErrorClass::RateLimit, 300);
-        assert_eq!(h.cooldown_until, Some(5_300));
+        assert_eq!(h.cooldown_until, Some(60_300));
 
-        // 4th failure with ServerError (30s cooldown) should extend
+        // 4th failure with ServerError (30s cooldown) leaves the rate window
         h.record_failure(ErrorClass::ServerError, 400);
         assert_eq!(h.state, CircuitState::Open);
-        assert_eq!(h.cooldown_until, Some(30_400));
-        assert_eq!(h.consecutive_failures, 4);
+        assert_eq!(h.cooldown_until, Some(60_300));
+
+        // 5th failure with AuthFailure (300s cooldown) extends it
+        h.record_failure(ErrorClass::AuthFailure, 500);
+        assert_eq!(h.cooldown_until, Some(300_500));
+        assert_eq!(h.consecutive_failures, 5);
     }
 
     /// Each error class produces a distinct cooldown duration.
     #[test]
     fn error_class_cooldown_values() {
         let h = new_provider_health("test");
-        assert_eq!(h.cooldown_ms(ErrorClass::RateLimit), 5_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::RateLimit), 60_000);
         assert_eq!(h.cooldown_ms(ErrorClass::Timeout), 10_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ServerError), 30_000);
         assert_eq!(h.cooldown_ms(ErrorClass::AuthFailure), 300_000);
@@ -1841,14 +1853,14 @@ mod tests {
         h.record_failure(ErrorClass::RateLimit, 200);
         h.record_failure(ErrorClass::RateLimit, 300);
         assert_eq!(h.state, CircuitState::Open);
-        // cooldown_until = 300 + 5000 = 5300
+        // cooldown_until = 300 + 60000 = 60300
 
         // Before cooldown expires -> unavailable
-        assert!(!h.is_available(5299));
+        assert!(!h.is_available(60_299));
         assert_eq!(h.state, CircuitState::Open);
 
         // After cooldown expires -> HalfOpen
-        assert!(h.is_available(5300));
+        assert!(h.is_available(60_300));
         assert_eq!(h.state, CircuitState::HalfOpen);
 
         // Success from HalfOpen -> Closed

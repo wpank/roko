@@ -7,8 +7,8 @@
 //!
 //! There are two kinds of canary: provider keys in the home directory's
 //! `~/.roko/.env`, which roko loads at startup, and a provider key exported
-//! in roko's own environment. The fake Claude CLI records its argv, its
-//! prompt and its environment outside the repository; the verify step
+//! in roko's own environment. The shared scripted provider logs each call's
+//! argv, prompt and environment outside the repository; the verify step
 //! records its environment there too. Probe variables that `[agent]` and
 //! `[gates]` pass through show that both environments came from roko's, so
 //! a missing canary means roko kept it out.
@@ -25,6 +25,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use common::{ScriptedPlanWorkspace, describe_leak, files_containing, mask_secret};
 use serde_json::Value;
 
@@ -55,24 +56,17 @@ fn canaries() -> Vec<&'static str> {
         .collect()
 }
 
-/// A fake Claude CLI that records its argv (NUL-separated), its prompt and
-/// its environment in the fixtures directory, appends to `NOTES.md` so the
-/// attempt has a diff, and reports success. Its reply quotes a home key, as
-/// an agent's would that found the key some other way: roko must redact it
-/// from everything it writes (gap-5f4852).
-fn fake_claude() -> String {
+/// The agent appends to `NOTES.md` so the attempt has a diff, and reports
+/// success. Its reply quotes a home key, as an agent's would that found the
+/// key some other way: roko must redact it from everything it writes
+/// (gap-5f4852).
+fn script() -> Script {
     let leaked = HOME_ENV_KEYS[0].1;
-    format!(
-        r#"#!/bin/sh
-set -eu
-fixtures=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cat >> "$fixtures/agent-prompt.txt"
-env >> "$fixtures/agent-env.txt"
-printf '%s\0' "$@" > "$fixtures/agent-argv.bin"
-printf 'attempt\n' >> NOTES.md
-printf '%s\n' '{{"type":"assistant","message":{{"id":"msg_1","model":"claude-sonnet-4-6","content":[{{"type":"text","text":"Updated NOTES.md; the key is {leaked}."}}],"usage":{{"input_tokens":10,"output_tokens":5}}}}}}'
-printf '%s\n' '{{"type":"result","subtype":"success","session_id":"c2","model":"claude-sonnet-4-6","result":"done","total_cost_usd":0.001,"usage":{{"input_tokens":10,"output_tokens":5}},"is_error":false}}'
-"#
+    Script::new().task(
+        "T1",
+        [Turn::reply()
+            .append("NOTES.md", "attempt\n")
+            .text(&format!("Updated NOTES.md; the key is {leaked}."))],
     )
 }
 
@@ -108,12 +102,18 @@ max_retries = 0
 "#;
 
 /// A workspace whose home holds `~/.roko/.env` with the home canaries and
-/// probe, and whose `roko.toml` passes the probes through.
-fn workspace(plan: &str, tasks: &str, agent: &str, extra_config: &str) -> ScriptedPlanWorkspace {
+/// probe, and whose `roko.toml` passes the probes through to the agent, which
+/// plays [`script`].
+fn workspace(
+    plan: &str,
+    tasks: &str,
+    extra_config: &str,
+) -> (ScriptedPlanWorkspace, ScriptedProvider) {
     let config = format!(
         "agent.env_passthrough = [\"C2_PROBE_*\"]\ngates.env_passthrough = [\"C2_PROBE_*\"]\n{extra_config}"
     );
-    let workspace = ScriptedPlanWorkspace::new(plan, tasks, agent, &config);
+    let (workspace, provider) =
+        ScriptedPlanWorkspace::with_provider(plan, tasks, &script(), &config);
     let home_env = workspace.home.join(".roko").join(".env");
     fs::create_dir_all(home_env.parent().expect("~/.roko")).expect("create ~/.roko");
     let mut text = String::new();
@@ -121,7 +121,7 @@ fn workspace(plan: &str, tasks: &str, agent: &str, extra_config: &str) -> Script
         text.push_str(&format!("{name}={value}\n"));
     }
     fs::write(&home_env, text).expect("write ~/.roko/.env");
-    workspace
+    (workspace, provider)
 }
 
 /// Run the plan with the exported canary and probe in roko's environment.
@@ -206,13 +206,17 @@ fn run_hook(hook: &str, cwd: &Path, command: &str, env: &[(&str, &Path)]) -> Opt
 
 #[test]
 fn secrets_and_git_guard_canary() {
-    let workspace = workspace(PLAN, TASKS, &fake_claude(), "");
+    let (workspace, provider) = workspace(PLAN, TASKS, "");
     let output = run(&workspace, PLAN, &[]);
     let fixtures = &workspace.fixtures;
 
     // Not vacuous: the agent and the verify step ran, and each saw the
     // probes, so their environments came from roko's own.
-    let agent_env = read(&fixtures.join("agent-env.txt"), &output);
+    let calls = provider.calls_for("T1");
+    let attempt = calls
+        .first()
+        .unwrap_or_else(|| panic!("the agent was not called for T1\n{}", context(&output)));
+    let agent_env: String = calls.iter().map(|call| call.env.as_str()).collect();
     let gate_env = read(&fixtures.join("gate-env.txt"), &output);
     for (env, what) in [(&agent_env, "agent"), (&gate_env, "verify step")] {
         for (name, value) in [HOME_PROBE, EXPORTED_PROBE] {
@@ -225,11 +229,13 @@ fn secrets_and_git_guard_canary() {
     }
 
     // No key reached the agent (environment, prompt, argv) or the verify
-    // step: every file the fake agent and the verify step wrote is checked,
-    // except the agent's script, which holds the key it prints.
+    // step: every call the provider logged and every file the verify step
+    // wrote is checked. The provider's turns, which hold the key it prints,
+    // are not.
     assert_no_canary(&agent_env, "the agent's environment");
     assert_no_canary(&gate_env, "the verify step's environment");
-    assert_no_canary_in_files(fixtures, &[fixtures.join("fake-claude.sh")]);
+    assert_no_canary_in_files(&provider.calls_dir(), &[]);
+    assert_no_canary_in_files(fixtures, &[]);
 
     // Nor any file roko wrote, in the repository (`.roko/` included) or in
     // its home apart from the `.env` itself, nor its output.
@@ -243,11 +249,7 @@ fn secrets_and_git_guard_canary() {
 
     // The agent's argv: isolated setting sources (gap-8be530) and the
     // guard hooks in `--settings`.
-    let argv_bytes = fs::read(fixtures.join("agent-argv.bin")).expect("agent argv");
-    let argv: Vec<String> = argv_bytes
-        .split(|byte| *byte == 0)
-        .map(|arg| String::from_utf8_lossy(arg).into_owned())
-        .collect();
+    let argv = &attempt.argv;
     assert!(
         argv.iter().any(|arg| arg == "--setting-sources"),
         "the agent was not started with --setting-sources: {argv:?}"
@@ -437,7 +439,7 @@ fn agent_tool_shells_exclude_provider_keys() {
         )
         .replace("env >> {fixtures}/gate-env.txt", "true");
     // The fake provider's config is set once its port is known.
-    let workspace = workspace(TOOLS_PLAN, &tasks, &fake_claude(), "");
+    let (workspace, _provider) = workspace(TOOLS_PLAN, &tasks, "");
     let base_url = spawn_tool_calling_server(&workspace.fixtures);
     let config_path = workspace.repo.join("roko.toml");
     let mut config = fs::read_to_string(&config_path).expect("read roko.toml");

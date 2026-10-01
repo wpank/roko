@@ -22,7 +22,8 @@
 //! plan is unverified, not succeeded (gap-29a84b). T5 checks that a reflex
 //! rule earns no gate pass for an output nothing verified (bug-94151f).
 //!
-//! No model runs: the agent is a script, and the run takes seconds.
+//! No model runs: the agent is the shared scripted provider, and the run
+//! takes seconds.
 
 mod common;
 
@@ -32,6 +33,7 @@ use std::process::Output;
 
 use assert_cmd::cargo::cargo_bin;
 use common::ScriptedPlanWorkspace;
+use common::scripted_provider::{Script, Turn};
 use roko_cli::graph_checkpoint::{GATE_VERDICT_EXTENSION, TASK_OUTCOME_EXTENSION};
 use roko_core::DashboardEvent;
 use roko_core::dashboard_snapshot::{DashboardSnapshot, TaskOutcomeClass, classify_task_outcome};
@@ -42,16 +44,12 @@ const CHECKED_PLAN: &str = "verdicts-checked";
 /// T3, whose role is disabled, and T4, whose verify step fails.
 const REJECTED_PLAN: &str = "verdicts-rejected";
 
-/// The fake agent: it appends a line to `NOTES.md`, so each attempt changes
-/// the file its task names, and reports one finished turn. Each task's
-/// verify step alone decides its verdict.
-const AGENT: &str = r#"#!/bin/sh
-set -eu
-cat >/dev/null
-printf 'attempt\n' >> NOTES.md
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '%s\n' '{"type":"result","session_id":"c1","model":"claude-sonnet-4-6","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5},"is_error":false}'
-"#;
+/// The agent: every call appends a line to `NOTES.md`, so each attempt
+/// changes the file its task names, and reports one finished turn. Each
+/// task's verify step alone decides its verdict.
+fn agent() -> Script {
+    Script::new().otherwise(Turn::reply().append("NOTES.md", "attempt\n"))
+}
 
 /// `roko.toml` additions: T3's role is off, T0 reflexes are on, and no
 /// verification waits for sibling tasks to settle.
@@ -158,7 +156,7 @@ fn json_lines(path: &Path) -> Vec<Value> {
 
 #[test]
 fn honest_verdicts_canary() {
-    let workspace = ScriptedPlanWorkspace::new(
+    let (workspace, _provider) = ScriptedPlanWorkspace::with_provider(
         CHECKED_PLAN,
         &tasks_toml(
             CHECKED_PLAN,
@@ -168,7 +166,7 @@ fn honest_verdicts_canary() {
                 ("T5", "scribe", None),
             ],
         ),
-        AGENT,
+        &agent(),
         CONFIG,
     );
     let rejected_dir = workspace.repo.join("plans").join(REJECTED_PLAN);

@@ -1,5 +1,9 @@
 # 39-14 Agent Harnesses and Tool Use -- Annotated Reference Map
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > Research foundations for scaffold engineering, agent-computer interfaces, tool use
 > patterns, and cascade architectures in Roko's dispatch and execution systems.
 >
@@ -10,13 +14,11 @@
 ## Harness Engineering (Core Thesis)
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-"The scaffold IS the product." 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 IMO math, 4x fewer tokens. Core thesis for Roko's approach: improving the harness matters more than switching models.
+ The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 IMO math, 4x fewer tokens. Core thesis for Roko's approach (Roko's reading; the paper shows only that the harness matters, §1, §4): improving the harness can matter as much as switching models.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
-Scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable across providers.
 
 **[Kapoor et al., 2026]** *HAL: A Holistic Agent Leaderboard.* ICLR 2026.
-21,730 agent rollouts show scaffold choice matters as much as model choice. Single-axis model leaderboards mislead for agent systems. Validates Roko's architecture-first approach.
 
 ---
 
@@ -30,13 +32,10 @@ Crossover optimization of scaffold components from heterogeneous agent architect
 ## Agent-Computer Interfaces
 
 **[Yang et al., 2024]** *SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering.* NeurIPS 2024.
-ACI design: how agents interact with environments matters as much as reasoning capability. Grounds the tool interface design in `roko-std`.
 
 **[Gauthier, 2024]** *Aider: AI Pair Programming in Your Terminal.* aider.chat.
-Repository map construction, edit format negotiation, diff-based output parsing. Practical reference for code-editing agent interfaces.
 
 **[Schluntz & Zhang, 2024]** *Building Effective Agents.* anthropic.com.
-Composition over complexity: keep individual agents simple, compose through a controller. Direct design input for Roko's Graph-of-Cells execution model.
 
 ---
 
@@ -46,61 +45,48 @@ Composition over complexity: keep individual agents simple, compose through a co
 Cascade architectures achieve up to 98% cost reduction. Grounds the T0/T1/T2 cascade in `CascadeRouter`.
 
 **[Ong et al., 2024]** *RouteLLM: Learning to Route LLMs with Preference Data.* arXiv:2406.18665.
-Preference-based routing. Informs CascadeRouter training on task outcomes.
 
 **[Gandhi et al., 2024]** *BudgetMLAgent: A Cost-Effective LLM Multi-Agent system for Automating Machine Learning Tasks.* AIMLSystems 2024.
-94.2% cost reduction via three-tier model cascade. Validates the cascade approach at production scale.
 
 ---
 
 ## Cognitive Pipelines
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-9-step cognitive pipeline: perceive, retrieve, reason, act, learn. Roko's loop extends CoALA with verification and meta-cognition.
+Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's. Roko's loop extends CoALA with verification and meta-cognition.
 
 **[Yao et al., 2023]** *ReAct: Synergizing Reasoning and Acting in Language Models.* ICLR 2023. arXiv:2210.03629.
-Interleaved reasoning and acting pattern. Foundational for the tool loop in `roko-agent`.
 
 **[Zhou et al., 2024]** *Language Agent Tree Search Unifies Reasoning, Acting, and Planning.* ICML 2024. arXiv:2310.04406.
-Tree search over agent reasoning. 92.7% HumanEval. Grounds structured planning approaches.
 
 **[Yao et al., 2023b]** *Tree of Thoughts: Deliberate Problem Solving with Large Language Models.* NeurIPS 2023. arXiv:2305.10601.
-Tree-structured deliberate reasoning for complex problems. Extends CoT with branching exploration.
 
 ---
 
 ## Tool Use Optimization
 
 **[Jia & Li, 2025]** *AutoTool: Efficient Tool Selection for Large Language Model Agents.* AAAI 2026. arXiv:2511.14650.
-Efficient tool selection from large toolsets. Grounds tool filtering in `roko-std`.
 
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
-48.5% latency reduction via speculative tool execution. Informs parallel tool dispatch.
+48.5% shorter average task completion time via speculative tool execution (v1 abstract; 43.5% in the current version). Informs parallel tool dispatch.
 
 **[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
-Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies. Grounds tool cache in the inference gateway.
 
 **[Zhang et al., 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
-50.31% cost reduction via plan-level caching. Informs plan execution optimization.
 
 **[Red Hat, 2025]** *Tool RAG: Next Breakthrough in Scalable AI Agents.* 2025.
-99.6% token reduction through tool-specific RAG. Grounds tool definition retrieval.
 
 ---
 
 ## Benchmarks
 
 **[Jimenez et al., 2024]** *SWE-bench: Can Language Models Resolve Real-World GitHub Issues?* ICLR 2024.
-2,294 real GitHub issues as gold standard coding agent benchmark. Used for Roko evaluation.
 
 **[Liu et al., 2024]** *AgentBench: Evaluating LLMs as Agents.* ICLR 2024.
-Multi-environment agent evaluation. Performance varies dramatically across environments.
 
 **[Shahul Es et al., 2024]** *RAGAS: Automated Evaluation of Retrieval Augmented Generation.* EACL 2024.
-Three automated RAG evaluation metrics. Applicable to NeuroStore retrieval quality.
 
 **[Saad-Falcon et al., 2024]** *ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems.* NAACL 2024.
-Statistically valid RAG evaluation from ~300 human labels with confidence intervals.
 
 ---
 

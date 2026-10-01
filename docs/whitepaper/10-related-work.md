@@ -2,9 +2,8 @@ Status: reviewed · budget 500 words · owner gap-ec516e
 
 # 10 Related work
 
-**Harness engineering.** Recent work optimizes the harness around a frozen model [@lee2026meta]. Self-improving
-harnesses converge on one guard: test each edit on held-out and anchor tasks, and commit only what passes, with
-rollback [@kang2026harness; @tayebati2026self; @xia2026rrsi]. The guard matters: agents predict their own edits'
+**Harness engineering.** Recent work optimizes the harness around a frozen model [@lee2026meta]. Self-improving harnesses converge on one guard: an edit persists only if it improves its target without
+regressing beyond a margin on protected or previously passing tasks [@kang2026harness; @tayebati2026self; @xia2026rrsi]. The guard matters: agents predict their own edits'
 regressions poorly [@lin2026agentic], and harness gains compounded only with regression control in the loop
 [@wang2026compound] (§5.4). Roko is designed to adopt the guard (§5, spec-6ac537), not the promise of compounding
 gains.

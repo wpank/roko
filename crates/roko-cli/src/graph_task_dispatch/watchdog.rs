@@ -1426,4 +1426,74 @@ exec sleep 60
             "a provider that may report only at the end is left to its timeout"
         );
     }
+
+    /// A run the stall watchdog drops leaves none of its tasks behind
+    /// (bug-2a2f63). The watchdog's heartbeat is an interval inside
+    /// `run_watched` and ends with it; the agent run's own heartbeat task is
+    /// aborted with the run, and its output readers end once its process is
+    /// killed.
+    #[tokio::test]
+    async fn a_dropped_run_stops_its_heartbeat() {
+        let temp = tempdir().expect("tempdir");
+        let launches = temp.path().join("launches.log");
+        let script = silent_provider_script(temp.path(), &launches);
+        let config = Arc::new(watched_config(&script));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+
+        let dispatch = tokio::spawn(async move {
+            dispatcher
+                .dispatch(
+                    &spec,
+                    Vec::new(),
+                    &CellContext::new().with_cell_id("T01".to_string()),
+                )
+                .await
+        });
+        for _ in 0..400 {
+            if launches.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The dispatch and, on this runtime, the run's readers and heartbeat.
+        assert!(
+            metrics.num_alive_tasks() >= before + 3,
+            "the run's tasks are counted"
+        );
+        let error = dispatch
+            .await
+            .expect("the dispatch task")
+            .expect_err("the stalled attempt is dropped");
+        assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
+
+        let mut alive = metrics.num_alive_tasks();
+        for _ in 0..200 {
+            if alive <= before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            alive = metrics.num_alive_tasks();
+        }
+        assert!(
+            alive <= before,
+            "{} task(s) of the dropped run outlived it",
+            alive - before
+        );
+    }
 }

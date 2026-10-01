@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #1-2
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a", "gap-d4466f", "bug-54c729", "bug-4e5a59", "bug-acab47"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a", "gap-d4466f", "bug-54c729", "bug-4e5a59", "bug-acab47", "bug-71a5e6", "bug-1cc498"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
@@ -67,21 +67,23 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] bug-7e1b6b: the dashboard counts unverified and skipped tasks as passed (existing item)
-- [ ] bug-a843d4: tasks whose role is disabled pass without running their verify steps (existing item)
+- [x] bug-7e1b6b: the dashboard counts unverified and skipped tasks as passed (existing item)
+- [x] bug-a843d4: tasks whose role is disabled pass without running their verify steps (existing item)
 - [x] bug-94151f: The reflex path credits its rule with a gate pass before any gate runs
 - [x] bug-7eb27e: Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed
 - [x] gap-29a84b: A plan can succeed while some of its tasks never ran a verify step
-- [ ] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface
+- [x] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface
 - [x] bug-5b43a9: A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt
 - [x] gap-3506f1: [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do
 - [x] bug-b4c565: The T0 reflex shortcut can pass a task without running the workspace rungs
 - [x] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run
 - [x] gap-a0f18a: planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run
 - [x] gap-d4466f: The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true
-- [ ] bug-54c729: roko-serve's runs route reports every task status other than passed as failed
-- [ ] bug-4e5a59: The portal's run-state reducer ignores a task completion it never saw start
+- [x] bug-54c729: roko-serve's runs route reports every task status other than passed as failed
+- [x] bug-4e5a59: The portal's run-state reducer ignores a task completion it never saw start
 - [ ] bug-acab47: A Claude CLI run that exits 0 without a result line counts as a successful provider run
+- [x] bug-71a5e6: GraphRuntimeEventAdapter maps every NodeCompleted to TaskCompleted { passed: true }, so unverified and already_satisfied tasks would read as passed on the runtime path
+- [x] bug-1cc498: The portal shows a task with no run record as passed when tasks.toml marks it done
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

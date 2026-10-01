@@ -518,26 +518,17 @@ The Petri net model enables:
   (Fowler 2005) where state transitions are driven by explicit events that
   can be replayed.
 - The executor's tick-based loop is similar to game engine update loops and
-  the CoALA (Cognitive Architectures for Language Agents) 9-step cognitive
-  cycle (Sumers et al. 2023) — both use a regular polling mechanism to drive
+  the CoALA (Cognitive Architectures for Language Agents) decision cycle (Sumers et al. 2023) — both use a regular polling mechanism to drive
   state forward.
 - Concurrency limits follow the bounded-concurrency pattern from operating
   systems scheduling (semaphore-based admission control).
-- Sha, L., Rajkumar, R. & Lehoczky, J. P. (1990). Priority inheritance
-  protocols: An approach to real-time synchronization. *IEEE Trans. Computers*,
-  39(9), 1175–1185. (Priority ceiling protocol, priority inversion prevention.)
-- van der Aalst, W. M. P. (1997). Verification of workflow nets. *Application
-  and Theory of Petri Nets 1997*. LNCS 1248. (WF-net soundness.)
+- Sha, L., Rajkumar, R. & Lehoczky, J. P. (1990). Priority inheritance protocols: An approach to real-time synchronization. *IEEE Trans. Computers*, 39(9), 1175–1185.
+- van der Aalst, W. M. P. (1997). Verification of workflow nets. *Application and Theory of Petri Nets 1997*. LNCS 1248.
 - van der Aalst, W. M. P. (1998). The application of Petri nets to workflow
   management. *J. Circuits, Systems and Computers*, 8(1), 21–66.
 - Blumofe, R. D. & Leiserson, C. E. (1999). Scheduling multithreaded
   computations by work stealing. *JACM*, 46(5), 720–748. (Work-stealing
   scheduler bounds: E[T_P] = T_1/P + O(T_inf).)
-- Chase, D. & Lev, Y. (2005). Dynamic circular work-stealing deque. *SPAA
-  2005*. (Lock-free deque used by Rayon/crossbeam-deque.)
-- Wei, C. et al. (2025). Agent.xpu: Scheduling concurrent agentic workloads
-  on heterogeneous SoCs. *arXiv:2506.24045*. (LLM agent scheduling with
-  kernel-level preemption; 3.2× throughput gain.)
-- Patel, S. et al. (2024). BudgetMLAgent: Multi-agent cascade for cost-efficient
-  LLM task execution. *AIMLSystems 2024*. (94.2% cost reduction via
-  three-tier model cascade.)
+- Chase, D. & Lev, Y. (2005). Dynamic circular work-stealing deque. *SPAA 2005*.
+- Wei, C. et al. (2025). Agent.xpu: Scheduling concurrent agentic workloads on heterogeneous SoCs. *arXiv:2506.24045*.
+- Patel, S. et al. (2024). BudgetMLAgent: Multi-agent cascade for cost-efficient LLM task execution. *AIMLSystems 2024*.

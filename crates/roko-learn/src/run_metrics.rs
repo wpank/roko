@@ -1,7 +1,6 @@
 //! Structured run-metrics persistence for plan runs.
 
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 
 /// A structured record of a completed plan run.
@@ -76,16 +75,7 @@ pub struct PlanMetrics {
 
 /// Append a single JSON line to the given path (creates file if not exists).
 pub fn append_run_metrics(path: &Path, record: &RunMetricsRecord) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-    writeln!(file, "{line}")?;
-    Ok(())
+    roko_core::io::append_jsonl(path, record)
 }
 
 #[cfg(test)]

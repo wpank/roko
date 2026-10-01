@@ -1,0 +1,1776 @@
+{
+ "schema": "roko.content_audit/1",
+ "item": "gap-11845c",
+ "date": "2026-10-01",
+ "question": "Do docs/v3's descriptions of cited papers say what the papers say?",
+ "method": [
+  "Ranking: cite/units.py-style scan of docs/v3 Markdown outside code fences and non-bibliography reference lists. A sentence, list item or table row counts as a descriptive unit for an arXiv ID when it contains the ID (or sits in a paragraph that cites only that ID) and states a method, result, number, taxonomy or claim. 167 arXiv works have descriptive units; the ranking only sees arXiv IDs, and it undercounts works described at length under a single 'Primary source' header.",
+  "Checking: for the 46 top-ranked works, the full text was fetched from arxiv.org/html (latest version; v1 abstracts where the docs quoted v1 figures) and every descriptive unit was compared with the abstract, introduction, method and results sections, by reading and by searching for each claimed number and term.",
+  "Verdicts: 'supported' when every claim matches the paper (loose paraphrase allowed); 'corrected' when at least one claim is not in the paper or contradicts it, and the docs were rewritten with section references or the claim was marked as Roko's own; 'removed' when nothing correct could replace it (none). Severity 'major' means an invented finding, number, mechanism, quotation or a result credited to the wrong paper; 'minor' means a dropped qualifier ('up to'), an overstated genre (a position paper as validation), a wrong affiliation or a misapplied number.",
+  "Wrong author labels found on the way were fixed in the same sentences but do not count toward the verdicts.",
+  "Regression guard: the phrases removed are now 'prose' entries in citation_errata.json (6 new works, 19 extended), so check_citation_errata.py --prose fails if they return in a section that cites the work."
+ ],
+ "summary": {
+  "ranked_arxiv_works": 167,
+  "descriptive_units_total": 588,
+  "checked": 45,
+  "descriptive_units_checked": 343,
+  "unit_coverage": 0.583,
+  "supported": 17,
+  "corrected": 28,
+  "removed": 0,
+  "error_rate": 0.622,
+  "major": 16,
+  "major_error_rate": 0.356,
+  "minor": 12,
+  "by_rank": [
+   {
+    "ranks": "1-15",
+    "checked": 15,
+    "with_errors": 12,
+    "major": 5
+   },
+   {
+    "ranks": "16-30",
+    "checked": 14,
+    "with_errors": 8,
+    "major": 5
+   },
+   {
+    "ranks": "31-57",
+    "checked": 16,
+    "with_errors": 8,
+    "major": 6
+   }
+  ],
+  "not_described": [
+   {
+    "arxiv": "2406.13605",
+    "note": "ranked only because of a version suffix; docs/v3 gives bibliographic entries with no description"
+   }
+  ],
+  "earlier_full_reads": [
+   {
+    "arxiv": "2603.28052",
+    "item": "gap-785a4f",
+    "verdict": "corrected"
+   },
+   {
+    "arxiv": "2606.14249",
+    "item": "gap-0d996a",
+    "verdict": "corrected"
+   },
+   {
+    "arxiv": "2605.27922",
+    "item": "gap-0d996a",
+    "verdict": "corrected"
+   },
+   {
+    "arxiv": "2607.04528",
+    "item": "gap-0d996a",
+    "verdict": "corrected"
+   },
+   {
+    "arxiv": "2607.23942",
+    "item": "gap-0d996a",
+    "verdict": "corrected"
+   }
+  ],
+  "docs_files_changed": [
+   "docs/v1/00-architecture/00-vision-and-thesis.md",
+   "docs/v1/00-architecture/24-cross-section-integration-map.md",
+   "docs/v1/00-architecture/25-attention-as-currency.md",
+   "docs/v1/02-agents/00-agent-trait.md",
+   "docs/v1/02-agents/INDEX.md",
+   "docs/v1/04-verification/07-process-reward-models.md",
+   "docs/v1/10-dreams/12-sleep-time-compute.md",
+   "docs/v1/16-heartbeat/00-coala-9-step-pipeline.md",
+   "docs/v1/16-heartbeat/01-universal-loop-mapping.md",
+   "docs/v1/16-heartbeat/INDEX.md",
+   "docs/v1/17-lifecycle/12-academic-foundations.md",
+   "docs/v1/21-references/03-dreams-and-offline-learning.md",
+   "docs/v1/21-references/06-self-learning-systems.md",
+   "docs/v1/21-references/14-agent-harnesses-and-tool-use.md",
+   "docs/v3/00-INDEX.md",
+   "docs/v3/03-GRAPH.md",
+   "docs/v3/06-COMPOSITION.md",
+   "docs/v3/07-GATES.md",
+   "docs/v3/08-LEARNING.md",
+   "docs/v3/09-MEMORY.md",
+   "docs/v3/10-DREAMS.md",
+   "docs/v3/11-AFFECT.md",
+   "docs/v3/16-COORDINATION.md",
+   "docs/v3/19-TOOLS-PLUGINS.md",
+   "docs/v3/20-GATEWAY.md",
+   "docs/v3/29-HEARTBEAT.md",
+   "docs/v3/30-CONDUCTOR.md",
+   "docs/v3/31-SELF-HOSTING.md",
+   "docs/v3/39-ROADMAP.md",
+   "docs/v3/REFERENCES.md",
+   "docs/v3/depth/00-architecture/design-principles-frontier-summary.md",
+   "docs/v3/depth/00-architecture/vision-and-thesis.md",
+   "docs/v3/depth/03-graph/cognitive-cells-7.md",
+   "docs/v3/depth/05-agent/harness-engineering.md",
+   "docs/v3/depth/05-agent/temperament-profiling.md",
+   "docs/v3/depth/06-composition/distributed-context-engineering.md",
+   "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md",
+   "docs/v3/depth/07-gates/process-reward-models.md",
+   "docs/v3/depth/08-learning/playbook-store.md",
+   "docs/v3/depth/10-dreams/sleep-time-compute.md",
+   "docs/v3/depth/11-affect/15-percent-contrarian-retrieval.md",
+   "docs/v3/depth/19-tools/tool-architecture.md",
+   "docs/v3/depth/20-gateway/06-routing-research.md",
+   "docs/v3/depth/29-heartbeat/coala-9-step-pipeline.md",
+   "docs/v3/depth/29-heartbeat/universal-loop-mapping.md",
+   "docs/v3/depth/31-self-hosting/01-rsi-taxonomy.md",
+   "docs/v3/depth/31-self-hosting/03-grasp-admission.md",
+   "docs/v3/depth/31-self-hosting/05-dgm-and-adas.md",
+   "docs/v3/depth/39-references/03-dreams-and-offline-learning.md",
+   "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+   "docs/v3/depth/39-references/06-self-learning-systems.md",
+   "docs/v3/depth/39-references/14-agent-harnesses-and-tool-use.md",
+   "docs/v3/depth/39-references/17-process-reward-models.md",
+   "docs/v3/depth/39-references/20-cognitive-architectures.md",
+   "docs/v3/depth/39-references/23-generational-and-evolutionary.md",
+   "docs/v3/depth/39-references/24-additions-2025-2026.md"
+  ]
+ },
+ "recommendation": {
+  "choice": "banner now, cut unchecked numbers to bare citations, and keep checking only the works the docs use as evidence",
+  "why": "62% of the 45 checked works had at least one unsupported claim and 36% had a major one (an invented finding, number, mechanism or quotation, or another paper's result). Every work read in full in earlier items was also wrong. Errors do not thin out down the ranking, so the unchecked 121 works and the non-arXiv citations should be assumed to carry similar rates. A full check costs about three tool calls per work.",
+  "steps": [
+   "Add a banner to REFERENCES.md and depth/39-references/*: descriptions are unverified unless the work is listed in tools/docs_integrity/content_audit.json.",
+   "Cut 'Brief annotation' lines and other one-line descriptions of unchecked works down to the bare citation plus at most a quoted abstract sentence; drop numbers that no one has checked. This is mechanical and scriptable from units.json.",
+   "Continue full checks only where the docs cite a work as evidence for a Roko design decision ('validates', 'grounds', 'demonstrates that'), starting with the next 20 by rank and the depth files that name a 'Primary source'.",
+   "Keep Roko's own synthesis visibly labelled ('Roko's mapping', 'Roko's own choice'); most major errors were Roko's design rationale written as if a paper had found it."
+  ]
+ },
+ "works": [
+  {
+   "arxiv": "2603.28052",
+   "title": "Meta-Harness: End-to-End Optimization of Model Harnesses",
+   "cite_as": "Lee et al. (2026)",
+   "rank": 1,
+   "descriptive_units": 26,
+   "files": [
+    "docs/v3/00-INDEX.md",
+    "docs/v3/05-AGENT.md",
+    "docs/v3/34-CODE-INTELLIGENCE.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/00-architecture/vision-and-thesis.md",
+    "docs/v3/depth/05-agent/temperament-profiling.md",
+    "docs/v3/depth/06-composition/distributed-context-engineering.md",
+    "docs/v3/depth/29-heartbeat/universal-loop-mapping.md",
+    "docs/v3/depth/34-code-intel/context-assembly-from-code.md",
+    "docs/v3/depth/34-code-intel/pagerank-symbol-importance.md",
+    "docs/v3/depth/34-code-intel/vision.md",
+    "docs/v3/depth/38-signal-analysis/01-vision.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/14-agent-harnesses-and-tool-use.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'6x performance gap from scaffold changes alone' given as its finding; it is SWE-bench Mobile's result, quoted in §1 (ref. 47)",
+    "the quotation \"The scaffold IS the product.\" is not in the paper",
+    "'harness principle 5 ... Lee et al.': the paper states no principles (see gap-785a4f)",
+    "39-ROADMAP merged it with HarnessX",
+    "'evaluated coding agents across scaffolds', 'no single scaffold dominates' and 'agent reads its own scaffold history' are not in the paper"
+   ],
+   "paper_says": "A coding-agent proposer reads earlier harness candidates' code, scores and traces from a filesystem (§3); +7.7 points over ACE on online text classification with 4x fewer context tokens (§4.1); +4.7 points on 200 IMO-level problems across five held-out models (§4.2).",
+   "prose_phrases": [
+    "six harness principles",
+    "6 harness principles",
+    "Meta-Harness principle",
+    "identifies six principles",
+    "Six principles, benchmark evidence",
+    "draws heavily on SWE-bench",
+    "25% or 85%",
+    "dominant performance factor",
+    "6x performance gap from scaffold",
+    "6x from scaffold alone",
+    "\"The scaffold IS the product.\"",
+    "HarnessX / Meta-Harness",
+    "reads its own scaffold history",
+    "Graduate Autonomy Based on Confidence; Lee"
+   ]
+  },
+  {
+   "arxiv": "2305.05176",
+   "title": "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance",
+   "cite_as": "Chen et al. (2023)",
+   "rank": 2,
+   "descriptive_units": 23,
+   "files": [
+    "docs/v3/00-INDEX.md",
+    "docs/v3/38-SIGNAL-ANALYSIS.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/00-architecture/design-principles-frontier-summary.md",
+    "docs/v3/depth/00-architecture/vision-and-thesis.md",
+    "docs/v3/depth/11-affect/behavioral-state-to-tier-routing.md",
+    "docs/v3/depth/20-gateway/06-routing-research.md",
+    "docs/v3/depth/29-heartbeat/16-t0-probes.md",
+    "docs/v3/depth/29-heartbeat/coala-9-step-pipeline.md",
+    "docs/v3/depth/29-heartbeat/dual-process-t0-t1-t2.md",
+    "docs/v3/depth/39-references/14-agent-harnesses-and-tool-use.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'matches GPT-4 quality at 2% cost' turns the best case into the rule"
+   ],
+   "paper_says": "Cost savings at the best single LLM's accuracy range from 50% to 98%; 98% is HEADLINES (§4, Table 3); the abstract says 'up to 98%'.",
+   "prose_phrases": [
+    "GPT-4 quality at 2%",
+    "GPT-4 at 2% cost"
+   ]
+  },
+  {
+   "arxiv": "2309.02427",
+   "title": "Cognitive Architectures for Language Agents",
+   "cite_as": "Sumers et al. (2023)",
+   "rank": 3,
+   "descriptive_units": 17,
+   "files": [
+    "docs/v3/00-INDEX.md",
+    "docs/v3/29-HEARTBEAT.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/00-architecture/vision-and-thesis.md",
+    "docs/v3/depth/03-graph/cognitive-cells-7.md",
+    "docs/v3/depth/10-dreams/sleep-time-compute.md",
+    "docs/v3/depth/29-heartbeat/coala-9-step-pipeline.md",
+    "docs/v3/depth/39-references/14-agent-harnesses-and-tool-use.md",
+    "docs/v3/depth/39-references/20-cognitive-architectures.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "a '9-step cognitive pipeline/cycle (perceive, retrieve, reason, act, learn)' credited to CoALA; the paper has no step list",
+    "'CoALA's prediction error mechanism maps to free energy': CoALA has no prediction-error mechanism"
+   ],
+   "paper_says": "Memory modules, internal and external action spaces, and a decision cycle of planning (proposal, evaluation, selection) followed by execution (§4, §4.6, Fig. 4).",
+   "prose_phrases": [
+    "CoALA 9-step",
+    "9-step CoALA",
+    "9 CoALA steps",
+    "9-step cognitive pipeline: perceive",
+    "CoALA's prediction error"
+   ]
+  },
+  {
+   "arxiv": "2605.29668",
+   "title": "GRASP: Gated Regression-Aware Skill Proposer for Self-Improving LLM Agents",
+   "cite_as": "Moll et al. (2026)",
+   "rank": 4,
+   "descriptive_units": 16,
+   "files": [
+    "docs/v3/08-LEARNING.md",
+    "docs/v3/31-SELF-HOSTING.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/08-learning/playbook-store.md",
+    "docs/v3/depth/31-self-hosting/03-grasp-admission.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Regression-aware selection admits a proposed skill only if probe tasks do not regress (§2.3); 40.6% to 88.8% on MedAgentBench with gpt-oss-120b (§4.1).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2505.22954",
+   "title": "Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents",
+   "cite_as": "Zhang et al. (2025)",
+   "rank": 5,
+   "descriptive_units": 16,
+   "files": [
+    "docs/v3/31-SELF-HOSTING.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/05-agent/12-extensibility.md",
+    "docs/v3/depth/05-agent/extensibility.md",
+    "docs/v3/depth/31-self-hosting/05-dgm-and-adas.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/23-generational-and-evolutionary.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'self-verification (selection)': selection is empirical benchmark evaluation of archived agents",
+    "credited to 'Lange et al.' (first author Zhang)"
+   ],
+   "paper_says": "An archive of coding agents that rewrite their own code, evaluated empirically on benchmarks instead of formal proofs (§1, §3); SWE-bench 20.0% to 50.0% (§4.4).",
+   "prose_phrases": [
+    "self-verification (selection)"
+   ]
+  },
+  {
+   "arxiv": "2305.20050",
+   "title": "Let's Verify Step by Step",
+   "cite_as": "Lightman et al. (2023)",
+   "rank": 6,
+   "descriptive_units": 11,
+   "files": [
+    "docs/v3/07-GATES.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/07-gates/process-reward-models.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/17-process-reward-models.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Process supervision beats outcome supervision on MATH; releases PRM800K (abstract, §3).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2606.00619",
+   "title": "MemPro: Agentic Memory Systems as Evolvable Programs",
+   "cite_as": "Liu et al. (2026)",
+   "rank": 7,
+   "descriptive_units": 11,
+   "files": [
+    "docs/v3/09-MEMORY.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/01-memory-consolidation.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Evolves the whole memory construction-retrieval pipeline as a program over a version tree (§4). 'Discovers optimal memory organization' is loose but not contradicted.",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2605.03310",
+   "title": "Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems",
+   "cite_as": "Nechepurenko & Shuvalov (2026)",
+   "rank": 8,
+   "descriptive_units": 10,
+   "files": [
+    "docs/v3/16-COORDINATION.md",
+    "docs/v3/30-CONDUCTOR.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'41-87% of failures are coordination, not capability' misreads the abstract: 41-87% is the production failure rate, most of which is attributed to coordination",
+    "'the coordination protocol breaks down under load' and a quotation in 30-CONDUCTOR are not in the paper",
+    "credited to 'Xie et al. (2025)' (Nechepurenko & Shuvalov, 2026)"
+   ],
+   "paper_says": "Opens with production failure rates of 41-87%, mostly coordination defects, citing Cemri et al. 2025 (abstract, §1); proposes coordination as a configurable architectural layer (§3).",
+   "prose_phrases": [
+    "of failures are coordination, not capability",
+    "failures stem from coordination, not capability",
+    "coordination protocol breaks down under load",
+    "multi-agent failures are coordination failures",
+    "stem from coordination breakdowns"
+   ]
+  },
+  {
+   "arxiv": "2605.26099",
+   "title": "Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference",
+   "cite_as": "Lee et al. (2026)",
+   "rank": 9,
+   "descriptive_units": 9,
+   "files": [
+    "docs/v3/10-DREAMS.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/03-dreams-and-offline-learning.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'key finding: recurrence must be structured (not random replay) and must extract abstractions that transfer across tasks' is not in the paper",
+    "'revisiting past experiences during idle periods' recasts an architecture-level mechanism as agent experience replay"
+   ],
+   "paper_says": "N offline recurrent passes write accumulated context into SSM fast weights before the KV cache is cleared (§5); longer sleep improves accuracy, most on deeper-reasoning examples (abstract, §6).",
+   "prose_phrases": [
+    "not random replay",
+    "abstractions that transfer across tasks",
+    "reprocessing past experiences during idle periods"
+   ]
+  },
+  {
+   "arxiv": "2511.20639",
+   "title": "Latent Collaboration in Multi-Agent Systems",
+   "cite_as": "Zou et al. (2025)",
+   "rank": 10,
+   "descriptive_units": 9,
+   "files": [
+    "docs/v3/16-COORDINATION.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'4x speed, 14.6% accuracy gain' drops 'up to'",
+    "credited to 'Yuan et al.' (first author Zou)"
+   ],
+   "paper_says": "Up to 14.6% higher accuracy, 70.8-83.7% fewer output tokens, 4-4.3x faster end-to-end inference (abstract, §4). 'ICML 2026 Spotlight' cannot be checked from the paper and was left.",
+   "prose_phrases": [
+    "4x speed improvement and 14.6%",
+    "4x speed, 14.6%"
+   ]
+  },
+  {
+   "arxiv": "2506.05109",
+   "title": "Truly Self-Improving Agents Require Intrinsic Metacognitive Learning",
+   "cite_as": "Liu & van der Schaar (2025)",
+   "rank": 11,
+   "descriptive_units": 9,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/23-generational-and-evolutionary.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'Validates the meta-cognition step': a position paper argues; it does not validate"
+   ],
+   "paper_says": "Position paper: self-improvement needs intrinsic metacognitive learning, made of metacognitive knowledge, planning and evaluation (abstract, §3).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2510.04618",
+   "title": "Agentic Context Engineering: Evolving Contexts for Self-Improving Language Models",
+   "cite_as": "Zhang et al. (2025)",
+   "rank": 12,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/06-COMPOSITION.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/06-composition/distributed-context-engineering.md",
+    "docs/v3/depth/39-references/07-context-engineering.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "called Anthropic's framework (authors at Stanford, SambaNova and UC Berkeley)"
+   ],
+   "paper_says": "Contexts as evolving playbooks updated by a Generator, Reflector and Curator (§3); +10.6% on agents (AppWorld) and +8.6% on finance (abstract, §4.3).",
+   "prose_phrases": [
+    "arXiv:2510.04618, Anthropic"
+   ]
+  },
+  {
+   "arxiv": "2605.19932",
+   "title": "PEEK: Context Map as an Orientation Cache for Long-Context LLM Agents",
+   "cite_as": "Gu et al. (2026)",
+   "rank": 13,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/06-COMPOSITION.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/07-context-engineering.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'93-145 fewer iterations per plan' applies benchmark iterations (OOLONG) to plans"
+   ],
+   "paper_says": "Distiller, Cartographer and Evictor maintain a fixed-budget context map (§3.2); 93-145 fewer iterations and 1.7-5.8x lower cost than ACE (abstract, §4.3).",
+   "prose_phrases": [
+    "fewer iterations per plan"
+   ]
+  },
+  {
+   "arxiv": "2511.08325",
+   "title": "AgentPRM: Process Reward Models for LLM Agents via Step-Wise Promise and Progress",
+   "cite_as": "Xi et al. (2025)",
+   "rank": 14,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/07-GATES.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/07-gates/process-reward-models.md",
+    "docs/v3/depth/39-references/17-process-reward-models.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'per-step rewards provide 10x richer signal than final pass/fail' is not in the paper",
+    "'8x compute efficiency for verification compared to outcome-only methods': the comparison is with baseline reward models in Best-of-N"
+   ],
+   "paper_says": "Step rewards for promise and progress, trained with TD estimation and GAE (§3.2, §3.3); over 8x more compute-efficient than baselines with Qwen2.5-3B (§1, §4.2). 'WWW 2026' cannot be checked from the paper.",
+   "prose_phrases": [
+    "10x richer signal",
+    "8x compute efficiency for verification"
+   ]
+  },
+  {
+   "arxiv": "2608.11079",
+   "title": "SkillZip: Evaluation-Free Skill Compression for Self-Evolving Agents by Discovering Reusable Structure",
+   "cite_as": "Bai et al. (2026)",
+   "rank": 15,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/08-LEARNING.md",
+    "docs/v3/31-SELF-HOSTING.md",
+    "docs/v3/depth/08-learning/playbook-store.md",
+    "docs/v3/depth/31-self-hosting/03-grasp-admission.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "described as keeping skill libraries from growing without bound; it compresses one skill's text"
+   ],
+   "paper_says": "Typed minimum-description-length objective with a hard coverage constraint, evaluation-free, with a Zip-on-Write mode for self-evolution patches (abstract, §IV, §V).",
+   "prose_phrases": [
+    "prevent skill libraries from growing without bound"
+   ]
+  },
+  {
+   "arxiv": "2502.04780",
+   "title": "SiriuS: Self-improving Multi-agent Systems via Bootstrapped Reasoning",
+   "cite_as": "Zhao et al. (2025)",
+   "rank": 16,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/08-LEARNING.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/31-self-hosting/03-grasp-admission.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'failed episodes ... reused as negative examples': SiriuS repairs them into correct trajectories used as positive fine-tuning data"
+   ],
+   "paper_says": "Experience library of successful trajectories; failed ones are augmented with feedback, regeneration and rephrasing (Fig. 1, §2.2); +2.86% to +21.88% (abstract).",
+   "prose_phrases": [
+    "reused as negative examples"
+   ]
+  },
+  {
+   "arxiv": "2606.03143",
+   "title": "FederatedSkill: Federated Learning for Agentic Skill Evolution",
+   "cite_as": "Yang et al. (2026)",
+   "rank": 17,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/16-COORDINATION.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'44% improvement ... over raw parameter sharing': the baseline is self-evolving agents, the contrast is raw trajectory sharing, and 44.4% is 'up to'",
+    "credited to 'Li et al.' (first author Yang)"
+   ],
+   "paper_says": "Clients share semantic skill diffs; up to 44.4% higher success and 37.5% lower compute than self-evolving baselines across 20 task families (abstract, §5.2, §5.4).",
+   "prose_phrases": [
+    "over raw parameter sharing",
+    "44% improvement in cross-workspace",
+    "skill diffs achieve 44%"
+   ]
+  },
+  {
+   "arxiv": "2511.14136",
+   "title": "Beyond Accuracy: A Multi-Dimensional Framework for Evaluating Enterprise Agentic AI Systems",
+   "cite_as": "Mehta (2025)",
+   "rank": 18,
+   "descriptive_units": 8,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/06-composition/distributed-context-engineering.md",
+    "docs/v3/depth/06-composition/token-budget-management.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "CLEAR: Cost, Latency, Efficacy, Assurance, Reliability; accuracy-only agents are 4.4-10.8x more expensive (abstract, §3, §4).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2510.05174",
+   "title": "Emergent Coordination in Multi-Agent Language Models",
+   "cite_as": "Riedl (2025)",
+   "rank": 19,
+   "descriptive_units": 7,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+    "docs/v3/depth/39-references/18-collective-intelligence.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Information-theoretic test for dynamical emergence (partial information decomposition of time-delayed mutual information) (abstract, §2).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2507.08616",
+   "title": "AgentsNet: Coordination and Collaborative Reasoning in Multi-Agent LLMs",
+   "cite_as": "Groetschla et al. (2025)",
+   "rank": 20,
+   "descriptive_units": 7,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/04-coordination-and-multi-agent.md",
+    "docs/v3/depth/39-references/18-collective-intelligence.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Coordination benchmark drawn from distributed computing; probes up to 100 agents (abstract, §5.3).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2504.13171",
+   "title": "Sleep-time Compute: Beyond Inference Scaling at Test-time",
+   "cite_as": "Lin et al. (2025)",
+   "rank": 21,
+   "descriptive_units": 6,
+   "files": [
+    "docs/v3/10-DREAMS.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/10-dreams/sleep-time-compute.md",
+    "docs/v3/depth/39-references/03-dreams-and-offline-learning.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'Dual-agent: Sleeper precomputes during downtime, Serve Agent handles live' describes no architecture in the paper",
+    "'18% accuracy gain' drops 'up to' in one place"
+   ],
+   "paper_says": "The model re-represents a context offline before queries arrive (§3): ~5x less test-time compute at equal accuracy, up to 13%/18% higher accuracy, 2.5x lower cost per query when amortised (abstract, §5).",
+   "prose_phrases": [
+    "Serve Agent handles live",
+    "Sleeper precomputes"
+   ]
+  },
+  {
+   "arxiv": "1407.3561",
+   "title": "IPFS - Content Addressed, Versioned, P2P File System",
+   "cite_as": "Benet (2014)",
+   "rank": 22,
+   "descriptive_units": 6,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/22-protocol-standards.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Content-addressed, versioned P2P file system over a Merkle DAG (abstract, §3).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2607.07663",
+   "title": "Recursive Self-Improvement in AI: From Bounded Self-Refinement to Autonomous Research Loops",
+   "cite_as": "Chen et al. (2026)",
+   "rank": 23,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/00-INDEX.md",
+    "docs/v3/31-SELF-HOSTING.md",
+    "docs/v3/depth/31-self-hosting/01-rsi-taxonomy.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'the first comprehensive taxonomy' and 'ordered by increasing scope, risk, and difficulty' are not claimed"
+   ],
+   "paper_says": "Survey of 1,250 arXiv papers on two axes, what is improved and degree of loop closure; four targets (§2.2).",
+   "prose_phrases": [
+    "first comprehensive taxonomy"
+   ]
+  },
+  {
+   "arxiv": "2604.19572",
+   "title": "A Self-Evolving Framework for Efficient Terminal Agents via Observational Context Compression",
+   "cite_as": "Ren et al. (2026)",
+   "rank": 25,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/06-COMPOSITION.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/07-context-engineering.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Self-evolving compression rules for terminal observations, with a global rule pool (abstract, §2).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2307.03172",
+   "title": "Lost in the Middle: How Language Models Use Long Contexts",
+   "cite_as": "Liu et al. (2023)",
+   "rank": 26,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/06-COMPOSITION.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'degradation exceeds 30%' is not stated",
+    "'U-shaped attention curve': the paper measures accuracy by position"
+   ],
+   "paper_says": "U-shaped performance curve (§2.3); for GPT-3.5-Turbo, accuracy with the answer mid-context falls below closed-book accuracy, 56.1% (§1).",
+   "prose_phrases": [
+    "degradation exceeds 30%",
+    "degrades over 30%",
+    "U-shaped attention curve paper"
+   ]
+  },
+  {
+   "arxiv": "2604.12007",
+   "title": "When to Forget: A Memory Governance Primitive",
+   "cite_as": "Simsek (2026)",
+   "rank": 27,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/09-MEMORY.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'evaluating each memory by its causal contribution': the paper says its signal is associational, not causal"
+   ],
+   "paper_says": "Two counters per memory track co-occurrence with success and failure; MW converges to P(success | memory retrieved), explicitly associational (abstract, §3, §4.2).",
+   "prose_phrases": [
+    "causal contribution to task success"
+   ]
+  },
+  {
+   "arxiv": "2606.25189",
+   "title": "ActPlane: Programmable OS-Level Policy Enforcement for Agent Harnesses",
+   "cite_as": "Zheng et al. (2026)",
+   "rank": 28,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/12-SAFETY.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'deployable substrate for tool cooldown' and 'hardware-backed guarantee' are not in the paper"
+   ],
+   "paper_says": "OS-level enforcement of agent-harness policies with eBPF: a policy DSL, information-flow control, hierarchical policy domains (§3).",
+   "prose_phrases": [
+    "execution plane",
+    "tool cooldown and isolation"
+   ]
+  },
+  {
+   "arxiv": "2603.29919",
+   "title": "SkillReducer: Optimizing LLM Agent Skills for Token Efficiency",
+   "cite_as": "Gao et al. (2026)",
+   "rank": 29,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/19-TOOLS-PLUGINS.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/19-tools/tool-architecture.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "described as tool pruning from the catalog; it compresses skills",
+    "credited to 'Chen et al.' (first author Gao)"
+   ],
+   "paper_says": "Routing descriptions 48% and skill bodies 39% shorter via progressive disclosure; functional quality kept or improved for 86% of 600 skills (abstract, §IV, §V).",
+   "prose_phrases": [
+    "systematic tool pruning"
+   ]
+  },
+  {
+   "arxiv": "2512.13564",
+   "title": "Memory in the Age of AI Agents",
+   "cite_as": "Hu et al. (2025)",
+   "rank": 30,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/01-memory-consolidation.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Forms, functions and dynamics of agent memory; functions are factual, experiential and working memory (abstract).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2603.07670",
+   "title": "Memory for Autonomous LLM Agents:Mechanisms, Evaluation, and Emerging Frontiers",
+   "cite_as": "Du (2026)",
+   "rank": 31,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/01-memory-consolidation.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Write-manage-read loop and five mechanism families (abstract, §2, §4).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2410.23041",
+   "title": "Emotional RAG: Enhancing Role-Playing Agents through Emotional Retrieval",
+   "cite_as": "Huang et al. (2024)",
+   "rank": 32,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/02-affective-computing.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "cited as validating and 'empirically grounding' a 15% contrarian (opposite-valence) retrieval quota; the paper tests only mood-congruent retrieval"
+   ],
+   "paper_says": "Emotion-aware retrieval for role-playing agents, after mood-dependent memory theory; better on three datasets (abstract, §III).",
+   "prose_phrases": [
+    "Empirically grounded** via Emotional RAG"
+   ]
+  },
+  {
+   "arxiv": "2510.18866",
+   "title": "LightMem: Lightweight and Efficient Memory-Augmented Generation",
+   "cite_as": "Fang et al. (2025)",
+   "rank": 33,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/03-dreams-and-offline-learning.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'10.9% accuracy gain, 117x token reduction' drops 'up to' (v1 figures; later versions report others)"
+   ],
+   "paper_says": "Three-stage memory with offline sleep-time consolidation (§3); v1: up to 10.9% accuracy, up to 117x fewer tokens; current: up to 7.7%/29.3%, 106x/117x online (abstract).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2506.03320",
+   "title": "The Future of Continual Learning in the Era of Foundation Models: Three Key Directions",
+   "cite_as": "Bell et al. (2025)",
+   "rank": 35,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Position paper on three directions for continual learning with foundation models (abstract, §4); the docs call it a survey, which is harmless.",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2601.12560",
+   "title": "Agentic Artificial Intelligence (AI): Architectures, Taxonomies, and Evaluation of Large Language Model Agents",
+   "cite_as": "Arunkumar V et al. (2026)",
+   "rank": 36,
+   "descriptive_units": 5,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/20-cognitive-architectures.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "annotated with '21,730 rollouts confirm scaffold-model importance parity', which is HAL's result (Kapoor et al.); this paper runs no rollouts"
+   ],
+   "paper_says": "Unified taxonomy of agents: Perception, Brain, Planning, Action, Tool Use, Collaboration (abstract, §3).",
+   "prose_phrases": [
+    "2601.12560. 21,730"
+   ]
+  },
+  {
+   "arxiv": "2601.11585",
+   "title": "Entropic Context Shaping: Information-Theoretic Filtering for Context-Aware LLM Agents",
+   "cite_as": "Kim (2026)",
+   "rank": 38,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/06-COMPOSITION.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/07-context-engineering.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'actively managing the information density of the context window ... improves downstream task performance' misstates both mechanism and measure"
+   ],
+   "paper_says": "Scores passages by the shift in answer distribution toward the correct answer (§3); turn-selection F1 0.265, 71.83% above TF-IDF (abstract, §4.2).",
+   "prose_phrases": [
+    "actively managing the information density"
+   ]
+  },
+  {
+   "arxiv": "2606.01619",
+   "title": "ReSkill: Reconciling Skill Creation with Policy Optimization in Agentic RL",
+   "cite_as": "He et al. (2026)",
+   "rank": 39,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/08-LEARNING.md",
+    "docs/v3/depth/08-learning/playbook-store.md",
+    "docs/v3/depth/31-self-hosting/03-grasp-admission.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "RL-in-the-loop skill creation and revision with within-group comparison and Thompson sampling (abstract, §3).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2601.18642",
+   "title": "FadeMem: Biologically-Inspired Forgetting for Efficient Agent Memory",
+   "cite_as": "Wei et al. (2026)",
+   "rank": 40,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/09-MEMORY.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Ebbinghaus-style adaptive exponential decay over a dual-layer memory; 45% storage reduction (abstract, §2.2).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2603.00991",
+   "title": "Tracking Capabilities for Safer Agents",
+   "cite_as": "Odersky et al. (2026)",
+   "rank": 41,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/12-SAFETY.md",
+    "docs/v3/39-ROADMAP.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Capture checking (tracked capabilities) for safe agent harnesses (§2, §3). 'Best Paper ACM CAIS 2026' cannot be checked from the paper, which notes publication at CAIS '26.",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2604.19540",
+   "title": "Mesh Memory Protocol: Semantic Infrastructure for Multi-Agent LLM Systems",
+   "cite_as": "Xu (2026)",
+   "rank": 42,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/16-COORDINATION.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'routes information based on meaning rather than address': the paper says its schema is not a routing or transport schema",
+    "credited to 'Deshpande et al. 2025' (sole author Xu, 2026)"
+   ],
+   "paper_says": "Semantic layer for cross-session agent collaboration: per-field acceptance, lineage, write-time filtering (abstract, §3, §3.1).",
+   "prose_phrases": [
+    "routes information based on meaning",
+    "Deshpande et al."
+   ]
+  },
+  {
+   "arxiv": "2605.00073",
+   "title": "AgentReputation: A Decentralized Agentic AI Reputation Framework",
+   "cite_as": "Chishti et al. (2026)",
+   "rank": 43,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/16-COORDINATION.md",
+    "docs/v3/37-SHARED-ECONOMY.md"
+   ],
+   "verdict": "corrected",
+   "severity": "minor",
+   "unsupported_claims": [
+    "'demonstrates': a framework proposal with an illustrative scenario and no evaluation",
+    "credited to 'Zhang et al.' (first author Chishti)"
+   ],
+   "paper_says": "Evidence-based, context-aware reputation for decentralized agent marketplaces (abstract, §3). 'FSE 2026' cannot be checked from the paper.",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2508.13171",
+   "title": "Cognitive Workspace: Active Memory Management for LLMs -- An Empirical Study of Functional Infinite Context",
+   "cite_as": "An (2025)",
+   "rank": 44,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/29-HEARTBEAT.md",
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/29-heartbeat/coala-9-step-pipeline.md",
+    "docs/v3/depth/39-references/24-additions-2025-2026.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "58.6% average memory reuse versus 0% for RAG, 17-18% net efficiency gain (abstract, §6).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2608.20318",
+   "title": "AI4AI-Bench: Benchmarking LLM Agents in Algorithmic Design for Recursive Self-Improvement",
+   "cite_as": "Chi et al. (2026)",
+   "rank": 45,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/31-SELF-HOSTING.md",
+    "docs/v3/depth/31-self-hosting/05-dgm-and-adas.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Agents rewrite training algorithms in 10 frozen research repositories, scored on a common scale (abstract, §2).",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2303.11366",
+   "title": "Reflexion: Language Agents with Verbal Reinforcement Learning",
+   "cite_as": "Shinn et al. (2023)",
+   "rank": 48,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/39-references/06-self-learning-systems.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'uses self-assessment (LLM judges its own output) rather than external verification (compiler, tests)'"
+   ],
+   "paper_says": "Evaluator is task-specific: exact match (HotpotQA), heuristics (ALFWorld), self-written unit tests run by an interpreter (§3, §4); 91% pass@1 on HumanEval (abstract).",
+   "prose_phrases": [
+    "LLM judges its own output"
+   ]
+  },
+  {
+   "arxiv": "2603.18897",
+   "title": "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving",
+   "cite_as": "Sui et al. (2026)",
+   "rank": 53,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/REFERENCES.md",
+    "docs/v3/depth/05-agent/harness-engineering.md",
+    "docs/v3/depth/39-references/14-agent-harnesses-and-tool-use.md"
+   ],
+   "verdict": "supported",
+   "severity": null,
+   "unsupported_claims": [],
+   "paper_says": "Speculative tool execution in parallel with generation; 48.5% shorter task completion time in v1, 43.5% in the current version (abstract, §6.2). The docs now say which version.",
+   "prose_phrases": []
+  },
+  {
+   "arxiv": "2503.13657",
+   "title": "Why Do Multi-Agent LLM Systems Fail?",
+   "cite_as": "Cemri et al. (2025)",
+   "rank": 57,
+   "descriptive_units": 4,
+   "files": [
+    "docs/v3/depth/00-architecture/architectural-analysis-improvements.md",
+    "docs/v3/depth/00-architecture/design-principles-frontier-summary.md"
+   ],
+   "verdict": "corrected",
+   "severity": "major",
+   "unsupported_claims": [
+    "'Hallucination Amplification anti-pattern from the MAST taxonomy': MAST has no such mode",
+    "'41.8% of failures stem from specification issues where unverified outputs cascade' mixes categories; the current version gives no 41.8%"
+   ],
+   "paper_says": "14 failure modes from 150 traces in 3 categories: system design issues, inter-agent misalignment, task verification (abstract, §4).",
+   "prose_phrases": [
+    "Hallucination Amplification anti-pattern from the MAST",
+    "specification issues where unverified outputs cascade"
+   ]
+  }
+ ],
+ "unchecked_annotations_cut": true,
+ "annotation_cut": {
+  "item": "gap-1f72ac",
+  "date": "2026-10-01",
+  "rule": "Every cited work not listed here (works + summary.earlier_full_reads) lost its annotation in the reference lists: the citation (authors, year, title, venue, identifier) stays, the description and its numbers go. Venue and award notes and '(See NN.)' cross-references were kept. A work counts as checked when its arXiv ID is in this file or, without an ID, when its title or name matches. Script: cut.py (gap-1f72ac scratch), three formats.",
+  "counts": {
+   "v3_references_and_reference_maps": {
+    "files": "docs/v3/REFERENCES.md, docs/v3/depth/39-references/*.md",
+    "entries": 1316,
+    "checked_kept": 136,
+    "cut": 1132,
+    "annotation_lines_removed": 1126,
+    "already_bare": 48
+   },
+   "v1_reference_maps": {
+    "files": "docs/v1/21-references/*.md",
+    "entries": 489,
+    "checked_kept": 30,
+    "cut": 450,
+    "already_bare": 9
+   },
+   "chapter_reference_sections": {
+    "files": "list items under Reference/Citation/Sources/Bibliography headings in docs/v3 and docs/v1",
+    "citation_items": 810,
+    "checked_kept": 78,
+    "cut": 189,
+    "left_as_is": 543,
+    "note": "left_as_is items carry no annotation the script recognises: most are bare; label-first forms such as '**Author Year** -- Title (Venue)' were not touched"
+   },
+   "total_annotations_cut": 1771
+  },
+  "checked_work_items_fixed_by_hand": 26,
+  "banners": [
+   "docs/v3/REFERENCES.md",
+   "docs/v3/depth/39-references/*.md (26 files)",
+   "docs/v1/21-references/INDEX.md",
+   "docs/v1/21-references/*.md (25 files)"
+  ],
+  "not_cut": "Descriptions in chapter prose (outside reference lists) were not cut; the REFERENCES.md banner says they are unchecked."
+ },
+ "evidence_candidates": {
+  "item": "gap-1f72ac",
+  "rule": "Unchecked arXiv works that docs/v3 prose (outside reference lists) cites with an evidence or design verb (validates, grounds, demonstrates, shows, proves, motivates, informs, based on, supports, outperforms, ...).",
+  "arxiv": [
+   {
+    "arxiv": "2504.14898",
+    "title": null,
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/00-INDEX.md"
+    ],
+    "sample": "Foundation for NREM dream consolidation math. |"
+   },
+   {
+    "arxiv": "2512.09369",
+    "title": "Encoder-Free Knowledge-Graph Reasoning with LLMs via Hyperdimensional Path Retrieval",
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/09-MEMORY.md",
+     "docs/v3/depth/09-memory/hdc-vsa-foundations.md"
+    ],
+    "sample": "Demonstrates that HDC role-filler binding naturally encodes KG relationships with competitive retrieval accuracy."
+   },
+   {
+    "arxiv": "2603.10123",
+    "title": "Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias",
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/06-COMPOSITION.md",
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "sample": "A 2025 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic property** of causal decoder architectures, present at initialization before any training or positional encoding:"
+   },
+   {
+    "arxiv": "2602.02007",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "sample": "Roko's architecture follows this pattern: HDC similarity search (retrieval) operates independently of the demurrage/reinforcement model (aggregation), and the CognitiveWorkspace VCG auction (composition) is a third independent stage."
+   },
+   {
+    "arxiv": "2602.14038",
+    "title": "Choosing How to Remember: Adaptive Memory Structures for LLM Agents",
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "sample": "A future evolution could make the kind assignment itself adaptive based on observed retrieval patterns."
+   },
+   {
+    "arxiv": "2607.12227",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2607.14004",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2608.18066",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2202.09722",
+    "title": "PooL: Pheromone-inspired Communication Framework for Large Scale Multi-Agent Reinforcement Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "(2022)** \"PooL: Pheromone-inspired Communication Framework for Large Scale Multi-Agent Reinforcement Learning,\" arXiv:2202.09722."
+   },
+   {
+    "arxiv": "2210.03629",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/05-agent/format-translation.md"
+    ],
+    "sample": "Fallback for models without native function-calling support."
+   },
+   {
+    "arxiv": "2308.07870",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "(2024)** \"Brain-Inspired Computational Intelligence via Predictive Coding,\" arXiv:2308.07870v3."
+   },
+   {
+    "arxiv": "2401.08623",
+    "title": "Wake-Sleep Consolidated Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/10-dreams/sleep-time-compute.md"
+    ],
+    "sample": "WSCL (Skenderi et al. 2024, \"Wake-Sleep Consolidated Learning,\" arXiv:2401.08623, IEEE 2024) showed a complementary result: interleaving wake and sleep processing phases produces a **38% reduction in catastrophic forgetting** compared to continuous waking-only learning."
+   },
+   {
+    "arxiv": "2402.10877",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "Proves that any agent achieving bounded regret under distributional shifts must have learned an approximate causal model."
+   },
+   {
+    "arxiv": "2405.10467",
+    "title": "Agent Design Pattern Catalogue: A Collection of Architectural Patterns for Foundation Model based Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/architectural-analysis-improvements.md"
+    ],
+    "sample": "AMD 6(1) | LIDA: Systems-level Architecture for Cognition | | Laird 2012, \"The Soar Cognitive Architecture\", MIT Press | SOAR decision cycle and impasse resolution | | Anderson 2007, \"How Can the Human Mind Occur?\", OUP | ACT-R production system | | Sumers et al. 2023 | CoALA: Cognitive Architecture"
+   },
+   {
+    "arxiv": "2406.16008",
+    "title": "Found in the Middle: Calibrating Positional Attention Bias Improves Long Context Utilization",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "sample": "- **\"Found in the Middle\"**, Hsieh et al., ACL Findings 2024, arXiv:2406.16008."
+   },
+   {
+    "arxiv": "2410.05983",
+    "title": "Long-Context LLMs Meet RAG: Overcoming Challenges for Long Inputs in RAG",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/06-composition/predictive-foraging-mvt.md"
+    ],
+    "sample": "Increasing retrieved passages doesn't consistently improve performance -- confirms MVT."
+   },
+   {
+    "arxiv": "2501.19278",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "Pheromone reinforcement outperforms standard chain-of-thought on GSM8K, ARC, MATH."
+   },
+   {
+    "arxiv": "2502.11882",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "sample": "This is grounded in FrugalGPT (Chen et al. 2023, arXiv:2305.05176; published 2024 in TMLR), DPT-Agent (Zhang et al. 2025, arXiv:2502.11882), and CLARION (Sun et al. 2005)."
+   },
+   {
+    "arxiv": "2504.14824",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/attention-as-currency.md"
+    ],
+    "sample": "(2024) extended VCG to multi-agent LLM settings, proving DSIC even when agents are LLMs with strategic capabilities. arXiv:2504.14824 (2025) further showed dual-currency VCG with MFMARL reduces collusion risk in distributed settings."
+   },
+   {
+    "arxiv": "2511.14650",
+    "title": "AutoTool: Efficient Tool Selection for Large Language Model Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/05-agent/harness-engineering.md"
+    ],
+    "sample": "Roko's episode data could support this but the graph is not yet built."
+   },
+   {
+    "arxiv": "2601.02845",
+    "title": "TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "**TiMem** (arXiv:2601.02845) provides a temporal hierarchical consolidation framework that validates the multi-tier approach: recent experiences should be stored at high resolution and progressively compressed into lower-resolution but more general representations over time."
+   },
+   {
+    "arxiv": "2601.04362",
+    "title": "Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "This validates the NREM/REM distinction -- NREM for faithful replay and pattern extraction, REM for creative recombination and schema testing."
+   },
+   {
+    "arxiv": "2604.11364",
+    "title": "The Missing Knowledge Layer in Cognitive Architectures for AI Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "sample": "Motivates Roko's Neuro knowledge store and tier-based knowledge management."
+   },
+   {
+    "arxiv": "2605.20616",
+    "title": "Auto-Dreamer: Learning Offline Memory Consolidation for Language Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "A learned consolidator based on Complementary Learning Systems (CLS) theory."
+   },
+   {
+    "arxiv": "2606.03979",
+    "title": "Language Models Need Sleep: Learning to Self-Modify and Consolidate Memories",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "Demonstrates parametric distillation during offline phases."
+   },
+   {
+    "arxiv": "2606.24535",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "The paper validates these design choices with empirical measurements."
+   },
+   {
+    "arxiv": "2606.26524",
+    "title": "VIGIL: Runtime Enforcement of Behavioral Specifications in AI Agent Skills",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/12-SAFETY.md"
+    ],
+    "sample": "Roko's gate pipeline uses empirical verification; VIGIL's formal approach would complement it with provably correct behavioral bounds."
+   },
+   {
+    "arxiv": "2606.30005",
+    "title": "LLM Agents Are Latent Context Managers: Eliciting Self-Managed Context via State Proprioception",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/06-COMPOSITION.md"
+    ],
+    "sample": "- **VISTA** (arXiv:2606.30005) validates the proprioceptive context dashboard pattern: agents with structured self-awareness of their state outperform those relying on raw context alone."
+   },
+   {
+    "arxiv": "2607.02032",
+    "title": "PACE: A Proxy for Agentic Capability Evaluation",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/07-GATES.md"
+    ],
+    "sample": "> **Citation**: PACE (arXiv:2607.02032) -- proxy capability evaluation shows > that continuous verification scores enable accurate capability assessment > at 15% of the compute cost of full evaluation."
+   },
+   {
+    "arxiv": "2607.25891",
+    "title": "Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/39-ROADMAP.md"
+    ],
+    "sample": "- Messier (arXiv:2607.25891) -- partial-pass scoring rationale"
+   }
+  ],
+  "classic_works": [
+   "Conant & Ashby 1970",
+   "Ashby 1956",
+   "Woolley et al. 2010",
+   "McClelland et al. 1995",
+   "Bower 1981",
+   "Wagner & Graham 1998",
+   "Ortony et al. 1988",
+   "Scherer 2001",
+   "Russell & Mehrabian 1977",
+   "Kahneman 2011",
+   "Kahneman & Tversky 1979",
+   "Kanerva 2009",
+   "Ebbinghaus 1885",
+   "Schaul et al. 2016",
+   "Heard & Martienssen 2014",
+   "Lacaux et al. 2021",
+   "Khattab et al. 2024",
+   "Ousterhout 2018"
+  ],
+  "classic_note": "books and journal papers cited as grounding in docs/v3 prose; not on arXiv, so not part of this audit"
+ },
+ "evidence_reads": {
+  "item": "gap-1f72ac",
+  "date": "2026-10-01",
+  "method": "Full text from arxiv.org/html; each evidence sentence compared with the abstract and the relevant sections.",
+  "checked": 23,
+  "supported": 16,
+  "corrected": 7,
+  "removed": 0,
+  "error_rate": 0.304,
+  "major": 4,
+  "major_error_rate": 0.174,
+  "no_claim": {
+   "arxiv": [
+    "2202.09722",
+    "2308.07870",
+    "2405.10467",
+    "2406.16008",
+    "2210.03629",
+    "2511.14650",
+    "2602.14038"
+   ],
+   "note": "matched the evidence scan through a title word or a sentence about Roko; no claim about the paper to check"
+  },
+  "works": [
+   {
+    "arxiv": "2603.10123",
+    "title": "Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias",
+    "files": [
+     "docs/v3/06-COMPOSITION.md",
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "The U-shape is present at initialization, a geometric property of causal decoders with residual connections (abstract). The docs' year was 2025; now 2026."
+   },
+   {
+    "arxiv": "2512.09369",
+    "title": "Encoder-Free Knowledge-Graph Reasoning with LLMs via Hyperdimensional Path Retrieval",
+    "files": [
+     "docs/v3/09-MEMORY.md",
+     "docs/v3/depth/09-memory/hdc-vsa-foundations.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'HDC role-filler binding naturally encodes KG relationships': it uses an order-sensitive, non-commutative binding of relation paths"
+    ],
+    "paper_says": "Block-diagonal GHRR binding of multi-hop paths, calibrated cosine retrieval, one LLM call; competitive Hits@1/F1 on WebQSP, CWQ, GrailQA at lower inference cost (abstract)."
+   },
+   {
+    "arxiv": "2504.14898",
+    "title": "Expected Free Energy-based Planning ",
+    "files": [
+     "docs/v3/00-INDEX.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "EFE-based planning arises from minimizing a variational free energy functional (abstract)."
+   },
+   {
+    "arxiv": "2607.12227",
+    "title": "Rethinking the Evaluation of Harness ",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Harness evolution does not consistently beat matched test-time scaling and generalizes little (abstract)."
+   },
+   {
+    "arxiv": "2607.14004",
+    "title": "Do Agent Optimizers Compound? A Continual-Learning Evaluation on Terminal-Bench 2.0",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'gains from agent optimizers fail to compound across tasks': one of three optimizers did compound"
+    ],
+    "paper_says": "GEPA fell below baseline on new tasks, Meta Harness stopped improving, RELAI-VCL kept compounding; gains compounded only with regression control in the loop (abstract)."
+   },
+   {
+    "arxiv": "2608.18066",
+    "title": "On the Fragility of Self-Improving Agents:",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Self-improving loops amplify run-to-run variance (71% of cases) and depend on task order (abstract)."
+   },
+   {
+    "arxiv": "2602.02007",
+    "title": "Beyond RAG for Agent Memory: Retrieval by Decoupling and Aggregation",
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'advocates decoupling memory retrieval from memory aggregation' misstates 'decoupling before aggregation'",
+     "'validates Roko's separation of HDC search, demurrage and VCG composition' is not tested by the paper"
+    ],
+    "paper_says": "Agent memory should first decouple segments into reusable components, then aggregate them into groups for retrieval (xMemory) (abstract)."
+   },
+   {
+    "arxiv": "2401.08623",
+    "title": "Wake-Sleep Consolidated Learning",
+    "files": [
+     "docs/v3/depth/10-dreams/sleep-time-compute.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'38% reduction in catastrophic forgetting' (and in docs/v1 '17.6% zero-shot transfer increase') are not in the paper",
+     "credited to 'Skenderi et al.' (first author Sorrenti)"
+    ],
+    "paper_says": "Wake, NREM and REM phases beat continual-learning baselines on CIFAR-10, Tiny-ImageNet and FG-ImageNet, with positive forward transfer (abstract)."
+   },
+   {
+    "arxiv": "2402.10877",
+    "title": "Robust agents learn causal world models",
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Agents satisfying a regret bound under many distributional shifts must have learned an approximate causal model (abstract)."
+   },
+   {
+    "arxiv": "2410.05983",
+    "title": "Long-Context LLMs Meet RAG: Overcoming Challenges for Long Inputs in RAG",
+    "files": [
+     "docs/v3/depth/06-composition/predictive-foraging-mvt.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "With more retrieved passages, quality first rises then falls because of hard negatives (abstract). 'Confirms MVT' is Roko's reading."
+   },
+   {
+    "arxiv": "2501.19278",
+    "title": "Pheromone-based Learning of Optimal Reasoning Paths",
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "ACO-ToT beats existing chain-of-thought optimization approaches on GSM8K, ARC-Challenge and MATH (abstract)."
+   },
+   {
+    "arxiv": "2502.11882",
+    "title": "Leveraging Dual Process Theory in Language Agent Framework ",
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "DPT-Agent pairs a fast System 1 (FSM, code-as-policy) with a System 2 (theory of mind, asynchronous reflection) (abstract)."
+   },
+   {
+    "arxiv": "2504.14824",
+    "title": "An Enhanced Dual-Currency VCG Auction Mechanism for Resource Allocation in IoV: A Value of Information Perspective",
+    "files": [
+     "docs/v3/depth/00-architecture/attention-as-currency.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Dual-currency VCG with mean-field MARL for IoV resource allocation; DSIC, lower collusion likelihood (abstract)."
+   },
+   {
+    "arxiv": "2601.02845",
+    "title": "TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Temporal Memory Tree consolidates raw observations into progressively abstracted representations (abstract)."
+   },
+   {
+    "arxiv": "2601.04362",
+    "title": "Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'validates the NREM/REM distinction -- NREM for faithful replay and pattern extraction, REM for creative recombination and schema testing'"
+    ],
+    "paper_says": "Deep-sleep-like phases commit tagged updates in gated write windows; REM-like replay reconstructs and perturbs experience for planning; modes are algorithmic, not physiological (abstract)."
+   },
+   {
+    "arxiv": "2604.11364",
+    "title": "The Missing Knowledge Layer in Cognitive Architectures for AI Agents",
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Proposes a Knowledge/Memory/Wisdom/Intelligence decomposition with distinct persistence semantics (abstract)."
+   },
+   {
+    "arxiv": "2605.20616",
+    "title": "Auto-Dreamer: Learning Offline Memory Consolidation for Language Agents",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "A learned offline consolidator inspired by complementary learning systems theory (abstract)."
+   },
+   {
+    "arxiv": "2606.03979",
+    "title": "Language Models Need Sleep: Learning to Self-Modify and Consolidate Memories",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "A sleep paradigm that distils short-term memories into long-term parameters (Knowledge Seeding) plus dreaming (abstract)."
+   },
+   {
+    "arxiv": "2606.24535",
+    "title": "Governed Shared Memory for Multi-Agent LLM Systems",
+    "files": [
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'identify three categories: stale reads, write contention, memory bloat': the paper lists four other failure modes",
+     "'the paper validates these design choices with empirical measurements': it measures one production service, not Roko's design",
+     "credited to 'Zhou et al.' (first author Margalit)"
+    ],
+    "paper_says": "Four failure modes: unauthorized leakage, stale propagation, contradiction persistence, provenance collapse; MemClaw measured without baselines (abstract)."
+   },
+   {
+    "arxiv": "2606.26524",
+    "title": "VIGIL: Runtime Enforcement of Behavioral Specifications in AI Agent Skills",
+    "files": [
+     "docs/v3/12-SAFETY.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Runtime enforcement of skill specifications as finite-trace temporal safety properties decided by SMT (§3)."
+   },
+   {
+    "arxiv": "2606.30005",
+    "title": "LLM Agents Are Latent Context Managers: Eliciting Self-Managed Context via State Proprioception",
+    "files": [
+     "docs/v3/06-COMPOSITION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "VISTA's context dashboard ('proprioceptive' is the paper's term) lifts Gemini-3-Flash from 22.7% to 50.7% on LOCA-Bench (abstract)."
+   },
+   {
+    "arxiv": "2607.02032",
+    "title": "PACE: A Proxy for Agentic Capability Evaluation",
+    "files": [
+     "docs/v3/07-GATES.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'continuous verification scores enable accurate capability assessment at 15% of the compute cost': wrong mechanism and number"
+    ],
+    "paper_says": "A small selected subset of non-agentic instances predicts agentic benchmark scores at under 1/100 of the cost of a full evaluation (§1, Fig. 1)."
+   },
+   {
+    "arxiv": "2607.25891",
+    "title": "Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation",
+    "files": [
+     "docs/v3/39-ROADMAP.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Counterfactual rescoring shows strict all-pass scoring in multi-verifier tasks can change agent rankings (abstract)."
+   }
+  ]
+ }
+}

@@ -79,6 +79,7 @@
   --color-state-done:       var(--state-done);
   --color-state-active:     var(--state-active);
   --color-state-accepted:   var(--state-accepted);
+  --color-state-satisfied:  var(--state-satisfied);
   --color-state-failed:     var(--state-failed);
   --color-state-queued:     var(--state-queued);
   --color-state-pending:    var(--state-pending);

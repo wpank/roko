@@ -239,11 +239,7 @@ coordination cost grows linearly with the number of agents.
 > from Natural Multi-Agent Systems." *Annals of Operations Research*, 75:69-101,
 > 1997]
 
-This scaling advantage is not merely theoretical. Xie et al. (2025) found
-that 41-87% of multi-agent failures are coordination failures, not capability
-failures -- the agents individually can solve the task, but the coordination
-protocol breaks down under load [Xie et al. "Coordination as Architectural
-Layer." arXiv:2605.03310, 2025]. Stigmergy's O(N x M) scaling avoids the
+This scaling advantage is not merely theoretical. Nechepurenko & Shuvalov (2026) open with the observation that multi-agent LLM systems fail in production at rates of 41-87%, most of those failures coming from coordination defects rather than base-model capability (§1, citing Cemri et al. 2025) [arXiv:2605.03310]. Stigmergy's O(N x M) scaling avoids the
 coordination bottleneck that causes these failures.
 
 ### Robustness
@@ -266,13 +262,7 @@ Intelligence: From Natural to Artificial Systems*. Oxford University Press,
 1999].
 
 However, shared-memory coordination mechanisms carry their own failure modes.
-Zhou et al. (2026) identify three categories: stale reads (agents acting on
-outdated state), write contention (agents corrupting each other's signals),
-and memory bloat (unbounded accumulation degrading performance) [Zhou et al.
-"Governed Shared Memory." arXiv:2606.24535, 2026]. Roko's pheromone system
-addresses all three: exponential decay prevents stale reads, kind-scoped
-deposition prevents write contention, and anti-saturation configuration
-prevents memory bloat.
+Margalit et al. (2026) identify four failure modes of governed shared memory: unauthorized leakage, stale propagation, contradiction persistence and provenance collapse [Margalit et al. "Governed Shared Memory for Multi-Agent LLM Systems." arXiv:2606.24535, 2026]. Roko's pheromone system covers stale propagation through exponential decay; its kind-scoped deposition and anti-saturation limits target write contention and memory bloat, which are Roko's own concerns rather than modes the paper lists.
 
 ### Asynchrony
 
@@ -903,8 +893,7 @@ to Mesh scope after confidence validation (confirmation threshold), and from
 Mesh to Global after collective confirmation (Consensus-level agreement).
 
 The Mesh Memory Protocol provides a relevant reference architecture for
-semantic communication layers between agents [Deshpande et al. "Mesh Memory
-Protocol." arXiv:2604.19540, 2025]. Roko's Bus-based mesh sync achieves
+semantic communication layers between agents [Xu "Mesh Memory Protocol." arXiv:2604.19540, 2026]. Roko's Bus-based mesh sync achieves
 similar goals through the pheromone-specific propagation model.
 
 ---
@@ -1270,8 +1259,7 @@ sharing an environment.
 > **Status (2026-09-29): a hypothesis the evidence does not support.** No
 > measurement shows Roko improving superlinearly, and recent studies argue against
 > expecting it:
-> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
-> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> of three agent optimizers, only the one with regression control built into its loop kept improving on new tasks (Wang, Kattakinda and Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
 > amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
 > consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
 > The defensible goal is bounded, audited improvement with rollback. The loops below
@@ -1294,10 +1282,7 @@ stagnation otherwise.
 | Cross-deployment heuristic commons | Imported heuristics create shared calibration | Every deployment contributes at near-zero marginal cost |
 | Plugin ecosystem | Each plugin increases the value of the system | The interface becomes a platform if it stays narrow, stable, composable |
 
-FederatedSkill [Li et al. "FederatedSkill." arXiv:2606.03143, 2026] validates
-the cross-deployment loop: semantic skill diffs achieve 44% improvement
-in federated agent learning over raw parameter sharing, providing evidence
-that Roko's heuristic commons design is well-founded.
+FederatedSkill [Yang et al. "FederatedSkill." arXiv:2606.03143, 2026] supports the cross-deployment loop: clients share semantic skill diffs (structured patches) instead of raw trajectories, and this gave up to 44.4% higher success rates than self-evolving baselines across 20 task families (abstract, §5.2), suggesting that Roko's heuristic commons design is well-founded.
 
 ### North-Star Metric
 
@@ -1429,7 +1414,7 @@ hardcoded. Different task families can legitimately induce different weight
 shapes. The CohortWeightsLearner subscribes to `cohort.completed` Bus topic
 and updates weights using the prediction error against observed outcome score.
 
-AgentReputation [Zhang et al. "AgentReputation." arXiv:2605.00073, FSE 2026]
+AgentReputation [Chishti et al. "AgentReputation." arXiv:2605.00073, FSE 2026]
 provides a complementary approach: context-conditioned reputation scoring
 where agent trustworthiness depends on the specific task type, not a single
 global score. This aligns with Roko's per-kind response thresholds and
@@ -1490,51 +1475,39 @@ Roko resolves this through four natural properties:
 
 ### Latent-Space Communication
 
-LatentMAS [Yuan et al. "LatentMAS." arXiv:2511.20639, ICML 2026 Spotlight]
+LatentMAS [Zou et al. "Latent Collaboration in Multi-Agent Systems." arXiv:2511.20639, ICML 2026 Spotlight]
 demonstrates that agents can communicate through compressed latent-space
-representations rather than natural language, achieving 4x speed improvement
-and 14.6% accuracy gain. This represents a frontier for evolving pheromone
+representations rather than natural language, with up to 14.6% higher accuracy, 70.8-83.7% fewer output tokens and 4-4.3x faster end-to-end inference (abstract, §4). This represents a frontier for evolving pheromone
 communication: instead of typed textual pheromones, future systems could
 deposit and sense compressed vector representations, dramatically increasing
 the bandwidth of the stigmergic channel while reducing token cost.
 
 ### Semantic Skill Diffs
 
-FederatedSkill [Li et al. arXiv:2606.03143, 2026] shows that semantic skill
-diffs -- structured representations of what an agent has learned -- enable
-44% improvement in cross-workspace knowledge transfer. This validates Roko's
+FederatedSkill [Yang et al. arXiv:2606.03143, 2026] shows that semantic skill diffs -- structured patches over each client's skill library -- gave up to 44.4% higher success rates than self-evolving baselines (§5.2). This validates Roko's
 cross-deployment heuristic commons loop and suggests that the pheromone system
 could evolve to transport skill diffs as a first-class pheromone kind.
 
 ### Coordination Failure Dominance
 
-Xie et al. [arXiv:2605.03310, 2025] demonstrate that 41-87% of multi-agent
-system failures stem from coordination, not capability. This empirically
-validates the design decision to make coordination a first-class architectural
+Nechepurenko & Shuvalov [arXiv:2605.03310, 2026] cite production failure rates of 41-87% for multi-agent systems, mostly from coordination defects (§1, after Cemri et al. 2025), and argue for treating coordination as a configurable architectural layer (§3). This supports the design decision to make coordination a first-class architectural
 layer rather than an emergent property. Roko's explicit pheromone system,
 morphogenetic specialization, and c-factor monitoring address precisely the
 failure modes identified in that work.
 
 ### Governed Shared Memory
 
-Zhou et al. [arXiv:2606.24535, 2026] identify systematic failure modes in
-shared-memory multi-agent systems: stale reads, write contention, and memory
-bloat. Roko's pheromone system addresses these through exponential decay
-(stale reads), kind-scoped deposition (write contention), and
-anti-saturation configuration (memory bloat). The paper validates these design
-choices with empirical measurements.
+Margalit et al. [arXiv:2606.24535, 2026] identify four failure modes in shared-memory multi-agent systems: unauthorized leakage, stale propagation, contradiction persistence and provenance collapse. They measure one production service (MemClaw) against them rather than comparing with baselines (abstract). Roko's pheromone decay addresses stale propagation; the paper does not evaluate Roko's design.
 
 ### Mesh Memory Protocol
 
-Deshpande et al. [arXiv:2604.19540, 2025] propose a semantic communication
-layer for multi-agent coordination that stores, retrieves, and routes
-information based on meaning rather than address. Roko's pheromone system
+Xu [arXiv:2604.19540, 2026] specifies a semantic layer for cross-session agent-to-agent collaboration: each agent accepts peers' claims field by field, every claim carries its lineage back to its source, and memory is filtered when it is written (§3). The paper stresses that its schema is not a routing or transport layer (§3.1). Roko's pheromone system
 achieves similar goals through HDC-based query scoring, where semantic
 similarity determines which pheromones an agent senses.
 
 ### Context-Conditioned Reputation
 
-AgentReputation [Zhang et al. arXiv:2605.00073, FSE 2026] demonstrates that
+AgentReputation [Chishti et al. arXiv:2605.00073, FSE 2026] argues, as a framework proposal without an evaluation (§3, §4), that
 agent trustworthiness should be context-conditioned -- an agent reliable at
 code review may be unreliable at architecture decisions. This aligns with
 Roko's per-kind response thresholds and per-domain pheromone weight learning.
@@ -1660,15 +1633,13 @@ This chapter decomposes into ~13 depth files in `docs/v3/depth/16-coordination/`
 
 ### Multi-Agent Systems (2025-2026 Research)
 
-- [Yuan et al. 2025] "LatentMAS." arXiv:2511.20639 (ICML 2026 Spotlight).
-  Latent-space agent communication: 4x speed, 14.6% accuracy gain.
-- [Li et al. 2026] "FederatedSkill." arXiv:2606.03143. Semantic skill diffs
-  for federated learning: 44% improvement.
-- [Xie et al. 2025] "Coordination as Architectural Layer." arXiv:2605.03310.
-  41-87% of failures are coordination, not capability.
-- [Zhou et al. 2026] "Governed Shared Memory." arXiv:2606.24535. Failure modes
+- [Zou et al. 2025] "Latent Collaboration in Multi-Agent Systems." arXiv:2511.20639 (ICML 2026 Spotlight).
+  Latent-space agent communication: up to 14.6% higher accuracy, 4-4.3x faster inference.
+- [Yang et al. 2026] "FederatedSkill." arXiv:2606.03143. Semantic skill diffs for federated skill evolution: up to 44.4% higher success than self-evolving baselines.
+- [Nechepurenko & Shuvalov 2026] "Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems." arXiv:2605.03310. Production failure rates of 41-87%, mostly coordination defects (§1, citing Cemri et al. 2025).
+- [Margalit et al. 2026] "Governed Shared Memory for Multi-Agent LLM Systems." arXiv:2606.24535. Failure modes
   in shared-memory multi-agent systems.
-- [Deshpande et al. 2025] "Mesh Memory Protocol." arXiv:2604.19540. Semantic
+- [Xu 2026] "Mesh Memory Protocol." arXiv:2604.19540. Semantic
   communication layer for agent coordination.
 - [Zhang et al. 2026] "AgentReputation." arXiv:2605.00073 (FSE 2026).
   Context-conditioned reputation scoring.

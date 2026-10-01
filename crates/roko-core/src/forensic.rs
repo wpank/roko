@@ -17,8 +17,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -362,16 +361,7 @@ impl ForensicReplayLogger {
     /// Returns an error if the directory cannot be created or the file
     /// cannot be opened/written.
     pub fn log(&self, replay: &ForensicReplay) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(replay)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(file, "{line}")
+        crate::io::append_jsonl(&self.path, replay)
     }
 
     /// Read all replays from the log file.

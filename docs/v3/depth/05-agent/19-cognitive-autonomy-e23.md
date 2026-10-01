@@ -510,21 +510,11 @@ dispatching new tasks.
 
 ## Citations
 
-1. Friston, K. (2006). "A free energy principle for the brain." *Journal
-   of Physiology - Paris*, 100(1-3), 70-87. -- Free Energy Principle,
-   Expected Free Energy, precision parameters.
-2. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.*
-   Yale University Press. -- Developmental maturation, invariant
-   stages, intrinsic pacing.
-3. Yerkes, R. M. & Dodson, J. D. (1908). "The relation of strength of
-   stimulus to rapidity of habit-formation." *Journal of Comparative
-   Neurology and Psychology*, 18(5), 459-482. -- Inverted-U
-   performance curve.
-4. Kahneman, D. & Tversky, A. (1979). "Prospect Theory: An Analysis
-   of Decision under Risk." *Econometrica*, 47(2), 263-291. -- Loss
-   aversion, subjective value function.
-5. Plutchik, R. (1980). *Emotion: A Psychoevolutionary Synthesis.* --
-   Eight primary emotions wheel.
+1. Friston, K. (2006). "A free energy principle for the brain." *Journal of Physiology - Paris*, 100(1-3), 70-87.
+2. Gesell, A. (1916). *The Mental Growth of the Pre-School Child.* Yale University Press.
+3. Yerkes, R. M. & Dodson, J. D. (1908). "The relation of strength of stimulus to rapidity of habit-formation." *Journal of Comparative Neurology and Psychology*, 18(5), 459-482.
+4. Kahneman, D. & Tversky, A. (1979). "Prospect Theory: An Analysis of Decision under Risk." *Econometrica*, 47(2), 263-291.
+5. Plutchik, R. (1980). *Emotion: A Psychoevolutionary Synthesis.*
 6. `crates/roko-daimon/src/lib.rs` -- VitalityTracker, BehavioralPhase.
 7. `crates/roko-runtime/src/heartbeat.rs` -- CorticalState,
    AdaptiveClock.

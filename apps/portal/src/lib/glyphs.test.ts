@@ -34,11 +34,14 @@ describe('GLYPHS', () => {
 
 describe('glyphStateForTask', () => {
   it('maps all TaskStatus values and pending', () => {
-    const cases: Array<[TaskStatus | 'pending', GlyphState]> = [
+    const cases: Array<[TaskStatus | 'pending' | 'marked_done', GlyphState]> = [
       ['active',                 'active'],
       ['passed',                 'done'],
       ['failed',                 'failed'],
       ['accepted_with_failures', 'accepted'],
+      ['already_satisfied',      'satisfied'],
+      ['unverified',             'unchecked'],
+      ['marked_done',            'marked'],
       ['skipped',                'skipped'],
       ['cancelled',              'skipped'],
       ['pending',                'pending'],

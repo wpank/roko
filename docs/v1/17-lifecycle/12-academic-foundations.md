@@ -351,11 +351,11 @@ These citations ground the knowledge transfer (backup/restore), generational con
   - **Application unchanged**: Motivates Dream consolidation scheduling.
 
 - **[LIN-SLEEPTIME-2025]** Lin, B. et al. "Sleep-time Compute: Beyond Inference Scaling at Test-Time." arXiv:2504.13171, 2025.
-  - **Use**: Dual-agent architecture: Sleeper precomputes, Server handles live. ~5× compute reduction.
+  - **Use**: Precomputes over a context offline, before queries arrive (§3). ~5× less test-time compute at equal accuracy.
   - **Application unchanged**: Grounds Sleepwalker mode (reduced-capability sleep).
 
 - **[WSCL-2024]** "Wake-Sleep Consolidated Learning." arXiv:2401.08623, 2024.
-  - **Use**: Three-phase CLS cycle: 38% reduction in catastrophic forgetting, 17.6% zero-shot transfer increase.
+  - **Use**: Three-phase CLS cycle (wake, NREM, REM) that beat continual-learning baselines on image classification, with positive forward transfer (abstract).
   - **Application unchanged**: Grounds three-phase Dream cycle.
 
 - **[XU-AMEM-2025]** Xu, W. et al. "A-MEM: Agentic Memory for LLM Agents." arXiv:2502.12110, 2025.

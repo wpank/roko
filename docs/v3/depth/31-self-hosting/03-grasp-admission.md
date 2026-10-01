@@ -141,8 +141,7 @@ The margin `max(1, floor(0.1 * |P|))` ensures that:
 ## 4. SiriuS: Failed-Episode Augmentation
 
 SiriuS (arXiv:2502.04780) provides a complementary insight: failed episodes
-should not be discarded but augmented with corrective annotations and reused
-as negative examples.
+should not be discarded but repaired: a critic's feedback is used to regenerate and rephrase them into correct trajectories, which join the fine-tuning library as positive examples (Fig. 1, §2.2).
 
 ### 4.1 Application to Roko
 
@@ -177,8 +176,7 @@ Each failed episode in the augmented probe set carries:
 
 ## 5. SkillZip: Unbounded Growth Prevention
 
-SkillZip (arXiv:2608.11079) applies Minimum Description Length (MDL)
-compression to prevent skill libraries from growing without bound.
+SkillZip (arXiv:2608.11079) compresses a skill's text with a typed minimum-description-length (MDL) objective under a hard coverage constraint, including on every self-evolution patch (abstract, §V).
 
 ### 5.1 The Growth Problem
 
@@ -258,11 +256,9 @@ A rule enters the refinement queue when:
 
 ## References
 
-- GRASP: "GRASP: Grounding Retrieval-Augmented Skill and Planning for
-  Medical Agents." arXiv:2605.29668, May 2026.
+- GRASP: "GRASP: Gated Regression-Aware Skill Proposer for Self-Improving LLM Agents." arXiv:2605.29668, May 2026.
 - SiriuS: "SiriuS: Self-Improving Multi-Agent Systems via Bootstrapped
   Reasoning." arXiv:2502.04780, February 2025.
-- SkillZip: "SkillZip: Compressing Agent Skill Libraries via Minimum
-  Description Length." arXiv:2608.11079, August 2026.
-- ReSkill: "ReSkill: Iterative Self-Correction for Agent Skill Refinement."
+- SkillZip: "SkillZip: Evaluation-Free Skill Compression for Self-Evolving Agents by Discovering Reusable Structure." arXiv:2608.11079, August 2026.
+- ReSkill: "ReSkill: Reconciling Skill Creation with Policy Optimization in Agentic RL."
   arXiv:2606.01619, June 2026.

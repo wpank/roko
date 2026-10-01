@@ -6,7 +6,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::PathBuf;
 
 /// Metrics for one generation (plan run or dream cycle).
@@ -127,17 +126,7 @@ impl GenerationalMetricsStore {
     ///
     /// Returns an error if the record cannot be serialized or appended.
     pub fn append(&self, metrics: &GenerationalMetrics) -> Result<(), std::io::Error> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(metrics)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(file, "{line}")?;
-        Ok(())
+        roko_core::io::append_jsonl(&self.path, metrics)
     }
 
     /// Read all generational metrics.

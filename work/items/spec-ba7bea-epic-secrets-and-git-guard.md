@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a", "bug-41bea4", "bug-5a6636", "bug-69a002", "bug-cef888", "bug-77413c", "bug-fa1537", "bug-bb3262"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a", "bug-41bea4", "bug-5a6636", "bug-69a002", "bug-cef888", "bug-77413c", "bug-fa1537", "bug-bb3262", "bug-6af02b", "gap-18d1a7"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -105,6 +105,8 @@ This is the implementation plan.
 - [x] bug-77413c: roko-std's refuse_key_file_in_command has none of the guard's search checks (grep -r, rg, git grep, ag/ack, find/xargs reads, brace globs, cd)
 - [ ] bug-fa1537: A recursive search reaches .roko key files: grep -r OPENAI . with a .roko/.env present passes both guards
 - [ ] bug-bb3262: The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases
+- [ ] bug-6af02b: Claude Code's Grep tool runs rg --hidden, so a Grep at a workspace root reads .roko/.env unless .gitignore covers it; the guard's Grep rule doesn't apply the tree check
+- [x] gap-18d1a7: The Claude CLI settings roko writes for agents have no Read deny rules for key files, which Claude Code would turn into Grep exclusions
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

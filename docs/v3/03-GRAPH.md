@@ -1026,35 +1026,19 @@ Each fixture contains `tasks.toml`, `graph.toml`, `expected.json`, and
 
 ## References
 
-- Kahn, A. B. (1962). Topological sorting of large networks. *Communications
-  of the ACM*, 5(11), 558--562. (Topological sort algorithm used by the wave
-  computation.)
-- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and
-  low-complexity task scheduling for heterogeneous computing. *IEEE Trans.
-  Parallel and Distributed Systems*, 13(3), 260--274. (HEFT algorithm;
-  informing agent dispatch within waves.)
-- Mokhov, A., Mitchell, N. & Peyton Jones, S. (2018). Build systems a la
-  carte. *ICFP 2018*. (Taxonomy of schedulers x rebuilders x dependency types;
-  Roko's DAG maps to topological + verifying traces.)
-- Hammer, M. A. et al. (2014). Adapton: Composable, demand-driven incremental
-  computation. *PLDI 2014*. (Demand-driven dirty/clean propagation for
-  incremental DAG recomputation.)
-- van der Aalst, W. M. P. (1997). Verification of workflow nets. *Application
-  and Theory of Petri Nets 1997*, LNCS 1248. (WF-net soundness properties;
-  the Workflow/Activity classification draws on Petri net place/transition
-  semantics.)
+- Kahn, A. B. (1962). Topological sorting of large networks. *Communications of the ACM*, 5(11), 558--562.
+- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and low-complexity task scheduling for heterogeneous computing. *IEEE Trans. Parallel and Distributed Systems*, 13(3), 260--274.
+- Mokhov, A., Mitchell, N. & Peyton Jones, S. (2018). Build systems a la carte. *ICFP 2018*.
+- Hammer, M. A. et al. (2014). Adapton: Composable, demand-driven incremental computation. *PLDI 2014*.
+- van der Aalst, W. M. P. (1997). Verification of workflow nets. *Application and Theory of Petri Nets 1997*, LNCS 1248.
 - Blumofe, R. D. & Leiserson, C. E. (1999). Scheduling multithreaded
   computations by work stealing. *JACM*, 46(5), 720--748. (Work-stealing
   bounds: E[T_P] = T_1/P + O(T_inf); informing wave-based parallelism
   limits.)
-- Rocklin, M. (2015). Dask: Parallel computation with blocked algorithms and
-  task scheduling. *SciPy 2015*. (Task graph optimization: cull, inline, fuse;
-  wave scheduling.)
-- Dean, J. & Ghemawat, S. (2008). MapReduce: Simplified data processing on
-  large clusters. *Comm. ACM*, 51(1), 107--113. (Speculative execution for
-  straggler mitigation.)
+- Rocklin, M. (2015). Dask: Parallel computation with blocked algorithms and task scheduling. *SciPy 2015*.
+- Dean, J. & Ghemawat, S. (2008). MapReduce: Simplified data processing on large clusters. *Comm. ACM*, 51(1), 107--113.
 - Sumers, T. R. et al. (2023). Cognitive architectures for language agents.
-  *arXiv:2309.02427*. (CoALA 9-step cognitive cycle; informing the 7
+  *arXiv:2309.02427*. (CoALA decision cycle, §4.6; informing the 7
   cognitive cells.)
 
 ---

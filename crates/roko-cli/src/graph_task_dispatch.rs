@@ -664,18 +664,23 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // ── Role-enabled check ──────────────────────────────────────────
         //
         // When a role is disabled via `[agent.roles.<role>] enabled = false`,
-        // skip the task with a warning rather than failing it.
+        // the task fails without a dispatch (bug-a843d4). Completing it
+        // would pass work that was never done, its verify steps unrun. The
+        // rejection is not retried, and a resume runs the task again.
         if let Some(role_label) = task.role.as_deref() {
             if !crate::config_helpers::is_role_enabled(&self.config, role_label) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
                     role = role_label,
-                    "role is disabled in config; skipping task"
+                    "role is disabled in config; failing task"
                 );
-                // Return an empty signal vec — the graph engine treats this
-                // as a completed (no-output) cell, not a failure.
-                return Ok(Vec::new());
+                return Err(RokoError::Rejected(format!(
+                    "task `{}` was not run: its role `{role_label}` is disabled in config \
+                     ([agent.roles.{role_label}] enabled = false); enable the role and \
+                     resume the plan",
+                    task.id
+                )));
             }
         }
 
@@ -1656,9 +1661,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 api_key_env: None,
                 command: Some(script.display().to_string()),
                 args: None,
-                timeout_ms: Some(5_000),
-                ttft_timeout_ms: Some(5_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1798,6 +1803,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// can hold up a fake provider or a step for seconds (bug-779ae7).
     pub(super) const FIXTURE_HANG_GUARD_SECS: u64 = 120;
 
+    /// Time limit, in ms, of the fixtures' providers, the fake CLIs and the
+    /// mock servers. A loaded machine can hold up a fake CLI's start or a
+    /// mock's answer for seconds (bug-f1f814), so this is the hang guard too.
+    /// A test of time limits sets its attempt's own limit, which is shorter
+    /// and stops the provider first.
+    pub(super) const FIXTURE_PROVIDER_TIMEOUT_MS: u64 = FIXTURE_HANG_GUARD_SECS * 1_000;
+
     pub(super) fn verify_step(phase: &str, command: &str) -> crate::task_parser::VerifyStep {
         crate::task_parser::VerifyStep {
             phase: phase.to_string(),
@@ -1854,9 +1866,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 api_key_env: None,
                 command: Some(script.display().to_string()),
                 args: None,
-                timeout_ms: Some(5_000),
-                ttft_timeout_ms: Some(5_000),
-                connect_timeout_ms: Some(5_000),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
                 limits: None,
@@ -1987,9 +1999,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             api_key_env: None,
             command: Some(command.to_string()),
             args: None,
-            timeout_ms: Some(5_000),
-            ttft_timeout_ms: Some(5_000),
-            connect_timeout_ms: Some(5_000),
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
             extra_headers: None,
             max_concurrent: None,
             limits: None,
@@ -2064,6 +2076,40 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
 
     pub(super) fn batch_ctx() -> CellContext {
         CellContext::new().with_cell_id("T-EXP".to_string())
+    }
+
+    /// bug-a843d4: a task whose role is disabled fails without a dispatch,
+    /// instead of completing with its verify steps unrun.
+    #[tokio::test]
+    async fn disabled_role_task_fails_without_dispatch() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, |config| {
+            let disabled = roko_core::config::schema::RoleOverride {
+                enabled: false,
+                ..Default::default()
+            };
+            config
+                .agent
+                .roles
+                .insert("implementer".to_string(), disabled);
+        })
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect_err("a disabled role fails its task");
+
+        assert!(matches!(error, RokoError::Rejected(_)), "{error}");
+        assert!(
+            error.to_string().contains("role `implementer` is disabled"),
+            "{error}"
+        );
+        assert!(
+            !temp.path().join("provider-args").exists(),
+            "the provider ran"
+        );
     }
 
     #[tokio::test]

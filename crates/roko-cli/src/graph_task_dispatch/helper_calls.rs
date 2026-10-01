@@ -394,8 +394,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, final_turn, jsonl_rows_where, make_spec, make_test_dispatcher,
-        no_auto_fix, recording_feedback, spawn_openai_mock, verify_step,
+        FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn, jsonl_rows_where, make_spec,
+        make_test_dispatcher, no_auto_fix, recording_feedback, spawn_openai_mock, verify_step,
     };
 
     const RUN: &str = "graph-helper-run";
@@ -439,9 +439,9 @@ mod tests {
                         api_key_env: Some("PATH".to_string()),
                         command: None,
                         args: None,
-                        timeout_ms: Some(15_000),
-                        ttft_timeout_ms: Some(15_000),
-                        connect_timeout_ms: Some(5_000),
+                        timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                        ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                        connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
                         extra_headers: None,
                         max_concurrent: None,
                         limits: None,

@@ -717,7 +717,17 @@ pub async fn run_graph_plan_in_run(
     if params.log_file.is_some() {
         return super::event_log::run_recorded(params).await;
     }
+    let observed_run_id = super::event_log::graph_run_id(run_id.as_deref());
+    run_graph_plan_observed(params, run_id, observed_run_id).await
+}
 
+/// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
+/// workspace event log name the run `observed_run_id`.
+pub(crate) async fn run_graph_plan_observed(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+    observed_run_id: String,
+) -> anyhow::Result<i32> {
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
@@ -734,10 +744,11 @@ pub async fn run_graph_plan_in_run(
     let status = crate::runner::status_file::GraphStatusWriter::spawn(
         &hub,
         RokoLayout::for_project(&params.workdir).state_dir(),
-        super::event_log::evidence_run_id()
-            .or_else(|| run_id.clone())
-            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4())),
+        observed_run_id.clone(),
     );
+    // `.roko/events.jsonl` and the run's index show it to a dashboard in
+    // another terminal, serve and `roko doctor` (bug-230de6).
+    let events = super::event_log::WorkspaceEventLog::spawn(&hub, &params.workdir, observed_run_id);
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
     // one now and put it back so the body and this wrapper share the same
@@ -764,6 +775,9 @@ pub async fn run_graph_plan_in_run(
         surviving_agent_pids: vec![],
     });
     status.finish(outcome).await;
+    if let Some(events) = events {
+        events.finish().await;
+    }
 
     result
 }
@@ -1637,8 +1651,8 @@ async fn run_graph_plan_body(
     // Collect task counts and cost from the just-completed plan loop and
     // append a structured RunMetricsRecord to `.roko/learn/run-metrics.jsonl`.
     // Each task counts under its own verdict (bug-7eb27e), not its plan's.
-    // The write is fire-and-forget on a background task so it never blocks
-    // the TUI exit path.
+    // The write is one appended line, made before the run returns: a write
+    // spawned onto the runtime could be dropped when the process exits.
     {
         let duration_ms = run_start.elapsed().as_millis() as u64;
         let per_plan: Vec<roko_learn::run_metrics::PlanMetrics> = plan_outcomes
@@ -1696,11 +1710,9 @@ async fn run_graph_plan_body(
             plans: per_plan,
         };
         let metrics_path = graph_learn_dir.join("run-metrics.jsonl");
-        tokio::spawn(async move {
-            if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
-                tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
-            }
-        });
+        if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
+            tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.
@@ -2665,7 +2677,9 @@ async fn run_one_plan(
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
         // Emit incremental TaskStarted/TaskCompleted events for any node whose
         // status changed since the last tick. Filter to real tasks only (the
-        // rich topology adds helper nodes absent from `node_titles`).
+        // rich topology adds helper nodes absent from `node_titles`). A
+        // completed task is reported with the gate verdict of its recorded
+        // output (bug-7e1b6b).
         let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
             .status()
             .node_statuses
@@ -2677,6 +2691,7 @@ async fn run_one_plan(
             &previous_statuses,
             &current_statuses,
             &node_titles,
+            || checkpoint.recorded_gate_verdicts(),
         );
         previous_statuses = current_statuses;
     }
@@ -2777,6 +2792,7 @@ async fn run_one_plan(
         &previous_statuses,
         &final_statuses,
         &node_titles,
+        || output.gate_verdicts.clone(),
     );
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.
@@ -3170,7 +3186,7 @@ mod tests {
     }
 
     /// Workspace config whose only role in use is disabled, so the task
-    /// completes without dispatching a provider.
+    /// fails without dispatching a provider (bug-a843d4).
     const DISABLED_ROLE_CONFIG: &str = r#"
 [agent]
 default_model = "claude-sonnet-4-6"
@@ -3192,19 +3208,19 @@ enabled = false
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("roko.toml"), DISABLED_ROLE_CONFIG).expect("config");
         std::fs::write(dir.path().join("README.md"), "# hub test\n").expect("readme");
-        let plan_dir = dir.path().join("plans").join("01-skipped");
+        let plan_dir = dir.path().join("plans").join("01-disabled");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(
             plan_dir.join("tasks.toml"),
             r#"[meta]
-plan = "01-skipped"
+plan = "01-disabled"
 max_parallel = 1
 skip_enrichment = true
 
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"
@@ -3250,16 +3266,15 @@ files = ["README.md"]
             .as_ref()
             .expect("PlanSetLoaded reached the hub");
         assert_eq!(plan_set.plans.len(), 1);
-        assert_eq!(plan_set.plans[0].plan_id, "01-skipped");
+        assert_eq!(plan_set.plans[0].plan_id, "01-disabled");
         // PlanStarted/PlanCompleted landed in the same hub.
         assert!(snapshot.plan_set_complete());
-        // gap-29a84b: the disabled-role task ran no verify step, so the plan
-        // is unverified, not succeeded.
-        assert_ne!(snapshot.plans["01-skipped"].phase, "completed");
+        // bug-a843d4: the disabled-role task failed, so the plan failed.
+        assert_eq!(snapshot.plans["01-disabled"].phase, "failed");
         assert_eq!(exit_code, EXIT_FAILURE);
         assert_eq!(
-            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
-            Some(GraphCheckpointStatus::Unverified)
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
+            Some(GraphCheckpointStatus::Failed)
         );
     }
 
@@ -3321,7 +3336,7 @@ skip_enrichment = true
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"

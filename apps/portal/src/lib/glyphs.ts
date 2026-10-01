@@ -11,9 +11,12 @@ import type { TaskStatus } from '@/lib/runState';
 
 export type GlyphState =
   | 'done'
+  | 'satisfied'
   | 'active'
   | 'unverified'
   | 'accepted'
+  | 'unchecked'
+  | 'marked'
   | 'failed'
   | 'queued'
   | 'pending'
@@ -35,15 +38,25 @@ export interface GlyphDef {
  *
  * Tokens map 1-to-1 with the CSS custom properties in tokens.css:
  *   --state-done, --state-active, --state-accepted (amber, NOT green),
- *   --state-failed, --state-queued, --state-pending, --state-skipped.
+ *   --state-satisfied (info cyan), --state-failed, --state-queued,
+ *   --state-pending, --state-skipped.
  * `unverified` is a running plan in amber: a task was accepted despite failing
- * checks, or every task is dispatched and only checks remain.
+ * checks or finished unchecked, or every task is dispatched and only checks
+ * remain. `unchecked` is a task that finished without a verify step judging it:
+ * amber too, since green means verified. `satisfied` is a task whose work was
+ * already there: its verify steps passed on the tree its attempt left
+ * unchanged. It is verified, but not a pass of this attempt, so it is cyan.
+ * `marked` is a task its plan file marks done that the run holds no record
+ * of: done on paper, with nothing to show it passed, so it stays faint.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
+  satisfied: { glyph: '≡', token: 'var(--state-satisfied)', label: 'already satisfied' },
   active:   { glyph: '►', token: 'var(--state-active)',   label: 'active'   },
   unverified: { glyph: '▷', token: 'var(--state-accepted)', label: 'running, not verified' },
   accepted: { glyph: '⚠', token: 'var(--state-accepted)', label: 'accepted' },
+  unchecked: { glyph: '?', token: 'var(--state-accepted)', label: 'done, not verified' },
+  marked:   { glyph: '☑', token: 'var(--state-pending)',  label: 'done without a run record' },
   failed:   { glyph: '✗', token: 'var(--state-failed)',   label: 'failed'   },
   queued:   { glyph: '◌', token: 'var(--state-queued)',   label: 'queued'   },
   pending:  { glyph: '·', token: 'var(--state-pending)',  label: 'pending'  },
@@ -60,11 +73,14 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
  *   passed               → done
  *   failed               → failed
  *   accepted_with_failures → accepted  (NEVER done — amber, not green)
+ *   already_satisfied    → satisfied (cyan: its verify steps passed, but it is not a pass)
+ *   unverified           → unchecked (NEVER done — amber, not green)
+ *   marked_done          → marked (done in tasks.toml, no run record; never done)
  *   skipped              → skipped
  *   cancelled            → skipped
  *   pending              → pending
  */
-export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
+export function glyphStateForTask(status: TaskStatus | 'pending' | 'marked_done'): GlyphState {
   switch (status) {
     case 'active':
       return 'active';
@@ -75,6 +91,12 @@ export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
     case 'accepted_with_failures':
       // Must map to accepted (amber), not done (green). See tokens.css §1.
       return 'accepted';
+    case 'already_satisfied':
+      return 'satisfied';
+    case 'unverified':
+      return 'unchecked';
+    case 'marked_done':
+      return 'marked';
     case 'skipped':
       return 'skipped';
     case 'cancelled':

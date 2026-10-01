@@ -1012,6 +1012,10 @@ pub struct PromptDiagnostics {
     pub playbook_ids: Vec<String>,
     /// Neuro knowledge ids surfaced (if any).
     pub knowledge_ids: Vec<String>,
+    /// Prior-episode ids the episode section cited (if any). Feedback treats
+    /// `knowledge_ids` as knowledge entry ids, so these stay apart.
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
     /// Canonical source refs and score results produced by prompt composition.
     #[serde(default)]
     pub scored_signals: Vec<ScoredSignalDiagnostic>,
@@ -1701,10 +1705,16 @@ impl PromptAssembler {
         // Gather playbook / knowledge ids and text for the canonical path.
         let mut playbook_ids: Vec<String> = Vec::new();
         let mut knowledge_ids: Vec<String> = Vec::new();
+        let mut episode_ids: Vec<String> = Vec::new();
         let mut code_context: Vec<String> = Vec::new();
         for sec in &source_sections {
             playbook_ids.extend(sec.playbook_ids.clone());
-            knowledge_ids.extend(sec.knowledge_ids.clone());
+            // The episode section cites prior episodes, not knowledge entries.
+            if sec.name == "episode_knowledge" {
+                episode_ids.extend(sec.knowledge_ids.clone());
+            } else {
+                knowledge_ids.extend(sec.knowledge_ids.clone());
+            }
             if !sec.body.is_empty()
                 && matches!(
                     sec.name.as_str(),
@@ -1910,6 +1920,7 @@ impl PromptAssembler {
             estimated_tokens,
             playbook_ids,
             knowledge_ids,
+            episode_ids,
             scored_signals,
             composition_manifest,
             experiment_assignments: experiment_assignment_diagnostics,
@@ -2281,24 +2292,21 @@ fn collect_neuro_knowledge_cached(
         return None;
     }
 
-    // Score entries by keyword overlap (mirrors KnowledgeStore::query's lexical path).
+    // Count the task keywords an entry holds as whole words: a substring test
+    // also finds them inside longer words ("log" in "catalog").
     let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
         .iter()
         .filter_map(|entry| {
             if is_group_scoped_knowledge(entry) {
                 return None;
             }
-            let haystack = format!(
+            let words = query_words(&format!(
                 "{} {} {}",
                 entry.content,
                 entry.tags.join(" "),
                 entry.source.as_deref().unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            let score = keywords
-                .iter()
-                .filter(|kw| haystack.contains(kw.as_str()))
-                .count();
+            ));
+            let score = keywords.intersection(&words).count();
             if score > 0 {
                 Some((score, entry))
             } else {
@@ -2310,7 +2318,8 @@ fn collect_neuro_knowledge_cached(
         b.0.cmp(&a.0)
             .then_with(|| b.1.confidence.total_cmp(&a.1.confidence))
     });
-    scored.truncate(5);
+    // The uncached path's cap.
+    scored.truncate(3);
 
     if scored.is_empty() {
         return None;
@@ -2485,12 +2494,35 @@ fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
     parts.join(" ")
 }
 
-fn query_keywords(text: &str) -> HashSet<String> {
+/// Words that say nothing about a task's topic, so they never match its
+/// context (bug-86117a).
+const QUERY_STOPWORDS: &[&str] = &[
+    "about", "after", "again", "all", "also", "and", "any", "are", "because", "been", "before",
+    "being", "both", "but", "can", "could", "did", "does", "doing", "done", "during", "each",
+    "every", "for", "from", "had", "has", "have", "here", "how", "into", "its", "just", "may",
+    "might", "more", "most", "must", "nor", "not", "off", "once", "only", "onto", "other", "our",
+    "out", "over", "own", "per", "same", "should", "some", "such", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through", "too", "under", "until",
+    "upon", "very", "via", "was", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "within", "without", "would", "yet", "you", "your",
+];
+
+/// The lowercase words of `text`. `-` and `_` join words, so `roko-cli` and
+/// `prompt_builder` are one word each.
+fn query_words(text: &str) -> HashSet<String> {
     text.to_ascii_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-        .filter(|word| word.len() > 2)
+        .filter(|word| !word.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+/// The words of a task's query text that can match its context: longer
+/// than two characters, and not stopwords.
+fn query_keywords(text: &str) -> HashSet<String> {
+    let mut keywords = query_words(text);
+    keywords.retain(|word| word.len() > 2 && !QUERY_STOPWORDS.contains(&word.as_str()));
+    keywords
 }
 
 fn episode_paths(workdir: &Path) -> Vec<PathBuf> {
@@ -3403,6 +3435,112 @@ mod tests {
         let ordinary = collect_neuro_knowledge(&task(), &prompt_ctx).expect("public knowledge");
         assert!(ordinary.body.contains("public wiring knowledge"));
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
+    }
+
+    /// Writes `entries` (id and content) to `workdir`'s knowledge store.
+    fn write_knowledge(workdir: &Path, entries: &[(&str, &str)]) {
+        let neuro_dir = workdir.join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entries
+            .iter()
+            .map(|(id, content)| {
+                let entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "content": content,
+                    "confidence": 0.8,
+                    "created_at": Utc::now(),
+                }))
+                .expect("knowledge entry");
+                serde_json::to_string(&entry).expect("knowledge json") + "\n"
+            })
+            .collect::<String>();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+    }
+
+    /// Assembles `task` in `workdir` as a plan run does, from a prompt cache
+    /// loaded once.
+    fn assemble_cached(task: &TaskDef, workdir: &Path) -> AssembledPrompt {
+        let mut dispatch = ctx();
+        dispatch.workdir = workdir.to_path_buf();
+        let prompt_ctx = PromptContext::from_task(task, &dispatch);
+        PromptAssembler::with_cache(Arc::new(PromptCache::load(workdir)))
+            .assemble(task, &prompt_ctx)
+            .expect("assemble")
+    }
+
+    /// A plan run's assembler reads knowledge from a cache loaded once
+    /// (bug-86117a). The cache holds every hot entry, and each prompt carries
+    /// those that share a content word with its task, not those that share
+    /// only stopwords.
+    #[test]
+    fn cached_prompt_surfaces_matching_durable_knowledge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The task explains "the wiring": the first entry shares "wiring",
+        // the second only "the", which a substring test also finds in "other".
+        write_knowledge(
+            temp.path(),
+            &[
+                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-stopwords", "Keep the other notes short"),
+            ],
+        );
+        assert_eq!(
+            PromptCache::load(temp.path()).neuro_entries.len(),
+            2,
+            "the cache holds every hot entry"
+        );
+        let prompt = assemble_cached(&task(), temp.path());
+
+        let system = &prompt.system_prompt;
+        assert!(system.contains("# Neuro knowledge"), "{system}");
+        assert!(
+            system.contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            "{system}"
+        );
+        assert!(!system.contains("Keep the other notes short"), "{system}");
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// The knowledge also reaches a prompt whose domain context is longer
+    /// than its conventions section. The composer's foraging pre-pass used
+    /// to drop that section, and the knowledge with it (bug-4aa696).
+    #[test]
+    fn cached_knowledge_survives_a_long_domain_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge(
+            temp.path(),
+            &[("k-wiring", "Register new wiring in the dispatcher table")],
+        );
+        let mut long_task = task();
+        long_task.description = Some(format!(
+            "Explain the wiring. {}",
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(30)
+        ));
+        let prompt = assemble_cached(&long_task, temp.path());
+
+        let manifest = prompt
+            .diagnostics
+            .composition_manifest
+            .as_ref()
+            .expect("composition manifest");
+        let tokens = |name: &str| {
+            manifest
+                .included
+                .iter()
+                .find(|section| section.name == name)
+                .map(|section| section.estimated_tokens)
+        };
+        let domain = tokens("domain_context").expect("domain_context is kept");
+        let conventions = tokens("conventions").expect("conventions is kept");
+        assert!(domain > conventions, "{domain} <= {conventions} tokens");
+        assert!(
+            prompt
+                .system_prompt
+                .contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            "{}",
+            prompt.system_prompt
+        );
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
     }
 
     #[test]

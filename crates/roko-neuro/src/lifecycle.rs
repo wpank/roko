@@ -1276,7 +1276,7 @@ where
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
     let line = serde_json::to_string(value).context("serialize lifecycle record")?;
-    writeln!(file, "{line}").context("write lifecycle record")?;
+    roko_core::io::write_jsonl_line(&mut file, &line).context("write lifecycle record")?;
     file.flush().context("flush lifecycle record")?;
     file.sync_all().context("sync lifecycle record")?;
     Ok(())

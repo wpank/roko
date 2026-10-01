@@ -1,5 +1,11 @@
 # References — Master Citation Index
 
+> **Descriptions checked against the papers: 49 works only.** The docs/v3 audit
+> (`tools/docs_integrity/content_audit.json`) compared the descriptions of these works with each paper's full
+> text and found claims the papers do not support for 62% of the 45 most-described ones. The `*Grounds:*`
+> annotations of every other work in these reference files were removed because they have not been checked
+> against the papers; the citations remain. The checked works are listed in docs/v3/REFERENCES.md.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 

@@ -169,7 +169,7 @@ The dream system draws from a rich body of research. These citations appear thro
 | Byrne (2005), The Rational Imagination | Counterfactual reasoning: fault lines (controllable, recent, abnormal actions) |
 | Epstude & Roese (2008), Personality and Social Psychology Review | Functional theory of counterfactual thinking: upward counterfactuals drive self-improvement |
 | Sumers et al. (2023), arXiv:2309.02427, CoALA framework | Three cognitive speeds: Gamma/Theta/Delta |
-| WSCL (2024) | Wake-sleep continual learning: 38% reduction in catastrophic forgetting |
+| WSCL (Sorrenti et al. 2024) | Wake-sleep consolidated learning: wake, NREM and REM phases beat continual-learning baselines on image classification, with positive forward transfer (abstract) |
 | Simonton (2010), "Creative thought as blind-variation and selective-retention" | BVSR theory: creativity requires variation + selection |
 | Gammaitoni et al. (1998), Reviews of Modern Physics | Stochastic resonance: controlled noise improves signal detection |
 

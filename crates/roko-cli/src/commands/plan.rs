@@ -837,6 +837,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     "plan generate --from-notes",
                 )?;
 
+                // `roko plan generate` keeps its plans in `.roko/plans/`.
+                let plans_root = workdir.join(".roko").join("plans");
                 for cluster in &clusters {
                     let combined: String = cluster
                         .notes
@@ -847,49 +849,25 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let slug = cluster.theme.replace(' ', "-");
                     tracing::info!(%slug, "generating plan for cluster");
 
-                    let system = roko_cli::plan_generate::build_generation_prompt(
-                        &workdir, &combined, "notes",
-                    );
-                    let task_id = format!("plan:generate:notes:{slug}");
-                    let task_prompt = format!(
-                        "Read the notes below and generate an implementation plan directory \
-                         under .roko/plans/{slug}/. \
-                         Use the supplied bounded context; allow at most one repository-rooted \
-                         exact-symbol query capped at 20 matches when a fact is missing. \
-                         Create plan.md and tasks.toml files with tier and context \
-                         (read_files with line ranges), mcp_servers (per-task MCP server names), \
-                         and verify steps (executable shell commands). \
-                         Use the cheapest model tier for each task.\n\n{combined}"
-                    );
-
-                    let exit_code = run_agent_logged(
-                        AgentExecOpts {
-                            prompt: &task_prompt,
-                            workdir: &workdir,
-                            model: Some(model_key.as_str()),
-                            effort: Some("high"),
-                            system_prompt: Some(&system),
-                            resume_session: None,
-                            env_vars: &gw.vars,
-                            role: Some("strategist"),
-                            allowed_tools: None,
-                        },
-                        AgentExecEpisode {
-                            task_kind: "plan-generate",
-                            task_id: &task_id,
-                        },
-                    )
-                    .await;
-
-                    match exit_code {
-                        Ok(code) if code == EXIT_SUCCESS => {
+                    let request = roko_cli::prd::PlanRequest {
+                        plans_root: Some(&plans_root),
+                        model: Some(model_key.as_str()),
+                        effort: Some("high"),
+                        ..roko_cli::prd::PlanRequest::new(
+                            roko_cli::prd::PlanSource::Text {
+                                text: &combined,
+                                kind: "notes",
+                            },
+                            &slug,
+                            &workdir,
+                        )
+                    };
+                    match roko_cli::prd::generate_plan(request).await {
+                        Ok(_) => {
                             tracing::info!(%slug, "plan generated from notes cluster");
                         }
-                        Ok(code) => {
-                            tracing::warn!(%slug, exit_code = code, "plan generate for cluster exited with non-zero code");
-                        }
                         Err(err) => {
-                            tracing::warn!(%slug, error = %err, "plan generate for cluster failed");
+                            tracing::warn!(%slug, error = %format!("{err:#}"), "plan generate for cluster failed");
                         }
                     }
                 }
@@ -917,17 +895,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 "prompt"
             };
-            let task_id = from_file
+            // The plan's slug: the file's stem, else the prompt's words.
+            let slug = from_file
                 .as_ref()
                 .and_then(|path| path.file_stem())
                 .and_then(|stem| stem.to_str())
-                .map(|stem| format!("plan:generate:{stem}"))
-                .unwrap_or_else(|| "plan:generate:prompt".to_string());
-            let system = roko_cli::plan_generate::build_generation_prompt(
-                &workdir,
-                &source_text,
-                source_type,
-            );
+                .map_or_else(
+                    || roko_cli::prd::slugify(&source_text),
+                    roko_cli::prd::slugify,
+                );
             let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
@@ -943,283 +919,97 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 );
                 if !loaded.is_empty() {
-                    format!("\n\n<context>\n{loaded}</context>\n")
+                    format!("<context>\n{loaded}</context>")
                 } else {
                     String::new()
                 }
             };
 
-            let task_prompt = format!(
-                "Read the source below and generate implementation plan directories under .roko/plans/. \
-                 Use the supplied bounded context; allow at most one repository-rooted exact-symbol query \
-                 capped at 20 matches when a fact is missing. \
-                 Create plan.md and tasks.toml files with tier and context (read_files with line ranges), \
-                 mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-                 Use the cheapest model tier for each task.\n\n{source_text}{context_block}"
-            );
-
-            let exit_code = run_agent_logged(
-                AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: &workdir,
-                    model: Some(model_key.as_str()),
-                    effort: Some("high"),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &gw.vars,
-                    role: Some("strategist"),
-                    allowed_tools: None,
-                },
-                AgentExecEpisode {
-                    task_kind: "plan-generate",
-                    task_id: &task_id,
-                },
-            )
-            .await?;
-
-            if exit_code != EXIT_SUCCESS {
+            // The one plan generator (gap-2623b2) validates and writes the
+            // plan; `roko plan generate` keeps its plans in `.roko/plans/`.
+            let plans_root = workdir.join(".roko").join("plans");
+            let request = roko_cli::prd::PlanRequest {
+                plans_root: Some(&plans_root),
+                context: Some(context_block.as_str()),
+                model: Some(model_key.as_str()),
+                effort: Some("high"),
+                ..roko_cli::prd::PlanRequest::new(
+                    roko_cli::prd::PlanSource::Text {
+                        text: &source_text,
+                        kind: source_type,
+                    },
+                    &slug,
+                    &workdir,
+                )
+            };
+            let (_, outcome) = roko_cli::prd::generate_plan(request).await?;
+            if outcome.artifact_valid {
+                Ok(EXIT_SUCCESS)
+            } else {
                 tracing::error!(
-                    exit_code,
-                    "plan generate: agent exited with non-zero code; \
-                     check the latest episode in .roko/episodes.jsonl for details"
+                    "plan generate: the generated plans failed validation (see warnings above)"
                 );
+                Ok(1)
             }
-
-            // Validate all tasks.toml files written by the agent under .roko/plans/.
-            // Check all files and collect all errors before reporting.
-            let mut final_exit_code = exit_code;
-            if exit_code == EXIT_SUCCESS {
-                let plans_output_dir = workdir.join(".roko").join("plans");
-                if plans_output_dir.is_dir() {
-                    let mut validation_failed = false;
-                    let entries = std::fs::read_dir(&plans_output_dir)
-                        .with_context(|| format!("read {}", plans_output_dir.display()))?;
-                    for entry in entries.flatten() {
-                        let tasks_path = entry.path().join("tasks.toml");
-                        if !tasks_path.is_file() {
-                            continue;
-                        }
-                        match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                            Ok(tasks) => {
-                                let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
-                                    roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
-                                );
-                                let issues = roko_cli::plan_policy::validate_plan_context(
-                                    &tasks,
-                                    &workdir,
-                                    &entry.path(),
-                                    policy,
-                                );
-                                if !issues.is_empty() {
-                                    tracing::warn!(
-                                        path = %tasks_path.display(),
-                                        issues = %issues.iter().map(|i| format!("  - {i}")).collect::<Vec<_>>().join("\n"),
-                                        "generated plan violates its execution contract"
-                                    );
-                                    validation_failed = true;
-                                }
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    path = %tasks_path.display(),
-                                    error = %err,
-                                    "invalid tasks.toml"
-                                );
-                                validation_failed = true;
-                            }
-                        }
-                    }
-                    if validation_failed {
-                        tracing::error!(
-                            "plan generate: one or more generated tasks.toml files failed \
-                             TOML validation (see warnings above)"
-                        );
-                        final_exit_code = 1;
-                    }
-                }
-            }
-
-            Ok(final_exit_code)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
-            use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
-
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan regeneration writes only to the target plan directory,
             // which is per-slug and non-overlapping with active plan runs.
             // No workspace lock needed (#226).
+            let plan_dir = if plan_dir.is_absolute() {
+                plan_dir
+            } else {
+                workdir.join(plan_dir)
+            };
             let tasks_path = plan_dir.join("tasks.toml");
             if !tasks_path.exists() {
                 anyhow::bail!("No tasks.toml found in {}", plan_dir.display());
             }
-
-            let existing = std::fs::read_to_string(&tasks_path)
-                .with_context(|| format!("read {}", tasks_path.display()))?;
-            let existing_tasks = roko_cli::task_parser::TasksFile::parse(&tasks_path).ok();
             let source_path = find_plan_source_document(&plan_dir)?;
-            let source_content = std::fs::read_to_string(&source_path)
-                .with_context(|| format!("read {}", source_path.display()))?;
             let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
                 "plan regenerate",
             )?;
 
-            // Collect pre-existing validation diagnostics so the agent knows what was wrong.
+            // Collect pre-existing validation diagnostics so the planner knows what was wrong.
             let pre_validation_context =
                 format_pre_validation_context(&tasks_path, &plan_validate::validate_plans_dir);
 
             if dry_run {
-                let system = roko_cli::plan_generate::build_generation_prompt(
-                    &workdir,
-                    &source_content,
-                    "prd",
-                );
-                let task_prompt = format!(
-                    "Regenerate the plan at {} from the source PRD above. \
-                     Rewrite tasks.toml in place with full modern metadata: tier, \
-                     max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                     [task.context], and exactly one focused [[task.verify]] per task. Never set \
-                     model_hint. Preserve the status of any task that \
-                     is already marked done in the existing file. Do not create new plan \
-                     directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
-                     {pre_validation_context}",
-                    tasks_path.display(),
-                    existing = existing,
-                );
                 tracing::info!(
                     tasks = %tasks_path.display(),
                     source = %source_path.display(),
-                    prompt_len = system.len() + task_prompt.len(),
+                    model = %model_key,
                     "[dry-run] would regenerate plan"
                 );
                 return Ok(EXIT_SUCCESS);
             }
 
-            let gw = load_gateway_env(&workdir);
-
-            let system =
-                roko_cli::plan_generate::build_generation_prompt(&workdir, &source_content, "prd");
-            let task_prompt = format!(
-                "Regenerate the plan at {} from the source PRD above. \
-                 Rewrite tasks.toml in place with full modern metadata: tier, \
-                 max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-                 [task.context], and exactly one focused [[task.verify]] per task. Never set \
-                 model_hint. Preserve the status of any task that \
-                 is already marked done in the existing file. Do not create new plan \
-                 directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```\
-                 {pre_validation_context}",
-                tasks_path.display(),
-                existing = existing,
-            );
-            let plan_name = plan_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown");
-            let task_id = format!("plan:regenerate:{plan_name}");
-
-            let exit_code = match run_agent_logged(
-                AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: &workdir,
-                    model: Some(model_key.as_str()),
-                    effort: Some("high"),
-                    system_prompt: Some(&system),
-                    resume_session: None,
-                    env_vars: &gw.vars,
-                    role: Some("strategist"),
-                    allowed_tools: None,
-                },
-                AgentExecEpisode {
-                    task_kind: "plan-regenerate",
-                    task_id: &task_id,
-                },
-            )
-            .await
-            {
-                Ok(code) => code,
-                Err(err) => {
-                    std::fs::write(&tasks_path, &existing)
-                        .with_context(|| format!("restore {}", tasks_path.display()))?;
-                    return Err(err);
-                }
+            // The one plan generator (gap-2623b2) rewrites tasks.toml only
+            // once the regenerated plan passes validation, keeping done
+            // tasks done.
+            let slug = roko_cli::prd::plan_dir_slug(&plan_dir);
+            let request = roko_cli::prd::PlanRequest {
+                context: Some(pre_validation_context.as_str()),
+                model: Some(model_key.as_str()),
+                effort: Some("high"),
+                ..roko_cli::prd::PlanRequest::new(
+                    roko_cli::prd::PlanSource::Regenerate(&plan_dir),
+                    &slug,
+                    &workdir,
+                )
             };
-
-            if exit_code != 0 {
-                std::fs::write(&tasks_path, &existing)
-                    .with_context(|| format!("restore {}", tasks_path.display()))?;
-                anyhow::bail!("plan regeneration agent failed with exit code {exit_code}");
-            }
-
-            let regenerated = match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                Ok(tasks) => tasks,
-                Err(err) => {
-                    std::fs::write(&tasks_path, &existing)
-                        .with_context(|| format!("restore {}", tasks_path.display()))?;
-                    return Err(err);
-                }
-            };
-
-            let merged =
-                preserve_completed_task_status(existing_tasks.as_ref(), regenerated, &plan_dir);
-            let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
-                roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
-            );
-            let policy_issues =
-                roko_cli::plan_policy::validate_plan_context(&merged, &workdir, &plan_dir, policy);
-            if !policy_issues.is_empty() {
-                std::fs::write(&tasks_path, &existing)
-                    .with_context(|| format!("restore {}", tasks_path.display()))?;
-                anyhow::bail!(
-                    "regenerated tasks.toml violates the bounded execution contract:\n{}",
-                    policy_issues
-                        .iter()
-                        .map(|issue| format!("  - {issue}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+            let (_, outcome) = roko_cli::prd::generate_plan(request).await?;
+            if outcome.artifact_valid {
+                Ok(EXIT_SUCCESS)
+            } else {
+                tracing::error!(
+                    "plan regenerate: the regenerated plan failed validation (see warnings above)"
                 );
+                Ok(1)
             }
-            let rendered =
-                toml::to_string_pretty(&merged).context("serialize regenerated tasks.toml")?;
-            if let Err(err) = std::fs::write(&tasks_path, rendered) {
-                std::fs::write(&tasks_path, &existing)
-                    .with_context(|| format!("restore {}", tasks_path.display()))?;
-                return Err(err.into());
-            }
-
-            match roko_cli::task_parser::TasksFile::validate_modern_fields(&tasks_path) {
-                Ok(issues) if !issues.is_empty() => {
-                    // Collect post-regeneration diagnostics for richer error output.
-                    let post_context = format_pre_validation_context(
-                        &tasks_path,
-                        &plan_validate::validate_plans_dir,
-                    );
-                    std::fs::write(&tasks_path, &existing)
-                        .with_context(|| format!("restore {}", tasks_path.display()))?;
-                    anyhow::bail!(
-                        "regenerated tasks.toml is still missing modern fields after regeneration.\n\
-                         Missing fields: {missing}\n\
-                         Pre-regeneration issues:{pre}\n\
-                         Post-regeneration issues:{post}",
-                        missing = issues
-                            .into_iter()
-                            .map(|issue| format!("{}: {:?}", issue.task_id, issue.missing_fields))
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                        pre = pre_validation_context,
-                        post = post_context,
-                    );
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    std::fs::write(&tasks_path, &existing)
-                        .with_context(|| format!("restore {}", tasks_path.display()))?;
-                    return Err(err);
-                }
-            }
-
-            Ok(EXIT_SUCCESS)
         }
         PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,
 
@@ -1456,7 +1246,7 @@ fn record_held_review(
         .create(true)
         .append(true)
         .open(&log)?;
-    writeln!(file, "{entry}")?;
+    file.write_all(format!("{entry}\n").as_bytes())?;
     Ok(attempt_key)
 }
 
@@ -2245,72 +2035,6 @@ pub(crate) fn find_plan_source_document(plan_dir: &Path) -> Result<PathBuf> {
         "no source PRD found in {} (looked for source-prd.md, prd-extract.md, and plan.md)",
         plan_dir.display()
     )
-}
-
-pub(crate) fn normalize_task_title(title: &str) -> String {
-    title
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-pub(crate) fn preserve_completed_task_status(
-    old_tasks: Option<&roko_cli::task_parser::TasksFile>,
-    mut regenerated: roko_cli::task_parser::TasksFile,
-    plan_dir: &Path,
-) -> roko_cli::task_parser::TasksFile {
-    if let Some(old_tasks) = old_tasks {
-        let completed: Vec<&roko_cli::task_parser::TaskDef> = old_tasks
-            .tasks
-            .iter()
-            .filter(|task| task.status.eq_ignore_ascii_case("done"))
-            .collect();
-
-        let mutations: Vec<roko_cli::task_parser::PlanMutation> = regenerated
-            .tasks
-            .iter()
-            .filter_map(|task| {
-                let normalized = normalize_task_title(&task.title);
-                let already_done = completed.iter().any(|old| {
-                    old.id == task.id
-                        || normalize_task_title(&old.title) == normalized
-                        || normalize_task_title(&old.title).contains(&normalized)
-                        || normalized.contains(&normalize_task_title(&old.title))
-                });
-                if already_done {
-                    Some(roko_cli::task_parser::PlanMutation::MarkTaskDone {
-                        task_id: task.id.clone(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        regenerated.apply_mutations(mutations);
-
-        regenerated.meta.iteration = old_tasks.meta.iteration.saturating_add(1);
-        if regenerated.meta.plan.trim().is_empty() {
-            regenerated.meta.plan = old_tasks.meta.plan.clone();
-        }
-    }
-
-    if regenerated.meta.plan.trim().is_empty() {
-        regenerated.meta.plan = plan_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown-plan".to_string());
-    }
-
-    // apply_mutations already calls recount_meta; call it once more to handle
-    // the case where old_tasks was None (no mutations were applied).
-    regenerated.recount_meta();
-
-    regenerated
 }
 
 pub(crate) fn read_executor_state(

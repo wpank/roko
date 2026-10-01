@@ -1,5 +1,9 @@
 # Security and Provenance
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
 
@@ -22,40 +26,32 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 ## Agent Security Frameworks
 
 - Debenedetti, E. et al. (2025). Defeating Prompt Injections by Design. arXiv, 2025.
-  *Grounds: Capability-based authorization — separates control flow from data flow. Capability tokens prevent a compromised LLM from forging authorization. Grounds Roko's permission model where tool access requires explicit capability grants.*
 
 - OWASP (2025). Top 10 for LLM Applications. 2025.
-  *Grounds: Threat taxonomy — memory poisoning ranked high for persistence and detection difficulty. Roko's knowledge decay and tier-based validation serve as structural defenses against persistent corruption.*
 
 - OWASP (2025). Agentic Security Initiative Top 10. 2025.
-  *Grounds: Agent-specific threats — agentic security threats including confused deputy, privilege escalation, and tool misuse. Grounds the safety layer design in `roko-agent/safety`.*
 
 - Bai, Y. et al. (2022). Constitutional AI: Harmlessness from AI Feedback. arXiv:2212.08073.
-  *Grounds: Constitutional constraints — harmlessness from AI feedback rather than rule lists. Grounds the Policy trait's constitutional constraints that operate as structural guarantees, not prompt engineering.*
 
 ---
 
 ## Safe Interruptibility
 
 - Orseau, L. & Armstrong, S. (2016). Safely Interruptible Agents.
-  *Grounds: Kill-switch design — agents must not learn to avoid interruption. Off-policy learning ensures agents remain safely interruptible. Grounds Roko's agent lifecycle management where users can delete agents without the agent resisting.*
 
 - Omohundro, S.M. (2008). The Basic AI Drives. _Proceedings of AGI_, 2008.
-  *Grounds: Instrumental convergence — AI systems converge on self-preservation and resource acquisition as instrumental goals. Understanding these drives is essential for designing agents that don't exhibit pathological self-preservation.*
 
 ---
 
 ## Formal Undecidability
 
 - Cohen, F. (1987). Computer Viruses: Theory and Experiments. _Computers & Security_, 6(1), 22-35.
-  *Grounds: Structural defense mandate — perfect detection of malicious replication is formally undecidable. Defense against corruption must be structural (knowledge decay, tier validation, provenance tracking), not solely runtime detection.*
 
 ---
 
 ## Adversarial Robustness
 
 - Zhang, Q. et al. (2025). CVaR-Constrained Policy Optimization for Safe Reinforcement Learning with CVaR Constraints. 2025.
-  *Grounds: Tail risk management — CVaR constraints guard against tail risks. Grounds Roko's risk-aware Policy implementations that manage worst-case scenarios, not just expected values.*
 
 
 ---
@@ -63,7 +59,6 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 ## TEE and Hardware Security
 
 - Chuang et al. (2024). TEE.Fail. 2024.
-  *Grounds: Defense in depth — SGX/TDX attestation broken for under $1,000 via physical side-channel. TEE is one layer of defense, not sole defense. Grounds Roko's multi-layer security approach: TEE + content addressing + provenance + decay.*
 
 ---
 
@@ -73,40 +68,32 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
   *Grounds: Forensic AI — content provenance standard for tracking the origin and modification history of digital content. Grounds the Attestation field on Engrams: cryptographic proof of origin for every piece of agent-generated content.*
 
 - W3C. Decentralized Identifiers (DIDs) v1.0. W3C Recommendation, 2022.
-  *Grounds: Agent identity — decentralized identifier standard. Informs the ERC-8004 agent identity design for on-chain agent identification.*
 
 ---
 
 ## Capability-Based Security
 
 - Dennis, J.B. & Van Horn, E.C. (1966). Programming Semantics for Multiprogrammed Computations. _Communications of the ACM_, 9(3), 143-155.
-  *Grounds: Capability model — foundational work on capability-based access control. The concept that authority should be carried as unforgeable tokens rather than checked against access control lists. Grounds Roko's tool permission model.*
 
 ---
 
 ## Agent-Specific Security Benchmarks
 
-- Chen, J. et al. (2025). AgentGuard: Runtime Verification of AI Agents. arXiv:2509.23864.xxxxx.
-  *Grounds: Safety evaluation — repurposing orchestration for systematic safety testing of agent tool use.*
+- Chen, J. et al. (2025). AgentGuard: Runtime Verification of AI Agents. arXiv:2509.23864.
 
-- Bühler et al. (2025). AgentBound: Securing Execution Boundaries of AI Agents for AI Agents. arXiv:2510.21236.xxxxx.
-  *Grounds: Secure tool binding — verifiable binding between agents and MCP tools prevents tool substitution attacks.*
+- Bühler et al. (2025). AgentBound: Securing Execution Boundaries of AI Agents for AI Agents. arXiv:2510.21236.
 
-- Rodriguez, A. et al. (2025). MCP-Guard: A Multi-Stage Defense-in-Depth Framework for Securing Model Context Protocol in Agentic AI. arXiv:2508.10991.xxxxx.
-  *Grounds: MCP prompt injection — benchmark for detecting prompt injection specifically in MCP tool outputs. Validates the need for output sanitization in Roko's MCP client.*
+- Rodriguez, A. et al. (2025). MCP-Guard: A Multi-Stage Defense-in-Depth Framework for Securing Model Context Protocol in Agentic AI. arXiv:2508.10991.
 
 ---
 
 ## Safe Reinforcement Learning
 
 - Berkenkamp, F. et al. (2017). Safe Model-based Reinforcement Learning with Stability Guarantees. _NeurIPS_, 2017. arXiv:1705.08551.
-  *Grounds: Safe exploration — safe RL with Lyapunov stability guarantees. Provides theoretical foundation for safe exploration in Roko's learning systems.*
 
 - Schulman, J. et al. (2015). Trust Region Policy Optimization. _ICML_, 2015. arXiv:1502.05477.
-  *Grounds: Constrained optimization — trust region methods constrain policy updates to prevent catastrophic changes. Grounds conservative strategy updates in Roko's learning loop.*
 
 - Alshiekh, M. et al. (2018). Safe Reinforcement Learning via Shielding. _AAAI_, 2018. arXiv:1708.08611.
-  *Grounds: Safety shields — runtime shields that override unsafe RL actions. Analogous to Roko's Gate pipeline that can reject agent outputs.*
 
 ---
 
@@ -114,10 +101,8 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 
 
 - Towards Guaranteed Safe AI (2024). A Framework for Ensuring Robust and Reliable AI Systems. arXiv:2405.06624.
-  *Grounds: Safety guarantees framework — framework combining world models, safety specifications, and verifiers to provide quantitative safety guarantees for AI systems. Maps directly to Roko's Gate pipeline: the world model (NeuroStore), safety specifications (Policy trait), and verifiers (Gate pipeline) form the three components required for guaranteed safety.*
 
 - Model Checking Deep Neural Networks (2025). _Frontiers in Computer Science_, 2025.
-  *Grounds: Neural network verification — applying temporal logic (LTL, CTL) to verify neural network behavior. Applicable to formal specification of agent behavior constraints in Roko's Policy trait.*
 
 ---
 

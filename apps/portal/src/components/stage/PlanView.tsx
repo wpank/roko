@@ -279,7 +279,8 @@ export function PlanView({
   const fraction = tasksTotal > 0 ? tasksDone / tasksTotal : 0;
 
   // Progress bar segments
-  const barAccepted = livePlan?.tasksAccepted ?? 0;
+  // Unverified tasks share the amber segment: only verified passes are green.
+  const barAccepted = (livePlan?.tasksAccepted ?? 0) + (livePlan?.tasksUnverified ?? 0);
   const barFailed = livePlan?.tasksFailed ?? 0;
   const barActive = isRunning
     ? Object.values(run.tasks).filter(

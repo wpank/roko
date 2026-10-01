@@ -341,6 +341,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         raise DriverError(str(err)) from None
     if args.own_process:  # the checks passed on the operator's environment; now shed its credentials (bug-32eb77)
         agent_env.exec_scrubbed()
+    _preflight(runner, plan)
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")
@@ -506,6 +507,18 @@ def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], pos
     bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task .vb-bin/, which PATH starts with
     shell = shutil.which("bash", path=env["PATH"]) or "/bin/bash"  # the shell the direct loop would use
     return vb_verify.install(bin_dir, key=key, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
+
+
+def _preflight(runner: ModuleType, plan: Plan) -> None:
+    """The runner's own start-up check, when it has one (`preflight`, harness.py), before the first task: the Roko
+    arm's binary must accept the plans the arm emits (bug-a05c53). A refusal stops the run."""
+    check = getattr(runner, "preflight", None)
+    if not callable(check):
+        return
+    try:
+        check(plan.arm, plan.model, plan.endpoint, plan.caps, plan.snapshot)
+    except Exception as err:  # the runner owns its errors; any of them refuses the run
+        raise DriverError(f"arm {plan.arm['arm']['id']}: {err}") from None
 
 
 def load_runner(arm: dict) -> ModuleType:

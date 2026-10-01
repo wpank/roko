@@ -2,10 +2,16 @@
 //!
 //! All state-critical writes should use [`atomic_write`] or [`atomic_write_async`]
 //! to prevent partial / corrupted files on crash.
+//!
+//! JSONL appenders write each row with [`append_jsonl`], [`append_jsonl_line`]
+//! or [`write_jsonl_line`]: the row and its newline in one write, so rows
+//! appended at once never interleave.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+use serde::Serialize;
 
 /// Atomically write `data` to `path` by writing to a `.tmp` sibling, then
 /// renaming.  Safe when `path` and the temp file are on the same filesystem
@@ -82,6 +88,47 @@ pub fn read_optional_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// Write `line`, one JSONL row without its newline, to `writer` together with
+/// the newline in a single `write_all`.
+///
+/// On a file opened for appending, one write keeps the row whole while other
+/// writers, in this process or another, append to the same file. `writeln!`
+/// on a `File` writes the newline in a second call, so rows appended at once
+/// can interleave, and their readers drop them as malformed (bug-8417d9).
+pub fn write_jsonl_line(writer: &mut impl Write, line: &str) -> io::Result<()> {
+    let mut row = String::with_capacity(line.len() + 1);
+    row.push_str(line);
+    row.push('\n');
+    writer.write_all(row.as_bytes())
+}
+
+/// Append `line`, one JSONL row without its newline, to the file at `path`
+/// in one write ([`write_jsonl_line`]). The file and its parent directories
+/// are created if they don't exist.
+pub fn append_jsonl_line(path: &Path, line: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    write_jsonl_line(&mut file, line)
+}
+
+/// Serialize `value` and append it to the file at `path` as one JSONL row
+/// ([`append_jsonl_line`]).
+///
+/// # Errors
+///
+/// Returns an [`io::ErrorKind::InvalidData`] error if `value` cannot be
+/// serialized, and any error creating, opening or writing the file.
+pub fn append_jsonl<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
+    let line = serde_json::to_string(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    append_jsonl_line(path, &line)
 }
 
 /// Process-global monotonic counter to prevent tmp-file collisions between
@@ -190,6 +237,75 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.txt");
         assert_eq!(read_optional_async(&path).await.unwrap(), None);
+    }
+
+    /// A writer that records each `write` call it gets.
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_jsonl_row_and_its_newline_are_one_write() {
+        let mut writes = Writes(Vec::new());
+        write_jsonl_line(&mut writes, r#"{"id":1}"#).unwrap();
+        assert_eq!(writes.0, [b"{\"id\":1}\n".to_vec()]);
+    }
+
+    /// bug-8417d9: rows that threads append to one file at once each land
+    /// whole, on a line of their own.
+    #[test]
+    fn concurrent_jsonl_appends_never_interleave() {
+        const WRITERS: u64 = 16;
+        const ROWS: u64 = 50;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("learn/rows.jsonl");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS as usize));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    for row in 0..ROWS {
+                        let value = serde_json::json!({
+                            "writer": writer,
+                            "row": row,
+                            "pad": "x".repeat(512),
+                        });
+                        append_jsonl(&path, &value).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let mut rows: Vec<(u64, u64)> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let row: serde_json::Value = serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("a whole row, not {line:?}: {error}"));
+                (
+                    row["writer"].as_u64().unwrap(),
+                    row["row"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        rows.sort_unstable();
+        let expected: Vec<(u64, u64)> = (0..WRITERS)
+            .flat_map(|writer| (0..ROWS).map(move |row| (writer, row)))
+            .collect();
+        assert_eq!(rows, expected);
     }
 
     #[tokio::test]

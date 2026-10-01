@@ -449,6 +449,16 @@ impl Default for TracingConfig {
 mod tests {
     use super::*;
 
+    /// L13: a `[deploy]` table that leaves out `worker_image` deploys the
+    /// same worker image as a config with no `[deploy]` table.
+    #[test]
+    fn deploy_table_without_worker_image_keeps_the_default_image() {
+        let partial: DeployConfig =
+            toml::from_str("backend = \"railway-api\"\n").expect("parse deploy config");
+        assert_eq!(partial.worker_image, DeployConfig::default().worker_image);
+        assert!(partial.worker_image.is_some());
+    }
+
     #[test]
     fn default_share_ttl_days_is_seven() {
         assert_eq!(ServeConfig::default().share_ttl_days, 7);
@@ -729,8 +739,10 @@ pub struct DeployConfig {
     #[serde(default)]
     pub environment_id: Option<String>,
 
-    /// Docker image for worker containers.
-    #[serde(default)]
+    /// Docker image for worker containers. Defaults to the published
+    /// `ghcr.io/nunchi-trade/roko-worker:latest`, whether `[deploy]` is
+    /// absent or leaves the key out.
+    #[serde(default = "default_worker_image")]
     pub worker_image: Option<String>,
 
     /// Default region for deployments.
@@ -742,6 +754,10 @@ fn default_deploy_backend() -> String {
     "manual".into()
 }
 
+fn default_worker_image() -> Option<String> {
+    Some("ghcr.io/nunchi-trade/roko-worker:latest".into())
+}
+
 impl Default for DeployConfig {
     fn default() -> Self {
         Self {
@@ -749,7 +765,7 @@ impl Default for DeployConfig {
             railway_api_token: None,
             project_id: None,
             environment_id: None,
-            worker_image: Some("ghcr.io/nunchi-trade/roko-worker:latest".into()),
+            worker_image: default_worker_image(),
             default_region: None,
         }
     }

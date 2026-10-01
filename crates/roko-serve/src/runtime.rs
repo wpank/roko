@@ -117,6 +117,14 @@ pub struct PlanRunOptions {
     /// `AppState::effective_live_agent_output()` by plan run handlers so that
     /// the trust level configured at startup flows into every server-side run.
     pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
+
+    /// The run id the caller returned to its client: the `id` of the 202
+    /// from `POST /api/plans/{id}/execute` or `POST /api/plans/execute`.
+    ///
+    /// The runtime runs under it: the run's events, its status and, for a
+    /// fresh single plan, its checkpoint take this id. `None` lets the runtime
+    /// mint its own.
+    pub run_id: Option<String>,
 }
 
 /// Summary info for a configured repository, used to give agents
@@ -407,6 +415,22 @@ pub trait CliRuntime: Send + Sync + 'static {
         _only_plans: Option<Vec<String>>,
     ) -> anyhow::Result<Vec<String>> {
         anyhow::bail!("runtime does not support plan run order")
+    }
+
+    /// Check the plans a run of `plan_target` would start, as `roko plan run`
+    /// checks them before it starts any agent; `only_plans` limits a plan-set
+    /// directory to the plans the run names.
+    ///
+    /// Returns the validation report when an error stops the run, and `None`
+    /// when the run may start. The default admits every run: a runtime that
+    /// cannot validate plans leaves that to the run itself.
+    async fn validate_plan_run(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_target: &std::path::Path,
+        _only_plans: Option<&[String]>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        Ok(None)
     }
 
     /// Execute the graph attached to a trigger firing.

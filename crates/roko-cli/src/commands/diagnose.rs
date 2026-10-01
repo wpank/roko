@@ -352,7 +352,7 @@ pub struct ResumeInfo {
 // Report builder
 // ---------------------------------------------------------------------------
 
-fn build_report(workdir: &Path, plan_id: &str, verbose: bool) -> Result<DiagnoseReport> {
+pub(crate) fn build_report(workdir: &Path, plan_id: &str, verbose: bool) -> Result<DiagnoseReport> {
     let checkpoint = inspect_canonical_checkpoint(workdir, plan_id)
         .with_context(|| format!("reading the Graph checkpoint of plan '{plan_id}'"))?;
     if let Some(checkpoint) = checkpoint {

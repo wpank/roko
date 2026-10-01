@@ -8,16 +8,16 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/plans", "roko-cli/serve-runtime"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/routes/plans.rs::start_plan_run", "crates/roko-serve/src/routes/plans.rs::execute_plans", "crates/roko-serve/src/runtime.rs::PlanRunOptions", "crates/roko-cli/src/serve_runtime.rs::run_plan_with_options", "crates/roko-cli/src/graph_execution/plan_runner.rs:2002"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-serve --test plan_execute'
+command = "grep -q 'pub run_id: Option<String>' crates/roko-serve/src/runtime.rs && cargo test -p roko-serve --test plan_execute execute_passes_run_id_to_runtime"
 +++
 
 The execute handler mints `run_id = Uuid::new_v4()` (`routes/plans.rs:266`) and returns it in the 202, but calls `runtime.run_plan(&workdir, &plan_dir)` (`:301`) without it.
@@ -28,3 +28,7 @@ Not covered by the current `plans/portal-programme/02-backend-plan-execution` ta
 Re-verified 2026-09-29 at d9e79e9d8: still open. Plans 03/03b/03c moved the handler into start_plan_run and threaded a CancelToken, fresh/force_resume and live output through PlanRunOptions (crates/roko-serve/src/runtime.rs:83), so the cancel part of the proposed fix exists, but PlanRunOptions carries no run id: the 202 id (routes/plans.rs:475) and the plan-set id (routes/plans.rs:381) are still never passed to the engine, which takes its run id from the checkpoint (roko-cli graph_execution/plan_runner.rs:2002). tests/plan_execute.rs only asserts the 202 id is non-empty.
 
 The [[verify]] command is unsound (see the check notes). Proposed replacement, not yet validated: `grep -q 'pub run_id' crates/roko-serve/src/runtime.rs && cargo test -p roko-serve --test plan_execute execute_passes_run_id_to_runtime (test the fix must add: stub runtime records PlanRunOptions and asserts its run id equals the 202 id; the existing plan_execute tests only check the id is non-empty and pass today)`.
+
+## Notes
+
+2026-10-01 (wk-runstate): implemented on work/find-8872ad; cargo verification deferred to the batch check. `PlanRunOptions` has a `run_id`. `POST /api/plans/{id}/execute`, `POST /api/plans/{id}/resume` and `POST /api/plans/execute` pass it the id their 202 returns; the 202 now also carries that id as `run_id`, and `id` is unchanged. The CLI runtime runs the plan through `run_graph_plan_in_run` with that id. So the run's events and per-run event index, its `status.json` and, for a fresh single plan, its checkpoint and `.roko/runs/<id>/` attempt records all take the id. Under `run_graph_plan_in_run`'s rules, a resumed plan's checkpoint keeps the run it resumes, and each plan of a multi-plan set mints its own checkpoint run. The test `execute_passes_run_id_to_runtime` (`tests/plan_execute.rs`) checks both routes against a recording stub. The [[verify]] is now the command proposed above, with the grep narrowed to `pub run_id: Option<String>` (`SweBenchRunResult` already had a `pub run_id`); the old one passed whatever the code did.

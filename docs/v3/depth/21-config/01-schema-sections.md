@@ -287,6 +287,7 @@ max_iterations = 5
 | `terminal_commands` | Vec\<String\> | `[]` | Command lines a terminal session may run instead of the login shell; any other `command` is refused |
 | `terminal_max_sessions` | usize | 8 | Most PTY sessions open at once; `0` lifts the cap |
 | `terminal_session_ttl_secs` | u64 | 28800 | Seconds a PTY session may live, attached or not; `0` lifts the limit |
+| `revision_max_retries` | u32 | 1 | Times `POST /api/plans/{id}/revise` asks the planning agent again, with the validation diagnostics, after a revision that fails validation; `0` makes one attempt only |
 
 ### `[serve.auth]` -- ServeAuthConfig
 

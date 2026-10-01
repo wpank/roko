@@ -372,6 +372,17 @@ async fn execute_plans(
         }
     };
 
+    // Refuse plans `roko plan run` would refuse, before the run takes the
+    // workspace (gap-655d19).
+    if let Some(validation) = state
+        .runtime
+        .validate_plan_run(&state.workdir, &plan_target, only_plans.as_deref())
+        .await
+        .map_err(|e| ApiError::internal(format!("validate plans: {e}")))?
+    {
+        return Err(plan_run_rejected("the plan set", &validation));
+    }
+
     // Effective parallelism: body value, else workspace [conductor] setting.
     let config = state.load_roko_config();
     let effective_max = req
@@ -406,6 +417,7 @@ async fn execute_plans(
             only_plans,
             max_parallel_plans: Some(effective_max),
             live_agent_output: Some(live_agent_output),
+            run_id: Some(run_id_for_task.clone()),
         };
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events
@@ -437,6 +449,7 @@ async fn execute_plans(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({
             "id": run_id,
+            "run_id": run_id,
             "order": order_for_response,
             "max_parallel_plans": effective_max,
         })),
@@ -489,6 +502,17 @@ async fn start_plan_run(
         .join(&id);
     let plan_id = id.clone();
 
+    // Refuse a plan `roko plan run` would refuse, before the run takes the
+    // workspace (gap-655d19).
+    if let Some(validation) = state
+        .runtime
+        .validate_plan_run(&state.workdir, &plan_dir, None)
+        .await
+        .map_err(|e| ApiError::internal(format!("validate plan '{id}': {e}")))?
+    {
+        return Err(plan_run_rejected(&format!("plan '{id}'"), &validation));
+    }
+
     // What a resume replays, read before the run can touch the checkpoint
     // (gap-b07969). It only informs the caller: a runtime that cannot tell,
     // or a checkpoint it cannot read, leaves it unknown.
@@ -526,6 +550,7 @@ async fn start_plan_run(
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         let plan_dir = plan_dir.clone();
+        let run_id = run_id.clone();
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
             // PlanStarted event (with the correct tasks_total) into the server
@@ -540,6 +565,8 @@ async fn start_plan_run(
                 fresh: !resume,
                 force_resume: resume,
                 live_agent_output: Some(live_agent_output),
+                // The run takes the id this handler returns (bug-4f833d).
+                run_id: Some(run_id),
                 ..PlanRunOptions::default()
             };
             let success = match runtime
@@ -606,6 +633,17 @@ struct StartedPlanRun {
     skippable_task_ids: Option<Vec<String>>,
 }
 
+/// 422 for a run `roko plan run` would refuse: `details` is the validation
+/// report, shaped as `POST /api/plans/{id}/validate` returns it.
+fn plan_run_rejected(what: &str, validation: &PlanValidationDto) -> ApiError {
+    let mut error = ApiError::unprocessable_entity(format!(
+        "{what} failed validation with {} error(s); fix them before running it",
+        validation.errors.len()
+    ));
+    error.details = serde_json::to_value(validation).ok().map(Box::new);
+    error
+}
+
 /// Whether the hub carries a `PlanCompleted` for `plan_id` sequenced at or
 /// after `from_seq`. A run's completion is among its last events, so the
 /// retained ring still holds it when the run returns.
@@ -648,6 +686,7 @@ async fn execute_plan(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({
             "id": started.run_id,
+            "run_id": started.run_id,
             "resume": resume,
             "skippable_task_ids": started.skippable_task_ids,
         })),
@@ -804,6 +843,7 @@ async fn resume_plan(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({
             "id": started.run_id,
+            "run_id": started.run_id,
             "resumed": true,
             "resume": true,
             "skippable_task_ids": started.skippable_task_ids,
@@ -2691,11 +2731,12 @@ async fn find_prd(
 /// name is found.
 async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
     let first_line = prompt.lines().next().unwrap_or("").trim();
-    let title = if first_line.len() > 80 {
-        &first_line[..80]
-    } else {
-        first_line
-    };
+    // At most 80 characters: cutting at byte 80 can split a multi-byte
+    // character, which panics (bug-7feee7).
+    let title = first_line
+        .char_indices()
+        .nth(80)
+        .map_or(first_line, |(end, _)| &first_line[..end]);
     let base = slug_from_title(title);
     let base = if base.is_empty() {
         "plan".to_string()
@@ -3271,6 +3312,18 @@ mod tests {
     }
 
     // ── slug_from_title unit tests ────────────────────────────────────────
+
+    /// bug-7feee7: a first line longer than 80 bytes whose byte 80 falls
+    /// inside a multi-byte character is cut at a character boundary, so the
+    /// slug is derived instead of the request panicking.
+    #[tokio::test]
+    async fn derive_unique_slug_cuts_a_multi_byte_first_line_at_a_char_boundary() {
+        let dir = tempdir().expect("tempdir");
+        let prompt = format!("a{}\nsecond line", "é".repeat(100));
+        assert!(!prompt.is_char_boundary(80));
+
+        assert_eq!(derive_unique_slug(dir.path(), &prompt).await, "a");
+    }
 
     #[test]
     fn slug_from_title_basic() {

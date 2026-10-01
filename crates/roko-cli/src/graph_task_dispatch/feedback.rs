@@ -831,11 +831,6 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         );
     }
 
-    /// bug-07bc75: a Graph dispatch teaches the router only through its
-    /// settled verdict. The provider bridge still records every call's
-    /// efficiency row and the provider's health, but it no longer observes
-    /// or saves `cascade-router.json` from the provider's own success,
-    /// before any gate ran.
     /// bug-f9ae3e: a streamed call's start, argument deltas and end make one
     /// efficiency record, sized by its tool output and with its outcome
     /// unknown; a call without an id counts once per event naming a tool.
@@ -915,6 +910,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!(usage_cost_without_cache(&usage, None, "unpriced-model"), None);
     }
 
+    /// bug-07bc75: a Graph dispatch teaches the router only through its
+    /// settled verdict. The provider bridge still records every call's
+    /// efficiency row and the provider's health, but it no longer observes
+    /// or saves `cascade-router.json` from the provider's own success,
+    /// before any gate ran.
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");

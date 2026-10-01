@@ -511,7 +511,7 @@ impl EventLogWriter {
         let (outcome, exit_code, error) = match result {
             Ok(code) if *code == EXIT_SUCCESS => (RunOutcome::Succeeded, Some(*code), None),
             Ok(code)
-                if [PlanRunInterrupt::Interrupt, PlanRunInterrupt::Terminate]
+                if PlanRunInterrupt::ALL
                     .iter()
                     .any(|interrupt| interrupt.exit_code() == *code) =>
             {
@@ -861,6 +861,16 @@ mod tests {
         let lines = read_lines(&path);
         assert_eq!(lines[1]["outcome"], "cancelled");
         assert_eq!(lines[1]["exit_code"], 143);
+
+        // bug-4641e3: a run a hangup stopped is cancelled too.
+        let path = dir.path().join("hangup.jsonl");
+        let log = RunEventLog::open(&path, &hub, false).expect("open log");
+        log.finish(&Ok(PlanRunInterrupt::Hangup.exit_code()))
+            .await
+            .expect("finish log");
+        let lines = read_lines(&path);
+        assert_eq!(lines[1]["outcome"], "cancelled");
+        assert_eq!(lines[1]["exit_code"], 129);
     }
 
     /// The `event` objects of the log's `dashboard.<kind>` lines.

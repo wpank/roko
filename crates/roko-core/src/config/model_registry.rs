@@ -500,6 +500,19 @@ pub fn builtin_pricing(slug: &str) -> Option<ModelPricing> {
         .map(|(_, pricing)| *pricing)
 }
 
+/// The cheapest built-in model of `kind` by input price: the model a probe
+/// that only needs the provider to answer, such as a credit check, requests.
+/// `None` when no priced built-in model has that kind.
+#[must_use]
+pub fn cheapest_builtin_model(kind: ProviderKind) -> Option<&'static BuiltinModel> {
+    BUILTIN_MODELS
+        .iter()
+        .filter(|model| model.provider_kind == kind)
+        .filter_map(|model| Some((model, builtin_pricing(model.slug)?.input_per_m)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(model, _)| model)
+}
+
 /// Resolved metadata for a model slug: the single source of truth shared by
 /// the TUI and the learning layer for family / tier / context / pricing.
 ///
@@ -606,6 +619,14 @@ pub fn model_meta(slug: &str) -> ModelMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cheapest_builtin_anthropic_model_is_haiku() {
+        let model = cheapest_builtin_model(ProviderKind::AnthropicApi).expect("anthropic");
+        assert_eq!(model.slug, "claude-haiku-4-5");
+        // No built-in model is served by a CLI provider.
+        assert!(cheapest_builtin_model(ProviderKind::ClaudeCli).is_none());
+    }
 
     #[test]
     fn exact_slug_lookup() {

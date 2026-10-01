@@ -63,7 +63,7 @@ pub struct AgentOptions {
 | **Config key** | `kind = "anthropic_api"` |
 | **Protocol** | Anthropic Messages API over HTTP |
 | **Capabilities** | Tool calling, extended thinking (budget_tokens 1K--128K), prompt caching (cache_read/cache_write tokens), vision (image content blocks), streaming (SSE) |
-| **Models** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-3-5, etc. |
+| **Models** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5, etc. |
 | **Tool format** | `anthropic_blocks` -- content blocks with `tool_use`/`tool_result` types |
 | **Config** | `base_url` (default: `https://api.anthropic.com`), `api_key_env` (ANTHROPIC_API_KEY), `timeout_ms`, `max_concurrent` |
 | **Quirks** | Temperature fixed at 1 when thinking enabled. Tool use with thinking only supports `tool_choice: auto` or `none`. Token-efficient tools via beta header (up to 70% savings). Interleaved thinking beta allows reasoning between tool calls. Cache reads no longer count against ITPM limit. TTL: 5min (Sonnet), 1hr (Haiku) |

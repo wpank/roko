@@ -339,6 +339,11 @@ pub enum ToolError {
     #[error("tool call cancelled")]
     Cancelled,
 
+    /// The CaMeL data-LLM boundary withheld an untrusted tool's output, so
+    /// the model gets this notice instead of the raw text (gap-b0d514).
+    #[error("untrusted content withheld: {0}")]
+    UntrustedContentWithheld(String),
+
     /// Catch-all for tool-specific failures.
     #[error("tool failure: {0}")]
     Other(String),
@@ -500,6 +505,7 @@ mod tests {
             ToolError::CommandNotAllowed("git push".into()),
             ToolError::NetworkBlocked("evil.example.com".into()),
             ToolError::Cancelled,
+            ToolError::UntrustedContentWithheld("the data LLM call failed".into()),
             ToolError::Other("boom".into()),
         ];
         for e in errors {

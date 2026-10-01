@@ -480,8 +480,8 @@ impl DataLlmBoundary {
                 ),
                 Err(withheld) => {
                     tracing::warn!(%reason, ?withheld, "data LLM boundary withheld tool output");
-                    let notice = format!("untrusted content withheld: {withheld}");
-                    return ToolResult::err(ToolError::Other(notice));
+                    let notice = ToolError::UntrustedContentWithheld(withheld.to_string());
+                    return ToolResult::err(notice);
                 }
             }
         };

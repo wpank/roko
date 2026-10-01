@@ -196,6 +196,11 @@ LLM failure blocks the content instead of passing it through.
   2 KiB summary, at most 50 facts and 512 bytes per fact. A rejection names the rule broken and quotes none of the
   output. A backend error's message, which may echo the request, stays in logs (`Debug`) and out of the notice the
   model sees. No new dependency. Test: `data_llm_boundary_passes_on_only_a_bounded_extraction`.
+- 2026-10-02 (wk-childenv): Plan step 5 (failure policy) on work/gap-1555ac; cargo verification deferred to the
+  batch check. A withheld result is now the typed `ToolError::UntrustedContentWithheld(<why>)` (roko-core
+  `tool/call.rs`; `classify_tool_error` maps it to `FailureKind::PermissionDenied`), not `ToolError::Other`. The
+  fail-closed policy itself landed with step 3: there is no path back to the raw text. The serde and classification
+  variant lists in roko-core's tests include it; the boundary's tool-loop test checks the notice.
 
 ## Original notes
 

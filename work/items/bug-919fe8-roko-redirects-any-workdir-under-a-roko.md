@@ -3,13 +3,15 @@ id = "bug-919fe8"
 kind = "bug"
 title = "roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/main"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-evidence's report on gap-09e478)"
 anchors = ["crates/roko-cli/src/main.rs::resolve_workdir"]
@@ -55,3 +57,8 @@ Unchanged at BASE. Graph worktrees are opt-in (`--worktree-per-task`), which may
 ## Notes
 
 - If gap-4ec59f makes per-task worktrees the default, raise this to p2.
+- 2026-10-01 (wk-climain): implemented on work/bug-28c193; cargo verification deferred to the batch check.
+  `resolve_workdir` now asks `enclosing_project_of_data_dir`, which walks up from the directory and stops without a
+  redirect at the first directory with a `roko.toml`, a `.git` entry or its own `.roko/`; only a `.roko` component
+  reached first redirects. An explicit `--repo` inside a `.roko/` is used as given, with a warning. Tests:
+  `resolve_workdir_keeps_a_workspace_nested_under_dot_roko`, `resolve_workdir_still_redirects_from_the_data_dir`.

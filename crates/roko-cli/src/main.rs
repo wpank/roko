@@ -4331,10 +4331,16 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     let resolved = dir.canonicalize().unwrap_or(dir);
 
     // Detect if we're running from inside a .roko/ directory and auto-correct
-    // to the project root to avoid nested .roko/.roko/ data dirs.
-    for ancestor in resolved.ancestors() {
-        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
-            let project_root = ancestor.parent().unwrap_or(ancestor).to_path_buf();
+    // to the project root to avoid nested .roko/.roko/ data dirs. An explicit
+    // --repo is used as given.
+    if let Some(project_root) = enclosing_project_of_data_dir(&resolved) {
+        if cli.repo.is_some() {
+            eprintln!(
+                "\x1b[33m\u{26a0} --repo {} is inside the .roko/ of {}; using it as given\x1b[0m",
+                resolved.display(),
+                project_root.display()
+            );
+        } else {
             eprintln!(
                 "\x1b[33m\u{26a0} Auto-correcting: running from inside .roko/, using project root: {}\x1b[0m",
                 project_root.display()
@@ -4344,6 +4350,25 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     }
 
     resolved
+}
+
+/// The project whose `.roko/` data directory contains `dir`, unless `dir` is
+/// in a workspace nested there: walking up from `dir`, a directory with a
+/// `roko.toml`, a `.git` entry or its own `.roko/` (a per-task worktree under
+/// `.roko/worktrees/`, a fixture workspace) ends the search first.
+fn enclosing_project_of_data_dir(dir: &Path) -> Option<PathBuf> {
+    for ancestor in dir.ancestors() {
+        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
+            return Some(ancestor.parent().unwrap_or(ancestor).to_path_buf());
+        }
+        if ancestor.join("roko.toml").is_file()
+            || ancestor.join(".git").exists()
+            || ancestor.join(".roko").is_dir()
+        {
+            return None;
+        }
+    }
+    None
 }
 
 /// Extract typed global CLI flags for resolved override construction.
@@ -5937,12 +5962,38 @@ mod tests {
     fn resolve_workdir_defaults_to_cwd() {
         let cli = Cli::try_parse_from(["roko"]).unwrap();
         let cwd = PathBuf::from(".").canonicalize().unwrap();
-        let expected = cwd
-            .ancestors()
-            .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some(".roko"))
-            .and_then(Path::parent)
-            .map_or_else(|| cwd.clone(), Path::to_path_buf);
+        let expected = enclosing_project_of_data_dir(&cwd).unwrap_or(cwd);
         assert_eq!(resolve_workdir(&cli), expected);
+    }
+
+    #[test]
+    fn resolve_workdir_keeps_a_workspace_nested_under_dot_roko() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let worktree = project.join(".roko").join("worktrees").join("x");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        // A git worktree has a `.git` file that points at the main repository.
+        std::fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/x\n").unwrap();
+
+        assert_eq!(enclosing_project_of_data_dir(&worktree), None);
+        assert_eq!(enclosing_project_of_data_dir(&worktree.join("src")), None);
+        let cli = Cli::try_parse_from(["roko", "--repo", worktree.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), worktree);
+    }
+
+    #[test]
+    fn resolve_workdir_still_redirects_from_the_data_dir() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let state = project.join(".roko").join("state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        assert_eq!(enclosing_project_of_data_dir(&state), Some(project.clone()));
+        assert_eq!(enclosing_project_of_data_dir(&project.join(".roko")), Some(project.clone()));
+        assert_eq!(enclosing_project_of_data_dir(&project), None);
+        // An explicit --repo is used as given, with a warning.
+        let cli = Cli::try_parse_from(["roko", "--repo", state.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), state);
     }
 
     #[test]

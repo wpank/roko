@@ -164,7 +164,7 @@ requests a `write_file` call -- the dispatcher blocks it with
 
 ## 6. Graduated Autonomy
 
-Roles implement graduated autonomy (Meta-Harness principle #5):
+Roles implement graduated autonomy (Roko's harness principle #5):
 
 - **Read-only roles** (Conductor, QuickReviewer, Auditor family): can inspect
   and report but not modify. The SafetyLayer provides a floor that even
@@ -263,5 +263,5 @@ Roles compose into agent types for different task categories:
 2. `crates/roko-compose/src/templates/` -- 11 role-specific prompt templates.
 3. `crates/roko-agent/src/dispatcher/mod.rs` -- Permission enforcement in
    dispatch pipeline.
-4. Lee, Y. et al. (2026). "Meta-Harness." arXiv:2603.28052. -- Graduated
-   autonomy (principle #5).
+4. Lee, Y. et al. (2026). "Meta-Harness." arXiv:2603.28052. -- Automated
+   harness search (§3).

@@ -1,8 +1,8 @@
 # 05-agent/harness-engineering -- Harness Engineering
 
-> The Meta-Harness thesis, six harness principles, HarnessX extensions,
-> Harness-Bench evaluation, Belief Divergence diagnostics, and how each
-> maps to Roko's implementation.
+> What the Meta-Harness paper contributes, the harness-design principles Roko
+> follows (its own synthesis), HarnessX extensions, Harness-Bench evaluation,
+> Belief Divergence diagnostics, and how each maps to Roko's implementation.
 
 **Parent:** [05-AGENT](../../05-AGENT.md)
 
@@ -11,40 +11,48 @@ Model Harnesses." arXiv:2603.28052.
 
 ---
 
-## 1. The Meta-Harness Thesis
+## 1. What the Meta-Harness Paper Shows
 
-The central finding of harness engineering research is that the **harness** --
-the scaffolding around an LLM (prompts, tools, context management, retry logic)
--- contributes more to agent performance than the model itself. A better harness
-on a weaker model often outperforms a worse harness on a stronger model.
+The **harness** -- the code that decides what to store, retrieve and show to the
+model -- "often matters as much as the model itself" (Lee et al. 2026, §1).
+Harness engineering is still mostly manual, so the paper automates it (§3):
+Meta-Harness is an outer-loop search over harness code. A coding-agent proposer
+(Claude Code, in the paper) reads a filesystem holding every earlier candidate's
+source code, scores and execution traces, and proposes a new harness; the loop
+evaluates it, logs the result and repeats.
 
 The key paper:
 
 > Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
 > arXiv:2603.28052.
 
-### Benchmark evidence
+### Results (§4)
 
-| Benchmark | Harness improvement | Notes |
-|-----------|-------------------|-------|
-| Text classification | +7.7 accuracy points | Same model, better harness |
-| IMO math problems | +4.7 points | Structured tool access + validation |
-| Token efficiency | 4x fewer tokens | Context pruning + right-sized prompts |
-| SWE-bench mobile | 6x performance gap | ref [46]; harness vs. no harness |
+| Task | Discovered harness vs. baseline | Section |
+|------|---------------------------------|---------|
+| Online text classification | +7.7 points over Agentic Context Engineering (ACE), with 4x fewer context tokens | §4.1 |
+| Retrieval-augmented math, 200 IMO-level problems | +4.7 points on average across five held-out models | §4.2 |
+| Agentic coding, TerminalBench-2 | Ranks #1 among Claude Haiku 4.5 agents | §4.3 |
 
-### The 6x nuance
+### The 6x figure
 
-The "6x gap" number comes from reference [46] in the Meta-Harness paper, a
-SWE-bench mobile benchmark measuring bare model vs. full harness. It is a
-specific benchmark result, not a general claim. The +7.7 and +4.7 numbers from
-text classification and math are more representative of typical impact.
+The paper's introduction opens with a "6x performance gap" from changing the
+harness around a fixed model on one benchmark. It is a result the paper cites
+(SWE-bench Mobile), not one it measures.
 
-The practical takeaway: harness quality is consistently the largest lever for
-agent performance, but the exact magnitude varies by task type.
+The practical takeaway: the harness can matter as much as the model, and in the
+paper's three domains, searching over harness code with full access to earlier
+traces found better harnesses than hand-designed ones (§4, §5).
 
 ---
 
-## 2. Six Harness Principles and Roko's Implementation
+## 2. Roko's Harness-Design Principles
+
+These six principles are Roko's own synthesis of harness-engineering practice.
+The Meta-Harness paper does not state them: its Appendix D lists procedural tips
+for running its search instead, such as writing a good skill for the proposer,
+logging every run in a navigable form, and validating candidates cheaply before
+evaluating them.
 
 ### Principle 1: Design Tools for the Model, Not for Humans
 
@@ -198,7 +206,7 @@ mechanisms that distinguish high-performing harnesses:
 
 ---
 
-## 7. Where Roko Implements Meta-Harness Well
+## 7. Where Roko Follows These Principles Well
 
 1. **Tool validation pipeline** -- The 7-step ToolDispatcher is exactly the
    "validate before executing" principle, with audit signals for observability.
@@ -237,29 +245,36 @@ mechanisms that distinguish high-performing harnesses:
 
 ---
 
-## 9. SWE-bench Context
+## 9. Benchmarks in Context
 
-The Meta-Harness paper draws heavily on SWE-bench (Jimenez et al., 2024), where
-harness quality accounts for most performance variance between agent systems.
-The same model can score 25% or 85% on SWE-bench depending on the harness.
+The Meta-Harness paper evaluates online text classification, retrieval-augmented
+math and TerminalBench-2 (§4). SWE-bench appears in it only through the SWE-bench
+Mobile result behind the 6x figure in its introduction. SWE-bench itself
+(Jimenez et al., 2024) is the usual agentic-coding benchmark, and
+`roko bench swe` runs SWE-bench-style evaluations.
 
-Roko's architecture is designed with this finding: the crate layers provide
-harness infrastructure while the model is a pluggable component selected at
-runtime. Harness improvements benefit all models simultaneously.
+Roko treats the harness as the lever: the crate layers provide the harness, and
+the model is a pluggable component chosen at runtime, so a harness improvement
+applies to every model.
 
 ---
 
 ## 10. Citations
 
 1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
-   Harnesses." arXiv:2603.28052. -- Six principles, benchmark evidence.
+   Harnesses." arXiv:2603.28052. -- Automated harness search (§3) and its
+   results (§4).
 2. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
    framework, composition rules, transfer analysis.
-3. arXiv:2605.27922. "Harness-Bench." -- Standardized harness evaluation.
-4. arXiv:2607.04528. "Belief Divergence in Language Agent Systems." --
-   Harness-model misalignment diagnostic.
-5. arXiv:2607.23942. "A Mechanism-Level Review of Language Agent Systems." --
-   Comprehensive survey of agent mechanisms.
+3. Yao, Y. et al. (2026). "Harness-Bench: Measuring Harness Effects across
+   Models in Realistic Agent Workflows." arXiv:2605.27922. -- Harness evaluation
+   across models.
+4. Yi, H. et al. (2026). "Measuring Harness-Induced Belief Divergence in
+   Multi-Step LLM Agents." arXiv:2607.04528. -- Harness-model misalignment
+   diagnostic.
+5. Fan, H. et al. (2026). "From Cognitive Architectures to Language Agents: A
+   Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
+   arXiv:2607.23942. -- Survey of agent mechanisms.
 6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" -- Benchmark showing harness variance.
 7. arXiv:2603.18897. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." --

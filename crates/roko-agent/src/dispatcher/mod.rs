@@ -1510,10 +1510,10 @@ fn apply_production_result_filter(
         ToolResult::Err(err) => {
             // Post-handler filters run even on error payloads per spec:
             // "Post-handler filters run even when a handler returns an error payload."
-            let filtered_msg = chain.filter_result(&err.to_string(), tool_name);
-            // Reconstruct the error with filtered text. We use the same
-            // error variant but with sanitized content.
-            ToolResult::Err(ToolError::Other(filtered_msg))
+            // They rewrite the text the error carries and keep its variant, so a
+            // handler's refusal still reads as `PermissionDenied`.
+            let filtered = map_error_text(err, |message| chain.filter_result(&message, tool_name));
+            ToolResult::Err(filtered)
         }
     }
 }
@@ -1641,23 +1641,27 @@ fn is_sensitive_json_key(key: &str) -> bool {
 }
 
 fn scrub_untrusted_error(safety: &SafetyLayer, error: ToolError) -> ToolError {
-    let scrub = |message: String| safety.scrub_text(&message);
+    map_error_text(error, |message| safety.scrub_text(&message))
+}
+
+/// Rewrites the text `error` carries with `rewrite`, keeping its variant.
+fn map_error_text(error: ToolError, rewrite: impl Fn(String) -> String) -> ToolError {
     match error {
-        ToolError::PermissionDenied(message) => ToolError::PermissionDenied(scrub(message)),
-        ToolError::SchemaInvalid(message) => ToolError::SchemaInvalid(scrub(message)),
-        ToolError::HandlerPanic(message) => ToolError::HandlerPanic(scrub(message)),
+        ToolError::PermissionDenied(message) => ToolError::PermissionDenied(rewrite(message)),
+        ToolError::SchemaInvalid(message) => ToolError::SchemaInvalid(rewrite(message)),
+        ToolError::HandlerPanic(message) => ToolError::HandlerPanic(rewrite(message)),
         ToolError::PathOutsideWorktree(path) => {
-            ToolError::PathOutsideWorktree(scrub(path.to_string_lossy().into_owned()).into())
+            ToolError::PathOutsideWorktree(rewrite(path.to_string_lossy().into_owned()).into())
         }
         ToolError::KeyFileBlocked(path) => {
-            ToolError::KeyFileBlocked(scrub(path.to_string_lossy().into_owned()).into())
+            ToolError::KeyFileBlocked(rewrite(path.to_string_lossy().into_owned()).into())
         }
-        ToolError::CommandNotAllowed(message) => ToolError::CommandNotAllowed(scrub(message)),
-        ToolError::NetworkBlocked(message) => ToolError::NetworkBlocked(scrub(message)),
-        ToolError::Other(message) => ToolError::Other(scrub(message)),
+        ToolError::CommandNotAllowed(message) => ToolError::CommandNotAllowed(rewrite(message)),
+        ToolError::NetworkBlocked(message) => ToolError::NetworkBlocked(rewrite(message)),
+        ToolError::Other(message) => ToolError::Other(rewrite(message)),
         ToolError::Timeout { after_ms } => ToolError::Timeout { after_ms },
         ToolError::Cancelled => ToolError::Cancelled,
-        other => ToolError::Other(scrub(other.to_string())),
+        other => ToolError::Other(rewrite(other.to_string())),
     }
 }
 
@@ -3225,6 +3229,50 @@ mod tests {
             ToolResult::Ok { .. } => assert!(res.text_content().contains("\"x\"")),
             other => panic!("expected Ok, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn production_result_filter_keeps_the_handler_error_variant() {
+        async fn dispatch_fixed(error: ToolError, workspace: &std::path::Path) -> ToolResult {
+            let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
+                "fixed",
+                ToolPermission::read_only(),
+                ToolConcurrency::Serial,
+            )]));
+            let resolver = resolver_from([(
+                "fixed",
+                Arc::new(FixedResultHandler {
+                    name: "fixed",
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    result: ToolResult::err(error),
+                }) as Arc<dyn ToolHandler>,
+            )]);
+            // `with_safety` installs the production chain, whose post-handler
+            // filter rewrites error text.
+            ToolDispatcher::new_unguarded(registry, resolver)
+                .with_safety(SafetyLayer::permissive())
+                .dispatch(
+                    ToolCall::new("fixed-call", "fixed", serde_json::json!({})),
+                    &ToolContext::testing(workspace),
+                )
+                .await
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let refused = dispatch_fixed(
+            ToolError::PermissionDenied("not for this role".to_string()),
+            workspace.path(),
+        )
+        .await;
+        let ToolResult::Err(ToolError::PermissionDenied(message)) = &refused else {
+            panic!("a handler's refusal must stay PermissionDenied, got {refused:?}");
+        };
+        assert_eq!(message, "not for this role");
+        let timed_out = dispatch_fixed(ToolError::Timeout { after_ms: 5 }, workspace.path()).await;
+        assert!(
+            matches!(timed_out, ToolResult::Err(ToolError::Timeout { after_ms: 5 })),
+            "a handler's timeout must stay Timeout, got {timed_out:?}"
+        );
     }
 
     #[tokio::test]

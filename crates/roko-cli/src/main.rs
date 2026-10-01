@@ -3423,6 +3423,22 @@ enum ConfigMcpCmd {
     },
 }
 
+/// The workspace a crash report goes to, recorded once the command line is
+/// parsed: the invoked subcommand's `--workdir`, else `--repo` or the current
+/// directory, as for the log file and the agent PID registry.
+static CRASH_REPORT_WORKDIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `.roko/` the panic hook writes `crash-report.json` into: the parsed
+/// workspace's, else (for a panic before parsing) `ROKO_WORKDIR`'s, else the
+/// current directory's.
+fn crash_report_dir(parsed_workdir: Option<&Path>) -> PathBuf {
+    parsed_workdir
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("ROKO_WORKDIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".roko")
+}
+
 fn main() {
     // ── Crash report panic hook ─────────────────────────────────────
     // Install a global panic hook that writes a structured crash report
@@ -3463,12 +3479,8 @@ fn main() {
                 env!("ROKO_RUSTC_VERSION"),
             );
 
-            // Try to find the `.roko/` directory: check cwd first, then
-            // ROKO_WORKDIR env, then fall back to `./`.
-            let roko_dir = std::env::var("ROKO_WORKDIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join(".roko");
+            // Write into the invoked command's workspace once it is known.
+            let roko_dir = crash_report_dir(CRASH_REPORT_WORKDIR.get().map(PathBuf::as_path));
 
             roko_core::write_crash_report(&roko_dir, &report);
 
@@ -3591,10 +3603,11 @@ fn main() {
 
     let ansi_logs = use_color;
 
-    // Determine the workdir for log file placement and the agent PID
-    // registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
+    // Determine the workdir for log file placement, crash reports and the agent
+    // PID registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
     let workdir = invoked_subcommand_workdir().unwrap_or_else(|| resolve_workdir(&cli));
     roko_agent::process::set_registry_root(&workdir);
+    let _ = CRASH_REPORT_WORKDIR.set(workdir.clone());
 
     // File layer: write to .roko/roko.log with day-based rotation.
     // In TUI mode, use serve-tui.log to keep it separate from the main log.
@@ -3755,15 +3768,27 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     // Authentication hint: match specific auth-related terms, not substrings
-    // like "authoritative" or "authorization policy".
-    if lower.contains("401")
+    // like "authoritative" or "authorization policy", and 401 only as an HTTP
+    // status, never inside a path, an id or a longer number.
+    if mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
         || lower.contains("auth denied")
     {
+        // ROKO_API_KEY authenticates to roko serve; each model provider has its own key.
+        if lower.contains("workspace server") || lower.contains("roko serve") {
+            return Some("check your roko serve API key: set ROKO_API_KEY or run `roko login`");
+        }
+        if lower.contains("provider") {
+            return Some(
+                "check the provider's API key: run `roko config check-secrets`, then \
+                 `roko config providers test --all`",
+            );
+        }
         return Some(
-            "check your API key: set ROKO_API_KEY or run `roko config set-secret ROKO_API_KEY <key>`",
+            "check your API key: `roko config check-secrets` checks model provider keys; \
+             ROKO_API_KEY or `roko login` authenticates to roko serve",
         );
     }
 
@@ -3772,6 +3797,30 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+/// Whether a lower-cased error message reports HTTP status 401: a standalone
+/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
+/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
+/// `gap-e4019c`, `14015 bytes`) is not a status.
+fn mentions_http_401(lower: &str) -> bool {
+    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    for (at, &word) in words.iter().enumerate() {
+        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
+        if word == "401" && near.iter().copied().any(is_http_status_word) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_http_status_word(word: &str) -> bool {
+    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]
@@ -4297,10 +4346,16 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     let resolved = dir.canonicalize().unwrap_or(dir);
 
     // Detect if we're running from inside a .roko/ directory and auto-correct
-    // to the project root to avoid nested .roko/.roko/ data dirs.
-    for ancestor in resolved.ancestors() {
-        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
-            let project_root = ancestor.parent().unwrap_or(ancestor).to_path_buf();
+    // to the project root to avoid nested .roko/.roko/ data dirs. An explicit
+    // --repo is used as given.
+    if let Some(project_root) = enclosing_project_of_data_dir(&resolved) {
+        if cli.repo.is_some() {
+            eprintln!(
+                "\x1b[33m\u{26a0} --repo {} is inside the .roko/ of {}; using it as given\x1b[0m",
+                resolved.display(),
+                project_root.display()
+            );
+        } else {
             eprintln!(
                 "\x1b[33m\u{26a0} Auto-correcting: running from inside .roko/, using project root: {}\x1b[0m",
                 project_root.display()
@@ -4310,6 +4365,25 @@ fn resolve_workdir(cli: &Cli) -> PathBuf {
     }
 
     resolved
+}
+
+/// The project whose `.roko/` data directory contains `dir`, unless `dir` is
+/// in a workspace nested there: walking up from `dir`, a directory with a
+/// `roko.toml`, a `.git` entry or its own `.roko/` (a per-task worktree under
+/// `.roko/worktrees/`, a fixture workspace) ends the search first.
+fn enclosing_project_of_data_dir(dir: &Path) -> Option<PathBuf> {
+    for ancestor in dir.ancestors() {
+        if ancestor.file_name().and_then(|n| n.to_str()) == Some(".roko") {
+            return Some(ancestor.parent().unwrap_or(ancestor).to_path_buf());
+        }
+        if ancestor.join("roko.toml").is_file()
+            || ancestor.join(".git").exists()
+            || ancestor.join(".roko").is_dir()
+        {
+            return None;
+        }
+    }
+    None
 }
 
 /// Extract typed global CLI flags for resolved override construction.
@@ -5903,12 +5977,40 @@ mod tests {
     fn resolve_workdir_defaults_to_cwd() {
         let cli = Cli::try_parse_from(["roko"]).unwrap();
         let cwd = PathBuf::from(".").canonicalize().unwrap();
-        let expected = cwd
-            .ancestors()
-            .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some(".roko"))
-            .and_then(Path::parent)
-            .map_or_else(|| cwd.clone(), Path::to_path_buf);
+        let expected = enclosing_project_of_data_dir(&cwd).unwrap_or(cwd);
         assert_eq!(resolve_workdir(&cli), expected);
+    }
+
+    #[test]
+    fn resolve_workdir_keeps_a_workspace_nested_under_dot_roko() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let worktree = project.join(".roko").join("worktrees").join("x");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        // A git worktree has a `.git` file that points at the main repository.
+        std::fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/x\n").unwrap();
+
+        assert_eq!(enclosing_project_of_data_dir(&worktree), None);
+        assert_eq!(enclosing_project_of_data_dir(&worktree.join("src")), None);
+        let cli = Cli::try_parse_from(["roko", "--repo", worktree.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), worktree);
+    }
+
+    #[test]
+    fn resolve_workdir_still_redirects_from_the_data_dir() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let data_dir = project.join(".roko");
+        let state = data_dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        let expected = Some(project.clone());
+        assert_eq!(enclosing_project_of_data_dir(&state), expected);
+        assert_eq!(enclosing_project_of_data_dir(&data_dir), expected);
+        assert_eq!(enclosing_project_of_data_dir(&project), None);
+        // An explicit --repo is used as given, with a warning.
+        let cli = Cli::try_parse_from(["roko", "--repo", state.to_str().unwrap()]).unwrap();
+        assert_eq!(resolve_workdir(&cli), state);
     }
 
     #[test]
@@ -7697,6 +7799,18 @@ mod tests {
     }
 
     #[test]
+    fn crash_report_dir_uses_subcommand_workdir() {
+        let matches = Cli::command()
+            .try_get_matches_from(["roko", "plan", "run", "plans", "--workdir", "/ws/plan"])
+            .expect("valid invocation");
+        let workdir = subcommand_workdir(&matches);
+        assert_eq!(
+            crash_report_dir(workdir.as_deref()),
+            PathBuf::from("/ws/plan").join(".roko")
+        );
+    }
+
+    #[test]
     fn redacting_format_scrubs_api_keys() {
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::layer::SubscriberExt;
@@ -8472,6 +8586,54 @@ mod tests {
     #[test]
     fn error_hint_unrelated_returns_none() {
         assert!(error_hint("something completely unrelated went wrong").is_none());
+    }
+
+    #[test]
+    fn error_hint_ignores_401_outside_an_http_status() {
+        for msg in [
+            "/tmp/run-1401/checkpoint.json: No such file or directory",
+            "worktree for gap-e4019c already exists",
+            "wrote 14015 bytes to the snapshot",
+            "task 401 of plan p1 failed verification",
+        ] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_none() || !hint.unwrap().contains("API key"),
+                "a 401 outside an HTTP status must not blame the API key: {msg}"
+            );
+        }
+        for msg in [
+            "HTTP 401",
+            "request returned status 401",
+            "server returned HTTP 401.",
+        ] {
+            let hint = error_hint(msg);
+            assert!(
+                hint.is_some_and(|h| h.contains("API key")),
+                "an HTTP 401 must get the API key hint: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_hint_points_provider_auth_at_provider_keys() {
+        let msg = "API key invalid for provider 'openai' (HTTP 401). Check $OPENAI_API_KEY";
+        let hint = error_hint(msg).expect("a provider 401 gets a hint");
+        assert!(hint.contains("roko config check-secrets"), "got: {hint}");
+        assert!(
+            !hint.contains("ROKO_API_KEY"),
+            "ROKO_API_KEY is the serve key, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn error_hint_points_serve_auth_at_roko_api_key() {
+        let msg = "the workspace server rejected the request (401): server returned HTTP 401";
+        let hint = error_hint(msg).expect("a serve 401 gets a hint");
+        assert!(
+            hint.contains("ROKO_API_KEY") && hint.contains("roko login"),
+            "got: {hint}"
+        );
     }
 
     // ─── Impact CLI parsing ─────────────────────────────────────────────

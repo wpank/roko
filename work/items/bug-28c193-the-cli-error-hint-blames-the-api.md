@@ -10,8 +10,8 @@ size = "S"
 subsystem = ["roko-cli/main"]
 created = 2026-09-29
 updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/diagnose-graph-runs 05f8854ce"
 anchors = ["crates/roko-cli/src/main.rs::error_hint", "crates/roko-cli/src/main.rs::format_error_with_hint"]
@@ -60,3 +60,12 @@ The bare `"401"` substring match is unchanged.
 
 - A digit run containing 401 in a path or id no longer produces the API-key hint, and real HTTP 401s still do.
 - The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-climain): implemented on work/bug-28c193; cargo verification deferred to the batch check.
+  `error_hint` matches 401 only as a standalone word within three words of `http`, `status`, `unauthorized`,
+  `request` or `returned` (`mentions_http_401`), and splits the auth hint: roko serve errors get `ROKO_API_KEY` /
+  `roko login`, provider errors get `roko config check-secrets` and `roko config providers test --all`, anything else
+  names both. Tests: `error_hint_ignores_401_outside_an_http_status`, `error_hint_points_provider_auth_at_provider_keys`,
+  `error_hint_points_serve_auth_at_roko_api_key`.

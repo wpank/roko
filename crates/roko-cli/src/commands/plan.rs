@@ -1419,6 +1419,15 @@ async fn cmd_plan_dir_status(
     // Why the plan's whole-plan check failed, when it did (gap-60233f).
     let plan_check_failure =
         roko_cli::graph_checkpoint::recorded_plan_check_failure(workdir, &plan_id);
+    // Where a delivered plan's work is, and how to take it into the checkout,
+    // which the run never changes (gap-4ec59f).
+    let delivery = roko_cli::graph_checkpoint::recorded_batch_delivery(workdir, plan_id);
+    let merge_command = match &delivery {
+        Some(delivery) => {
+            roko_cli::graph_execution::batch::merge_command(workdir, &delivery.branch).await
+        }
+        None => None,
+    };
 
     if cli.json {
         let task_entries: Vec<serde_json::Value> = tasks_file
@@ -1445,6 +1454,11 @@ async fn cmd_plan_dir_status(
                 "completed": status_str == "complete",
                 "status": status_str,
                 "plan_check_failure": plan_check_failure,
+                "delivery": delivery.as_ref().map(|delivery| serde_json::json!({
+                    "branch": delivery.branch,
+                    "merge_commit": delivery.merge_commit,
+                    "merge_command": merge_command,
+                })),
                 "tasks": task_entries,
             }))?
         );
@@ -1455,6 +1469,12 @@ async fn cmd_plan_dir_status(
         println!("status:          {status_str}");
         if let Some(failure) = &plan_check_failure {
             println!("plan check:      {failure}");
+        }
+        if let Some(delivery) = &delivery {
+            println!("delivered:       {} at {}", delivery.branch, delivery.merge_commit);
+            if let Some(command) = &merge_command {
+                println!("take it with:    {command}");
+            }
         }
         println!();
         if tasks_file.tasks.is_empty() {
@@ -2461,6 +2481,7 @@ async fn cmd_plan_run_engine(
         dangerously_skip_permissions,
         log_file: log_file.map(|p| p.to_path_buf()),
         worktree_per_task,
+        worktree_per_task_explicit: worktree_flag == Some(true),
         rich_topology,
         promote,
         no_tui,
@@ -2490,14 +2511,29 @@ async fn cmd_plan_run_engine(
 
 /// Whether a plan run in `workdir` isolates each task in its own git
 /// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
-/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f).
+/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). The setting
+/// alone does not isolate a workdir that cannot be isolated, such as one that
+/// is not the top level of a git checkout with a commit (see
+/// `worktree_isolation_blocker`); an explicit flag there fails the run.
 fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
-    flag.unwrap_or_else(|| {
-        roko_core::config::loader::load_config_unified(workdir)
-            .unwrap_or_default()
-            .runner
-            .worktree_per_task
-    })
+    if let Some(flag) = flag {
+        return flag;
+    }
+    let configured = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .runner
+        .worktree_per_task;
+    if configured
+        && let Some(blocker) = roko_cli::graph_execution::batch::worktree_isolation_blocker(workdir)
+    {
+        tracing::warn!(
+            workdir = %workdir.display(),
+            "[runner] worktree_per_task is on, but the workdir {blocker}: the tasks run in the \
+             shared working tree"
+        );
+        return false;
+    }
+    configured
 }
 
 #[cfg(test)]
@@ -2506,7 +2542,8 @@ mod tests {
     use tempfile::tempdir;
 
     /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
-    /// `[runner] worktree_per_task` otherwise.
+    /// `[runner] worktree_per_task` otherwise, which isolates only a git
+    /// checkout with a commit to start worktrees from.
     #[test]
     fn worktree_per_task_follows_the_flag_then_the_runner_config() {
         let dir = tempdir().expect("tempdir");
@@ -2515,9 +2552,39 @@ mod tests {
             "[runner]\nworktree_per_task = true\n",
         )
         .expect("write roko.toml");
+        assert!(
+            !resolve_worktree_per_task(None, dir.path()),
+            "not a git checkout: the setting falls back to the shared tree"
+        );
+        assert!(resolve_worktree_per_task(Some(true), dir.path()));
+
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
         assert!(resolve_worktree_per_task(None, dir.path()));
         assert!(!resolve_worktree_per_task(Some(false), dir.path()));
-        assert!(resolve_worktree_per_task(Some(true), dir.path()));
     }
 
     #[test]

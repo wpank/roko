@@ -810,6 +810,7 @@ pub(crate) async fn run_plan_execution(
         dangerously_skip_permissions: false,
         log_file: None,
         worktree_per_task: false,
+        worktree_per_task_explicit: false,
         rich_topology: false,
         promote: None,
         // Inline progress on stderr; `roko dashboard` is the TUI.

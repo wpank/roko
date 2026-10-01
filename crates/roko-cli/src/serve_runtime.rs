@@ -926,8 +926,12 @@ fn run_plan_on_local_runtime(
                 cli_model_override: None,
                 dangerously_skip_permissions,
                 log_file: None,
-                // The server's `[runner] worktree_per_task` (gap-4ec59f).
-                worktree_per_task: roko_config.runner.worktree_per_task,
+                // The server's `[runner] worktree_per_task`, where the workdir
+                // can isolate tasks (gap-4ec59f).
+                worktree_per_task: roko_config.runner.worktree_per_task
+                    && crate::graph_execution::batch::worktree_isolation_blocker(&workdir)
+                        .is_none(),
+                worktree_per_task_explicit: false,
                 rich_topology: false,
                 promote: None,
                 // Never launch an interactive TUI from an HTTP handler.

@@ -1704,6 +1704,37 @@ pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// A plan's delivery into its run's batch branch, as its checkpoint recorded
+/// it (see [`recorded_batch_delivery`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedBatchDelivery {
+    /// The run's batch branch, `roko/batch/<run-id>`.
+    pub branch: String,
+    /// The batch commit that delivered the plan's work.
+    pub merge_commit: String,
+}
+
+/// Where plan `plan_id`'s work went: the batch branch and commit its
+/// checkpoint recorded under [`BATCH_EXTENSION`] when the plan was delivered
+/// (gap-4ec59f). `None` when it was not.
+#[must_use]
+pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<RecordedBatchDelivery> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    let batch = &manifest["extensions"][BATCH_EXTENSION]["value"];
+    if batch["state"].as_str() != Some("delivered") {
+        return None;
+    }
+    Some(RecordedBatchDelivery {
+        branch: batch["branch"].as_str()?.to_string(),
+        merge_commit: batch["merge_commit"].as_str()?.to_string(),
+    })
+}
+
 /// Why plan `plan_id`'s whole-plan check failed, as its checkpoint recorded
 /// it: the failed `[meta] verify` step in the shared working tree, or the
 /// failed delivery into the run's batch branch, whose regression check runs
@@ -3708,6 +3739,36 @@ depends_on = ["T1"]
         let json = serde_json::to_string(&entry).expect("serialize");
         let deser: ReceiptLedgerEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(entry, deser);
+    }
+
+    /// gap-4ec59f: `roko plan status` finds where a delivered plan's work
+    /// went in its checkpoint, and nothing for a plan whose delivery failed.
+    #[test]
+    fn recorded_batch_delivery_reads_only_a_delivered_plan() {
+        let dir = tempdir().expect("tempdir");
+        for (plan, state) in [("p-delivered", "delivered"), ("p-conflict", "conflict")] {
+            let checkpoint = dir.path().join(".roko/state/graph").join(plan);
+            std::fs::create_dir_all(&checkpoint).expect("checkpoint dir");
+            let manifest = serde_json::json!({
+                "extensions": {BATCH_EXTENSION: {"value": {
+                    "branch": "roko/batch/run-1",
+                    "state": state,
+                    "merge_commit": "a".repeat(40),
+                }}}
+            });
+            std::fs::write(checkpoint.join("checkpoint.json"), manifest.to_string())
+                .expect("checkpoint");
+        }
+
+        assert_eq!(
+            recorded_batch_delivery(dir.path(), "p-delivered"),
+            Some(RecordedBatchDelivery {
+                branch: "roko/batch/run-1".to_string(),
+                merge_commit: "a".repeat(40),
+            })
+        );
+        assert_eq!(recorded_batch_delivery(dir.path(), "p-conflict"), None);
+        assert_eq!(recorded_batch_delivery(dir.path(), "p-missing"), None);
     }
 
     #[test]

@@ -351,7 +351,8 @@ pub(super) struct Settlement {
 impl Settlement {
     /// The verify steps' verdict on a successful provider call. An attempt
     /// the pre-verify screen rejected is a verify failure too: the agent's,
-    /// with the screen's check as its rung.
+    /// with the screen's check as its rung. A verify its stopping plan run
+    /// cut short is a cancellation, which teaches nothing (bug-82cbef).
     pub(super) fn verified(verification: &Result<TaskGateVerdict>) -> Self {
         match verification {
             Ok(verdict) => {
@@ -364,6 +365,16 @@ impl Settlement {
                     rung: None,
                 }
             }
+            Err(RokoError::Cancelled(reason)) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: true,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
             Err(error) => Self {
                 outcome: AttemptOutcome::GateFailed,
                 gate_verdict: None,

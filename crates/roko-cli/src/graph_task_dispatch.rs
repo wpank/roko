@@ -526,15 +526,22 @@ impl GraphTaskDispatcher {
     /// result, an agent that exits on that SIGTERM included, settles as
     /// cancelled rather than as a provider failure, and fails with
     /// [`RokoError::Cancelled`], which the task executor does not retry
-    /// (bug-28b604).
+    /// (bug-28b604). So does a verify step that fails then, a gate command
+    /// stopped with the agents say, and no further verify step starts
+    /// (bug-82cbef).
     pub fn begin_stop(&self) {
         self.stopping.store(true, Ordering::Release);
+    }
+
+    /// Whether the plan run began to stop ([`Self::begin_stop`]).
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
     }
 
     /// The cancellation a call of `plan_id/task_id` that ended with `cause`
     /// becomes once its run began to stop ([`Self::begin_stop`]).
     fn stopped_call(&self, plan_id: &str, task_id: &str, cause: &str) -> Option<RokoError> {
-        self.stopping.load(Ordering::Acquire).then(|| {
+        self.is_stopping().then(|| {
             RokoError::cancelled(format!(
                 "agent for {plan_id}/{task_id} ended while its plan run was stopping: {cause}"
             ))

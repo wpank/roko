@@ -253,6 +253,9 @@ impl GraphTaskDispatcher {
                 return Ok(TaskGateVerdict::AlreadySatisfied);
             }
             Ok(verdict) => format!("they settled as `{}`", verdict.as_str()),
+            // A probe its stopping plan run cut short found nothing
+            // (bug-82cbef).
+            Err(cancelled @ RokoError::Cancelled(_)) => return Err(cancelled),
             Err(RokoError::Verify { message, .. }) => message,
             Err(error) => error.to_string(),
         };

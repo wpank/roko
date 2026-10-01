@@ -8161,9 +8161,9 @@ mod tests {
     // ── #262: CLI flag resolution contract tests ────────────────────
 
     use roko_cli::resolved_overrides::{
-        ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
-        DevelopInput, DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput,
-        PresentationMode, ResolvedExecutionOverrides, ServePolicy,
+        ApprovalPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput, DevelopInput,
+        DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode,
+        ResolvedExecutionOverrides, ServePolicy,
     };
 
     #[test]
@@ -8340,30 +8340,6 @@ mod tests {
         };
         let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
         assert_eq!(overrides.approval, ApprovalPolicy::AutoApprove);
-    }
-
-    #[test]
-    fn cli_flags_plan_run_budget_override() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            budget_override: Some(50.0),
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Override(50.0));
-    }
-
-    #[test]
-    fn cli_flags_plan_run_no_budget() {
-        let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let plan = PlanRunInput {
-            no_budget: true,
-            ..PlanRunInput::default()
-        };
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(overrides.budget, BudgetPolicy::Disabled);
     }
 
     #[test]

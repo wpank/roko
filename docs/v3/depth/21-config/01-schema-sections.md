@@ -232,7 +232,7 @@ replan keys are set to a non-default value, `roko config doctor` reports them
 | `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
 | `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
 | `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
-| `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. No effect on Graph runs, which save the thresholds after every task (reg-c7ecf6) |
+| `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. Graph runs write the thresholds once this many observations have built up, before a plan's retry budgets are read, and when the run ends (reg-c7ecf6) |
 | `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
 
 The `dreams` and `knowledge` fields are the two sub-tables below.

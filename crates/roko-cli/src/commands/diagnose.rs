@@ -308,7 +308,9 @@ pub struct GateFailureInfo {
     pub failure_kind: GateFailureKind,
     pub primary_class: FailureClass,
     pub recommended_action: GateFailureAction,
-    /// Summary as recorded; it is cut at 200 characters.
+    /// Summary as recorded: on Graph runs the step's label, its failure
+    /// message and its output, at most 2 KiB (bug-6f7f72). Records written
+    /// before then hold the first 200 characters of the failure text.
     pub summary: String,
 }
 
@@ -967,6 +969,9 @@ fn verify_step(summary: &str, task: Option<&TaskDef>) -> Option<VerifyStepInfo> 
 
 /// Classify a recorded Graph gate failure by the class the gate recorded.
 fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError> {
+    // The first line names the step and its failure message; the output that
+    // follows may mention anything.
+    let headline = record.summary.lines().next().unwrap_or_default();
     let class = match record.primary_class {
         FailureClass::SyntaxError
         | FailureClass::ImportError
@@ -975,14 +980,14 @@ fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError>
         | FailureClass::BorrowOrLifetime => ErrorClass::CompileError,
         FailureClass::TestExpectationFailure => ErrorClass::TestFailure,
         _ if record.failure_kind == GateFailureKind::Timeout => ErrorClass::Timeout,
-        _ if mentions_timeout(&record.summary) => ErrorClass::Timeout,
+        _ if mentions_timeout(headline) => ErrorClass::Timeout,
         _ => ErrorClass::Unknown,
     };
     vec![ClassifiedError {
         error_class: class,
         file: None,
         line: None,
-        error_summary: truncate(&record.summary, 200),
+        error_summary: truncate(headline, 200),
         suggestion: suggestion_for(class),
     }]
 }

@@ -58,6 +58,7 @@ mod budget;
 mod diff_snapshot;
 mod failover;
 mod feedback;
+mod gate_learning;
 mod helper_calls;
 mod inert_settings;
 mod ladder;

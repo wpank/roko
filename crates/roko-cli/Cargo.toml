@@ -29,11 +29,11 @@ alloy-backend = [
 # tui-png: Optional PNG screenshot capture for TUI visual regression testing.
 # Not required for production.
 #
-# Gates two modules (png_renderer, screenshot_diff) that provide a built-in
-# bitmap rasterizer and pixel/text/buffer diff comparison. No heavy image
+# Gates the png_renderer module, a built-in bitmap rasterizer. No heavy image
 # dependencies yet — the current implementation uses a minimal hand-rolled
-# PNG writer. No callers outside the gated modules themselves; tests inside
-# the modules run only when the feature is enabled.
+# PNG writer. No callers outside the module itself; its tests run only when
+# the feature is enabled. (The text/buffer diff module, screenshot_diff, is
+# always built: `roko screenshot --compare` and `--format ansi` use it.)
 tui-png = []
 
 [[bin]]

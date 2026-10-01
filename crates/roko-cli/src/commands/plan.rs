@@ -685,7 +685,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             from_backlog,
         } => {
             use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
+            use roko_cli::agent_exec::{
+                AgentExecEpisode, AgentExecOpts, run_agent_logged_with_spend,
+            };
+            use roko_cli::plan_authoring::AuthoringSpend;
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
@@ -738,8 +741,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
                     let task_prompt = build_backlog_task_prompt(&spec, &slug);
                     let task_id = format!("plan:generate:backlog:{id}");
+                    // The call's spend is recorded against the plan, as every
+                    // other generate path records it (bug-ac5432).
+                    let spend = AuthoringSpend::generation(&workdir, &slug, None);
 
-                    let exit_code = run_agent_logged(
+                    let exit_code = run_agent_logged_with_spend(
                         AgentExecOpts {
                             prompt: &task_prompt,
                             workdir: &workdir,
@@ -755,6 +761,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             task_kind: "plan-generate",
                             task_id: &task_id,
                         },
+                        &spend,
                     )
                     .await;
 

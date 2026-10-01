@@ -824,11 +824,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // ── P0-02: EvalGenerator pre-dispatch ───────────────────────────
         //
-        // For standard-tier and above tasks, generate evaluation test
-        // artifacts before the agent starts. Opt-in via
-        // `gates.write_eval_artifacts`, because nothing in `plan run`
-        // executes them. Enabled artifacts go to `.roko/generated-tests/`
-        // (read by the Runner-v2 generated-test rung), not the repo root.
+        // For standard-tier and above tasks, write the evaluations that pass
+        // `generate_checked` (each holds a `#[test]` that can fail) to
+        // `.roko/generated-tests/`, not the repo root, before the agent
+        // starts. Opt-in via `gates.write_eval_artifacts`: nothing in `plan
+        // run` executes them, and the built-in template needs an assertion
+        // body that Graph tasks do not author, so none is written today.
         if self.feedback.eval_generation_enabled
             && self.config.gates.write_eval_artifacts
             && !skip_enrichment
@@ -841,7 +842,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     .cloned()
                     .unwrap_or_else(|| "roko-cli".to_string());
                 let generator = EvalGenerator::new();
-                let evals = generator.generate_all(&task.title, &primary_crate, &task.files);
+                let (evals, rejected) =
+                    generator.generate_checked_all(&task.title, &primary_crate, &task.files, None);
+                for error in &rejected {
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %error,
+                        "P0-02: eval template rejected (non-fatal)"
+                    );
+                }
                 if !evals.is_empty() {
                     let gen_dir = self.workdir.join(".roko").join("generated-tests");
                     if let Err(err) = std::fs::create_dir_all(&gen_dir) {
@@ -2366,8 +2376,12 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
     }
 
+    /// bug-017c2d: no placeholder test is written, and nothing reaches the
+    /// repo root. With `write_eval_artifacts` on, only checked evaluations
+    /// are written; the built-in template needs a property body that the
+    /// fixture task does not author, so none is.
     #[tokio::test]
-    async fn eval_artifacts_are_opt_in_and_never_written_to_the_repo_root() {
+    async fn eval_artifacts_never_hold_placeholder_tests_or_reach_the_repo_root() {
         for write_eval_artifacts in [false, true] {
             let temp = tempdir().expect("tempdir");
             let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
@@ -2388,8 +2402,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 .map(|entries| entries.count())
                 .unwrap_or(0);
             assert_eq!(
-                written > 0,
-                write_eval_artifacts,
+                written, 0,
                 "write_eval_artifacts={write_eval_artifacts} wrote {written} artifacts"
             );
         }

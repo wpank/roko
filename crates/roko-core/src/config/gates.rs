@@ -157,8 +157,11 @@ pub struct GatesConfig {
     /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
     /// each standard-tier Graph task dispatch.
     ///
-    /// Defaults to `false`: `plan run` never executes these files. Only the
-    /// legacy Runner-v2 generated-test rung reads them.
+    /// Defaults to `false`. The files are for manual inspection: nothing in
+    /// `plan run` executes them. Only evaluations that pass
+    /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
+    /// written, and the built-in template needs an assertion body that Graph
+    /// tasks do not author, so today none is.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.

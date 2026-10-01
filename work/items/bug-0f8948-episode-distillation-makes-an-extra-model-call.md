@@ -9,9 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/learning", "roko-neuro"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "session:roko-b6 2026-09-29 portal close-out (a background episode-distiller call next to each plan generation)"
 anchors = ["crates/roko-cli/src/learning_helpers.rs::distillation_model_caller", "crates/roko-cli/src/agent_exec.rs::persist_capture_episode", "crates/roko-cli/src/commands/util.rs::persist_capture_episode", "crates/roko-neuro/src/episode_completion.rs::spawn_episode_distillation", "crates/roko-agent/src/model_call_service.rs::ModelCallService"]
@@ -88,3 +88,11 @@ instead that no distillation call is made.
 
 - bug-ac5432 covers the other cost-record defect of the same capture episodes: they also write a $0 row of their own.
 - Durable-knowledge decay and dreams are on hold. This item is only about the spend of the distillation call.
+- 2026-10-01 (wk-learn2): implemented on work/gap-14f08e (option a); cargo verification deferred to the batch check.
+  `learning_helpers::install_capture_distillation` replaces the two copies of the hook (`agent_exec.rs` and
+  `commands/util.rs`). It wraps the caller in `DistillationSpend`, a `ModelCaller` that appends one `CostRecord` to
+  `costs.jsonl` and one efficiency row per returned call, under role `episode-distiller` with the episode's plan and
+  task ids. No StateHub is at hand on this path, so nothing is published live. Test: `distillation_spend_is_recorded`.
+- Still unrecorded, outside this item's capture paths: roko-acp `bridge_events/cost.rs:237` distils every ACP episode
+  through a bare `ModelCallService` (the same defect; `DistillationSpend` lives in roko-cli, which roko-acp cannot use),
+  and roko-serve `dispatch.rs:2633` distils through `state.model_call_service`, whose spend recording was not checked.

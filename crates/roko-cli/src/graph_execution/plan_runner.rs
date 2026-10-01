@@ -2202,7 +2202,8 @@ fn graph_daimon_state(
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
 /// error patterns, routing when there is a cascade router, and the
 /// plan-completion dream, daimon, theta and delta sinks). The routing sink
-/// journals its observations in `cascade_journal`, when there is one;
+/// journals its observations in `cascade_journal`, when there is one, and the
+/// hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
 /// completes; `error_patterns` is the store dispatch formats into prompts.
 pub fn build_graph_feedback_facade(
@@ -2227,7 +2228,8 @@ pub fn build_graph_feedback_facade(
                 &graph_episodes_path,
                 graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
             )
-            .with_router(cascade_router.cloned()),
+            .with_router(cascade_router.cloned())
+            .with_journal(cascade_journal.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
         // progression included) under `.roko/neuro/`.

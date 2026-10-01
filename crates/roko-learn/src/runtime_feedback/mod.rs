@@ -216,6 +216,25 @@ pub(crate) fn recover_wal(paths: &LearningPaths) {
     }
 }
 
+/// A cascade router update journaled in the WAL.
+enum RecoveredUpdate<'a> {
+    /// An observation.
+    Observation(RecoveredObservation<'a>),
+    /// A success that a hindsight relabel retracted from the model's
+    /// confidence stats (bug-583e50).
+    Retraction { model_slug: &'a str },
+}
+
+impl<'a> RecoveredUpdate<'a> {
+    /// The model the update is for.
+    fn model_slug(&self) -> &'a str {
+        match self {
+            Self::Observation(observation) => observation.model_slug,
+            Self::Retraction { model_slug } => *model_slug,
+        }
+    }
+}
+
 /// A cascade observation journaled in the WAL.
 struct RecoveredObservation<'a> {
     model_slug: &'a str,
@@ -224,6 +243,20 @@ struct RecoveredObservation<'a> {
     success: bool,
     /// Share of a full observation its `LinUCB` update carried.
     weight: f64,
+}
+
+/// The cascade router update `entry` journals, unless a saved snapshot
+/// already holds it.
+fn recovered_update<'a>(
+    entry: &'a WalEntry,
+    folded: &HashSet<&str>,
+) -> Option<RecoveredUpdate<'a>> {
+    // A retraction undoes a success replayed before it, or one that the
+    // snapshot holds already.
+    if let WalEntry::SuccessRetraction { model_slug, .. } = entry {
+        return Some(RecoveredUpdate::Retraction { model_slug });
+    }
+    recovered_observation(entry, folded).map(RecoveredUpdate::Observation)
 }
 
 /// The cascade observation `entry` journals, unless a saved snapshot already
@@ -267,21 +300,22 @@ fn recovered_observation<'a>(
     }
 }
 
-/// Replay the cascade observations in `entries` into the snapshot at
-/// `snapshot_path`, and report whether the snapshot now holds them.
+/// Replay the cascade router updates in `entries`, in order, into the
+/// snapshot at `snapshot_path`, and report whether the snapshot now holds
+/// them.
 ///
 /// The replaying router tracks exactly the models the entries name, so no
 /// entry is skipped as an unknown model (bug-7a2630).
 fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bool {
     let folded = wal::folded_model_call_ids(entries);
-    let observations = entries
+    let updates = entries
         .iter()
-        .filter_map(|entry| recovered_observation(entry, &folded))
+        .filter_map(|entry| recovered_update(entry, &folded))
         .collect::<Vec<_>>();
     let mut models: Vec<String> = Vec::new();
-    for observation in &observations {
-        if !models.iter().any(|model| model == observation.model_slug) {
-            models.push(observation.model_slug.to_string());
+    for update in &updates {
+        if !models.iter().any(|model| model == update.model_slug()) {
+            models.push(update.model_slug().to_string());
         }
     }
     if models.is_empty() {
@@ -289,7 +323,14 @@ fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bo
     }
 
     let router = CascadeRouter::load_or_new(snapshot_path, models);
-    for observation in &observations {
+    for update in &updates {
+        let observation = match update {
+            RecoveredUpdate::Observation(observation) => observation,
+            RecoveredUpdate::Retraction { model_slug } => {
+                router.replay_retraction(model_slug);
+                continue;
+            }
+        };
         let Some(model_idx) = router.model_index_for_slug(observation.model_slug) else {
             continue;
         };

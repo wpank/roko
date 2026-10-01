@@ -2,7 +2,7 @@
 id = "gap-4ec59f"
 kind = "gap"
 title = "Worktree Isolation: Flip Default and Add Startup Repair"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p0"
 size = "L"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/orchestrator"]
 created = 2026-09-21
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c58c7c2ba"
+last_verified_rev = "39feebc07"
 source = "tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 discovered_from = "audit:tmp/backlog/archive/400-worktree-isolation-defaults.md#400 — Worktree Isolation: Flip Default and Add Startup Repair"
 anchors = ["crates/roko-core/src/config/schema.rs::CoreRunnerConfig::default_worktree_per_task", "crates/roko-cli/src/commands/plan.rs::resolve_worktree_per_task", "crates/roko-cli/src/graph_execution/batch.rs::worktree_isolation_blocker", "crates/roko-cli/src/graph_execution/batch.rs::merge_command", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-cli/src/graph_execution/plan_runner.rs:1155", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::with_workspace_provider", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/commands/plan.rs::cmd_resume", "crates/roko-cli/src/main.rs:2138", "crates/roko-cli/src/serve_runtime.rs:888", "crates/roko-cli/src/serve_client.rs:560", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::prune"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-109b5a", "bug-53475e", "
 
 [[verify]]
 command = "grep -A1 'const fn default_worktree_per_task' crates/roko-core/src/config/schema.rs | grep -q true && grep -q 'fn resolve_worktree_per_task' crates/roko-cli/src/commands/plan.rs && grep -q 'runner.worktree_per_task' crates/roko-cli/src/serve_runtime.rs && grep -rn 'clear_stale_locks()\\|clear_stuck_mutation_lock()' crates/roko-cli/src --include='*.rs' | grep -v 'orchestrator/worktree/' | grep -q ."
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-01T23:45:21Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Gate 6d on 9eacfde5f plus its fixes, re-checked at c9e78d12d and merged as 39feebc07 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3407, roko-agent 2276, roko-core 1980, roko-learn 1228, roko-serve 1012, roko-acp 219, roko-compose 562, roko-execution 192, roko-gateway 43); all eight canaries with the new default-isolation canary, golden_path_suite, secret_canary, C2, graph_plan_callers, cost_dedup, phase0_wiring, run_serve_share, graph_timeout_matrix (6), plan_prepare_full and the gateway pipeline contract pass; bin tests pass; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged; route snapshot matches. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

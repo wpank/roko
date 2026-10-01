@@ -233,6 +233,12 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
     in-flight checkpoints.
   - `roko run`, `roko do`, PRD runs and the cloud worker still run shared on purpose: they are one-shot runs into the
     user's tree.
+- 2026-10-01 (wk-tiers): step 3 (parallel-plan guard) on work/gap-4ec59f; cargo verification deferred to the batch check.
+  - The guard stays. Its message no longer claims that worktrees are never merged back, which has been false since
+    batch integration (spec-f830c4, `8268c7498`). It now names both ways out: `--max-parallel-plans 1`, or
+    `--no-worktree-per-task` / `[runner] worktree_per_task = false`.
+  - Relaxing it looks possible. Deliveries into the batch take turns, and a dependent plan starts only after its
+    prerequisite is delivered. That needs a live check of parallel plans in worktrees first, so it is left.
 
 ## Original notes
 

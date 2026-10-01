@@ -495,7 +495,7 @@ impl GraphTaskDispatcher {
             );
         }
         // The tasks' spend and turn-cap retries the earlier process kept
-        // (gap-34b2ed).
+        // (gap-34b2ed), and its timeout retries (gap-6f77a3).
         for (task_id, micro_usd) in self.gate_retry_context.kept_task_spend(plan_id) {
             let key = format!("{plan_id}/{task_id}");
             self.task_spend.restore(&key, micro_usd);
@@ -503,6 +503,10 @@ impl GraphTaskDispatcher {
         for (task_id, retry) in self.gate_retry_context.kept_turn_caps(plan_id) {
             let key = format!("{plan_id}/{task_id}");
             self.turn_cap_retries.lock().insert(key, retry);
+        }
+        for (task_id, timeout_ms) in self.gate_retry_context.kept_timeouts(plan_id) {
+            let key = format!("{plan_id}/{task_id}");
+            self.timeout_retries.lock().insert(key, timeout_ms);
         }
     }
 
@@ -567,15 +571,22 @@ impl GraphTaskDispatcher {
     /// result, an agent that exits on that SIGTERM included, settles as
     /// cancelled rather than as a provider failure, and fails with
     /// [`RokoError::Cancelled`], which the task executor does not retry
-    /// (bug-28b604).
+    /// (bug-28b604). So does a verify step that fails then, a gate command
+    /// stopped with the agents say, and no further verify step starts
+    /// (bug-82cbef).
     pub fn begin_stop(&self) {
         self.stopping.store(true, Ordering::Release);
+    }
+
+    /// Whether the plan run began to stop ([`Self::begin_stop`]).
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
     }
 
     /// The cancellation a call of `plan_id/task_id` that ended with `cause`
     /// becomes once its run began to stop ([`Self::begin_stop`]).
     fn stopped_call(&self, plan_id: &str, task_id: &str, cause: &str) -> Option<RokoError> {
-        self.stopping.load(Ordering::Acquire).then(|| {
+        self.is_stopping().then(|| {
             RokoError::cancelled(format!(
                 "agent for {plan_id}/{task_id} ended while its plan run was stopping: {cause}"
             ))
@@ -1265,7 +1276,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
         // rerun the budget that already ran out.
-        let timeout_resume = self.timeout_retries.lock().remove(&task_spend_key);
+        let timeout_resume = self.take_timeout_retry(&spec.plan_id, &task.id);
         let timeout_ms = timeout_resume.map_or(base_timeout_ms, |previous_ms| {
             let raised = raised_attempt_timeout_ms(previous_ms, base_timeout_ms);
             tracing::info!(
@@ -1621,9 +1632,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 });
             }
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
-                self.timeout_retries
-                    .lock()
-                    .insert(task_spend_key.clone(), timeout_ms);
+                self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
             }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,

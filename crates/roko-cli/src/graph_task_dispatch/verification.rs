@@ -82,9 +82,11 @@ impl GraphTaskDispatcher {
     /// run fail-fast; the rest are reported as skipped. A step that fails
     /// while sibling tasks edit the same working tree waits for them to
     /// settle and re-runs once; only that result counts (`sibling_settle`).
-    /// A step that ran out of time is recorded as a timeout. The caller
-    /// releases any worktree lease and settles episode feedback with the
-    /// result.
+    /// A step that ran out of time is recorded as a timeout. Once the plan
+    /// run began to stop, a step that fails, or would start, ends the verify
+    /// with a `RokoError::Cancelled` that no record or learner sees
+    /// (bug-82cbef). The caller releases any worktree lease and settles
+    /// episode feedback with the result.
     ///
     /// With `unchanged_tree` the attempt changed nothing, and its steps only
     /// probe whether the task's work was already there: their result stands
@@ -228,8 +230,19 @@ impl GraphTaskDispatcher {
                     &task.id,
                 )
                 .await;
+                // A run that began to stop starts no further step (bug-82cbef).
+                if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
+                    return Err(cancelled);
+                }
                 let mut verdict = gate.verify(&gate_signal, &gate_ctx).await;
                 if !verdict.passed {
+                    // A step that failed once its run began to stop was
+                    // stopped with the run's commands: it says nothing about
+                    // the work, so no sibling settle, record or learner sees
+                    // it (bug-82cbef).
+                    if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
+                        return Err(cancelled);
+                    }
                     // A sibling editing this working tree may have caused the
                     // failure: let it settle, then re-run the step. The
                     // compile lock is released meanwhile so the sibling's own
@@ -248,6 +261,10 @@ impl GraphTaskDispatcher {
                     (verdict, blocked_by_sibling) = self
                         .in_flight
                         .settle_failed_step(&failed_step, verdict, || async {
+                            // Nothing re-runs once the run began to stop.
+                            if self.is_stopping() {
+                                return roko_core::Verdict::fail(step_label, "stopping");
+                            }
                             let _compile_permit = verify_compile_permit(
                                 &effective_workdir,
                                 self.config.gates.compile_concurrency,
@@ -259,6 +276,11 @@ impl GraphTaskDispatcher {
                             gate.verify(&gate_signal, &gate_ctx).await
                         })
                         .await;
+                    if !verdict.passed
+                        && let Some(cancelled) = self.stopped_verify(spec, task, step_label)
+                    {
+                        return Err(cancelled);
+                    }
                 }
                 // A test step that still fails may fail only on tests that
                 // failed on the plan run's start commit too (gap-161be1). The
@@ -443,6 +465,11 @@ impl GraphTaskDispatcher {
             // retry loop. Only applies when promise-tracker did NOT terminate
             // early (those failures are structural, not fixable by `cargo fix`).
             if !failures.is_empty() && !promise_terminated && self.config.gates.cargo_fix_enabled {
+                // The auto-fix and its re-run are verification too: a run
+                // that began to stop starts neither (bug-82cbef).
+                if let Some(cancelled) = self.stopped_verify(spec, task, "auto-fix") {
+                    return Err(cancelled);
+                }
                 // Use the phase of the first failing step as the gate name so
                 // `attempt_auto_fix` can pick the right fix command.
                 let first_fail_phase = step_outcomes
@@ -516,6 +543,9 @@ impl GraphTaskDispatcher {
                                     limit: sibling_wait,
                                 })
                                 .await;
+                            if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
+                                return Err(cancelled);
+                            }
                             // The re-run builds like the first run, so it
                             // queues on the same compile lock.
                             let mut retry_verdict = verify_step_locked(
@@ -530,6 +560,11 @@ impl GraphTaskDispatcher {
                             )
                             .await;
                             if !retry_verdict.passed {
+                                if let Some(cancelled) =
+                                    self.stopped_verify(spec, task, step_label)
+                                {
+                                    return Err(cancelled);
+                                }
                                 drop(reading);
                                 if let Some(judgement) = self
                                     .judge_against_baseline(
@@ -1268,6 +1303,25 @@ impl GraphTaskDispatcher {
             TaskGateVerdict::PassedWithPreexistingFailures
         } else {
             TaskGateVerdict::Passed
+        })
+    }
+
+    /// The cancellation `task`'s verify ends in at `at`, a step or the
+    /// auto-fix, once its plan run began to stop ([`Self::begin_stop`]). The
+    /// run is stopping its commands, so a step that fails then says nothing
+    /// about the attempt's work, and a step that would start then is not
+    /// worth starting (bug-82cbef).
+    fn stopped_verify(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        at: &str,
+    ) -> Option<RokoError> {
+        self.is_stopping().then(|| {
+            RokoError::cancelled(format!(
+                "the plan run stopped during the verify of {}/{} at {at}",
+                spec.plan_id, task.id
+            ))
         })
     }
 }
@@ -2314,6 +2368,66 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         assert!(
             !summary.contains(&padding),
             "the command is left out: {summary}"
+        );
+    }
+
+    /// bug-82cbef: a verify step that fails once its plan run began to stop,
+    /// as a gate command does when an interrupt signals the run's commands,
+    /// settles the attempt as cancelled. It leaves no gate-failure record,
+    /// and the dispatch fails with a cancellation, which the task executor
+    /// does not retry.
+    #[tokio::test]
+    async fn interrupted_verify_settles_as_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        let runs = temp.path().join(".roko/runs");
+        let gate_failures = temp.path().join(".roko/learn/gate-failures.jsonl");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs.clone()),
+            gate_failures_path: Some(gate_failures.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let started = temp.path().join("verify-started");
+        let stop_now = temp.path().join("stop-now");
+        // The step runs until the run stops, then exits on SIGTERM.
+        task.verify = vec![verify_step(
+            "structural",
+            &format!(
+                "touch '{}'; until [ -e '{}' ]; do sleep 0.05; done; kill -TERM $$",
+                started.display(),
+                stop_now.display()
+            ),
+        )];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id("interrupted-run".to_string());
+
+        let dispatched = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        let stop = async {
+            for _ in 0..1_200 {
+                if started.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            dispatcher.begin_stop();
+            std::fs::write(&stop_now, "").expect("stop the step");
+        };
+        let (result, ()) = tokio::join!(dispatched, stop);
+        let error = result.expect_err("the stopped verify fails the attempt");
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error}");
+
+        let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+            &runs.join("interrupted-run").join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
+        crate::background_writes::settled(gate_failures.parent().unwrap_or(temp.path())).await;
+        assert!(
+            !gate_failures.exists(),
+            "a stopped step records no gate failure"
         );
     }
 

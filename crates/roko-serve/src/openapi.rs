@@ -93,6 +93,12 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         execute_plan,
         plan_status,
         generate_plan,
+        execute_plans,
+        cancel_plan,
+        revise_plan,
+        plan_chat,
+        get_plan_source,
+        update_plan_source,
         start_run,
         run_status,
         run_observability_detail,
@@ -148,6 +154,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         draft_prd,
         promote_prd,
         plan_from_prd,
+        prds_coverage,
+        consolidate_prds,
         github_webhook,
         slack_webhook,
         generic_webhook,
@@ -301,7 +309,12 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         evaluate_job,
         execute_job,
         cancel_job_endpoint,
-        neuro_query
+        neuro_query,
+        knowledge_query,
+        retrieval_stats,
+        retrieval_query,
+        create_auth_session,
+        end_auth_session
     ),
     components(schemas(
         ApiErrorResponse,
@@ -457,6 +470,12 @@ doc_post_value!(create_plan, "/plans", "plans");
 doc_post_value!(execute_plan, "/plans/{id}/execute", "plans");
 doc_get_param!(plan_status, "/plans/{id}/status", "plans", "id");
 doc_post_value!(generate_plan, "/plans/generate", "plans");
+doc_post_value!(execute_plans, "/plans/execute", "plans");
+doc_post_value!(cancel_plan, "/plans/{id}/cancel", "plans");
+doc_post_value!(revise_plan, "/plans/{id}/revise", "plans");
+doc_post_value!(plan_chat, "/plans/{id}/chat", "plans");
+doc_get_param!(get_plan_source, "/plans/{id}/source", "plans", "id");
+doc_put_value!(update_plan_source, "/plans/{id}/source", "plans");
 
 doc_post_value!(start_run, "/run", "run");
 doc_get_param!(run_status, "/run/{id}/status", "run", "id");
@@ -540,7 +559,17 @@ doc_get_param!(
 doc_get!(list_templates, "/templates", "templates");
 doc_post_value!(create_template, "/templates", "templates");
 doc_get_param!(get_template, "/templates/{name}", "templates", "name");
-doc_get_param!(delete_template, "/templates/{name}", "templates", "name");
+#[utoipa::path(
+    delete,
+    path = "/templates/{name}",
+    tag = "templates",
+    params(("name" = String, Path, description = "Template name")),
+    responses(
+        (status = 200, description = "Template removed", body = Value),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn delete_template() {}
 doc_post_value!(deploy_template, "/templates/{name}/deploy", "templates");
 
 doc_get!(list_deployments, "/deployments", "deployments");
@@ -626,6 +655,8 @@ doc_get_param!(get_prd, "/prds/{slug}", "prds", "slug");
 doc_post_value!(draft_prd, "/prds/{slug}/draft", "prds");
 doc_post_value!(promote_prd, "/prds/{slug}/promote", "prds");
 doc_post_value!(plan_from_prd, "/prds/{slug}/plan", "prds");
+doc_get!(prds_coverage, "/prds/status", "prds");
+doc_post_value!(consolidate_prds, "/prds/consolidate", "prds");
 
 doc_post_value!(github_webhook, "/webhooks/github", "webhooks");
 doc_post_value!(slack_webhook, "/webhooks/slack", "webhooks");
@@ -1189,6 +1220,28 @@ doc_post_value!(cancel_job_endpoint, "/jobs/{id}/cancel", "jobs");
 
 // ── Neuro ─────────────────────────────────────────────────────────────────
 doc_post_value!(neuro_query, "/neuro/query", "neuro");
+doc_get!(knowledge_query, "/knowledge", "neuro");
+doc_get!(retrieval_stats, "/retrieval/stats", "neuro");
+doc_get!(retrieval_query, "/retrieval/query", "neuro");
+
+// ── Session exchange (mounted at `/api/auth/session`, outside the API key layer) ──
+#[utoipa::path(
+    post,
+    path = "/auth/session",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session created; `Set-Cookie` carries `roko_session`"),
+        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse)
+    )
+)]
+fn create_auth_session() {}
+#[utoipa::path(
+    delete,
+    path = "/auth/session",
+    tag = "auth",
+    responses((status = 204, description = "Session ended and its cookie cleared"))
+)]
+fn end_auth_session() {}
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
@@ -1354,6 +1407,8 @@ pub struct SearchQueryRequest {
 mod tests {
     use super::*;
 
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use axum::body::{Body, to_bytes};
@@ -1419,5 +1474,241 @@ mod tests {
         assert!(payload["components"]["schemas"]["AgentRuntimeObservation"].is_object());
         assert!(payload["components"]["schemas"]["AgentObservationCommit"].is_object());
         assert!(payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object());
+    }
+
+    /// Registered routes the document does not describe yet (gap-c50b85).
+    const UNDOCUMENTED_ROUTES: &str = include_str!("openapi_undocumented.txt");
+
+    /// Methods a route registration can name. `any(...)` proxies are left out:
+    /// they have no single method to document.
+    const ROUTE_METHODS: [&str; 8] = [
+        "get", "post", "put", "patch", "delete", "head", "options", "trace",
+    ];
+
+    /// Routers nested under a prefix inside `/api` (`routes/mod.rs`).
+    const NESTED_ROUTERS: [(&str, &str, &str); 3] = [
+        ("routes/providers.rs", "router", "/providers"),
+        ("routes/providers.rs", "models_router", "/models"),
+        ("routes/providers.rs", "routing_router", "/routing"),
+    ];
+
+    #[test]
+    fn openapi_documents_every_registered_route() {
+        let registered = registered_routes();
+        let documented = documented_routes();
+        let listed: BTreeSet<&str> = UNDOCUMENTED_ROUTES
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+
+        let missing: Vec<&str> = registered
+            .iter()
+            .map(String::as_str)
+            .filter(|route| !documented.contains(*route) && !listed.contains(route))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "registered routes missing from the OpenAPI document; document them in openapi.rs \
+             (or, failing that, list them in openapi_undocumented.txt): {missing:#?}"
+        );
+
+        let stale: Vec<&str> = listed
+            .iter()
+            .copied()
+            .filter(|route| documented.contains(*route) || !registered.contains(*route))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "openapi_undocumented.txt lists routes that are documented or no longer registered; \
+             delete these lines: {stale:#?}"
+        );
+    }
+
+    /// `METHOD /path` for every operation in the document, parameters written `{}`.
+    fn documented_routes() -> BTreeSet<String> {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("serialize OpenAPI document");
+        let mut routes = BTreeSet::new();
+        for (path, item) in doc["paths"].as_object().expect("paths object") {
+            for method in ROUTE_METHODS {
+                if item.get(method).is_some() {
+                    let method = method.to_ascii_uppercase();
+                    routes.insert(format!("{method} {}", normalize_params(path)));
+                }
+            }
+        }
+        routes
+    }
+
+    /// `METHOD /path` for every `.route("<literal>", <methods>)` registration in
+    /// this crate's sources outside test modules, as served under `/api`, with
+    /// parameters written `{}`. Root-mounted `/api/...` literals lose their prefix.
+    fn registered_routes() -> BTreeSet<String> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rust_files(&src, &mut files);
+        let mut routes = BTreeSet::new();
+        for file in files {
+            if file.file_name().is_some_and(|name| name == "tests.rs") {
+                continue;
+            }
+            let rel = file.strip_prefix(&src).expect("file under src");
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let source = std::fs::read_to_string(&file).expect("read source file");
+            let text = production_part(&source);
+            let mut from = 0;
+            while let Some(found) = text[from..].find(".route(") {
+                let open = from + found + ".route".len();
+                from = open;
+                let Some(close) = matching_paren(text, open) else {
+                    continue;
+                };
+                let Some(literal) = text[open + 1..close].trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = literal.find('"') else {
+                    continue;
+                };
+                let Some(methods) = literal[end + 1..].trim_start().strip_prefix(',') else {
+                    continue;
+                };
+                let path = &literal[..end];
+                let router_fn = enclosing_fn(&text[..open]);
+                let nest = NESTED_ROUTERS
+                    .iter()
+                    .find(|(nest_file, nest_fn, _)| *nest_file == rel && *nest_fn == router_fn);
+                let api_path = match (path.strip_prefix("/api/"), nest) {
+                    (Some(rest), _) => format!("/{rest}"),
+                    (None, Some((_, _, prefix))) if path == "/" => (*prefix).to_string(),
+                    (None, Some((_, _, prefix))) => format!("{prefix}{path}"),
+                    (None, None) => path.to_string(),
+                };
+                for method in method_names(methods) {
+                    routes.insert(format!("{method} {}", normalize_params(&api_path)));
+                }
+            }
+        }
+        routes
+    }
+
+    fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read source dir") {
+            let path = entry.expect("source dir entry").path();
+            if path.is_dir() {
+                collect_rust_files(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// The source before its first `#[cfg(test)]` module.
+    fn production_part(text: &str) -> &str {
+        let mut from = 0;
+        while let Some(found) = text[from..].find("#[cfg(test)]") {
+            let at = from + found;
+            let rest = text[at + "#[cfg(test)]".len()..].trim_start();
+            let rest = rest
+                .strip_prefix("pub(crate)")
+                .or_else(|| rest.strip_prefix("pub"))
+                .map_or(rest, str::trim_start);
+            let is_module = rest
+                .strip_prefix("mod")
+                .is_some_and(|after| after.starts_with(char::is_whitespace));
+            if is_module {
+                return &text[..at];
+            }
+            from = at + 1;
+        }
+        text
+    }
+
+    /// Byte index of the bracket closing the one at `open`, skipping string literals.
+    fn matching_paren(text: &str, open: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' if in_string => i += 1,
+                b'"' => in_string = !in_string,
+                b'(' | b'[' | b'{' if !in_string => depth += 1,
+                b')' | b']' | b'}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Name of the last `fn <name>` in `text`.
+    fn enclosing_fn(text: &str) -> &str {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut name = "";
+        let mut from = 0;
+        while let Some(found) = text[from..].find("fn ") {
+            let at = from + found;
+            from = at + "fn ".len();
+            if text[..at].chars().next_back().is_some_and(is_ident) {
+                continue;
+            }
+            let rest = text[from..].trim_start();
+            let len = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+            if len > 0 {
+                name = &rest[..len];
+            }
+        }
+        name
+    }
+
+    /// Upper-cased HTTP methods named by a method router such as
+    /// `get(list).post(create)`.
+    fn method_names(expr: &str) -> Vec<String> {
+        let mut methods = Vec::new();
+        let mut rest = expr;
+        loop {
+            rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '.' || c == ',');
+            let len = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(rest.len());
+            let callee = &rest[..len];
+            let open = rest.len() - rest[len..].trim_start().len();
+            if callee.is_empty() || !rest[open..].starts_with('(') {
+                break;
+            }
+            let Some(close) = matching_paren(rest, open) else {
+                break;
+            };
+            let name = callee.rsplit("::").next().unwrap_or(callee);
+            if ROUTE_METHODS.contains(&name) {
+                methods.push(name.to_ascii_uppercase());
+            }
+            rest = &rest[close + 1..];
+        }
+        methods
+    }
+
+    /// `path` with every `{param}` written `{}`.
+    fn normalize_params(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        let mut in_param = false;
+        for c in path.chars() {
+            match c {
+                '{' => {
+                    in_param = true;
+                    out.push_str("{}");
+                }
+                '}' => in_param = false,
+                _ if in_param => {}
+                _ => out.push(c),
+            }
+        }
+        out
     }
 }

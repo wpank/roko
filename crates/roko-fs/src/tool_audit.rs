@@ -285,6 +285,12 @@ impl ScrubAuditAdapter {
         Self { log, scrubber }
     }
 
+    /// Path to the JSONL file the adapter writes.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.log.path()
+    }
+
     /// Record an admitted call with scrubbed arguments, joined to the run
     /// by `correlation`.
     ///

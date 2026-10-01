@@ -52,21 +52,56 @@ pub(super) fn threshold_profile(task: &TaskDef) -> ThresholdProfile {
 
 /// Record a verify step's verdict in the metrics the gate pipeline emits
 /// (P2-22): `roko_gate_verdicts_total` and `roko_gate_duration_seconds`, as
-/// the same tracing metric fields `run_gate_once` uses.
-pub(super) fn record_gate_verdict_metrics(phase: &str, verdict: &roko_core::Verdict) {
-    let rung = rung_for_gate_name(phase).map(|rung| rung.as_index());
+/// the same tracing metric fields `run_gate_once` uses, and in `registry`
+/// when the run has one (gap-d8c39a). Its series carry the canonical labels:
+/// `gate`, the step's rung (`other` for a step that names none), and
+/// `verdict`; never a plan or task id.
+pub(super) fn record_gate_verdict_metrics(
+    registry: Option<&roko_core::obs::metrics::MetricRegistry>,
+    phase: &str,
+    verdict: &roko_core::Verdict,
+) {
+    use roko_core::obs::histograms::LLM_LATENCY_BUCKETS;
+    use roko_core::obs::metrics::LabelSet;
+    use roko_core::obs::schema::{LABEL_GATE, LABEL_VERDICT, ROKO_GATE_VERDICTS_TOTAL_DESCRIPTOR};
+
+    let rung = rung_for_gate_name(phase);
+    let rung_index = rung.map(|rung| rung.as_index());
+    let result = if verdict.passed { "pass" } else { "fail" };
+    let seconds = verdict.duration_ms as f64 / 1000.0;
     tracing::info!(
         monotonic_counter.roko_gate_verdicts_total = 1_u64,
-        result = if verdict.passed { "pass" } else { "fail" },
-        rung,
+        result,
+        rung = rung_index,
         "gate verdict recorded"
     );
     tracing::info!(
-        histogram.roko_gate_duration_seconds = verdict.duration_ms as f64 / 1000.0,
-        rung,
+        histogram.roko_gate_duration_seconds = seconds,
+        rung = rung_index,
         "gate duration recorded"
     );
+
+    let Some(registry) = registry else {
+        return;
+    };
+    let gate = rung.map_or("other", |rung| rung.label());
+    let labels = LabelSet::from_pairs(&[(LABEL_GATE, gate), (LABEL_VERDICT, result)]);
+    let verdicts = &ROKO_GATE_VERDICTS_TOTAL_DESCRIPTOR;
+    registry
+        .register_counter(verdicts.name, verdicts.help, labels.clone())
+        .inc();
+    registry
+        .register_histogram(
+            GATE_DURATION_SECONDS,
+            "Verify step duration in seconds, by gate and verdict",
+            labels,
+            LLM_LATENCY_BUCKETS.to_vec(),
+        )
+        .observe(seconds);
 }
+
+/// The verify step duration histogram's name.
+const GATE_DURATION_SECONDS: &str = "roko_gate_duration_seconds";
 
 /// What one verify run taught the gate learning.
 #[derive(Debug, Default, PartialEq)]

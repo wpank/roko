@@ -51,7 +51,9 @@ pub fn create_openai_compat_backend(
     poster: Arc<dyn HttpPoster>,
 ) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
     match provider.kind {
-        ProviderKind::OpenAiCompat => {
+        // The Hermes and OpenClaw harnesses speak the same chat completions
+        // protocol over HTTP (bug-02d5ad).
+        ProviderKind::OpenAiCompat | ProviderKind::Hermes | ProviderKind::OpenClaw => {
             let api_key = resolve_api_key(provider)?;
             let mut backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
                 .with_provider_id(model.provider.clone())
@@ -152,10 +154,6 @@ pub fn create_openai_compat_backend(
             Err(AgentCreationError::MissingConfig(
                 "Gemini tool-loop backend is not implemented yet".into(),
             ))
-        }
-        ProviderKind::Hermes | ProviderKind::OpenClaw => {
-            // Harness adapters use OpenAI-compat as their base HTTP transport.
-            create_openai_compat_backend(provider, model, poster)
         }
     }
 }
@@ -503,6 +501,48 @@ mod tests {
         assert_eq!(requests[0].body["thinking"]["clear_thinking"], true);
         assert_eq!(requests[0].body["tool_stream"], true);
         assert_eq!(requests[0].body["tools"][0]["function"]["name"], "echo");
+    }
+
+    /// bug-02d5ad: the Hermes and OpenClaw kinds get the chat completions
+    /// backend, where they used to recurse into this factory without end.
+    #[tokio::test]
+    async fn openai_compat_backend_for_hermes_and_openclaw_speaks_chat_completions() {
+        for kind in [ProviderKind::Hermes, ProviderKind::OpenClaw] {
+            let poster = Arc::new(MockPoster::new(
+                json!({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "done"
+                        }
+                    }]
+                })
+                .to_string(),
+            ));
+            let provider = ProviderConfig {
+                kind,
+                ..zai_provider()
+            };
+
+            let backend =
+                create_openai_compat_backend(&provider, &glm_5_1_profile(), poster.clone())
+                    .expect("create backend");
+            backend
+                .send_turn(
+                    &[json!({ "role": "user", "content": "hi" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                )
+                .await
+                .expect("send turn");
+
+            let requests = poster.requests.lock().expect("requests lock");
+            assert_eq!(requests.len(), 1, "{kind:?}");
+            assert_eq!(
+                requests[0].url, "https://api.z.ai/api/paas/v4/chat/completions",
+                "{kind:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -127,7 +127,7 @@ impl UnifiedStreamEvent {
                 name,
                 arguments: args.to_string(),
             }),
-            StreamEventKind::ToolResult { id, output } => Some(Self::ToolOutput { id, output }),
+            StreamEventKind::ToolResult { id, output, .. } => Some(Self::ToolOutput { id, output }),
             StreamEventKind::Usage(usage) => Some(Self::Usage {
                 input_tokens: u64::from(usage.input_tokens),
                 output_tokens: u64::from(usage.output_tokens),
@@ -461,6 +461,7 @@ mod tests {
         let event = StreamEvent::now(StreamEventKind::ToolResult {
             id: "call-1".to_string(),
             output: "hello".to_string(),
+            is_error: false,
         });
         let unified = UnifiedStreamEvent::from_stream_event(event)
             .expect("ToolResult should produce a UnifiedStreamEvent");

@@ -530,7 +530,8 @@ pub fn read_lock_unless_served(
 ///
 /// `--max-retries`, `--max-tasks`, `--budget-override`, `--no-budget`,
 /// `--model`, `--dangerously-skip-permissions`, `--log-file`,
-/// `--worktree-per-task`, `--rich-topology`, and an explicit
+/// `--worktree-per-task` and `--no-worktree-per-task` (the server's
+/// `[runner] worktree_per_task` decides), `--rich-topology`, and an explicit
 /// `--resume-plan` path.
 ///
 /// # Protocol
@@ -593,7 +594,8 @@ pub async fn run_plan_via_server(
         refused.push("--log-file");
     }
     if refused_worktree_per_task {
-        refused.push("--worktree-per-task");
+        // The server's `[runner] worktree_per_task` decides (gap-4ec59f).
+        refused.push("--[no-]worktree-per-task (the server's config decides)");
     }
     if refused_rich_topology {
         refused.push("--rich-topology");

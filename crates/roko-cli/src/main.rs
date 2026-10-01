@@ -2307,9 +2307,14 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// When enabled, each task dispatch creates a fresh worktree,
         /// runs the agent and verify steps inside it, and cleans it up
         /// on completion. Failed worktrees are retained for post-mortem.
-        /// Only applies to the Graph engine.
+        /// Overrides `[runner] worktree_per_task`. Only applies to the Graph
+        /// engine.
         #[arg(long)]
         worktree_per_task: bool,
+        /// Run every task in the shared working tree, whatever
+        /// `[runner] worktree_per_task` says.
+        #[arg(long, conflicts_with = "worktree_per_task")]
+        no_worktree_per_task: bool,
         /// Use the rich 11-node-per-task production topology instead of the
         /// simple single-Activity-per-task converter.
         ///
@@ -2333,7 +2338,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
         /// such as your own checkout's, is not moved: the promotion is parked
         /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.
-        #[arg(long, value_name = "BRANCH", requires = "worktree_per_task")]
+        /// Needs per-task worktrees (`--worktree-per-task` or
+        /// `[runner] worktree_per_task = true`).
+        #[arg(long, value_name = "BRANCH", conflicts_with = "no_worktree_per_task")]
         promote: Option<String>,
         /// Run up to N plans of a plan set at the same time.
         ///
@@ -3061,7 +3068,7 @@ enum ConfigCmd {
         /// Pre-set token budget.
         #[arg(long)]
         budget: Option<usize>,
-        /// Pre-set role string.
+        /// Ignored: no config key stores a role text any more.
         #[arg(long)]
         role: Option<String>,
         /// Enable default compile+clippy gates.
@@ -3825,7 +3832,7 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     // Authentication hint: match specific auth-related terms, not substrings
     // like "authoritative" or "authorization policy", and 401 only as an HTTP
     // status, never inside a path, an id or a longer number.
-    if mentions_http_401(&lower)
+    if roko_agent::provider::error_classify::mentions_http_401(&lower)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("authentication failed")
@@ -3852,30 +3859,6 @@ fn error_hint(msg: &str) -> Option<&'static str> {
     }
 
     None
-}
-
-/// Whether a lower-cased error message reports HTTP status 401: a standalone
-/// `401` within three words of `http`, `status`, `unauthorized`, `request` or
-/// `returned`. A 401 inside a path, an id or a longer number (`run-1401/`,
-/// `gap-e4019c`, `14015 bytes`) is not a status.
-fn mentions_http_401(lower: &str) -> bool {
-    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json` is one word.
-    let words: Vec<&str> = lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
-        .map(|word| word.trim_end_matches('.'))
-        .filter(|word| !word.is_empty())
-        .collect();
-    for (at, &word) in words.iter().enumerate() {
-        let near = &words[at.saturating_sub(3)..words.len().min(at + 4)];
-        if word == "401" && near.iter().copied().any(is_http_status_word) {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_http_status_word(word: &str) -> bool {
-    word.starts_with("http") || matches!(word, "status" | "unauthorized" | "request" | "returned")
 }
 
 #[derive(Debug)]
@@ -6028,6 +6011,37 @@ mod tests {
         assert!(
             Cli::try_parse_from(["roko", "plan", "run", "plans", "--max-parallel-plans", "0"])
                 .is_err()
+        );
+    }
+
+    /// gap-4ec59f: `--no-worktree-per-task` opts a run out of per-task
+    /// worktrees and conflicts with `--worktree-per-task`; `--promote` no
+    /// longer needs the flag (config may turn worktrees on) but conflicts with
+    /// the opt-out.
+    #[test]
+    fn cli_parses_the_worktree_per_task_opt_out() {
+        let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--no-worktree-per-task"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plan {
+                cmd: PlanCmd::Run {
+                    worktree_per_task: false,
+                    no_worktree_per_task: true,
+                    ..
+                }
+            })
+        ));
+        for conflicting in [
+            ["--worktree-per-task", "--no-worktree-per-task"],
+            ["--promote=release", "--no-worktree-per-task"],
+        ] {
+            let mut args = vec!["roko", "plan", "run", "plans"];
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err(), "{conflicting:?}");
+        }
+        assert!(
+            Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok()
         );
     }
 

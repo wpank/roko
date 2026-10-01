@@ -34,7 +34,6 @@ pub mod pages;
 pub mod png_renderer;
 pub mod postfx;
 pub mod postfx_pipeline;
-#[cfg(feature = "tui-png")]
 pub mod screenshot_diff;
 pub mod scroll;
 pub mod segment;

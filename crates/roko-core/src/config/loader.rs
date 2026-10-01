@@ -1518,7 +1518,62 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
         "learning.replan_gate_attempts was removed because no plan run \
          revises a plan on gate failure, so it limited nothing",
     ),
+    (
+        "executor",
+        "the [executor] section was removed because no plan run read it; \
+         conductor.max_parallel_plans sets how many plans run at once, and \
+         `roko plan run --worktree-per-task` runs each task in its own worktree",
+    ),
+    (
+        "tools.prefer_mcp",
+        "tools.prefer_mcp was removed because nothing read it",
+    ),
+    (
+        "tools.global_denied",
+        "tools.global_denied was removed because nothing read it; \
+         tools.deny is the current tool denylist",
+    ),
+    (
+        "tools.mcp_timeout_secs",
+        "tools.mcp_timeout_secs was removed because nothing read it",
+    ),
+    (
+        "prompt.token_budget",
+        "prompt.token_budget was removed because nothing read it from roko.toml; \
+         budget.prompt_token_budget is the current key",
+    ),
+    (
+        "prompt.role",
+        "prompt.role was removed because nothing read it from roko.toml; \
+         pass --role to choose the agent role",
+    ),
+    (
+        "prompt.files",
+        "prompt.files was removed because nothing injected the files",
+    ),
+    (
+        "prompt.budgets",
+        "prompt.budgets was removed because nothing read it",
+    ),
+    (
+        "prompt.context_budgets",
+        "prompt.context_budgets was removed because nothing read it",
+    ),
 ];
+
+/// Why the dotted `key` was removed, when [`REMOVED_CONFIG_KEYS`] lists it
+/// or a section that holds it (`executor` holds `executor.use_worktrees`).
+/// `roko config set` refuses such a key with this reason.
+#[must_use]
+pub fn removed_config_key_reason(key: &str) -> Option<&'static str> {
+    REMOVED_CONFIG_KEYS
+        .iter()
+        .find(|(removed, _)| {
+            key.strip_prefix(*removed)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+        .map(|(_, reason)| *reason)
+}
 
 /// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
 /// for each key removed.
@@ -1535,14 +1590,14 @@ pub fn drop_removed_config_keys(value: &mut toml::Value) -> Vec<ConfigDiagnostic
     removed
 }
 
-/// Remove the dotted `path`, below the top level, from `tree`, and return
-/// whether the tree had it.
+/// Remove the dotted `path` from `tree`, and return whether the tree had it.
 fn remove_dotted_key(tree: &mut toml::Value, path: &str) -> bool {
-    let Some((parent, leaf)) = path.rsplit_once('.') else {
+    let mut parents: Vec<&str> = path.split('.').collect();
+    let Some(leaf) = parents.pop() else {
         return false;
     };
-    parent
-        .split('.')
+    parents
+        .into_iter()
         .try_fold(tree, |node, key| node.get_mut(key))
         .and_then(toml::Value::as_table_mut)
         .is_some_and(|table| table.remove(leaf).is_some())
@@ -4615,6 +4670,44 @@ dream_on_completion = true
         let parsed = RokoConfig::from_toml(text).expect("parse the old file");
         assert_eq!(parsed.gates.max_rung, Some(2));
         assert!(parsed.learning.dream_on_completion);
+    }
+
+    /// gap-666ab3: the CLI-only `[executor]` section was removed. An old file
+    /// that has one is told why, and still loads and parses.
+    #[test]
+    fn removed_executor_section_still_loads() {
+        let text = r#"
+[executor]
+max_concurrent_tasks = 4
+use_worktrees = true
+
+[runner]
+plan_timeout_secs = 99
+"#;
+        let value: toml::Value = text.parse().expect("parse the old file");
+        let diags = validate_known_config_paths(&value);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].key, "executor");
+        assert!(diags[0].message.contains("was removed"));
+
+        let loaded = deserialize_migrated_toml(text).expect("load the old file");
+        assert_eq!(loaded.runner.plan_timeout_secs, 99);
+        let parsed = RokoConfig::from_toml(text).expect("parse the old file");
+        assert_eq!(parsed.runner.plan_timeout_secs, 99);
+    }
+
+    /// bug-d5051e: `config set` asks the removed-keys list about a key; a key
+    /// inside a removed section counts as removed, a current key does not.
+    #[test]
+    fn removed_config_key_reason_covers_keys_and_sections() {
+        assert!(removed_config_key_reason("tools.prefer_mcp").is_some());
+        assert!(removed_config_key_reason("prompt.role").is_some());
+        assert!(removed_config_key_reason("executor").is_some());
+        assert!(removed_config_key_reason("executor.budget_usd").is_some());
+        assert_eq!(removed_config_key_reason("tools.deny"), None);
+        assert_eq!(removed_config_key_reason("executors.max"), None);
+        let current = removed_config_key_reason("prompt.composition_strategy");
+        assert_eq!(current, None);
     }
 
     /// gap-e9660f: agents can read roko.toml, so a grep of the project would

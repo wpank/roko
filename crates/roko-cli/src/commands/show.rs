@@ -969,10 +969,11 @@ fn cost_by_task(events: &[&AgentEfficiencyEvent]) -> Vec<(String, CostAggregate)
 fn cost_by_day(events: &[&AgentEfficiencyEvent]) -> BTreeMap<String, CostAggregate> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
     for event in events {
-        let day = if event.timestamp.len() >= 10 {
-            event.timestamp[..10].to_string()
-        } else {
-            String::from("undated")
+        // The event's UTC date. A timestamp that does not parse is undated,
+        // never cut at a byte offset, which panics inside a multi-byte char.
+        let day = match event_time(&event.timestamp) {
+            Some(time) => time.format("%Y-%m-%d").to_string(),
+            None => String::from("undated"),
         };
         rows.entry(day).or_default().record(event);
     }
@@ -1500,5 +1501,27 @@ mod tests {
             ["live-agent", "T02:1", "H11:12", "undated"]
         );
         assert_eq!(everything.stale, 0);
+    }
+
+    #[test]
+    fn cost_by_day_never_slices_a_timestamp_by_bytes() {
+        let events = [
+            efficiency_event("a", "2026-09-30T10:00:00+00:00"),
+            // Late on the 30th west of UTC is the 1st in UTC.
+            efficiency_event("b", "2026-09-30T23:30:00-02:00"),
+            // A two-byte character across byte 10 used to panic the slice.
+            efficiency_event("c", "2026-09-3éT10:00:00Z"),
+            efficiency_event("d", ""),
+        ];
+        let refs: Vec<&AgentEfficiencyEvent> = events.iter().collect();
+        let by_date = cost_by_day(&refs);
+        let turns_by_day: Vec<(&str, usize)> = by_date
+            .iter()
+            .map(|(day, aggregate)| (day.as_str(), aggregate.turns))
+            .collect();
+        assert_eq!(
+            turns_by_day,
+            [("2026-09-30", 1), ("2026-10-01", 1), ("undated", 2)]
+        );
     }
 }

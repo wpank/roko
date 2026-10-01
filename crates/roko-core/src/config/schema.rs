@@ -2594,6 +2594,12 @@ pub struct CoreRunnerConfig {
     /// are removed, and the branches stay for inspection and history.
     #[serde(default)]
     pub delete_attempt_branches: bool,
+    /// Whether `roko plan run` runs each task in its own git worktree, as
+    /// `--worktree-per-task` asks. `--worktree-per-task` and
+    /// `--no-worktree-per-task` override it per run; a server's runs follow
+    /// the server's value (gap-4ec59f).
+    #[serde(default = "CoreRunnerConfig::default_worktree_per_task")]
+    pub worktree_per_task: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2628,6 +2634,11 @@ impl CoreRunnerConfig {
     pub const fn default_prompt_log_retention() -> usize {
         100
     }
+
+    /// Default task isolation: tasks share the working tree.
+    pub const fn default_worktree_per_task() -> bool {
+        false
+    }
 }
 
 impl Default for CoreRunnerConfig {
@@ -2643,6 +2654,7 @@ impl Default for CoreRunnerConfig {
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
             delete_attempt_branches: false,
+            worktree_per_task: Self::default_worktree_per_task(),
         }
     }
 }

@@ -47,7 +47,7 @@ File classifications:
 | Epics accepted | 0 | 48/48 |
 | Executable tasks complete | 0 | Withdrawn 2026-09-29 (stale count) |
 | Execution engine | WorkflowEngine | Graph (sole engine) |
-| HTTP routes | 0 | ~376 canonical (~421 incl. aliases) |
+| HTTP routes | 0 | counted in `tools/http_route_inventory.snapshot.json` |
 | ACP tests | 0 | 180 |
 
 ### 2.2 Section Scorecard (Updated)
@@ -99,7 +99,7 @@ Integration wiring saw the largest improvement (+0.9) reflecting the 48 accepted
 | roko-core | 1,200+ | Yes (kernel) | **Stable** | +600 tests, pub(crate) encapsulation |
 | roko-agent | 1,100+ | Yes | **Wired** (12 providers) | +550 tests, 7 new providers |
 | roko-agent-server | 200+ | Yes (sidecar) | **Wired** | New crate |
-| roko-serve | 800+ | Yes | **Wired** (~376 routes) | +774 tests, from 0 routes to 376 |
+| roko-serve | 800+ | Yes | **Wired** | +774 tests; route counts in `tools/http_route_inventory.snapshot.json` |
 | roko-gate | 500+ | Yes | **Wired** (19 gates) | +300 tests, 8 new gates |
 | roko-compose | 300+ | Yes | **Wired** | +277 tests |
 | roko-conductor | 350+ | Yes | **Wired** (12 watchers) | +220 tests, +2 watchers |

@@ -965,8 +965,9 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
     ));
     assert_eq!(app.tui_state.plan_scroll_offset, 9);
 
-    app.tui_state.active_modal = Some(ModalState::AgentPool {
-        agents: Vec::new(),
+    app.tui_state.active_modal = Some(ModalState::BatchReview {
+        batch_name: "b".to_string(),
+        results: Vec::new(),
         scroll_offset: 4,
     });
 
@@ -974,7 +975,7 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
 
     assert!(matches!(
         app.tui_state.active_modal,
-        Some(ModalState::AgentPool {
+        Some(ModalState::BatchReview {
             scroll_offset: 3,
             ..
         })
@@ -1760,4 +1761,122 @@ fn tui_event_loop_current_tick_duration_matches_policy() {
         std::time::Duration::from_millis(250),
         "dormant app should use 250ms tick"
     );
+}
+
+#[test]
+fn full_refresh_keeps_the_plan_set() {
+    let dir = tempdir().unwrap();
+    // A workspace plan outside the run's plan set: the disk loader lists it.
+    let unrelated = dir.path().join("plans").join("03-unrelated");
+    std::fs::create_dir_all(&unrelated).unwrap();
+    std::fs::write(
+        unrelated.join("tasks.toml"),
+        "[[task]]\nid = \"T1\"\ntitle = \"Task\"\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.path());
+    let hub = app._state_hub.clone().expect("hub");
+    publish_plan_set(&hub, &["01-first", "02-second"]);
+    app.drain_snapshot_channel();
+    let plan_ids = |app: &App| -> Vec<String> {
+        app.tui_state
+            .plans
+            .iter()
+            .map(|plan| plan.id.clone())
+            .collect()
+    };
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+
+    // An explicit full refresh reloads `DashboardData` from disk, which lists
+    // every workspace plan; the hub's plan set must still be what is shown.
+    app.refresh_snapshot();
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+}
+
+/// gap-633184: a consumer far behind a long, fast stream loses no event
+/// without counting it, a replay longer than one tick is not cut short, and
+/// every task's terminal status still reaches the TUI, through the snapshot.
+#[test]
+fn control_events_survive_long_stream_backpressure() {
+    use super::channels::take_state_events;
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::state_hub::{SharedStateHub, StateHub, StateHubSubscription};
+    use crate::tui::state::TaskStatus;
+
+    const TICK: usize = 256;
+    let tasks = ["t1", "t2", "t3"];
+    // A Graph run's stream: per task, hundreds of tool calls, results and
+    // text deltas between its start, gate result and completion.
+    let publish_run = |hub: &SharedStateHub| {
+        let bridge = TuiBridge::new(hub.sender());
+        let start = hub.cursor_snapshot().next_seq;
+        bridge.plan_started("p1", tasks.len());
+        for task_id in tasks {
+            let agent_id = format!("p1/{task_id}");
+            bridge.task_started("p1", task_id, task_id, "implement");
+            for step in 0..200 {
+                let tool_id = format!("{task_id}-{step}");
+                bridge.tool_call(&agent_id, "p1", task_id, 1, &tool_id, "Bash");
+                bridge.tool_output(&agent_id, "p1", task_id, 1, &tool_id, "ok");
+                bridge.agent_text_delta(&agent_id, "p1", task_id, 1, "working");
+            }
+            bridge.gate_result("p1", task_id, "verify[0]", true);
+            bridge.task_completed("p1", task_id, "passed");
+        }
+        bridge.plan_completed("p1", true);
+        hub.cursor_snapshot().next_seq - start
+    };
+    // Everything a subscription yields, a tick at a time, and the number of
+    // events it reported dropped.
+    let drain = |subscription: &mut StateHubSubscription| {
+        let (mut events, mut dropped) = (Vec::new(), 0);
+        loop {
+            let (taken, missed) = take_state_events(subscription, TICK);
+            dropped += missed;
+            if taken.is_empty() && missed == 0 {
+                return (events, dropped);
+            }
+            events.extend(taken);
+        }
+    };
+
+    // A replay longer than one tick arrives whole, over several ticks.
+    let hub = SharedStateHub::new(StateHub::new(4096));
+    let published = publish_run(&hub);
+    let (events, dropped) = drain(&mut hub.subscribe_events_from(0));
+    assert!(published > TICK as u64);
+    assert_eq!((events.len() as u64, dropped), (published, 0));
+
+    // A live consumer that falls far behind an 8-event ring loses events,
+    // but counts every one of them.
+    let hub = SharedStateHub::new(StateHub::new(8));
+    let dir = tempdir().expect("tempdir");
+    let mut app = App::new_connected(dir.path(), &hub);
+    let mut subscription = hub.subscribe_events_from(hub.cursor_snapshot().next_seq);
+    let published = publish_run(&hub);
+    let (events, dropped) = drain(&mut subscription);
+    assert!(dropped > 0, "the stream outran the ring");
+    assert_eq!(events.len() as u64 + dropped, published);
+
+    // The TUI reports that count, and shows every task finished: plan, task
+    // and gate state come from the snapshot, not from the dropped events.
+    app.drain_snapshot_channel();
+    app.drain_state_events();
+    let marker = format!("[stream lagged: {dropped} StateHub events; snapshot resynced]");
+    let system = &app.tui_state.agent_streams["system"];
+    assert!(system.chunks.contains(&marker), "{:?}", system.chunks);
+    let plan = app
+        .tui_state
+        .plans
+        .iter()
+        .find(|plan| plan.id == "p1")
+        .expect("p1 is listed");
+    for task_id in tasks {
+        let task = plan
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .expect("the task is listed");
+        assert_eq!(task.status, TaskStatus::Done, "{task_id}");
+    }
 }

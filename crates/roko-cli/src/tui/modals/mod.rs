@@ -6,7 +6,6 @@
 //! The [`render_modal`] dispatch function matches on [`ModalState`] and routes
 //! to the appropriate modal renderer.
 
-pub mod agent_pool_modal;
 pub mod approval;
 pub mod batch_review;
 pub mod confirm;
@@ -22,7 +21,6 @@ pub mod task_picker;
 pub mod wave_overview;
 pub mod welcome;
 
-pub use agent_pool_modal::{AgentPoolRow, render_agent_pool};
 pub use approval::render_approval;
 pub use batch_review::{BatchTaskResult, render_batch_review};
 pub use confirm::{ConfirmAction, render_confirm};
@@ -86,12 +84,6 @@ pub enum ModalState {
     QueueOverview {
         milestones: Vec<Milestone>,
         selected_index: usize,
-        scroll_offset: u16,
-    },
-
-    /// Full agent roster.
-    AgentPool {
-        agents: Vec<AgentPoolRow>,
         scroll_offset: u16,
     },
 
@@ -193,12 +185,6 @@ pub fn render_modal(
                 *scroll_offset,
                 theme,
             );
-        }
-        ModalState::AgentPool {
-            agents,
-            scroll_offset,
-        } => {
-            render_agent_pool(frame, area, agents, *scroll_offset, theme);
         }
         ModalState::TaskPicker {
             tasks,
@@ -311,7 +297,6 @@ fn modal_area(modal: &ModalState, area: Rect) -> Rect {
         ModalState::Inject { .. } => centered_rect(70, 20, area),
         ModalState::WaveOverview { .. } => centered_rect(80, 70, area),
         ModalState::QueueOverview { .. } => centered_rect(85, 75, area),
-        ModalState::AgentPool { .. } => centered_rect(90, 70, area),
         ModalState::TaskPicker { .. } => centered_rect(80, 60, area),
         ModalState::TaskDetail { .. } => centered_rect(78, 72, area),
         ModalState::BatchReview { .. } => centered_rect(75, 65, area),

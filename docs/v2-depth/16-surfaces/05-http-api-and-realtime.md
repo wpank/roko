@@ -2,7 +2,7 @@
 
 > Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Covers the HTTP API as a Connect Cell with StateHub backing, routes grouped by resource, the shared realtime protocol (WebSocket + SSE) as Bus subscriptions through Connect Cells, the canonical frame vocabulary, cursor semantics, and deployment-shape-aware configuration.
 
-> **Implementation status (2026-09-10):** IMPLEMENTED. The HTTP control plane exposes ~376 canonical routes (~421 total incl. aliases) on :6677 as of the 2026-09-03 inventory. Any "~317 routes" count in this document is outdated. All E37 named-surface routes (Workbench/Inbox/Canvas/Minimap/Autonomy) are live. SSE and WebSocket streaming are wired. See `crates/roko-serve/src/routes/` for the current route assembly.
+> **Implementation status (2026-09-10):** IMPLEMENTED. The HTTP control plane exposes the routes counted in `tools/http_route_inventory.snapshot.json` on :6677. Any "~317 routes" count in this document is outdated. All E37 named-surface routes (Workbench/Inbox/Canvas/Minimap/Autonomy) are live. SSE and WebSocket streaming are wired. See `crates/roko-serve/src/routes/` for the current route assembly.
 
 ---
 

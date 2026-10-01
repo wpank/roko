@@ -296,14 +296,16 @@ pub enum StreamEventKind {
 
     /// The output of a completed tool call, correlated by the provider's call id.
     ///
-    /// Emitted by providers that surface tool results on the stream (trusted
-    /// live-output mode).  No provider emits this variant yet; it is handled
-    /// on the receiving end only.
+    /// Emitted by providers that run their own tools and surface the results
+    /// on the stream, such as the Claude CLI (trusted live-output mode).
     ToolResult {
         /// Provider-assigned tool call identifier (correlates with `ToolCallEnd`).
         id: String,
         /// The text output returned by the tool.
         output: String,
+        /// Whether the provider marked the result as a failed call. A result
+        /// without the mark counts as a success, as in the Anthropic API.
+        is_error: bool,
     },
 
     /// Final usage statistics for this turn.

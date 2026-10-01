@@ -328,7 +328,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 }
             );
             let tasks_toml = format!(
-                "[meta]\nplan = {:?}\nmax_parallel = 1\n\n# Add [[task]] entries below.\n",
+                "[meta]\nplan = {:?}\n\n# Add [[task]] entries below.\n",
                 plan.id
             );
             std::fs::write(&plan_md_path, plan_md)

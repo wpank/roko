@@ -475,7 +475,7 @@ const depth25 = [
 ]
 
 const depth26 = [
-  ['01-route-inventory-376', 'Route Inventory (376)'],
+  ['01-route-inventory', 'Route Inventory'],
   ['02-sse-websocket', 'SSE and WebSocket'],
   ['03-openapi-spec', 'OpenAPI Spec'],
   ['04-sidecar-api', 'Sidecar API'],

@@ -166,3 +166,16 @@ jobs:
           name: portal-check-evidence
           path: tmp/portal-audit/evidence/portal-check/
           overwrite: true
+
+  route-inventory:
+    name: HTTP route inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the route scanner
+        run: python3 tools/test_http_route_inventory.py
+      # A route added or removed in roko-serve fails this until the snapshot
+      # is refreshed: python3 tools/http_route_inventory.py --refresh
+      - name: Compare roko-serve's routes with the snapshot
+        run: python3 tools/http_route_inventory.py --check-snapshot

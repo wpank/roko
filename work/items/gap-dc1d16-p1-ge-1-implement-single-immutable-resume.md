@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-graph"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 discovered_from = "audit:tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointManifest", "crates/roko-cli/src/graph_checkpoint.rs::invalidate_unverified_activities", "crates/roko-cli/src/graph_checkpoint.rs::write_manifest_atomic", "crates/roko-cli/src/graph_checkpoint.rs::write_cost_ledger_atomic", "crates/roko-graph/src/replay.rs::ActivityReplayer::load_scoped", "crates/roko-graph/src/replay.rs::retain_recorded_activities", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -162,6 +162,23 @@ spend, is set aside visibly and does not block resume.
   other items that touch `graph_checkpoint.rs` or `replay.rs`, such as `gap-36f3fb`, `gap-34b2ed` and `bug-4641e3`.
 - The StateHub/SSE generation (`gap-9c82d3`) is out of scope. It can later reuse the `generation` number.
 - Size is L: design, a schema bump, a commit hook across `roko-graph` and `roko-cli`, migration and tests.
+- 2026-10-01 (wk-tamper): PARTIAL on work/gap-7147bb; cargo verification deferred to the batch check. Still open at
+  ebdc0f5d5. First step (Plan steps 3 and 6, without the generation stamp): a record is committed once its line ends.
+  `resume_checkpoint` now calls `roko_graph::replay::set_aside_uncommitted_activities` before anything reads the log.
+  The bytes after the last newline, a record whose write did not finish, move to `activities.jsonl.uncommitted.<ms>`
+  with a warning, and the log is cut back to its last complete record. A torn line therefore no longer blocks
+  `--resume-plan`, and the resumed run appends on a line of its own. The resume preview replays the same committed
+  prefix without changing a file (`committed_activity_len`, `ActivityReplayer::load_scoped_committed`). Tests:
+  `resume_sets_aside_a_torn_activity_record` (roko-cli) and `a_torn_last_record_is_set_aside_and_never_replayed`
+  (roko-graph).
+  Still open:
+  - The generation stamp itself (steps 1-2): schema v4 with `generation`, the log's committed length and BLAKE3, and
+    the cost values, written last after each durable change, so the log, the cost ledger and the manifest name one
+    moment.
+  - Non-destructive invalidation (step 4): `invalidate_unverified_activities` still rewrites the log.
+  - One parser for `recorded_gate_verdicts`, `recorded_nodes`, `recorded_outputs` and `load_scoped` (step 5).
+  - `resume_selects_single_immutable_generation` and the repeated-resume test (step 7).
+  - Hot Graph resume (`hot.rs`) still fails closed on a torn line.
 
 ## Original notes
 

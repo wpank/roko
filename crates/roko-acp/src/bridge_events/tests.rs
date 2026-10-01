@@ -1140,7 +1140,9 @@ fn acp_schema_errors(
                 .filter(|branch| acp_schema_errors(value, branch, defs, path).is_empty())
                 .count();
             if matching == 0 || (exactly_one && matching > 1) {
-                errors.push(format!("{path}: {matching} {keyword} branches match {value}"));
+                errors.push(format!(
+                    "{path}: {matching} {keyword} branches match {value}"
+                ));
             }
         }
     }

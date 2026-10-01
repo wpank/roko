@@ -1355,16 +1355,11 @@ struct PatternSupport {
 #[derive(Debug, Clone)]
 struct EpisodeActionView {
     actions: Vec<String>,
-    succeeded: bool,
 }
 
 impl EpisodeView for EpisodeActionView {
     fn actions(&self) -> &[String] {
         &self.actions
-    }
-
-    fn succeeded(&self) -> bool {
-        self.succeeded
     }
 }
 
@@ -1377,7 +1372,6 @@ fn discover_patterns(
     for episode in episodes {
         let view = EpisodeActionView {
             actions: episode_actions(episode),
-            succeeded: episode.success,
         };
         miner.ingest_episode(&view);
     }

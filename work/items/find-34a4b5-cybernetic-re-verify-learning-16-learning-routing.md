@@ -9,12 +9,12 @@ size = "M"
 goal = "learning"
 subsystem = ["roko-learn"]
 created = 2026-09-06
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints_persist", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::with_neuro_gate_hints", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
 links = { depends_on = [], blocks = [], related = ["gap-5fb9a7", "reg-ff6e1a", "reg-c7ecf6", "q-1faa0c", "find-4b4344"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -112,6 +112,47 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
 - `graph_task_dispatch.rs` is large and changes often. Keep each re-wire a small, separate commit.
 - Do not edit the closed checklist in `tmp/archive/` (it is not in the repo). This item and its children are the
   record now.
+
+- 2026-10-01 (wk-settle): PARTIAL on work/bug-f9ae3e; cargo verification deferred to the batch check. P1-09 is
+  wired, and the item's verify passes:
+  - Graph plan runs apply `apply_neuro_gate_hints` to the in-memory thresholds behind their tasks' retry budgets
+    (`TaskRetryBudgets::with_neuro_gate_hints`, called from `GraphTaskDispatcher::task_retry_budgets` with
+    `KnowledgeStore::for_workdir`). A rung that knowledge names as failing, with 5 to 9 observations, now suggests
+    more retries. Test: `knowledge_of_a_failing_rung_raises_a_young_rungs_budget`.
+  - Deleted the persist-layer twin, `apply_neuro_gate_hints_persist` and `GateThresholds::apply_neuro_hints`
+    (`runner/persist.rs`). Applied to the saved `gate-thresholds.json` at each plan start, its `ema * 0.7` would
+    compound on every young rung a plan doesn't verify, and it would write the file outside bug-e0f472's lock.
+- Status of the 16 closures at BASE `ebdc0f5d5`:
+  - Re-attached already: P0-07 (`graph_task_dispatch/feedback.rs:247`, 189a14e65); P0-04's playbook ids
+    (`feedback.rs:248`, 763596768); P0-09, which survived (`runtime_feedback/episodes.rs:296`, `feedback.rs:245`);
+    P2-15 (`runtime_feedback/knowledge.rs:166`, reg-06ae9f); P3-32's relabeling (`runtime_feedback/hindsight.rs:120`,
+    `plan_runner.rs:2050`, gap-5fb9a7); P4-04's assignment and settlement (`graph_task_dispatch.rs:1068`,
+    `feedback.rs:211`, gap-fdd27f); P4-17 through the roko-fs `JsonlMetricsSink` (`.roko/metrics/tool_metrics.jsonl`,
+    `plan_runner.rs:833` to `dispatch_v2.rs:1904`, find-f489db).
+  - Left, with an open item: P0-04's `playbook_hit_rate` (gap-14f08e) and P3-32's unread adjustments
+    (gap-5be28d), both held by wk-learn2 this round.
+  - Left, with a parked item: P0-01 (no writer of per-section effects; the wiring census reports
+    `sink.section_effect` missing, `graph_task_dispatch/wiring.rs:129`; gap-b0ebae, gap-ee03d6, gap-6c006d); P0-02
+    (`CascadeRouter::select_tier_with_active_inference`, `cascade_router.rs:593`, has no caller and nothing
+    persists a `BeliefState`; spec-9ba7f0); P1-20 (`ModelAttentionCurves` exists only in
+    `roko-compose/src/attention.rs:59`; spec-e924b1); P1-19 (gap-4f8af2), which is wider than that item says: the
+    whole attention-bidder loop is test-only. `PromptAssembler::record_outcome` (`dispatch/prompt_builder.rs:1582`),
+    `update_bidders_with_cost` (:1611), `load_attention_bidders` and `save_attention_bidders` (:1409, :1457) and
+    `set_learning_bidders` (`dispatch/factory.rs:442`) have no production caller.
+  - Left, with no item yet (for the coordinator to file; each is "re-wire or delete"):
+    - P0-13: `PromptEfficiencyScore` (`roko-learn/src/efficiency.rs:552`) is never built outside its tests.
+    - P1-22: `ToolFactory::format_bandit` is a static `ProfileBandit` (`dispatch/factory.rs:255`). Nothing reads the
+      field or `format_bandit()` (:702), and nothing selects, updates or persists an arm.
+    - P3-17: no affect reward shaping exists anywhere.
+    - P4-19: `ToolRecommender` (`roko-learn/src/tool_recommendation.rs`) has no caller, and it can't read today's
+      rows: it parses `tools_used` as a list of `{name, call_count}`, but `AgentEfficiencyEvent` writes
+      `tools_used: u32` and per-call `tool_calls` (`efficiency.rs:144-146`), so every row fails to parse and is
+      skipped.
+    - P4-17: `roko-learn/src/tool_metrics_store.rs` duplicates the roko-fs sink and has no user. Delete it.
+    - P4-04: nothing proposes experiments; only `roko learn` registers one (`commands/learn.rs:1549`). Automatic
+      proposals need a product decision.
+  - Plan steps 3 and 4 (file the new items, link them back here) are left to the coordinator: this round's brief
+    leaves filing to them and rules out editing other items.
 
 ## Original notes
 

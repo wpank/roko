@@ -350,8 +350,15 @@ impl OpenAiCompatLlmBackend {
         session: &SessionState,
         stream: bool,
     ) -> Result<Vec<u8>, LlmError> {
-        let RenderedTools::JsonArray(tools) = tools else {
-            return Err(LlmError::Backend("expected json tool array".into()));
+        // Native tools travel in `tools`. A text tool format (Hermes
+        // `<tool_call>` blocks) puts its tool block in the system message
+        // instead, and the request carries no `tools` (bug-d0b8b8).
+        let (tools, tools_prompt) = match tools {
+            RenderedTools::JsonArray(tools) => (Some(tools), None),
+            RenderedTools::SystemPromptBlock(block) => (None, Some(block.as_str())),
+            RenderedTools::CliFlag(_) => {
+                return Err(LlmError::Backend("expected json tool array".into()));
+            }
         };
         if !self.supports_vision && wire_messages_contain_images(messages) {
             return Err(LlmError::Backend(
@@ -395,13 +402,22 @@ impl OpenAiCompatLlmBackend {
             std::borrow::Cow::Borrowed(messages)
         };
 
+        let messages = match tools_prompt {
+            Some(block) => std::borrow::Cow::Owned(with_system_block(&messages, block)),
+            None => messages,
+        };
+        // An empty `tools` array is omitted: some endpoints reject it.
+        let tools = tools.filter(|tools| tools.as_array().is_none_or(|tools| !tools.is_empty()));
+
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": *messages,
-            "tools": tools,
         });
 
         if let Some(body_obj) = body.as_object_mut() {
+            if let Some(tools) = tools {
+                body_obj.insert("tools".to_string(), tools.clone());
+            }
             if let Some(max_tokens) = self.max_tokens {
                 let key = if self.use_max_completion_tokens {
                     "max_completion_tokens"
@@ -424,7 +440,7 @@ impl OpenAiCompatLlmBackend {
                     );
                 }
             }
-            if self.disable_parallel_tool_calls {
+            if self.disable_parallel_tool_calls && tools.is_some() {
                 body_obj.insert("parallel_tool_calls".to_string(), Value::Bool(false));
             }
             if stream {
@@ -495,6 +511,32 @@ impl OpenAiCompatLlmBackend {
 
         Ok(json)
     }
+}
+
+/// `messages` with `block` appended to the system message, or put first as a
+/// system message of its own when there is none.
+fn with_system_block(messages: &[Value], block: &str) -> Vec<Value> {
+    let mut messages = messages.to_vec();
+    let Some(system) = messages
+        .iter()
+        .position(|message| message.get("role").and_then(Value::as_str) == Some("system"))
+    else {
+        messages.insert(0, serde_json::json!({"role": "system", "content": block}));
+        return messages;
+    };
+    let content = match messages[system].get("content") {
+        Some(Value::String(content)) if !content.is_empty() => {
+            Value::String(format!("{content}\n\n{block}"))
+        }
+        Some(Value::Array(parts)) => {
+            let mut parts = parts.clone();
+            parts.push(serde_json::json!({"type": "text", "text": block}));
+            Value::Array(parts)
+        }
+        _ => Value::String(block.to_string()),
+    };
+    messages[system]["content"] = content;
+    messages
 }
 
 fn extract_session(response: &Value) -> SessionState {
@@ -1092,6 +1134,52 @@ mod tests {
         assert_eq!(parsed["model"], "gpt-5.4");
         assert_eq!(parsed["max_completion_tokens"], 256);
         assert!(parsed.get("max_tokens").is_none());
+    }
+
+    /// bug-d0b8b8: a text tool format's block joins the system message, or
+    /// becomes the first message when there is none, and the request then
+    /// carries no `tools`; an empty native `tools` array is omitted too.
+    #[test]
+    fn build_body_puts_a_system_prompt_tool_block_in_the_system_message() {
+        let backend = OpenAiCompatLlmBackend::new("test-key", "hermes-4-70b");
+        let block = RenderedTools::SystemPromptBlock("<tools>[]</tools>".to_string());
+        let body = |messages: &[Value], tools: &RenderedTools| -> Value {
+            let body = backend
+                .build_body(messages, tools, &SessionState::default(), false)
+                .expect("build body");
+            serde_json::from_slice(&body).expect("request body json")
+        };
+
+        let with_system = body(
+            &[
+                serde_json::json!({"role": "system", "content": "Be brief."}),
+                serde_json::json!({"role": "user", "content": "hello"}),
+            ],
+            &block,
+        );
+        assert!(with_system.get("tools").is_none(), "{with_system}");
+        assert_eq!(
+            with_system["messages"][0]["content"],
+            "Be brief.\n\n<tools>[]</tools>"
+        );
+        assert_eq!(with_system["messages"][1]["content"], "hello");
+
+        let without_system = body(
+            &[serde_json::json!({"role": "user", "content": "hello"})],
+            &block,
+        );
+        assert_eq!(without_system["messages"][0]["role"], "system");
+        assert_eq!(
+            without_system["messages"][0]["content"],
+            "<tools>[]</tools>"
+        );
+        assert_eq!(without_system["messages"][1]["content"], "hello");
+
+        let no_tools = body(
+            &[serde_json::json!({"role": "user", "content": "hello"})],
+            &RenderedTools::JsonArray(serde_json::json!([])),
+        );
+        assert!(no_tools.get("tools").is_none(), "{no_tools}");
     }
 
     #[test]

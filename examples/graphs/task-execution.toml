@@ -7,6 +7,10 @@
 #
 # If the gate fails, a conditional edge routes back to a retry compose
 # that includes the gate feedback.
+#
+# Not runnable yet: `claude-agent` builds ActCell, a stub that dispatches
+# nothing until it is wired to a provider (gap-3d5cce), so `roko graph run`
+# refuses this graph (bug-91a34e). `roko graph show` lists the stub nodes.
 
 [graph]
 name = "task-execution"

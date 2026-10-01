@@ -292,7 +292,10 @@ fn persist_validation_sidecar(
 
 pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     use roko_cli::agent_config::{command_from_config, load_gateway_env, model_from_config};
-    use roko_cli::agent_exec::{AgentExecOpts, persist_capture_episode, run_agent_capture_silent};
+    use roko_cli::agent_exec::{
+        AgentExecOpts, persist_capture_episode, run_agent_capture_silent_recorded,
+    };
+    use roko_cli::plan_authoring::AuthoringSpend;
 
     let workdir = resolve_workdir(cli);
     let gw = load_gateway_env(&workdir);
@@ -483,17 +486,23 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 let started = Instant::now();
                 let scribe_effort = cli_effort_ref
                     .unwrap_or_else(|| prd_role_config.agent.effort_for_role("scribe"));
-                let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: &workdir,
-                    model: Some(model_key.as_str()),
-                    effort: Some(scribe_effort),
-                    system_prompt: Some(&system),
-                    resume_session,
-                    env_vars: &gw.vars,
-                    role: Some(cli_role.unwrap_or("scribe")),
-                    allowed_tools: Some("Read,Grep,Glob"),
-                })
+                let task_id = format!("prd:draft:{slug}");
+                let spend =
+                    AuthoringSpend::operation(&workdir, &task_id, cli_role.unwrap_or("scribe"));
+                let (exit_code, output) = run_agent_capture_silent_recorded(
+                    AgentExecOpts {
+                        prompt: &task_prompt,
+                        workdir: &workdir,
+                        model: Some(model_key.as_str()),
+                        effort: Some(scribe_effort),
+                        system_prompt: Some(&system),
+                        resume_session,
+                        env_vars: &gw.vars,
+                        role: Some(cli_role.unwrap_or("scribe")),
+                        allowed_tools: Some("Read,Grep,Glob"),
+                    },
+                    &spend,
+                )
                 .await?;
                 if exit_code == 0 {
                     tracing::info!(%slug, "PRD draft generated");
@@ -650,7 +659,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     &agent_command,
                     Some(model_key.as_str()),
                     "prd-draft-new",
-                    &format!("prd:draft:{slug}"),
+                    &task_id,
                     &task_prompt,
                     &output,
                     artifact_success,
@@ -743,17 +752,23 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 let started = Instant::now();
                 let edit_effort = cli_effort_ref
                     .unwrap_or_else(|| prd_role_config.agent.effort_for_role("scribe"));
-                let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: &workdir,
-                    model: Some(model_key.as_str()),
-                    effort: Some(edit_effort),
-                    system_prompt: Some(&system),
-                    resume_session,
-                    env_vars: &gw.vars,
-                    role: Some(cli_role.unwrap_or("scribe")),
-                    allowed_tools: Some("Read,Grep,Glob"),
-                })
+                let task_id = format!("prd:draft:edit:{slug}");
+                let spend =
+                    AuthoringSpend::operation(&workdir, &task_id, cli_role.unwrap_or("scribe"));
+                let (exit_code, output) = run_agent_capture_silent_recorded(
+                    AgentExecOpts {
+                        prompt: &task_prompt,
+                        workdir: &workdir,
+                        model: Some(model_key.as_str()),
+                        effort: Some(edit_effort),
+                        system_prompt: Some(&system),
+                        resume_session,
+                        env_vars: &gw.vars,
+                        role: Some(cli_role.unwrap_or("scribe")),
+                        allowed_tools: Some("Read,Grep,Glob"),
+                    },
+                    &spend,
+                )
                 .await?;
                 let mtime_after = std::fs::metadata(&draft).and_then(|m| m.modified()).ok();
                 let file_was_modified = match (mtime_before, mtime_after) {
@@ -787,7 +802,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     &agent_command,
                     Some(model_key.as_str()),
                     "prd-draft-edit",
-                    &format!("prd:draft:edit:{slug}"),
+                    &task_id,
                     &task_prompt,
                     &output,
                     exit_code == 0,
@@ -915,17 +930,25 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             let started = Instant::now();
             let consolidate_effort = cli_effort_ref
                 .unwrap_or_else(|| prd_role_config.agent.effort_for_role("strategist"));
-            let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                prompt: &task_prompt,
-                workdir: &workdir,
-                model: Some(model_key.as_str()),
-                effort: Some(consolidate_effort),
-                system_prompt: Some(&system),
-                resume_session,
-                env_vars: &gw.vars,
-                role: Some(cli_role.unwrap_or("strategist")),
-                allowed_tools: Some("Read,Grep,Glob"),
-            })
+            let spend = AuthoringSpend::operation(
+                &workdir,
+                "prd:consolidate",
+                cli_role.unwrap_or("strategist"),
+            );
+            let (exit_code, output) = run_agent_capture_silent_recorded(
+                AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: &workdir,
+                    model: Some(model_key.as_str()),
+                    effort: Some(consolidate_effort),
+                    system_prompt: Some(&system),
+                    resume_session,
+                    env_vars: &gw.vars,
+                    role: Some(cli_role.unwrap_or("strategist")),
+                    allowed_tools: Some("Read,Grep,Glob"),
+                },
+                &spend,
+            )
             .await?;
             if !output.is_empty() {
                 print!("{output}");

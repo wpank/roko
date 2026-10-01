@@ -222,8 +222,13 @@ event log (--log-file {bundle}/events.jsonl), and these environment variables:
   SKIP_FRONTEND_BUILD=1
 
 On the Graph engine, ROKO_FAST_MODE bounds prompt context, enforces the
-one-verify plan contract, and stops the run at ROKO_FAST_PLAN_DEADLINE_SECS;
-the remaining variables are recorded in the evidence metadata.
+one-verify plan contract, and stops the run at ROKO_FAST_PLAN_DEADLINE_SECS
+(exit 143, reported as `deadline`). Each task attempt gets at most
+ROKO_FAST_MAX_AGENT_TURNS turns (default 6) and 90 s, and a prompt section
+telling the agent to patch and hand off without running Cargo; simple cargo
+verify commands build with --profile dev-fast when Cargo.toml declares it, and
+a failed verify never runs cargo fix. The remaining variables are recorded in
+the evidence metadata.
 
 Wrapper options:
   --deadline <seconds>    Hard command deadline including settlement (default: 300)

@@ -56,6 +56,11 @@ pub struct RungStats {
     /// at its pre-poisoning value until diversity is restored.
     #[serde(default)]
     pub poisoning_defense: PoisoningDefense,
+    /// Fields that another writer of `gate-thresholds.json` keeps for the
+    /// rung, such as the Graph path's `pass_count`, carried through a load
+    /// and save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for RungStats {
@@ -68,6 +73,7 @@ impl Default for RungStats {
             cusum_low: 0.0,
             cusum_shift_detected: false,
             poisoning_defense: PoisoningDefense::default(),
+            extra: serde_json::Map::new(),
         }
     }
 }

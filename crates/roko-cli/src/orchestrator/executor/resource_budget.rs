@@ -1,7 +1,6 @@
 //! Multi-dimensional resource-aware scheduling (ORCH-08).
 //!
-//! Extends the basic [`ResourceBudget`](super::ResourceBudget) with the full
-//! five-resource model from the spec: agent slots, API rate limits, LLM token
+//! The full five-resource model from the spec: agent slots, API rate limits, LLM token
 //! budget, worktree slots, and USD cost budget. The executor tick loop can use
 //! [`FullResourceBudget::can_schedule`] before dispatching a task and
 //! [`FullResourceBudget::reserve`] / [`FullResourceBudget::release`] to track

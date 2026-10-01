@@ -1719,6 +1719,30 @@ fn feedback_with_unknown_model_is_noop() {
 
 // ── P2-LRN-5: task_category awareness in stages 2-3 ─────────────────────────
 
+/// gap-b95d94: a hindsight relabel moves one credited success to a failure
+/// in the category and confidence stats; the trials stay.
+#[test]
+fn retract_success_moves_a_credited_success_to_a_failure() {
+    let cascade = CascadeRouter::new(test_slugs());
+    let mut ctx = default_ctx();
+    ctx.task_category = TaskCategory::Docs;
+    cascade.record_observation(&ctx, "claude-sonnet-4-5", 0.9, true);
+    let sonnet_docs = ("claude-sonnet-4-5".to_string(), "docs".to_string());
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 1))
+    );
+
+    cascade.retract_success("claude-sonnet-4-5", TaskCategory::Docs, true);
+
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 0))
+    );
+    let confidence = cascade.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
 /// record_observation must populate category_stats so Stage 2
 /// confidence_scores can apply the per-category pass-rate delta.
 #[test]

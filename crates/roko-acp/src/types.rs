@@ -884,7 +884,9 @@ mod tool_call_content {
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     enum ToolCallContent {
-        Content { content: ContentBlock },
+        Content {
+            content: ContentBlock,
+        },
         Diff {
             path: String,
             #[serde(rename = "oldText", default, skip_serializing_if = "Option::is_none")]
@@ -930,8 +932,7 @@ mod tool_call_content {
             }),
             // A unified diff without the new file text has no spec `diff` form.
             ContentBlock::Diff {
-                diff: Some(diff),
-                ..
+                diff: Some(diff), ..
             } => Some(ToolCallContent::Content {
                 content: ContentBlock::Text {
                     text: format!("```diff\n{}\n```", diff.trim_end()),

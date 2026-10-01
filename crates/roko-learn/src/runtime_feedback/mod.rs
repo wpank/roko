@@ -207,7 +207,7 @@ impl<'a> RecoveredUpdate<'a> {
     fn model_slug(&self) -> &'a str {
         match self {
             Self::Observation(observation) => observation.model_slug,
-            Self::Retraction { model_slug } => *model_slug,
+            Self::Retraction { model_slug } => model_slug,
         }
     }
 }

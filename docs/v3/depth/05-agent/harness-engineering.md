@@ -310,12 +310,10 @@ applies to every model.
 5. Fan, H. & Lan, Z. (2026). "From Cognitive Architectures to Language Agents: A
    Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
    arXiv:2607.23942. -- Survey of agent mechanisms.
-6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
-   Real-World GitHub Issues?" -- Benchmark showing harness variance.
+6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
 7. arXiv:2603.18897. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." --
    48.5% shorter task completion time via speculative execution (v1; 43.5% in the current version).
-8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for Large Language Model Agents."
-   AAAI 2026. -- Graph-based tool prediction.
+8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for Large Language Model Agents." AAAI 2026.
 9. `crates/roko-agent/src/dispatcher/mod.rs` -- 7-step pipeline.
 10. `crates/roko-compose/src/system_prompt_builder.rs` -- 9-layer prompts.
 11. `crates/roko-agent/src/tool_loop/prune.rs` -- Context pruning.

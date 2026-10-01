@@ -278,7 +278,7 @@ code.
 
 ## References
 
-- Lange, R., Fu, Y., et al. "Darwin Godel Machine: Open-Ended Evolution of
+- Zhang, J., Hu, S., Lu, C., Lange, R. & Clune, J. "Darwin Godel Machine: Open-Ended Evolution of
   Self-Improving Agents." arXiv:2505.22954, May 2025.
 - Hu, S., Lu, C., Clune, J. "Automated Design of Agentic Systems."
   ICLR 2025.

@@ -933,21 +933,16 @@ lens on the data these subsystems already produce.
 ## Citations
 
 1. Kapoor et al. (2026). "HAL: A Benchmark for Evaluating LLM Agents." ICLR.
-   -- Scaffold-aware evaluation, 21,730 agent rollouts.
 2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
    arXiv:2603.28052. -- +7.7 accuracy, 4x token reduction.
-3. Jimenez et al. (2024). "SWE-bench: Can Language Models Resolve Real-World
-   GitHub Issues?" -- External benchmark context.
-4. Huang et al. (2024). "Large Language Models Cannot Self-Correct Reasoning
-   Yet." ICLR. -- Self-correction fails without external feedback.
+3. Jimenez et al. (2024). "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+4. Huang et al. (2024). "Large Language Models Cannot Self-Correct Reasoning Yet." ICLR.
 5. Pan et al. (2024). "Spontaneous Reward Hacking in Self-Refinement." ICML.
-   -- LLM self-evaluation attacks surface features.
 6. Song et al. (2025). GVU Framework. ICLR. -- Verification quality bounds
    self-improvement.
 7. Lightman et al. (2023). "Let's Verify Step by Step." -- Process reward
    models for step-level evaluation.
-8. Singh et al. (2025). "The Leaderboard Illusion." NeurIPS. -- Overfitting
-   detection in agent evaluation.
+8. Singh et al. (2025). "The Leaderboard Illusion." NeurIPS.
 10. Bailey et al. (2015). PBO: Probability of Backtest Overfitting. --
     Combinatorial cross-validation for configuration selection.
 11. Gibson (1979). The Ecological Approach to Visual Perception. --

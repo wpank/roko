@@ -1128,5 +1128,347 @@
     "specification issues where unverified outputs cascade"
    ]
   }
- ]
+ ],
+ "unchecked_annotations_cut": true,
+ "annotation_cut": {
+  "item": "gap-1f72ac",
+  "date": "2026-10-01",
+  "rule": "Every cited work not listed here (works + summary.earlier_full_reads) lost its annotation in the reference lists: the citation (authors, year, title, venue, identifier) stays, the description and its numbers go. Venue and award notes and '(See NN.)' cross-references were kept. A work counts as checked when its arXiv ID is in this file or, without an ID, when its title or name matches. Script: cut.py (gap-1f72ac scratch), three formats.",
+  "counts": {
+   "v3_references_and_reference_maps": {
+    "files": "docs/v3/REFERENCES.md, docs/v3/depth/39-references/*.md",
+    "entries": 1316,
+    "checked_kept": 136,
+    "cut": 1132,
+    "annotation_lines_removed": 1126,
+    "already_bare": 48
+   },
+   "v1_reference_maps": {
+    "files": "docs/v1/21-references/*.md",
+    "entries": 489,
+    "checked_kept": 30,
+    "cut": 450,
+    "already_bare": 9
+   },
+   "chapter_reference_sections": {
+    "files": "list items under Reference/Citation/Sources/Bibliography headings in docs/v3 and docs/v1",
+    "citation_items": 810,
+    "checked_kept": 78,
+    "cut": 189,
+    "left_as_is": 543,
+    "note": "left_as_is items carry no annotation the script recognises: most are bare; label-first forms such as '**Author Year** -- Title (Venue)' were not touched"
+   },
+   "total_annotations_cut": 1771
+  },
+  "checked_work_items_fixed_by_hand": 26,
+  "banners": [
+   "docs/v3/REFERENCES.md",
+   "docs/v3/depth/39-references/*.md (26 files)",
+   "docs/v1/21-references/INDEX.md",
+   "docs/v1/21-references/*.md (25 files)"
+  ],
+  "not_cut": "Descriptions in chapter prose (outside reference lists) were not cut; the REFERENCES.md banner says they are unchecked."
+ },
+ "evidence_candidates": {
+  "item": "gap-1f72ac",
+  "rule": "Unchecked arXiv works that docs/v3 prose (outside reference lists) cites with an evidence or design verb (validates, grounds, demonstrates, shows, proves, motivates, informs, based on, supports, outperforms, ...).",
+  "arxiv": [
+   {
+    "arxiv": "2504.14898",
+    "title": null,
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/00-INDEX.md"
+    ],
+    "sample": "Foundation for NREM dream consolidation math. |"
+   },
+   {
+    "arxiv": "2512.09369",
+    "title": "Encoder-Free Knowledge-Graph Reasoning with LLMs via Hyperdimensional Path Retrieval",
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/09-MEMORY.md",
+     "docs/v3/depth/09-memory/hdc-vsa-foundations.md"
+    ],
+    "sample": "Demonstrates that HDC role-filler binding naturally encodes KG relationships with competitive retrieval accuracy."
+   },
+   {
+    "arxiv": "2603.10123",
+    "title": "Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias",
+    "evidence_sentences": 3,
+    "files": [
+     "docs/v3/06-COMPOSITION.md",
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "sample": "A 2025 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic property** of causal decoder architectures, present at initialization before any training or positional encoding:"
+   },
+   {
+    "arxiv": "2602.02007",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "sample": "Roko's architecture follows this pattern: HDC similarity search (retrieval) operates independently of the demurrage/reinforcement model (aggregation), and the CognitiveWorkspace VCG auction (composition) is a third independent stage."
+   },
+   {
+    "arxiv": "2602.14038",
+    "title": "Choosing How to Remember: Adaptive Memory Structures for LLM Agents",
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "sample": "A future evolution could make the kind assignment itself adaptive based on observed retrieval patterns."
+   },
+   {
+    "arxiv": "2607.12227",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2607.14004",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2608.18066",
+    "title": null,
+    "evidence_sentences": 2,
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "> **Status (2026-09-29): a hypothesis the evidence does not support.** No > measurement shows Roko improving superlinearly, and recent studies argue against > expecting it: > gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and > Feizi 2026, arXiv:2607.14004), self-improve"
+   },
+   {
+    "arxiv": "2202.09722",
+    "title": "PooL: Pheromone-inspired Communication Framework for Large Scale Multi-Agent Reinforcement Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "(2022)** \"PooL: Pheromone-inspired Communication Framework for Large Scale Multi-Agent Reinforcement Learning,\" arXiv:2202.09722."
+   },
+   {
+    "arxiv": "2210.03629",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/05-agent/format-translation.md"
+    ],
+    "sample": "Fallback for models without native function-calling support."
+   },
+   {
+    "arxiv": "2308.07870",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "(2024)** \"Brain-Inspired Computational Intelligence via Predictive Coding,\" arXiv:2308.07870v3."
+   },
+   {
+    "arxiv": "2401.08623",
+    "title": "Wake-Sleep Consolidated Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/10-dreams/sleep-time-compute.md"
+    ],
+    "sample": "WSCL (Skenderi et al. 2024, \"Wake-Sleep Consolidated Learning,\" arXiv:2401.08623, IEEE 2024) showed a complementary result: interleaving wake and sleep processing phases produces a **38% reduction in catastrophic forgetting** compared to continuous waking-only learning."
+   },
+   {
+    "arxiv": "2402.10877",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "Proves that any agent achieving bounded regret under distributional shifts must have learned an approximate causal model."
+   },
+   {
+    "arxiv": "2405.10467",
+    "title": "Agent Design Pattern Catalogue: A Collection of Architectural Patterns for Foundation Model based Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/architectural-analysis-improvements.md"
+    ],
+    "sample": "AMD 6(1) | LIDA: Systems-level Architecture for Cognition | | Laird 2012, \"The Soar Cognitive Architecture\", MIT Press | SOAR decision cycle and impasse resolution | | Anderson 2007, \"How Can the Human Mind Occur?\", OUP | ACT-R production system | | Sumers et al. 2023 | CoALA: Cognitive Architecture"
+   },
+   {
+    "arxiv": "2406.16008",
+    "title": "Found in the Middle: Calibrating Positional Attention Bias Improves Long Context Utilization",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "sample": "- **\"Found in the Middle\"**, Hsieh et al., ACL Findings 2024, arXiv:2406.16008."
+   },
+   {
+    "arxiv": "2410.05983",
+    "title": "Long-Context LLMs Meet RAG: Overcoming Challenges for Long Inputs in RAG",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/06-composition/predictive-foraging-mvt.md"
+    ],
+    "sample": "Increasing retrieved passages doesn't consistently improve performance -- confirms MVT."
+   },
+   {
+    "arxiv": "2501.19278",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "sample": "Pheromone reinforcement outperforms standard chain-of-thought on GSM8K, ARC, MATH."
+   },
+   {
+    "arxiv": "2502.11882",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "sample": "This is grounded in FrugalGPT (Chen et al. 2023, arXiv:2305.05176; published 2024 in TMLR), DPT-Agent (Zhang et al. 2025, arXiv:2502.11882), and CLARION (Sun et al. 2005)."
+   },
+   {
+    "arxiv": "2504.14824",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/00-architecture/attention-as-currency.md"
+    ],
+    "sample": "(2024) extended VCG to multi-agent LLM settings, proving DSIC even when agents are LLMs with strategic capabilities. arXiv:2504.14824 (2025) further showed dual-currency VCG with MFMARL reduces collusion risk in distributed settings."
+   },
+   {
+    "arxiv": "2511.14650",
+    "title": "AutoTool: Efficient Tool Selection for Large Language Model Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/depth/05-agent/harness-engineering.md"
+    ],
+    "sample": "Roko's episode data could support this but the graph is not yet built."
+   },
+   {
+    "arxiv": "2601.02845",
+    "title": "TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "**TiMem** (arXiv:2601.02845) provides a temporal hierarchical consolidation framework that validates the multi-tier approach: recent experiences should be stored at high resolution and progressively compressed into lower-resolution but more general representations over time."
+   },
+   {
+    "arxiv": "2601.04362",
+    "title": "Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "This validates the NREM/REM distinction -- NREM for faithful replay and pattern extraction, REM for creative recombination and schema testing."
+   },
+   {
+    "arxiv": "2604.11364",
+    "title": "The Missing Knowledge Layer in Cognitive Architectures for AI Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "sample": "Motivates Roko's Neuro knowledge store and tier-based knowledge management."
+   },
+   {
+    "arxiv": "2605.20616",
+    "title": "Auto-Dreamer: Learning Offline Memory Consolidation for Language Agents",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "A learned consolidator based on Complementary Learning Systems (CLS) theory."
+   },
+   {
+    "arxiv": "2606.03979",
+    "title": "Language Models Need Sleep: Learning to Self-Modify and Consolidate Memories",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "sample": "Demonstrates parametric distillation during offline phases."
+   },
+   {
+    "arxiv": "2606.24535",
+    "title": null,
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "sample": "The paper validates these design choices with empirical measurements."
+   },
+   {
+    "arxiv": "2606.26524",
+    "title": "VIGIL: Runtime Enforcement of Behavioral Specifications in AI Agent Skills",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/12-SAFETY.md"
+    ],
+    "sample": "Roko's gate pipeline uses empirical verification; VIGIL's formal approach would complement it with provably correct behavioral bounds."
+   },
+   {
+    "arxiv": "2606.30005",
+    "title": "LLM Agents Are Latent Context Managers: Eliciting Self-Managed Context via State Proprioception",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/06-COMPOSITION.md"
+    ],
+    "sample": "- **VISTA** (arXiv:2606.30005) validates the proprioceptive context dashboard pattern: agents with structured self-awareness of their state outperform those relying on raw context alone."
+   },
+   {
+    "arxiv": "2607.02032",
+    "title": "PACE: A Proxy for Agentic Capability Evaluation",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/07-GATES.md"
+    ],
+    "sample": "> **Citation**: PACE (arXiv:2607.02032) -- proxy capability evaluation shows > that continuous verification scores enable accurate capability assessment > at 15% of the compute cost of full evaluation."
+   },
+   {
+    "arxiv": "2607.25891",
+    "title": "Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation",
+    "evidence_sentences": 1,
+    "files": [
+     "docs/v3/39-ROADMAP.md"
+    ],
+    "sample": "- Messier (arXiv:2607.25891) -- partial-pass scoring rationale"
+   }
+  ],
+  "classic_works": [
+   "Conant & Ashby 1970",
+   "Ashby 1956",
+   "Woolley et al. 2010",
+   "McClelland et al. 1995",
+   "Bower 1981",
+   "Wagner & Graham 1998",
+   "Ortony et al. 1988",
+   "Scherer 2001",
+   "Russell & Mehrabian 1977",
+   "Kahneman 2011",
+   "Kahneman & Tversky 1979",
+   "Kanerva 2009",
+   "Ebbinghaus 1885",
+   "Schaul et al. 2016",
+   "Heard & Martienssen 2014",
+   "Lacaux et al. 2021",
+   "Khattab et al. 2024",
+   "Ousterhout 2018"
+  ],
+  "classic_note": "books and journal papers cited as grounding in docs/v3 prose; not on arXiv, so not part of this audit"
+ }
 }

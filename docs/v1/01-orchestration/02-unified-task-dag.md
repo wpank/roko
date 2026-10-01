@@ -672,26 +672,15 @@ replay), and Prefect (state transition rules):
 
 - The wave scheduling approach draws on topological sort algorithms (Kahn 1962)
   and list scheduling heuristics from the task scheduling literature.
-- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and
-  low-complexity task scheduling for heterogeneous computing. *IEEE Trans.
-  Parallel and Distributed Systems*, 13(3), 260–274. (HEFT algorithm)
+- Topcuoglu, H., Hariri, S. & Wu, M.-Y. (2002). Performance-effective and low-complexity task scheduling for heterogeneous computing. *IEEE Trans. Parallel and Distributed Systems*, 13(3), 260–274.
 - The file-conflict inference mechanism is analogous to lock-based concurrency
   control in database systems, where conflicting transactions are serialized
   to prevent anomalies.
-- Grassé, P.-P. (1959). La reconstruction du nid et les coordinations
-  interindividuelles. *Insectes Sociaux*, 6(1), 41–80. (Stigmergic
-  coordination — agents coordinate through shared artifacts.)
-- Hammer, M. A. et al. (2014). Adapton: Composable, demand-driven incremental
-  computation. *PLDI 2014*. (Demand-driven dirtying/cleaning for incremental
-  DAG recomputation.)
-- Mokhov, A., Mitchell, N. & Peyton Jones, S. (2018). Build systems à la carte.
-  *ICFP 2018*. (Taxonomy: schedulers × rebuilders × dependency types.)
+- Grassé, P.-P. (1959). La reconstruction du nid et les coordinations interindividuelles. *Insectes Sociaux*, 6(1), 41–80.
+- Hammer, M. A. et al. (2014). Adapton: Composable, demand-driven incremental computation. *PLDI 2014*.
+- Mokhov, A., Mitchell, N. & Peyton Jones, S. (2018). Build systems à la carte. *ICFP 2018*.
 - Salsa. Incremental computation for rust-analyzer. Red-green validation,
   durability levels, backdate optimization. *github.com/salsa-rs/salsa*
-- Karypis, G. & Kumar, V. (1998). A fast and high quality multilevel scheme
-  for partitioning irregular graphs. *SIAM J. Sci. Comput.*, 20(1), 359–392.
-  (METIS graph partitioning.)
-- Dean, J. & Ghemawat, S. (2008). MapReduce: Simplified data processing on
-  large clusters. *Comm. ACM*, 51(1), 107–113. (Speculative execution.)
-- Rocklin, M. (2015). Dask: Parallel computation with blocked algorithms and
-  task scheduling. *SciPy 2015*. (Task graph optimization: cull, inline, fuse.)
+- Karypis, G. & Kumar, V. (1998). A fast and high quality multilevel scheme for partitioning irregular graphs. *SIAM J. Sci. Comput.*, 20(1), 359–392.
+- Dean, J. & Ghemawat, S. (2008). MapReduce: Simplified data processing on large clusters. *Comm. ACM*, 51(1), 107–113.
+- Rocklin, M. (2015). Dask: Parallel computation with blocked algorithms and task scheduling. *SciPy 2015*.

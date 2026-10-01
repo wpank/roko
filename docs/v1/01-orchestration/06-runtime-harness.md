@@ -365,12 +365,8 @@ theoretical background.
 
 ## References
 
-- Woolley, A. W. et al. (2010). Evidence for a collective intelligence factor.
-  *Science*, 330(6004), 686–688. (C-Factor metric)
-- Yerkes, R. M. & Dodson, J. D. (1908). The relation of strength of stimulus to
-  rapidity of habit-formation. *Journal of Comparative Neurology and
-  Psychology*, 18(5), 459–482. (Arousal-based task prioritization)
+- Woolley, A. W. et al. (2010). Evidence for a collective intelligence factor. *Science*, 330(6004), 686–688.
+- Yerkes, R. M. & Dodson, J. D. (1908). The relation of strength of stimulus to rapidity of habit-formation. *Journal of Comparative Neurology and Psychology*, 18(5), 459–482.
 - Sumers, T. R. et al. (2023). Cognitive architectures for language agents.
   *arXiv:2309.02427*. (CoALA cognitive cycle)
-- Damasio, A. (1994). *Descartes' Error: Emotion, Reason, and the Human Brain*.
-  Putnam. (Somatic marker hypothesis — underpins the Daimon affect integration)
+- Damasio, A. (1994). *Descartes' Error: Emotion, Reason, and the Human Brain*. Putnam.

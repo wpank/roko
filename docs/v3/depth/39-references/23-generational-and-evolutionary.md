@@ -1,5 +1,9 @@
 # 39-23 Generational and Evolutionary -- Annotated Reference Map
 
+> Annotations are kept only for works whose descriptions were checked against the papers (listed in
+> `tools/docs_integrity/content_audit.json` and in the banner of docs/v3/REFERENCES.md). The other entries are
+> bare citations: their annotations were removed because they had not been checked against the papers.
+
 > Research foundations for evolutionary computing, quality-diversity algorithms,
 > memetic evolution, and generational knowledge transfer in Roko's EvoSkills
 > and knowledge evolution systems.
@@ -11,41 +15,34 @@
 ## Digital Evolution
 
 **[Ray, 1991]** *An Approach to the Synthesis of Life.* Artificial Life II, Addison-Wesley, 1992.
-Tierra: resource pressure drives digital evolution. 300+ genotypes emerged only with finite lifespans. Grounds knowledge decay as the mechanism that prevents knowledge calcification. (See also [00-lifecycle](./00-lifecycle-and-finite-agency.md).)
 
 **[Lenski et al., 2003]** *The Evolutionary Origin of Complex Features.* Nature, 423, 139--144.
-LTEE: complex features require generational turnover. Tier promotion (Episode to Insight to Heuristic to Playbook) produces generalization through lossy compression. (See also [00-lifecycle](./00-lifecycle-and-finite-agency.md).)
 
 ---
 
 ## Genomic Bottleneck
 
 **[Shuvaev et al., 2024]** *Encoding Innate Ability Through a Genomic Bottleneck.* PNAS, 121(39).
-The genome is ~1000x smaller than brain connectivity information, yet organisms have innate behaviors. Compression (~2,000 gene limit) transfers better than raw knowledge. Grounds knowledge backup compression via the bottleneck principle.
 
 ---
 
 ## Cultural and Vertical Transmission
 
 **[Bhoopchand et al., 2023]** *Learning few-shot imitation as cultural transmission.* Working paper.
-Cultural transmission produces cumulative learning across agent populations. Few-shot imitation enables cross-agent learning.
 
 ---
 
 ## Quality-Diversity Algorithms
 
 **[Mouret & Clune, 2015]** *Illuminating Search Spaces by Mapping Elites (MAP-Elites).* arXiv:1504.04909.
-Quality-diversity algorithm maintaining high-performing diverse solutions across feature space. Grounds the EvoSkills skill library -- maintaining a diverse repertoire of strategies, not just the single best.
 
 **[GVU, 2024]** *Self-Improving AI Agents through Self-Play.* Working paper.
-Quality-diversity framework for evolving robust multi-strategy systems. Extends MAP-Elites with genome-level value tracking.
 
 ---
 
 ## Architecture Search
 
 **[Hu et al., 2025]** *Automated Design of Agentic Systems (ADAS).* ICLR 2025.
-Meta-agent searching the agent architecture space. Discovers novel building blocks and compositions. Roko's composable trait system provides the search space that ADAS-style optimization operates over. (See also [06-self-learning](./06-self-learning-systems.md).)
 
 ---
 
@@ -62,32 +59,24 @@ The same DGM paper from Sakana AI. Agents that can modify their own code and ver
 ## Memetic Evolution
 
 **[Dawkins, 1976]** *The Selfish Gene.* Oxford University Press.
-Memes as units of cultural transmission. Knowledge entries are the agent ecosystem's memes -- they replicate, mutate, and compete for context window space.
 
 **[Blackmore, 1999]** *The Meme Machine.* Oxford University Press.
-Memetic evolution: cultural units compete for replication. Knowledge entries in the NeuroStore are memes competing for retrieval and confirmation.
 
 **[Hull, 1988]** *Science as a Process.* University of Chicago Press.
-Evolutionary epistemology: science as evolution with replicators (ideas) and interactors (scientists). Knowledge entries are replicators; agents are interactors.
 
 ---
 
 ## Formal Evolutionary Theory
 
 **[Price, 1970]** *Selection and Covariance.* Nature, 227, 520--521.
-Price equation: trait change = covariance between trait and fitness. Provides a framework for analyzing which knowledge entries persist -- entries correlated with task success are selected for.
 
 **[Fisher, 1930]** *The Genetical Theory of Natural Selection.* Clarendon Press.
-Fisher's fundamental theorem: rate of fitness increase equals genetic variance. Diversity drives improvement. Grounds the diversity maintenance mandate in EvoSkills.
 
 **[Taylor & Jonker, 1978]** *Evolutionary Stable Strategies and Game Dynamics.* Mathematical Biosciences, 40(1--2), 145--156.
-Replicator dynamics for strategy frequency changes. Grounds NeuroStore strategy selection: successful strategies replicate (higher confidence), unsuccessful ones decline (decay).
 
 **[Wright, 1932]** *The Roles of Mutation, Inbreeding, Crossbreeding, and Selection in Evolution.* Proc. Sixth International Congress on Genetics, 1, 356--366.
-Fitness landscapes. The Somatic Landscape in the Daimon is an affective analogy: an 8-dimensional k-d tree over strategy space where terrain encodes past outcomes.
 
 **[Hinton & Nowlan, 1987]** *How Learning Can Guide Evolution.* Complex Systems, 1.
-Learning smooths fitness landscapes. Individual task-level learning guides collective knowledge evolution by identifying promising search regions before evolutionary selection commits.
 
 ---
 

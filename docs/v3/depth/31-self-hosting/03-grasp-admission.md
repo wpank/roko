@@ -256,11 +256,9 @@ A rule enters the refinement queue when:
 
 ## References
 
-- GRASP: "GRASP: Grounding Retrieval-Augmented Skill and Planning for
-  Medical Agents." arXiv:2605.29668, May 2026.
+- GRASP: "GRASP: Gated Regression-Aware Skill Proposer for Self-Improving LLM Agents." arXiv:2605.29668, May 2026.
 - SiriuS: "SiriuS: Self-Improving Multi-Agent Systems via Bootstrapped
   Reasoning." arXiv:2502.04780, February 2025.
-- SkillZip: "SkillZip: Compressing Agent Skill Libraries via Minimum
-  Description Length." arXiv:2608.11079, August 2026.
-- ReSkill: "ReSkill: Iterative Self-Correction for Agent Skill Refinement."
+- SkillZip: "SkillZip: Evaluation-Free Skill Compression for Self-Evolving Agents by Discovering Reusable Structure." arXiv:2608.11079, August 2026.
+- ReSkill: "ReSkill: Reconciling Skill Creation with Policy Optimization in Agentic RL."
   arXiv:2606.01619, June 2026.

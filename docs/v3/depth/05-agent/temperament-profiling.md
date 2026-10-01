@@ -238,8 +238,7 @@ Each step is independent and can be wired incrementally.
 
 1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
    Harnesses." arXiv:2603.28052. -- Automated harness search (§3).
-2. Friston, K. (2006). "A free energy principle for the brain." Journal
-   of Physiology - Paris. -- Precision parameter and active inference.
+2. Friston, K. (2006). "A free energy principle for the brain." Journal of Physiology - Paris.
 3. `crates/roko-core/src/config/schema.rs` -- AgentConfig temperament
    field.
 4. `crates/roko-learn/` -- CascadeRouter, adaptive gate thresholds.

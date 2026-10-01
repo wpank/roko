@@ -340,8 +340,7 @@ This is critical for:
 
 ## References
 
-- BLAKE3: O'Connor, J. et al. (2020). BLAKE3: One function, fast everywhere.
-  *blake3.io*. (The hash function used for content addressing)
+- BLAKE3: O'Connor, J. et al. (2020). BLAKE3: One function, fast everywhere. *blake3.io*.
 - Hash-chaining for tamper detection follows the Bitcoin blockchain's linked
   hash chain pattern (Nakamoto, S. (2008). Bitcoin: A Peer-to-Peer Electronic
   Cash System), adapted for local audit trails rather than distributed

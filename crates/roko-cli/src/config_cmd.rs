@@ -1088,31 +1088,6 @@ fn print_resolved(r: &ResolvedConfig) {
         r.config.agent.timeout_ms,
         r.sources.agent_timeout_ms.tag()
     );
-    println!(
-        "  tools.prefer_mcp   = {} {}",
-        r.config.tools.prefer_mcp,
-        r.sources.tools_prefer_mcp.tag()
-    );
-    println!(
-        "  tools.global_denied = {:?} {}",
-        r.config.tools.global_denied,
-        r.sources.tools_global_denied.tag()
-    );
-    println!(
-        "  tools.mcp_timeout_secs = {} {}",
-        r.config.tools.mcp_timeout_secs,
-        r.sources.tools_mcp_timeout_secs.tag()
-    );
-    println!(
-        "  prompt.token_budget= {} {}",
-        r.config.prompt.token_budget,
-        r.sources.prompt_token_budget.tag()
-    );
-    println!(
-        "  prompt.role        = {:?} {}",
-        r.config.prompt.role,
-        r.sources.prompt_role.tag()
-    );
     // Serialize providers to TOML and redact secret fields (api_key, tokens,
     // extra_headers values, etc.) before printing so that `roko config show`
     // never leaks literal API keys or bearer tokens to stdout.
@@ -1192,10 +1167,8 @@ fn print_resolved(r: &ResolvedConfig) {
     let fully_default = r.sources.agent_command == Source::Default
         && r.sources.auto_plan == Source::Default
         && r.sources.prompt_token_budget == Source::Default
-        && r.sources.prompt_role == Source::Default
         && r.sources.providers == Source::Default
         && r.sources.models == Source::Default
-        && r.sources.tools_prefer_mcp == Source::Default
         && r.sources.dreams_auto_dream == Source::Default
         && r.sources.dreams_idle_threshold_mins == Source::Default
         && r.sources.dreams_min_episodes_for_dream == Source::Default
@@ -2246,32 +2219,19 @@ scheduled_cron = "invalid cron"
     #[test]
     fn set_dotted_key_sets_prompt_budget() {
         let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "prompt.token_budget", "12345").unwrap();
-        assert_eq!(doc["prompt"]["token_budget"].as_integer().unwrap(), 12_345);
+        set_toml_dotted_key(&mut doc, "budget.prompt_token_budget", "12345").unwrap();
+        let budget = doc["budget"]["prompt_token_budget"].as_integer();
+        assert_eq!(budget, Some(12_345));
     }
 
     #[test]
-    fn set_dotted_key_sets_tools_prefer_mcp() {
+    fn set_dotted_key_sets_tools_deny() {
         let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.prefer_mcp", "true").unwrap();
-        assert!(doc["tools"]["prefer_mcp"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn set_dotted_key_sets_tools_global_denied() {
-        let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.global_denied", r#"["write_file","bash"]"#).unwrap();
-        let arr = doc["tools"]["global_denied"].as_array().unwrap();
+        set_toml_dotted_key(&mut doc, "tools.deny", r#"["write_file","bash"]"#).unwrap();
+        let arr = doc["tools"]["deny"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0].as_str().unwrap(), "write_file");
         assert_eq!(arr[1].as_str().unwrap(), "bash");
-    }
-
-    #[test]
-    fn set_dotted_key_sets_tools_timeout() {
-        let mut doc = empty_doc();
-        set_toml_dotted_key(&mut doc, "tools.mcp_timeout_secs", "75").unwrap();
-        assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 75);
     }
 
     #[test]
@@ -2528,7 +2488,7 @@ scheduled_cron = "invalid cron"
             ("serve.auth.api_key", ""),
             ("serve.auth.api_key", "${SERVE_KEY}"),
             ("agent.default_model", "sk-looking-model"),
-            ("prompt.token_budget", "5000"),
+            ("budget.prompt_token_budget", "5000"),
         ] {
             let outcome = set_secret_config_key(workdir, &paths, key, value).unwrap();
             assert_eq!(outcome, None, "{key} = {value}");

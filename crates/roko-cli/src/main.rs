@@ -3007,7 +3007,7 @@ enum ConfigCmd {
         /// Pre-set token budget.
         #[arg(long)]
         budget: Option<usize>,
-        /// Pre-set role string.
+        /// Ignored: no config key stores a role text any more.
         #[arg(long)]
         role: Option<String>,
         /// Enable default compile+clippy gates.

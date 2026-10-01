@@ -299,7 +299,8 @@ max_iterations = 5
 
 These keys were removed because nothing read them. Loading an old `roko.toml` that sets one
 still works: the key is dropped with a warning that says why, and `roko config doctor` parses
-the file the same way. `roko config validate` reports the key as removed, so delete the line.
+the file the same way. `roko config validate` reports the key as removed, so delete the line, and
+`roko config set` refuses it with the same reason.
 The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 
 | Key | Why it went |
@@ -310,6 +311,11 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
 | `agent.data_llm` | No dispatch path routed untrusted content to a separate data LLM, so setting it isolated nothing. `DataLlmConfig` and `DataLlmRouter` remain for future CaMeL work (gap-7a3527) |
 | `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `roko plan run --worktree-per-task` runs each task in its own worktree (gap-666ab3) |
+| `tools.prefer_mcp`, `tools.mcp_timeout_secs` | v1 keys of the CLI-only config that nothing read (bug-d5051e) |
+| `tools.global_denied` | v1 key that nothing read; `tools.deny` is the current tool denylist (bug-d5051e) |
+| `prompt.token_budget` | v1 key that nothing read from roko.toml; `budget.prompt_token_budget` is the current key (bug-d5051e) |
+| `prompt.role` | v1 key that nothing read from roko.toml; `--role` chooses the agent role (bug-d5051e) |
+| `prompt.files`, `prompt.budgets`, `prompt.context_budgets` | v1 keys that nothing read (bug-d5051e) |
 
 ---
 

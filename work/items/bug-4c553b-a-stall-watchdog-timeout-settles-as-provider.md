@@ -44,3 +44,9 @@ Record truth (epic spec-b7303f): a stall is the agent's or the model's failure t
 ## Notes
 
 - 2026-10-01 (wk-tiers): implemented on `work/gap-9eebcb-l7` at `fe18ce50e`; cargo verification deferred to the batch check. `AttemptInterrupted::settlement` settles a stall as `timeout` on both dispatch paths, using the typed interruption rather than the error text. The timeout is the agent's once the attempt reported anything, the provider's before that. A conductor restart still settles as a provider failure, as before; it arguably belongs to the harness (`cancelled`), which is left for a follow-up. Test: `a_stalled_attempt_settles_as_a_timeout`.
+- 2026-10-01 (wk-tiers): at `c6bb37a33`, merging batch 20e reconciled this with model-truth's `Settlement::provider_call_error` (bug-2b1ddc) into one typed path, `watchdog::failed_call_settlement`, used at both dispatch sites and in streaming:
+  - a stall settles as a timeout, as above;
+  - a cancellation settles as `cancelled`, a stopping plan run's included;
+  - anything else is a provider failure, a conductor restart included.
+
+  `AttemptInterrupted::settlement` is gone. Cargo verification is deferred to the batch check.

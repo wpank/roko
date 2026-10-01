@@ -3,13 +3,14 @@ id = "bug-02d5ad"
 kind = "bug"
 title = "create_openai_compat_backend calls itself for Hermes and OpenClaw, and its limiter variant has no callers"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-agent/tool_loop"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-53088d"
 anchors = ["crates/roko-agent/src/tool_loop/backends/mod.rs::create_openai_compat_backend", "crates/roko-agent/src/tool_loop/backends/mod.rs::create_openai_compat_backend_with_limiter"]
@@ -35,3 +36,8 @@ Route Hermes and OpenClaw to their real backends, or return an error, and delete
 ## Notes
 
 - Reported on 2026-10-01 by the worker on bug-53088d, during the evening close-out round.
+- 2026-10-01 (wk-model-truth): implemented on work/bug-3aa61f; cargo verification deferred to the batch check.
+  `create_openai_compat_backend` builds the chat completions backend for Hermes and OpenClaw in the OpenAiCompat
+  arm; the arm that called the function again is gone. The second half of the premise was wrong:
+  `create_openai_compat_backend_with_limiter` has two callers in roko-acp (`bridge_events/dispatch.rs`), so it
+  stays. Test: `openai_compat_backend_for_hermes_and_openclaw_speaks_chat_completions`.

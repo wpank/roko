@@ -2303,9 +2303,6 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             total_ms,
             "prd plan generate: phase timing"
         );
-        eprintln!(
-            "  Timing: init={init_ms}ms context={context_ms}ms prompt={prompt_ms}ms agent={agent_ms}ms post={post_ms}ms total={total_ms}ms"
-        );
 
         let outcome = GenerationOutcome {
             process_success: true,

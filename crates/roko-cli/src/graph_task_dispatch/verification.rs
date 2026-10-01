@@ -1826,68 +1826,83 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
     }
 
-    /// Dispatch `task` while a sibling `T12` edits `web/src/PlanView.tsx` in
-    /// the same working tree; the sibling ends its attempt after `edit_for`,
-    /// first creating `sibling_done`.
-    async fn dispatch_while_sibling_edits(
-        dispatcher: &GraphTaskDispatcher,
-        task: &TaskDef,
-        sibling_done: &Path,
-        edit_for: std::time::Duration,
-    ) -> Result<Vec<Signal>> {
-        let spec = make_spec(task);
-        let sibling = dispatcher.in_flight.register(
-            &format!("{}/T12", spec.plan_id),
-            &dispatcher.workdir,
-            &["web/src/PlanView.tsx".to_string()],
-        );
-        let finish_sibling = async {
-            tokio::time::sleep(edit_for).await;
-            std::fs::write(sibling_done, "").expect("sibling edit");
-            drop(sibling);
-        };
-        let ctx = CellContext::new();
-        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
-        })
-        .await
-        .expect("the attempt ends within the settle limit");
-        outcome
+    /// How long a dispatch that should finish may take on a loaded machine.
+    /// Far below the limits [`wait_while_siblings_edit`] sets, so a step that
+    /// waits when it should not fails the test here (bug-779ae7).
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// No auto-fix, and a sibling wait and provider timeouts far beyond
+    /// [`HANG_GUARD`]: however loaded the machine, a step waits exactly as
+    /// long as its siblings edit, and the fake provider never times out.
+    /// The tests also give the task an attempt timeout beyond the guard.
+    fn wait_while_siblings_edit(config: &mut RokoConfig) {
+        config.gates.cargo_fix_enabled = false;
+        config.gates.sibling_settle_secs = 3_600;
+        for provider in config.providers.values_mut() {
+            provider.timeout_ms = Some(600_000);
+            provider.ttft_timeout_ms = Some(600_000);
+        }
     }
 
     /// gap-1920ba: a verify step that reads the whole project (here hidden
     /// behind `bash -c`) waits until a sibling sharing the working tree has
-    /// finished editing, so it never checks a half-written file. It runs
-    /// once, after the sibling, and passes; without the wait it would fail
-    /// first and pass only on the settle re-run.
+    /// finished editing, so it never checks a half-written file. The sibling
+    /// finishes only once the step has reached its wait without running;
+    /// the step then runs once, after the sibling, and passes.
     #[tokio::test]
     async fn a_whole_project_verify_never_runs_while_a_sibling_edits() {
         let temp = tempdir().expect("tempdir");
         let (dispatcher, mut task) = make_test_dispatcher(
             &temp,
             VERIFY_PROVIDER,
-            settle_quickly,
+            wait_while_siblings_edit,
             GraphFeedbackContext::default(),
         )
         .await;
+        task.timeout_secs = 600;
         let sibling_done = temp.path().join("sibling-done");
         let runs = temp.path().join("verify-runs");
-        task.verify = vec![verify_step(
+        let mut step = verify_step(
             "typecheck",
             &format!(
                 "bash -c 'echo run >> {}; test -f {}'",
                 runs.display(),
                 sibling_done.display()
             ),
-        )];
+        );
+        step.timeout_ms = 120_000;
+        task.verify = vec![step];
+        let spec = make_spec(&task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        let finish_sibling = async {
+            while !dispatcher.in_flight.reading(&key) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            // Time for a step that did not wait to have started.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(!runs.exists(), "the step ran while its sibling edited");
+            std::fs::write(&sibling_done, "").expect("sibling edit");
+            drop(sibling);
+        };
 
-        let outputs = dispatch_while_sibling_edits(
-            &dispatcher,
-            &task,
-            &sibling_done,
-            std::time::Duration::from_millis(500),
-        )
+        let ctx = CellContext::new();
+        let dispatch = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        tokio::pin!(dispatch);
+        let outputs = tokio::time::timeout(HANG_GUARD, async {
+            tokio::select! {
+                outcome = &mut dispatch => {
+                    panic!("the attempt ended before its verify step ran: {:?}", outcome.err())
+                }
+                () = finish_sibling => dispatch.await,
+            }
+        })
         .await
+        .expect("the step runs once its sibling is done")
         .expect("the step ran after the sibling's edit");
 
         assert_eq!(
@@ -1899,33 +1914,37 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
     }
 
     /// A verify step whose scope the sibling does not write runs at once,
-    /// while the sibling is still editing.
+    /// while the sibling is still editing. The sibling edits until the
+    /// dispatch returns, so a step that waited for it would hang.
     #[tokio::test]
     async fn a_scoped_verify_runs_beside_a_sibling_editing_elsewhere() {
         let temp = tempdir().expect("tempdir");
         let (dispatcher, mut task) = make_test_dispatcher(
             &temp,
             VERIFY_PROVIDER,
-            settle_quickly,
+            wait_while_siblings_edit,
             GraphFeedbackContext::default(),
         )
         .await;
-        let sibling_done = temp.path().join("sibling-done");
-        let mut step = verify_step(
-            "typecheck",
-            &format!("bash -c 'test ! -f {}'", sibling_done.display()),
-        );
+        task.timeout_secs = 600;
+        let mut step = verify_step("typecheck", "true");
         step.scope = vec!["crates/own".to_string()];
+        step.timeout_ms = 120_000;
         task.verify = vec![step];
+        let spec = make_spec(&task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
 
-        let outputs = dispatch_while_sibling_edits(
-            &dispatcher,
-            &task,
-            &sibling_done,
-            std::time::Duration::from_secs(3),
-        )
-        .await
-        .expect("the step ran while the sibling was still editing");
+        let ctx = CellContext::new();
+        let outputs =
+            tokio::time::timeout(HANG_GUARD, dispatcher.dispatch(&spec, Vec::new(), &ctx))
+                .await
+                .expect("the step ran while the sibling was still editing")
+                .expect("dispatch");
+        drop(sibling);
 
         assert_eq!(
             TaskGateVerdict::from_signals(&outputs),

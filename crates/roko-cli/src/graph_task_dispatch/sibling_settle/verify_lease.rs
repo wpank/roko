@@ -245,6 +245,16 @@ impl InFlightTasks {
         }
         self.bump();
     }
+
+    /// Whether a verify step of `key` is running or waiting to run, for
+    /// tests that act once a step has reached its wait.
+    #[cfg(test)]
+    pub(crate) fn reading(&self, key: &str) -> bool {
+        self.attempts
+            .lock()
+            .values()
+            .any(|attempt| attempt.key == key && attempt.reading.is_some())
+    }
 }
 
 #[cfg(test)]

@@ -1129,6 +1129,7 @@ async fn run_graph_plan_body(
             idle_ttl: std::time::Duration::from_hours(1),
         });
         worktrees = Some(worktree_manager.clone());
+        repair_worktree_state(&worktree_manager).await;
         // Each attempt reserves its worktree's disk headroom before it
         // starts, and attempts serialise under disk pressure (reg-7cf6f9).
         let counted = worktree_manager.clone();
@@ -2284,6 +2285,37 @@ async fn run_admitted_plan(
     control: PlanControl,
 ) -> (String, anyhow::Result<PlanRunResult>) {
     (plan.id.clone(), run_one_plan(ctx, plan, &control).await)
+}
+
+/// Repair what a crashed run left behind before the first dispatch
+/// (gap-4ec59f): an unowned repository mutation lock file, stale
+/// `index.lock` files and `git worktree` metadata whose checkout is gone.
+/// A repair that fails is logged, and the run goes on without it.
+async fn repair_worktree_state(worktrees: &crate::orchestrator::worktree::WorktreeManager) {
+    let manager = worktrees.clone();
+    let cleared = tokio::task::spawn_blocking(move || {
+        if let Err(error) = manager.clear_stuck_mutation_lock() {
+            tracing::warn!(%error, "could not check for a stuck worktree mutation lock");
+        }
+        manager.clear_stale_locks()
+    })
+    .await;
+    match cleared {
+        Ok(Ok(cleared)) => {
+            for lock in cleared {
+                tracing::warn!(
+                    path = %lock.display(),
+                    "removed a stale git index.lock left by a crashed run"
+                );
+            }
+        }
+        Ok(Err(error)) => tracing::warn!(%error, "could not clear stale git index.lock files"),
+        Err(error) => tracing::warn!(%error, "the stale git lock repair did not finish"),
+    }
+    match worktrees.prune().await {
+        Ok(_) => tracing::debug!("pruned git worktree metadata whose checkout is gone"),
+        Err(error) => tracing::warn!(%error, "could not prune stale git worktree metadata"),
+    }
 }
 
 /// Run one admitted plan to a terminal checkpoint.

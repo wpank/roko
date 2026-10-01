@@ -7,57 +7,77 @@
 //! `--fresh` rerun of a finished task, whose work is already there, completes
 //! as already satisfied (gap-9eb1e1).
 //!
-//! Each plan holds one task and runs on its own, in a git repository, with a
-//! scripted fake Claude CLI whose next action the test picks. Each verify
-//! step checks for the helper its task adds, then leaves a marker outside the
+//! Each plan holds one task and runs on its own, in a git repository, with
+//! the shared scripted provider playing each task's turn. Each verify step
+//! checks for the helper its task adds, then leaves a marker outside the
 //! repository, so the test can tell whether it passed.
 
+mod common;
+
 use assert_cmd::cargo::cargo_bin;
+use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A throwaway workspace: the repository roko runs in, a home directory for
-/// the pinned acceptance-test store, the verify markers, and the fake agent.
+/// the pinned acceptance-test store, the verify markers, and the agent.
 struct Canary {
     _temp: tempfile::TempDir,
     root: PathBuf,
     repo: PathBuf,
 }
 
-/// What the fake agent does on its next call.
-const FAKE_AGENT: &str = r##"#!/bin/sh
-set -eu
-cat >/dev/null
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo="$root/repo"
-action=$(cat "$root/next-action" 2>/dev/null || echo none)
-# Act once per action, whatever else calls the model.
-if [ ! -e "$root/acted-$action" ]; then
-  : > "$root/acted-$action"
-  case "$action" in
-    tamper)
-      printf 'pub fn add3(a: u8, b: u8, c: u8) -> u8 {\n    add(add(a, b), c)\n}\n' >> "$repo/src/add.rs"
-      printf '# the agent was here\necho "# pass 1"\n' >> "$repo/plans/c5-tamper/accept/add_accept.sh"
-      awk '{ print } /#\[test\]/ { print "#[ignore]" }' "$repo/tests/math.rs" > "$root/math.rs"
-      mv "$root/math.rs" "$repo/tests/math.rs"
-      ;;
-    scope)
-      printf 'pub fn sub3(a: u8, b: u8, c: u8) -> u8 {\n    sub(sub(a, b), c)\n}\n' >> "$repo/src/sub.rs"
-      printf '\nThe scope task also wrote this.\n' >> "$repo/README.md"
-      ;;
-    honest)
-      printf 'pub fn mul3(a: u8, b: u8, c: u8) -> u8 {\n    mul(mul(a, b), c)\n}\n' >> "$repo/src/mul.rs"
-      ;;
-    *)
-      ;;
-  esac
-fi
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '%s\n' '{"type":"result","session_id":"c5","model":"claude-sonnet-4-6","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5},"is_error":false}'
-"##;
+/// `tests/math.rs` as the repository holds it.
+const MATH_TEST: &str =
+    "use c5::add::add;\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n";
+
+/// What the agent does on each task's attempts.
+///
+/// - T1 tampers: beside a real change to its own file, it edits the pinned
+///   acceptance test's source and adds `#[ignore]` to an existing test.
+/// - T2 also edits `README.md`, outside its files.
+/// - T3 changes nothing.
+/// - T4 makes an honest change, then changes nothing on a rerun.
+fn script() -> Script {
+    Script::new()
+        .task(
+            "T1",
+            [Turn::reply()
+                .append(
+                    "src/add.rs",
+                    "pub fn add3(a: u8, b: u8, c: u8) -> u8 {\n    add(add(a, b), c)\n}\n",
+                )
+                .append(
+                    "plans/c5-tamper/accept/add_accept.sh",
+                    "# the agent was here\necho \"# pass 1\"\n",
+                )
+                .write(
+                    "tests/math.rs",
+                    &MATH_TEST.replace("#[test]\n", "#[test]\n#[ignore]\n"),
+                )],
+        )
+        .task(
+            "T2",
+            [Turn::reply()
+                .append(
+                    "src/sub.rs",
+                    "pub fn sub3(a: u8, b: u8, c: u8) -> u8 {\n    sub(sub(a, b), c)\n}\n",
+                )
+                .append("README.md", "\nThe scope task also wrote this.\n")],
+        )
+        .task(
+            "T4",
+            [
+                Turn::reply().append(
+                    "src/mul.rs",
+                    "pub fn mul3(a: u8, b: u8, c: u8) -> u8 {\n    mul(mul(a, b), c)\n}\n",
+                ),
+                Turn::reply(),
+            ],
+        )
+}
 
 /// The planner's acceptance test for `add`, pinned by `[task.accept]`.
 const ADD_ACCEPT: &str = "#!/bin/sh\n# add(2, 2) is 4\ngrep -q 'a + b' src/add.rs || { echo 'not ok 1 add'; exit 1; }\necho 'ok 1 add'\necho '# pass 1'\n";
@@ -155,11 +175,7 @@ impl Canary {
         let repo = root.join("repo");
         fs::create_dir_all(root.join("markers")).expect("markers dir");
         fs::create_dir_all(root.join("home")).expect("home dir");
-        let agent = root.join("fake-agent.sh");
-        write(&agent, FAKE_AGENT);
-        let mut permissions = fs::metadata(&agent).expect("agent metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&agent, permissions).expect("make agent executable");
+        let agent = ScriptedProvider::install(&root.join("provider"), &script()).command();
 
         write(&repo.join(".gitignore"), ".roko/\n");
         write(
@@ -182,10 +198,7 @@ impl Canary {
             &repo.join("src/mul.rs"),
             "pub fn mul(a: u8, b: u8) -> u8 {\n    a * b\n}\n",
         );
-        write(
-            &repo.join("tests/math.rs"),
-            "use c5::add::add;\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n",
-        );
+        write(&repo.join("tests/math.rs"), MATH_TEST);
         write(&repo.join("README.md"), "# c5\n");
         write(
             &repo.join("roko.toml"),
@@ -244,14 +257,13 @@ diff_scope = "{diff_scope}"
             .expect("run roko")
     }
 
-    /// Run `plan` with the fake agent set to `action`; returns roko's stderr.
-    fn run(&self, plan: &str, action: &str) -> (Output, String) {
-        self.run_with(plan, action, &[])
+    /// Run `plan`; returns roko's output and stderr.
+    fn run(&self, plan: &str) -> (Output, String) {
+        self.run_with(plan, &[])
     }
 
     /// [`Self::run`] with `extra` arguments to `roko plan run`.
-    fn run_with(&self, plan: &str, action: &str, extra: &[&str]) -> (Output, String) {
-        fs::write(self.root.join("next-action"), action).expect("pick the agent's action");
+    fn run_with(&self, plan: &str, extra: &[&str]) -> (Output, String) {
         let repo = self.repo.display().to_string();
         let plan_dir = format!("plans/{plan}");
         let mut args = vec![
@@ -336,7 +348,7 @@ fn c5_tampering_attempt_is_flagged() {
 
     // T1 edits the pinned acceptance test's source and adds `#[ignore]` to an
     // existing test, beside a real change to its own file.
-    let (output, stderr) = canary.run("c5-tamper", "tamper");
+    let (output, stderr) = canary.run("c5-tamper");
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(!canary.verify_ran("T1"), "T1's verify steps must not run");
     assert!(stderr.contains("pre_verify:tamper"), "stderr: {stderr}");
@@ -352,7 +364,7 @@ fn c5_tampering_attempt_is_flagged() {
 
     // T2 edits README.md, outside its files: recorded, and its verify steps
     // still run under the default `diff_scope = "record"`.
-    let (output, stderr) = canary.run("c5-scope", "scope");
+    let (output, stderr) = canary.run("c5-scope");
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(canary.verify_ran("T2"));
     assert!(
@@ -368,7 +380,7 @@ fn c5_tampering_attempt_is_flagged() {
 
     // The same attempt fails under `diff_scope = "enforce"`.
     let enforced = Canary::new("enforce");
-    let (output, stderr) = enforced.run("c5-scope", "scope");
+    let (output, stderr) = enforced.run("c5-scope");
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(!enforced.verify_ran("T2"), "T2's verify steps must not run");
     assert!(stderr.contains("pre_verify:scope"), "stderr: {stderr}");
@@ -385,7 +397,7 @@ fn c5_empty_diff_is_rejected_before_verify() {
 
     // T3's agent answers without changing anything. Its verify steps run on
     // the unchanged tree to see whether the task was already done, and fail.
-    let (output, stderr) = canary.run("c5-empty", "none");
+    let (output, stderr) = canary.run("c5-empty");
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(!canary.verify_ran("T3"), "T3's verify steps must not pass");
     assert!(stderr.contains("pre_verify:no_changes"), "stderr: {stderr}");
@@ -393,7 +405,7 @@ fn c5_empty_diff_is_rejected_before_verify() {
 
     // The same task with a real change passes: the screen is not a blanket
     // rejection.
-    let (output, stderr) = canary.run("c5-honest", "honest");
+    let (output, stderr) = canary.run("c5-honest");
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(canary.verify_ran("T4"));
     canary.assert_outcome("c5-honest", &[]);
@@ -401,7 +413,7 @@ fn c5_empty_diff_is_rejected_before_verify() {
     // gap-9eb1e1: a `--fresh` rerun finds the work already there. The agent
     // rightly changes nothing, and the task completes as already satisfied.
     fs::remove_file(canary.root.join("markers/T4.ran")).expect("reset T4's marker");
-    let (output, stderr) = canary.run_with("c5-honest", "none", &["--fresh"]);
+    let (output, stderr) = canary.run_with("c5-honest", &["--fresh"]);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(canary.verify_ran("T4"), "T4's verify steps passed");
     canary.assert_outcome("c5-honest", &[]);

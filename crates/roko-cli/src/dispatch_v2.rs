@@ -1710,7 +1710,7 @@ impl AgentDispatcherV2 {
                     output_tokens: u64::from(result.usage.output_tokens),
                     cache_read_tokens: u64::from(result.usage.cache_read_tokens),
                     cache_write_tokens: u64::from(result.usage.cache_create_tokens),
-                    reasoning_tokens: 0,
+                    reasoning_tokens: u64::from(result.usage.reasoning_tokens),
                 })
                 .await;
         }
@@ -2197,6 +2197,24 @@ pub(crate) fn fill_usage_cost_from_pricing(
     }
 }
 
+/// What `usage` would have cost with no prompt caching, priced like
+/// [`fill_usage_cost_from_pricing`]: the profile's input and output prices,
+/// else the model's built-in pricing. `None` when neither prices the model
+/// (gap-7a8474).
+pub(crate) fn usage_cost_without_cache(
+    usage: &roko_core::Usage,
+    profile: Option<&ModelProfile>,
+    model_slug: &str,
+) -> Option<f64> {
+    if let Some((input, output)) =
+        profile.and_then(|profile| profile.cost_input_per_m.zip(profile.cost_output_per_m))
+    {
+        return Some(usage.cost_without_cache(input, output));
+    }
+    let pricing = roko_core::config::model_registry::builtin_pricing(model_slug)?;
+    Some(usage.cost_without_cache(pricing.input_per_m, pricing.output_per_m))
+}
+
 fn dispatch_events_from_result(
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
@@ -2232,7 +2250,7 @@ fn dispatch_events_from_result(
             output_tokens: u64::from(result.usage.output_tokens),
             cache_read_tokens: u64::from(result.usage.cache_read_tokens),
             cache_write_tokens: u64::from(result.usage.cache_create_tokens),
-            reasoning_tokens: 0,
+            reasoning_tokens: u64::from(result.usage.reasoning_tokens),
         });
     }
 
@@ -2323,7 +2341,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             output_tokens: u64::from(usage.output_tokens),
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cache_write_tokens: u64::from(usage.cache_create_tokens),
-            reasoning_tokens: 0,
+            reasoning_tokens: u64::from(usage.reasoning_tokens),
         },
         StreamChunk::Done(_) => AgentRuntimeEvent::TurnCompleted {
             session_id: None,

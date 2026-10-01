@@ -148,9 +148,9 @@ combinations, building a richer reward signal for future decisions.
 
 ---
 
-## Temperament and the Six Harness Principles
+## Temperament and Roko's Harness Principles
 
-The temperament system implements Meta-Harness principle #5 (Graduate Autonomy
+The temperament system implements Roko's harness principle #5 (Graduate Autonomy
 Based on Confidence) at the configuration level:
 
 - **Conservative** = low autonomy, high validation
@@ -246,7 +246,7 @@ Each step is independent and can be wired incrementally.
 
 1. Refactoring PRD §02-five-layers — Temperament Profiling table, Layer 2
    specification.
-2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — Principle #5: Graduate Autonomy.
+2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — Automated harness search (§3).
 3. Refactoring PRD §07-implementation-priorities — Tier 2: Temperament wiring.
 4. `crates/roko-core/src/config/schema.rs` — AgentConfig temperament field.
 5. `crates/roko-learn/` — CascadeRouter, adaptive gate thresholds.

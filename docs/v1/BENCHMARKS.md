@@ -646,8 +646,8 @@ against the field.
 ### 10.1 SWE-bench
 
 SWE-bench (Jimenez et al., 2024) measures resolution of real GitHub issues.
-Harness quality accounts for most performance variance between agent systems --
-the same model can score 25% or 85% depending on the harness. Roko's
+The harness around a fixed model can matter as much as the model (Lee et al.
+2026, §1, citing a 6× gap on SWE-bench Mobile). Roko's
 architecture is designed with this finding in mind: the six crate layers
 (core, agent, orchestrator, gate, compose, learn) provide harness
 infrastructure while the model is a pluggable component.

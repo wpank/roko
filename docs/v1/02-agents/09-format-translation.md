@@ -19,8 +19,6 @@
 Research shows 5–30 accuracy points difference when using the wrong tool-call
 format for a model. This is documented in:
 
-- **Meta-Harness** (Lee et al., 2026, arXiv:2603.28052): Principle #1 —
-  "Design tools for the model, not for humans."
 - **WildToolBench**: Format-specific accuracy drops of 15–20% for models
   tested with non-native tool formats.
 - **Qwen3-coder**: Documented format switch above 5 tools — performance
@@ -297,7 +295,7 @@ comfortable range.
 
 ## Citations
 
-1. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — Principle #1: tools for the model.
+1. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — Automated harness search (§3).
 2. `crates/roko-agent/src/translate/mod.rs` — Full 548-line source: Translator
    trait, ChatResponse, FinishReason, BackendResponse, wire format enums.
 3. `crates/roko-agent/src/translate/openai.rs` — OpenAiTranslator.

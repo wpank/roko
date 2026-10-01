@@ -28,7 +28,7 @@
 | 05 | [Agent Pools](05-agent-pools.md) | `05-agent-pools.md` | `AgentPool` (sequential), `MultiAgentPool` (parallel), warm-pool pre-spawning, lifecycle states, fallback retry |
 | 06 | [MCP Integration](06-mcp-integration.md) | `06-mcp-integration.md` | JSON-RPC stdio client, tool conversion, config discovery, dedup, dynamic registry, Claude CLI passthrough |
 | 07 | [Tool Loop](07-tool-loop.md) | `07-tool-loop.md` | `ToolLoop` multi-turn driver (**already exists**), `LlmBackend` trait, `ToolDispatcher` 7-step pipeline, `SafetyLayer`, integration gap, **reasoning pattern taxonomy** (ReAct/Reflexion/ToT/MCTS), **tool selection optimization** (Tool RAG, AutoTool, speculative execution), **tool result caching**, **tool use benchmarks** |
-| 08 | [Harness Engineering](08-harness-engineering.md) | `08-harness-engineering.md` | Meta-Harness research (Lee et al., 2026), 6 harness principles, +7.7/+4.7/4× evidence, mapping to Roko, remaining gaps |
+| 08 | [Harness Engineering](08-harness-engineering.md) | `08-harness-engineering.md` | Meta-Harness research (Lee et al., 2026), Roko's own harness principles, +7.7/+4.7/4× evidence, mapping to Roko, remaining gaps |
 | 09 | [Format Translation](09-format-translation.md) | `09-format-translation.md` | `Translator` trait, 4 translators (OpenAI/Claude/Ollama/ReAct), wire format types, model capabilities, reasoning extraction |
 | 10 | [Temperament Profiling](10-temperament-profiling.md) | `10-temperament-profiling.md` | Conservative/Balanced/Aggressive/Exploratory dial, controls for model params, tool selection, gates, review, routing |
 | 11 | [Dual-Process Routing](11-dual-process-routing.md) | `11-dual-process-routing.md` | System 1/System 2 model, `CascadeRouter`, `LinUCB` bandit, Pareto frontier, Thompson sampling, anomaly detection, **Dual-Process Theory 2.0** (competing intuitions, triple-process), **MoE connection**, **routing feedback loops**, **meta-routing**, **latest routing research** (Router-R1, xRouter, IRT-Router, BEST-Route) |
@@ -95,7 +95,7 @@
    arXiv:2309.02427. — CoALA 9-step loop, theoretical basis for Agent trait
    separation.
 2. Lee et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses." arXiv:2603.28052. — +7.7 text classification, +4.7 IMO math,
-   4× fewer tokens, 6× gap (ref [46], SWE-bench mobile).
+   4× fewer tokens; the 6× gap is a cited SWE-bench Mobile result.
 3. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" — Benchmark context for harness variance.
 4. Kahneman, D. (2011). "Thinking, Fast and Slow." — Dual-process theory
@@ -180,5 +180,5 @@
 4. **SafetyLayer is wired but unreachable.** The #1 integration gap:
    `SafetyLayer` → `ToolDispatcher` → `ToolLoop` pipeline is built but never
    called from `orchestrate.rs`.
-5. **Meta-Harness "6× gap"** comes from ref [46] (SWE-bench mobile), not a
-   general claim. +7.7 and +4.7 are more representative numbers.
+5. **Meta-Harness "6× gap"** is a result the paper cites (SWE-bench Mobile),
+   not a general claim. +7.7 and +4.7 are more representative numbers.

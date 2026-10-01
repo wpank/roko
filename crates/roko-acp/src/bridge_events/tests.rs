@@ -2473,6 +2473,117 @@ async fn builtin_tool_permitted_in_default_code_mode() {
     assert_eq!(acp_contract_role_for_mode("unknown-mode"), "unknown-mode");
 }
 
+/// A stdio MCP server that lists one read-only `echo` tool and answers one call
+/// to it. It creates the file named by its first argument when the call arrives.
+const MCP_ECHO_FIXTURE: &str = r#"
+    IFS= read -r initialize
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+    IFS= read -r list_tools
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+    IFS= read -r call || exit 0
+    : > "$1"
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}'
+"#;
+
+/// Dispatches the fixture's `echo` tool through the dispatcher an ACP tool loop
+/// builds for `mode`. Returns the result and whether the server got the call.
+async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let marker = tmp.path().join("tools-call-received");
+    let servers = vec![crate::types::McpServerConfig {
+        name: "fixture".into(),
+        transport: crate::types::McpTransport::Stdio {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                MCP_ECHO_FIXTURE.into(),
+                "fixture".into(),
+                marker.display().to_string(),
+            ],
+        },
+        discovery_timeout_ms: Some(1_000),
+    }];
+    let (event_sender, _event_receiver) = mpsc::channel(16);
+    let (runtime, statuses) = setup_session_mcp_tools(
+        "mcp-contract-session",
+        &servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+
+    let registry = Arc::new(VecToolRegistry::from_tools(runtime.tools));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
+        handlers: runtime.handlers,
+    });
+    let role = acp_contract_role_for_mode(mode);
+    let safety = acp_tool_safety(&RokoConfig::default(), &role);
+    let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
+    let call = ToolCall::new("mcp-contract-call", "fixture_echo", json!({}));
+    let result = dispatcher
+        .dispatch(call, &ToolContext::testing(tmp.path()))
+        .await;
+    (result, marker.exists())
+}
+
+#[tokio::test]
+async fn mcp_tool_loop_allows_tool_permitted_by_role_contract() {
+    // The default `code` mode loads the implementer contract, which permits the tool.
+    let (result, received) = dispatch_fixture_mcp_tool("code").await;
+    assert!(
+        result.is_ok(),
+        "code mode must run the MCP tool, got {result:?}"
+    );
+    assert!(result.text_content().contains("echoed"));
+    assert!(received, "the MCP server must receive the call");
+}
+
+#[tokio::test]
+async fn acp_tool_dispatcher_runs_builtin_tool_in_code_mode() {
+    // The default dispatcher layer denies every tool; the role-scoped one admits
+    // what the implementer contract permits.
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("notes.txt"), "code mode dispatch").expect("write fixture");
+    let role = acp_contract_role_for_mode("code");
+    let (tx, _rx) = mpsc::channel(16);
+    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
+    handlers.insert(
+        "read_file".to_owned(),
+        Arc::new(AcpBuiltinToolHandler {
+            tool_name: "read_file".into(),
+            session_id: "dispatcher-code-mode".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: tx,
+            role: role.clone(),
+        }),
+    );
+    let registry = Arc::new(VecToolRegistry::from_tools(acp_builtin_tools()));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
+    let safety = acp_tool_safety(&RokoConfig::default(), &role);
+    let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
+    let call = ToolCall::new("read-1", "read_file", json!({ "path": "notes.txt" }));
+    let result = dispatcher
+        .dispatch(call, &ToolContext::testing(tmp.path()))
+        .await;
+    assert!(
+        result.is_ok(),
+        "read_file must pass the code-mode layer, got {result:?}"
+    );
+    assert!(result.text_content().contains("code mode dispatch"));
+}
+
+#[tokio::test]
+async fn mcp_tool_loop_denies_tool_outside_role_contract() {
+    // A mode with no bundled contract gets the deny-all restricted fallback.
+    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode").await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "a tool outside the role contract must be denied, got {result:?}"
+    );
+    assert!(!received, "a denied call must never reach the MCP server");
+}
+
 #[tokio::test]
 async fn permission_prompt_precedes_write() {
     let tmp = tempfile::tempdir().expect("create tmpdir");

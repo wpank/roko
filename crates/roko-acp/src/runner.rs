@@ -2078,6 +2078,28 @@ mod tests {
         }
     }
 
+    /// bug-35c901: a gate-thresholds.json the Graph path wrote keeps the
+    /// fields only it knows, such as `pass_count`, when an ACP session
+    /// records its gates there.
+    #[test]
+    fn gate_thresholds_schema_keeps_graph_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(THRESHOLDS_PATH);
+        std::fs::create_dir_all(path.parent().expect("learn dir")).expect("learn dir");
+        let graph = serde_json::json!({
+            "rungs": { "0": { "pass_count": 3, "total_count": 4, "ema_pass_rate": 0.75 } }
+        });
+        std::fs::write(&path, graph.to_string()).expect("graph thresholds");
+
+        record_observations(&path, &[(0, true)]);
+
+        let saved = std::fs::read_to_string(&path).expect("thresholds");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        let rung = &saved["rungs"]["0"];
+        assert_eq!(rung["pass_count"], 3, "{saved}");
+        assert_eq!(rung["total_observations"], 5, "{saved}");
+    }
+
     fn git(workdir: &Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args(args)

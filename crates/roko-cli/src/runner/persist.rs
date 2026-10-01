@@ -251,6 +251,11 @@ pub struct GateThresholdStats {
     pub total_count: u64,
     #[serde(default = "GateThresholdStats::default_ema_pass_rate")]
     pub ema_pass_rate: f64,
+    /// Fields that roko-acp's `AdaptiveThresholds` keeps for the rung (its
+    /// pass streak, CUSUM and poisoning-defense state), carried through a
+    /// load and save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GateThresholdStats {
@@ -265,6 +270,7 @@ impl Default for GateThresholdStats {
             pass_count: 0,
             total_count: 0,
             ema_pass_rate: Self::default_ema_pass_rate(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -274,6 +280,11 @@ impl Default for GateThresholdStats {
 pub struct GateThresholds {
     #[serde(default)]
     pub rungs: HashMap<u32, GateThresholdStats>,
+    /// Fields that roko-acp's `AdaptiveThresholds` keeps in the same file
+    /// (its CUSUM settings and SPC detectors), carried through a load and
+    /// save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Per-rung conservative EMA priors used when no observations have been
@@ -313,9 +324,8 @@ impl GateThresholds {
                 .rungs
                 .entry(rung)
                 .or_insert_with(|| GateThresholdStats {
-                    pass_count: 0,
-                    total_count: 0,
                     ema_pass_rate: prior,
+                    ..GateThresholdStats::default()
                 });
             // Only update the EMA when this rung truly has no observations.
             // Never clobber learned data.
@@ -1651,6 +1661,44 @@ mod tests {
         assert_eq!(test.total_count, 16, "{thresholds:?}");
         assert_eq!(test.pass_count, 8, "{thresholds:?}");
         assert_eq!(thresholds.rungs.len(), 7, "every canonical rung is filled in");
+    }
+
+    /// bug-35c901: a gate-thresholds.json roko-acp wrote keeps the fields
+    /// only `AdaptiveThresholds` knows (pass streaks, CUSUM state, SPC
+    /// detectors) when a Graph run updates it, and roko-acp reads them back.
+    #[test]
+    fn gate_thresholds_schema_keeps_acp_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gate-thresholds.json");
+        let mut acp = roko_gate::AdaptiveThresholds::default();
+        for _ in 0..3 {
+            acp.observe(0, true);
+        }
+        acp.save(&path).expect("acp thresholds");
+        let read = |path: &Path| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(path).expect("thresholds")).expect("json")
+        };
+        let before = read(&path);
+
+        GateThresholds::update_locked(&path, |thresholds| thresholds.observe(0, false))
+            .expect("graph update");
+
+        let after = read(&path);
+        for key in before.as_object().expect("thresholds").keys() {
+            assert!(after.get(key).is_some(), "{key} was dropped: {after}");
+        }
+        // The Graph path names the count `total_count`, which roko-acp reads.
+        let rung_keys = before["rungs"]["0"].as_object().expect("rung 0").keys();
+        for key in rung_keys.filter(|key| *key != "total_observations") {
+            assert!(
+                after["rungs"]["0"].get(key).is_some(),
+                "rung field {key} was dropped: {after}"
+            );
+        }
+        let acp = roko_gate::AdaptiveThresholds::load(&path).expect("roko-acp reads it");
+        let rung = acp.rung_stats(0).expect("rung 0");
+        assert_eq!(rung.total_observations, 4);
+        assert_eq!(rung.consecutive_passes, 3);
     }
 
     /// Audit #80: `load_gate_thresholds` on a fresh workspace (no file)

@@ -198,7 +198,8 @@ impl GraphTaskDispatcher {
                     ],
                 )
                 .with_timeout_ms(step.timeout_ms)
-                .with_name(step_label);
+                .with_name(step_label)
+                .with_phase(&step.phase);
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
@@ -458,7 +459,8 @@ impl GraphTaskDispatcher {
                                 ],
                             )
                             .with_timeout_ms(step.timeout_ms)
-                            .with_name(step_label);
+                            .with_name(step_label)
+                            .with_phase(&step.phase);
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let _reading = self
@@ -933,8 +935,17 @@ impl GraphTaskDispatcher {
                 // adaptive threshold learning (#218).
                 if let Some(gf_path) = &self.feedback.gate_failures_path {
                     let raw_for_classification = failures.join("\n---\n");
-                    let classification =
-                        roko_gate::classify_gate_failure("graph-verify", &raw_for_classification);
+                    // The failed step's phase says whether it ran tests
+                    // (bug-386c9b).
+                    let failed_phase = step_outcomes
+                        .iter()
+                        .find(|(_, passed)| !passed)
+                        .map(|(phase, _)| phase.as_str());
+                    let classification = roko_gate::classify_step_failure(
+                        "graph-verify",
+                        failed_phase,
+                        &raw_for_classification,
+                    );
                     // The failed step's verdict, not the failure text, says
                     // whether it ran out of time.
                     let classification = if timed_out {

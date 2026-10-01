@@ -2291,6 +2291,7 @@ fn verify_step_gate(
         ],
     )
     .with_name(format!("task-verify:{}:{}", task_id, step.phase))
+    .with_phase(&step.phase)
     .with_timeout_ms(step.timeout_ms);
     if let Some(sink) = line_sink {
         gate = gate.with_line_sink(sink);

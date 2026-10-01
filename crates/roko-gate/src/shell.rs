@@ -10,7 +10,9 @@
 //! variables described in [`crate::gate_env`] plus the payload's explicit
 //! ones.
 
-use crate::compile_errors::{render_failure_classification, structured_gate_failure};
+use crate::compile_errors::{
+    GateFailureClassification, classify_step_failure, render_failure_classification,
+};
 use crate::gate_env::{inherit_gate_env, inherit_gate_env_from};
 use crate::payload::GatePayload;
 use async_trait::async_trait;
@@ -33,6 +35,9 @@ pub struct ShellGate {
     args: Vec<String>,
     timeout_ms: u64,
     name: String,
+    /// The verify phase the command checks, such as `test`, when known: it
+    /// classifies a failure (`classify_step_failure`).
+    phase: Option<String>,
     /// Optional sender for live line-by-line output streaming.
     /// Each line from stdout/stderr is forwarded as it arrives.
     line_sink: Option<mpsc::UnboundedSender<String>>,
@@ -52,6 +57,7 @@ impl ShellGate {
             args,
             timeout_ms: 300_000, // 5 minutes
             name,
+            phase: None,
             line_sink: None,
             parent_env: None,
         }
@@ -69,6 +75,27 @@ impl ShellGate {
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
+    }
+
+    /// Name the verify phase the command checks, such as `test`, so a
+    /// failure classifies by it rather than by the gate's name.
+    #[must_use]
+    pub fn with_phase(mut self, phase: impl Into<String>) -> Self {
+        self.phase = Some(phase.into());
+        self
+    }
+
+    /// Classify a failure whose output is `output` for the verdict's error
+    /// digest, by the gate's phase when it has one.
+    fn classify_failure(
+        &self,
+        output: &str,
+        summary: String,
+        duration_ms: u64,
+    ) -> GateFailureClassification {
+        classify_step_failure(&self.name, self.phase.as_deref(), output)
+            .with_summary(summary)
+            .with_duration_ms(duration_ms)
     }
 
     /// Attach a line sink for live output streaming.
@@ -148,8 +175,7 @@ impl Verify for ShellGate {
                 #[allow(clippy::cast_possible_truncation)]
                 let elapsed = started.elapsed().as_millis() as u64;
                 let reason = format!("spawn failed: {io_err}");
-                let classification =
-                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
+                let classification = self.classify_failure(&reason, reason.clone(), elapsed);
                 return Verdict::fail(&self.name, reason)
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed);
@@ -215,17 +241,16 @@ impl Verify for ShellGate {
             Err(_timeout) => {
                 terminate_child_process_group(child_pid).await;
                 let reason = format!("timed out after {} ms", self.timeout_ms);
-                let classification =
-                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed)
-                        .timed_out();
+                let classification = self
+                    .classify_failure(&reason, reason.clone(), elapsed)
+                    .timed_out();
                 Verdict::fail(&self.name, reason)
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
             }
             Ok((_stdout, _stderr, Err(io_err))) => {
                 let reason = format!("wait failed: {io_err}");
-                let classification =
-                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
+                let classification = self.classify_failure(&reason, reason.clone(), elapsed);
                 Verdict::fail(&self.name, reason)
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
@@ -245,8 +270,7 @@ impl Verify for ShellGate {
                         .code()
                         .map_or_else(|| "terminated by signal".into(), |c| c.to_string());
                     let reason = format!("exit code: {code}");
-                    let classification =
-                        structured_gate_failure(&self.name, &combined, reason.clone(), elapsed);
+                    let classification = self.classify_failure(&combined, reason.clone(), elapsed);
                     Verdict::fail(&self.name, reason)
                         .with_detail(combined)
                         .with_error_digest(render_failure_classification(&classification))

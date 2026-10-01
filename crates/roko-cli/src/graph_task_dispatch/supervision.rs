@@ -43,7 +43,7 @@ use roko_agent::StreamEventKind;
 use roko_agent::live_output::LiveAgentEvent;
 use roko_conductor::{Conductor, InterventionOutcome};
 use roko_core::{ConductorDecision, DiagnosisSeverity, DiagnosisSummary, TestCount, Verdict};
-use roko_gate::{BuildSystem, ErrorCategory, GateFailureClassification};
+use roko_gate::{BuildSystem, GateFailureClassification};
 use tokio_util::sync::CancellationToken;
 
 use crate::runner::conductor_adapter::{
@@ -468,7 +468,7 @@ fn verify_run_signals(
     let Some((phase, settled_by)) = failed.or_else(|| steps.last()) else {
         return Vec::new();
     };
-    let classification = failed.map(|(_, verdict)| failure_classification(verdict));
+    let classification = failed.map(|(phase, verdict)| failure_classification(phase, verdict));
     let failure_kind = classification
         .as_ref()
         .map(|classification| format!("{:?}", classification.failure_kind));
@@ -509,29 +509,29 @@ fn verify_run_signals(
 }
 
 /// A failed step's classification: the one its gate recorded as the
-/// verdict's error digest, else one made from its output.
-fn failure_classification(verdict: &Verdict) -> GateFailureClassification {
+/// verdict's error digest, else one made from its output and its `phase`.
+fn failure_classification(phase: &str, verdict: &Verdict) -> GateFailureClassification {
     verdict
         .error_digest
         .as_deref()
         .and_then(|digest| serde_json::from_str(digest).ok())
         .unwrap_or_else(|| {
-            roko_gate::classify_gate_failure(
+            roko_gate::classify_step_failure(
                 &verdict.gate,
+                Some(phase),
                 verdict.detail.as_deref().unwrap_or(&verdict.reason),
             )
         })
 }
 
 /// The first compiler error a failed step reported, by code, message and
-/// file. Cargo's own `could not compile` and `test failed` lines, which have
-/// no code and no category, are none.
+/// file; cargo's own `could not compile` and `test failed` lines are none.
 fn first_compiler_error(classification: &GateFailureClassification) -> Option<String> {
     classification
         .compile_errors
         .iter()
         .zip(roko_gate::records_from_classification(classification))
-        .find(|(error, _)| error.code.is_some() || error.category != ErrorCategory::Other)
+        .find(|(error, _)| error.is_compiler_error())
         .map(|(_, record)| record.digest)
 }
 
@@ -947,8 +947,10 @@ mod tests {
             Verdict::pass(label)
         } else {
             Verdict::fail(label, "exit code: 101").with_error_digest(
-                roko_gate::render_failure_classification(&roko_gate::classify_gate_failure(
-                    label, output,
+                roko_gate::render_failure_classification(&roko_gate::classify_step_failure(
+                    label,
+                    Some(phase),
+                    output,
                 )),
             )
         };
@@ -1008,6 +1010,7 @@ mod tests {
         let verdict = signal_body(&run[0]);
         assert_eq!(verdict["gate"], "verify[1:test]");
         assert_eq!(verdict["rung"], 2);
+        assert_eq!(verdict["failure_class"], "test_expectation_failure");
         assert_eq!(verdict["duration_ms"], 20);
         assert_eq!(verdict["test_count"]["passed"], 3);
         assert_eq!(verdict["test_count"]["failed"], 2);

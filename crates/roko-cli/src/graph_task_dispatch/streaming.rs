@@ -51,6 +51,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Budget reservation ───────────────────────────────────────────
+        self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
             .reserve(&spec.plan_id, self.budget_policy)?;
@@ -282,8 +283,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                        self.task_spend
-                            .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                        self.task_spend.record(
+                            &format!("{}/{}", spec.plan_id, task.id),
+                            &dispatch.result.usage,
+                        );
                         if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                             tracing::warn!(
                                 attempt = %attempt_id,
@@ -413,8 +416,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
-                self.task_spend
-                    .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
+                self.task_spend.record(
+                    &format!("{}/{}", spec.plan_id, task.id),
+                    &dispatch.result.usage,
+                );
                 if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
                     let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
                     return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);

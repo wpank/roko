@@ -156,6 +156,9 @@
 ### roko-cli/chat (1)
 - **P2** [bug-8a78e1](items/bug-8a78e1-chat-dispatch-v2-and-serve-load-the-cascade.md) chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens [bug] · size S
 
+### docs/v3 (1)
+- **P2** [gap-11845c](items/gap-11845c-docs-v3-s-descriptions-of-what-cited.md) docs/v3's descriptions of what cited papers say are unchecked; two harness-engineering sections checked so far were mostly invented · size M
+
 ### roko-serve/routes/runs (1)
 - **P2** [bug-54c729](items/bug-54c729-roko-serve-s-runs-route-reports-every-task.md) roko-serve's runs route reports every task status other than passed as failed [bug] · size S
 
@@ -209,9 +212,6 @@
 
 ### roko-learn/error_pattern_store (1)
 - **P3** [bug-ddd5bd](items/bug-ddd5bd-error-pattern-store-s-append-preserves-first.md) error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick [bug] · size S
-
-### docs/v3 (1)
-- **P3** [gap-0d996a](items/gap-0d996a-harness-engineering-md-3-6-describe-harnessx.md) harness-engineering.md §3–§6 describe HarnessX, Harness-Bench and Belief Divergence's dimensions and taxonomies without a check against the papers · size S
 
 ### roko-cli/config (2)
 - **P3** [bug-9434c4](items/bug-9434c4-roko-config-set-rejects-learning-t0-reflexes.md) roko config set rejects learning.t0_reflexes and every learning.dreams key [bug] · size S

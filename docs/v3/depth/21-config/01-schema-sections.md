@@ -242,7 +242,7 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
-| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `max_concurrent` | usize | 1 | Most dream consolidations that ACP sessions run at once in one process; an ACP turn that finds this many running starts none (0 is treated as 1). The plan-completion trigger keeps its own limit of one |
 | `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
 | `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
 

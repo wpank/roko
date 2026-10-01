@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #1-2
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a", "gap-d4466f", "bug-54c729", "bug-4e5a59", "bug-acab47"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1", "bug-b4c565", "gap-191ecd", "gap-a0f18a", "gap-d4466f", "bug-54c729", "bug-4e5a59", "bug-acab47", "bug-71a5e6", "bug-1cc498"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
@@ -82,6 +82,8 @@ This is the implementation plan.
 - [ ] bug-54c729: roko-serve's runs route reports every task status other than passed as failed
 - [ ] bug-4e5a59: The portal's run-state reducer ignores a task completion it never saw start
 - [ ] bug-acab47: A Claude CLI run that exits 0 without a result line counts as a successful provider run
+- [ ] bug-71a5e6: GraphRuntimeEventAdapter maps every NodeCompleted to TaskCompleted { passed: true }, so unverified and already_satisfied tasks would read as passed on the runtime path
+- [ ] bug-1cc498: The portal shows a task with no run record as passed when tasks.toml marks it done
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

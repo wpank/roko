@@ -469,7 +469,9 @@ pub(crate) fn build_agent_activity_snapshot(
             });
         aggregate.input_tokens += event.input_tokens;
         aggregate.output_tokens += event.output_tokens;
-        if event_has_known_cost(event) {
+        // A token-consuming event at $0 has an unknown cost: estimate it,
+        // never price it as $0.00.
+        if event.has_known_cost() {
             aggregate.real_cost_usd += event.cost_usd;
         } else {
             aggregate.events_with_unknown_cost += 1;
@@ -522,17 +524,6 @@ fn synthesize_agents_from_events(efficiency_events: &[AgentEfficiencyEvent]) -> 
             });
     }
     agents.into_values().collect()
-}
-
-/// Whether an efficiency event's cost is known, mirroring the wave-1
-/// `Usage::has_known_cost` semantics (`roko-core/src/chat_types.rs`): cost is
-/// known when it is non-zero or when no tokens were consumed (a confirmed
-/// free turn). Token-consuming turns recorded with `cost_usd: 0.0` have
-/// *unknown* cost and must be estimated -- never silently priced as $0.00.
-fn event_has_known_cost(event: &AgentEfficiencyEvent) -> bool {
-    event.cost_usd.abs() > f64::EPSILON
-        || (event.input_tokens + event.output_tokens + event.cache_write_tokens == 0
-            && event.cache_read_tokens == 0)
 }
 
 #[derive(Debug, Default)]

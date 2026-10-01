@@ -3,13 +3,15 @@ id = "bug-9bffe2"
 kind = "bug"
 title = "roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/commands/util"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "286c5e53a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report, checked on work/bug-960ab1 at b482d7830)"
 anchors = ["crates/roko-cli/src/commands/util.rs"]
@@ -42,3 +44,7 @@ The cfactor aggregation in `commands/util.rs`.
 
 - [ ] `--cfactor` never shows $0 for a cost nobody measured.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-0320da` at `722d486f4`; cargo verification deferred to the batch check. The known-cost rule is now `AgentEfficiencyEvent::has_known_cost()` in roko-learn, shared with the dashboard. Not covered: `roko learn`'s per-role table (`commands/learn.rs:2740`) still averages unknown costs as $0 through `compute_role_profiles`.

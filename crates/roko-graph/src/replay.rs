@@ -387,12 +387,14 @@ pub fn committed_activity_len(path: impl AsRef<Path>) -> std::io::Result<u64> {
     }
 }
 
-/// Move the end of the Activity log at `path` that follows its last newline
-/// to `<log>.uncommitted.<unix ms>`, and cut the log back to its last
-/// complete record. Such an end is a record whose write did not finish, for
-/// example a line a crash tore: replaying it fails, and appending after it
-/// would corrupt the next record. Returns the file that now holds those
-/// bytes, or `None` when the log ends in a complete record or is missing.
+/// Set aside the unfinished end of the Activity log at `path`.
+///
+/// The bytes after the log's last newline move to
+/// `<log>.uncommitted.<unix ms>`, and the log is cut back to its last complete
+/// record. Such an end is a record whose write did not finish, for example a
+/// line a crash tore: replaying it fails, and appending after it would corrupt
+/// the next record. Returns the file that now holds those bytes, or `None`
+/// when the log ends in a complete record or is missing.
 ///
 /// # Errors
 /// Returns an `std::io::Error` if the log cannot be read or cut back, or the

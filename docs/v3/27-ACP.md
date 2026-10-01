@@ -393,8 +393,9 @@ the session refuses further prompts.
    `SESSION_BUDGET_EXCEEDED` (-32002) without making an API call.
 
 4. **Budget status notification**: After each efficiency event, a
-   `BudgetStatusUpdate` is pushed to the editor containing the ceiling, accumulated
-   spend, and remaining budget. The editor can display this in a status bar.
+   `session_info_update` is pushed to the editor whose `_meta.roko.budget` holds the
+   ceiling, accumulated spend, and remaining budget. The editor can display this in a
+   status bar; spec clients that do not know the extension ignore it.
 
 **Source:** `crates/roko-acp/src/bridge_events/cost.rs`,
 `crates/roko-acp/src/bridge_events/protocol.rs`

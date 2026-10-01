@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result};
 use serde::Serialize;
 
 use super::app::App;
+use super::screenshot_diff::{buffer_to_ansi, buffer_to_text};
 use super::tabs::Tab;
 
 const MIN_SNAPSHOT_WIDTH: u16 = 40;
@@ -31,6 +32,9 @@ pub struct SnapshotConfig {
     pub tabs: Option<Vec<String>>,
     /// Human-readable label for this snapshot.
     pub label: Option<String>,
+    /// Also write each tab with its colours and modifiers, as ANSI escapes,
+    /// to `<tab>.ansi` beside its `.txt`.
+    pub ansi: bool,
 }
 
 /// Result of a completed snapshot capture.
@@ -41,6 +45,8 @@ pub struct SnapshotResult {
     pub tabs_captured: usize,
     /// Path to the manifest file.
     pub manifest_path: PathBuf,
+    /// The `.txt` file name of each captured tab, in capture order.
+    pub files: Vec<String>,
 }
 
 /// Manifest entry for one captured tab.
@@ -49,6 +55,9 @@ pub struct TabEntry {
     tab: String,
     fkey: String,
     file: String,
+    /// The tab's `.ansi` file, when the capture wrote one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ansi_file: Option<String>,
 }
 
 /// Top-level manifest written alongside the snapshot files.
@@ -98,22 +107,33 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
     let mut app = App::new(workdir);
     app.prepare_headless_capture();
     let tabs_to_capture = resolve_tabs(&config.tabs)?;
-    let rendered = app.render_tabs_to_text(config.width, config.height, &tabs_to_capture);
+    let rendered = app.render_tabs_to_buffers(config.width, config.height, &tabs_to_capture);
 
     let mut entries = Vec::new();
 
-    for (tab, text) in rendered {
+    for (tab, buffer) in rendered {
         let filename = tab_filename(tab);
         let path = config.output_dir.join(&filename);
-        std::fs::write(&path, &text)
+        std::fs::write(&path, buffer_to_text(&buffer))
             .with_context(|| format!("failed to write {}", path.display()))?;
+        let ansi_file = if config.ansi {
+            let ansi_name = format!("{}.ansi", filename.trim_end_matches(".txt"));
+            let ansi_path = config.output_dir.join(&ansi_name);
+            std::fs::write(&ansi_path, buffer_to_ansi(&buffer))
+                .with_context(|| format!("failed to write {}", ansi_path.display()))?;
+            Some(ansi_name)
+        } else {
+            None
+        };
 
         entries.push(TabEntry {
             tab: tab.label().to_string(),
             fkey: format!("F{}", tab.index() + 1),
             file: filename,
+            ansi_file,
         });
     }
+    let files = entries.iter().map(|entry| entry.file.clone()).collect();
 
     let manifest = Manifest {
         schema_version: 2,
@@ -135,6 +155,7 @@ pub fn capture_snapshots(workdir: &Path, config: &SnapshotConfig) -> Result<Snap
         tabs_captured: tabs_to_capture.len(),
         dir: config.output_dir.clone(),
         manifest_path,
+        files,
     })
 }
 
@@ -241,6 +262,7 @@ mod tests {
             output_dir: dir.path().join("shots"),
             tabs: None,
             label: None,
+            ansi: false,
         };
         assert!(capture_snapshots(dir.path(), &config).is_err());
     }
@@ -255,6 +277,7 @@ mod tests {
             output_dir: output_dir.clone(),
             tabs: Some(vec!["f1".to_string()]),
             label: Some("full-frame".to_string()),
+            ansi: false,
         };
 
         let result = capture_snapshots(dir.path(), &config).unwrap();
@@ -266,5 +289,34 @@ mod tests {
         let manifest = std::fs::read_to_string(result.manifest_path).unwrap();
         assert!(manifest.contains("\"schema_version\": 2"));
         assert!(manifest.contains("app.draw/full-frame"));
+    }
+
+    #[test]
+    fn capture_writes_ansi_beside_text_when_asked() {
+        let dir = tempdir().unwrap();
+        let output_dir = dir.path().join("shots");
+        let config = SnapshotConfig {
+            width: 120,
+            height: 30,
+            output_dir: output_dir.clone(),
+            tabs: Some(vec!["f1".to_string()]),
+            label: None,
+            ansi: true,
+        };
+
+        let result = capture_snapshots(dir.path(), &config).unwrap();
+        assert_eq!(result.files, ["f01-dashboard.txt"]);
+        let text = std::fs::read_to_string(output_dir.join("f01-dashboard.txt")).unwrap();
+        assert!(!text.contains('\x1b'), "the .txt capture stays plain");
+        let ansi = std::fs::read_to_string(output_dir.join("f01-dashboard.ansi")).unwrap();
+        // Every row ends in a reset, and without its escapes the `.ansi`
+        // file holds the same rows as the `.txt` one.
+        assert!(ansi.lines().all(|row| row.ends_with("\x1b[0m")));
+        let escapes = regex::Regex::new("\x1b\\[[0-9;]*m").unwrap();
+        let plain = escapes.replace_all(&ansi, "");
+        let plain_rows: Vec<&str> = plain.lines().map(str::trim_end).collect();
+        assert_eq!(plain_rows, text.split('\n').collect::<Vec<_>>());
+        let manifest = std::fs::read_to_string(result.manifest_path).unwrap();
+        assert!(manifest.contains("\"ansi_file\": \"f01-dashboard.ansi\""));
     }
 }

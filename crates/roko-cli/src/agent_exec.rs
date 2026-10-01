@@ -134,6 +134,18 @@ pub async fn run_agent_capture_silent_with_usage(opts: AgentExecOpts<'_>) -> Res
     run_agent_capture_impl(opts, false, None).await
 }
 
+/// Like [`run_agent_capture_silent`], but also record what the call cost
+/// through `spend`. The capture episode its caller persists carries no usage,
+/// so this is where the call's spend is recorded (bug-86ff56).
+pub async fn run_agent_capture_silent_recorded(
+    opts: AgentExecOpts<'_>,
+    spend: &crate::plan_authoring::AuthoringSpend,
+) -> Result<(i32, String)> {
+    let call = run_agent_capture_silent_with_usage(opts).await?;
+    spend.record(&call).await;
+    Ok((call.exit_code, call.output))
+}
+
 async fn run_agent_capture_impl(
     opts: AgentExecOpts<'_>,
     echo_output: bool,
@@ -448,6 +460,7 @@ pub fn classify_agent_crash(stderr: &str) -> AgentCrashClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan_authoring::AuthoringSpend;
     use roko_learn::episode_logger::EpisodeLogger;
     use tempfile::TempDir;
 
@@ -877,5 +890,46 @@ context_window = 200000
         assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
         assert_eq!(rows[0]["input_tokens"], 1200);
         assert_eq!(rows[0]["plan_id"], "demo");
+    }
+
+    /// bug-86ff56: a one-off call, as `roko research`, `roko do` and the PRD
+    /// drafting commands make them, records the reported cost under the
+    /// operation's task and role, with no plan id.
+    #[tokio::test]
+    async fn research_calls_record_spend() {
+        let workspace = fake_planner_workspace();
+        let task_id = "research:topic:graph-engines";
+        let spend = AuthoringSpend::operation(workspace.path(), task_id, "researcher");
+
+        let (exit_code, _) = run_agent_capture_silent_recorded(
+            AgentExecOpts {
+                prompt: "Research graph engines.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: None,
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("researcher"),
+                allowed_tools: Some("Read,Write,Edit"),
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["role"], "researcher");
+        assert_eq!(rows[0]["plan_id"], "");
+        assert_eq!(rows[0]["task_id"], task_id);
+        let efficiency_log = workspace.path().join(".roko/learn/efficiency.jsonl");
+        let efficiency = std::fs::read_to_string(efficiency_log).expect("efficiency log");
+        assert!(
+            efficiency.contains(&format!("\"attempt_id\":\"{task_id}/a1\"")),
+            "{efficiency}"
+        );
     }
 }

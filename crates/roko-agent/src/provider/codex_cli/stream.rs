@@ -5,6 +5,7 @@
 //! `item.completed`, and `turn.completed`. This module translates each line
 //! into provider-neutral [`AgentRuntimeEvent`]s.
 
+use roko_core::config::model_registry::{ModelPricing, builtin_pricing};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -80,64 +81,32 @@ struct CodexUsage {
 
 // ── Cost estimation ─────────────────────────────────────────────────────
 
-/// Per-million-token pricing for a codex-family model.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct CodexPricing {
-    /// USD per million uncached input tokens.
-    input_per_m: f64,
-    /// USD per million cached (cache-read) input tokens.
-    cached_input_per_m: f64,
-    /// USD per million output tokens. Codex reports reasoning tokens as a
-    /// subset of `output_tokens`, so reasoning is billed at the output rate
-    /// here, matching how OpenAI invoices it.
-    output_per_m: f64,
-}
+/// The Codex CLI's configured default model, whose rates price a turn on a
+/// model the built-in price table does not know.
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
 
-/// Pricing for `gpt-5.6-sol`, the configured default codex CLI model.
-///
-/// This is also the fallback for unknown codex slugs: it preserves the rates
-/// this module applied to *every* codex turn before pricing became
-/// model-aware.
-const GPT_5_6_SOL_PRICING: CodexPricing = CodexPricing {
-    input_per_m: 2.0,
-    cached_input_per_m: 0.50,
-    output_per_m: 8.0,
-};
-
-/// Resolve per-token pricing for a codex model slug.
-///
-/// Rates mirror the gpt-5.x tiers in roko-learn's `CostTable::with_defaults`
-/// (roko-agent must not depend on roko-learn, so the rows are duplicated
-/// here): full-size gpt-5.x ≈ $2.50/$10.00 per M, mini tier ≈ $0.40/$1.60.
-/// Unknown slugs fall back to [`GPT_5_6_SOL_PRICING`]. Configured
+/// Resolve per-token pricing for a codex model slug from the shared built-in
+/// price table ([`builtin_pricing`]), so a turn's estimate agrees with the
+/// cost tables (bug-0c0747). An empty slug, or one the table does not price,
+/// gets [`DEFAULT_CODEX_MODEL`]'s rates. Configured
 /// `[models.*].cost_*_per_m` values take precedence downstream whenever the
 /// runner prices from the `ModelProfile`; this estimate only feeds the
 /// stream-level `TurnCompleted.total_cost_usd`.
-fn codex_pricing_for_model(model: Option<&str>) -> CodexPricing {
-    let Some(slug) = model.map(str::trim).filter(|slug| !slug.is_empty()) else {
-        return GPT_5_6_SOL_PRICING;
-    };
-    match slug {
-        "gpt-5.6-sol" => GPT_5_6_SOL_PRICING,
-        "gpt-5-codex" => CodexPricing {
-            input_per_m: 2.50,
-            cached_input_per_m: 0.63,
-            output_per_m: 10.0,
-        },
-        other if other.contains("mini") => CodexPricing {
-            input_per_m: 0.40,
-            cached_input_per_m: 0.10,
-            output_per_m: 1.60,
-        },
-        _ => GPT_5_6_SOL_PRICING,
-    }
+fn codex_pricing_for_model(model: Option<&str>) -> Option<ModelPricing> {
+    model
+        .map(str::trim)
+        .filter(|slug| !slug.is_empty())
+        .and_then(builtin_pricing)
+        .or_else(|| builtin_pricing(DEFAULT_CODEX_MODEL))
 }
 
-/// Estimate the USD cost of a Codex turn from its token usage.
-fn estimate_codex_cost(usage: &CodexUsage, pricing: &CodexPricing) -> f64 {
+/// Estimate the USD cost of a Codex turn from its token usage. Codex reports
+/// reasoning tokens as a subset of `output_tokens`, so reasoning is billed at
+/// the output rate here, matching how OpenAI invoices it.
+fn estimate_codex_cost(usage: &CodexUsage, pricing: &ModelPricing) -> f64 {
     let uncached = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
     uncached as f64 * pricing.input_per_m / 1_000_000.0
-        + usage.cached_input_tokens as f64 * pricing.cached_input_per_m / 1_000_000.0
+        + usage.cached_input_tokens as f64 * pricing.cache_read_per_m / 1_000_000.0
         + usage.output_tokens as f64 * pricing.output_per_m / 1_000_000.0
 }
 
@@ -215,7 +184,8 @@ pub fn parse_stream_line_with_model(line: &str, model: Option<&str>) -> Vec<Agen
             let total_cost_usd = event
                 .usage
                 .as_ref()
-                .map(|usage| estimate_codex_cost(usage, &pricing));
+                .zip(pricing)
+                .map(|(usage, pricing)| estimate_codex_cost(usage, &pricing));
             if let Some(usage) = event.usage {
                 events.push(AgentRuntimeEvent::TokenUsage {
                     input_tokens: usage.input_tokens,
@@ -379,7 +349,7 @@ mod tests {
     #[test]
     fn turn_cost_uses_fallback_pricing_without_model_hint() {
         // 100 input (50 cached) + 10 output at gpt-5.6-sol rates:
-        // 50*$2 + 50*$0.50 + 10*$8 per M = $0.000205.
+        // 50*$4 + 50*$0.40 + 10*$20 per M = $0.00042.
         let events = parse_stream_line(
             r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}"#,
         );
@@ -388,9 +358,10 @@ mod tests {
             _ => None,
         });
         let cost = cost.expect("cost estimate");
-        assert!((cost - 0.000205).abs() < 1e-12, "cost was {cost}");
+        assert!((cost - 0.00042).abs() < 1e-12, "cost was {cost}");
     }
 
+    /// bug-0c0747: the rates are the built-in price table's.
     #[test]
     fn turn_cost_resolves_pricing_from_model_slug() {
         let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}"#;
@@ -411,14 +382,16 @@ mod tests {
             );
         };
 
-        // gpt-5-codex: 50*$2.50 + 50*$0.63 + 10*$10 per M = $0.0002565.
-        assert_cost(Some("gpt-5-codex"), 0.0002565);
-        // codex-mini: 50*$0.40 + 50*$0.10 + 10*$1.60 per M = $0.000041.
-        assert_cost(Some("codex-mini"), 0.000041);
-        // Unknown and empty slugs fall back to gpt-5.6-sol rates.
-        assert_cost(Some("gpt-9-future"), 0.000205);
-        assert_cost(Some(""), 0.000205);
-        assert_cost(None, 0.000205);
+        // codex-mini: 50*$2 + 50*$0.50 + 10*$8 per M = $0.000205.
+        assert_cost(Some("codex-mini"), 0.000205);
+        // gpt-5.4-mini: 50*$0.75 + 50*$0.075 + 10*$4.50 per M = $0.00008625.
+        assert_cost(Some("gpt-5.4-mini"), 0.00008625);
+        // Slugs the table does not price, and empty ones, get gpt-5.6-sol's
+        // rates: 50*$4 + 50*$0.40 + 10*$20 per M = $0.00042.
+        assert_cost(Some("gpt-5-codex"), 0.00042);
+        assert_cost(Some("gpt-9-future"), 0.00042);
+        assert_cost(Some(""), 0.00042);
+        assert_cost(None, 0.00042);
     }
 
     #[test]

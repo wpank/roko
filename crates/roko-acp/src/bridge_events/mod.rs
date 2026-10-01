@@ -29,9 +29,9 @@ pub(crate) use context::{
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
-    acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context, append_acp_episode,
-    derive_acp_tool_capabilities, emit_acp_efficiency_event, truncate_assistant_history,
-    truncate_to_title,
+    acp_contract_role_for_mode, acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context,
+    append_acp_episode, derive_acp_tool_capabilities, emit_acp_efficiency_event,
+    truncate_assistant_history, truncate_to_title,
 };
 pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
 pub(crate) use experiments::{
@@ -41,8 +41,8 @@ pub(crate) use experiments::{
     replace_experiment_section, resolve_acp_dispatch_model,
 };
 pub(crate) use helpers::{
-    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, send_cognitive_event,
-    send_session_update, workflow_template_name,
+    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, roko_meta_update,
+    send_cognitive_event, send_session_update, workflow_template_name,
 };
 pub use permissions::request_permission;
 pub(crate) use permissions::request_permission_for_event;
@@ -188,7 +188,8 @@ where
                         });
                     }
                     CognitiveEvent::PermissionRequest { payload, reply } => {
-                        let decision = request_permission_for_event(
+                        // Delivers the decision on `reply` itself.
+                        request_permission_for_event(
                             transport,
                             session,
                             workdir,
@@ -197,12 +198,6 @@ where
                             cancel_token,
                         )
                         .await;
-                        if !reply.reply(decision) {
-                            warn!(
-                                session_id,
-                                "permission requester disappeared before receiving the decision"
-                            );
-                        }
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
                         assistant_text.push_str(text);
@@ -344,7 +339,13 @@ where
         let sid = session.session_id.clone();
         tokio::task::spawn_blocking(move || assign_acp_experiment(&path, &mode, &sid))
             .await
-            .unwrap_or(None)
+            .unwrap_or_else(|error| {
+                warn!(
+                    error = %error,
+                    "ACP experiment assignment task failed; continuing without one"
+                );
+                None
+            })
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,
@@ -604,7 +605,7 @@ where
     let session_mcp_servers = session.mcp_servers.clone();
     let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
-    let session_agent_role = session.config_state.agent_mode.clone();
+    let session_agent_role = acp_contract_role_for_mode(&session.config_state.agent_mode);
     let session_tool_capabilities = derive_acp_tool_capabilities(
         &session.config_state.agent_mode,
         &session.client_capabilities,
@@ -983,20 +984,13 @@ where
         );
         session.record_efficiency_cost(efficiency_event.cost_usd);
         let budget_status = session.budget_status();
-        if let (Some(cost_budget_usd), Some(accumulated_cost_usd), Some(budget_remaining_usd)) = (
-            budget_status.cost_budget_usd,
-            budget_status.accumulated_cost_usd,
-            budget_status.budget_remaining_usd,
-        ) && let Err(error) = send_session_update(
-            transport,
-            &session.session_id,
-            SessionUpdate::BudgetStatusUpdate {
-                cost_budget_usd,
-                accumulated_cost_usd,
-                budget_remaining_usd,
-            },
-        )
-        .await
+        if budget_status.cost_budget_usd.is_some()
+            && let Err(error) = send_session_update(
+                transport,
+                &session.session_id,
+                roko_meta_update("budget", &budget_status),
+            )
+            .await
         {
             warn!(
                 session_id = %session.session_id,
@@ -1055,8 +1049,8 @@ where
         let title = truncate_to_title(&prompt_text_for_title, 60);
         session.session_name = Some(title.clone());
         let title_update = SessionUpdate::SessionInfoUpdate {
-            session_id: session.session_id.clone(),
-            session_name: Some(title),
+            title: Some(title),
+            _meta: None,
         };
         if let Err(error) = send_session_update(transport, &session.session_id, title_update).await
         {

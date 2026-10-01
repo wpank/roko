@@ -124,6 +124,8 @@ fn load_episodes(workdir: &Path) -> Vec<Episode> {
             }
         }
     }
+    // A success a later verify failure was blamed on reads as a failure.
+    roko_learn::hindsight::apply_workspace_adjustments(&mut episodes, workdir);
     episodes
 }
 

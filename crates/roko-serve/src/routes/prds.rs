@@ -284,19 +284,25 @@ fn extract_section(content: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Check if a plan exists for this slug.
+/// Check if a plan exists for this slug: a plan directory `<slug>/` (holding
+/// `tasks.toml` or `plan.md`) in the workspace plans directory, where new
+/// plans are written, or in the legacy `.roko/plans/`, or a legacy
+/// `.roko/plans/<slug>.json` or `<slug>.toml` file.
 async fn has_plan_for_slug(workdir: &std::path::Path, slug: &str) -> bool {
-    let plans_dir = workdir.join(".roko").join("plans");
-    if !plans_dir.is_dir() {
-        return false;
+    let legacy = roko_fs::workspace_plans::legacy_plans_dir(workdir);
+    let plans_dirs = [
+        roko_fs::workspace_plans::workspace_plans_dir(workdir),
+        legacy.clone(),
+    ];
+    if plans_dirs.iter().any(|plans_dir| {
+        let plan_dir = plans_dir.join(slug);
+        plan_dir.join("tasks.toml").is_file() || plan_dir.join("plan.md").is_file()
+    }) {
+        return true;
     }
-    // Check for plan file with matching slug
-    for ext in &["json", "toml"] {
-        if plans_dir.join(format!("{slug}.{ext}")).is_file() {
-            return true;
-        }
-    }
-    false
+    ["json", "toml"]
+        .iter()
+        .any(|ext| legacy.join(format!("{slug}.{ext}")).is_file())
 }
 
 /// `GET /api/prds` — list PRDs from ideas/, drafts/, and published/.
@@ -1034,6 +1040,35 @@ mod tests {
         })
         .await
         .expect("timed out waiting for background PRD draft job");
+    }
+
+    /// bug-17dad4: a PRD's plan is found where new plans are written, the
+    /// workspace plans directory.
+    #[tokio::test]
+    async fn has_plan_for_slug_finds_a_plan_in_the_workspace_plans_dir() {
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path();
+        assert!(!has_plan_for_slug(workdir, "widget").await);
+
+        let plan_dir = workdir.join("plans").join("widget");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n").expect("tasks.toml");
+        assert!(has_plan_for_slug(workdir, "widget").await);
+        assert!(!has_plan_for_slug(workdir, "gadget").await);
+    }
+
+    /// Plans in the legacy `.roko/plans/` still count: a plan directory or a
+    /// flat `<slug>.toml` file.
+    #[tokio::test]
+    async fn has_plan_for_slug_reads_legacy_plans() {
+        let dir = tempdir().expect("tempdir");
+        let legacy = dir.path().join(".roko").join("plans");
+        std::fs::create_dir_all(legacy.join("widget")).expect("legacy plan dir");
+        std::fs::write(legacy.join("widget").join("plan.md"), "# Widget\n").expect("plan.md");
+        std::fs::write(legacy.join("gadget.toml"), "").expect("legacy plan file");
+        assert!(has_plan_for_slug(dir.path(), "widget").await);
+        assert!(has_plan_for_slug(dir.path(), "gadget").await);
+        assert!(!has_plan_for_slug(dir.path(), "gizmo").await);
     }
 
     #[test]

@@ -145,7 +145,7 @@ pub(super) fn forward_live_event_to_tui(
                     }),
                 );
             }
-            StreamEventKind::ToolResult { id, output } => {
+            StreamEventKind::ToolResult { id, output, .. } => {
                 // Truncate tool output the same way forward_dispatch_events_to_tui
                 // does: keep the last 1 024 bytes (aligned to a char boundary).
                 let truncated = if output.len() > 2048 {

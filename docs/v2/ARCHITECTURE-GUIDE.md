@@ -1,6 +1,6 @@
 # Roko v2 Architecture Guide
 
-> **Implementation status (verified 2026-09-15):** This guide reflects the converged production architecture. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All 48 epics are accepted. See `.roko/GAPS.md` for remaining product/release residuals. Any references to `WorkflowEngine` as a live runtime type reflect the deprecated path; the authoritative types are in `roko-runtime::workflow_contract`.
+> **Implementation status (verified 2026-09-15):** This guide reflects the converged production architecture. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes the routes counted in `tools/http_route_inventory.snapshot.json`. `roko-gate` provides 19 gates in a 7-rung pipeline. All 48 epics are accepted. See `.roko/GAPS.md` for remaining product/release residuals. Any references to `WorkflowEngine` as a live runtime type reflect the deprecated path; the authoritative types are in `roko-runtime::workflow_contract`.
 
 **Who this is for**: Engineers reading the codebase for the first time. If you
 already know the system well, jump to the section you need using the table of
@@ -350,7 +350,7 @@ the top are foundations.
 Additional crates (parallel, not in the main execution stack):
 
 ```
-  roko-serve          HTTP control plane (~376 canonical routes (~421 incl. aliases) on :6677), durable exact-room
+  roko-serve          HTTP control plane on :6677 (route counts in tools/http_route_inventory.snapshot.json), durable exact-room
                       relay subscription execution, local arena/meta-agent services
   roko-agent-server   Per-agent HTTP sidecar plus supervised durable relay client
   agent-relay         Bounded canonical-envelope relay and atomic recovery server
@@ -1306,7 +1306,6 @@ pub struct ToolDispatcher {
     safety: SafetyLayer,
     hook_chain: Option<SafetyHookChain>,
     production_hook_chain: Option<SafetyHookChain>,
-    tool_selector: Option<ToolSelector>,
 }
 ```
 

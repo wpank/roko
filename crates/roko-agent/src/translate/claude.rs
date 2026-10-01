@@ -179,7 +179,8 @@ pub(crate) fn inject_cache_markers_into_content(content: &mut Value) -> bool {
 /// `text` without its cache markers, for a provider that does not turn them
 /// into `cache_control` blocks (find-6ee709): the segments between them are
 /// joined by a blank line. Text without a marker is returned unchanged.
-pub(crate) fn strip_cache_markers(text: &str) -> String {
+#[must_use]
+pub fn strip_cache_markers(text: &str) -> String {
     let mut remaining = text;
     let mut saw_marker = false;
     let mut segments = Vec::new();

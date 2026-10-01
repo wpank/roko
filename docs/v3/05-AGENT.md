@@ -11,8 +11,9 @@
 > (10/10 manifest): lifecycle type-state, five-phase VitalityTracker,
 > CorticalState energy fields, energy/affect coupling, EFE routing, GoalTree,
 > SlotManager, revisioned mode owners, and phase-aware runner dispatch are live.
-> 28 AgentRole variants map to 11 compose templates. AgentPool/MultiAgentPool
-> are built and tested but not runtime-instantiated by the Graph engine.
+> 28 AgentRole variants map to 11 compose templates. The unused
+> AgentPool/MultiAgentPool were removed on 2026-10-01; `WarmPool` is the only
+> agent pool.
 
 ### Implementation sources
 
@@ -26,7 +27,7 @@
 | ToolLoop | `crates/roko-agent/src/tool_loop/mod.rs` | Multi-turn driver, checkpoint/resume, context pruning |
 | Safety layer | `crates/roko-agent/src/safety/mod.rs` | 6 policy families, contract enforcement |
 | Agent roles | `crates/roko-core/src/agent.rs` | 28 `AgentRole` variants |
-| Agent pools | `crates/roko-agent/src/pool.rs`, `multi_pool.rs` | `AgentPool`, `MultiAgentPool` |
+| Agent pool | `crates/roko-cli/src/dispatch/warm_pool.rs` | `WarmPool`, a per-role LRU of warm agent handles |
 | Lifecycle and slots | `crates/roko-agent/src/lifecycle.rs` | Type-state transitions, `SlotManager` |
 | Vitality and phases | `crates/roko-daimon/src/lib.rs` | `VitalityTracker`, 5 `BehavioralPhase`s |
 | CorticalState | `crates/roko-runtime/src/heartbeat.rs` | Atomic energy fields, affect coupling |
@@ -604,46 +605,17 @@ The SafetyLayer provides a floor that even high-autonomy roles cannot breach.
 
 ## 6. Agent Pools
 
-Two pool types manage agent lifecycle and concurrency. Both are built and tested
-but are not yet runtime-instantiated by the Graph engine.
+`WarmPool` (`crates/roko-cli/src/dispatch/warm_pool.rs`) is the only agent
+pool: a per-role LRU of pre-spawned agent handles, so that a second-leg agent
+(a reviewer after a gate, for example) can take over a live process instead of
+cold-starting one. Otherwise agents are constructed on demand through
+`create_agent_for_model()` and tracked by `ProcessSupervisor`.
 
-### AgentPool
-
-```rust
-// crates/roko-agent/src/pool.rs
-
-pub struct AgentPool {
-    role: AgentRole,
-    primary: Arc<dyn Agent>,
-    fallback: Option<Arc<dyn Agent>>,
-    pending: VecDeque<AgentTask>,
-    statuses: Vec<(AgentInstanceId, InstanceStatus)>,
-    completed: VecDeque<TaskOutcome>,
-    active_task: Option<AgentInstanceId>,
-}
-```
-
-A single-role pool with primary + optional fallback agent. Queues tasks, tracks
-instance status, and drains completed outcomes.
-
-### MultiAgentPool
-
-```rust
-// crates/roko-agent/src/multi_pool.rs
-
-pub struct MultiAgentPool {
-    active: HashMap<AgentInstanceId, ActiveEntry>,
-    warm: HashMap<(AgentRole, String), WarmEntry>,
-    fallbacks: HashMap<AgentRole, Arc<dyn Agent>>,
-    concurrency_limits: HashMap<AgentRole, usize>,
-    default_concurrency: usize,  // Default: 4
-}
-```
-
-Multi-role pool with warm pre-spawned agents, per-role concurrency limits, and
-fallback agents. The TUI `AgentPoolRow` in `tui/modals/agent_pool_modal.rs`
-provides a scrollable view of all pool entries (role, model, task, tokens, cost,
-state, context%).
+roko-agent's `AgentPool` (one role, a primary and a fallback agent) and
+`MultiAgentPool` (several roles, warm entries, per-role concurrency limits)
+never ran outside their own tests. They were removed on 2026-10-01
+(gap-ee8dc0), and the TUI roster modal built for them went with them
+(bug-2f33d6).
 
 ---
 
@@ -776,7 +748,7 @@ every tool call through a 7-step pipeline:
 
 ```
 1. VALIDATE   -- identity + args against JSON schema from registry
-2. AUTHORIZE  -- profile/task filters and role capabilities
+2. AUTHORIZE  -- task tool filters and role capabilities
 3. SAFETY     -- hooks, policy, durable immune controls
 4. EXECUTE    -- handler under timeout/cancellation, panic-catching
 5. BOUND      -- recursively scrub, recover, re-bound results
@@ -816,9 +788,18 @@ every tool call through a 7-step pipeline:
 | `production_safety_chain` | Production safety hook chain |
 | `result_cache` | Explicit cache primitives (dispatcher does NOT cache internally) |
 | `timeout` | Timeout enforcement |
-| `tool_selector` | Tool selection logic |
 | `truncate` | Result truncation/bounding |
 | `validate` | Input validation |
+
+### Tool policy
+
+Which tools a role may call is decided on every call. Step 2 applies the
+task's `allowed_tools` and `denied_tools` and the role's capabilities; step 3
+runs `SafetyLayer::check_pre_execution`, which applies the role's tool
+whitelist from config and its `AgentContract`: the contract's `allowed_tools`
+allowlist and its `ForbiddenTools` rules. There is no separate per-role tool
+menu: one was built but never attached to a dispatcher, and it was removed on
+2026-10-01 (gap-48faa7).
 
 ---
 
@@ -1189,7 +1170,7 @@ cargo run -p roko-cli -- doctor
 | `depth/05-02-provider-adapters.md` | ProviderAdapter trait, adapter dispatch table, format translation |
 | `depth/05-03-chat-types.md` | ChatMessage/ChatResponse/ChatRequest canonical types |
 | `depth/05-04-agent-roles.md` | 28 roles, permissions, template mapping |
-| `depth/05-05-agent-pools.md` | AgentPool, MultiAgentPool, warm pre-spawning |
+| `depth/05-05-agent-pools.md` | The removed AgentPool and MultiAgentPool design |
 | `depth/05-06-mcp-integration.md` | MCP config, CLI passthrough, HTTP clients/resolvers |
 | `depth/05-07-tool-loop.md` | ToolLoop internals, LlmBackend trait, checkpoint/resume |
 | `depth/05-08-harness-engineering.md` | Meta-Harness results, Roko's harness principles, HarnessX, Harness-Bench, Belief Divergence |

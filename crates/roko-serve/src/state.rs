@@ -701,6 +701,10 @@ pub struct AppState {
     /// set of active session hashes for this process lifetime.
     /// Never persisted; reset on every server start.
     pub local_access: LocalAccess,
+
+    /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
+    /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
+    pub job_execution: roko_core::JobExecutionService,
 }
 
 /// A tracked bench run with its background task handle.
@@ -1186,6 +1190,8 @@ impl AppState {
         let connectors = Arc::new(RwLock::new(roko_core::ConnectorRegistry::new()));
         let connector_runtime =
             Arc::new(roko_runtime::ConnectorRuntime::new(Arc::clone(&connectors)));
+        let jobs_root = workdir.join(".roko").join("jobs");
+        let job_execution = roko_core::JobExecutionService::new(jobs_root);
 
         Ok(Self {
             workdir,
@@ -1279,6 +1285,7 @@ impl AppState {
                 .filter(|s| !s.is_empty()),
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
+            job_execution,
         })
     }
 

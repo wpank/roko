@@ -10,7 +10,7 @@ goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-01
 updated = 2026-09-29
-last_verified = 2026-09-29
+last_verified = 2026-10-01
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F007"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F007"
@@ -154,6 +154,15 @@ Entry point: `roko acp` -> session prompt handler in `crates/roko-acp/src/bridge
   than assigning the field.
 - The old verify command grepped a fixed line window (`777-968`) in `dispatch.rs` and ran an unguarded test
   filter (cargo passes when no test matches); the command above replaces it.
+- 2026-10-01 (wk-specq): implemented on work/bug-8dbffd; cargo verification deferred to the batch check.
+  The baseline claim holds statically: `ToolDispatcher::new` keeps `SafetyLayer::with_defaults()`, whose
+  `AllowExplicit` list is empty, so every ACP tool loop call was denied. All three loops now build their dispatcher
+  with `dispatch.rs::acp_tool_dispatcher` and a role-scoped layer from `acp_tool_safety` (`from_config` +
+  `with_role(acp_contract_role_for_mode(mode))`, from bug-bfb8ce). Tests: the two `mcp_tool_loop_` tests (sh MCP
+  fixture; the denied call never reaches the server) and `acp_tool_dispatcher_runs_builtin_tool_in_code_mode`.
+  Not done: plan step 5(b), checking the remote MCP tool name against `ForbiddenTools`; the Sandboxed plugin tier
+  already refuses most such names. The session-level pre/post-dispatch `SafetyLayer` in `mod.rs` still takes the
+  raw mode.
 
 ## Original notes
 

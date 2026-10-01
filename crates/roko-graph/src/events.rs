@@ -297,6 +297,11 @@ pub enum GraphExecutionEvent {
         node: NodeFields,
         /// Duration of this node execution.
         elapsed_ms: u64,
+        /// How the node's task settled, in the dashboard's outcome words
+        /// (`passed`, `unverified`, `already_satisfied`, ...), when the
+        /// executor knows it. Only `passed` is a verified pass.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
     },
     /// A node failed (all retries exhausted).
     NodeFailed {
@@ -999,6 +1004,7 @@ mod tests {
                 common: common.clone(),
                 node: node.clone(),
                 elapsed_ms: 1000,
+                outcome: None,
             },
             GraphExecutionEvent::NodeFailed {
                 common: common.clone(),
@@ -1234,6 +1240,7 @@ mod tests {
                 common: common.clone(),
                 node: node.clone(),
                 elapsed_ms: 1,
+                outcome: None,
             },
             GraphExecutionEvent::NodeFailed {
                 common: common.clone(),
@@ -1417,6 +1424,7 @@ mod tests {
                 common: common.clone(),
                 node: node.clone(),
                 elapsed_ms: 1,
+                outcome: None,
             },
             GraphExecutionEvent::NodeFailed {
                 common: common.clone(),

@@ -498,17 +498,19 @@ impl SseAdapter {
                 task_id,
                 passed,
                 duration_ms,
-                ..
-            } => (
-                "task_completed",
-                run_id.as_str(),
-                serde_json::json!({
+                outcome,
+            } => {
+                let mut data = serde_json::json!({
                     "plan_id": plan_id,
                     "task_id": task_id,
                     "passed": passed,
                     "duration_ms": duration_ms,
-                }),
-            ),
+                });
+                if let Some(outcome) = outcome {
+                    data["outcome"] = serde_json::json!(outcome);
+                }
+                ("task_completed", run_id.as_str(), data)
+            }
             RuntimeEvent::PipelinePhase {
                 run_id,
                 phase,
@@ -707,6 +709,7 @@ mod tests {
                     task_id: "t1".into(),
                     passed: true,
                     duration_ms: 5000,
+                    outcome: None,
                 },
                 "task_completed",
                 "passed",

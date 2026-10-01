@@ -2072,6 +2072,7 @@ mod tests {
                 task_id: "t-ok".into(),
                 passed: true,
                 duration_ms: 1,
+                outcome: None,
             },
             RuntimeEvent::TaskCompleted {
                 run_id: "r2".into(),
@@ -2079,6 +2080,7 @@ mod tests {
                 task_id: "t-bad".into(),
                 passed: false,
                 duration_ms: 1,
+                outcome: None,
             },
             RuntimeEvent::TaskSkipped {
                 task_id: "t-never".into(),

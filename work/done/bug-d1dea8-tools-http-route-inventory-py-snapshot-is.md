@@ -2,7 +2,7 @@
 id = "bug-d1dea8"
 kind = "bug"
 title = "tools/http_route_inventory.py snapshot is stale and compares counts only; no CI job runs it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["tools"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
+last_verified_rev = "bb04bcc91"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-c50b85"
 anchors = ["tools/http_route_inventory.py", "tools/http_route_inventory.snapshot.json"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["gap-c50b85"], supersedes = [
 
 [[verify]]
 command = "python3 tools/http_route_inventory.py --check-snapshot"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T18:29:13Z"
+commit = "bb04bcc91"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T18:14:48Z"
+forced = false
+evidence = "python3 tools/http_route_inventory.py --check-snapshot passes against the refreshed snapshot (453/402) and now diffs route lists; python3 tools/test_http_route_inventory.py passes (24 tests); ci.yml runs both in the route-inventory job"
 +++
 
 ## Problem

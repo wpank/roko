@@ -647,7 +647,6 @@ pub fn handle_key(
             ModalState::TaskPicker { .. } => handle_task_picker_key(key),
             ModalState::TaskDetail { .. } => handle_task_detail_key(key),
             ModalState::QueueOverview { .. } => handle_queue_overview_key(key),
-            ModalState::AgentPool { .. } => handle_agent_pool_key(key),
             ModalState::Quit | ModalState::Confirm { .. } => handle_confirm_key(key),
             ModalState::Inject { .. } => handle_inject_key(key),
             ModalState::BatchReview { .. } => handle_batch_review_key(key),
@@ -765,15 +764,6 @@ fn handle_queue_overview_key(key: KeyEvent) -> TuiAction {
         KeyCode::Esc | KeyCode::Char('q') => TuiAction::ShowQueueOverview, // toggle off
         KeyCode::Up | KeyCode::Char('k') => TuiAction::QueueOverviewUp,
         KeyCode::Down | KeyCode::Char('j') => TuiAction::QueueOverviewDown,
-        _ => TuiAction::None,
-    }
-}
-
-fn handle_agent_pool_key(key: KeyEvent) -> TuiAction {
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => TuiAction::CloseModal,
-        KeyCode::Up | KeyCode::Char('k') => TuiAction::ModalScrollUp,
-        KeyCode::Down | KeyCode::Char('j') => TuiAction::ModalScrollDown,
         _ => TuiAction::None,
     }
 }
@@ -1621,16 +1611,6 @@ mod tests {
             vis.active_modal,
             Some(ModalState::TaskPicker { .. })
         ));
-
-        let agent_pool = ModalState::AgentPool {
-            agents: Vec::new(),
-            scroll_offset: 0,
-        };
-        let vis = ModalVisibility::from_active_modal(Some(&agent_pool));
-        assert!(matches!(
-            vis.active_modal,
-            Some(ModalState::AgentPool { .. })
-        ));
     }
 
     #[test]
@@ -1755,51 +1735,6 @@ mod tests {
             &vis,
         );
         assert_eq!(action, TuiAction::QueueOverviewDown);
-    }
-
-    #[test]
-    fn agent_pool_modal_blocks_navigation_keys() {
-        let modal = ModalState::AgentPool {
-            agents: Vec::new(),
-            scroll_offset: 0,
-        };
-        let vis = modals(Some(&modal));
-
-        let action = handle_key(
-            key(KeyCode::Up),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::ModalScrollUp);
-
-        let action = handle_key(
-            key(KeyCode::Char('j')),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::ModalScrollDown);
-
-        let action = handle_key(
-            key(KeyCode::Tab),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::None);
-
-        let action = handle_key(
-            key(KeyCode::Esc),
-            InputMode::Normal,
-            Tab::Agents,
-            FocusZone::AgentOutput,
-            &vis,
-        );
-        assert_eq!(action, TuiAction::CloseModal);
     }
 
     #[test]

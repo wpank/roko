@@ -1306,7 +1306,6 @@ pub struct ToolDispatcher {
     safety: SafetyLayer,
     hook_chain: Option<SafetyHookChain>,
     production_hook_chain: Option<SafetyHookChain>,
-    tool_selector: Option<ToolSelector>,
 }
 ```
 

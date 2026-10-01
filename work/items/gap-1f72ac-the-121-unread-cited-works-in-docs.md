@@ -2,7 +2,7 @@
 id = "gap-1f72ac"
 kind = "gap"
 title = "The ~121 unread cited works in docs/v3 likely carry unsupported claims at the audited 62% rate: banner the references, cut unchecked annotations to bare citations"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["docs/v3", "docs/v1", "tools/docs_integrity"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "b00b20e61"
+last_verified_rev = "90a39c516"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's gap-11845c result: 28 of 45 audited works corrected, 62.2%)"
 anchors = ["docs/v3/REFERENCES.md", "tools/docs_integrity/content_audit.json", "tools/docs_integrity/check_citation_errata.py"]
@@ -20,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-11845c", "gap-0d996a", "
 
 [[verify]]
 command = "python3 -c \"import json;d=json.load(open('tools/docs_integrity/content_audit.json'));assert d.get('unchecked_annotations_cut') is True\" && grep -q 'not been checked against' docs/v3/REFERENCES.md && python3 tools/docs_integrity/check_citation_errata.py --prose"
+
+[closed]
+at = 2026-10-01
+commit = "90a39c516"
+evidence = "content_audit.json: unchecked_annotations_cut=true (1,771 annotations cut: 1,132 v3 reference entries, 450 v1, 189 chapter reference items); banner in REFERENCES.md; 23 evidence works read (7 corrected); check_citation_errata.py --prose clean (905 files, 306 works); 13 tests pass"
 +++
 
 ## Problem

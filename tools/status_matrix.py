@@ -105,7 +105,7 @@ SVG_STYLE = """\
     .removed .id { text-decoration: line-through; }
   </style>"""
 STATUSES = ("stub", "draft", "reviewed")
-ITEM_DIRS = ("work/items", "work/parked")
+ITEM_DIRS = ("work/items", "work/done", "work/closed", "work/parked")
 
 ITEM_RE = re.compile(r"^(?:bug|gap|reg|find|spec|dec|q)-[0-9a-f]{6}$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")

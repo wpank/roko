@@ -469,7 +469,7 @@ def manifest(date: str) -> dict:
             files.append({"path": str(p.relative_to(work.REPO)), "sha256": sha256(data),
                           "rows": len([ln for ln in data.decode(errors="replace").splitlines() if ln.strip()])})
     closed = sorted((i["id"], i.get("status"), i.get("closed") or {}) for i in work.load("work")[0] if i.get("closed"))
-    files.append({"path": "work/items/*.md [closed]", "sha256": sha256(json.dumps(closed, default=str, sort_keys=True).encode()),
+    files.append({"path": "work/{done,closed}/*.md [closed]", "sha256": sha256(json.dumps(closed, default=str, sort_keys=True).encode()),
                   "rows": len(closed)})
     return {"schema": MANIFEST_SCHEMA, "date": date, "head": work.head_rev(), "files": files}
 

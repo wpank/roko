@@ -1470,5 +1470,307 @@
    "Ousterhout 2018"
   ],
   "classic_note": "books and journal papers cited as grounding in docs/v3 prose; not on arXiv, so not part of this audit"
+ },
+ "evidence_reads": {
+  "item": "gap-1f72ac",
+  "date": "2026-10-01",
+  "method": "Full text from arxiv.org/html; each evidence sentence compared with the abstract and the relevant sections.",
+  "checked": 23,
+  "supported": 16,
+  "corrected": 7,
+  "removed": 0,
+  "error_rate": 0.304,
+  "major": 4,
+  "major_error_rate": 0.174,
+  "no_claim": {
+   "arxiv": [
+    "2202.09722",
+    "2308.07870",
+    "2405.10467",
+    "2406.16008",
+    "2210.03629",
+    "2511.14650",
+    "2602.14038"
+   ],
+   "note": "matched the evidence scan through a title word or a sentence about Roko; no claim about the paper to check"
+  },
+  "works": [
+   {
+    "arxiv": "2603.10123",
+    "title": "Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias",
+    "files": [
+     "docs/v3/06-COMPOSITION.md",
+     "docs/v3/depth/06-composition/lost-in-the-middle-u-shape.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "The U-shape is present at initialization, a geometric property of causal decoders with residual connections (abstract). The docs' year was 2025; now 2026."
+   },
+   {
+    "arxiv": "2512.09369",
+    "title": "Encoder-Free Knowledge-Graph Reasoning with LLMs via Hyperdimensional Path Retrieval",
+    "files": [
+     "docs/v3/09-MEMORY.md",
+     "docs/v3/depth/09-memory/hdc-vsa-foundations.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'HDC role-filler binding naturally encodes KG relationships': it uses an order-sensitive, non-commutative binding of relation paths"
+    ],
+    "paper_says": "Block-diagonal GHRR binding of multi-hop paths, calibrated cosine retrieval, one LLM call; competitive Hits@1/F1 on WebQSP, CWQ, GrailQA at lower inference cost (abstract)."
+   },
+   {
+    "arxiv": "2504.14898",
+    "title": "Expected Free Energy-based Planning ",
+    "files": [
+     "docs/v3/00-INDEX.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "EFE-based planning arises from minimizing a variational free energy functional (abstract)."
+   },
+   {
+    "arxiv": "2607.12227",
+    "title": "Rethinking the Evaluation of Harness ",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Harness evolution does not consistently beat matched test-time scaling and generalizes little (abstract)."
+   },
+   {
+    "arxiv": "2607.14004",
+    "title": "Do Agent Optimizers Compound? A Continual-Learning Evaluation on Terminal-Bench 2.0",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'gains from agent optimizers fail to compound across tasks': one of three optimizers did compound"
+    ],
+    "paper_says": "GEPA fell below baseline on new tasks, Meta Harness stopped improving, RELAI-VCL kept compounding; gains compounded only with regression control in the loop (abstract)."
+   },
+   {
+    "arxiv": "2608.18066",
+    "title": "On the Fragility of Self-Improving Agents:",
+    "files": [
+     "docs/v3/08-LEARNING.md",
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Self-improving loops amplify run-to-run variance (71% of cases) and depend on task order (abstract)."
+   },
+   {
+    "arxiv": "2602.02007",
+    "title": "Beyond RAG for Agent Memory: Retrieval by Decoupling and Aggregation",
+    "files": [
+     "docs/v3/09-MEMORY.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'advocates decoupling memory retrieval from memory aggregation' misstates 'decoupling before aggregation'",
+     "'validates Roko's separation of HDC search, demurrage and VCG composition' is not tested by the paper"
+    ],
+    "paper_says": "Agent memory should first decouple segments into reusable components, then aggregate them into groups for retrieval (xMemory) (abstract)."
+   },
+   {
+    "arxiv": "2401.08623",
+    "title": "Wake-Sleep Consolidated Learning",
+    "files": [
+     "docs/v3/depth/10-dreams/sleep-time-compute.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'38% reduction in catastrophic forgetting' (and in docs/v1 '17.6% zero-shot transfer increase') are not in the paper",
+     "credited to 'Skenderi et al.' (first author Sorrenti)"
+    ],
+    "paper_says": "Wake, NREM and REM phases beat continual-learning baselines on CIFAR-10, Tiny-ImageNet and FG-ImageNet, with positive forward transfer (abstract)."
+   },
+   {
+    "arxiv": "2402.10877",
+    "title": "Robust agents learn causal world models",
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Agents satisfying a regret bound under many distributional shifts must have learned an approximate causal model (abstract)."
+   },
+   {
+    "arxiv": "2410.05983",
+    "title": "Long-Context LLMs Meet RAG: Overcoming Challenges for Long Inputs in RAG",
+    "files": [
+     "docs/v3/depth/06-composition/predictive-foraging-mvt.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "With more retrieved passages, quality first rises then falls because of hard negatives (abstract). 'Confirms MVT' is Roko's reading."
+   },
+   {
+    "arxiv": "2501.19278",
+    "title": "Pheromone-based Learning of Optimal Reasoning Paths",
+    "files": [
+     "docs/v3/depth/00-architecture/cross-pollination-innovations.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "ACO-ToT beats existing chain-of-thought optimization approaches on GSM8K, ARC-Challenge and MATH (abstract)."
+   },
+   {
+    "arxiv": "2502.11882",
+    "title": "Leveraging Dual Process Theory in Language Agent Framework ",
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "DPT-Agent pairs a fast System 1 (FSM, code-as-policy) with a System 2 (theory of mind, asynchronous reflection) (abstract)."
+   },
+   {
+    "arxiv": "2504.14824",
+    "title": "An Enhanced Dual-Currency VCG Auction Mechanism for Resource Allocation in IoV: A Value of Information Perspective",
+    "files": [
+     "docs/v3/depth/00-architecture/attention-as-currency.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Dual-currency VCG with mean-field MARL for IoV resource allocation; DSIC, lower collusion likelihood (abstract)."
+   },
+   {
+    "arxiv": "2601.02845",
+    "title": "TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Temporal Memory Tree consolidates raw observations into progressively abstracted representations (abstract)."
+   },
+   {
+    "arxiv": "2601.04362",
+    "title": "Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "corrected",
+    "severity": "minor",
+    "unsupported_claims": [
+     "'validates the NREM/REM distinction -- NREM for faithful replay and pattern extraction, REM for creative recombination and schema testing'"
+    ],
+    "paper_says": "Deep-sleep-like phases commit tagged updates in gated write windows; REM-like replay reconstructs and perturbs experience for planning; modes are algorithmic, not physiological (abstract)."
+   },
+   {
+    "arxiv": "2604.11364",
+    "title": "The Missing Knowledge Layer in Cognitive Architectures for AI Agents",
+    "files": [
+     "docs/v3/29-HEARTBEAT.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Proposes a Knowledge/Memory/Wisdom/Intelligence decomposition with distinct persistence semantics (abstract)."
+   },
+   {
+    "arxiv": "2605.20616",
+    "title": "Auto-Dreamer: Learning Offline Memory Consolidation for Language Agents",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "A learned offline consolidator inspired by complementary learning systems theory (abstract)."
+   },
+   {
+    "arxiv": "2606.03979",
+    "title": "Language Models Need Sleep: Learning to Self-Modify and Consolidate Memories",
+    "files": [
+     "docs/v3/10-DREAMS.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "A sleep paradigm that distils short-term memories into long-term parameters (Knowledge Seeding) plus dreaming (abstract)."
+   },
+   {
+    "arxiv": "2606.24535",
+    "title": "Governed Shared Memory for Multi-Agent LLM Systems",
+    "files": [
+     "docs/v3/16-COORDINATION.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'identify three categories: stale reads, write contention, memory bloat': the paper lists four other failure modes",
+     "'the paper validates these design choices with empirical measurements': it measures one production service, not Roko's design",
+     "credited to 'Zhou et al.' (first author Margalit)"
+    ],
+    "paper_says": "Four failure modes: unauthorized leakage, stale propagation, contradiction persistence, provenance collapse; MemClaw measured without baselines (abstract)."
+   },
+   {
+    "arxiv": "2606.26524",
+    "title": "VIGIL: Runtime Enforcement of Behavioral Specifications in AI Agent Skills",
+    "files": [
+     "docs/v3/12-SAFETY.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Runtime enforcement of skill specifications as finite-trace temporal safety properties decided by SMT (§3)."
+   },
+   {
+    "arxiv": "2606.30005",
+    "title": "LLM Agents Are Latent Context Managers: Eliciting Self-Managed Context via State Proprioception",
+    "files": [
+     "docs/v3/06-COMPOSITION.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "VISTA's context dashboard ('proprioceptive' is the paper's term) lifts Gemini-3-Flash from 22.7% to 50.7% on LOCA-Bench (abstract)."
+   },
+   {
+    "arxiv": "2607.02032",
+    "title": "PACE: A Proxy for Agentic Capability Evaluation",
+    "files": [
+     "docs/v3/07-GATES.md"
+    ],
+    "verdict": "corrected",
+    "severity": "major",
+    "unsupported_claims": [
+     "'continuous verification scores enable accurate capability assessment at 15% of the compute cost': wrong mechanism and number"
+    ],
+    "paper_says": "A small selected subset of non-agentic instances predicts agentic benchmark scores at under 1/100 of the cost of a full evaluation (§1, Fig. 1)."
+   },
+   {
+    "arxiv": "2607.25891",
+    "title": "Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation",
+    "files": [
+     "docs/v3/39-ROADMAP.md"
+    ],
+    "verdict": "supported",
+    "severity": null,
+    "unsupported_claims": [],
+    "paper_says": "Counterfactual rescoring shows strict all-pass scoring in multi-verifier tasks can change agent rankings (abstract)."
+   }
+  ]
  }
 }

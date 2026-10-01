@@ -10,12 +10,14 @@
 >
 > **Last updated**: 2026-10-01
 
-> **Only 49 works have been checked against the papers.** Their descriptions were compared with each paper's
-> full text (gap-785a4f, gap-0d996a, gap-11845c); the verdicts, evidence and section references are in
-> `tools/docs_integrity/content_audit.json`. That audit found claims the papers do not support for 62% of the 45
-> most-described works, so the annotations of all other entries were removed: they had not been checked against
-> the papers. Descriptions of those works elsewhere in the docs have not been checked against the papers either;
-> read them as Roko's interpretation, not as what the paper reports.
+> **Only 72 works have been checked against the papers.** The 49 listed below were compared with each paper's full
+> text (gap-785a4f, gap-0d996a, gap-11845c), and their entries keep their annotations. 23 more were checked where the
+> docs cite them as evidence for a design decision (gap-1f72ac); their entries stay bare citations. Verdicts, evidence
+> and section references for all 72 are in `tools/docs_integrity/content_audit.json` (`works`,
+> `summary.earlier_full_reads` and `evidence_reads`). The audit found claims the papers do not support for 62% of the
+> 45 most-described works, so the annotations of every other entry were removed: they had not been checked against
+> the papers. Descriptions of the unchecked works elsewhere in the docs have not been checked against the papers
+> either; read them as Roko's interpretation, not as what the paper reports.
 >
 > Checked (arXiv IDs): Meta-Harness (2603.28052); FrugalGPT (2305.05176); CoALA (2309.02427); GRASP (2605.29668); Darwin Gödel Machine (2505.22954); Let's Verify Step by Step (2305.20050); MemPro (2606.00619); Coordination as an Architectural Layer (2605.03310); Do Language Models Need Sleep? (2605.26099); LatentMAS (2511.20639); Truly Self-Improving Agents Require Intrinsic Metacognitive Learning (2506.05109); Agentic Context Engineering (ACE) (2510.04618); PEEK (2605.19932); AgentPRM (2511.08325); SkillZip (2608.11079); SiriuS (2502.04780); FederatedSkill (2606.03143); CLEAR (Beyond Accuracy) (2511.14136); Emergent Coordination in Multi-Agent Language Models (2510.05174); AgentsNet (2507.08616); Sleep-time Compute (2504.13171); IPFS (1407.3561); Recursive Self-Improvement in AI (survey) (2607.07663); TACO (2604.19572); Lost in the Middle (2307.03172); Memory Worth (When to Forget) (2604.12007); ActPlane (2606.25189); SkillReducer (2603.29919); Memory in the Age of AI Agents (2512.13564); Memory for Autonomous LLM Agents (2603.07670); Emotional RAG (2410.23041); LightMem (2510.18866); The Future of Continual Learning in the Era of Foundation Models (2506.03320); Agentic Artificial Intelligence: Architectures, Taxonomies, and Evaluation (2601.12560); Entropic Context Shaping (2601.11585); ReSkill (2606.01619); FadeMem (2601.18642); Tracking Capabilities for Safer Agents (2603.00991); Mesh Memory Protocol (2604.19540); AgentReputation (2605.00073); Cognitive Workspace (2508.13171); AI4AI-Bench (2608.20318); Reflexion (2303.11366); PASTE (Parallelizing Tool Execution and LLM Generation) (2603.18897); MAST (Why Do Multi-Agent LLM Systems Fail?) (2503.13657); HarnessX (2606.14249); Harness-Bench (2605.27922); Measuring Harness-Induced Belief Divergence (2607.04528); From Cognitive Architectures to Language Agents (mechanism-level review) (2607.23942).
 

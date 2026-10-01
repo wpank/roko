@@ -892,8 +892,7 @@ and adjusts section weights accordingly.
 
 > **Status (2026-09-29): a hypothesis, not a result.** No measurement shows Roko's
 > learning compounding, and recent studies argue against expecting it:
-> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
-> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> of three agent optimizers, only the one with regression control built into its loop kept improving on new tasks (Wang, Kattakinda and Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
 > amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
 > consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
 > The defensible claim is bounded, audited improvement with rollback. The metric

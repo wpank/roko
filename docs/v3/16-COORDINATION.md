@@ -262,13 +262,7 @@ Intelligence: From Natural to Artificial Systems*. Oxford University Press,
 1999].
 
 However, shared-memory coordination mechanisms carry their own failure modes.
-Zhou et al. (2026) identify three categories: stale reads (agents acting on
-outdated state), write contention (agents corrupting each other's signals),
-and memory bloat (unbounded accumulation degrading performance) [Zhou et al.
-"Governed Shared Memory." arXiv:2606.24535, 2026]. Roko's pheromone system
-addresses all three: exponential decay prevents stale reads, kind-scoped
-deposition prevents write contention, and anti-saturation configuration
-prevents memory bloat.
+Margalit et al. (2026) identify four failure modes of governed shared memory: unauthorized leakage, stale propagation, contradiction persistence and provenance collapse [Margalit et al. "Governed Shared Memory for Multi-Agent LLM Systems." arXiv:2606.24535, 2026]. Roko's pheromone system covers stale propagation through exponential decay; its kind-scoped deposition and anti-saturation limits target write contention and memory bloat, which are Roko's own concerns rather than modes the paper lists.
 
 ### Asynchrony
 
@@ -1265,8 +1259,7 @@ sharing an environment.
 > **Status (2026-09-29): a hypothesis the evidence does not support.** No
 > measurement shows Roko improving superlinearly, and recent studies argue against
 > expecting it:
-> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
-> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> of three agent optimizers, only the one with regression control built into its loop kept improving on new tasks (Wang, Kattakinda and Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
 > amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
 > consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
 > The defensible goal is bounded, audited improvement with rollback. The loops below
@@ -1504,12 +1497,7 @@ failure modes identified in that work.
 
 ### Governed Shared Memory
 
-Zhou et al. [arXiv:2606.24535, 2026] identify systematic failure modes in
-shared-memory multi-agent systems: stale reads, write contention, and memory
-bloat. Roko's pheromone system addresses these through exponential decay
-(stale reads), kind-scoped deposition (write contention), and
-anti-saturation configuration (memory bloat). The paper validates these design
-choices with empirical measurements.
+Margalit et al. [arXiv:2606.24535, 2026] identify four failure modes in shared-memory multi-agent systems: unauthorized leakage, stale propagation, contradiction persistence and provenance collapse. They measure one production service (MemClaw) against them rather than comparing with baselines (abstract). Roko's pheromone decay addresses stale propagation; the paper does not evaluate Roko's design.
 
 ### Mesh Memory Protocol
 
@@ -1649,7 +1637,7 @@ This chapter decomposes into ~13 depth files in `docs/v3/depth/16-coordination/`
   Latent-space agent communication: up to 14.6% higher accuracy, 4-4.3x faster inference.
 - [Yang et al. 2026] "FederatedSkill." arXiv:2606.03143. Semantic skill diffs for federated skill evolution: up to 44.4% higher success than self-evolving baselines.
 - [Nechepurenko & Shuvalov 2026] "Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems." arXiv:2605.03310. Production failure rates of 41-87%, mostly coordination defects (§1, citing Cemri et al. 2025).
-- [Zhou et al. 2026] "Governed Shared Memory." arXiv:2606.24535. Failure modes
+- [Margalit et al. 2026] "Governed Shared Memory for Multi-Agent LLM Systems." arXiv:2606.24535. Failure modes
   in shared-memory multi-agent systems.
 - [Xu 2026] "Mesh Memory Protocol." arXiv:2604.19540. Semantic
   communication layer for agent coordination.

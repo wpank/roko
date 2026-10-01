@@ -83,7 +83,7 @@ it. Models perform worse with irrelevant context than with no context at all.
 
 ## 3. Why It Is Architectural, Not Learned
 
-A 2025 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic
+A 2026 paper (arXiv:2603.10123) proved the U-shaped bias is an **algebraic
 property** of causal decoder architectures, present at initialization before
 any training or positional encoding:
 

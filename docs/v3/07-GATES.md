@@ -995,9 +995,7 @@ flowchart TB
 > here for a 2.3x faster convergence from partial-pass scoring. That paper does not
 > report such a result, and no cited study does, so the claim is withdrawn.
 
-> **Citation**: PACE (arXiv:2607.02032) -- proxy capability evaluation shows
-> that continuous verification scores enable accurate capability assessment
-> at 15% of the compute cost of full evaluation.
+> **Citation**: PACE (arXiv:2607.02032) -- scores on a small, selected subset of non-agentic benchmark instances predict agentic benchmark scores closely, at under 1/100 of the cost of a full agent evaluation (§1, Fig. 1).
 
 ---
 

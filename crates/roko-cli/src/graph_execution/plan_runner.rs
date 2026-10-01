@@ -265,9 +265,9 @@ const FORCED_EXIT_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(2);
 /// checkpoint is finalized without them (bug-2b1ddc).
 const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long an interrupted plan waits for its attempts' cost and learning
-/// rows to reach the disk before it returns, and the process exits.
-const INTERRUPT_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a plan waits for its attempts' cost and learning rows to reach
+/// the disk before it returns, and the process exits.
+const ROW_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Set while a CLI plan run handles SIGINT/SIGTERM itself.
 static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
@@ -860,6 +860,12 @@ pub struct GraphPlanRunParams {
     pub dangerously_skip_permissions: bool,
     pub log_file: Option<PathBuf>,
     pub worktree_per_task: bool,
+    /// Whether `--worktree-per-task` asked for [`Self::worktree_per_task`],
+    /// rather than `[runner] worktree_per_task` or its default (gap-4ec59f).
+    /// Per-task worktrees run one plan at a time for now: a run that asked
+    /// for them with `max_parallel_plans` above 1 is refused, and one that
+    /// has them from the config runs its plans one at a time.
+    pub worktree_per_task_explicit: bool,
     pub rich_topology: bool,
     /// With `worktree_per_task`: once every plan is delivered into the run's
     /// batch branch, promote the batch into this branch and tag the run
@@ -1084,6 +1090,7 @@ async fn run_graph_plan_body(
         // `event_log::run_recorded`, which records it and clears the field.
         log_file: _,
         worktree_per_task,
+        worktree_per_task_explicit,
         rich_topology,
         promote,
         no_tui,
@@ -1167,16 +1174,28 @@ async fn run_graph_plan_body(
     // How many independent plans may run at once: the per-run override, else
     // `[conductor] max_parallel_plans`. Never written back into the config,
     // which every checkpoint fingerprint includes.
-    let max_parallel_plans = max_parallel_plans
+    let mut max_parallel_plans = max_parallel_plans
         .unwrap_or(roko_config.conductor.max_parallel_plans)
         .max(1);
+    // Per-task worktrees run one plan at a time for now (gap-4ec59f). A run
+    // that asked for them with --worktree-per-task is refused; one that has
+    // them from `[runner] worktree_per_task` runs its plans in turn.
     if worktree_per_task && max_parallel_plans > 1 && plans.len() > 1 {
-        anyhow::bail!(
-            "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
-             {max_parallel_plans}): run with --max-parallel-plans 1, or run the tasks in the \
-             shared working tree with --no-worktree-per-task (or [runner] worktree_per_task = \
-             false)"
+        if worktree_per_task_explicit {
+            anyhow::bail!(
+                "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
+                 {max_parallel_plans}): run with --max-parallel-plans 1, or replace \
+                 --worktree-per-task with --no-worktree-per-task to run the plans in parallel \
+                 in the shared working tree"
+            );
+        }
+        tracing::warn!(
+            max_parallel_plans,
+            "per-task worktrees do not run plans in parallel yet, so the plans run one at a \
+             time: pass --no-worktree-per-task to run them in parallel in the shared working \
+             tree, or --max-parallel-plans 1 to ask for one at a time"
         );
+        max_parallel_plans = 1;
     }
 
     let (plan_budget_ceiling, budget_bypassed) = resolve_budget_ceiling(
@@ -1865,6 +1884,13 @@ async fn run_graph_plan_body(
         }
     }
 
+    // gap-4ec59f: the run never changes the operator's checkout, so its
+    // summary says how to take the batch's work, unless a promotion did.
+    let merge_command = match (batch.as_ref(), promotion.as_ref()) {
+        (Some(batch), None) => batch.merge_command().await,
+        _ => None,
+    };
+
     let plan_outcome_labels = plan_execution_order
         .iter()
         .map(|plan_id| {
@@ -2046,6 +2072,7 @@ async fn run_graph_plan_body(
                         .map(|receipt| batch.summary_record(receipt))
                         .collect::<Vec<_>>(),
                     "promotion": promotion,
+                    "merge_command": merge_command,
                 })),
             }))
             .unwrap_or_default()
@@ -2114,6 +2141,13 @@ async fn run_graph_plan_body(
             }
             if let Some(promotion) = &promotion {
                 println!("{}", promotion.summary);
+            }
+            if let Some(command) = &merge_command {
+                println!(
+                    "The work is on branch {}; your checkout was not changed. To take it:\n  \
+                     {command}",
+                    batch.branch()
+                );
             }
         }
     }
@@ -2275,7 +2309,8 @@ fn graph_daimon_state(
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
 /// error patterns, routing when there is a cascade router, and the
 /// plan-completion dream, daimon, theta and delta sinks). The routing sink
-/// journals its observations in `cascade_journal`, when there is one;
+/// journals its observations in `cascade_journal`, when there is one, and the
+/// hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
 /// completes; `error_patterns` is the store dispatch formats into prompts.
 pub fn build_graph_feedback_facade(
@@ -2300,7 +2335,8 @@ pub fn build_graph_feedback_facade(
                 &graph_episodes_path,
                 graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
             )
-            .with_router(cascade_router.cloned()),
+            .with_router(cascade_router.cloned())
+            .with_journal(cascade_journal.cloned()),
         ))
         // Gate-verified attempts grow durable knowledge (tier
         // progression included) under `.roko/neuro/`.
@@ -3124,15 +3160,14 @@ async fn run_one_plan(
     } else {
         flow_handle.await_completion().await
     };
-    // The process exits soon after an interrupted run returns: let its
-    // attempts' cost and learning rows reach the disk first.
-    if interrupted_by.is_some() {
-        let _ = tokio::time::timeout(
-            INTERRUPT_WRITES_TIMEOUT,
-            crate::background_writes::settled(ctx.workdir),
-        )
-        .await;
-    }
+    // The process exits soon after a run returns: let its attempts' cost and
+    // learning rows reach the disk first. The last attempt's rows are still
+    // being written when its graph settles, interrupted or not (q-1faa0c).
+    let _ = tokio::time::timeout(
+        ROW_WRITES_TIMEOUT,
+        crate::background_writes::settled(ctx.workdir),
+    )
+    .await;
 
     let Some(output) = flow_result else {
         // Flow was cancelled before producing a result (e.g. validation
@@ -3670,6 +3705,57 @@ mod tests {
 
     /// bug-8208a6: a command `roko plan cancel` writes to control.json reaches
     /// the run's command channel, as a TUI command would, and is consumed.
+    /// gap-4ec59f: before the first dispatch, a worktree run clears what a
+    /// crashed run left behind, here a stale `index.lock`.
+    #[tokio::test]
+    async fn worktree_startup_repair_clears_a_stale_index_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = std::fs::canonicalize(dir.path()).expect("canonical repo");
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let lock = repo.join(".git/index.lock");
+        std::fs::File::create(&lock)
+            .expect("create a lock")
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+            .expect("age the lock");
+        let manager = crate::orchestrator::worktree::WorktreeManager::new(
+            crate::orchestrator::worktree::WorktreeConfig {
+                repo_root: repo.clone(),
+                base_branch: "HEAD".to_string(),
+                worktrees_root: repo.join(".roko").join("worktrees"),
+                max_live: None,
+                idle_ttl: std::time::Duration::from_secs(3600),
+            },
+        );
+
+        repair_worktree_state(&manager).await;
+
+        assert!(!lock.exists(), "the stale index.lock was cleared");
+    }
+
     #[test]
     fn a_control_file_command_reaches_the_run() {
         let state_dir = tempfile::tempdir().expect("tempdir");
@@ -3809,6 +3895,7 @@ files = ["README.md"]
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -4019,6 +4106,7 @@ max_retries = 0
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -5726,6 +5814,7 @@ exec sleep 60
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: true,
             promote: None,
             no_tui: true,
@@ -5908,6 +5997,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: true,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -5995,6 +6085,46 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-4ec59f: per-task worktrees run one plan at a time for now. Asked
+    /// for with `--worktree-per-task`, they refuse a run that would put two
+    /// plans in parallel before anything starts. From `[runner]
+    /// worktree_per_task`, they run the two plans in turn, the second on the
+    /// first's work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn configured_worktrees_run_parallel_plans_one_at_a_time() {
+        let dir = repo_with_file_plans(&["alpha", "beta"], None);
+        let repo = dir.path();
+        let parallel = |explicit| GraphPlanRunParams {
+            worktree_per_task_explicit: explicit,
+            max_parallel_plans: Some(2),
+            ..worktree_run_params(repo)
+        };
+
+        let error = run_graph_plan_in_run(parallel(true), Some("run-refused".into()))
+            .await
+            .expect_err("the requested run is refused");
+        assert!(
+            error.to_string().contains("--no-worktree-per-task"),
+            "{error}"
+        );
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/batch/"]),
+            "",
+            "the refused run started nothing"
+        );
+
+        let exit_code = run_graph_plan_in_run(parallel(false), Some("run-capped".into()))
+            .await
+            .expect("run the plans");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        // beta started from alpha's work, so the batch only fast-forwarded.
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/batch/run-capped"]),
+            git_stdout(repo, &["rev-parse", "roko/plan/02-beta"])
+        );
     }
 
     /// gap-415c54: with `[runner] delete_attempt_branches = true`, a

@@ -300,8 +300,10 @@ pub(crate) fn remap_role_table_entry(slug: String, changes: &[VersionChange]) ->
 /// is its own new learning. Confidence counters and LinUCB `A`/`b` sums are
 /// additive, so adding that difference model by model keeps everything other
 /// writers saved meanwhile, and a model only `latest` has keeps its state
-/// (bug-605a8a). Role-table entries and a Pareto frontier the router changed
-/// replace the persisted ones; new models and stage transitions are appended.
+/// (bug-605a8a). Successes can also fall, when a hindsight relabel retracts
+/// one that `base` held; that many leave `latest` (bug-583e50). Role-table
+/// entries and a Pareto frontier the router changed replace the persisted
+/// ones; new models and stage transitions are appended.
 pub(crate) fn merge_learning(
     latest: &mut CascadeSnapshot,
     current: &CascadeSnapshot,
@@ -327,16 +329,18 @@ pub(crate) fn merge_learning(
     }
 
     for (slug, stats) in &current.confidence_stats {
-        let learned = match base.confidence_stats.get(slug) {
-            Some(base_stats) => stats.learned_since(*base_stats),
-            None => *stats,
+        let base_stats = match base.confidence_stats.get(slug) {
+            Some(base_stats) => *base_stats,
+            None => PersistedModelStats::default(),
         };
-        if learned != PersistedModelStats::default() {
-            latest
-                .confidence_stats
-                .entry(slug.clone())
-                .or_default()
-                .absorb(learned);
+        let learned = stats.learned_since(base_stats);
+        // Successes a hindsight relabel retracted from what `base` held
+        // (bug-583e50): the only counter that can fall.
+        let retracted = base_stats.successes.saturating_sub(stats.successes);
+        if learned != PersistedModelStats::default() || retracted > 0 {
+            let persisted = latest.confidence_stats.entry(slug.clone()).or_default();
+            persisted.absorb(learned);
+            persisted.successes = persisted.successes.saturating_sub(retracted);
         }
     }
 

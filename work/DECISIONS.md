@@ -4,7 +4,7 @@
 
 12 open.
 
-- **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
+- **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-10-01
 - **P2** [dec-39c781](items/dec-39c781-confirm-decisions-d28-d36-before-the-pre.md) Confirm decisions D28–D36 before the pre-registration lock [decision] · size S
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 - **P2** [dec-536bbd](items/dec-536bbd-decide-how-paperlint-strict-treats-numbers-in.md) Decide how paperlint --strict treats numbers in the claims-ledger rows [decision] · size S

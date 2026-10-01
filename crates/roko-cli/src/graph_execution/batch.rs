@@ -20,7 +20,9 @@ use roko_graph::delivery::{
     CompletionDeliveryState, DeliveryError, DeliveryReceiptStore,
 };
 
-use super::delivery::{CliCompletionDeliveryService, DeliveryBackend, GitDeliveryBackend};
+use super::delivery::{
+    CliCompletionDeliveryService, DeliveryBackend, GitDeliveryBackend, is_ancestor,
+};
 use crate::orchestrator::worktree::format_branch_name;
 use crate::runner::merge::git_output;
 
@@ -125,6 +127,12 @@ impl BatchIntegration {
     #[must_use]
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// The command that takes the batch into the operator's checkout, which
+    /// the run never changes (gap-4ec59f); see [`merge_command`].
+    pub async fn merge_command(&self) -> Option<String> {
+        merge_command(&self.repo, &self.branch).await
     }
 
     /// The deliveries' receipts, shared by every service that delivers into
@@ -377,6 +385,24 @@ pub async fn resumed_batch_run(repo: &Path, plan_ids: &[&str]) -> Option<String>
     None
 }
 
+/// The command that takes batch branch `branch` into the checkout at `repo`
+/// (gap-4ec59f): `git merge --ff-only <branch>` while the checkout's `HEAD`
+/// is behind the branch, as it is when nothing moved it since the run
+/// started, and `git merge <branch>` once it has moved. `None` when `HEAD`
+/// already has the branch's tip, or either does not resolve: there is
+/// nothing to take.
+pub async fn merge_command(repo: &Path, branch: &str) -> Option<String> {
+    let tip = format!("refs/heads/{branch}");
+    if is_ancestor(repo, &tip, "HEAD").await.ok()? {
+        return None;
+    }
+    Some(if is_ancestor(repo, "HEAD", &tip).await.ok()? {
+        format!("git merge --ff-only {branch}")
+    } else {
+        format!("git merge {branch}")
+    })
+}
+
 /// A new run id for a batch: when it started, and a random suffix.
 #[must_use]
 pub fn new_batch_run_id() -> String {
@@ -386,6 +412,38 @@ pub fn new_batch_run_id() -> String {
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
         &suffix[..8]
     )
+}
+
+/// Why the workdir `repo` cannot run each task in its own git worktree, or
+/// `None` when it can (gap-4ec59f). A run's batch branch and worktrees start
+/// from the commit at `HEAD`, and each attempt runs at the top level of its
+/// worktree, so `repo` must be the top level of a git checkout with a commit.
+#[must_use]
+pub fn worktree_isolation_blocker(repo: &Path) -> Option<&'static str> {
+    let Some(prefix) = git_probe(repo, &["rev-parse", "--show-prefix"]) else {
+        return Some("is not a git checkout");
+    };
+    if !prefix.stdout.trim_ascii().is_empty() {
+        return Some("is a subdirectory of a git checkout, not its top level");
+    }
+    if git_probe(repo, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).is_none() {
+        return Some("is a git checkout with no commit yet");
+    }
+    None
+}
+
+/// The output of `git <args>` in `repo` when it succeeds, run without the
+/// invoking environment's `GIT_DIR` and `GIT_WORK_TREE`.
+fn git_probe(repo: &Path, args: &[&str]) -> Option<std::process::Output> {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
 }
 
 /// The commit `rev` names in `repo`, if it names one.
@@ -424,6 +482,31 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// gap-4ec59f: a workdir can isolate its tasks only as the top level of
+    /// a git checkout, with a commit for the batch and the worktrees to start
+    /// from.
+    #[test]
+    fn worktree_isolation_needs_the_top_level_of_a_checkout_with_a_commit() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert_eq!(
+            worktree_isolation_blocker(dir.path()),
+            Some("is not a git checkout")
+        );
+        git(dir.path(), &["init", "--quiet"]);
+        assert_eq!(
+            worktree_isolation_blocker(dir.path()),
+            Some("is a git checkout with no commit yet")
+        );
+        let repo = repo_with_plan_branches();
+        assert_eq!(worktree_isolation_blocker(repo.path()), None);
+        let subdirectory = repo.path().join("sub");
+        std::fs::create_dir(&subdirectory).expect("subdirectory");
+        assert_eq!(
+            worktree_isolation_blocker(&subdirectory),
+            Some("is a subdirectory of a git checkout, not its top level")
+        );
     }
 
     /// A repository on `main`, with plan branches `roko/plan/plan-a` and
@@ -643,6 +726,47 @@ mod tests {
             // Promoting again changes nothing.
             assert_eq!(batch.promote(target).await.expect("again").commit, tip);
         }
+    }
+
+    /// gap-4ec59f: the end of a run names the command that takes its batch
+    /// into the operator's checkout: a fast-forward while the checkout is
+    /// still behind the batch, a merge once it moved, and nothing once the
+    /// checkout has the batch's work or the branch is gone.
+    #[tokio::test]
+    async fn merge_command_fast_forwards_until_the_checkout_moves() {
+        let repo = repo_with_plan_branches();
+        let path = repo.path();
+        let batch = BatchIntegration::open(path, "run-m").await.expect("batch");
+        assert_eq!(batch.merge_command().await, None, "nothing delivered yet");
+
+        let tip = plan_branch_tip(path, "plan-a").await.expect("plan branch");
+        let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_steps(Vec::new());
+        let receipt = batch
+            .deliver(
+                &service(&batch, backend),
+                batch.request("plan-a", tip),
+                None,
+            )
+            .await
+            .expect("delivery runs");
+        assert_eq!(receipt.state, CompletionDeliveryState::Delivered);
+        assert_eq!(
+            batch.merge_command().await.as_deref(),
+            Some("git merge --ff-only roko/batch/run-m")
+        );
+
+        // The operator committed since the run started.
+        std::fs::write(path.join("operator.txt"), "operator\n").expect("write");
+        git(path, &["add", "operator.txt"]);
+        git(path, &["commit", "--quiet", "-m", "operator"]);
+        assert_eq!(
+            batch.merge_command().await.as_deref(),
+            Some("git merge roko/batch/run-m")
+        );
+
+        git(path, &["merge", "--quiet", "--no-edit", "roko/batch/run-m"]);
+        assert_eq!(batch.merge_command().await, None, "already taken");
+        assert_eq!(merge_command(path, "roko/batch/gone").await, None);
     }
 
     /// Counts the merges and regression checks it is asked for; both pass.

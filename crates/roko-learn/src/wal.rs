@@ -50,6 +50,7 @@
 //! | `CascadeObservation` | One cascade router LinUCB arm update (model slug, context features, reward) |
 //! | `ModelCallObservation` | The same update, journaled by a model-call surface (see below) |
 //! | `ModelCallObservationsFolded` | Ids of model-call observations already in a snapshot |
+//! | `SuccessRetraction` | A routing success that a hindsight relabel retracted (model slug) |
 //! | `ExperimentOutcome` | One A/B prompt experiment trial (variant ID, success flag) |
 //! | `GateThresholdUpdate` | One gate rung EMA update (rung index, passed flag) |
 //!
@@ -143,6 +144,16 @@ pub enum WalEntry {
     ModelCallObservationsFolded {
         /// Ids of the [`WalEntry::ModelCallObservation`] entries it contains.
         ids: Vec<String>,
+        /// Unix timestamp in milliseconds.
+        ts_ms: i64,
+    },
+    /// A routing success retracted once a later verdict relabeled its
+    /// attempt a failure (hindsight, bug-583e50): one success of the model's
+    /// confidence stats becomes a failure. Replay applies it in order, after
+    /// the observation it undoes, or on top of the snapshot that holds it.
+    SuccessRetraction {
+        /// Model slug the success was credited to.
+        model_slug: String,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -787,6 +798,10 @@ mod tests {
             WalEntry::ModelCallObservationsFolded {
                 ids: vec!["obs-1".into()],
                 ts_ms: 500,
+            },
+            WalEntry::SuccessRetraction {
+                model_slug: "model-c".into(),
+                ts_ms: 600,
             },
         ];
         for entry in &entries {

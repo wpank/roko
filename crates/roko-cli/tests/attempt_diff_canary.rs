@@ -168,6 +168,8 @@ max_retries = 0
 impl Canary {
     /// A repository holding a small crate, a README, a test file, and the
     /// four single-task plans, committed; `diff_scope` goes to `[gates]`.
+    /// The tasks run in the shared working tree, as they did before per-task
+    /// worktrees became the default (gap-4ec59f).
     fn new(diff_scope: &str) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         // Canonical, so paths roko prints and paths the test builds agree.
@@ -220,6 +222,9 @@ context_window = 200000
 [gates]
 cargo_fix_enabled = false
 diff_scope = "{diff_scope}"
+
+[runner]
+worktree_per_task = false
 "#,
                 agent = agent.display().to_string()
             ),

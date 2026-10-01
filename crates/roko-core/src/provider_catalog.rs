@@ -188,8 +188,9 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: false,
-                cost_input_per_m: Some(1.10),
-                cost_output_per_m: Some(4.40),
+                // Priced by the shared registry (bug-0c0747, bug-1f81ab).
+                cost_input_per_m: None,
+                cost_output_per_m: None,
             },
         ],
     },

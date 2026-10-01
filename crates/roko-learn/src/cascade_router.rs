@@ -1697,20 +1697,29 @@ impl CascadeRouter {
     /// Retract one success credited to `model_slug` when its attempt
     /// completed: a later verdict relabeled that attempt a failure
     /// (hindsight, gap-b95d94). The success becomes a failure in `category`'s
-    /// stats and, when `confidence` is set (the router, not an operator
-    /// override, was credited), in the model's confidence stats. Trials are
-    /// unchanged, and a count with no success left stays as it is. The
-    /// `LinUCB` bandit is not corrected: its update folded the dispatch-time
-    /// context into its matrices, and a relabel no longer has that context.
-    pub fn retract_success(&self, model_slug: &str, category: TaskCategory, confidence: bool) {
+    /// stats and in the model's confidence stats, where every routing
+    /// outcome counts, an operator override's included. Trials are
+    /// unchanged, and a count with no success left stays as it is.
+    ///
+    /// The `LinUCB` bandit is exempt (bug-583e50). The success added the
+    /// dispatch-time context features to the arm's reward vector, scaled by
+    /// the reward that the arm's EWC regularizer let through at that moment.
+    /// The relabel has neither the features nor that effective reward, so
+    /// any subtraction would move the arm somewhere no observation put it.
+    /// The bandit keeps the attempt as it was settled.
+    pub fn retract_success(&self, model_slug: &str, category: TaskCategory) {
         let mut cat = self.category_stats.lock();
         if let Some(entry) = cat.get_mut(&(model_slug.to_string(), category)) {
             entry.successes = entry.successes.saturating_sub(1);
         }
         drop(cat);
-        if !confidence {
-            return;
-        }
+        self.replay_retraction(model_slug);
+    }
+
+    /// Apply a WAL-replayed success retraction: the confidence-stats half of
+    /// [`Self::retract_success`], the half a snapshot persists (bug-583e50).
+    /// Does NOT write a WAL entry.
+    pub fn replay_retraction(&self, model_slug: &str) {
         let Some(slug) = self
             .model_index_for_slug(model_slug)
             .and_then(|model_idx| self.model_slugs.get(model_idx))

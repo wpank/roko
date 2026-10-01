@@ -461,6 +461,29 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Prepare {
+            plan_dir,
+            force,
+            workdir,
+        } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let plan_dir = if plan_dir.is_absolute() {
+                plan_dir
+            } else {
+                workdir.join(plan_dir)
+            };
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            let prepared = roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?;
+            if !cli.quiet {
+                for path in &prepared.written {
+                    println!("wrote {}", path.display());
+                }
+                for path in &prepared.kept {
+                    println!("kept {} (it exists; --force overwrites it)", path.display());
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
         PlanCmd::Run {
             plans_dir,
             engine,

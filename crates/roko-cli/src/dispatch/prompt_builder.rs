@@ -172,6 +172,8 @@ pub struct PromptContext {
     /// The other plans running in the same working tree now, with the areas
     /// they write ([`DispatchContext::concurrent_plans`]).
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The plan's `brief.md`, which `roko plan prepare` writes (gap-d6fd85).
+    pub plan_brief: String,
 }
 
 impl PromptContext {
@@ -261,6 +263,14 @@ impl PromptContext {
             generate_cfactor_context(&ctx.workdir)
         };
         let impact_context = declared_impact_context(task, bounded_context_only);
+        let plan_brief = if skip_enrichment {
+            String::new()
+        } else {
+            truncate_to_limit(
+                load_plan_brief(&ctx.workdir, &ctx.plan_id),
+                PLAN_BRIEF_LIMIT,
+            )
+        };
         tracing::debug!(
             plan_id = %ctx.plan_id,
             role = %ctx.role,
@@ -301,6 +311,7 @@ impl PromptContext {
             cfactor_context,
             error_patterns_context: ctx.error_patterns_context.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
+            plan_brief,
         }
     }
 }
@@ -358,6 +369,7 @@ fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String
 const WORKSPACE_MAP_LIMIT: usize = 6_000;
 const TASKS_TOML_LIMIT: usize = 4_000;
 const PRD_EXCERPT_LIMIT: usize = 2_000;
+const PLAN_BRIEF_LIMIT: usize = 4_000;
 
 /// Per-role context size limits for prompt enrichment sections.
 ///
@@ -632,6 +644,24 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str, cap: usize) -> String {
         }
     }
     String::new()
+}
+
+/// Load the `brief.md` of plan `plan_id` (`roko plan prepare`), from the
+/// plan directories [`load_tasks_toml`] reads. Empty when it has none.
+fn load_plan_brief(workdir: &Path, plan_id: &str) -> String {
+    let file = crate::plan_brief::BRIEF_FILE;
+    let candidates = [
+        workdir
+            .join(".roko")
+            .join("plans")
+            .join(plan_id)
+            .join(file),
+        workdir.join("plans").join(plan_id).join(file),
+    ];
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
 }
 
 /// Load a PRD excerpt for `plan_id`.
@@ -1508,6 +1538,10 @@ fn build_runner_context(
 
     if !ctx.workspace_map.is_empty() {
         parts.push(ctx.workspace_map.clone());
+    }
+
+    if !ctx.plan_brief.is_empty() {
+        parts.push(format!("# Plan Brief\n{}", ctx.plan_brief));
     }
 
     if !ctx.tasks_toml.is_empty() {
@@ -3798,6 +3832,26 @@ formulas = ["retries = 2 * (k + 1) - 1"]
         assert!(!plain.user_prompt.contains("## Specification"));
     }
 
+    /// gap-d6fd85: a plan's `brief.md` reaches its tasks' prompts.
+    #[test]
+    fn plan_brief_reaches_the_prompt() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = workdir.path().join("plans/p");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("brief.md"), "# Plan brief: `p`\n").expect("brief");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = workdir.path().to_path_buf();
+
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx).expect("runner context");
+
+        assert_eq!(pctx.plan_brief, "# Plan brief: `p`\n");
+        assert!(
+            context.contains("# Plan Brief\n# Plan brief: `p`"),
+            "{context}"
+        );
+    }
+
     /// gap-c09fc7: an agent hears which other plans run in its working tree
     /// and what they write.
     #[test]
@@ -4007,6 +4061,7 @@ formulas = ["retries = 2 * (k + 1) - 1"]
             cfactor_context: String::new(),
             error_patterns_context: String::new(),
             concurrent_plans: Vec::new(),
+            plan_brief: String::new(),
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

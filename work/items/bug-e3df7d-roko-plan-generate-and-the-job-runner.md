@@ -9,8 +9,8 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/plan-generate", "roko-serve/jobs"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "d5c1dc6be"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "q-4299a9 Answer (1e0073605): 'Still writing new plans to .roko/plans/'"
@@ -73,3 +73,10 @@ legacy reads, and they are fine.
 ## Notes
 
 `.roko/plans/` stays readable for legacy workspaces (q-4299a9). Do not remove the legacy reads.
+
+- 2026-10-01 (wk-taskdef): implemented on work/bug-e3df7d; cargo verification deferred to the batch check.
+- `plan generate` (prompt, `--from-file` and `--from-notes`) no longer passes `.roko/plans` as the plans root, so
+  `prd::generate_plan` writes and validates in `workspace_plans_dir`. `synthesize_coding_plan` and
+  `prepare_coding_plan`'s fallback use `workspace_plans_dir`; `job_runner_integration.rs` now expects the fallback plan
+  under `plans/`. `generate_plan` validates every plan in its plans root, so in a workspace with `plans/` a broken
+  unrelated plan now makes `plan generate` exit 1, as it already marks `prd plan`'s outcome invalid.

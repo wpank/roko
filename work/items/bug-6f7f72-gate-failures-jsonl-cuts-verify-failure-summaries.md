@@ -9,9 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-gate", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/diagnose-graph-runs 05f8854ce"
 anchors = ["crates/roko-gate/src/compile_errors.rs::GateFailureRecord::from_classification", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/commands/diagnose.rs::classify_recorded_failure"]
@@ -68,3 +68,13 @@ Checked at 33e107da1 by reading the code above. No test covers a long command.
 
 - A long verify command's record keeps its failure message, and `roko diagnose` shows it.
 - The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-honestbench): implemented on work/bug-730243; cargo verification deferred to the batch check.
+  The Graph writer (`graph_task_dispatch/verification.rs`, `settle_task_verification`) sets the record's summary
+  with `failed_step_summary`: the failed step's label, its `fail_msg` or how it ended, then its output, without
+  the command, kept to 2 KiB by `turn_policy::head_and_tail`. `GateFailureRecord::from_classification` falls back to
+  the whole `raw_excerpt` (up to 2,000 characters) instead of 200 characters. In diagnose,
+  `classify_recorded_failure` reads the summary's first line, and the `summary` doc comment describes the new form.
+  Test: `a_long_verify_command_keeps_its_failure_message`.

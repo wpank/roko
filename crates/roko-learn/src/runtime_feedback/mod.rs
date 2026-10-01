@@ -67,9 +67,7 @@ use crate::episode_logger::{Episode, EpisodeLogger};
 use crate::latency::LatencyRegistry;
 use crate::local_reward::LocalRewardFunction;
 use crate::model_router::RoutingContext;
-use crate::pattern_discovery::{
-    CrossEpisodeConsolidationReport, CrossEpisodeConsolidator, EpisodeView, PatternMiner,
-};
+use crate::pattern_discovery::{EpisodeView, PatternMiner};
 use crate::playbook::PlaybookStore;
 use crate::playbook_rules::PlaybookRules;
 use crate::post_gate_reflection::{
@@ -1104,22 +1102,6 @@ impl LearningRuntime {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .and_then(|line| serde_json::from_str::<CFactor>(line).ok()))
-    }
-
-    /// Run the offline cross-episode consolidation pass over the persisted log.
-    ///
-    /// This loads the current `.roko/episodes.jsonl` batch, vectorizes each
-    /// episode, and returns structural meta-patterns discovered through
-    /// HDC bundling plus k-medoids clustering.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the episode log cannot be read.
-    pub async fn discover_cross_episode_patterns(
-        &self,
-    ) -> Result<CrossEpisodeConsolidationReport, LearningRuntimeError> {
-        let episodes = EpisodeLogger::read_all(&self.paths.episodes_jsonl).await?;
-        Ok(CrossEpisodeConsolidator::default().discover(&episodes))
     }
 
     // ── WAL ───────────────────────────────────────────────────────────

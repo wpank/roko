@@ -9,9 +9,9 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/chat"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "review of bug-2116ec's fix (85ba4cb4d), which covered only the screened transcript"
 anchors = ["crates/roko-cli/src/chat_session.rs::send_turn_streaming_with_program", "crates/roko-cli/src/chat_session.rs::render_stream_event", "crates/roko-cli/src/chat_inline/event_loop.rs::run_main_loop", "crates/roko-agent/src/provider/claude_cli/stream.rs::parse_stream_line"]
@@ -74,3 +74,9 @@ message id from the raw stream, which the chat's `MessageDelta` path does not ha
 ## Notes
 
 The existing mock-stream tests in `chat_session.rs` (around :2866-3031) show how to feed `parse_stream_line` output.
+- 2026-10-01 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  Premise still true at BASE `ebdc0f5d5`. Plan step 1, applied once: `send_turn_streaming_with_program` passes each
+  parsed event through the new `separate_assistant_messages` before it accumulates or forwards it, so a text delta
+  after a `ToolCall`/`ToolOutput` starts a new paragraph (two newlines, fewer when the text so far already ends in
+  one). The reply, `render_stream_event` and the inline TUI's `streaming.append` all read the rewritten events, so
+  `render_stream_event` and `run_main_loop` needed no change. Test `streaming_turn_separates_assistant_messages`.

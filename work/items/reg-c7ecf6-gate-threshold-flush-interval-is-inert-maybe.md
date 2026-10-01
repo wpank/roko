@@ -9,11 +9,11 @@ goal = "learning"
 subsystem = ["roko-cli/gate-thresholds", "roko-gate/adaptive-thresholds"]
 created = 2026-09-28
 updated = 2026-10-01
-last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "gaps-md#gate-threshold-flush-interval-configurable----resolved-2026-08-13"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
-anchors = ["crates/roko-cli/src/runner/persist.rs::maybe_flush_gate_thresholds", "crates/roko-core/src/config/learning.rs:124", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::GateThresholdWrites", "crates/roko-cli/src/runner/persist.rs::maybe_flush_gate_thresholds", "crates/roko-core/src/config/learning.rs:124", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -25,3 +25,14 @@ command = "! grep -q 'gate_threshold_flush_interval' crates/roko-core/src/config
 Fix: flush EMA gate thresholds from the Graph gate/feedback path at the configured interval, or remove the key and document the Graph behaviour.
 
 Checked 2026-09-29 at d9e79e9d8: the key is still inert. The Graph path does persist adaptive gate thresholds: after each task's verify steps, graph_task_dispatch.rs:2216-2239 loads gate-thresholds.json, observes each step by rung and saves it every time (path wired at graph_execution/plan_runner.rs:1068). The fix is therefore to honour learning.gate_threshold_flush_interval there, or to remove the key and document the save-per-task behaviour.
+
+## Notes
+
+- 2026-10-01 (wk-honestbench): implemented on work/bug-730243; cargo verification deferred to the batch check.
+  `GraphTaskDispatcher::new` reads `config.learning.effective_gate_threshold_flush_interval()` into a
+  `GateThresholdWrites` (`graph_task_dispatch/gate_learning.rs`). `settle_gate_learning` holds each verify run's
+  observations there and writes them in one locked update (`GateThresholds::update_locked`, bug-e0f472) once they add
+  up to the interval, before a plan's retry budgets are read (`task_retry_budgets`), and when the dispatcher is
+  dropped. The ratchet, regressions and skip advice still settle per run. Test:
+  `gate_thresholds_are_written_every_flush_interval`. `maybe_flush_gate_thresholds` (persist.rs) is still called
+  only from its own tests.

@@ -3,13 +3,15 @@ id = "bug-31bca6"
 kind = "bug"
 title = "Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-acp", "roko-dreams"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-acp-dream's report on bug-b16d55)"
 anchors = ["crates/roko-acp/src/bridge_events/cost.rs::maybe_spawn_dream_consolidation", "crates/roko-acp/src/bridge_events/cost.rs::acp_dream_due", "crates/roko-core/src/config/learning.rs::DreamsConfig"]
@@ -56,3 +58,20 @@ On `work/bug-b16d55`, `git grep max_concurrent` finds the field, its default fun
 
 - [ ] While dreams run, further triggers start no more than `max_concurrent` of them.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  Premise checked at BASE `ebdc0f5d5`: the ACP trigger is opt-in there (bug-b16d55 merged), and nothing read
+  `max_concurrent`. `crates/roko-acp/src/bridge_events/cost.rs` now counts running ACP dreams in a process-wide
+  `DreamSlots` (an atomic counter, not a semaphore, so a config reload that changes the limit applies at once).
+  `claim_acp_dream` takes a slot under `DreamsConfig::effective_max_concurrent()` (new; 0 counts as 1) or skips
+  with a debug log, and the spawned dream drops its `DreamSlot` when it ends. Test
+  `acp_starts_no_dream_while_one_is_running`. The `max_concurrent` doc in `learning.rs` and
+  `docs/v3/depth/21-config/01-schema-sections.md` now say what the code does.
+- Plan step 3: the plan-completion trigger (`DreamConsolidationSink` in
+  `crates/roko-cli/src/runtime_feedback/plan_completion.rs`) already guards with its own `running` flag, so it runs
+  one dream at a time and ignores `max_concurrent`; the doc says so. Not changed here (outside this packet's files).
+- Left out: a cross-process guard. Two `roko acp` processes on one workspace can each run `max_concurrent` dreams.
+  A lock file under `.roko/dreams/` needs `fs2` in roko-acp or roko-dreams, a new dependency that changes
+  `Cargo.lock`, which a static-only round can't regenerate.

@@ -9,9 +9,9 @@ goal = "learning"
 size = "S"
 subsystem = ["roko-learn", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-completion-loops 763596768"
 anchors = ["crates/roko-learn/src/aggregate.rs::compute_compounding_metrics", "crates/roko-learn/src/aggregate.rs::append_compounding_metrics", "crates/roko-learn/src/aggregate.rs::AutocatalyticMetrics", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/commands/learn.rs::print_learn_episodes"]
@@ -81,3 +81,15 @@ delete the whole `AutocatalyticMetrics` path.
   writes episodes with and without `playbook_id` and asserts the rate. The `[[verify]]` command
   passes.
 - If the metrics are computed at plan end instead, the verify moves to a guarded roko-cli lib test.
+
+## Notes
+
+- 2026-10-01 (wk-learn2): implemented on work/gap-14f08e; cargo verification deferred to the batch check.
+  `roko learn episodes` prints the seven rates over the last 200 episodes (`COMPOUNDING_WINDOW`), and `--json` adds
+  them as `episodes.compounding`; the test `learn_episodes_json_reports_compounding_metrics` covers both.
+- Plan step 2: `append_compounding_metrics` is deleted (no caller, not even a test). A trend can be recomputed from
+  `episodes.jsonl`; `.roko/learn/compounding.jsonl` is a stale file nothing writes or reads.
+- Plan step 3: 133c02093 (bug-86117a) keeps episode ids out of `knowledge_ids`, so `knowledge_used` no longer means
+  "episodes surfaced". But `compute_compounding_metrics` counted the key's presence, and Graph episodes always write
+  it (`false` when nothing was injected), so every Graph episode counted as reuse. It now counts only `true`
+  (test `knowledge_used_false_is_not_knowledge_reuse`).

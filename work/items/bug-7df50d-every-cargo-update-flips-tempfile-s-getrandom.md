@@ -3,13 +3,14 @@ id = "bug-7df50d"
 kind = "bug"
 title = "Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["workspace/Cargo.lock"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-ci2's report on find-8cc7ac)"
 anchors = ["Cargo.lock", "Cargo.toml"]
@@ -48,3 +49,7 @@ The cause is not established. tempfile's requirement probably admits both getran
 
 - [ ] `cargo update` leaves tempfile's getrandom edge unchanged.
 - [ ] The `[[verify]]` command passes. It needs network access for the index.
+
+## Notes
+
+- 2026-10-01 (wk-filer4): implemented on work/gap-2bc1b9; cargo verification deferred to the batch check. Cause: tempfile 3.27.0 asks for `getrandom = ">=0.3.0, <0.5"` (its Cargo.toml, target deps). Both getrandom 0.3.4 and 0.4.3 are in the graph for other crates, so either satisfies the edge. A full `cargo update` re-resolves without the old lock and picks 0.3.4 (wk-ci2's observation), while the committed lock had 0.4.3 from an incremental resolve. Cargo.lock now records tempfile -> getrandom 0.3.4, what a full update produces, so the update leaves it alone. Both versions stay locked (4 users each). The gate's cargo step runs the item's verify, which re-runs `cargo update`, compares and restores the lock.

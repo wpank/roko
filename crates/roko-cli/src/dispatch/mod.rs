@@ -162,6 +162,9 @@ pub struct DispatchContext {
     /// When non-empty, `PromptContext::from_task` uses this value instead of
     /// reading `.roko/learn/c-factor.jsonl` on the Tokio reactor thread.
     pub cached_cfactor_context: String,
+    /// The other plans running in the same working tree now, each with the
+    /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
+    pub concurrent_plans: Vec<(String, Vec<String>)>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -251,6 +254,20 @@ impl Dispatcher {
     #[must_use]
     pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
         self.router.routing_ladder()
+    }
+
+    /// Weigh the durable knowledge `store` into the cascade router's pick
+    /// ([`ModelRouter::with_knowledge_store`]).
+    #[must_use]
+    pub fn with_knowledge_store(mut self, store: roko_neuro::KnowledgeStore) -> Self {
+        self.router = self.router.with_knowledge_store(store);
+        self
+    }
+
+    /// The knowledge store the inner [`ModelRouter`] weighs, if any.
+    #[must_use]
+    pub fn knowledge_store(&self) -> Option<&roko_neuro::KnowledgeStore> {
+        self.router.knowledge_store()
     }
 
     /// Read-only access to the prompt assembler -- exposed for bidder
@@ -539,6 +556,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             cached_cfactor_context: String::new(),
+            concurrent_plans: Vec::new(),
         }
     }
 

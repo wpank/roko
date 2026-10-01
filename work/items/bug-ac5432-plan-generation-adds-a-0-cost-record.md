@@ -9,9 +9,9 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/prd", "roko-cli/plan-generate", "roko-learn/costs"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d5c1dc6be"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "review of gap-a6e2c3's fix (9a7e8a1cb), whose message notes the generation episode's $0 record"
 anchors = ["crates/roko-cli/src/agent_exec.rs::persist_capture_episode", "crates/roko-cli/src/agent_episode.rs::build_capture_episode", "crates/roko-learn/src/runtime_feedback/episode_helpers.rs::derive_cost_record", "crates/roko-cli/src/agent_exec.rs::run_agent_capture_logged", "crates/roko-cli/src/prd.rs::generate_plan_from_prd", "crates/roko-cli/src/prd.rs::regenerate_old_format_plan", "crates/roko-cli/src/plan_authoring.rs::AuthoringSpend"]
@@ -89,3 +89,16 @@ record"; that row is still written. `commands/plan.rs` was not changed.
 - find-6a5b62 (parked, unverified) saw "$0 plan-operation costs" in an older audit; this item is the verified,
   current form of that part.
 - gap-288e38 (no usage-source field on `CostRecord`) is related but separate.
+- 2026-10-01 (wk-learn2): implemented on work/gap-14f08e; cargo verification deferred to the batch check.
+  - Re-checked at BASE: bb1d7f952 (gap-2623b2, one plan generator) already routes plain and `--from-notes`
+    `plan generate`, `plan regenerate` and `regenerate_old_format_plan` through `prd::generate_plan`, which records
+    each call with `AuthoringSpend`. Two defects were left: the $0 row of every capture episode, and
+    `plan generate --from-backlog`, which still ran `run_agent_logged` and kept no usage.
+  - Double rows: both copies of `build_capture_episode` (`agent_episode.rs`, `commands/util.rs`) mark the episode
+    cost-unknown, as `bench.rs` does for spend it never sees, so `derive_cost_record` writes no $0 row. The episode
+    itself is still logged.
+  - `--from-backlog`: the new lib `agent_exec::run_agent_logged_with_spend` echoes, logs the episode and records the
+    call through `AuthoringSpend::generation(<slug>)`. Tests: `plan_generation_writes_one_cost_record` and
+    `plan_generate_records_the_agent_spend`, both in `agent_exec.rs` with a fake Claude CLI.
+  - Not covered: research, `roko do` and the PRD draft commands also log capture episodes without usage. They lose
+    their $0 rows, and their real spend is still recorded nowhere.

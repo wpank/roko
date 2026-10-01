@@ -8,16 +8,16 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/show"]
 created = 2026-09-18
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-18-session.md#ISSUE-9: `roko show costs` — pass_rate 7.8% is misleadingly low"
 discovered_from = "audit:tmp/dogfood/2026-09-18-session.md#ISSUE-9: `roko show costs` — pass_rate 7.8% is misleadingly low"
 anchors = ["crates/roko-cli/src/commands/show.rs::render_costs", "crates/roko-cli/src/tui/dashboard.rs::load_efficiency_summary", "crates/roko-cli/src/tui/dashboard.rs::efficiency_summary_from_events"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn show_costs_excludes_events_outside_window' crates/roko-cli/ && cargo test -p roko-cli --lib show_costs_excludes_events_outside_window"
+command = "grep -rqw 'fn show_costs_excludes_events_outside_window' crates/roko-cli/src/commands/show.rs && cargo test -p roko-cli --bin roko show_costs_excludes_events_outside_window"
 +++
 Cost and pass-rate reports include early runs from broken provider configs with no windowing or decay, making current performance look far worse.
 
@@ -28,3 +28,17 @@ Imported without verification from:
 How to verify: Run roko show costs; check for time window/decay options.
 
 Verified 2026-09-28 (static check against 3d0ee4d02): `roko show` accepts only --dashboard/--live/--follow/--serve-url/--workdir plus a subject (crates/roko-cli/src/main.rs:601-621) and has no --since, window or decay option. render_costs (crates/roko-cli/src/commands/show.rs:203-226) prints total cost and pass rate from DashboardData::load_best_effort, and load_efficiency_summary (crates/roko-cli/src/tui/dashboard.rs:2897-2925) sums cost_usd and gate_passed==Some(true) over every event in .roko/learn/efficiency.jsonl, so old broken runs are still included. show.rs was last changed in 244f564e1; no uncommitted change adds windowing.
+
+## Notes
+
+- 2026-10-01 (wk-tuiv): implemented on work/bug-6c11d1; cargo verification deferred to the batch check.
+  `roko show costs` and the overview's cost lines count only the `--since` window (default 7d; `--since all`
+  restores every turn, added for bug-6c11d1). The summary names its window and adds an "all time" line. The pass
+  rate is now "gate pass rate: P% (p of v gate verdict(s))": it divided by every turn, but most turns carry no
+  verdict (a task's earlier turns, provider failures, ungated runs). A Python count of the main checkout's
+  efficiency log on 2026-10-01 (rows with an agent id) gives 37 of 42 verdicts passed in the last 7 days, where
+  the old formula gave 206 of 874 turns (24%) all-time.
+- The verify command ran `--lib`, but `commands/show.rs` belongs to the `roko` binary, so the filter matched
+  nothing and passed vacuously. It now runs `--bin roko`.
+- Not changed: the TUI dashboard's all-time `EfficiencySummary` (`tui/dashboard.rs::load_efficiency_summary`,
+  `efficiency_summary_from_events`), which `roko show` no longer reads.

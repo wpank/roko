@@ -215,6 +215,17 @@ impl Usage {
 
         self.cost_usd = cost as f32;
     }
+
+    /// What the call would have cost with no prompt caching, at the
+    /// per-million prices `input_per_m` and `output_per_m`: every cached
+    /// token, read or written, billed as ordinary input.
+    #[must_use]
+    pub fn cost_without_cache(&self, input_per_m: f64, output_per_m: f64) -> f64 {
+        let input = f64::from(self.input_tokens)
+            + f64::from(self.cache_read_tokens)
+            + f64::from(self.cache_create_tokens);
+        (input * input_per_m + f64::from(self.output_tokens) * output_per_m) / 1_000_000.0
+    }
 }
 
 /// Provider/session continuity state carried across turns.

@@ -3,13 +3,15 @@ id = "bug-ccfa0d"
 kind = "bug"
 title = "config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report)"
 anchors = ["crates/roko-core/src/config/schema.rs::DomainProfile", "crates/roko-core/src/config/loader.rs::build_schema_tree", "crates/roko-core/src/config/loader.rs::validate_known_config_paths"]
@@ -47,3 +49,16 @@ At 7fa54b873 neither map has a template or a wildcard in the tree.
 
 - [ ] `roko config validate` accepts extra profile keys and `tools.profiles` entries, and loading keeps them.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  Premise checked at BASE `ebdc0f5d5`: `walk_config_paths` reported every extra `[profiles.<name>]` key as unknown,
+  which makes `roko config validate` fail (it treats unknown paths as errors). `tools.profiles` serialized as an
+  empty table, so validation skipped its entries unchecked and `config set tools.profiles.<name>.extra_tools …`
+  failed with `unknown key` (`schema_value_for_path` had no template). Loading already kept both.
+- Change (`crates/roko-core/src/config/loader.rs`): a new `OPEN_TABLES` list (`profiles.*`) whose unknown keys
+  validation accepts, matched by a shared `matches_section_pattern`; a `ToolProfileConfig` sentinel for
+  `tools.profiles` in `build_schema_tree`. The schema guard test now skips open tables and compares the new
+  template with `ToolProfileConfig`'s serde fields. New test
+  `profile_extra_keys_and_tools_profiles_are_known_config_paths`.

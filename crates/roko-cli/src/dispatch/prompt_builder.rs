@@ -47,7 +47,7 @@ use roko_compose::{
     RoleSystemPromptSpec, SourceForagingProfile, TaskContext,
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
-use roko_core::{AgentRole, Group, GroupId, GroupPheromone};
+use roko_core::{AgentRole, Group, GroupId, GroupPheromone, TaskContextWeight};
 use serde::{Deserialize, Serialize};
 
 use super::outcome::RunnerDispatchError;
@@ -61,6 +61,11 @@ use crate::task_parser::TaskDef;
 const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itself: it copies the \
      pinned test over its destination, so edits to that copy are lost, and requires exactly the \
      stated number of passing tests.";
+
+/// Appended to the user prompt of a task that sets `research_before_edit` (gap-404fdb).
+const RESEARCH_BEFORE_EDIT_NOTE: &str = "\n## Before You Edit\nResearch first: find the code that \
+     already does something like this task (search for the types, functions and files it names), \
+     read it, and follow its patterns. Make your first edit only after that.\n";
 
 /// Maximum tokens an assembled prompt may emit before deterministic
 /// dropping kicks in. Roughly mirrors a 200K-context-window providers'
@@ -164,6 +169,11 @@ pub struct PromptContext {
     /// Carried from `DispatchContext::error_patterns_context` so the prompt
     /// assembler can inject "known pitfalls" without touching the store itself.
     pub error_patterns_context: String,
+    /// The other plans running in the same working tree now, with the areas
+    /// they write ([`DispatchContext::concurrent_plans`]).
+    pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The plan's `brief.md`, which `roko plan prepare` writes (gap-d6fd85).
+    pub plan_brief: String,
 }
 
 impl PromptContext {
@@ -187,6 +197,11 @@ impl PromptContext {
         // limits here keeps the run-scoped cache at full size while still
         // giving individual task dispatches only the context they need.
         let role_limits = context_limits_for_role(&ctx.role);
+        // The task's `context_weight` scales those limits: `slim` loads none of
+        // these sections, `deep` twice as much (gap-404fdb).
+        let factor = context_factor(task.hints.context_weight);
+        let role_limits = role_limits.scaled(factor);
+        let skip_enrichment = bounded_context_only || factor == 0;
 
         // Use pre-computed run-scoped cache when available; fall back to
         // on-demand computation (for callers that don't populate the cache,
@@ -196,7 +211,7 @@ impl PromptContext {
         // constants). After loading we re-apply role-specific limits so that
         // roles with smaller budgets get a tighter slice without requiring a
         // separate cache entry per role.
-        let workspace_map = if bounded_context_only {
+        let workspace_map = if skip_enrichment {
             String::new()
         } else if !ctx.cached_workspace_map.is_empty() {
             truncate_to_limit(ctx.cached_workspace_map.clone(), role_limits.workspace_map)
@@ -206,19 +221,28 @@ impl PromptContext {
                 role_limits.workspace_map,
             )
         };
-        let tasks_toml = if bounded_context_only {
+        let tasks_toml = if skip_enrichment {
             String::new()
         } else {
             truncate_to_limit(
-                load_tasks_toml(&ctx.workdir, &ctx.plan_id),
+                load_tasks_toml(&ctx.workdir, &ctx.plan_id, TASKS_TOML_LIMIT * factor),
                 role_limits.tasks_toml,
             )
         };
-        let prd_excerpt = truncate_to_limit(
-            load_prd_excerpt(&ctx.workdir, &ctx.plan_id),
-            role_limits.prd_excerpt,
-        );
-        let workspace_context = if bounded_context_only {
+        let prd_excerpt = if factor == 0 {
+            String::new()
+        } else {
+            truncate_to_limit(
+                load_prd_excerpt(
+                    &ctx.workdir,
+                    &ctx.plan_id,
+                    task.hints.plan_section.as_deref(),
+                    PRD_EXCERPT_LIMIT * factor,
+                ),
+                role_limits.prd_excerpt,
+            )
+        };
+        let workspace_context = if skip_enrichment {
             String::new()
         } else if !ctx.cached_workspace_context.is_empty() {
             truncate_to_limit(
@@ -239,6 +263,14 @@ impl PromptContext {
             generate_cfactor_context(&ctx.workdir)
         };
         let impact_context = declared_impact_context(task, bounded_context_only);
+        let plan_brief = if skip_enrichment {
+            String::new()
+        } else {
+            truncate_to_limit(
+                load_plan_brief(&ctx.workdir, &ctx.plan_id),
+                PLAN_BRIEF_LIMIT,
+            )
+        };
         tracing::debug!(
             plan_id = %ctx.plan_id,
             role = %ctx.role,
@@ -278,6 +310,8 @@ impl PromptContext {
             workspace_context,
             cfactor_context,
             error_patterns_context: ctx.error_patterns_context.clone(),
+            concurrent_plans: ctx.concurrent_plans.clone(),
+            plan_brief,
         }
     }
 }
@@ -335,6 +369,7 @@ fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String
 const WORKSPACE_MAP_LIMIT: usize = 6_000;
 const TASKS_TOML_LIMIT: usize = 4_000;
 const PRD_EXCERPT_LIMIT: usize = 2_000;
+const PLAN_BRIEF_LIMIT: usize = 4_000;
 
 /// Per-role context size limits for prompt enrichment sections.
 ///
@@ -408,6 +443,29 @@ impl RoleContextLimits {
             prd_excerpt: 3_000,
             workspace_context: WORKSPACE_CONTEXT_LIMIT,
         }
+    }
+
+    /// Every limit `factor` times over.
+    #[must_use]
+    pub const fn scaled(self, factor: usize) -> Self {
+        Self {
+            workspace_map: self.workspace_map * factor,
+            tasks_toml: self.tasks_toml * factor,
+            prd_excerpt: self.prd_excerpt * factor,
+            workspace_context: self.workspace_context * factor,
+        }
+    }
+}
+
+/// How many times the usual context a task's `context_weight` asks for: none
+/// for `slim` (just the task and its role), twice for `deep`, and the usual
+/// for `standard` or no hint.
+const fn context_factor(weight: Option<TaskContextWeight>) -> usize {
+    match weight {
+        Some(TaskContextWeight::Slim) => 0,
+        Some(TaskContextWeight::Deep) => 2,
+        // `standard`, no hint, or a weight this build does not know.
+        _ => 1,
     }
 }
 
@@ -560,8 +618,8 @@ fn walk_src_tree(dir: &Path, prefix: &str, depth: usize) -> String {
 /// 1. `{workdir}/.roko/plans/{plan_id}/tasks.toml`
 /// 2. `{workdir}/plans/{plan_id}/tasks.toml`
 ///
-/// Returns an empty string when neither exists.
-fn load_tasks_toml(workdir: &Path, plan_id: &str) -> String {
+/// Returns an empty string when neither exists, and at most `cap` characters.
+fn load_tasks_toml(workdir: &Path, plan_id: &str, cap: usize) -> String {
     let candidates = [
         workdir
             .join(".roko")
@@ -573,8 +631,8 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str) -> String {
     for path in &candidates {
         match std::fs::read_to_string(path) {
             Ok(content) => {
-                return if content.len() > TASKS_TOML_LIMIT {
-                    let mut truncated = content.chars().take(TASKS_TOML_LIMIT).collect::<String>();
+                return if content.len() > cap {
+                    let mut truncated = content.chars().take(cap).collect::<String>();
                     truncated.push_str("\n[truncated]");
                     truncated
                 } else {
@@ -588,14 +646,30 @@ fn load_tasks_toml(workdir: &Path, plan_id: &str) -> String {
     String::new()
 }
 
+/// Load the `brief.md` of plan `plan_id` (`roko plan prepare`), from the
+/// plan directories [`load_tasks_toml`] reads. Empty when it has none.
+fn load_plan_brief(workdir: &Path, plan_id: &str) -> String {
+    let file = crate::plan_brief::BRIEF_FILE;
+    let candidates = [
+        workdir.join(".roko").join("plans").join(plan_id).join(file),
+        workdir.join("plans").join(plan_id).join(file),
+    ];
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
 /// Load a PRD excerpt for `plan_id`.
 ///
 /// Searches:
 /// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
 /// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
 ///
-/// Returns an empty string when neither exists.
-fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
+/// Returns an empty string when neither exists. With `section` (a task's
+/// `plan_section`), the excerpt is the PRD section it names when the PRD has
+/// one ([`markdown_section`]). It is at most `cap` characters.
+fn load_prd_excerpt(workdir: &Path, plan_id: &str, section: Option<&str>, cap: usize) -> String {
     let prd_base = workdir.join(".roko").join("prd");
     let candidates = [
         prd_base.join("published").join(format!("{plan_id}.md")),
@@ -605,8 +679,11 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
     for path in &candidates {
         match std::fs::read_to_string(path) {
             Ok(content) => {
-                return if content.len() > PRD_EXCERPT_LIMIT {
-                    let mut truncated = content.chars().take(PRD_EXCERPT_LIMIT).collect::<String>();
+                let content = section
+                    .and_then(|heading| markdown_section(&content, heading))
+                    .unwrap_or(content);
+                return if content.len() > cap {
+                    let mut truncated = content.chars().take(cap).collect::<String>();
                     truncated.push_str("\n[truncated]");
                     truncated
                 } else {
@@ -618,6 +695,67 @@ fn load_prd_excerpt(workdir: &Path, plan_id: &str) -> String {
         }
     }
     String::new()
+}
+
+/// The section of the markdown `content` under the heading that `heading`
+/// names (`## Parsing` or just `Parsing`, in any case), up to the next heading
+/// of the same or a higher level. `None` when `content` has no such heading.
+fn markdown_section(content: &str, heading: &str) -> Option<String> {
+    let wanted = heading.trim().trim_start_matches('#').trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    let level = |line: &str| line.chars().take_while(|c| *c == '#').count();
+    let mut depth = 0;
+    let mut section = String::new();
+    for line in content.lines() {
+        let hashes = level(line);
+        if depth == 0 {
+            if hashes > 0 && line[hashes..].trim().eq_ignore_ascii_case(wanted) {
+                depth = hashes;
+                section.push_str(line);
+                section.push('\n');
+            }
+        } else if hashes > 0 && hashes <= depth {
+            break;
+        } else {
+            section.push_str(line);
+            section.push('\n');
+        }
+    }
+    (depth > 0).then_some(section)
+}
+
+/// The `## Skills` section of a task that names `skills`: each skill's
+/// summary and prompt from the workspace's skill library
+/// (`.roko/learn/skills.json`), or just its name when the library has no
+/// skill by that name (gap-404fdb). Empty when the task names none.
+fn skills_section(task: &TaskDef, workdir: &Path) -> String {
+    let names = task.hints.skills.as_deref().unwrap_or_default();
+    if names.is_empty() {
+        return String::new();
+    }
+    let path = workdir.join(".roko").join("learn").join("skills.json");
+    let library: Vec<serde_json::Value> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let field = |skill: &serde_json::Value, key: &str| {
+        skill[key].as_str().unwrap_or_default().trim().to_string()
+    };
+    let mut section = String::from("\n## Skills\n");
+    for name in names {
+        let skill = library.iter().find(|skill| skill["name"] == name.as_str());
+        match skill {
+            Some(skill) => section.push_str(&format!(
+                "### {name}\n{}\n\n{}\n",
+                field(skill, "summary"),
+                field(skill, "prompt_template")
+            )),
+            None => section.push_str(&format!("- {name}\n")),
+        }
+    }
+    section
 }
 
 // ─── Workspace context (ported from legacy orchestrator) ───────────────
@@ -1370,12 +1508,36 @@ fn build_runner_context(
         parts.push(dep);
     }
 
+    // gap-c09fc7: other plans editing this tree make a wide build fail for
+    // reasons that are not the agent's.
+    if !ctx.concurrent_plans.is_empty() {
+        let mut plans = String::from(
+            "# Plans Running Beside This One\n\nOther plans edit this working tree while you \
+             work. A build or test of more than your own crates may compile their half-finished \
+             edits and fail for reasons that are not yours. Build and test only the crates your \
+             task changes, and leave these areas alone:\n",
+        );
+        for (plan_id, areas) in &ctx.concurrent_plans {
+            let areas = if areas.is_empty() {
+                "its own files".to_string()
+            } else {
+                areas.join(", ")
+            };
+            plans.push_str(&format!("- `{plan_id}`: {areas}\n"));
+        }
+        parts.push(plans);
+    }
+
     if !ctx.prd_excerpt.is_empty() {
         parts.push(format!("# PRD Requirements\n{}", ctx.prd_excerpt));
     }
 
     if !ctx.workspace_map.is_empty() {
         parts.push(ctx.workspace_map.clone());
+    }
+
+    if !ctx.plan_brief.is_empty() {
+        parts.push(format!("# Plan Brief\n{}", ctx.plan_brief));
     }
 
     if !ctx.tasks_toml.is_empty() {
@@ -1977,6 +2139,10 @@ impl PromptAssembler {
             }
         }
         user_prompt.push_str(&task.specification_section());
+        user_prompt.push_str(&skills_section(task, &ctx.workdir));
+        if task.hints.research_before_edit == Some(true) {
+            user_prompt.push_str(RESEARCH_BEFORE_EDIT_NOTE);
+        }
         if !task.acceptance.is_empty() {
             user_prompt.push_str("\n## Acceptance\n");
             for item in &task.acceptance {
@@ -2983,6 +3149,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             cached_cfactor_context: String::new(),
+            concurrent_plans: Vec::new(),
         }
     }
 
@@ -3661,6 +3828,135 @@ formulas = ["retries = 2 * (k + 1) - 1"]
         assert!(!plain.user_prompt.contains("## Specification"));
     }
 
+    /// gap-d6fd85: a plan's `brief.md` reaches its tasks' prompts.
+    #[test]
+    fn plan_brief_reaches_the_prompt() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = workdir.path().join("plans/p");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("brief.md"), "# Plan brief: `p`\n").expect("brief");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = workdir.path().to_path_buf();
+
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx).expect("runner context");
+
+        assert_eq!(pctx.plan_brief, "# Plan brief: `p`\n");
+        assert!(
+            context.contains("# Plan Brief\n# Plan brief: `p`"),
+            "{context}"
+        );
+    }
+
+    /// gap-c09fc7: an agent hears which other plans run in its working tree
+    /// and what they write.
+    #[test]
+    fn prompt_names_concurrent_plans() {
+        let mut dispatch_ctx = ctx();
+        let areas = vec!["crates/roko-serve".to_string(), "web/src".to_string()];
+        dispatch_ctx.concurrent_plans = vec![("portal-api".to_string(), areas)];
+        let pctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let context = build_runner_context(&task(), &pctx).expect("runner context");
+        assert!(
+            context.contains("# Plans Running Beside This One"),
+            "{context}"
+        );
+        assert!(
+            context.contains("- `portal-api`: crates/roko-serve, web/src\n"),
+            "{context}"
+        );
+
+        let alone = PromptContext::from_task(&task(), &ctx());
+        let context = build_runner_context(&task(), &alone).expect("runner context");
+        assert!(!context.contains("# Plans Running Beside This One"));
+    }
+
+    /// gap-404fdb: the context-depth hints shape the prompt. `plan_section`
+    /// narrows the PRD excerpt to its section, `skills` brings in each named
+    /// skill from the skill library, `research_before_edit` asks for research
+    /// first, and `context_weight` scales the plan context: `slim` drops it
+    /// and `deep` takes twice as much.
+    #[test]
+    fn context_depth_hints_shape_the_prompt() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let root = workdir.path();
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            let dir = path.parent().expect("parent");
+            std::fs::create_dir_all(dir).expect("create dir");
+            std::fs::write(path, text).expect("write fixture");
+        };
+        let parsing = "## Parsing\n\nParse the hints.\n\n### Edge cases\n\nEmpty files.\n\n";
+        let routing = "## Routing\n\nRoute them.\n\n";
+        let appendix = "x".repeat(3 * PRD_EXCERPT_LIMIT / 2);
+        write(
+            ".roko/prd/published/p.md",
+            &format!("# PRD\n\nIntro.\n\n{parsing}{routing}## Appendix\n\n{appendix}\n"),
+        );
+        write("plans/p/tasks.toml", "[meta]\nplan = \"p\"\n");
+        write(
+            ".roko/learn/skills.json",
+            r#"[{"name": "serde", "summary": "Derive serde traits.",
+                 "prompt_template": "Default optional keys."}]"#,
+        );
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = root.to_path_buf();
+        let assembler = PromptAssembler::minimal();
+        let prompt = |hints: &str| {
+            let task = crate::task_parser::TasksFile::parse_str(&format!(
+                "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"t\"\ntitle = \"Wire it up\"\n\
+                 role = \"implementer\"\n{hints}"
+            ))
+            .expect("parse")
+            .tasks
+            .remove(0);
+            let context = PromptContext::from_task(&task, &dispatch_ctx);
+            let assembled = assembler.assemble(&task, &context).expect("assemble");
+            (context, assembled.user_prompt)
+        };
+
+        let (plain, plain_prompt) = prompt("");
+        assert!(
+            plain.prd_excerpt.contains("Route them."),
+            "{}",
+            plain.prd_excerpt
+        );
+        assert!(
+            plain.prd_excerpt.ends_with("[truncated]"),
+            "{}",
+            plain.prd_excerpt
+        );
+        assert!(!plain_prompt.contains("## Skills"), "{plain_prompt}");
+        assert!(
+            !plain_prompt.contains("## Before You Edit"),
+            "{plain_prompt}"
+        );
+
+        let (hinted, hinted_prompt) = prompt(
+            "plan_section = \"## Parsing\"\nskills = [\"serde\", \"tokio\"]\n\
+             research_before_edit = true\n",
+        );
+        assert_eq!(hinted.prd_excerpt, parsing);
+        let skills = "## Skills\n### serde\nDerive serde traits.\n\n\
+                      Default optional keys.\n- tokio\n";
+        assert!(hinted_prompt.contains(skills), "{hinted_prompt}");
+        assert!(
+            hinted_prompt.contains(RESEARCH_BEFORE_EDIT_NOTE),
+            "{hinted_prompt}"
+        );
+
+        let (slim, _) = prompt("context_weight = \"slim\"\n");
+        assert!(slim.prd_excerpt.is_empty(), "{}", slim.prd_excerpt);
+        assert!(slim.tasks_toml.is_empty(), "{}", slim.tasks_toml);
+        assert!(slim.workspace_map.is_empty(), "{}", slim.workspace_map);
+
+        let (deep, _) = prompt("context_weight = \"deep\"\n");
+        assert!(
+            deep.prd_excerpt.ends_with(&format!("{appendix}\n")),
+            "the whole PRD"
+        );
+    }
+
     #[test]
     fn workspace_context_included_when_present() {
         let assembler = PromptAssembler::minimal();
@@ -3760,6 +4056,8 @@ formulas = ["retries = 2 * (k + 1) - 1"]
             workspace_context: String::new(),
             cfactor_context: String::new(),
             error_patterns_context: String::new(),
+            concurrent_plans: Vec::new(),
+            plan_brief: String::new(),
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

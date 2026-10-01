@@ -9,9 +9,9 @@ size = "S"
 goal = "tooling"
 subsystem = ["roko-graph/engine"]
 created = 2026-09-25
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-graph/src/engine.rs::with_event_sink", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/runner/structured_log.rs::GraphEventLogger", "crates/roko-cli/src/task_parser.rs::build_fix_prompt"]
@@ -133,3 +133,13 @@ Partly fixed (checked 2026-09-28 against 3d0ee4d02): Fixed in 725f21e05: --log-f
 
 Rechecked 2026-09-29 at d9e79e9d8: the --log-file recorder and the single settle_task_verification path (725f21e05) are still in place. Two dead paths remain: GraphEngine stores event_sink (roko-graph engine.rs:327, set by with_event_sink at :448-449) but never reads or emits through it (the same defect is tracked in reg-cbfff6), and TaskDef::build_fix_prompt (roko-cli task_parser.rs:612) is still called only from tests (:2494, :2535). Close once the sink is used (or removed) and build_fix_prompt is used in production or deleted.
 - 2026-10-01 (coordinator): the "dead GraphExecutionEvent sink" part is no longer dead: since reg-cbfff6 (work/reg-cbfff6) the Graph engine emits node lifecycle events to it (wk-runstate). Re-check this item's remaining dead paths.
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  Steps 1 and 2 are done; step 3 resolved itself, because the engine emits node lifecycle events since
+  reg-cbfff6.
+  - Deleted `TaskDef::build_fix_prompt` and its two tests.
+  - Deleted the unreachable `--log-file` wiring in `plan_runner.rs`: the `GraphEventLogger` block, the
+    `graph_event_logger` context field and the `with_event_sink` attach. The body now destructures `log_file: _`,
+    because `event_log::run_recorded` takes that path.
+  - Deleted `GraphEventLogger` and `FanOutGraphEventSink` from `runner/structured_log.rs`, with their tests, and kept
+    `StructuredLogger`.
+  - The `[[verify]]` greps pass statically.

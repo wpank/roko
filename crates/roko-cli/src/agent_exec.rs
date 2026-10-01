@@ -5,15 +5,14 @@
 //! safety scoping, resume threading, and learning-episode persistence.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent_config::{command_from_config, model_from_config};
 use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, distillation_model_caller, provider_id_for_model,
-    record_persisted_provider_health, resolve_capture_model_slug,
+    capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
+    provider_id_for_model, record_persisted_provider_health, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
@@ -106,6 +105,19 @@ pub async fn run_agent_capture_logged(
     run_agent_capture_impl(opts, true, Some(episode))
         .await
         .map(|capture| (capture.exit_code, capture.output))
+}
+
+/// Like [`run_agent_logged`], but also record what the call cost through
+/// `spend`. The episode it persists carries no usage, so this is where the
+/// call's spend is recorded.
+pub async fn run_agent_logged_with_spend(
+    opts: AgentExecOpts<'_>,
+    episode: AgentExecEpisode<'_>,
+    spend: &crate::plan_authoring::AuthoringSpend,
+) -> Result<i32> {
+    let call = run_agent_capture_impl(opts, true, Some(episode)).await?;
+    spend.record(&call).await;
+    Ok(call.exit_code)
 }
 
 /// Run the configured direct agent path and return `(exit_code, output_text)`
@@ -347,15 +359,7 @@ pub async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(Arc::clone(&distillation_caller)),
-        );
-    });
+    install_capture_distillation(&mut runtime, workdir, distillation_model_caller(workdir));
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = (!provider.trim().is_empty()).then_some(provider.clone());
@@ -709,5 +713,169 @@ tool_format = "openai_json"
                 "{v:?} hint must not be empty"
             );
         }
+    }
+
+    /// What the fake planner charges per call. A power of two, so it survives
+    /// the provider usage's `f32` exactly.
+    const CALL_COST_USD: f64 = 0.0625;
+
+    const DEMO_PLAN: &str = r#"[meta]
+plan = "demo"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T01"
+title = "Write the hello world program"
+description = "Create hello/main.rs, a Rust program that prints hello world."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["hello/main.rs"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f hello/main.rs"
+fail_msg = "hello/main.rs was not written"
+"#;
+
+    /// A workspace whose only model runs a fake Claude CLI: it answers every
+    /// prompt with [`DEMO_PLAN`] in a fenced toml block and reports
+    /// [`CALL_COST_USD`].
+    fn fake_planner_workspace() -> TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = TempDir::new().expect("workspace");
+        let text = format!("```toml\n{DEMO_PLAN}```\n");
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": text}]},
+        });
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": text,
+            "model": "claude-sonnet-4-6",
+            "total_cost_usd": CALL_COST_USD,
+            "usage": {"input_tokens": 1200, "output_tokens": 340},
+        });
+        let script = workspace.path().join("fake-claude");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n{assistant}\n{result}\nJSON\n"),
+        )
+        .expect("write fake provider");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make fake provider executable");
+        std::fs::write(
+            workspace.path().join("roko.toml"),
+            format!(
+                r#"[agent]
+default_model = "fake-model"
+
+[providers.fake-cli]
+kind = "claude_cli"
+command = {script:?}
+
+[models.fake-model]
+provider = "fake-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+"#,
+                script = script.display().to_string()
+            ),
+        )
+        .expect("write roko.toml");
+        workspace
+    }
+
+    /// The rows of `.roko/learn/costs.jsonl`, leaving out the background
+    /// distillation call's, which is recorded under its own role.
+    fn agent_cost_rows(workdir: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(workdir.join(".roko").join("learn").join("costs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["role"] != crate::learning_helpers::DISTILLATION_ROLE)
+            .collect()
+    }
+
+    /// bug-ac5432: a plan generation leaves one cost record for its one agent
+    /// call, carrying the reported cost. The generation episode adds no $0
+    /// row beside it.
+    #[tokio::test]
+    async fn plan_generation_writes_one_cost_record() {
+        let workspace = fake_planner_workspace();
+        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
+        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
+        let prd_path = prd_dir.join("demo.md");
+        std::fs::write(
+            &prd_path,
+            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
+        )
+        .expect("write PRD");
+
+        let request = crate::prd::PlanRequest::new(
+            crate::prd::PlanSource::Prd(&prd_path),
+            "demo",
+            workspace.path(),
+        );
+        crate::prd::generate_plan(request)
+            .await
+            .expect("generate plan");
+
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["plan_id"], "demo");
+        assert_eq!(
+            rows[0]["task_id"],
+            crate::plan_authoring::GENERATION_SPEND_TASK_ID
+        );
+    }
+
+    /// bug-ac5432: `roko plan generate --from-backlog` runs its agent through
+    /// `run_agent_logged_with_spend`, which records the reported cost against
+    /// the plan, where it used to leave only a $0 row.
+    #[tokio::test]
+    async fn plan_generate_records_the_agent_spend() {
+        let workspace = fake_planner_workspace();
+        let spend =
+            crate::plan_authoring::AuthoringSpend::generation(workspace.path(), "demo", None);
+
+        let exit_code = run_agent_logged_with_spend(
+            AgentExecOpts {
+                prompt: "Plan the demo.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: Some("high"),
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("strategist"),
+                allowed_tools: None,
+            },
+            AgentExecEpisode {
+                task_kind: "plan-generate",
+                task_id: "plan:generate:backlog:7",
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
+        assert_eq!(rows[0]["input_tokens"], 1200);
+        assert_eq!(rows[0]["plan_id"], "demo");
     }
 }

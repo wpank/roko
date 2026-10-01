@@ -7,9 +7,9 @@ triage = "verified"
 severity = "p3"
 subsystem = ["roko-serve/plans"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "plan:portal-programme/04b-backend-plan-revision#T06"
 discovered_from = "plan:portal-programme/04b-backend-plan-revision#T06"
 anchors = ["crates/roko-cli/src/plan_authoring.rs::revise_plan_source", "crates/roko-serve/src/routes/plans.rs::revise_plan"]
@@ -35,3 +35,7 @@ improvement.
 to 1) and pass it to the revision handler, so the retry cap is not baked into the binary.
 
 Re-checked 2026-09-29: unchanged. The hardcoded single retry is in crates/roko-cli/src/plan_authoring.rs::revise_plan_source (:398-413), not in the serve route. The existing verify always passes (grep | head exits 0) and targets the wrong file.
+
+## Notes
+
+2026-10-01 (wk-runstate): implemented on work/find-8872ad; cargo verification deferred to the batch check. `[serve] revision_max_retries` (`ServeConfig`, u32, default 1) sets how many times `revise_plan_source` asks the planning agent again after a rejected revision. Each retry carries the last rejection's diagnostics; `0` makes one attempt only. The setting is read from the workspace's resolved config, which the function already loads, so `revise_plan_source` keeps its signature and serve's caller is unchanged. Test: `revision_retries_default_to_one_and_are_configurable` (roko-core `config/serve.rs`). Documented in `docs/v3/depth/21-config/01-schema-sections.md`.

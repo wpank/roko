@@ -9,9 +9,9 @@ goal = "core"
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 9ef6f4aad"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetPolicy::from_limits", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger::reserve", "crates/roko-cli/src/graph_task_dispatch.rs::dispatch", "crates/roko-graph/src/engine.rs::execute_cell_with_retries"]
@@ -73,3 +73,14 @@ time" in this setup. In fact the extra calls fail. gap-4665ac (budget defaults) 
 - With a plan budget and no `max_turn_usd`, concurrent tasks wait for budget capacity instead of failing, and a plan
   stops only on settled spend.
 - The `[[verify]]` command passes.
+
+## Notes
+- 2026-10-01 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check. This is
+  Plan step 1. Step 2, a bounded per-call estimate, is left to gap-e95077.
+  - `GraphPlanBudgetLedger::reserve_waiting`, which `dispatch` and `dispatch_streaming` now use, waits while only
+    reservations in flight hold the plan's remaining budget. It wakes on a `tokio::sync::Notify` that `settle` and
+    `release` signal, and rechecks every 250 ms.
+  - It fails with `BudgetExceeded` once settled spend reaches the ceiling, which `dispatch_stop` also handles.
+  - It ends with `Cancelled` once the cell context is cancelled. The non-waiting `reserve` is now test-only.
+  - Tests: `concurrent_tasks_wait_for_a_reserved_plan_budget` (two concurrent dispatches, $1 plan, no
+    `max_turn_usd`) and `a_waiting_reservation_ends_at_the_ceiling_or_a_stop`.

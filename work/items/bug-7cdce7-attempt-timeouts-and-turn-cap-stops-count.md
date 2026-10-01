@@ -9,9 +9,9 @@ goal = "core"
 size = "S"
 subsystem = ["roko-cli/dispatch_v2", "roko-learn/provider_health"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge_with_tools_and_cli_mcp", "crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge", "crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-learn/src/provider_health.rs::record_failure", "crates/roko-cli/src/graph_task_dispatch/failover.rs::blocked_provider"]
@@ -89,3 +89,19 @@ Checked statically at `33e107da1`:
 - Three consecutive attempt timeouts, or turn-cap stops, leave the provider's circuit closed.
 - A real provider failure still trips it.
 - The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-tiers): implemented on work/bug-7cdce7; cargo verification deferred to the batch check.
+  - Both bridges record the provider outcome through `AgentDispatcherV2::record_provider_outcome`:
+    - a success or a turn-cap stop is a provider success;
+    - an attempt timeout (`detect_attempt_timeout`) records nothing;
+    - anything else is a classified failure, as before.
+  - Test `attempt_timeouts_do_not_open_the_provider_circuit` runs three cases through the Graph bridge: three
+    attempt timeouts, three turn-cap stops and three 503 failures. Only the 503 case opens the circuit.
+  - Caveat: `detect_attempt_timeout` matches any "timed out after". So an adapter whose own request timeout uses
+    that wording (Hermes: "request timed out after 90s") no longer counts against the provider either. This matches
+    how `turn_policy` already classifies it. Tightening the marker to "timed out after <N> ms" would separate the two.
+- 2026-10-01 (wk-tiers): the caveat above is resolved on work/bug-7cdce7. `detect_attempt_timeout` now matches only
+  the adapters' own `"timed out after <N> ms"`, so a provider's request timeout (Hermes' "request timed out after
+  90s") counts against the provider again. Test: `a_provider_request_timeout_is_not_an_attempt_timeout`.

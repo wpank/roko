@@ -3,13 +3,15 @@ id = "bug-9434c4"
 kind = "bug"
 title = "roko config set rejects learning.t0_reflexes and every learning.dreams key"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-gtd-split's report on bug-94151f)"
 anchors = ["crates/roko-cli/src/config.rs::parse_value_for_key", "crates/roko-core/src/config/learning.rs"]
@@ -58,3 +60,10 @@ Each new config field needs its own arm in this list, and new fields keep missin
 
 - Depends on bug-94151f and bug-b16d55, which add the keys. They are not on BASE yet.
 - **2026-09-29 (wk-filer4):** fixed in substance by 3bf3af074: `learning.t0_reflexes` and the four `learning.dreams` fields are non-Option, so they serialize into the schema tree, and `config set` accepts every schema key since bug-1c93b4 (b351d2be5). The verify names `config_set_accepts_learning_opt_in_keys`, which doesn't exist, so closing needs that test or a re-pointed verify.
+- 2026-10-01 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check.
+  The behaviour was already fixed at BASE `ebdc0f5d5`: `learning.t0_reflexes` and the four `learning.dreams` fields
+  are non-`Option` (`crates/roko-core/src/config/learning.rs:26-50`, `:151`), so they are in the schema tree, and
+  `parse_value_for_key` falls back to `parse_value_from_schema` (`crates/roko-cli/src/config.rs:1752`, added by
+  3bf3af074, merged in b351d2be5). Plan step 2 is that fallback. Only the regression test was missing: added
+  `config_set_accepts_learning_opt_in_keys` in `crates/roko-cli/src/config.rs`, which sets all five keys through
+  `set_toml_dotted_key`, checks validation accepts them, and loads them into `RokoConfig`.

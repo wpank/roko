@@ -555,6 +555,9 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
 const fn gate_verdict_tag(verdict: TaskGateVerdict) -> GateVerdictTag {
     match verdict {
         TaskGateVerdict::Passed => GateVerdictTag::Passed,
+        TaskGateVerdict::PassedWithPreexistingFailures => {
+            GateVerdictTag::PassedWithPreexistingFailures
+        }
         TaskGateVerdict::AlreadySatisfied => GateVerdictTag::AlreadySatisfied,
         TaskGateVerdict::Unverified => GateVerdictTag::Unverified,
         TaskGateVerdict::ForcedAccept => GateVerdictTag::ForcedAccept,

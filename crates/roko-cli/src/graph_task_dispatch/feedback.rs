@@ -262,8 +262,10 @@ impl GraphTaskDispatcher {
             }
 
             // Only a pass carries the learning label 1: every authored
-            // verify step passed (`TaskGateVerdict::Passed`). Only those grow
-            // durable knowledge.
+            // verify step passed (`TaskGateVerdict::Passed`), or failed only
+            // on tests that failed before the run too
+            // (`PassedWithPreexistingFailures`). Only those grow durable
+            // knowledge.
             if learning == Some(true) {
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),

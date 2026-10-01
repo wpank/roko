@@ -3222,7 +3222,10 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 /// and gate verdict (epic spec-e9d7ec).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TaskVerdictCounts {
-    /// Completed with a `passed` gate verdict: every verify step passed.
+    /// Completed with a `passed` gate verdict: every verify step passed. A
+    /// `passed_with_preexisting_failures` verdict counts here too: its steps
+    /// failed only on tests that failed before the run (gap-161be1), which
+    /// its attempt record keeps.
     passed: usize,
     /// Completed with an `already_satisfied` gate verdict: the attempt
     /// changed nothing, and every verify step passed on the tree as it was
@@ -3251,7 +3254,10 @@ impl TaskVerdictCounts {
         {
             let verdict = output.gate_verdicts.get(&result.node_id).copied();
             match (result.status, verdict) {
-                (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (
+                    NodeStatus::Complete,
+                    Some(TaskGateVerdict::Passed | TaskGateVerdict::PassedWithPreexistingFailures),
+                ) => counts.passed += 1,
                 (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
                     counts.already_satisfied += 1;
                 }

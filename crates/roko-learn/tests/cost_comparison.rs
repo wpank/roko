@@ -97,6 +97,7 @@ fn profile_cost_per_successful_task(
         .find(|profile| profile.role == role)
         .unwrap_or_else(|| panic!("missing profile for role {role}"))
         .cost_per_successful_task()
+        .unwrap_or_else(|| panic!("every {role} turn is priced"))
 }
 
 #[test]

@@ -328,9 +328,16 @@ class GraphBundleScenarios(GraphRunCase):
             self.assertTrue(samples, "the Graph run wrote no status.json revision")
             self.assertEqual({sample["source_run_id"] for sample in samples}, {run_id})
             self.assertEqual(samples[-1]["status"]["phase"], "completed")
+            # Every Graph run records its events, with its run ID, in the
+            # workspace event log (bug-230de6): the bundle holds this run's
+            # lines and none of the old run's.
             sources = read_json(bundle / "filtered-logs" / "index.json")["sources"]
-            events_log = [source for source in sources if source["source"].endswith(".roko/events.jsonl")]
-            self.assertEqual([source["lines_selected"] for source in events_log], [0])
+            [events_log] = [source for source in sources if source["source"].endswith(".roko/events.jsonl")]
+            events = read_jsonl(bundle / events_log["artifact"])
+            self.assertGreater(events_log["lines_selected"], 0)
+            self.assertEqual(len(events), events_log["lines_selected"])
+            run_ids = set().union(*(run_evidence.collect_named_values(row, "run_id") for row in events))
+            self.assertEqual(run_ids, {run_id})
             sampling = read_json(bundle / "summary.json")["collection"]["status_sampling"]
             self.assertEqual(sampling["state"], "sampled")
 

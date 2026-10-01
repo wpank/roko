@@ -326,6 +326,14 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
   now names `runner.worktree_per_task (on by default)` instead of `roko plan run --worktree-per-task`. Its row in
   `docs/v3/depth/21-config/01-schema-sections.md` matches, and the `[runner]` table there gains a `worktree_per_task`
   row. On work/gap-4ec59f; cargo verification deferred to the batch check.
+- 2026-10-02 (wk-tiers): gate 6d's one failure, `scripts/test_run_evidence_graph.py`
+  `test_bundles_hold_only_their_own_run`, was a stale expectation, not the flip. The test expected no lines of the run
+  in `.roko/events.jsonl`, but since bug-230de6 (`0ccbe77d8`, batch 20d) every Graph run writes its hub events there
+  with its run ID. The shared-tree pin took effect: no worktree and no batch branch.
+  - The test now expects the run's own lines in the bundle's filtered events log, and none from the old run.
+  - All 9 tests pass against the 6d batch binary, three runs in a row.
+  - Without the pin, 2 of the 9 fail, because they read files the task wrote in the shared tree. The other 7, including
+    bundle validation, pass in worktree mode.
 
 ## Original notes
 

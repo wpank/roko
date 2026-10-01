@@ -706,11 +706,56 @@ fn spawn_save_worker(
     (tx, handle)
 }
 
+/// Persist `snapshot` to `path`, merged under the file's cross-process lock
+/// with what other processes saved there (bug-cfe0be): each provider keeps
+/// whichever record saw the most recent outcome, so two runs sharing a
+/// workspace no longer overwrite each other's circuit state. A file that
+/// cannot be read as a snapshot is replaced, as before.
 fn save_snapshot(
     path: &Path,
     snapshot: &ProviderHealthRegistrySnapshot,
 ) -> Result<(), std::io::Error> {
-    roko_fs::atomic_write_json(path, snapshot)
+    let merged = roko_fs::with_locked_json_transaction(
+        path,
+        |persisted: &mut ProviderHealthRegistrySnapshot| {
+            merge_snapshot(persisted, snapshot);
+            Ok::<(), std::io::Error>(())
+        },
+    );
+    match merged {
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "replacing an unreadable provider health file"
+            );
+            roko_fs::atomic_write_json(path, snapshot)
+        }
+        result => result,
+    }
+}
+
+/// Merge `ours` into `persisted`: per provider, the record whose latest
+/// outcome is newer wins, and ours on a tie.
+fn merge_snapshot(
+    persisted: &mut ProviderHealthRegistrySnapshot,
+    ours: &ProviderHealthRegistrySnapshot,
+) {
+    let mut providers = normalize_snapshot_keys(std::mem::take(&mut persisted.providers));
+    for (key, health) in &ours.providers {
+        let theirs_is_newer = providers
+            .get(key)
+            .is_some_and(|theirs| last_outcome_at(theirs) > last_outcome_at(health));
+        if !theirs_is_newer {
+            providers.insert(key.clone(), health.clone());
+        }
+    }
+    persisted.providers = providers;
+}
+
+/// When `health` last saw an outcome, a success or a failure.
+fn last_outcome_at(health: &ProviderHealth) -> Option<i64> {
+    health.last_failure_at.max(health.last_success_at)
 }
 
 /// Re-key a loaded snapshot so that every provider ID uses the canonical
@@ -1635,6 +1680,68 @@ mod tests {
         let mut providers = loaded.providers.lock().keys().cloned().collect::<Vec<_>>();
         providers.sort();
         assert_eq!(providers, vec!["alpha".to_owned(), "beta".to_owned()]);
+    }
+
+    /// bug-cfe0be: two registries saving one health file, as two roko
+    /// processes sharing a workspace do, merge rather than overwrite each
+    /// other: each keeps the providers only it saw, and a provider both saw
+    /// keeps the record with the latest outcome, whichever saved last.
+    #[test]
+    fn concurrent_registries_merge_on_save() {
+        let tmp = TempDir::new().expect("create tempdir");
+        let path = tmp.path().join("provider-health.json");
+        let record = |provider: &str, failed_at: Option<i64>, succeeded_at: Option<i64>| {
+            let mut health = new_provider_health(provider);
+            health.last_failure_at = failed_at;
+            health.last_success_at = succeeded_at;
+            if failed_at.is_some() {
+                health.state = CircuitState::Open;
+            }
+            health
+        };
+
+        let first = ProviderHealthRegistry::new();
+        {
+            let mut providers = first.providers.lock();
+            providers.insert("alpha".to_owned(), record("alpha", Some(1_000), None));
+            providers.insert("shared".to_owned(), record("shared", None, Some(1_000)));
+        }
+        let second = ProviderHealthRegistry::new();
+        {
+            let mut providers = second.providers.lock();
+            providers.insert("beta".to_owned(), record("beta", None, Some(2_000)));
+            providers.insert("shared".to_owned(), record("shared", Some(3_000), None));
+        }
+        second.save(&path).expect("the second process saves");
+        first.save(&path).expect("the first process saves after it");
+
+        let merged = ProviderHealthRegistry::load_or_new(&path);
+        assert_eq!(merged.get("alpha").state, CircuitState::Open);
+        assert_eq!(merged.get("beta").last_success_at, Some(2_000));
+        assert_eq!(
+            merged.get("shared").last_failure_at,
+            Some(3_000),
+            "the later outcome wins although it was saved first"
+        );
+        assert_eq!(merged.get("shared").state, CircuitState::Open);
+    }
+
+    /// A health file that does not parse is replaced on save instead of
+    /// failing every later save.
+    #[test]
+    fn an_unreadable_health_file_is_replaced_on_save() {
+        let tmp = TempDir::new().expect("create tempdir");
+        let path = tmp.path().join("provider-health.json");
+        std::fs::write(&path, "not valid json{{{").expect("write a corrupt file");
+
+        let registry = ProviderHealthRegistry::new();
+        registry.record_success("alpha");
+        registry.save(&path).expect("save over the corrupt file");
+
+        let saved: ProviderHealthRegistrySnapshot =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read the health file"))
+                .expect("the replacement parses");
+        assert!(saved.providers.contains_key("alpha"));
     }
 
     /// Persisted registry state survives a restart without a manual save.

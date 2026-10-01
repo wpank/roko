@@ -170,18 +170,27 @@ Verified 2026-09-28: The diff + gate + summary half ran live in the 2026-09-25 p
   batch check.
   - Cleanup: `WorktreeManager` records every attempt it accepts per plan. Once a plan's delivery ends with
     `release_policy` `Delete`, `deliver_plan_to_batch` calls `WorktreeManager::release_accepted`, which, under the
-    operation and repository mutation locks, removes each accepted checkout (only when its attempt branch is
-    still at the accepted commit and the checkout is clean apart from roko's `.cursor` copy) and deletes its
-    branch by compare-and-swap. Anything else is kept and logged. A failed or undelivered plan keeps everything.
-    Not covered: checkouts accepted by an earlier process of a resumed run (the record is in memory).
-  - Summary: the `--json` summary has `batch` (branch, each delivery's record with its merge commit, and the
-    promotion), and the text summary names each delivered plan's merge commit and the promotion.
+    operation and repository mutation locks, removes each accepted checkout that is clean apart from roko's
+    `.cursor` copy; a dirty one is kept and logged. The `roko/attempt/*` branches are kept by default for
+    inspection and history (the checkouts are the disk cost); this is the coordinator's call of 2026-10-01,
+    following Will's standing request, so the Done-when's "branch removed" holds only with the setting on. `[runner] delete_attempt_branches = true` (default
+    false) deletes them too, each only while it is at its accepted commit and the plan branch contains that
+    commit, by compare-and-swap. A failed or undelivered plan keeps everything. Not covered: checkouts accepted by
+    an earlier process of a resumed run (the record is in memory). The setting is in `[runner]` (roko-core), which
+    the Graph path already loads: `[executor]` is roko-cli's own config, which the Graph path does not read yet
+    (gap-4ec59f wires it).
+  - Summary: the `--json` summary has `batch` (branch, each delivery's record with its merge commit and
+    `attempt_cleanup`: the checkouts removed and the branches kept or deleted, and the promotion), and the text
+    summary names each delivered plan's merge commit, the attempt branches kept and the promotion.
   - Tests: `tests/worktree_task_diff.rs` runs the real binary in a scratch repository, as C3 does.
     `worktree_task_diff_is_gated_merged_and_cleaned` checks the commit on the plan branch and in the checkpoint,
     the delivery into the batch and the promotion into `release` (and the summary's commits), no attempt worktree
-    or branch afterwards, no cleanup warning in `.roko/roko.log.*`, and the untouched operator checkout.
+    afterwards while its branch is kept at the accepted commit and named in the summary, no cleanup warning in
+    `.roko/roko.log.*`, and the untouched operator checkout.
     `worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing` checks that a failed edit stays in
     its kept worktree on its attempt branch, and that no plan branch exists and neither the batch nor `release`
-    moved. `a_worktree_run_delivers_each_plan_into_its_batch_branch` (in-process) now also checks the cleanup.
+    moved. `release_accepted_removes_checkouts_and_keeps_branches_unless_asked` (worktree unit test) covers both
+    branch modes and an unaccepted attempt. `a_worktree_run_delivers_each_plan_into_its_batch_branch`
+    (in-process) now also checks that the checkouts are gone and the branches kept.
   - The live-run evidence the Done-when asks for is these binary tests' run in the batch check; gap-3aa9cb can
     fold them onto its shared scripted provider.

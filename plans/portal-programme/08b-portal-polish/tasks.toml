@@ -26,14 +26,17 @@ estimated_total_minutes = 345
 # depends_on and conflicts_with), and the portal tolerates a plan list without
 # tasks_done, group or estimated_minutes.
 #
-# Acceptance tests live in accept/ beside this file. Each gate copies its tests
-# into apps/portal/src and requires their exact passing count; an edited copy is
-# overwritten by the next gate run, so fix the code a test exercises, never the
-# test. Each test fails on the tree its task starts from and passed against a
-# reference implementation on 2026-09-28 (with only that task's dependencies
-# applied, then with its own files added; tsc clean at every step). DOM tests
-# run under jsdom with @testing-library/react (T01) and check structure, text and
-# state, not layout; the classes they require are styled in T07.
+# Acceptance tests live in accept/ beside this file. They are pinned acceptance
+# tests ([task.accept], gap-d14a43, migrated by gap-ba4d01): a run pins each one
+# outside the working tree, and a generated gate that runs before the task's own
+# copies the pinned test into apps/portal/src and requires its exact passing
+# count, as it does the shared helper dom.tsx. An edited copy is overwritten by
+# the next gate run, so fix the code a test exercises, never the test. Each test
+# fails on the tree its task starts from and passed against a reference
+# implementation on 2026-09-28 (with only that task's dependencies applied, then
+# with its own files added; tsc clean at every step). DOM tests run under jsdom
+# with @testing-library/react (T01) and check structure, text and state, not
+# layout; the classes they require are styled in T07.
 #
 # Portal only (npm, tsc, vitest; no cargo); run in the portal worktree.
 # Concurrency (max_parallel 4): tasks that can run side by side write disjoint
@@ -101,17 +104,29 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+# The shared helper has no tests of its own, and the harness test that exercises it
+# is not in the tree until the next entry pins it: this entry puts the pinned helper
+# in place and runs the node-environment suite (formatters.test.ts, 22) that this
+# task's own steps also require.
+src = "accept/dom.tsx"
+dest = "apps/portal/src/test/dom.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/formatters.test.ts {count}'
+count = 22
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/harness.accept.test.tsx"
+dest = "apps/portal/src/test/harness.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/test/harness.accept.test.tsx {count}'
+count = 8
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "structural"
 command = "cd apps/portal && grep -q '\"@testing-library/react\"' package.json && grep -q '\"@testing-library/dom\"' package.json && grep -q '\"jsdom\"' package.json && grep -q 'node_modules/jsdom' package-lock.json && test -f node_modules/@testing-library/react/package.json && test -f node_modules/jsdom/package.json && grep -q 'test.tsx' vitest.config.ts && grep -q 'automatic' vitest.config.ts"
 fail_msg = "Testing Library and jsdom are not installed and recorded, or vitest does not collect .tsx tests with the automatic JSX runtime"
 timeout_ms = 60000
-
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/harness.accept.test.tsx src/test/harness.accept.test.tsx && node scripts/vitest-min.mjs src/test/harness.accept.test.tsx 8'
-fail_msg = "the component-test harness acceptance test does not pass all 8 tests"
-timeout_ms = 600000
 
 [[task.verify]]
 phase = "test"
@@ -121,13 +136,13 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/harness.accept.test.tsx src/test/harness.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check with the harness"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "structural"
-command = 'cd apps/portal && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && out=$(node scripts/orphans.mjs || true) && printf "%s\n" "$out" | head -1 | grep -qE "^(no orphans|src/)" && ! printf "%s\n" "$out" | grep -q "src/test/"'
+command = 'cd apps/portal && out=$(node scripts/orphans.mjs || true) && printf "%s\n" "$out" | head -1 | grep -qE "^(no orphans|src/)" && ! printf "%s\n" "$out" | grep -q "src/test/"'
 fail_msg = "scripts/orphans.mjs does not run, or it still reports the test helpers under src/test/ as orphans"
 timeout_ms = 60000
 
@@ -202,10 +217,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/runState.accept.test.ts src/lib/runState.accept.test.ts && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
-fail_msg = "the run-state acceptance test does not pass all 15 tests"
+[[task.accept.files]]
+src = "accept/runState.accept.test.ts"
+dest = "apps/portal/src/lib/runState.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts {count}'
+count = 15
 timeout_ms = 600000
 
 [[task.verify]]
@@ -216,7 +232,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/runState.accept.test.ts src/lib/runState.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -274,15 +290,16 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planSet.accept.test.ts src/lib/planSet.accept.test.ts && node scripts/vitest-min.mjs src/lib/planSet.accept.test.ts 17'
-fail_msg = "the plan-set acceptance test does not pass all 17 tests"
+[[task.accept.files]]
+src = "accept/planSet.accept.test.ts"
+dest = "apps/portal/src/lib/planSet.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planSet.accept.test.ts {count}'
+count = 17
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planSet.accept.test.ts src/lib/planSet.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -361,10 +378,18 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/apiErrors.accept.test.ts src/lib/apiErrors.accept.test.ts && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && node scripts/vitest-min.mjs src/lib/apiErrors.accept.test.ts 12 && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx 3'
-fail_msg = "the request-error acceptance tests do not pass (12 + 3 tests)"
+[[task.accept.files]]
+src = "accept/apiErrors.accept.test.ts"
+dest = "apps/portal/src/lib/apiErrors.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/apiErrors.accept.test.ts {count}'
+count = 12
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/missingRoutes.accept.test.tsx"
+dest = "apps/portal/src/components/stage/missingRoutes.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx {count}'
+count = 3
 timeout_ms = 600000
 
 [[task.verify]]
@@ -375,7 +400,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/apiErrors.accept.test.ts src/lib/apiErrors.accept.test.ts && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -420,15 +445,16 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/useNow.accept.test.tsx src/lib/useNow.accept.test.tsx && node scripts/vitest-min.mjs src/lib/useNow.accept.test.tsx 7'
-fail_msg = "the clock hook acceptance test does not pass all 7 tests"
+[[task.accept.files]]
+src = "accept/useNow.accept.test.tsx"
+dest = "apps/portal/src/lib/useNow.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/useNow.accept.test.tsx {count}'
+count = 7
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/useNow.accept.test.tsx src/lib/useNow.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -488,15 +514,16 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/statusLine.accept.test.ts src/lib/statusLine.accept.test.ts && node scripts/vitest-min.mjs src/lib/statusLine.accept.test.ts 11'
-fail_msg = "the status-line acceptance test does not pass all 11 tests"
+[[task.accept.files]]
+src = "accept/statusLine.accept.test.ts"
+dest = "apps/portal/src/lib/statusLine.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/statusLine.accept.test.ts {count}'
+count = 11
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/statusLine.accept.test.ts src/lib/statusLine.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -566,15 +593,16 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/styles.accept.test.ts src/styles/styles.accept.test.ts && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12'
-fail_msg = "the styles acceptance test does not pass all 12 tests"
+[[task.accept.files]]
+src = "accept/styles.accept.test.ts"
+dest = "apps/portal/src/styles/styles.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts {count}'
+count = 12
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/styles.accept.test.ts src/styles/styles.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -617,10 +645,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planRows.wait.accept.test.ts src/lib/planRows.wait.accept.test.ts && node scripts/vitest-min.mjs src/lib/planRows.wait.accept.test.ts 8'
-fail_msg = "the queued-row acceptance test does not pass all 8 tests"
+[[task.accept.files]]
+src = "accept/planRows.wait.accept.test.ts"
+dest = "apps/portal/src/lib/planRows.wait.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planRows.wait.accept.test.ts {count}'
+count = 8
 timeout_ms = 600000
 
 [[task.verify]]
@@ -631,7 +660,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planRows.wait.accept.test.ts src/lib/planRows.wait.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -700,10 +729,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/rail.accept.test.tsx src/components/rail/rail.accept.test.tsx && node scripts/vitest-min.mjs src/components/rail/rail.accept.test.tsx 11'
-fail_msg = "the rail acceptance test does not pass all 11 tests"
+[[task.accept.files]]
+src = "accept/rail.accept.test.tsx"
+dest = "apps/portal/src/components/rail/rail.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/rail/rail.accept.test.tsx {count}'
+count = 11
 timeout_ms = 600000
 
 [[task.verify]]
@@ -714,7 +744,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/rail.accept.test.tsx src/components/rail/rail.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -791,10 +821,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/shell.accept.test.tsx src/components/shell/shell.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/shell.accept.test.tsx 11'
-fail_msg = "the header and alert acceptance test does not pass all 11 tests"
+[[task.accept.files]]
+src = "accept/shell.accept.test.tsx"
+dest = "apps/portal/src/components/shell/shell.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/shell.accept.test.tsx {count}'
+count = 11
 timeout_ms = 600000
 
 [[task.verify]]
@@ -805,7 +836,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/shell.accept.test.tsx src/components/shell/shell.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -876,10 +907,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/RunBand.accept.test.tsx src/components/run/RunBand.accept.test.tsx && node scripts/vitest-min.mjs src/components/run/RunBand.accept.test.tsx 9'
-fail_msg = "the run band acceptance test does not pass all 9 tests"
+[[task.accept.files]]
+src = "accept/RunBand.accept.test.tsx"
+dest = "apps/portal/src/components/run/RunBand.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/run/RunBand.accept.test.tsx {count}'
+count = 9
 timeout_ms = 600000
 
 [[task.verify]]
@@ -890,7 +922,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/RunBand.accept.test.tsx src/components/run/RunBand.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -961,10 +993,18 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/PlanView.accept.test.tsx src/components/stage/PlanView.accept.test.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx 15 && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx 3'
-fail_msg = "the plan view acceptance test (15) or the missing-route test (3) does not pass"
+[[task.accept.files]]
+src = "accept/PlanView.accept.test.tsx"
+dest = "apps/portal/src/components/stage/PlanView.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx {count}'
+count = 15
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/missingRoutes.accept.test.tsx"
+dest = "apps/portal/src/components/stage/missingRoutes.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx {count}'
+count = 3
 timeout_ms = 600000
 
 [[task.verify]]
@@ -975,7 +1015,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/PlanView.accept.test.tsx src/components/stage/PlanView.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -1033,15 +1073,22 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/stream.accept.test.tsx"
+dest = "apps/portal/src/components/stream/stream.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx {count}'
+count = 7
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx src/components/stream/stream.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx 7 && node scripts/vitest-min.mjs src/lib/emptyState.test.ts 21'
-fail_msg = "the stream acceptance test (7) or the empty-state suite (21) does not pass"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/emptyState.test.ts 21'
+fail_msg = "the empty-state suite (21) does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx src/components/stream/stream.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -1081,15 +1128,16 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/TaskList.accept.test.tsx src/components/stage/TaskList.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx 4'
-fail_msg = "the task-list role acceptance test does not pass all 4 tests"
+[[task.accept.files]]
+src = "accept/TaskList.accept.test.tsx"
+dest = "apps/portal/src/components/stage/TaskList.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx {count}'
+count = 4
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/TaskList.accept.test.tsx src/components/stage/TaskList.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -1135,10 +1183,11 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/Workspace.accept.test.tsx src/components/shell/Workspace.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/Workspace.accept.test.tsx 4'
-fail_msg = "the whole-screen acceptance test does not pass all 4 tests"
+[[task.accept.files]]
+src = "accept/Workspace.accept.test.tsx"
+dest = "apps/portal/src/components/shell/Workspace.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/Workspace.accept.test.tsx {count}'
+count = 4
 timeout_ms = 600000
 
 [[task.verify]]
@@ -1149,7 +1198,7 @@ timeout_ms = 60000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/Workspace.accept.test.tsx src/components/shell/Workspace.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -1159,10 +1208,10 @@ title = "Prove the whole plan together and build once"
 description = '''
 Run everything together and build the export once.
 
-The gates re-copy every acceptance test and the shared helper from
-plans/portal-programme/08b-portal-polish/accept/ (they must be unchanged), then
-require: the full suite with at least 501 passing tests (347 before this plan,
-plus 154 acceptance tests) and none failing; tsc; the orphan check
+Its pinned acceptance tests put every acceptance test, and the shared helper,
+back in the tree, each test with its exact count; then the gates require: the
+full suite with at least 501 passing tests (347 before this plan, plus 154
+acceptance tests) and none failing; tsc; the orphan check
 (scripts/orphans.mjs); and the one production build, whose exported CSS must
 carry the base layer and the rd- component classes.
 
@@ -1189,9 +1238,130 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+# The shared helper has no tests of its own. The harness test exercises it; it has
+# been in the tree since T01, and the next entry puts back its pinned copy.
+src = "accept/dom.tsx"
+dest = "apps/portal/src/test/dom.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/test/harness.accept.test.tsx {count}'
+count = 8
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/harness.accept.test.tsx"
+dest = "apps/portal/src/test/harness.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/test/harness.accept.test.tsx {count}'
+count = 8
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/runState.accept.test.ts"
+dest = "apps/portal/src/lib/runState.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts {count}'
+count = 15
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/planSet.accept.test.ts"
+dest = "apps/portal/src/lib/planSet.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planSet.accept.test.ts {count}'
+count = 17
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/apiErrors.accept.test.ts"
+dest = "apps/portal/src/lib/apiErrors.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/apiErrors.accept.test.ts {count}'
+count = 12
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/missingRoutes.accept.test.tsx"
+dest = "apps/portal/src/components/stage/missingRoutes.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx {count}'
+count = 3
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/useNow.accept.test.tsx"
+dest = "apps/portal/src/lib/useNow.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/useNow.accept.test.tsx {count}'
+count = 7
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/statusLine.accept.test.ts"
+dest = "apps/portal/src/lib/statusLine.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/statusLine.accept.test.ts {count}'
+count = 11
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/styles.accept.test.ts"
+dest = "apps/portal/src/styles/styles.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts {count}'
+count = 12
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/planRows.wait.accept.test.ts"
+dest = "apps/portal/src/lib/planRows.wait.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planRows.wait.accept.test.ts {count}'
+count = 8
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/rail.accept.test.tsx"
+dest = "apps/portal/src/components/rail/rail.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/rail/rail.accept.test.tsx {count}'
+count = 11
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/shell.accept.test.tsx"
+dest = "apps/portal/src/components/shell/shell.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/shell.accept.test.tsx {count}'
+count = 11
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/RunBand.accept.test.tsx"
+dest = "apps/portal/src/components/run/RunBand.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/run/RunBand.accept.test.tsx {count}'
+count = 9
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/PlanView.accept.test.tsx"
+dest = "apps/portal/src/components/stage/PlanView.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx {count}'
+count = 15
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/stream.accept.test.tsx"
+dest = "apps/portal/src/components/stream/stream.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx {count}'
+count = 7
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/TaskList.accept.test.tsx"
+dest = "apps/portal/src/components/stage/TaskList.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx {count}'
+count = 4
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/Workspace.accept.test.tsx"
+dest = "apps/portal/src/components/shell/Workspace.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/Workspace.accept.test.tsx {count}'
+count = 4
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08b-portal-polish/accept && mkdir -p src/test && cp $A/dom.tsx src/test/dom.tsx && for p in test/harness.accept.test.tsx lib/runState.accept.test.ts lib/planSet.accept.test.ts lib/apiErrors.accept.test.ts components/stage/missingRoutes.accept.test.tsx lib/useNow.accept.test.tsx lib/statusLine.accept.test.ts styles/styles.accept.test.ts lib/planRows.wait.accept.test.ts components/rail/rail.accept.test.tsx components/shell/shell.accept.test.tsx components/run/RunBand.accept.test.tsx components/stage/PlanView.accept.test.tsx components/stream/stream.accept.test.tsx components/stage/TaskList.accept.test.tsx components/shell/Workspace.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 501'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src 501'
 fail_msg = "the full suite, with every acceptance test, lacks 501 passing tests or has a failure"
 timeout_ms = 900000
 

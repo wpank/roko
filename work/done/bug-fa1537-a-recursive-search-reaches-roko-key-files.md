@@ -2,7 +2,7 @@
 id = "bug-fa1537"
 kind = "bug"
 title = "A recursive search reaches .roko key files: grep -r OPENAI . with a .roko/.env present passes both guards"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/claude_cli_guard", "roko-std/sandbox"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "49acd1711"
+last_verified_rev = "aec267cac"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report, checked on work/bug-77413c at 49acd1711)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py", "crates/roko-std/src/tool/builtin/sandbox/reads.rs"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["bug-69a002", "bug-77413c", "
 
 [[verify]]
 command = "python3 -c \"import json,os,subprocess,sys,tempfile; d=tempfile.mkdtemp(); os.makedirs(d+'/.roko'); open(d+'/.roko/.env','w').write('OPENAI_API_KEY=sk-test-123456789\\n'); g=os.path.abspath('crates/roko-agent/src/claude_cli_guard.py'); r=subprocess.run(['python3',g],input=json.dumps({'tool_name':'Bash','cwd':d,'tool_input':{'command':'grep -r OPENAI .'}}),text=True,capture_output=True,cwd=d); sys.exit(0 if r.returncode==2 else 1)\" && grep -rqw 'fn recursive_search_reaching_a_key_file_is_refused' crates/roko-std/src/ && cargo test -p roko-std --lib recursive_search_reaching_a_key_file_is_refused"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:13Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including recursive_search_reaching_a_key_file_is_refused (shared 165+12-row table, Python guard suites on 3.12/3.9). Merged 05f012355 (work/guard-l9 dde633b87)."
 +++
 
 ## Problem

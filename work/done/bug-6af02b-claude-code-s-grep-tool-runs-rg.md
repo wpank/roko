@@ -2,7 +2,7 @@
 id = "bug-6af02b"
 kind = "bug"
 title = "Claude Code's Grep tool runs rg --hidden, so a Grep at a workspace root reads .roko/.env unless .gitignore covers it; the guard's Grep rule doesn't apply the tree check"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/safety", "roko-std/sandbox"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "9fd38f50f"
+last_verified_rev = "aec267cac"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report on bug-fa1537 and bug-bb3262, branch work/guard-l9 at 4a75e9965)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py", "crates/roko-std/src/tool/builtin/sandbox/reads.rs"]
@@ -21,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["bug-fa1537", "bug-bb3262", "
 
 [[verify]]
 command = "grep -rqw 'fn grep_tool_at_a_workspace_root_cannot_read_a_key_file' crates/roko-agent/src/ && cargo test -p roko-agent --lib grep_tool_at_a_workspace_root_cannot_read_a_key_file"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:14Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T08:21:59Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including grep_tool_at_a_workspace_root_cannot_read_a_key_file. The original finding was wrong for roko's agents (bug-a66941's deny rules already reach Claude Code's Grep); what was fixed is the secret-holding roko config case. Merged 05f012355."
 +++
 
 ## Problem

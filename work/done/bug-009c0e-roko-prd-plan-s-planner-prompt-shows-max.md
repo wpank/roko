@@ -2,7 +2,7 @@
 id = "bug-009c0e"
 kind = "bug"
 title = "roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/prd"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "849449ded"
+last_verified_rev = "aec267cac"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-repin's report)"
 anchors = ["crates/roko-cli/src/prd.rs", "crates/roko-cli/src/commands/plan.rs"]
@@ -24,6 +24,13 @@ command = "! sed -n '/^async fn generate_plan_from_prd_with_outcome(/,/^}/p;/^pu
 
 [[verify]]
 command = "grep -qF '# Add [[task]] entries below' crates/roko-cli/src/commands/plan.rs && ! grep -F '# Add [[task]] entries below' crates/roko-cli/src/commands/plan.rs | grep -q max_parallel"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:19Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18; roko plan create's scaffold and the planner's retry prompt no longer write max_parallel = 1 (both verify parts pass). Merged d9ee47916 (work/gap-2623b2 44fd6ceb0) and earlier ce7156389."
 +++
 
 ## Problem

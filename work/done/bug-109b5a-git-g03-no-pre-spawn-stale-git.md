@@ -2,7 +2,7 @@
 id = "bug-109b5a"
 kind = "bug"
 title = "No pre-spawn stale .git/index.lock cleanup (with .git indirection) before agent dispatch"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "S"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "32938ad4b"
+last_verified_rev = "aec267cac"
 source = "tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::acquire", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks_unlocked", "crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::is_stale_lock"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-7ed79a", "gap-4ec59f", "
 
 [[verify]]
 command = "grep -qE 'clear_stale_index_lock|clean_stale_index_lock' crates/roko-cli/src/graph_task_dispatch.rs && grep -rqw 'fn stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection' crates/roko-cli/src && cargo test -p roko-cli --lib stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:25Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T08:38:20Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including stale_index_lock_is_cleared_before_dispatch_with_gitdir_indirection. Merged 8ae38c669 (work/gap-4ec59f 8a6c932ce)."
 +++
 
 ## Problem

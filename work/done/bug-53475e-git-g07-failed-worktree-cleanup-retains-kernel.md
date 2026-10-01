@@ -2,7 +2,7 @@
 id = "bug-53475e"
 kind = "bug"
 title = "Failed worktree cleanup retains kernel mutation lock requiring operator intervention"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "32938ad4b"
+last_verified_rev = "aec267cac"
 source = "tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/creation_journal.rs::retain_lock_if_cleanup_unproved", "crates/roko-cli/src/orchestrator/worktree/creation_journal.rs::acquire_repository_mutation_lock", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::start_owned_operation", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::mark_cleanup_unproved", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stuck_mutation_lock", "crates/roko-cli/src/orchestrator/worktree/mod.rs::REPOSITORY_MUTATION_LOCK", "crates/roko-cli/src/graph_execution/plan_runner.rs:1157"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-7ed79a", "gap-4ec59f", "
 
 [[verify]]
 command = "grep -rqw 'fn unproved_cleanup_fails_fast_instead_of_blocking_later_operations' crates/roko-cli/src && cargo test -p roko-cli --lib unproved_cleanup_fails_fast_instead_of_blocking_later_operations"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:25Z"
+by = "coordinator (session 7622b882)"
+size = "M"
+claimed_at = "2026-10-01T08:38:21Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including unproved_cleanup_fails_fast_instead_of_blocking_later_operations and a_contended_repository_lock_times_out_naming_its_holder. Merged 8ae38c669."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-4ed3c2"
 kind = "bug"
 title = "roko plan run ignores --config and loads the workspace roko.toml; only ROKO_CONFIG selects another config"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan-run", "roko-cli/graph-execution"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "32938ad4b"
+last_verified_rev = "aec267cac"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-cli/src/commands/plan.rs::cmd_plan_run_engine", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::GraphPlanRunParams", "crates/roko-core/src/config/loader.rs::find_config_path", "crates/roko-cli/src/main.rs::resolve_config_for_workdir"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-6bc156"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn plan_run_uses_the_config_flag' crates/roko-cli/ && cargo test -p roko-cli plan_run_uses_the_config_flag"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:21Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T09:07:54Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including the binary test plan_run_uses_the_config_flag (1/1). Merged d7cbcfc1f (work/bug-4ed3c2 630cee870)."
 +++
 
 ## Problem

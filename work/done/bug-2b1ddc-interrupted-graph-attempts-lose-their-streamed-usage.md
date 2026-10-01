@@ -2,7 +2,7 @@
 id = "bug-2b1ddc"
 kind = "bug"
 title = "Interrupted Graph attempts lose their streamed usage when the plan runner abandons them after the 3 s drain"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-cli/graph-dispatch"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "e22421998"
+last_verified_rev = "aec267cac"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::INTERRUPT_DRAIN_TIMEOUT", "crates/roko-cli/src/graph_execution/plan_runner.rs::force_exit", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetReservation", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["bug-690dc6", "q-1faa0c", "ga
 
 [[verify]]
 command = "grep -rqw 'fn an_interrupted_attempt_settles_the_usage_it_streamed' crates/roko-cli/src && cargo test -p roko-cli --lib an_interrupted_attempt_settles_the_usage_it_streamed"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:18Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including an_interrupted_attempt_settles_the_usage_it_streamed and roko-graph a_cancelled_dispatch_is_not_retried. Merged 39b520479."
 +++
 
 ## Problem

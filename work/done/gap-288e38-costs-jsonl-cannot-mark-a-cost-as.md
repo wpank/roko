@@ -2,7 +2,7 @@
 id = "gap-288e38"
 kind = "gap"
 title = "costs.jsonl cannot mark a cost as estimated: CostRecord has no usage-source field"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn/costs_db", "roko-cli/graph-dispatch"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "ea5fbe4b2"
+last_verified_rev = "aec267cac"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
 anchors = ["crates/roko-learn/src/costs_db.rs::CostRecord", "crates/roko-learn/src/costs_db.rs::create_cost_record", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-core/src/usage.rs::UsageSource", "crates/roko-cli/src/commands/diagnose.rs"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["bug-690dc6", "q-1faa0c", "bu
 
 [[verify]]
 command = "sed -n '/^pub struct CostRecord {/,/^}/p' crates/roko-learn/src/costs_db.rs | grep -qE 'pub (cost|usage)_source:' && grep -rqw 'fn a_timed_out_attempt_cost_record_is_marked_estimated' crates/roko-cli/src && cargo test -p roko-cli --lib a_timed_out_attempt_cost_record_is_marked_estimated"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:24Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T09:06:33Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including a_timed_out_attempt_cost_record_is_marked_estimated and rows_carry_their_cost_source; bench suite 373 passed (wk-tamper). Merged c9b6348d4 (work/gap-288e38 7623a1458)."
 +++
 
 ## Problem

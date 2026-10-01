@@ -2,7 +2,7 @@
 id = "bug-ae28ac"
 kind = "bug"
 title = "Daily and agent-lifetime budget limits are not enforced by the Graph engine"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-25
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "9f2da6a2b"
+last_verified_rev = "aec267cac"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::admit_task_budget", "crates/roko-cli/src/graph_task_dispatch/budget.rs::task_budget_ceiling_usd", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling", "crates/roko-learn/src/costs_log.rs::CostsLog::cost_today", "crates/roko-core/src/config/budget.rs::BudgetConfig"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["gap-d31457", "q-778b4f", "q-
 
 [[verify]]
 command = "grep -rqw 'fn graph_daily_budget_blocks_dispatch' crates/roko-cli/src/ && cargo test -p roko-cli graph_daily_budget_blocks_dispatch && ! grep -A1 -E '\"budget\\.max_(daily|agent_lifetime)_usd\"' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs | grep -q NOT_ENFORCED"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:20Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including graph_daily_budget_blocks_dispatch and the other budget tests, and roko-learn spend_on_counts_one_day_and_tells_unpriced_calls_apart. Merged 9669a2f16 (work/bug-ae28ac 68a8a3739)."
 +++
 
 ## Problem

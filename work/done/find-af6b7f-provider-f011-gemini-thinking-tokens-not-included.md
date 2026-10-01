@@ -2,7 +2,7 @@
 id = "find-af6b7f"
 kind = "finding"
 title = "Gemini thinking tokens not included in UsageObservation.output_tokens"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "S"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/gemini"]
 created = 2026-09-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "476e57f98"
+last_verified_rev = "aec267cac"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F011"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F011"
 anchors = ["crates/roko-agent/src/gemini/types.rs::UsageMetadata", "crates/roko-agent/src/gemini/native.rs::gemini_observation", "crates/roko-agent/src/gemini/types.rs::GeminiMetadata"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -Eq 'thoughtsTokenCount|thoughts_token_count' crates/roko-agent/src/gemini/types.rs && grep -rqw 'fn gemini_observation_counts_thoughts_as_output' crates/roko-agent/src/gemini/ && cargo test -p roko-agent gemini_observation_counts_thoughts_as_output"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:18Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including gemini_observation_counts_thoughts_as_output and streamed_gemini_usage_counts_thoughts_as_output. Merged 39b520479 (work/bug-2b1ddc 766f7ad53 + fixes cf722c1be, bed29287d)."
 +++
 
 ## Problem

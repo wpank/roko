@@ -2,7 +2,7 @@
 id = "bug-b9cb83"
 kind = "bug"
 title = "Gateway ThinkingConfig dropped at ModelCallerBackend boundary"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-gateway/provider"]
 created = 2026-09-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "e78145143"
+last_verified_rev = "aec267cac"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F023"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F023"
 anchors = ["crates/roko-gateway/src/provider.rs::ModelCallerBackend::request", "crates/roko-gateway/src/types.rs::ThinkingConfig", "crates/roko-core/src/foundation.rs::ModelCallRequest", "crates/roko-gateway/src/gateway.rs::GatewayConfig::from_model_caller", "crates/roko-agent/src/provider/mod.rs::AgentOptions", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::create_tool_loop_backend_with_api_key"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "sed -n '/fn request(&self, request: &InferenceRequest)/,/^    }/p' crates/roko-gateway/src/provider.rs | grep -q thinking && grep -rqw 'fn model_caller_backend_forwards_thinking_config' crates/roko-gateway/ && cargo test -p roko-gateway model_caller_backend_forwards_thinking_config"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:19Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including roko-gateway model_caller_backend_forwards_thinking_config and the roko-agent thinking tests (cache key, clamp, override). Merged 39b520479."
 +++
 
 ## Problem

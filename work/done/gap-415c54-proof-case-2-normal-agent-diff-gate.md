@@ -2,7 +2,7 @@
 id = "gap-415c54"
 kind = "gap"
 title = "Proof Case 2: Normal agent diff + gate + merge"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/runner"]
 created = 2026-09-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "a962bcab9"
+last_verified_rev = "aec267cac"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
@@ -22,6 +22,15 @@ command = "grep -rqw 'fn worktree_task_diff_is_gated_merged_and_cleaned' crates/
 
 [[verify]]
 command = "grep -rqw 'fn worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing' crates/roko-cli/tests && cargo test -p roko-cli --test worktree_task_diff worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:16Z"
+by = "coordinator (session 7622b882)"
+size = "M"
+claimed_at = "2026-10-01T08:38:19Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including the live binary runs worktree_task_diff_is_gated_merged_and_cleaned and worktree_task_that_fails_verify_keeps_its_worktree_and_merges_nothing (2/2). Attempt branches are kept by default; [runner] delete_attempt_branches opts in. Merged 8e8aed36f (work/gap-415c54 6ef2e40ac)."
 +++
 
 ## Problem

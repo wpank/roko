@@ -2,7 +2,7 @@
 id = "gap-161be1"
 kind = "gap"
 title = "Gate Verify Should Filter Pre-Existing Test Failures"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/runner"]
 created = 2026-09-07
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "d7070e368"
+last_verified_rev = "aec267cac"
 source = "tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
 discovered_from = "audit:tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs::GraphTaskDispatcher::judge_against_baseline", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks::settle_failed_step", "crates/roko-cli/src/runner/gate_dispatch.rs::run_focused_baseline_verify", "crates/roko-cli/src/runner/gate_report.rs::filter_preexisting_failures", "crates/roko-core/src/config/gates.rs"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-a534e4"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn preexisting_verify_failure_is_filtered' crates/roko-cli/ && cargo test -p roko-cli preexisting_verify_failure_is_filtered && grep -rqw 'fn new_failure_on_top_of_preexisting_still_rejects' crates/roko-cli/ && cargo test -p roko-cli new_failure_on_top_of_preexisting_still_rejects"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:22Z"
+by = "coordinator (session 7622b882)"
+size = "M"
+claimed_at = "2026-10-01T08:25:50Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including the baseline-verify dispatch and unit tests (preexisting_verify_failure_is_filtered and new_failure_on_top_of_preexisting_still_fails). Merged 096ed268a (work/gap-161be1 4bc969541)."
 +++
 
 ## Problem

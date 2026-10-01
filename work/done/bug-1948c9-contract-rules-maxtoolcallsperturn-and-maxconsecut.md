@@ -2,7 +2,7 @@
 id = "bug-1948c9"
 kind = "bug"
 title = "Contract rules MaxToolCallsPerTurn and MaxConsecutiveFailures never fire: nothing records the actions they count"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-agent/safety"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "ea5fbe4b2"
+last_verified_rev = "aec267cac"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e5-failover"
 anchors = ["crates/roko-agent/src/safety/contract.rs::orchestrator_actions", "crates/roko-agent/src/dispatcher/mod.rs:567"]
@@ -18,6 +18,14 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = 'grep -rq "fn max_tool_calls_per_turn_counts_dispatched_tools" crates/roko-agent && cargo test -p roko-agent max_tool_calls_per_turn_counts_dispatched_tools'
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:23Z"
+by = "coordinator (session 7622b882)"
+claimed_at = "2026-10-01T09:06:23Z"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including max_tool_calls_per_turn_counts_dispatched_tools. Merged 5202f230d."
 +++
 
 `MaxToolCallsPerTurn` and `MaxConsecutiveFailures` (and the cost total at contract.rs:861) count `orchestrator_actions(ctx)`, which excludes external actions whose service is `roko.tool_history`. The only production writer of `ToolContext` external actions is the dispatcher's per-call tool history (dispatcher/mod.rs:567), which uses exactly that service; `with_external_actions` is called only in tests. These rules therefore always see zero actions: for example, the researcher contract's `MaxToolCallsPerTurn: 12` can never trigger. `RequireToolBeforeEdit` is unaffected because it reads the tool history directly.

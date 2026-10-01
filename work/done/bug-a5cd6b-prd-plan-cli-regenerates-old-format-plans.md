@@ -2,7 +2,7 @@
 id = "bug-a5cd6b"
 kind = "bug"
 title = "roko prd plan regenerates every old-format plan in plans/ as a side effect"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-cli/prd"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "5fe2b64a5"
+last_verified_rev = "aec267cac"
 source = "plan:portal-programme/04-backend-plan-authoring#T15"
 discovered_from = "plan:portal-programme/04-backend-plan-authoring#T15"
 anchors = ["crates/roko-cli/src/prd.rs::regenerate_old_format_plans", "crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_outcome", "crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_model", "crates/roko-cli/src/commands/prd.rs:845", "crates/roko-cli/src/task_parser.rs::validate_modern_fields_content"]
@@ -21,6 +21,13 @@ command = "ls plans/ | wc -l && cargo run -p roko-cli -- prd plan <any-slug> && 
 
 [[verify]]
 command = "grep -q 'fn test_prd_plan_does_not_regenerate_other_plans' crates/roko-cli/src/prd.rs && cargo test -p roko-cli --lib prd::tests::test_prd_plan_does_not_regenerate_other_plans"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T13:44:20Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20e gate on 1a8aad603, re-checked with the compile fixes (cf722c1be, bed29287d), tiers' rustfmt (8a6c932ce) and the run-index scrub fix (d972959bd) on 32fe02384; MAIN aec267cac has the same crates: check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-acp/agent/cli/core/dreams/fs/gateway/graph/learn/neuro/serve/std; lib tests roko-cli 3305, roko-agent 2294, roko-core 1962, roko-learn 1213, roko-serve 991, roko-graph 478, roko-fs 260, roko-neuro 239, roko-std 229, roko-acp 199, roko-dreams 100, roko-gateway 42 all pass; extras: golden_path_suite 2/2, all eight canaries pass (secret_canary 11/11 and C2 2/2 after the scrub fix), worktree_task_diff 2/2, plan_run_config_flag 1/1, default_engine 1, bin 429, routing crash loop 10/10, bench driver 18, including prd::tests::test_prd_plan_does_not_regenerate_other_plans; regeneration is opt-in with --regenerate-old. Merged d9ee47916."
 +++
 
 `roko prd plan <slug>` calls `regenerate_old_format_plans` as a side effect. This function scans every directory under `plans/`, finds plans using the old flat-file format (not `tasks.toml`), and regenerates each one by sending a separate LLM request per plan. In a workspace with many old-format plans this:

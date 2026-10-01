@@ -12,9 +12,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) secrets and git guard
 
-- **28/33 closed** · goal `release` · severity p0
-- open by lane: rust-cold 5
-- next: none ready (5 unverified)
+- **31/33 closed** · goal `release` · severity p0
+- open by lane: rust-cold 2
+- next: none ready (2 unverified)
 
 ## [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) research paper, companion report and TL;DR upkeep
 
@@ -46,9 +46,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
 
-- **0/2 closed** · goal `golden-path` · severity p1
-- open by lane: rust-cold 2
-- next: none ready (2 unverified)
+- **1/2 closed** · goal `golden-path` · severity p1
+- open by lane: rust-cold 1
+- next: none ready (1 unverified)
 
 ## [spec-a0e40a](items/spec-a0e40a-epic-integration-and-a-whole-plan-check.md) integration and a whole-plan check
 
@@ -64,9 +64,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
-- **18/21 closed** · goal `golden-path` · severity p1
-- open by lane: docs 1, none 1, rust-cold 1
-- next: [bug-009c0e](items/bug-009c0e-roko-prd-plan-s-planner-prompt-shows-max.md) roko prd plan's planner prompt shows max_parallel = 1 in its required plan structure, so most plans run serially
+- **19/21 closed** · goal `golden-path` · severity p1
+- open by lane: docs 1, none 1
+- next: [find-70edcb](items/find-70edcb-df-0926-r-1-r-5-plan.md) Plan generation/validation does not flag weak verify gates
 
 ## [spec-98f76d](items/spec-98f76d-epic-tier-ladder-and-escalation.md) tier ladder and escalation
 
@@ -86,8 +86,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **24/28 closed** · goal `cybernetic` · severity p2
-- open by lane: rust-hot 3, none 1
+- **26/28 closed** · goal `cybernetic` · severity p2
+- open by lane: none 1, rust-hot 1
 - next: [gap-644040](items/gap-644040-no-way-to-run-with-learning-frozen.md) No way to run with learning frozen: prompts and routing change from run to run
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
@@ -113,9 +113,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 47 | 59 | 12 (0) |
 | docs | 14 | 15 | 1 (0) |
 | frontend | 1 | 1 | 0 (0) |
-| none | 174 | 390 | 216 (216) |
+| none | 190 | 391 | 201 (201) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 117 | 144 | 27 (1) |
-| rust-hot | 72 | 86 | 14 (0) |
+| rust-cold | 122 | 144 | 22 (0) |
+| rust-hot | 74 | 86 | 12 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 19 | 23 | 4 (0) |

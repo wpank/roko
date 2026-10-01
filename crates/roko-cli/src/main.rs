@@ -2210,8 +2210,8 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Override the plan cost ceiling for this run.
         ///
         /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
-        /// replacing whatever is configured in roko.toml.  The guardrail still
-        /// logs a warning when the ceiling is hit, but execution continues.
+        /// replacing whatever is configured in roko.toml. Once the plan has
+        /// spent it, no further task starts, as with a configured ceiling.
         /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
         #[arg(long, value_name = "AMOUNT")]
         budget_override: Option<f64>,

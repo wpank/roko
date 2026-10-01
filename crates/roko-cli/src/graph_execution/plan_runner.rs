@@ -508,8 +508,9 @@ const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
 /// 3. `config_max_plan_usd` (from `roko.toml [budget].max_plan_usd`)
 ///
 /// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
-/// when the caller explicitly provided a ceiling via the CLI (so the runner
-/// warns on overage instead of hard-blocking).
+/// only under `--no-budget`, which also lets a spent day dispatch. An explicit
+/// CLI ceiling is a hard cap, as a configured one is: once the plan has spent
+/// it, no further task starts (gap-d31457).
 pub fn resolve_budget_ceiling(
     budget_override: Option<f64>,
     no_budget: bool,
@@ -518,7 +519,7 @@ pub fn resolve_budget_ceiling(
     if no_budget {
         (0.0, true)
     } else if let Some(ceiling) = budget_override {
-        (ceiling.max(0.0), true)
+        (ceiling.max(0.0), false)
     } else {
         (config_max_plan_usd, false)
     }
@@ -957,7 +958,7 @@ async fn run_graph_plan_body(
         );
     }
 
-    let (plan_budget_ceiling, budget_override_active) = resolve_budget_ceiling(
+    let (plan_budget_ceiling, budget_bypassed) = resolve_budget_ceiling(
         budget_override,
         no_budget,
         f64::from(roko_config.budget.max_plan_usd),
@@ -1107,7 +1108,7 @@ async fn run_graph_plan_body(
     .with_plan_budget(
         plan_budget_ceiling,
         f64::from(roko_config.budget.max_turn_usd),
-        budget_override_active,
+        budget_bypassed,
     )
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
@@ -4066,6 +4067,23 @@ max_retries = 0
         assert_eq!(exit_code, EXIT_SUCCESS, "no two verify steps overlapped");
         for id in IDS {
             assert!(verified(narrow.path(), id), "{id}");
+        }
+    }
+
+    /// gap-d31457: `--budget-override` is a hard plan ceiling, as a configured
+    /// one is; only `--no-budget` lets dispatch go on past a spent budget.
+    #[test]
+    fn a_budget_override_is_a_hard_ceiling() {
+        for (budget_override, no_budget, expected) in [
+            (Some(2.0), false, (2.0, false)),
+            (Some(-1.0), false, (0.0, false)),
+            (None, false, (25.0, false)),
+            (None, true, (0.0, true)),
+        ] {
+            assert_eq!(
+                resolve_budget_ceiling(budget_override, no_budget, 25.0),
+                expected
+            );
         }
     }
 

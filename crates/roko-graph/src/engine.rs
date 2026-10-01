@@ -381,6 +381,9 @@ pub struct GraphEngine {
     event_sink: Option<Arc<dyn crate::events::GraphEventSink>>,
     /// Monotonic sequence counter for graph event emission.
     event_seq: crate::events::EventSeqCounter,
+    /// Events the event sink failed to take or dropped that no `Gap` it took
+    /// has reported yet (bug-4ba581).
+    lost_events: AtomicU64,
     /// Last complete per-node outputs for stateful Hot Graph ticks.
     tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
     /// Set to `true` after [`validate_for_start`] succeeds, so Hot Graph tick
@@ -408,6 +411,7 @@ impl GraphEngine {
             telemetry: None,
             event_sink: None,
             event_seq: crate::events::EventSeqCounter::new(),
+            lost_events: AtomicU64::new(0),
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
             allow_test_stubs: false,
@@ -2449,14 +2453,54 @@ impl GraphEngine {
     }
 
     /// Publish one graph execution event to the event sink, when one is
-    /// attached (reg-cbfff6). A failed delivery is logged: the sink observes
-    /// the run and does not stop it.
+    /// attached (reg-cbfff6). The sink observes the run and never stops it:
+    /// an event it fails to take, or drops, is lost, and the loss is reported
+    /// to it as a reliable `Gap` before its next event, right after the lost
+    /// one when it takes the `Gap` then (bug-4ba581).
     async fn publish_graph_event(&self, event: crate::events::GraphExecutionEvent) {
         let Some(sink) = &self.event_sink else {
             return;
         };
-        if let Err(error) = sink.publish(&event).await {
-            warn!(%error, event = event.variant_name(), "graph event delivery failed");
+        let run_id = event.common().run_id.clone();
+        self.report_lost_events(sink.as_ref(), &run_id).await;
+        if !Self::deliver_graph_event(sink.as_ref(), &event).await {
+            self.lost_events.fetch_add(1, Ordering::Relaxed);
+            self.report_lost_events(sink.as_ref(), &run_id).await;
+        }
+    }
+
+    /// Publish a `Gap` counting the events lost since the last one the sink
+    /// took, if any were.
+    async fn report_lost_events(&self, sink: &dyn crate::events::GraphEventSink, run_id: &str) {
+        let lost = self.lost_events.load(Ordering::Relaxed);
+        if lost == 0 {
+            return;
+        }
+        let gap = crate::events::GraphExecutionEvent::Gap {
+            common: crate::events::make_common(run_id, &self.graph.metadata.name, &self.event_seq),
+            lost_count: lost,
+        };
+        if Self::deliver_graph_event(sink, &gap).await {
+            self.lost_events.fetch_sub(lost, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether `sink` took `event`: neither failed to deliver it nor dropped
+    /// it. Either is logged.
+    async fn deliver_graph_event(
+        sink: &dyn crate::events::GraphEventSink,
+        event: &crate::events::GraphExecutionEvent,
+    ) -> bool {
+        match sink.publish(event).await {
+            Ok(crate::events::GraphEventDisposition::Dropped) => {
+                warn!(event = event.variant_name(), "graph event sink dropped an event");
+                false
+            }
+            Ok(_) => true,
+            Err(error) => {
+                warn!(%error, event = event.variant_name(), "graph event delivery failed");
+                false
+            }
         }
     }
 
@@ -6274,6 +6318,90 @@ to = "grandchild"
             self.events.lock().push(event.clone());
             Ok(crate::events::GraphEventDisposition::Acknowledged)
         }
+    }
+
+    /// A graph event sink that fails its first delivery and drops its third,
+    /// recording the events it takes.
+    #[derive(Default)]
+    struct FlakyGraphSink {
+        calls: AtomicU64,
+        events: parking_lot::Mutex<Vec<crate::events::GraphExecutionEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::events::GraphEventSink for FlakyGraphSink {
+        async fn publish(
+            &self,
+            event: &crate::events::GraphExecutionEvent,
+        ) -> std::result::Result<crate::events::GraphEventDisposition, crate::events::GraphEventError>
+        {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(crate::events::GraphEventError::DeliveryFailed {
+                    reason: "the observer is down".to_string(),
+                }),
+                2 => Ok(crate::events::GraphEventDisposition::Dropped),
+                _ => {
+                    self.events.lock().push(event.clone());
+                    Ok(crate::events::GraphEventDisposition::Acknowledged)
+                }
+            }
+        }
+    }
+
+    /// bug-4ba581: an event the sink fails to take, or drops, is reported to
+    /// it right after as a `Gap` counting the loss, and the run goes on.
+    #[tokio::test]
+    async fn a_failed_sink_delivery_is_reported_and_followed_by_a_gap() {
+        use crate::events::GraphExecutionEvent;
+
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "flaky-sink"
+
+[[nodes]]
+id = "first"
+cell_type = "sleep"
+config = { label = "first" }
+
+[[nodes]]
+id = "second"
+cell_type = "sleep"
+config = { label = "second" }
+
+[[edges]]
+from = "first"
+to = "second"
+"#,
+        )
+        .unwrap();
+        let log = Arc::new(SleepLog::default());
+        let sink = Arc::new(FlakyGraphSink::default());
+        let output = GraphEngine::new(graph, sleep_registry(&log))
+            .with_event_sink(sink.clone())
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+        assert!(output.success, "a failing observer does not stop the run");
+
+        let events = sink.events.lock().clone();
+        let names: Vec<&str> = events
+            .iter()
+            .map(GraphExecutionEvent::variant_name)
+            .collect();
+        // The first node's start failed and its completion was dropped: each
+        // is followed by a gap of one.
+        assert_eq!(names, ["Gap", "Gap", "NodeStarted", "NodeCompleted"]);
+        let gaps: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                GraphExecutionEvent::Gap { lost_count, .. } => Some(*lost_count),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gaps, [1, 1]);
+        let seqs: Vec<u64> = events.iter().map(|event| event.common().seq).collect();
+        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
     }
 
     /// reg-cbfff6: a sink attached with `with_event_sink` receives each

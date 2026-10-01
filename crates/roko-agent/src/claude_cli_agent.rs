@@ -330,6 +330,8 @@ pub struct ClaudeCliAgent {
     /// shared semaphores that enforce it (bug-eba31d).
     provider_id: Option<String>,
     provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
+    /// Where a run reports that it waits for its provider's permit.
+    live_output: Option<crate::live_output::LiveOutput>,
     name: String,
 }
 
@@ -369,6 +371,7 @@ impl ClaudeCliAgent {
             resource_limits: None,
             provider_id: None,
             provider_semaphores: None,
+            live_output: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -406,6 +409,43 @@ impl ClaudeCliAgent {
         self.provider_id = Some(provider_id.into());
         self.provider_semaphores = Some(provider_semaphores);
         self
+    }
+
+    /// Report on `live_output` when a run has to wait for its provider's
+    /// concurrency permit, and when it gets it, so that a stall watchdog
+    /// counts the wait as queued rather than silent.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: crate::live_output::LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Wait for this provider's concurrency permit when a cap applies
+    /// (bug-eba31d). A run that has to wait reports it on its live output,
+    /// and reports again once it has the permit and starts.
+    async fn provider_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let (Some(provider_id), Some(provider_semaphores)) =
+            (&self.provider_id, &self.provider_semaphores)
+        else {
+            return None;
+        };
+        if let Some(permit) = provider_semaphores.try_acquire(provider_id) {
+            return Some(permit);
+        }
+        self.report_queued(true).await;
+        let permit = provider_semaphores.acquire(provider_id).await.ok();
+        self.report_queued(false).await;
+        permit
+    }
+
+    /// Tell the live output, if any, whether the run waits for its permit.
+    async fn report_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .send(crate::live_output::LiveAgentEvent::Queued { waiting })
+                .await;
+        }
     }
 
     /// Override the reasoning-effort label passed to Claude.
@@ -1236,12 +1276,7 @@ impl ClaudeCliAgent {
         }
         // The provider's concurrency cap (bug-eba31d): wait for a permit
         // before spawning, and hold it until the run ends.
-        let _permit = match (&self.provider_id, &self.provider_semaphores) {
-            (Some(provider_id), Some(provider_semaphores)) => {
-                provider_semaphores.acquire(provider_id).await.ok()
-            }
-            _ => None,
-        };
+        let _permit = self.provider_permit().await;
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -3447,7 +3482,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
     }
 
     /// bug-eba31d: a run waits for its provider's concurrency permit
-    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`.
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`, and says
+    /// on its live output that it is queued, then that it got the permit.
     #[cfg(unix)]
     #[tokio::test]
     async fn claude_cli_waits_for_provider_permit() {
@@ -3486,8 +3522,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         );
         let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
         let held = semaphores.acquire("capped").await.expect("the only permit");
+        let (sink, mut events) = mpsc::channel(8);
         let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
-            .with_provider_semaphores("capped", Arc::clone(&semaphores));
+            .with_provider_semaphores("capped", Arc::clone(&semaphores))
+            .with_live_output(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            });
         let launched = tmp.path().join("launched");
 
         let input = prompt("go");
@@ -3499,6 +3540,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             "the run waits while the provider's only permit is held"
         );
         assert!(!launched.exists(), "claude is not spawned before a permit");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
 
         drop(held);
         let result = timeout(Duration::from_secs(10), run)
@@ -3506,6 +3551,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             .expect("the run ends once the permit is free");
         assert!(result.success, "{:?}", result.output.body.as_text());
         assert!(launched.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: false })
+        ));
     }
 
     /// gap-5d3b82: `claude` exits while a process it started still holds its

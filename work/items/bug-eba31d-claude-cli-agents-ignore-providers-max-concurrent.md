@@ -39,3 +39,15 @@ Fix: acquire the provider permit in the Claude CLI agent, or centrally in the fa
     first-output grace, and a queued call is no exception. With a low cap and long tasks, an attempt queued for
     more than `task_stall_secs` (300 s) is cancelled as stalled and burns a retry. It needs a "queued" signal the
     watchdog honours, or the permit taken before the watchdog's call start.
+- 2026-10-01 (wk-tiers): the follow-up above is fixed on work/bug-7cdce7; cargo verification deferred to the batch check.
+  - A run that has to wait for its permit (`ProviderSemaphores::try_acquire` fails) sends
+    `LiveAgentEvent::Queued { waiting: true }` on its live output (`ClaudeCliAgent::with_live_output`, wired by the
+    adapter). Once it has the permit it sends `waiting: false`.
+  - The stall watchdog counts no silence while a call is queued. On `waiting: false` it restarts the call's silence
+    and first-output grace from that moment. Neither event counts as progress the agent reported.
+  - Tests:
+    - `a_queued_call_is_not_silent_until_it_starts` (unit);
+    - `a_queued_attempt_is_not_cancelled_while_it_waits`: `max_concurrent = 1`, an 8 s first attempt, a 5 s
+      grace (`GraphTaskDispatcher::with_first_output_grace`, test-only) and `task_stall_secs = 3`, and both
+      attempts finish;
+    - `claude_cli_waits_for_provider_permit` now also checks both queue events.

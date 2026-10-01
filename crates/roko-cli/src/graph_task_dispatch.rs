@@ -256,6 +256,10 @@ pub struct GraphTaskDispatcher {
     /// Plans whose verified tasks wait for a person's approval before they
     /// are accepted (gap-0d64d5, [`Self::hold_for_approval`]).
     approval_plans: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// How long a streaming provider call may report nothing from its start
+    /// before the stall watchdog counts its silence
+    /// ([`watchdog::FIRST_OUTPUT_GRACE`]; tests shorten it).
+    first_output_grace: std::time::Duration,
 }
 
 impl GraphTaskDispatcher {
@@ -302,6 +306,7 @@ impl GraphTaskDispatcher {
             baselines: baseline_verify::Baselines::default(),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),
+            first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
         }
     }
 

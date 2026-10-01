@@ -85,7 +85,8 @@ pub use capabilities::{
     delegate, delegate_at,
 };
 pub use data_llm::{
-    DataLlmAuditEntry, DataLlmDecision, DataLlmRouter, SanitizeResult, sanitize_input,
+    DataLlmAuditEntry, DataLlmBoundary, DataLlmDecision, DataLlmRouter, DataLlmWithheld,
+    SanitizeResult, sanitize_input,
 };
 pub use hallucination::HallucinationDetector;
 pub use hooks::{

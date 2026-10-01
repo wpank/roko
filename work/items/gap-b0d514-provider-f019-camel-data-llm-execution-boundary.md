@@ -157,6 +157,16 @@ LLM failure blocks the content instead of passing it through.
   `graph_engine_inert_settings` reports the key, and the config docs say it protects nothing yet. Tests:
   `validate_invariants_rejects_a_data_llm_with_tools_or_no_bounds`, `validate_references_warns_on_unknown_data_llm_model`,
   the data_llm rows of `every_optional_config_key_survives_a_load` and `inert_settings_list_only_changed_keys_the_graph_engine_ignores`.
+- 2026-10-01 (wk-childenv): Plan step 2 (data-only caller) on work/gap-1555ac; cargo verification deferred to the
+  batch check. `DataLlmBoundary { router, backend }` in `safety/data_llm.rs` (re-exported from `safety`) is built
+  with `DataLlmBoundary::new(config, backend)`, which refuses `strip_tool_calls = false` or a zero bound. `process`
+  sanitizes, cuts the text to `max_input_bytes` at a character boundary, and sends only the fixed
+  `DATA_LLM_SYSTEM_PROMPT` (plus the configured output schema) and that text, with an empty tool list, through
+  `stream_turn` under `timeout_ms`, `max_tokens` and `temperature`. It never dispatches a tool call. A timeout, a
+  backend error, a response that asks for a tool, or output that fails `validate_output` is a `DataLlmWithheld`
+  that names no content. Building the backend from the provider factory belongs to step 6. Tests:
+  `data_llm_boundary_sends_only_the_fixed_prompt_and_the_text`, `data_llm_boundary_withholds_what_it_cannot_validate`,
+  `data_llm_boundary_bounds_its_input`, `data_llm_boundary_refuses_tools_and_unbounded_calls`.
 
 ## Original notes
 

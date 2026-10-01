@@ -27,7 +27,7 @@ Code-as-action skill library; 3.3x more unique behaviors. Grounds EvoSkills and 
 ## Meta-Harness and Scaffold Self-Improvement
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-6x performance gap from scaffold changes alone. Core thesis for Roko's approach: the scaffold IS the product.
+The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. Core thesis for Roko's approach: the scaffold IS the product.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Scaffold logic as natural language specifications. Makes scaffold design inspectable and portable.
@@ -124,7 +124,7 @@ Minimum Description Length compression prevents unbounded skill library growth. 
 Open-ended self-improvement through evolutionary architecture search.
 
 **[Liu & van der Schaar, 2025]** *Truly Self-Improving Agents Require Intrinsic Metacognitive Learning.* ICML 2025. arXiv:2506.05109.
-Intrinsic metacognition required for genuine self-improvement. Validates the meta-cognition step (Step 9: Daimon.assess()).
+Intrinsic metacognition required for genuine self-improvement. Motivates the meta-cognition step (Step 9: Daimon.assess()); it is a position paper, so this is Roko's mapping, not a validation.
 
 ---
 

@@ -450,8 +450,7 @@ approach is compatible: the tier multiplier and demurrage model generalize
 the basic Ebbinghaus curve with economic reinforcement.
 
 Memory Worth (arXiv:2604.12007) introduces outcome-grounded forgetting --
-evaluating each memory by its causal contribution to task success rather than
-by age alone. Roko's reinforcement signals partially implement this: the
+tracking how often each memory co-occurs with successful versus failed outcomes rather than relying on age alone; the paper stresses that this signal is associational, not causal (§3, §4.2). Roko's reinforcement signals partially implement this: the
 `Gated` signal specifically rewards knowledge that contributed to gate success.
 The catalytic score (`catalytic_score` field) extends this further by tracking
 how many new entries each entry helped create, enabling autocatalysis
@@ -1365,8 +1364,7 @@ least `min_tag_overlap` tags in common.
   make kind assignment itself adaptive.
 
 - **Memory Worth** (arXiv:2604.12007). Outcome-grounded forgetting metric --
-  evaluating memory by causal contribution to task success rather than age
-  alone. Roko's `Gated` reinforcement signal and catalytic score partially
+  tracking how often a memory co-occurs with success versus failure rather than relying on age alone (associational, not causal, as the paper stresses; §3, §4.2). Roko's `Gated` reinforcement signal and catalytic score partially
   implement this.
 
 - **FadeMem** (arXiv:2601.18642). Validates the Ebbinghaus-based decay

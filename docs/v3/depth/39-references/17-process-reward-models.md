@@ -36,7 +36,7 @@ When the same model generates and judges, it learns to produce outputs that scor
 ## Agent Process Reward Models (2025--2026)
 
 **[Xi et al., 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
-Continuous progress signals via temporal-difference estimation + Generalized Advantage Estimation. 8x compute efficiency for verification compared to outcome-only methods. Target for upgrading Roko's gate pipeline from binary pass/fail to continuous progress signals. The TD-based approach would allow gates to provide gradient information, not just accept/reject.
+Continuous progress signals via temporal-difference estimation + Generalized Advantage Estimation. Over 8x more compute-efficient than baseline reward models (outcome reward models and step-value models) in Best-of-N search (§1, §4.2). Target for upgrading Roko's gate pipeline from binary pass/fail to continuous progress signals. The TD-based approach would allow gates to provide gradient information, not just accept/reject.
 
 **[Agrawal et al., 2026]** *GEPA: Reflective Prompt Evolution.* ICLR (Oral) 2026. arXiv:2507.19457.
 Process-level feedback for prompt evolution. Applicable to CascadeRouter optimization -- prompts evolve based on per-step verification outcomes rather than final task outcomes only.

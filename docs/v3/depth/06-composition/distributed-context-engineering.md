@@ -17,9 +17,7 @@ articulated the key reframing: the real skill in building LLM applications
 is not prompt engineering (phrasing instructions well) but context engineering
 (managing the entire information environment the model sees).
 
-The **ACE** framework (arXiv:2510.04618, Anthropic) formalized autonomous
-context engineering as the baseline for agents that maintain their own working
-memory. Roko's composition system extends ACE with the VCG auction for
+The **ACE** framework (Zhang et al., Stanford, SambaNova and UC Berkeley; arXiv:2510.04618) treats contexts as evolving playbooks that a Generator, Reflector and Curator update incrementally (§3); it is the baseline PEEK compares against. Roko's composition system extends ACE with the VCG auction for
 multi-subsystem allocation and the PEEK orientation cache for session-persistent
 context.
 
@@ -180,17 +178,17 @@ context, no conversation history, no mystery.
 
 ## 4. The Meta-Harness Evaluation
 
-Lee et al. (2026, arXiv:2603.28052) evaluated coding agents across scaffolds:
+Lee et al. (2026, arXiv:2603.28052) search over harness code with a coding-agent proposer (§3):
 
 | Finding | Measurement | Implication |
 |---------|-------------|-------------|
-| **6x performance gap** from scaffold changes alone | Same model, different scaffolds | Scaffold > model quality |
-| **4x fewer input tokens** in the best scaffolds | Token usage comparison | Better context engineering = less input |
-| **Scaffold diversity matters** | Performance across task types | No single scaffold dominates all tasks |
+| **+7.7 points** over ACE on online text classification | Same model, discovered harness vs. ACE (§4.1) | The harness alone moves accuracy |
+| **4x fewer context tokens** than ACE at that accuracy | Token usage comparison (§4.1) | Better context engineering = less input |
+| **+4.7 points** on 200 IMO-level problems | One discovered retrieval harness, five held-out models (§4.2) | A harness can transfer across models |
 
-The 6x gap validates Roko's core premise: the scaffold IS the product. Investing
-in better context engineering produces more improvement than upgrading to a more
-expensive model. The 4x token reduction means better scaffolds are also cheaper.
+The 6x gap often quoted with this paper is SWE-bench Mobile's result (Tian et al. 2026), which Meta-Harness
+cites in §1. Roko reads these results as support for its core premise that the scaffold IS the product; that
+is Roko's thesis, not a claim the paper makes. The 4x token reduction means better scaffolds can also be cheaper.
 
 ---
 
@@ -324,7 +322,7 @@ baseline for agents that maintain their own working memory. Roko's PEEK
 orientation cache targets 1.7-5.8x improvement over ACE.
 
 **Lee et al. (2026), "Meta-Harness: Evaluating Coding Agents Across Scaffolds."**
-arXiv:2603.28052. The 6x performance gap and 4x token reduction findings.
+arXiv:2603.28052. Its +7.7 points at 4x fewer context tokens (§4.1); the 6x harness gap it quotes in §1 is SWE-bench Mobile's result.
 
 **Zaharia et al. (2024), "The Shift to Compound AI Systems."** BAIR.
 State-of-the-art from composing components, not scaling single models.

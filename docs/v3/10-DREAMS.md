@@ -1307,12 +1307,7 @@ stable long-term representations. This goes beyond reorganizing stored
 records -- it modifies the model's internal representations to encode
 generalizable schemas.
 
-**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Shows that offline
-recurrence -- revisiting and reprocessing past experiences during idle
-periods -- produces measurably better downstream performance than
-continuous waking-only processing. The key finding: recurrence must be
-structured (not random replay) and must extract abstractions that transfer
-across tasks.
+**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Proposes a sleep phase for language models: the model runs N offline recurrent passes over its accumulated context, writes the result into fast weights in its state-space blocks and then clears its KV cache (§5). On synthetic tasks and a math-reasoning task where plain transformers and SSM-attention hybrids fail, longer sleep (larger N) improves accuracy, most on examples that need deeper reasoning (abstract, §6). It is an architecture-level mechanism; it does not compare structured with random replay or test transfer across tasks.
 
 ### Target data flow
 

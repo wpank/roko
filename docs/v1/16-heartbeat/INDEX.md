@@ -38,7 +38,7 @@ This topic spans L0 Runtime (HeartbeatPolicy, adaptive clock, CorticalState, Bus
 
 | # | Sub-doc | What it covers |
 |---|---|---|
-| 00 | [CoALA 9-Step Pipeline](./00-coala-9-step-pipeline.md) | Historical CoALA-derived heartbeat framing, now retold against Roko's canonical seven-step SENSE / ASSESS / COMPOSE / ACT / VERIFY / PERSIST + BROADCAST / REACT loop. Academic predecessors (Soar, ACT-R, CLARION). OODA loop mapping. |
+| 00 | [CoALA-Inspired 9-Step Pipeline](./00-coala-9-step-pipeline.md) | Historical CoALA-derived heartbeat framing, now retold against Roko's canonical seven-step SENSE / ASSESS / COMPOSE / ACT / VERIFY / PERSIST + BROADCAST / REACT loop. Academic predecessors (Soar, ACT-R, CLARION). OODA loop mapping. |
 | 01 | [Universal Loop Mapping](./01-universal-loop-mapping.md) | CoALA-to-universal-loop translation for the seven-step canonical heartbeat, with BROADCAST co-equal to PERSIST and cross-cuts injected rather than sequenced. Layer traversal. Domain parameterization (coding, chain, research). |
 | 02 | [Chain Heartbeat Variant](./02-chain-heartbeat-variant.md) | Chain-specific heartbeat extensions, including historical SIMULATE/VALIDATE pre-flight checks, custody modes, and the Sleepwalker 3-step variant (OBSERVE → REFLECT → PUBLISH). |
 | 03 | [Three Cognitive Speeds](./03-three-cognitive-speeds.md) | Gamma (5-15s reactive), Theta (75s reflective), Delta (hours consolidation). Nested hierarchy. Bus topics and topic subscribers. Cost model per speed. |

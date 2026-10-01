@@ -52,6 +52,12 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
   - Workers commit only on their own branch `work/<id>`, in their own worktree.
   - The orchestrator merges passing branches into the current working branch of the main checkout with
     `git merge --no-ff work/<id>`, without asking each time. It never merges into `main` and never pushes.
+  - Several sessions merge and commit in the main checkout, so every merge or commit there runs under the shared
+    lock, after checking that no merge is in progress, and stages explicit paths only (never `git add -A` or
+    `git add work/`):
+    `lockf -k -t 900 "$(git rev-parse --git-common-dir)/roko-merge.lock" bash -c 'test ! -e "$(git rev-parse --git-path MERGE_HEAD)" && git merge --no-ff work/<id> -m "…"'`
+    (macOS `lockf`; on Linux use `flock -w 900` with the same lock file). Workers committing in their own
+    worktree do not need the lock.
   - After each merge, re-run the item's `[[verify]]` on the merged tree. If it fails, stop merging and report.
   - The main checkout may have other sessions' uncommitted changes. Never stash, reset, restore, force or check
     out anything there. If git refuses a merge because of local changes or a conflict, run `git merge --abort`

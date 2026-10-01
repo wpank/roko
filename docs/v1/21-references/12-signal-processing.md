@@ -76,10 +76,10 @@ Roko agents operate at three cognitive frequencies — Gamma (~5-15s), Theta (~7
 - Persistent Homology-Based Algorithm for Unsupervised Anomaly Detection in Time Series (2025). OpenReview.
   *Grounds: TDA anomaly detection — algorithm using delay embeddings and 1-dimensional persistent homology from distance-to-measure Rips filtration for unsupervised anomaly detection. Competitive with state-of-the-art methods. Applicable to Roko's drift detection in agent performance streams.*
 
-- Multivariate Time-Series Anomaly Detection with Topological Analysis (2024). arXiv:2408.13082.
+- Multivariate Time-Series Anomaly Detection based on Enhancing Graph Attention Networks with Topological Analysis (2024). arXiv:2408.13082.
   *Grounds: Graph-TDA anomaly detection — enhanced GAT modeling higher-order topological features as persistent homology groups under varying graph filtering degrees. Improves accuracy of inter-feature dependency modeling. Applicable to monitoring correlated agent performance metrics.*
 
-- Change Point Detection in Financial Time Series Using TDA (2025). _Systems_, 13(10), 875.
+- Change Point Detection in Financial Market Using Topological Data Analysis (2025). _Systems_, 13(10), 875.
   *Grounds: TDA change points — Takens embedding and sliding window techniques transform time series into high-dimensional topological space for change point detection. Applicable to detecting regime changes in agent execution patterns.*
 
 ---

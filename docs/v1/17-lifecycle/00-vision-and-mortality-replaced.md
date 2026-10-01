@@ -130,7 +130,7 @@ The mortality research contained genuine insights about knowledge management, ex
 
 **New**: The Daimon tracks cognitive performance via PAD vectors, producing behavioral states that modulate the same behavioral channels (exploration temperature, risk tolerance, sharing thresholds) but driven by task success, resource availability, and knowledge freshness — not by death proximity.
 
-**Citations preserved**: Damasio, A. _Descartes' Error_. 1994. Bechara, A. et al. "Emotion, Decision Making and the Orbitofrontal Cortex." _Cerebral Cortex_ 10(3), 2000. Bower, G.H. "Mood and Memory." _American Psychologist_ 36(2), 1981. Plutchik, R. _Emotion: A Psychoevolutionary Synthesis_. 1980. Cabrera-Paniagua, D. & Rubilar-Torrealba, R. "Autonomous stock market agents with somatic markers." _JAIHC_, 2023. — All now cited in the context of Daimon PAD computation and somatic marker retrieval (see `docs/04-daimon/`).
+**Citations preserved**: Damasio, A. _Descartes' Error_. 1994. Bechara, A. et al. "Emotion, Decision Making and the Orbitofrontal Cortex." _Cerebral Cortex_ 10(3), 2000. Bower, G.H. "Mood and Memory." _American Psychologist_ 36(2), 1981. Plutchik, R. _Emotion: A Psychoevolutionary Synthesis_. 1980. — All now cited in the context of Daimon PAD computation and somatic marker retrieval (see `docs/04-daimon/`).
 
 ### Dreams (Death-Approach Triggered) → Idle/Scheduled Consolidation
 

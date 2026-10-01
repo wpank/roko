@@ -10,10 +10,10 @@ subsystem = ["roko-cli/graph-execution", "roko-fs/resources"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "f99e45dba"
 source = "gaps-md#resource-and-disk-lifecycle-e47----resolved-2026-08-13"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:3374", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider::acquire", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-conductor/src/watchers/worktree_count.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

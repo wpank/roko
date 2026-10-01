@@ -234,7 +234,7 @@ All citations referenced across the 03-composition sub-docs:
 | 44 | Itti & Baldi (2005), Bayesian Surprise [NeurIPS] | [07](07-active-inference-context-selection.md), [09](09-predictive-foraging-mvt.md) |
 | 45 | Kapoor et al. (2025), AI Agents That Matter [Princeton] | [11](11-distributed-context-engineering.md) |
 | 46 | Miller (2024), Clustered Standard Errors [Anthropic] | [11](11-distributed-context-engineering.md) |
-| 47 | CLEAR Framework (2025) | [05](05-token-budget-management.md), [11](11-distributed-context-engineering.md) |
+| 47 | CLEAR (Mehta 2025, arXiv:2511.14136) | [05](05-token-budget-management.md), [11](11-distributed-context-engineering.md) |
 | 48 | Contextual Influence Value (2025), Shanghai Jiao Tong | [11](11-distributed-context-engineering.md) |
 | 49 | McClelland, McNaughton, O'Reilly (1995), CLS Theory | (background, knowledge consolidation) |
 | 50 | Grassé (1959), Stigmergy | (background, collective knowledge) |

@@ -64,7 +64,9 @@
 # the file out. A command after a cd is judged where it runs. roko itself
 # refuses to load such a file (the secret belongs in .roko/.env), so this
 # matters for a secret added while roko runs; a script or a variable can
-# still hide the read.
+# still hide the read. roko-std's bash tool applies the same rules
+# (sandbox/reads.rs), and both test the commands in roko-std's
+# sandbox/secret_read_cases.txt.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking

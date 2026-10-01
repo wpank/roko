@@ -814,6 +814,13 @@ pub struct AttemptVerdictRecord {
     /// is off or did not route the attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ladder: Option<AttemptLadder>,
+    /// How the agent run was kept apart from the invoking user's own
+    /// configuration, as the agent reported it: a Claude CLI run's
+    /// isolation tags (`setting_sources`, `mcp_servers`, `auto_memory`,
+    /// `config_dir`, `shell_snapshot`). Empty for an agent that reports
+    /// none (gap-751ac9).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub isolation: BTreeMap<String, String>,
     /// `sha256` of the provider request.
     #[serde(default)]
     pub request_sha256: Option<String>,
@@ -855,6 +862,7 @@ impl AttemptVerdictRecord {
             cost: AttemptCost::default(),
             helpers: None,
             ladder: None,
+            isolation: BTreeMap::new(),
             request_sha256: None,
             output_sha256: None,
             diff_sha256: None,

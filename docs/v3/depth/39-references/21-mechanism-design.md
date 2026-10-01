@@ -24,9 +24,9 @@ Comprehensive applied auction theory. Foundation for efficient VCG implementatio
 
 ---
 
-## Mechanism Design for LLMs (2024)
+## Mechanism Design for Large Language Models (2024)
 
-**[Duetting et al., 2024]** *Mechanism Design for LLMs.* ACM WWW Best Paper 2024. arXiv:2310.10826.
+**[Duetting et al., 2024]** *Mechanism Design for Large Language Models.* ACM WWW Best Paper 2024. arXiv:2310.10826.
 Token auction model for multi-LLM output generation. Multiple LLMs "bid" for tokens in generated output. Extends VCG to token granularity, showing that mechanism design principles apply at the finest level of LLM interaction. Directly informs the multi-provider dispatch architecture where providers compete for task allocation.
 
 ---
@@ -84,7 +84,7 @@ Economics of bundling information goods. Informs how knowledge bundles (playbook
 
 ## Agent Marketplace (2025)
 
-**[Agent Exchange (AEX), 2025]** *Agent Exchange: Shaping the Future of AI Agent Economics.* arXiv:2507.03904.
+**[Yang et al., 2025]** *Agent Exchange: Shaping the Future of AI Agent Economics.* arXiv:2507.03904.
 RTB-inspired auction engine for agent task allocation with User-Side Platform, Agent-Side Platform, Agent Hubs, and Data Management Platform. Informs the Artifact Marketplace design in `roko-chain`.
 
 ---
@@ -94,7 +94,7 @@ RTB-inspired auction engine for agent task allocation with User-Side Platform, A
 **[Tacchetti et al., 2024]** *Deep mechanism design: Learning social and economic policies for human benefit.* PNAS 2024.
 RL-trained neural networks create desirable mechanisms. Validates learned allocation mechanisms as alternatives to hand-designed VCG.
 
-**[Anonymous, 2024]** *Automated Mechanism Design Survey.* ACM SIGecom Exchanges, 22(2).
+**[Curry et al., 2024]** *Automated Mechanism Design Survey.* ACM SIGecom Exchanges, 22(2).
 Comprehensive survey of differentiable economics and neural auction design. Maps the landscape of automated mechanism design.
 
 **[Zeng et al., 2025]** *Regularized Proportional Fairness Mechanism for Resource Allocation Without Money.* ICLR 2025. arXiv:2501.01111.

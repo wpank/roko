@@ -98,7 +98,7 @@ This topic connects to:
 - Baddeley 2000 — Working memory model (episodic buffer) for context assembly.
 - Barrett 2017 — Constructed emotion from prediction residuals.
 - Sun et al. 2005 — CLARION dual-level cognitive architecture.
-- Koudahl et al. 2024 — Factorized discrete POMDP for tractable active inference (arXiv:2412.10425).
+- Prakki 2024 — Factorized discrete POMDP for tractable active inference (arXiv:2412.10425).
 - McClelland et al. 1995 — Complementary learning systems. Fast/slow memory consolidation.
 - Clark 2013 — "Whatever Next?" Predictive processing at multiple timescales.
 - Sims 2003 — Rational inattention (Journal of Monetary Economics).

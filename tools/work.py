@@ -398,7 +398,7 @@ def compute_drift(items, stale_days: int = STALE_DAYS, today: dt.date | None = N
                     d["gone"].append(a)
             hits = by_file.get(path, []) if p.is_file() else [c for f, cs in by_file.items() if f.startswith(path + "/") for c in cs]
             for c in hits:
-                if not after_check(c) or (c[0], c[2]) in {(t[0], t[2]) for t in d["touched"]}:
+                if not after_check(c) or own in c[4] or (c[0], c[2]) in {(t[0], t[2]) for t in d["touched"]}:
                     continue
                 if path not in whole and symbols.get(path) and not patch_mentions(c[0], path, symbols[path]):
                     continue
@@ -876,6 +876,7 @@ def rewrite_item(it, *, status=None, closed=None, verify=None, anchors=None, dup
         other = [b for b in rest if b[0].strip() != "[[repro]]"]
         blocks = repro + [["[[verify]]", f"command = {tomlstr(c)}"] for c in verify] + other
     if closed:
+        top = [ln for ln in top if not ln.startswith("hold = ")]  # a closed item is no longer on hold
         blocks = [b for b in blocks if b[0].strip() != "[closed]"]
         blocks.append(["[closed]"] + [f"{k} = {v if k == 'at' else tomlstr(str(v))}" for k, v in closed.items() if v])
     if note:
@@ -998,10 +999,11 @@ def touched_report(rev: str, items) -> list[str]:
     files = set(git("diff", "--name-only", base, tip).split()) if git_ok("rev-parse", "--verify", "-q", base) else \
         set(git("show", "--format=", "--name-only", tip).split())
     opened = [i for i in items if i.get("status") in OPEN]
+    edited = {i["id"] for i in items if str(i["_path"].relative_to(REPO)) in files}  # the commit updated the item itself
     hit, lines = [], []
     for it in opened:
         paths = [p for p, _ in (anchor_parts(a) for a in it.get("anchors") or []) if p]
-        if any(f == p or f.startswith(p + "/") for p in paths for f in files):
+        if it["id"] not in edited and any(f == p or f.startswith(p + "/") for p in paths for f in files):
             hit.append(it)
     claimed = {iid for m in CLOSE_RE.finditer(msgs) for iid in ID_ANY.findall(m.group(1))}
     mentioned = set(ID_ANY.findall(msgs)) - claimed
@@ -1013,7 +1015,7 @@ def touched_report(rev: str, items) -> list[str]:
     for it in sorted(hit, key=sev_key):
         if it["id"] not in claimed:
             lines.append(f"touched {it['id']} [{it['severity']}] {it['title']} — {it['_path'].relative_to(REPO)}")
-    for iid in sorted(mentioned):
+    for iid in sorted(mentioned - edited):
         it = by_id.get(iid)
         if it and it["id"] not in {h["id"] for h in hit}:
             lines.append(f"mentions {iid} ({it['status']}): {it['title']}")
@@ -1061,11 +1063,19 @@ def cmd_hook(a):
         if not top or not (Path(top) / "work" / "items").is_dir():
             return
         set_repo(top)
-        ts = git("log", "-1", "--format=%ct").strip()
-        if not ts or time.time() - int(ts) > 300:
-            return  # the commit did not happen (or is old): say nothing
-        closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False), quiet=True)
-        report = touched_report("HEAD", [i for k in ROOTS for i in load(k)[0]])
+        resp = payload.get("tool_response")
+        out = resp if isinstance(resp, str) else "\n".join(str((resp or {}).get(k) or "") for k in ("stdout", "output", "stderr"))
+        made = re.search(r"^\[[^\]\n]*?\s([0-9a-f]{7,40})\]", out, re.M)  # git commit prints "[branch abc1234] subject"
+        if made:
+            rev = made.group(1)
+        elif re.search(r"\s(?:-q|--quiet)\b", cmd) and time.time() - int(git("log", "-1", "--format=%ct").strip() or 0) < 120:
+            rev = head_rev()  # a quiet commit prints nothing; accept a HEAD made in the last two minutes
+        else:
+            return  # no commit was made by this command: say nothing
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            closed, conflicts = cmd_sync(argparse.Namespace(dry_run=False), quiet=True)
+        report = touched_report(rev, [i for k in ROOTS for i in load(k)[0]])
         if not (closed or conflicts or report):
             return
         msg = ["Work graph check for this commit (tools/work.py):"]
@@ -1075,6 +1085,7 @@ def cmd_hook(a):
                    "--evidence \"…\" (or add `Closes: <id>` to the next commit message). If it only changed the code an item "
                    "describes, re-check the item. Closures made here are uncommitted edits under work/; commit them with your "
                    "next commit, then run tools/work.py render.")
+        msg[0] = f"Work graph check for commit {rev} (tools/work.py):"
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n".join(msg)}}))
     except Exception:  # noqa: BLE001 - a hook must never break the session
         return

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6-7
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/plans.rs", "crates/roko-core/src/config/learning.rs::LearningConfig", "docs/v3/", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4", "bug-919fe8", "bug-c1950e", "bug-7df50d", "dec-01be49", "gap-4b3bd5", "bug-779ae7", "bug-ccfa0d", "gap-d0f52f", "bug-a70def", "bug-f3969d", "gap-3505fb", "gap-603aa4", "bug-fbefe0"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4", "bug-919fe8", "bug-c1950e", "bug-7df50d", "dec-01be49", "gap-4b3bd5", "bug-779ae7", "bug-ccfa0d", "gap-d0f52f", "bug-a70def", "bug-f3969d", "gap-3505fb", "gap-603aa4", "bug-fbefe0", "bug-f1f814", "bug-ddd5bd"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-serve/src/routes/plans/run_control.rs && ! grep -qE 'enum (LearnCmd|PlanCmd) [{]' crates/roko-cli/src/main.rs && grep -q '^dream_on_completion = false' roko.toml && ! grep -q 'This is law' docs/v3/30-CONDUCTOR.md"
@@ -103,7 +103,7 @@ This is the implementation plan.
 - [ ] bug-7df50d: Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock
 - [ ] dec-01be49: Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions
 - [ ] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
-- [ ] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
+- [x] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
 - [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
 - [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
 - [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
@@ -111,6 +111,8 @@ This is the implementation plan.
 - [x] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
 - [x] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
+- [ ] bug-f1f814: graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load
+- [ ] bug-ddd5bd: error_pattern_store's append_preserves_first_seen_timestamp fails when two appends share a timestamp tick
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

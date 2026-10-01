@@ -6874,6 +6874,7 @@ dependencies = [
  "async-trait",
  "parking_lot",
  "proptest",
+ "regex",
  "reqwest 0.12.28",
  "roko-chain",
  "roko-core",

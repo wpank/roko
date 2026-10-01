@@ -228,7 +228,6 @@ impl TaskDef {
     pub fn unused_hints(&self) -> Vec<&'static str> {
         let hints = &self.hints;
         [
-            ("quality_profile", hints.quality_profile.is_some()),
             ("context_weight", hints.context_weight.is_some()),
             ("skills", hints.skills.is_some()),
             ("plan_section", hints.plan_section.is_some()),

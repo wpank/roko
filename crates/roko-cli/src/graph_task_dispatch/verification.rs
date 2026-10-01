@@ -1308,14 +1308,17 @@ impl GraphTaskDispatcher {
         runs
     }
 
-    /// The workspace rungs a task of `spec`'s plan faces: the required
-    /// `[[gates.rungs]]`, none when the plan opts out.
-    pub(super) fn plan_rungs(
+    /// The workspace rungs an attempt at `task` of `spec`'s plan faces: the
+    /// `[[gates.rungs]]` [`task_runs_rung`] picks, none when the plan opts
+    /// out.
+    pub(super) fn task_rungs(
         &self,
         spec: &TaskExecutionSpec,
+        task: &TaskDef,
     ) -> impl Iterator<Item = &roko_core::config::GateRungConfig> {
         let runs = self.plan_runs_workspace_rungs(spec);
-        self.config.gates.required_rungs().filter(move |_| runs)
+        let rungs = self.config.gates.custom_rungs.iter();
+        rungs.filter(move |rung| runs && task_runs_rung(task, rung))
     }
 
     /// The verify steps an attempt at `task` runs, labelled
@@ -1325,7 +1328,7 @@ impl GraphTaskDispatcher {
         spec: &TaskExecutionSpec,
         task: &TaskDef,
     ) -> Vec<(String, crate::task_parser::VerifyStep)> {
-        attempt_verify_steps(task, self.plan_rungs(spec))
+        attempt_verify_steps(task, self.task_rungs(spec, task))
     }
 
     /// `task` as its prompt shows it: with every verify step that will judge
@@ -1339,6 +1342,22 @@ impl GraphTaskDispatcher {
             .collect();
         prompt_task
     }
+}
+
+/// Whether an attempt at `task` runs the workspace rung `rung`: a required
+/// rung with a command always, and an optional one when the task's
+/// gate-profile hints ask for it (gap-69a56e). A `quality_profile =
+/// "hardened"` task runs every declared rung, and a task that names
+/// `test_invariants` also runs the rungs that run tests.
+fn task_runs_rung(task: &TaskDef, rung: &roko_core::config::GateRungConfig) -> bool {
+    if rung.command.trim().is_empty() {
+        return false;
+    }
+    let invariants = task.hints.test_invariants.as_deref().unwrap_or_default();
+    let test_rung = matches!(rung_for_gate_name(&rung.name), Some(roko_gate::Rung::Test));
+    rung.required
+        || task.hints.quality_profile == Some(roko_core::TaskQualityProfile::Hardened)
+        || (test_rung && !invariants.is_empty())
 }
 
 /// The verify steps an attempt at `task` runs, each with its label: the
@@ -2419,6 +2438,45 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let text = prompt();
         assert!(text.contains("true # the own step"), "{text}");
         assert!(!text.contains("the lint rung"), "opted out:\n{text}");
+    }
+
+    /// gap-69a56e: a task's gate-profile hints choose optional workspace
+    /// rungs. A hardened task runs every declared rung, a task that names test
+    /// invariants also the rungs that run tests, and any other task only the
+    /// required ones.
+    #[tokio::test]
+    async fn quality_profile_and_test_invariants_select_gate_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                config.gates.custom_rungs = vec![
+                    rung("compile", "true # compile", true),
+                    rung("test", "true # test", false),
+                    rung("audit", "true # audit", false),
+                ];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = Vec::new();
+        let rungs_of = |task: &TaskDef| -> Vec<String> {
+            dispatcher
+                .verify_steps(&make_spec(task), task)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect()
+        };
+        assert_eq!(rungs_of(&task), ["rung[compile]"]);
+
+        let mut invariants = task.clone();
+        invariants.hints.test_invariants = Some(vec!["INV-1".to_string()]);
+        assert_eq!(rungs_of(&invariants), ["rung[compile]", "rung[test]"]);
+
+        let mut hardened = task.clone();
+        hardened.hints.quality_profile = Some(roko_core::TaskQualityProfile::Hardened);
+        assert_eq!(rungs_of(&hardened), ["rung[compile]", "rung[test]", "rung[audit]"]);
     }
 
     /// A pinned acceptance step is quoted by its header line, not its

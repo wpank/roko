@@ -3234,11 +3234,12 @@ mod tests {
     #[tokio::test]
     async fn production_result_filter_keeps_the_handler_error_variant() {
         async fn dispatch_fixed(error: ToolError, workspace: &std::path::Path) -> ToolResult {
-            let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![tool(
-                "fixed",
-                ToolPermission::read_only(),
-                ToolConcurrency::Serial,
-            )]));
+            let registry: Arc<dyn ToolRegistry> =
+                Arc::new(VecToolRegistry::from_tools(vec![tool(
+                    "fixed",
+                    ToolPermission::read_only(),
+                    ToolConcurrency::Serial,
+                )]));
             let resolver = resolver_from([(
                 "fixed",
                 Arc::new(FixedResultHandler {
@@ -3270,7 +3271,10 @@ mod tests {
         assert_eq!(message, "not for this role");
         let timed_out = dispatch_fixed(ToolError::Timeout { after_ms: 5 }, workspace.path()).await;
         assert!(
-            matches!(timed_out, ToolResult::Err(ToolError::Timeout { after_ms: 5 })),
+            matches!(
+                timed_out,
+                ToolResult::Err(ToolError::Timeout { after_ms: 5 })
+            ),
             "a handler's timeout must stay Timeout, got {timed_out:?}"
         );
     }

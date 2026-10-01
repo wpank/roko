@@ -184,7 +184,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         final_turn, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def,
-        recording_feedback, spawn_openai_mock, tool_call_turn,
+        recording_feedback, spawn_openai_mock, spawn_openai_stream_mock, tool_call_turn,
     };
 
     const RUN: &str = "graph-served-model-run";
@@ -349,6 +349,69 @@ mod tests {
         let episode = episodes(pinned_dir.path()).await.remove(0);
         assert!(!episode.success);
         assert_eq!(episode.extra["model_reported"], "glm-4.7");
+    }
+
+    /// With the stall watchdog on, live output makes the tool loop stream
+    /// its model calls. The model the stream's chunks name is the one the
+    /// records report (bug-bfd241), as for an answer sent in one piece.
+    #[tokio::test]
+    async fn streamed_attempts_record_the_provider_reported_model() {
+        let temp = tempdir().expect("tempdir");
+        let (base_url, requests) = spawn_openai_stream_mock(vec![vec![
+            serde_json::json!({
+                "model": "glm-4.7",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "done"}}]
+            }),
+            serde_json::json!({
+                "model": "glm-4.7",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            }),
+            serde_json::json!({
+                "model": "glm-4.7",
+                "choices": [],
+                "usage": {"prompt_tokens": 1_000, "completion_tokens": 100, "total_tokens": 1_100}
+            }),
+        ]]);
+        let mut config = openai_config(&base_url);
+        config.conductor = roko_core::config::schema::ConductorConfig::default();
+        let mut task = make_task_def("focused");
+        task.model_hint = Some("gpt-oss-120b".to_string());
+        task.timeout_secs = 30;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(recording_feedback(temp.path()));
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the streamed answer is unverified, not failed");
+        assert_eq!(
+            requests.lock()[0]["stream"],
+            true,
+            "the model call streamed"
+        );
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(
+            &temp
+                .path()
+                .join(".roko/runs")
+                .join(RUN)
+                .join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let executed = &verdicts[0]["executed"];
+        assert_eq!(executed["model_dispatched"], "gpt-oss-120b");
+        assert_eq!(executed["model_reported"], "glm-4.7", "{executed}");
+        assert_eq!(executed["model_mismatch"], true);
+        let costs =
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 1, |_| true).await;
+        assert_eq!(costs[0]["model_reported"], "glm-4.7");
+        assert_eq!(costs[0]["input_tokens"], 1_000);
     }
 
     /// Each model call of roko's tool loop is a turn: an OpenAI-compatible

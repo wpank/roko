@@ -853,14 +853,15 @@ These are Roko's own synthesis; the Meta-Harness paper does not state them (see
 The paper's "6x gap" from changing the harness around a fixed model is a result
 it cites (SWE-bench Mobile), not one it measures.
 
-The Harness-Bench benchmark (arXiv:2605.27922) provides standardized evaluation
-of harness quality across agent systems. Belief Divergence (arXiv:2607.04528)
-quantifies the gap between an agent's internal model and its expressed behavior,
-providing a diagnostic for harness-model misalignment.
+Harness-Bench (Yao et al., 2026, arXiv:2605.27922) fixes the task and varies the
+harness around eight model backends, scoring completion, security and process
+quality (§3–§4). The Belief Divergence paper (Yi & Song, 2026, arXiv:2607.04528)
+measures how a harness changes an agent's beliefs about a task by comparing
+belief rollouts across harnesses (§1, §4).
 
-The mechanism-level review by Fan et al. (2026, arXiv:2607.23942) surveys agent
-architectures, cataloguing the specific
-mechanisms that distinguish high-performing harnesses.
+The mechanism-level review by Fan & Lan (2026, arXiv:2607.23942) traces
+mechanisms from cognitive architectures into modern agent runtimes and names
+five couplings that runtimes still lack (§VI).
 
 ---
 
@@ -1215,14 +1216,15 @@ cargo run -p roko-cli -- doctor
 3. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
    Harnesses." arXiv:2603.28052. -- The harness can matter as much as the
    model (§1); automated harness search (§3).
-4. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
-   harness engineering framework.
-5. arXiv:2605.27922. "Harness-Bench." -- Standardized harness quality
-   evaluation.
-6. Yi, H. et al. (2026). "Measuring Harness-Induced Belief Divergence in
-   Multi-Step LLM Agents." arXiv:2607.04528. -- Agent internal model vs.
-   expressed behavior.
-7. Fan, H. et al. (2026). "From Cognitive Architectures to Language Agents: A
+4. Chen, T. et al. (2026). "HarnessX: A Composable, Adaptive, and Evolvable
+   Agent Harness Foundry." arXiv:2606.14249. -- Composable, evolvable harnesses.
+5. Yao, Y. et al. (2026). "Harness-Bench: Measuring Harness Effects across
+   Models in Realistic Agent Workflows." arXiv:2605.27922. -- Harness effects
+   across models.
+6. Yi, H. & Song, X. (2026). "Measuring Harness-Induced Belief Divergence in
+   Multi-Step LLM Agents." arXiv:2607.04528. -- How a harness changes an agent's
+   beliefs (§1, §4).
+7. Fan, H. & Lan, Z. (2026). "From Cognitive Architectures to Language Agents: A
    Mechanism-Level Review of Lineage, Convergence, and Migration Gaps."
    arXiv:2607.23942. -- Survey of agent mechanisms.
 8. Kahneman, D. (2011). *Thinking, Fast and Slow.* -- Dual-process theory

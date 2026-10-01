@@ -781,5 +781,5 @@ confidence. Roko's `AttentionCascadeRouter` extends FrugalGPT with three innovat
 - [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) — Daimon affect modulation
 - [29-cognitive-energy-model](./29-cognitive-energy-model.md) — Energy pools that replenish AT budgets
 - [Topic 05: Learning](../05-learning/INDEX.md) — CascadeRouter and bandit optimization
-- [Topic 16: Heartbeat](../16-heartbeat/INDEX.md) — CoALA 9-step pipeline integration
+- [Topic 16: Heartbeat](../16-heartbeat/INDEX.md) — CoALA-inspired 9-step pipeline integration
 - [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md) — Full demurrage proposal behind this chapter update

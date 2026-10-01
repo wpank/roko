@@ -154,7 +154,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-4e8795: flaky_verify needs a visible-verify wrapper, and no arm has one
 - [x] gap-8bdf5e: model_swap needs served-model checks, in records and run_roko, that accept a declared swap
 - [x] gap-98516b: F1 and F4 render latent v1 only, so the convention_flip disturbance is refused
-- [ ] bug-cd5000: ViabilityBench's gate_verdict enum and metrics.py's NOT_PASSED don't list already_satisfied
+- [x] bug-cd5000: ViabilityBench's gate_verdict enum and metrics.py's NOT_PASSED don't list already_satisfied
 - [ ] bug-a05c53: ViabilityBench's Roko arm fails plan validate --strict on PLAN_041 since gap-dbf2a6, so every Roko-arm task ends infra_error
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.

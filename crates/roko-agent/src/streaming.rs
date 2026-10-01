@@ -224,6 +224,18 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     let line = value;
 
     let json: Value = serde_json::from_str(line).ok()?;
+    // Each chunk names the model that serves it (bug-bfd241).
+    let model = json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+    parse_sse_chunk(&json).map(|event| event.with_model(model))
+}
+
+/// The event of an OpenAI-compatible stream chunk, parsed from its JSON.
+fn parse_sse_chunk(json: &Value) -> Option<StreamEvent> {
     let delta = json.pointer("/choices/0/delta").unwrap_or(&Value::Null);
 
     // GLM streams reasoning before content, so surface that first.
@@ -293,7 +305,7 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
         }
     }
     if json.get("usage").is_some() {
-        return Some(StreamEvent::now(StreamEventKind::Usage(parse_usage(&json))));
+        return Some(StreamEvent::now(StreamEventKind::Usage(parse_usage(json))));
     }
     if let Some(reason) = json
         .pointer("/choices/0/finish_reason")
@@ -334,6 +346,19 @@ mod tests {
             event.map(|e| e.kind),
             Some(StreamEventKind::TextDelta(content)) if content == "I can answer now."
         ));
+    }
+
+    /// Each event keeps the model its chunk named (bug-bfd241).
+    #[test]
+    fn sse_parser_keeps_the_chunk_model() {
+        let named =
+            parse_sse_line(r#"data: {"model":"glm-4.7","choices":[{"delta":{"content":"hi"}}]}"#)
+                .expect("a content chunk");
+        assert_eq!(named.model.as_deref(), Some("glm-4.7"));
+
+        let unnamed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
+            .expect("a content chunk");
+        assert_eq!(unnamed.model, None);
     }
 
     #[test]

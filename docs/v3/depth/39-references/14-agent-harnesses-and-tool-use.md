@@ -10,7 +10,7 @@
 ## Harness Engineering (Core Thesis)
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-"The scaffold IS the product." 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 IMO math, 4x fewer tokens. Core thesis for Roko's approach: improving the harness matters more than switching models.
+ The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 IMO math, 4x fewer tokens. Core thesis for Roko's approach (Roko's reading; the paper shows only that the harness matters, §1, §4): improving the harness can matter as much as switching models.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable across providers.
@@ -56,7 +56,7 @@ Preference-based routing. Informs CascadeRouter training on task outcomes.
 ## Cognitive Pipelines
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-9-step cognitive pipeline: perceive, retrieve, reason, act, learn. Roko's loop extends CoALA with verification and meta-cognition.
+Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's. Roko's loop extends CoALA with verification and meta-cognition.
 
 **[Yao et al., 2023]** *ReAct: Synergizing Reasoning and Acting in Language Models.* ICLR 2023. arXiv:2210.03629.
 Interleaved reasoning and acting pattern. Foundational for the tool loop in `roko-agent`.
@@ -75,7 +75,7 @@ Tree-structured deliberate reasoning for complex problems. Extends CoT with bran
 Efficient tool selection from large toolsets. Grounds tool filtering in `roko-std`.
 
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
-48.5% latency reduction via speculative tool execution. Informs parallel tool dispatch.
+48.5% shorter average task completion time via speculative tool execution (v1 abstract; 43.5% in the current version). Informs parallel tool dispatch.
 
 **[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
 Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies. Grounds tool cache in the inference gateway.

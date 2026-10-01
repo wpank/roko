@@ -99,13 +99,13 @@ Multi-agent consensus with transactive reasoning.
 ## 2025--2026 Additions: LatentMAS, FederatedSkill
 
 **[Zou et al., 2025]** *Latent Collaboration in Multi-Agent Systems.* arXiv:2511.20639. ICML 2026 Spotlight.
-Latent-space communication achieves 4x speed, 14.6% accuracy gain. Frontier architecture for pheromone communication beyond natural language.
+Latent-space communication achieves up to 14.6% higher accuracy, 4-4.3x faster inference. Frontier architecture for pheromone communication beyond natural language.
 
 **[Yang et al., 2026]** *FederatedSkill: Federated Learning for Agentic Skill Evolution.* arXiv:2606.03143.
-44.4% improvement via semantic skill diffs. Informs cross-workspace knowledge transfer and federated collective learning.
+Up to 44.4% higher success than self-evolving baselines via semantic skill diffs. Informs cross-workspace knowledge transfer and federated collective learning.
 
 **[Nechepurenko & Shuvalov, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
-41--87% of failures are coordination, not capability. Validates explicit coordination architecture.
+Multi-agent systems fail in production at 41--87%, mostly from coordination defects (§1, citing Cemri et al. 2025). Validates explicit coordination architecture.
 
 ---
 

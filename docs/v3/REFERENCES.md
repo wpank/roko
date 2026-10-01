@@ -366,7 +366,7 @@ Brief annotation: Two-stage sleep paradigm: Memory Consolidation + Dreaming. Val
 Brief annotation: 38% forgetting reduction, 17.6% zero-shot transfer increase. Quantitative validation.
 
 **[Fang et al., 2025]** *LightMem: Lightweight and Efficient Memory-Augmented Generation.* arXiv:2510.18866.
-Brief annotation: 10.9% accuracy gain, 117x token reduction via offline consolidation.
+Brief annotation: Up to 10.9% accuracy gain and up to 117x fewer tokens in its v1 abstract (later versions report up to 7.7%/29.3% and 106x/117x online), with consolidation moved offline into a sleep-time update (§3.3).
 
 **[Xie, 2025]** *Learning to Forget: Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in Large Language Models.* arXiv:2603.14517.
 Brief annotation: Learned active forgetting resolves proactive interference. Validates the Curator cycle.
@@ -381,7 +381,7 @@ Brief annotation: Learned consolidator using CLS-inspired fast/slow separation. 
 Brief annotation: Parametric distillation during offline consolidation phases. Informs schema extraction.
 
 **[Lee et al., 2026]** *Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference.* arXiv:2605.26099.
-Brief annotation: Offline recurrence improves knowledge integration. Further validates the dream approach.
+Brief annotation: Offline recurrent passes consolidate context into fast weights; longer sleep improves accuracy (§5, §6). Further validates the dream approach.
 
 **[Li et al., 2026]** *TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.* arXiv:2601.02845.
 Brief annotation: Temporal hierarchical consolidation architecture. Informs tiered dream scheduling.
@@ -463,13 +463,13 @@ Brief annotation: Benchmark for multi-agent LLM coordination abilities.
 Brief annotation: Multi-agent consensus with transactive reasoning. Applicable to multi-agent decisions.
 
 **[Zou et al., 2025]** *Latent Collaboration in Multi-Agent Systems.* arXiv:2511.20639. ICML 2026 Spotlight.
-Brief annotation: Latent-space communication achieves 4x speed, 14.6% accuracy gain. Frontier for pheromone communication.
+Brief annotation: Latent-space communication achieves up to 14.6% higher accuracy, 4-4.3x faster inference. Frontier for pheromone communication.
 
 **[Yang et al., 2026]** *FederatedSkill: Federated Learning for Agentic Skill Evolution.* arXiv:2606.03143.
-Brief annotation: 44.4% improvement via semantic skill diffs. Informs cross-workspace knowledge transfer.
+Brief annotation: Up to 44.4% higher success than self-evolving baselines via semantic skill diffs. Informs cross-workspace knowledge transfer.
 
 **[Nechepurenko & Shuvalov, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
-Brief annotation: 41--87% of failures are coordination, not capability. Validates explicit coordination architecture.
+Brief annotation: Multi-agent systems fail in production at 41--87%, mostly from coordination defects (§1, citing Cemri et al. 2025). Validates explicit coordination architecture.
 
 ---
 
@@ -549,7 +549,7 @@ Brief annotation: Learning from autonomous experience. Grounds experience extrac
 Brief annotation: Open-ended agent with skill library. Grounds EvoSkills and persistent skill accumulation.
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: 6x performance gap from scaffold changes alone. Core thesis for Roko's approach.
+Brief annotation: The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. Core thesis for Roko's approach.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic as natural language specifications. Informs declarative scaffold design.
@@ -1046,7 +1046,7 @@ Brief annotation: Self-producing systems. Agents are autopoietic -- they produce
 ## 14 -- Agent Harnesses and Tool Use
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 points IMO math, 4x fewer tokens.
+Brief annotation: The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 points IMO math, 4x fewer tokens.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic as natural language specifications interpreted by an intelligent runtime.
@@ -1070,7 +1070,7 @@ Brief annotation: Cascade architectures achieve up to 98% cost reduction. Ground
 Brief annotation: Preference-based routing. Informs CascadeRouter training on task outcomes.
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-Brief annotation: 9-step cognitive pipeline: perceive, retrieve, reason, act, learn.
+Brief annotation: Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's.
 
 **[Jimenez et al., 2024]** *SWE-bench: Can Language Models Resolve Real-World GitHub Issues?* ICLR 2024.
 Brief annotation: 2,294 real GitHub issues as gold standard coding agent benchmark.
@@ -1097,7 +1097,7 @@ Brief annotation: Tree-structured deliberate reasoning for complex problems.
 Brief annotation: Efficient tool selection from large toolsets.
 
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
-Brief annotation: 48.5% latency reduction via speculative tool execution.
+Brief annotation: 48.5% shorter average task completion time via speculative tool execution (v1 abstract; 43.5% in the current version).
 
 **[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
 Brief annotation: Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies.
@@ -1331,7 +1331,7 @@ Brief annotation: Legal analysis of trust and liability in autonomous agent syst
 ## 20 -- Cognitive Architectures
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-Brief annotation: 9-step cognitive pipeline. Roko's universal loop extends CoALA with verification and meta-cognition.
+Brief annotation: Decision cycle of planning then execution over modular memory (§4.6); the 9-step list is Roko's own. Roko's universal loop extends CoALA with verification and meta-cognition.
 
 **[Sumers et al., 2024]** *Cognitive Architectures for Language Agents.* Transactions on Machine Learning Research.
 Brief annotation: Extended CoALA treatment with updated cognitive architecture taxonomy.
@@ -1716,7 +1716,7 @@ Brief annotation: Organizational sensemaking theory. Informs agent interpretatio
 New section covering the 2026 harness engineering research wave.
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: Core thesis paper. 6x performance gap from scaffold changes alone. Agent reads its own scaffold history, proposes improvements, benchmarks them, and iterates. (See also 06, 14.)
+Brief annotation: Core thesis paper. The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. A coding-agent proposer reads the code, scores and execution traces of earlier harness candidates from a filesystem, proposes new harnesses, evaluates them and iterates (§3). (See also 06, 14.)
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic expressed as natural language specifications interpreted by an intelligent runtime.
@@ -1802,7 +1802,7 @@ Brief annotation: Step-level verification outperforms outcome-only verification.
 Brief annotation: Verification must exceed generation for self-improvement. (See 17.)
 
 **[Xi et al., 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
-Brief annotation: Continuous progress signals via TD estimation + GAE. 8x compute efficiency for verification. Target for gate upgrade.
+Brief annotation: Continuous progress signals via TD estimation + GAE. over 8x more compute-efficient than baseline reward models (§4.2). Target for gate upgrade.
 
 **[Agrawal et al., 2026]** *GEPA: Reflective Prompt Evolution.* ICLR Oral 2026. arXiv:2507.19457.
 Brief annotation: Process-level feedback for prompt evolution.

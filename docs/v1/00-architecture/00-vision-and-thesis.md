@@ -38,7 +38,7 @@ LLM — accounts for a large and growing share of agent performance:
 
 - **FrugalGPT** (Chen et al. 2023, arXiv:2305.05176): Shows that cascading through models
   of increasing capability — routing easy queries to cheap models and hard queries to
-  expensive ones — can match GPT-4 quality at 2% of the cost. The routing harness is the
+  expensive ones — can match the best single LLM at 50-98% lower cost, 98% on one dataset (§4, Table 3). The routing harness is the
   product.
 
 - **DSPy** (Khattab et al. 2024): Replaces hand-written prompts with a compiler that
@@ -445,7 +445,7 @@ it has not solved.
 | Citation | Contribution to Roko |
 |---|---|
 | Lee et al. 2026 (arXiv:2603.28052) | Meta-Harness: +7.7 pts from harness optimization alone, 4× fewer tokens. Direct evidence for the scaffold thesis. |
-| Chen et al. 2023 (arXiv:2305.05176) | FrugalGPT: cascade routing matches GPT-4 at 2% cost. Foundation for CascadeRouter. |
+| Chen et al. 2023 (arXiv:2305.05176) | FrugalGPT: cascade routing matches the best single LLM at 50-98% lower cost (§4, Table 3). Foundation for CascadeRouter. |
 | Sumers et al. 2023 (arXiv:2309.02427) | CoALA: cognitive architecture framework for language agents. Structural blueprint for the universal cognitive loop. |
 | Friston 2010, Nature Reviews Neuroscience 11(2) | Free Energy Principle: prediction error drives learning and attention. Foundation for Roko's Bus-level prediction/outcome/error loops. |
 | Clark 2013, Behavioral and Brain Sciences 36(3) | Predictive Processing: brain as prediction machine. Supports prediction-error-based attention allocation. |

@@ -1103,8 +1103,7 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 /// The plan is written by the planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, None)
-            .await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, None).await?;
     Ok(plans_root)
 }
 
@@ -1131,8 +1130,7 @@ pub async fn generate_plan_from_prd_with_model(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, None)
-            .await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, None).await?;
     Ok(plans_root)
 }
 
@@ -1145,15 +1143,9 @@ pub async fn generate_plan_from_prd_with_failure_context(
     failure_context: Option<&str>,
     model: Option<&str>,
 ) -> Result<PathBuf> {
-    let (plans_root, _) = generate_plan_from_prd_with_outcome(
-        slug,
-        prd_path,
-        dry_run,
-        failure_context,
-        model,
-        None,
-    )
-    .await?;
+    let (plans_root, _) =
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, failure_context, model, None)
+            .await?;
     Ok(plans_root)
 }
 
@@ -4091,8 +4083,11 @@ mod tests {
             let dir = plans.join(name);
             std::fs::create_dir_all(&dir).expect("plan directory");
             std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
-            std::fs::write(dir.join("plan.md"), format!("---\nplan: {name}\n---\n# {name}\n"))
-                .expect("plan.md");
+            std::fs::write(
+                dir.join("plan.md"),
+                format!("---\nplan: {name}\n---\n# {name}\n"),
+            )
+            .expect("plan.md");
         }
 
         // The planner answers every call with the widget plan, and logs it.
@@ -4157,12 +4152,16 @@ mod tests {
         let widget = TasksFile::parse_str(&widget).expect("parse the widget plan");
         assert_eq!(widget.tasks.len(), 1);
         for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
-            let after = std::fs::read_to_string(plans.join(name).join("tasks.toml"))
-                .expect("tasks.toml");
+            let after =
+                std::fs::read_to_string(plans.join(name).join("tasks.toml")).expect("tasks.toml");
             assert_eq!(after, tasks, "plans/{name} was rewritten");
         }
         let calls = std::fs::read_to_string(&calls).expect("planner call log");
-        assert_eq!(calls.lines().count(), 1, "one planner call: the widget plan");
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "one planner call: the widget plan"
+        );
         // A plan that names no model is modern: only `old` counts as old.
         assert_eq!(old_format_plan_dirs(&plans), [plans.join("old")]);
     }

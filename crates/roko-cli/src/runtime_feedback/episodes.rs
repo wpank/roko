@@ -66,6 +66,8 @@ impl FeedbackSink for EpisodeSink {
             turns,
             failure_reason,
             settled,
+            model_source,
+            routing_context,
             ..
         } = event
         else {
@@ -172,6 +174,29 @@ impl FeedbackSink for EpisodeSink {
             episode.extra.insert(
                 "playbook_hits".into(),
                 serde_json::Value::Number(serde_json::Number::from(playbook_ids.len())),
+            );
+            // Every playbook dispatch credited, so a hindsight relabel can
+            // retract each one (gap-b95d94).
+            episode.extra.insert(
+                super::hindsight::PLAYBOOK_IDS_KEY.into(),
+                serde_json::json!(playbook_ids),
+            );
+        }
+        // The routing credit this attempt earns, so a hindsight relabel can
+        // retract it (gap-b95d94): the category the routing sink counts it
+        // under, and whether an operator override takes it.
+        let routing_category = routing_context.as_ref().map_or_else(
+            || super::routing::build_fallback_routing_context(&outcome.model, None).task_category,
+            |ctx| ctx.task_category,
+        );
+        episode.extra.insert(
+            super::hindsight::ROUTING_CATEGORY_KEY.into(),
+            serde_json::json!(routing_category),
+        );
+        if *model_source == crate::dispatch::ModelChoiceSource::Override {
+            episode.extra.insert(
+                super::hindsight::MODEL_OVERRIDE_KEY.into(),
+                serde_json::Value::Bool(true),
             );
         }
         episode.extra.insert(

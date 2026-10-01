@@ -331,8 +331,13 @@ pub fn workspace_adjustments_path(workdir: &Path) -> PathBuf {
 /// [`apply_adjustments`] with the corrections recorded for the workspace at
 /// `workdir`. An unreadable log applies none.
 pub fn apply_workspace_adjustments(episodes: &mut [Episode], workdir: &Path) -> usize {
-    let path = workspace_adjustments_path(workdir);
-    match read_adjustments(&path) {
+    apply_adjustments_from(episodes, &workspace_adjustments_path(workdir))
+}
+
+/// [`apply_adjustments`] with the corrections recorded in the log at `path`.
+/// An unreadable log applies none.
+pub fn apply_adjustments_from(episodes: &mut [Episode], path: &Path) -> usize {
+    match read_adjustments(path) {
         Ok(adjustments) => apply_adjustments(episodes, &adjustments),
         Err(error) => {
             tracing::warn!(

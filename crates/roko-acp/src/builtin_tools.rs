@@ -280,8 +280,7 @@ fn needs_permission(name: &str) -> bool {
 fn tool_call_kind(name: &str) -> ToolCallKind {
     match name {
         "read_file" => ToolCallKind::Read,
-        "write_file" => ToolCallKind::Create,
-        "edit_file" => ToolCallKind::Edit,
+        "write_file" | "edit_file" => ToolCallKind::Edit,
         "glob" | "grep" => ToolCallKind::Search,
         "bash" => ToolCallKind::Terminal,
         "ls" => ToolCallKind::Read,

@@ -539,8 +539,7 @@ mod tests {
             let requests = poster.requests.lock().expect("requests lock");
             assert_eq!(requests.len(), 1, "{kind:?}");
             assert_eq!(
-                requests[0].url,
-                "https://api.z.ai/api/paas/v4/chat/completions",
+                requests[0].url, "https://api.z.ai/api/paas/v4/chat/completions",
                 "{kind:?}"
             );
         }

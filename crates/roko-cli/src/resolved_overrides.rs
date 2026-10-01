@@ -93,17 +93,6 @@ pub enum ScreenshotPolicy {
     },
 }
 
-/// Budget enforcement policy resolved from `--budget-override`/`--no-budget`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BudgetPolicy {
-    /// Use the config default.
-    FromConfig,
-    /// Explicit per-run ceiling in USD.
-    Override(f64),
-    /// Disabled entirely (`--no-budget` or `--budget-override 0`).
-    Disabled,
-}
-
 /// Config edit target scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigEditTarget {
@@ -161,8 +150,6 @@ pub struct PlanRunInput {
     pub dry_run: bool,
     pub fresh: bool,
     pub force_resume: bool,
-    pub budget_override: Option<f64>,
-    pub no_budget: bool,
 }
 
 /// Input fields for `config set`.
@@ -295,9 +282,6 @@ pub struct ResolvedExecutionOverrides {
     /// Additional context file paths from `--context`.
     pub context_paths: Vec<PathBuf>,
 
-    /// Budget enforcement policy from `--budget-override`/`--no-budget`.
-    pub budget: BudgetPolicy,
-
     /// Archive old state and start clean from `--fresh`.
     pub fresh: bool,
 
@@ -340,7 +324,6 @@ impl ResolvedExecutionOverrides {
             force_disk_check: false,
             skip_preflight: false,
             max_retries: None,
-            budget: BudgetPolicy::FromConfig,
             fresh: false,
             force_resume: false,
         }
@@ -472,18 +455,6 @@ impl ResolvedExecutionOverrides {
         // Batch size: zero from clap is rejected; nonzero wraps into NonZeroUsize.
         if let Some(n) = input.batch_size {
             resolved.batch_size = NonZeroUsize::new(n);
-        }
-
-        // Budget policy: --no-budget or --budget-override 0 -> Disabled,
-        // --budget-override <n> -> Override(n), otherwise FromConfig.
-        if input.no_budget {
-            resolved.budget = BudgetPolicy::Disabled;
-        } else if let Some(amount) = input.budget_override {
-            if amount == 0.0 {
-                resolved.budget = BudgetPolicy::Disabled;
-            } else {
-                resolved.budget = BudgetPolicy::Override(amount);
-            }
         }
 
         resolved.fresh = input.fresh;
@@ -1078,51 +1049,8 @@ mod tests {
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
         assert!(!r.fresh);
         assert!(!r.force_resume);
-    }
-
-    // ── Budget policy ─────────────────────────────────────────────────
-
-    #[test]
-    fn plan_run_budget_default_is_from_config() {
-        let flags = default_flags();
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
-    }
-
-    #[test]
-    fn plan_run_no_budget_disables() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            no_budget: true,
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Disabled);
-    }
-
-    #[test]
-    fn plan_run_budget_override_zero_disables() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            budget_override: Some(0.0),
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Disabled);
-    }
-
-    #[test]
-    fn plan_run_budget_override_positive() {
-        let flags = default_flags();
-        let plan = PlanRunInput {
-            budget_override: Some(50.0),
-            ..PlanRunInput::default()
-        };
-        let r = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
-        assert_eq!(r.budget, BudgetPolicy::Override(50.0));
     }
 
     // ── Fresh / force-resume ──────────────────────────────────────────
@@ -1194,7 +1122,6 @@ mod tests {
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
         assert!(!r.fresh);
         assert!(!r.force_resume);
     }
@@ -1268,7 +1195,6 @@ mod tests {
         assert!(!r.force_disk_check);
         assert_eq!(r.screenshots, ScreenshotPolicy::Disabled);
         assert_eq!(r.batch_size, None);
-        assert_eq!(r.budget, BudgetPolicy::FromConfig);
         assert!(!r.fresh);
         assert!(!r.force_resume);
     }
@@ -1300,8 +1226,6 @@ mod tests {
                 dry_run: true,
                 fresh: true,
                 force_resume: true,
-                budget_override: Some(25.0),
-                no_budget: false,
             },
         );
 
@@ -1330,7 +1254,6 @@ mod tests {
             skip_preflight,
             max_retries,
             context_paths: _,
-            budget,
             fresh,
             force_resume,
         } = r;
@@ -1344,7 +1267,6 @@ mod tests {
         assert_eq!(batch_size, NonZeroUsize::new(3));
         assert!(force_disk_check);
         assert_eq!(max_retries, Some(2));
-        assert_eq!(budget, BudgetPolicy::Override(25.0));
         assert!(fresh);
         assert!(force_resume);
     }

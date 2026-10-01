@@ -743,7 +743,7 @@ How an API request flows through `roko serve`.
          v
   +------+--------+
   | Axum Router    |  crates/roko-serve/src/routes/
-  | (roko-serve)   |  ~376 canonical routes organized by subsystem:
+  | (roko-serve)   |  REST routes organized by subsystem:
   |                |   /health, /api/metrics, /api/plans, /api/prd,
   |                |   /api/agents, /api/knowledge, /api/learn,
   |                |   /api/config, /api/events, /api/feeds, etc.

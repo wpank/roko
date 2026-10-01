@@ -272,7 +272,7 @@ This decouples cells from the full service facade. Cells only see the
 handles they need. The dispatch factory provides provider construction,
 the prompt cache provides pre-loaded context, the budget tracker provides
 atomic microdollar accounting, and the cancellation token enables
-cooperative shutdown from the `GuaranteedFinallyController`.
+cooperative shutdown when the run is cancelled.
 
 ---
 

@@ -13,7 +13,7 @@ last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "tmp/backlog/archive/284-topology-restore-killpoint-gate.md#284 — Production Topology Restore and Kill-Point Gate"
 discovered_from = "audit:tmp/backlog/archive/284-topology-restore-killpoint-gate.md#284 — Production Topology Restore and Kill-Point Gate"
-anchors = ["crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-graph/src/finally.rs::GuaranteedFinallyController", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint"]
+anchors = ["crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint"]
 links = { depends_on = [], blocks = [], related = ["gap-22b0a2", "gap-8ea1bd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -51,3 +51,7 @@ Re-verified 2026-09-29: still open. 3d0637232 made Graph checkpoints upgrade-saf
   Next step: a scope decision (Will or the coordinator). Then wire or delete `finally.rs`, add the hook behind a
   test feature, and write `crates/roko-cli/tests/topology_kill_points.rs` with counting fakes on the default
   topology.
+- 2026-10-01 (wk-tamper): gap-ff6e83 deleted `finally.rs`, which was never compiled. `run_one_plan` owns a plan run's
+  cleanup, so without the controller the first checklist step would register `run_one_plan`'s terminal state (the
+  checkpoint's terminal status and task outcomes); that is part of the scope decision. The anchor moved from the
+  controller to `run_one_plan`.

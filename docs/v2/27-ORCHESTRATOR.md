@@ -6,7 +6,7 @@
 **Replaced**: `crates/roko-cli/src/orchestrate.rs` (deleted by E12-T07), `WorkflowEngine` (deleted by #276)
 **Runtime**: `crates/roko-cli/src/graph_execution/` (Graph engine) + `crates/roko-cli/src/runner/` (legacy, deprecated)
 
-> **Implementation status:** CONVERGED — Graph is the sole production engine (`PlanEngine::Graph`, the `#[default]` variant). The legacy Runner-v2 event loop is retained as `--engine legacy` for one deprecation cycle. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Plan-execute-gate-persist works end-to-end via Graph with `ProductionPlanTopology`, `GuaranteedFinallyController`, 12-row `FeedbackSettler`, `CellResources` injection, and `RuntimeServices` (7 `RuntimeProfile` variants).
+> **Implementation status:** CONVERGED — Graph is the sole production engine (`PlanEngine::Graph`, the `#[default]` variant). The legacy Runner-v2 event loop is retained as `--engine legacy` for one deprecation cycle. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Plan-execute-gate-persist works end-to-end via Graph with `ProductionPlanTopology`, 12-row `FeedbackSettler`, `CellResources` injection, and `RuntimeServices` (7 `RuntimeProfile` variants).
 
 **Depends on**: [02-CELL](02-CELL.md) (Cell protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [04-EXECUTION](04-EXECUTION.md) (Engine, Flow, Activity recording), [05-AGENT](05-AGENT.md) (Agent lifecycle), [06-MEMORY](06-MEMORY.md) (Knowledge Store for context injection), [07-LEARNING](07-LEARNING.md) (Episodes, CascadeRouter, efficiency events), [15-TELEMETRY](15-TELEMETRY.md) (StateHub, Lenses)
 
@@ -733,8 +733,7 @@ Runner-v2 was created in `crates/roko-cli/src/runner/`.
 
 ### Phase D: Align with unified spec -- DONE (engine convergence)
 Graph is the sole engine. `ProductionPlanTopology` builds canonical per-task subgraphs.
-`GuaranteedFinallyController` provides guaranteed cleanup. Activity recording per-node
-is live. `CellResources` injects shared service handles. `RuntimeServices` facade with
+Activity recording per-node is live. `CellResources` injects shared service handles. `RuntimeServices` facade with
 7 `RuntimeProfile` variants provides the shared service contract.
 
 ---
@@ -749,7 +748,7 @@ The engine convergence has been completed. The Graph engine now realizes these u
 | Flow lifecycle Pulses | `StateHubGraphEventSink` publishes DashboardEvents |
 | Activity recording per-node | `ActivityRecorder`/`ActivityReplayer` provide JSONL-based durable replay |
 | Workflow/Activity split | `ExecutionClass::Workflow` vs `ExecutionClass::Activity` on every node |
-| Failure strategies | `GuaranteedFinallyController` + replan controller + autofix |
+| Failure strategies | Replan controller + autofix |
 | Budget enforcement | Schema-v2 cost sidecar with atomic reservations per dispatch |
 | Verify protocol | `GatePipelineCell` via `CellResources.gates` (`SharedGateEvaluator`) |
 | Agent type-state lifecycle | `ProcessSupervisor` tracking + `RuntimeServices` guards |

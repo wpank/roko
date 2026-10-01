@@ -15,6 +15,7 @@
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
 //! | [`disk_admission`] | Free-disk check at run start, and disk headroom per attempt |
 //! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
+//! | [`failure_issues`] | GitHub issues for the tasks a plan run leaves failed |
 //! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
 //! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
@@ -32,6 +33,7 @@ pub mod control_adapter;
 pub mod delivery;
 pub mod disk_admission;
 pub mod event_log;
+pub mod failure_issues;
 pub mod fast_lane;
 pub mod identity_map;
 pub mod plan_runner;

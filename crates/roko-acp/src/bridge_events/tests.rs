@@ -1066,6 +1066,236 @@ async fn send_session_update_emits_wrapped_payload() {
     );
 }
 
+/// The ACP v1 schema's definitions reachable from `SessionNotification`.
+const ACP_SESSION_NOTIFICATION_SCHEMA: &str =
+    include_str!("../../tests/fixtures/acp-v1-session-notification.schema.json");
+
+/// Lists the ways `value` breaks `schema`, resolving `$ref`s against `defs`. Covers the
+/// JSON Schema keywords that the ACP session-update definitions use, except `format`
+/// and `minimum`.
+fn acp_schema_errors(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+    defs: &serde_json::Value,
+    path: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+        let name = reference.trim_start_matches("#/$defs/");
+        let target = defs
+            .get(name)
+            .unwrap_or_else(|| panic!("schema has no definition for {reference}"));
+        errors.extend(acp_schema_errors(value, target, defs, path));
+    }
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        errors.push(format!("{path}: expected {expected}, got {value}"));
+    }
+    if let Some(types) = schema.get("type") {
+        let names: Vec<&str> = match types {
+            serde_json::Value::Array(list) => {
+                list.iter().filter_map(serde_json::Value::as_str).collect()
+            }
+            single => single.as_str().into_iter().collect(),
+        };
+        if !names.iter().any(|name| json_type_matches(value, name)) {
+            errors.push(format!("{path}: {value} is not of type {types}"));
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let required = schema["required"].as_array().into_iter().flatten();
+        for name in required.filter_map(serde_json::Value::as_str) {
+            if !object.contains_key(name) {
+                errors.push(format!("{path}: missing required `{name}`"));
+            }
+        }
+        for (name, property) in schema["properties"].as_object().into_iter().flatten() {
+            if let Some(field) = object.get(name) {
+                let field_path = format!("{path}.{name}");
+                errors.extend(acp_schema_errors(field, property, defs, &field_path));
+            }
+        }
+    }
+    if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
+        for (index, item) in array.iter().enumerate() {
+            let item_path = format!("{path}[{index}]");
+            errors.extend(acp_schema_errors(item, items, defs, &item_path));
+        }
+    }
+    for branch in schema["allOf"].as_array().into_iter().flatten() {
+        errors.extend(acp_schema_errors(value, branch, defs, path));
+    }
+    for (keyword, exactly_one) in [("anyOf", false), ("oneOf", true)] {
+        if let Some(branches) = schema[keyword].as_array() {
+            let matching = branches
+                .iter()
+                .filter(|branch| acp_schema_errors(value, branch, defs, path).is_empty())
+                .count();
+            if matching == 0 || (exactly_one && matching > 1) {
+                errors.push(format!(
+                    "{path}: {matching} {keyword} branches match {value}"
+                ));
+            }
+        }
+    }
+    errors
+}
+
+fn json_type_matches(value: &serde_json::Value, json_type: &str) -> bool {
+    match json_type {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "null" => value.is_null(),
+        other => panic!("unsupported JSON Schema type {other}"),
+    }
+}
+
+#[test]
+fn session_update_spec_conformance() {
+    use crate::types::{
+        CostInfo, PlanEntry, PlanEntryStatus, Priority, SessionBudgetStatus, ToolCallLocation,
+    };
+
+    let schema: serde_json::Value =
+        serde_json::from_str(ACP_SESSION_NOTIFICATION_SCHEMA).expect("parse ACP schema subset");
+    let defs = &schema["$defs"];
+    // Checks one update as `session/update` params and returns the update's JSON.
+    let conforming = |update: SessionUpdate| {
+        let params = json!({ "sessionId": "sess-1", "update": update });
+        let errors = acp_schema_errors(&params, &defs["SessionNotification"], defs, "params");
+        assert!(
+            errors.is_empty(),
+            "{params} is not a spec session/update: {errors:?}"
+        );
+        params["update"].clone()
+    };
+    let mapped = |event: CognitiveEvent| map_event_to_update(event).expect("maps to an update");
+
+    for kind in [
+        ToolCallKind::Read,
+        ToolCallKind::Edit,
+        ToolCallKind::Delete,
+        ToolCallKind::Move,
+        ToolCallKind::Search,
+        ToolCallKind::Terminal,
+        ToolCallKind::Think,
+        ToolCallKind::Fetch,
+        ToolCallKind::Other,
+    ] {
+        let value = serde_json::to_value(&kind).expect("serialize tool kind");
+        let errors = acp_schema_errors(&value, &defs["ToolKind"], defs, "kind");
+        assert!(
+            errors.is_empty(),
+            "{kind:?} is not a spec ToolKind: {errors:?}"
+        );
+    }
+
+    conforming(mapped(CognitiveEvent::TokenChunk("hello".to_owned())));
+    conforming(mapped(CognitiveEvent::ThinkingChunk("thinking".to_owned())));
+    conforming(dispatch_failure_update("provider failed".to_owned()));
+    conforming(mapped(CognitiveEvent::PlanUpdate {
+        entries: vec![PlanEntry {
+            content: "Write the test".to_owned(),
+            priority: Priority::High,
+            status: PlanEntryStatus::InProgress,
+        }],
+    }));
+
+    let started = conforming(mapped(CognitiveEvent::ToolCallStart {
+        tool_call_id: "tc-1".to_owned(),
+        title: "Write result.txt".to_owned(),
+        kind: ToolCallKind::Edit,
+        locations: Some(vec![ToolCallLocation {
+            path: "/repo/result.txt".to_owned(),
+            line: Some(3),
+        }]),
+    }));
+    assert_eq!(started["kind"], json!("edit"));
+    assert_eq!(
+        started["locations"],
+        json!([{ "path": "/repo/result.txt", "line": 3 }])
+    );
+
+    // Tool output keeps its text and diffs, in the spec's wrapped shapes.
+    let completed = conforming(mapped(CognitiveEvent::ToolCallComplete {
+        tool_call_id: "tc-1".to_owned(),
+        status: ToolCallStatus::Completed,
+        content: vec![
+            text_block("wrote result.txt".to_owned()),
+            ContentBlock::Diff {
+                path: "/repo/result.txt".to_owned(),
+                old_text: Some("old\n".to_owned()),
+                new_text: Some("new\n".to_owned()),
+                diff: None,
+            },
+            ContentBlock::Diff {
+                path: "/repo/lib.rs".to_owned(),
+                old_text: None,
+                new_text: None,
+                diff: Some("@@ -1 +1 @@\n-old\n+new\n".to_owned()),
+            },
+        ],
+    }));
+    assert_eq!(
+        completed["content"],
+        json!([
+            { "type": "content", "content": { "type": "text", "text": "wrote result.txt" } },
+            { "type": "diff", "path": "/repo/result.txt", "oldText": "old\n", "newText": "new\n" },
+            {
+                "type": "content",
+                "content": { "type": "text", "text": "```diff\n@@ -1 +1 @@\n-old\n+new\n```" }
+            }
+        ])
+    );
+
+    // Roko's extensions ride under `_meta` on a spec update.
+    let mcp = conforming(mapped(CognitiveEvent::McpStatus {
+        statuses: vec![McpServerStatus::ready("github", 3)],
+    }));
+    assert_eq!(mcp["_meta"]["roko"]["mcpStatus"][0]["toolCount"], json!(3));
+    let budget = conforming(roko_meta_update(
+        "budget",
+        &SessionBudgetStatus {
+            cost_budget_usd: Some(1.0),
+            accumulated_cost_usd: Some(0.25),
+            budget_remaining_usd: Some(0.75),
+        },
+    ));
+    assert_eq!(
+        budget["_meta"]["roko"]["budget"]["budgetRemainingUsd"],
+        json!(0.75)
+    );
+
+    let titled = conforming(SessionUpdate::SessionInfoUpdate {
+        title: Some("Fix the login bug".to_owned()),
+        _meta: None,
+    });
+    assert_eq!(titled["title"], json!("Fix the login bug"));
+    conforming(SessionUpdate::UsageUpdate {
+        used: 1_200,
+        size: 200_000,
+        cost: Some(CostInfo {
+            amount: 0.01,
+            currency: "USD".to_owned(),
+        }),
+    });
+    conforming(SessionUpdate::AvailableCommandsUpdate {
+        available_commands: crate::session::build_slash_commands(false),
+    });
+
+    // The check is not vacuous: the update roko used to send for MCP status fails it.
+    let old = json!({
+        "sessionId": "sess-1",
+        "update": { "sessionUpdate": "mcp_status_update", "statuses": [] }
+    });
+    assert!(!acp_schema_errors(&old, &defs["SessionNotification"], defs, "params").is_empty());
+}
+
 #[tokio::test]
 async fn stream_events_to_editor_emits_notifications_and_returns_completion() {
     let (client, server) = duplex(4096);
@@ -1488,6 +1718,52 @@ async fn request_permission_defaults_to_reject_on_malformed_response() {
 }
 
 #[tokio::test]
+async fn request_permission_accepts_spec_shaped_responses() {
+    let action = PermissionAction::FileEdit;
+    let cases = [
+        (
+            json!({ "outcome": "selected", "optionId": "allow_once" }),
+            PermissionDecision::Allow,
+        ),
+        (
+            json!({ "outcome": "selected", "optionId": "allow_always" }),
+            PermissionDecision::AlwaysAllow,
+        ),
+        (
+            json!({ "outcome": "cancelled" }),
+            PermissionDecision::Reject,
+        ),
+    ];
+    for (outcome, expected) in cases {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let mut session = test_session("test-model", "none");
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let ((), decision) = tokio::join!(
+            reply_to_permission_request(client, json!({ "outcome": outcome })),
+            request_permission(
+                &mut transport,
+                &mut session,
+                tmp.path(),
+                action.clone(),
+                "Allow code agent to edit files?",
+                "The code agent may read and modify files.",
+            ),
+        );
+
+        // Only `allow_always` records a session grant and a workspace trust entry.
+        let always = expected == PermissionDecision::AlwaysAllow;
+        assert_eq!(decision, expected);
+        assert_eq!(session.always_allowed.contains(&action), always);
+        assert_eq!(
+            AcpSession::load_workspace_trust(tmp.path()).contains(&action),
+            always
+        );
+    }
+}
+
+#[tokio::test]
 async fn append_acp_episode_records_single_dispatch_episode() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let workdir = tmp.path();
@@ -1848,7 +2124,7 @@ fn assistant_history_truncation_caps_bytes_and_preserves_boundaries() {
 #[test]
 fn tool_name_mapping() {
     assert_eq!(tool_name_to_kind("Edit"), ToolCallKind::Edit);
-    assert_eq!(tool_name_to_kind("Write"), ToolCallKind::Create);
+    assert_eq!(tool_name_to_kind("Write"), ToolCallKind::Edit);
     assert_eq!(tool_name_to_kind("Bash"), ToolCallKind::Terminal);
     assert_eq!(tool_name_to_kind("Read"), ToolCallKind::Other);
 }
@@ -2200,6 +2476,156 @@ async fn acp_builtin_tool_handler_unknown_role_falls_closed() {
         "Unknown role must fall closed (deny all tools), got {:?}",
         result,
     );
+}
+
+#[tokio::test]
+async fn builtin_tool_permitted_in_default_code_mode() {
+    // A new session starts in `code` mode, which loads the implementer contract.
+    let session = test_session("test-model", "none");
+    assert_eq!(session.config_state.agent_mode, "code");
+    let role = acp_contract_role_for_mode(&session.config_state.agent_mode);
+    assert_eq!(role, "implementer");
+
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("notes.txt"), "read in code mode").expect("write fixture");
+    let (tx, _rx) = mpsc::channel(16);
+    let handler = AcpBuiltinToolHandler {
+        tool_name: "read_file".into(),
+        session_id: session.session_id.clone(),
+        workdir: tmp.path().to_path_buf(),
+        event_sender: tx,
+        role,
+    };
+    let call = ToolCall {
+        id: "code-mode-read".into(),
+        name: "read_file".into(),
+        arguments: json!({ "path": "notes.txt" }),
+        request_ts_ms: 0,
+    };
+    let result = handler
+        .execute(call, &ToolContext::testing(tmp.path()))
+        .await;
+    assert!(
+        result.is_ok(),
+        "read_file must run in code mode, got {result:?}"
+    );
+    assert_eq!(result.text_content(), "read in code mode");
+
+    // The other modes load their own contracts, and unknown modes still fail closed.
+    assert_eq!(acp_contract_role_for_mode("plan"), "strategist");
+    assert_eq!(acp_contract_role_for_mode("research"), "researcher");
+    assert_eq!(acp_contract_role_for_mode("unknown-mode"), "unknown-mode");
+}
+
+/// A stdio MCP server that lists one read-only `echo` tool and answers one call
+/// to it. It creates the file named by its first argument when the call arrives.
+const MCP_ECHO_FIXTURE: &str = r#"
+    IFS= read -r initialize
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+    IFS= read -r list_tools
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+    IFS= read -r call || exit 0
+    : > "$1"
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}'
+"#;
+
+/// Dispatches the fixture's `echo` tool through the dispatcher an ACP tool loop
+/// builds for `mode`. Returns the result and whether the server got the call.
+async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let marker = tmp.path().join("tools-call-received");
+    let servers = vec![crate::types::McpServerConfig {
+        name: "fixture".into(),
+        transport: crate::types::McpTransport::Stdio {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                MCP_ECHO_FIXTURE.into(),
+                "fixture".into(),
+                marker.display().to_string(),
+            ],
+        },
+        discovery_timeout_ms: Some(1_000),
+    }];
+    let (event_sender, _event_receiver) = mpsc::channel(16);
+    let (runtime, statuses) = setup_session_mcp_tools(
+        "mcp-contract-session",
+        &servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+
+    let registry = Arc::new(VecToolRegistry::from_tools(runtime.tools));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
+        handlers: runtime.handlers,
+    });
+    let role = acp_contract_role_for_mode(mode);
+    let safety = acp_tool_safety(&RokoConfig::default(), &role);
+    let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
+    let call = ToolCall::new("mcp-contract-call", "fixture_echo", json!({}));
+    let result = dispatcher
+        .dispatch(call, &ToolContext::testing(tmp.path()))
+        .await;
+    (result, marker.exists())
+}
+
+#[tokio::test]
+async fn mcp_tool_loop_allows_tool_permitted_by_role_contract() {
+    // The default `code` mode loads the implementer contract, which permits the tool.
+    let (result, received) = dispatch_fixture_mcp_tool("code").await;
+    assert!(
+        result.is_ok(),
+        "code mode must run the MCP tool, got {result:?}"
+    );
+    assert!(result.text_content().contains("echoed"));
+    assert!(received, "the MCP server must receive the call");
+}
+
+#[tokio::test]
+async fn acp_tool_dispatcher_runs_builtin_tool_in_code_mode() {
+    // The default dispatcher layer denies every tool; the role-scoped one admits
+    // what the implementer contract permits.
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("notes.txt"), "code mode dispatch").expect("write fixture");
+    let role = acp_contract_role_for_mode("code");
+    let (tx, _rx) = mpsc::channel(16);
+    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
+    handlers.insert(
+        "read_file".to_owned(),
+        Arc::new(AcpBuiltinToolHandler {
+            tool_name: "read_file".into(),
+            session_id: "dispatcher-code-mode".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: tx,
+            role: role.clone(),
+        }),
+    );
+    let registry = Arc::new(VecToolRegistry::from_tools(acp_builtin_tools()));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
+    let safety = acp_tool_safety(&RokoConfig::default(), &role);
+    let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
+    let call = ToolCall::new("read-1", "read_file", json!({ "path": "notes.txt" }));
+    let result = dispatcher
+        .dispatch(call, &ToolContext::testing(tmp.path()))
+        .await;
+    assert!(
+        result.is_ok(),
+        "read_file must pass the code-mode layer, got {result:?}"
+    );
+    assert!(result.text_content().contains("code mode dispatch"));
+}
+
+#[tokio::test]
+async fn mcp_tool_loop_denies_tool_outside_role_contract() {
+    // A mode with no bundled contract gets the deny-all restricted fallback.
+    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode").await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "a tool outside the role contract must be denied, got {result:?}"
+    );
+    assert!(!received, "a denied call must never reach the MCP server");
 }
 
 #[tokio::test]

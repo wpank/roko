@@ -46,9 +46,6 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                     return Err(anyhow!("--non-interactive requires --agent"));
                 }
                 inputs.token_budget.get_or_insert(8000);
-                inputs
-                    .role
-                    .get_or_insert_with(|| "You are a Roko agent.".into());
                 inputs.enable_gates.get_or_insert(false);
                 inputs.yes = true;
                 if inputs.agent_args.is_none() {

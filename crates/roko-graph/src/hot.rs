@@ -27,7 +27,7 @@ use crate::cell::CellContext;
 use crate::engine::{GraphEngine, GraphOutput};
 use crate::fingerprint::graph_execution_fingerprint;
 use crate::registry::CellRegistry;
-use crate::replay::{ActivityRecorder, ActivityReplayer};
+use crate::replay::{ActivityRecorder, ActivityReplayer, set_aside_uncommitted_activities};
 use crate::types::{ExecutionClass, Graph};
 
 const HOT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
@@ -116,6 +116,9 @@ pub struct HotCheckpointOptions {
     pub fresh: bool,
     /// Archive an invalid or drifted checkpoint and begin a new run.
     pub force_resume: bool,
+    /// Run cells whose registry descriptors are stubs, which a start refuses
+    /// otherwise (see [`GraphEngine::with_allow_test_stubs`]).
+    pub allow_test_stubs: bool,
 }
 
 impl HotCheckpointOptions {
@@ -126,6 +129,7 @@ impl HotCheckpointOptions {
             directory: directory.into(),
             fresh: false,
             force_resume: false,
+            allow_test_stubs: false,
         }
     }
 }
@@ -296,7 +300,7 @@ pub fn start_hot_with_budget(
     budget: Option<BudgetEnforcer>,
 ) -> HotGraphHandle {
     configure_hot_graph(&mut graph, &policy);
-    start_hot_engine(graph, registry, policy, parent_cancel, budget, None)
+    start_hot_engine(graph, registry, policy, parent_cancel, budget, None, false)
 }
 
 /// Start or resume a crash-recoverable Hot Graph.
@@ -340,6 +344,7 @@ pub fn start_hot_resumable_with_budget(
         parent_cancel,
         budget,
         Some(prepared),
+        checkpoint.allow_test_stubs,
     ))
 }
 
@@ -356,6 +361,7 @@ fn start_hot_engine(
     parent_cancel: Option<CancellationToken>,
     budget: Option<BudgetEnforcer>,
     checkpoint: Option<PreparedHotCheckpoint>,
+    allow_test_stubs: bool,
 ) -> HotGraphHandle {
     let cancel = parent_cancel.map(|p| p.child_token()).unwrap_or_default();
     let initial_tick = checkpoint
@@ -369,7 +375,7 @@ fn start_hot_engine(
     let parallel_execution = graph.policy.max_concurrent_nodes > 1;
     let graph_name = graph.metadata.name.clone();
 
-    let mut engine = GraphEngine::new(graph, registry);
+    let mut engine = GraphEngine::new(graph, registry).with_allow_test_stubs(allow_test_stubs);
 
     // Validate edge type compatibility before spawning work.
     if let Err(error) = engine.validate_for_start() {
@@ -651,6 +657,23 @@ fn load_hot_checkpoint(
             "Hot Graph checkpoint references missing Activity log {}",
             activities_path.display()
         )));
+    }
+    // A record whose write did not finish, such as a line a crash tore, was
+    // never committed: set it aside rather than fail on it, as a plan resume
+    // does, so its node runs again (bug-403181).
+    let uncommitted = set_aside_uncommitted_activities(activities_path).map_err(|error| {
+        HotCheckpointError::new(format!(
+            "set aside the torn end of Hot Graph Activity log {}: {error}",
+            activities_path.display()
+        ))
+    })?;
+    if let Some(aside) = uncommitted {
+        warn!(
+            activities = %activities_path.display(),
+            set_aside = %aside.display(),
+            "Hot Graph resume: the Activity log ended in a record whose write did not finish; \
+             set it aside, and its node runs again"
+        );
     }
 
     let replayer =
@@ -976,6 +999,67 @@ execution_class = "activity"
         registry
     }
 
+    /// bug-91a34e: a Hot Graph start refuses cells whose descriptors are
+    /// stubs, unless its options allow them, as `roko agent serve
+    /// --allow-stub-cognitive-loop` does.
+    #[tokio::test]
+    async fn stub_cells_are_refused_by_hot_graph_starts_unless_allowed() {
+        let temp = tempdir().expect("tempdir");
+        let stub_registry = |executions: Arc<AtomicU64>| {
+            let mut registry = CellRegistry::new();
+            registry.register_with_descriptor(
+                "counter",
+                crate::registry::CellDescriptor::test_stub("counter"),
+                move |_| {
+                    Box::new(CountingCell {
+                        executions: executions.clone(),
+                        cancel_after: None,
+                    })
+                },
+            );
+            registry
+        };
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(1),
+            persist_tick_state: true,
+            loop_level: None,
+        };
+
+        let refused_executions = Arc::new(AtomicU64::new(0));
+        let refused = start_hot_resumable(
+            hot_graph("stub-refused"),
+            stub_registry(refused_executions.clone()),
+            policy.clone(),
+            None,
+            HotCheckpointOptions::new(temp.path().join("refused")),
+        )
+        .expect("start refused graph");
+        let failure = refused
+            .wait_result()
+            .await
+            .expect_err("a stub cell is refused");
+        assert!(
+            failure.to_string().contains("test-stub node(s): counter"),
+            "{failure}"
+        );
+        assert_eq!(refused_executions.load(Ordering::Relaxed), 0);
+
+        let allowed_executions = Arc::new(AtomicU64::new(0));
+        let mut options = HotCheckpointOptions::new(temp.path().join("allowed"));
+        options.allow_test_stubs = true;
+        let allowed = start_hot_resumable(
+            hot_graph("stub-allowed"),
+            stub_registry(allowed_executions.clone()),
+            policy,
+            None,
+            options,
+        )
+        .expect("start allowed graph");
+        allowed.wait_result().await.expect("stub cells allowed");
+        assert_eq!(allowed_executions.load(Ordering::Relaxed), 1);
+    }
+
     #[tokio::test]
     async fn hot_graph_respects_max_ticks() {
         let toml_str = r#"
@@ -1260,6 +1344,81 @@ cell_type = "noop"
         resumed.wait_result().await.expect("replay succeeds");
         assert_eq!(executions.load(Ordering::Relaxed), 0);
         assert_eq!(resumed.tick_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn hot_resume_sets_aside_a_torn_activity() {
+        let temp = tempdir().expect("tempdir");
+        let checkpoint_dir = temp.path().join("hot");
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(1),
+            persist_tick_state: false,
+            loop_level: None,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let initial = start_hot_resumable(
+            hot_graph("torn"),
+            counting_registry(Arc::new(AtomicU64::new(0)), None),
+            policy.clone(),
+            Some(cancelled),
+            HotCheckpointOptions::new(&checkpoint_dir),
+        )
+        .expect("create checkpoint");
+        initial.wait_result().await.expect("cancel cleanly");
+
+        // Tick 0's Activity completed, and the process died while it
+        // appended the next record.
+        let manifest = checkpoint_manifest(&checkpoint_dir);
+        let log = checkpoint_dir.join(HOT_ACTIVITY_LOG);
+        let mut recorder = ActivityRecorder::create(&manifest.run_id, &log).expect("recorder");
+        recorder
+            .record(
+                "torn",
+                "counter",
+                0,
+                vec![
+                    Signal::builder(Kind::Task)
+                        .body(Body::text("recorded"))
+                        .build(),
+                ],
+            )
+            .expect("record completed Activity");
+        drop(recorder);
+        let committed = std::fs::read(&log).expect("committed log");
+        let torn = b"{\"graph_id\":\"torn\",\"node_id\":\"coun";
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("open log");
+        file.write_all(torn).expect("tear the log");
+        drop(file);
+
+        let executions = Arc::new(AtomicU64::new(0));
+        let resumed = start_hot_resumable(
+            hot_graph("torn"),
+            counting_registry(executions.clone(), None),
+            policy,
+            None,
+            HotCheckpointOptions::new(&checkpoint_dir),
+        )
+        .expect("a torn record does not block resume");
+        resumed.wait_result().await.expect("replay succeeds");
+        assert_eq!(executions.load(Ordering::Relaxed), 0);
+        assert_eq!(resumed.tick_count(), 1);
+
+        let set_aside: Vec<Vec<u8>> = std::fs::read_dir(&checkpoint_dir)
+            .expect("checkpoint directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.contains(".uncommitted."))
+            .map(|name| std::fs::read(checkpoint_dir.join(name)).expect("set-aside bytes"))
+            .collect();
+        assert_eq!(set_aside, [torn.to_vec()]);
+        let log_bytes = std::fs::read(&log).expect("log");
+        assert!(log_bytes.starts_with(&committed));
+        assert_eq!(log_bytes.last(), Some(&b'\n'));
     }
 
     #[tokio::test]

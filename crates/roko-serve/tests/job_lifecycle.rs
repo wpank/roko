@@ -519,7 +519,10 @@ async fn test_job_cancellation_from_open() {
     let disk_data = std::fs::read_to_string(&path).expect("read persisted job");
     let disk_job: serde_json::Value =
         serde_json::from_str(&disk_data).expect("parse persisted job");
-    assert_eq!(disk_job["state"], "cancelled");
+    // The shared execution service persists the canonical `status` key and
+    // drops the legacy `state` key (bug-96341e).
+    assert_eq!(disk_job["status"], "cancelled");
+    assert!(disk_job.get("state").is_none(), "stale key: {disk_job}");
 
     // Verify the cancelled job still appears in the list.
     let (status, listed) = get_json(&app, "/api/jobs").await;

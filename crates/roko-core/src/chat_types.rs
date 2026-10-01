@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::model_registry::{DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER};
+use crate::config::model_registry::{
+    DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER,
+};
 use crate::tool::{ToolCall, ToolDef};
 use crate::{Body, Kind, Signal};
 

@@ -3,12 +3,14 @@
 # Demonstrates the universal loop pattern: score a signal, compose a prompt,
 # then act on it. Each step passes its output signals to the next.
 #
-# All three cell types resolve to real cognitive cell implementations
-# registered in the default registry (score is an alias for AssessCell,
-# compose maps to CognitiveComposeCell, act maps to ActCell).
+# All three cell types resolve to cognitive cell implementations registered
+# in the default registry (score is an alias for AssessCell, compose maps to
+# CognitiveComposeCell, act maps to ActCell). ActCell is still a stub that
+# dispatches nothing (gap-3d5cce), so `roko graph run` refuses this graph
+# until it is wired to a provider (bug-91a34e).
 #
 # Usage:
-#   roko graph run examples/graphs/score-compose.toml
+#   roko graph show examples/graphs/score-compose.toml
 
 [graph]
 name = "score-compose-act"

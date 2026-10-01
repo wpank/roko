@@ -1,22 +1,23 @@
 # 05-agent/agent-pools -- Agent Pools
 
-> AgentPool (sequential, single-role) and MultiAgentPool (parallel, multi-role):
+> The removed AgentPool (sequential, single-role) and MultiAgentPool (parallel, multi-role):
 > lifecycle states, warm pre-spawning, concurrency limits, fallback retry, and
 > integration status.
 
 **Parent:** [05-AGENT](../../05-AGENT.md)
 
-**Source:** `crates/roko-agent/src/pool.rs`, `crates/roko-agent/src/multi_pool.rs`
+**Source (removed 2026-10-01, gap-ee8dc0):** `crates/roko-agent/src/pool.rs`, `crates/roko-agent/src/multi_pool.rs`
 
 ---
 
 ## 1. Status
 
-> **Built but not runtime-instantiated.** `AgentPool` and `MultiAgentPool`
-> compile with tests, but the Graph engine and `PlanRunner` do not delegate
-> agent lifecycle to these pool types. Agents are constructed on-demand via
-> `create_agent_for_model()` and tracked by `ProcessSupervisor`. The pool
-> layer described here is the intended future architecture.
+> **Removed.** `AgentPool` and `MultiAgentPool` never ran outside their own
+> tests, and were deleted on 2026-10-01 (gap-ee8dc0) together with the TUI
+> roster modal built for them (bug-2f33d6). Agents are constructed on demand
+> via `create_agent_for_model()` and tracked by `ProcessSupervisor`; the only
+> pool is `WarmPool` (`crates/roko-cli/src/dispatch/warm_pool.rs`), a per-role
+> LRU of warm agent handles. The rest of this page records the removed design.
 
 ---
 
@@ -225,8 +226,8 @@ graceful shutdown.
 
 ## 8. TUI Integration
 
-The TUI `AgentPoolRow` in `tui/modals/agent_pool_modal.rs` provides a
-scrollable view of all pool entries:
+The TUI roster modal (`tui/modals/agent_pool_modal.rs`, removed with the
+pools) showed every pool entry:
 
 | Column | Content |
 |--------|---------|
@@ -262,10 +263,10 @@ Future:
 
 ## 10. Citations
 
-1. `crates/roko-agent/src/pool.rs` -- AgentPool, AgentInstanceId,
+1. `crates/roko-agent/src/pool.rs` (removed) -- AgentPool, AgentInstanceId,
    InstanceStatus, AgentTask, TaskOutcome.
-2. `crates/roko-agent/src/multi_pool.rs` -- MultiAgentPool, WarmEntry,
+2. `crates/roko-agent/src/multi_pool.rs` (removed) -- MultiAgentPool, WarmEntry,
    ActiveEntry, concurrency control.
 3. `crates/roko-runtime/src/supervisor.rs` -- ProcessSupervisor for subprocess
    lifecycle.
-4. `crates/roko-cli/src/tui/modals/agent_pool_modal.rs` -- TUI pool view.
+4. `crates/roko-cli/src/tui/modals/agent_pool_modal.rs` (removed) -- TUI pool view.

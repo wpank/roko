@@ -115,7 +115,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Esc", "close plan detail", theme));
     lines.push(kb("w", "wave overview modal", theme));
     lines.push(kb("p", "pause/resume pipeline (wired to executor)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("y", "approve pending command", theme));
     lines.push(kb("`", "cycle agent role tabs", theme));
     lines.push(sub_label("Right-panel sub-tab shortcuts:", theme));
@@ -179,7 +179,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("A", "approve all pending", theme));
     lines.push(kb("x", "reject pending command", theme));
     lines.push(kb("X", "cancel selected agent's task (skip)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("g", "toggle agent pane grouping", theme));
     lines.push(kb("t", "toggle agent topology", theme));
     lines.push(sub_label("Agent output search:", theme));

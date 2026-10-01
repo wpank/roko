@@ -1146,6 +1146,7 @@ impl ClaudeCliAgent {
     /// - `tool` events (subtype `result`) → `ToolResult`.
     /// - `user` messages with `tool_result` blocks (older CLI format) →
     ///   `ToolResult`, with content flattened to a single text string.
+    /// - Either result's `is_error` mark → the `ToolResult`'s `is_error`.
     /// - partial-message deltas ([`Self::delta_kind`]) → `TextDelta` or
     ///   `ReasoningDelta`.
     fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
@@ -1203,7 +1204,12 @@ impl ClaudeCliAgent {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                events.push(StreamEventKind::ToolResult { id, output });
+                let is_error = Self::marked_error(event);
+                events.push(StreamEventKind::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                });
             }
             Some("user") => {
                 // Older Claude CLI format: tool results arrive as a `user`
@@ -1239,7 +1245,12 @@ impl ClaudeCliAgent {
                             .join("\n"),
                         _ => String::new(),
                     };
-                    events.push(StreamEventKind::ToolResult { id, output });
+                    let is_error = Self::marked_error(block);
+                    events.push(StreamEventKind::ToolResult {
+                        id,
+                        output,
+                        is_error,
+                    });
                 }
             }
             _ => {}
@@ -1267,6 +1278,15 @@ impl ClaudeCliAgent {
             .get("thinking")
             .and_then(Value::as_str)
             .map(|thinking| StreamEventKind::ReasoningDelta(thinking.to_string()))
+    }
+
+    /// Whether a tool result carries `"is_error": true`: the tool call
+    /// failed (bug-264c41). A result without the mark is a success.
+    fn marked_error(result: &Value) -> bool {
+        result
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Whether `stdout` is a stream-json run that never reached its final
@@ -3973,8 +3993,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
-            if id == "tu_2" && output == "output")
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, is_error }
+            if id == "tu_2" && output == "output" && !is_error)
         );
     }
 
@@ -3993,8 +4013,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
-            if id == "tu_3" && output == "plain text result")
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, is_error }
+            if id == "tu_3" && output == "plain text result" && !is_error)
         );
     }
 
@@ -4016,8 +4036,30 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
         assert_eq!(kinds.len(), 1);
         assert!(
-            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output, .. }
             if id == "tu_4" && output == "line one\nline two")
+        );
+    }
+
+    /// bug-264c41: a tool result marked `is_error` is a failed call.
+    #[test]
+    fn event_kinds_tool_result_marked_error() {
+        let event = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu_5",
+                    "content": "<tool_use_error>File does not exist.</tool_use_error>",
+                    "is_error": true
+                }]
+            }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, is_error, .. }
+            if id == "tu_5" && *is_error)
         );
     }
 
@@ -4073,7 +4115,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"h
         let tool_result_pos = kinds
             .iter()
             .position(|k| {
-                matches!(k, StreamEventKind::ToolResult { id, output } if id == "tu_1" && output == "file contents")
+                matches!(k, StreamEventKind::ToolResult { id, output, .. } if id == "tu_1" && output == "file contents")
             })
             .expect("ToolResult not found");
 

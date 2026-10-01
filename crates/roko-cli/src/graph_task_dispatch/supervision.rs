@@ -936,7 +936,9 @@ mod tests {
                 .is_none()
         );
         assert!(
-            dispatcher.live_output_tap(&watched(), None, None).is_none(),
+            dispatcher
+                .live_output_tap(&watched(), None, None, None)
+                .is_none(),
             "no TUI, no watchdog and no conductor: no live output"
         );
     }

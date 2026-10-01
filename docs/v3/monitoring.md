@@ -1,7 +1,7 @@
 # Monitoring Guide
 
-> Operator reference for the `roko serve` HTTP control plane (~376 canonical
-> routes on `:6677`). This guide covers the minimum set of endpoints needed
+> Operator reference for the `roko serve` HTTP control plane (on `:6677`;
+> route counts in `tools/http_route_inventory.snapshot.json`). This guide covers the minimum set of endpoints needed
 > for production monitoring, alerting, and dashboarding.
 >
 > For the full route inventory see `docs/v3/26-HTTP-API.md` and

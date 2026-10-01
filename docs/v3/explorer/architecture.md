@@ -74,7 +74,7 @@ graph TB
     subgraph T5["Tier 5: External Interfaces"]
         direction LR
         CLI["roko-cli<br/><i>85+ commands, TUI,<br/>plan runner</i>"]
-        SERVE["roko-serve<br/><i>~376 REST routes,<br/>SSE, WebSocket</i>"]
+        SERVE["roko-serve<br/><i>REST routes,<br/>SSE, WebSocket</i>"]
         ACP["roko-acp<br/><i>Editor integration<br/>(Cursor, etc.)</i>"]
         AGSERV["roko-agent-server<br/><i>Per-agent sidecar<br/>14 routes</i>"]
     end
@@ -262,7 +262,7 @@ User-facing and integration surfaces.
 | Crate | Primary responsibility | Scale |
 |-------|----------------------|-------|
 | [roko-cli](/28-CLI) | Main binary, 85+ commands, plan runner, TUI dashboard | 10 TUI tabs (F1-F10) |
-| [roko-serve](/26-HTTP-API) | HTTP control plane on :6677 | ~376 REST routes + SSE + WS |
+| [roko-serve](/26-HTTP-API) | HTTP control plane on :6677 | REST routes + SSE + WS |
 | [roko-acp](/27-ACP) | Editor integration protocol (Cursor, etc.) | 180 tests |
 | [roko-agent-server](/depth/26-http/04-sidecar-api) | Per-agent HTTP sidecar | 14 routes |
 

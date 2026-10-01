@@ -231,9 +231,9 @@ const FORCED_EXIT_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(2);
 /// checkpoint is finalized without them (bug-2b1ddc).
 const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long an interrupted plan waits for its attempts' cost and learning
-/// rows to reach the disk before it returns, and the process exits.
-const INTERRUPT_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a plan waits for its attempts' cost and learning rows to reach
+/// the disk before it returns, and the process exits.
+const ROW_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Set while a CLI plan run handles SIGINT/SIGTERM itself.
 static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
@@ -3047,15 +3047,14 @@ async fn run_one_plan(
     } else {
         flow_handle.await_completion().await
     };
-    // The process exits soon after an interrupted run returns: let its
-    // attempts' cost and learning rows reach the disk first.
-    if interrupted_by.is_some() {
-        let _ = tokio::time::timeout(
-            INTERRUPT_WRITES_TIMEOUT,
-            crate::background_writes::settled(ctx.workdir),
-        )
-        .await;
-    }
+    // The process exits soon after a run returns: let its attempts' cost and
+    // learning rows reach the disk first. The last attempt's rows are still
+    // being written when its graph settles, interrupted or not (q-1faa0c).
+    let _ = tokio::time::timeout(
+        ROW_WRITES_TIMEOUT,
+        crate::background_writes::settled(ctx.workdir),
+    )
+    .await;
 
     let Some(output) = flow_result else {
         // Flow was cancelled before producing a result (e.g. validation

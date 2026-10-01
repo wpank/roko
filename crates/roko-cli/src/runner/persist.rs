@@ -762,6 +762,35 @@ pub fn append_run_scoped_event(
     Ok(())
 }
 
+/// Append one event to the derived per-run index only, for an event the
+/// global log gets from another writer: a state hub that persists its own
+/// events (`StateHub::persists_events`).
+pub fn append_run_index_event(
+    paths: &PersistPaths,
+    run_id: &str,
+    value: &impl Serialize,
+    flush_index: bool,
+) -> Result<()> {
+    let line = serialized_jsonl(value)?;
+    append_buffered_run_index(&paths.events_jsonl, run_id, &line, flush_index)
+}
+
+/// Flush what is buffered of the run `run_id`'s derived index, as a run's
+/// writer does when the run ends.
+pub fn flush_run_index(paths: &PersistPaths, run_id: &str) -> Result<()> {
+    let run_path = roko_fs::run_index::run_index_path(&paths.events_jsonl, run_id)
+        .map_err(anyhow::Error::msg)?;
+    let mut cache = run_index_writers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(writer) = cache.writers.get_mut(&run_path) {
+        writer
+            .flush()
+            .with_context(|| format!("flushing run index {}", run_path.display()))?;
+    }
+    Ok(())
+}
+
 fn append_buffered_run_index(
     global_path: &Path,
     run_id: &str,

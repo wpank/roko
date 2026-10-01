@@ -9,9 +9,9 @@ size = "M"
 goal = "visibility"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-05
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "faa378453"
 source = "crates/roko-cli/tests/default_engine.rs:11"
 discovered_from = "audit:crates/roko-cli/tests/default_engine.rs:11"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::EventTap", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/runner/persist.rs::append_run_scoped_event", "crates/roko-cli/src/serve_runtime.rs::collect_runner_gate_results", "crates/roko-runtime/src/state_hub.rs::replay_log_into_snapshot", "crates/roko-cli/tests/default_engine.rs::default_engine_does_real_work"]
@@ -140,6 +140,7 @@ The regression test for this, `crates/roko-cli/tests/default_engine.rs::default_
   must stay hermetic: isolated `HOME`, no API keys.
 - Parallel safety: this edits `run_graph_plan` in `plan_runner.rs` and `serve_runtime.rs`. Coordinate with
   `gap-7c9e48` and `spec-3cb55d`, which touch the same runner, and with `gap-8a1fb3` (event stream contents).
+- Implemented on `work/bug-230de6` at `0ccbe77d8`; cargo verification deferred to the batch check. Every Graph run spawns a `WorkspaceEventLog` tap that writes each hub event, as a `DashboardEvent` line stamped with the run's `run_id`, through `append_run_scoped_event` (global log plus `.roko/events-by-run/` index). A hub that already persists (serve's, `StateHub::persists_events`) gets the index only, so nothing is written twice. Serve's `collect_runner_gate_results` reads the run's `GateResult` lines. `default_engine_does_real_work` is rewritten and no longer ignored.
 
 ## Original notes
 

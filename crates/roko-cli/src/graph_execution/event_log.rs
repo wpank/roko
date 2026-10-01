@@ -24,6 +24,9 @@
 //! output lines are replaced the same way. A `gate_result` also keeps
 //! `output_text_excerpt`, the redacted last 240 bytes of its output, which
 //! end with how a failed step ended (`✗ timed out after 600000 ms`).
+//!
+//! Every run, with or without `--log-file`, also records its events in the
+//! workspace event log, `.roko/events.jsonl` ([`WorkspaceEventLog`]).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -43,7 +46,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::oneshot;
 
-use super::plan_runner::{GraphPlanRunParams, PlanRunInterrupt, run_graph_plan};
+use super::plan_runner::{
+    GraphPlanRunParams, PlanRunInterrupt, run_graph_plan, run_graph_plan_observed,
+};
 use crate::exit_codes::EXIT_SUCCESS;
 use crate::runner::tui_bridge::STREAM_RECORD_PREFIX;
 use crate::runner::types::{RunOutcome, RunnerEvent};
@@ -149,9 +154,13 @@ pub(crate) fn run_recorded(
             .state_hub
             .get_or_insert_with(crate::state_hub::shared_state_hub)
             .clone();
-        let log = RunEventLog::open(&path, &hub, params.resume_plan.is_some())
-            .with_context(|| format!("open --log-file {}", path.display()))?;
-        let result = run_graph_plan(params).await;
+        // The log, `status.json` and the workspace event log name the run
+        // alike.
+        let run_id = graph_run_id(None);
+        let log =
+            RunEventLog::open_for_run(&path, &hub, params.resume_plan.is_some(), run_id.clone())
+                .with_context(|| format!("open --log-file {}", path.display()))?;
+        let result = run_graph_plan_observed(params, None, run_id).await;
         if let Err(error) = log.finish(&result).await {
             tracing::warn!(
                 path = %path.display(),
@@ -169,13 +178,23 @@ pub struct RunEventLog {
 }
 
 impl RunEventLog {
-    /// Create (or truncate) `path` and start recording `hub`'s events.
+    /// Create (or truncate) `path` and start recording `hub`'s events under a
+    /// new run id ([`graph_run_id`]).
     pub fn open(path: &Path, hub: &StateHub, resumed: bool) -> std::io::Result<Self> {
+        Self::open_for_run(path, hub, resumed, graph_run_id(None))
+    }
+
+    /// [`Self::open`] for the run `run_id`.
+    pub fn open_for_run(
+        path: &Path,
+        hub: &StateHub,
+        resumed: bool,
+        run_id: String,
+    ) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let out = BufWriter::new(File::create(path)?);
-        let run_id = evidence_run_id().unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
         let writer = EventLogWriter {
             out,
             run_id,
@@ -214,6 +233,142 @@ pub(crate) fn evidence_run_id() -> Option<String> {
     std::env::var("ROKO_EVIDENCE_RUN_ID")
         .ok()
         .filter(|id| !id.trim().is_empty())
+}
+
+/// The id a Graph run's records name it by: the evidence collector's
+/// ([`evidence_run_id`]), else the caller's `run_id`, else a new
+/// `graph-<uuid>`.
+pub(crate) fn graph_run_id(run_id: Option<&str>) -> String {
+    evidence_run_id()
+        .or_else(|| run_id.map(str::to_string))
+        .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()))
+}
+
+// ── Workspace event log ──────────────────────────────────────────────────
+
+/// Records a Graph run's hub events in the workspace event log,
+/// `.roko/events.jsonl`, and in the run's derived index,
+/// `.roko/events-by-run/<sha256(run id)>.jsonl`, whether or not it has a
+/// `--log-file` (bug-230de6). A dashboard in another terminal, serve's gate
+/// evidence, the runs route and `roko doctor` read them.
+///
+/// Each line is the [`DashboardEvent`] as the hub publishes it, the format
+/// the TUI replays, with the run's `run_id` added, by which the index is
+/// derived and repaired. A hub that writes the workspace log itself (serve's,
+/// see [`StateHub::persists_events`]) gets the index only. Plan, task, gate
+/// and run lifecycle events are synced and flush the index; the rest, agent
+/// output above all, are appended without a sync per line.
+pub(crate) struct WorkspaceEventLog {
+    tap: EventTap<WorkspaceLogWriter>,
+}
+
+impl WorkspaceEventLog {
+    /// Start recording `hub`'s events for the run `run_id` in `workdir`;
+    /// `None` when its `.roko` directories cannot be created.
+    pub(crate) fn spawn(hub: &StateHub, workdir: &Path, run_id: String) -> Option<Self> {
+        let paths = crate::runner::persist::PersistPaths::from_workdir(workdir)
+            .inspect_err(|error| {
+                tracing::warn!(error = %format!("{error:#}"), "the run's events are not recorded");
+            })
+            .ok()?;
+        let writer = WorkspaceLogWriter {
+            paths,
+            run_id,
+            index_only: hub.persists_events(),
+            failed: false,
+        };
+        Some(Self {
+            tap: EventTap::spawn(hub, writer, WorkspaceLogWriter::record),
+        })
+    }
+
+    /// Record the events published so far, flush the run's index, and stop.
+    pub(crate) async fn finish(self) {
+        let flushed = self.tap.finish().await.and_then(|writer| {
+            crate::runner::persist::flush_run_index(&writer.paths, &writer.run_id)
+        });
+        if let Err(error) = flushed {
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                "the run's event log is incomplete"
+            );
+        }
+    }
+}
+
+/// Writer state folded by a [`WorkspaceEventLog`]'s tap.
+struct WorkspaceLogWriter {
+    paths: crate::runner::persist::PersistPaths,
+    run_id: String,
+    /// The hub writes `.roko/events.jsonl` itself.
+    index_only: bool,
+    /// A write failed, and was reported.
+    failed: bool,
+}
+
+impl WorkspaceLogWriter {
+    fn record(&mut self, tapped: Tapped<'_>) {
+        let event = match tapped {
+            Tapped::Event(envelope) => &envelope.payload,
+            Tapped::Lagged(skipped) => {
+                tracing::warn!(
+                    run_id = %self.run_id,
+                    skipped,
+                    "the run's event log fell behind and missed events"
+                );
+                return;
+            }
+        };
+        if !crate::state_hub::should_persist(event) {
+            return;
+        }
+        let mut line = serde_json::to_value(event).unwrap_or_default();
+        if let Some(fields) = line.as_object_mut() {
+            fields
+                .entry("run_id")
+                .or_insert_with(|| serde_json::json!(self.run_id));
+        }
+        let lifecycle = matches!(
+            event,
+            DashboardEvent::PlanSetLoaded { .. }
+                | DashboardEvent::PlanStarted { .. }
+                | DashboardEvent::PlanCompleted { .. }
+                | DashboardEvent::TaskStarted { .. }
+                | DashboardEvent::TaskCompleted { .. }
+                | DashboardEvent::GateResult { .. }
+                | DashboardEvent::RunCompleted { .. }
+        );
+        let result = if self.index_only {
+            crate::runner::persist::append_run_index_event(
+                &self.paths,
+                &self.run_id,
+                &line,
+                lifecycle,
+            )
+        } else {
+            let durability = if lifecycle {
+                crate::runner::persist::EventDurability::Durable
+            } else {
+                crate::runner::persist::EventDurability::Relaxed
+            };
+            crate::runner::persist::append_run_scoped_event(
+                &self.paths,
+                &self.run_id,
+                &line,
+                durability,
+                lifecycle,
+            )
+        };
+        if let Err(error) = result
+            && !std::mem::replace(&mut self.failed, true)
+        {
+            tracing::warn!(
+                run_id = %self.run_id,
+                error = %format!("{error:#}"),
+                "the run's event log could not be written"
+            );
+        }
+    }
 }
 
 /// One hub event.
@@ -576,6 +731,68 @@ mod tests {
         assert_eq!(end["total_agent_calls"], 1);
         assert_eq!(end["task_outcomes"]["passed"], 1);
         assert!(end["timestamp_ms"].as_u64() >= lines[0]["timestamp_ms"].as_u64());
+    }
+
+    /// bug-230de6: a run's hub events land in `.roko/events.jsonl` as the
+    /// dashboard events the TUI replays, stamped with the run's id, and in
+    /// the run's derived index. A hub that writes the workspace log itself
+    /// gets the index only, so no event is written twice.
+    #[tokio::test]
+    async fn workspace_event_log_records_replayable_events_and_the_runs_index() {
+        let completed = || DashboardEvent::TaskCompleted {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            outcome: "passed".to_string(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = WorkspaceEventLog::spawn(&hub, dir.path(), "graph-test-1".to_string())
+            .expect("record the run");
+        let sender = hub.sender();
+        sender.publish(completed());
+        sender.publish(DashboardEvent::GateResult {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            gate: "verify[0:compile]".to_string(),
+            passed: true,
+            output_text: Some("$ cargo check".to_string()),
+        });
+        log.finish().await;
+
+        let events_path = dir.path().join(".roko/events.jsonl");
+        let lines = read_lines(&events_path);
+        let types: Vec<&str> = lines
+            .iter()
+            .map(|line| line["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(types, ["task_completed", "gate_result"]);
+        assert!(lines.iter().all(|line| line["run_id"] == "graph-test-1"));
+        let replay = crate::state_hub::shared_state_hub();
+        let mut reader = std::io::BufReader::new(File::open(&events_path).expect("open log"));
+        assert_eq!(replay.replay_events_from_reader(&mut reader), 2);
+        let index =
+            roko_fs::run_index::run_index_path(&events_path, "graph-test-1").expect("index path");
+        assert_eq!(read_lines(&index), lines);
+
+        let durable_dir = tempfile::tempdir().expect("tempdir");
+        let durable_events = durable_dir.path().join(".roko/events.jsonl");
+        let durable = crate::state_hub::SharedStateHub::new(
+            crate::state_hub::StateHub::with_event_log(64, &durable_events),
+        );
+        let log =
+            WorkspaceEventLog::spawn(&durable, durable_dir.path(), "graph-test-2".to_string())
+                .expect("record the run");
+        durable.sender().publish(completed());
+        log.finish().await;
+        let lines = read_lines(&durable_events);
+        assert_eq!(lines.len(), 1, "the hub wrote it, once");
+        assert!(lines[0].get("run_id").is_none());
+        let index = roko_fs::run_index::run_index_path(&durable_events, "graph-test-2")
+            .expect("index path");
+        let indexed = read_lines(&index);
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0]["type"], "task_completed");
+        assert_eq!(indexed[0]["run_id"], "graph-test-2");
     }
 
     #[tokio::test]

@@ -38,3 +38,6 @@ Re-verified 2026-09-29 at d9e79e9d8: still no write-back. Correction: plan listi
   either write terminal statuses back into tasks.toml after a Graph run (a `toml_edit` write in graph_execution, which
   keeps the INDEX deterministic and fixes every reader at once), or declare checkpoints canonical for run status, have
   the INDEX count authored statuses only, and change this item's verify.
+- 2026-10-01 (wk-taskdef): the audit half landed with gap-759041 on the same branch. `roko backlog audit` reads each
+  plan's checkpoint through `graph_checkpoint::inspect_canonical_checkpoint`, a name this item's verify grep does not
+  accept; widen the grep when the INDEX half is decided.

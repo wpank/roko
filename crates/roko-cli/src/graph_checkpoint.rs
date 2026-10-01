@@ -1571,6 +1571,32 @@ pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutc
     .ok()
 }
 
+/// Every canonical checkpoint under `.roko/state/graph/`: the plan id its
+/// manifest records, with the manifest's path. Unreadable manifests are left
+/// out. `roko backlog audit` finds checkpoints whose plan is gone with this.
+#[must_use]
+pub fn canonical_checkpoint_plans(workdir: &Path) -> Vec<(String, PathBuf)> {
+    #[derive(Deserialize)]
+    struct PlanIdOnly {
+        plan_id: String,
+    }
+
+    let Ok(entries) = std::fs::read_dir(workdir.join(".roko/state/graph")) else {
+        return Vec::new();
+    };
+    let mut plans: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path().join("checkpoint.json"))
+        .filter_map(|manifest| {
+            let bytes = std::fs::read(&manifest).ok()?;
+            let plan = serde_json::from_slice::<PlanIdOnly>(&bytes).ok()?;
+            Some((plan.plan_id, manifest))
+        })
+        .collect();
+    plans.sort();
+    plans
+}
+
 // ---------------------------------------------------------------------------
 // Inspection
 // ---------------------------------------------------------------------------

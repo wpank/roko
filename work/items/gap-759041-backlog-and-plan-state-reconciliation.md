@@ -9,8 +9,8 @@ size = "M"
 goal = "tooling"
 subsystem = ["roko-cli"]
 created = 2026-09-07
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/229-backlog-plan-state-reconciliation.md#229 — Backlog and Plan State Reconciliation"
 discovered_from = "audit:tmp/backlog/archive/229-backlog-plan-state-reconciliation.md#229 — Backlog and Plan State Reconciliation"
@@ -117,6 +117,19 @@ Expected: `roko backlog audit [--json]` reads Graph checkpoints, walks nested pl
 - The reader in step 1 is shared with `gap-20ab07`, `bug-4cac0e` and `bug-5e7de4`. Land it in `graph_checkpoint.rs` with a stable signature, and do not start those items in parallel on the same file.
 - Touches `commands/backlog.rs`, `graph_checkpoint.rs` (reader only) and the `main.rs` doc comment. Low conflict risk otherwise.
 - Size M.
+- 2026-10-01 (wk-taskdef): implemented on work/bug-e3df7d; cargo verification deferred to the batch check.
+- Step 1's reader already existed: `graph_checkpoint::inspect_canonical_checkpoint` (added for `roko diagnose`) reads
+  the manifest, migrates v2 in memory, and maps every node the manifest's run recorded to its gate verdict, skipping
+  lines that do not parse; it takes no locks. The audit uses it, plus a new `canonical_checkpoint_plans` that lists
+  every checkpoint's plan id for orphan detection. The Runner-v2 readers and their tests are gone.
+- `build_audit_report` walks `find_plan_dirs` over the workspace plans directory, so plan sets are included. A task node
+  is the task id, or `task.<id>.executor` in the rich topology. Codes and severities: `AUDIT_RUN_SUCCEEDED_TOML_READY`,
+  `AUDIT_PLAN_SKIPPED` and `AUDIT_CHECKPOINT_UNREADABLE` are errors; `AUDIT_TASK_DONE_NOT_RECORDED` is a warning, since
+  hand-closed tasks are common (188 `done` tasks in plans/ today); `AUDIT_RUN_FAILED_TOML_READY` and
+  `AUDIT_ORPHAN_CHECKPOINT` are info (MAIN has checkpoints for demo, speed and validate plans run from other
+  directories). The command exits 1 on any error. Text output lists errors in full and the first 10 of each other code;
+  `--json` lists them all. Superseded, archived and fixture plans are counted but not checked. Step 6's tests are
+  `audit_*`; there is no CI step yet.
 
 ## Original notes
 

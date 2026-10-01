@@ -54,7 +54,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
-            .reserve(&spec.plan_id, self.budget_policy)?;
+            .reserve_waiting(&spec.plan_id, self.budget_policy, || ctx.is_cancelled())
+            .await?;
 
         // ── Attempt identity ─────────────────────────────────────────────
         let attempt_id = format!(

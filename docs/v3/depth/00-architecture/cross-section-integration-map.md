@@ -2,7 +2,7 @@
 
 > **v3 depth file** -- `/docs/v3/depth/00-architecture/cross-section-integration-map.md`
 > Canonical source: v1 `docs/v1/00-architecture/24-cross-section-integration-map.md`
-> Status: **Current** (48/48 epics accepted as programme manifests, ~376 canonical routes).
+> Status: **Current** (48/48 epics accepted as programme manifests; route counts in `tools/http_route_inventory.snapshot.json`).
 > Corrected 2026-09-29: not every subsystem is wired on plan runs; the Conductor, replan,
 > WASM hooks and most learning loops are not, or only partly ([00-INDEX](../../00-INDEX.md)
 > section 13).
@@ -185,7 +185,7 @@ The `Bus` trait provides typed publish-subscribe. Key topic namespaces:
 
 ## 5. HTTP Control Plane Integration
 
-The serve crate exposes ~376 canonical REST routes (~421 including aliases) organized
+The serve crate exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) organized
 across the full subsystem matrix:
 
 | Route Group | Count | Subsystem Integration |
@@ -289,7 +289,7 @@ The following metrics characterize the integration state of the system:
 | Tests | 10,300+ | cargo test --workspace |
 | Accepted epics | 48/48 | Epic manifest |
 | Executable tasks | Withdrawn 2026-09-29 | Stale count (`work/history/claude-md-status-2026-09-28.md`) |
-| Canonical HTTP routes | ~376 | route inventory |
+| Canonical HTTP routes | `canonical_registrations` in `tools/http_route_inventory.snapshot.json` | route inventory |
 | Kernel traits | 12 | roko-core |
 | Agent providers | 12 | roko-agent |
 | Gate types | 19 | roko-gate |

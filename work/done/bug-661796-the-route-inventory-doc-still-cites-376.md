@@ -56,3 +56,8 @@ Regenerate the doc's numbers from the tool, or point the doc at the snapshot. Re
 - Other docs still quote "~376 canonical routes (~421 incl. aliases)": `docs/v3/26-HTTP-API.md:3`,
   `docs/v3/00-INDEX.md:467,879`, `docs/v3/28-CLI.md:1691`, `docs/v3/32-DEPLOYMENT.md:4,67`, two VitePress components,
   and older v1/v2 status lines. Not changed here.
+- 2026-10-01 (wk-climain, follow-up after closing): the other "~376 canonical routes (~421 incl. aliases)" quotes, 49
+  lines in 30 files across docs/v1, docs/v2, docs/v2-depth, docs/v3 and two VitePress components, now point at
+  `tools/http_route_inventory.snapshot.json` instead of a number. Mermaid and ASCII diagrams and the components'
+  tooltips drop the number. `git grep -nE '~376|~421' -- docs` finds nothing; the Markdown link checker passes for
+  its default corpus, and the docs-lint stale-pattern grep finds nothing.

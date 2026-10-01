@@ -328,16 +328,7 @@ impl WorkspaceLogWriter {
                 .entry("run_id")
                 .or_insert_with(|| serde_json::json!(self.run_id));
         }
-        let lifecycle = matches!(
-            event,
-            DashboardEvent::PlanSetLoaded { .. }
-                | DashboardEvent::PlanStarted { .. }
-                | DashboardEvent::PlanCompleted { .. }
-                | DashboardEvent::TaskStarted { .. }
-                | DashboardEvent::TaskCompleted { .. }
-                | DashboardEvent::GateResult { .. }
-                | DashboardEvent::RunCompleted { .. }
-        );
+        let lifecycle = is_lifecycle_event(event);
         let result = if self.index_only {
             crate::runner::persist::append_run_index_event(
                 &self.paths,
@@ -369,6 +360,24 @@ impl WorkspaceLogWriter {
             );
         }
     }
+}
+
+/// Whether a [`WorkspaceEventLog`] syncs `event` and flushes the run's index
+/// as it is written: the plan, task, gate and run events that explain a run's
+/// end state, a blocked task's included (gap-dd4826), so a crash right after
+/// one cannot lose it.
+fn is_lifecycle_event(event: &DashboardEvent) -> bool {
+    matches!(
+        event,
+        DashboardEvent::PlanSetLoaded { .. }
+            | DashboardEvent::PlanStarted { .. }
+            | DashboardEvent::PlanCompleted { .. }
+            | DashboardEvent::TaskStarted { .. }
+            | DashboardEvent::TaskCompleted { .. }
+            | DashboardEvent::TaskBlocked { .. }
+            | DashboardEvent::GateResult { .. }
+            | DashboardEvent::RunCompleted { .. }
+    )
 }
 
 /// One hub event.
@@ -793,6 +802,30 @@ mod tests {
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0]["type"], "task_completed");
         assert_eq!(indexed[0]["run_id"], "graph-test-2");
+    }
+
+    /// gap-dd4826: a blocked task is synced as it is written, like the
+    /// other task lifecycle events; agent traffic is appended relaxed.
+    #[test]
+    fn workspace_event_log_syncs_a_blocked_task() {
+        let blocked = DashboardEvent::TaskBlocked {
+            plan_id: "p1".to_string(),
+            task_id: "T2".to_string(),
+            title: String::new(),
+            blocked_by: Some("T1".to_string()),
+            reason: String::new(),
+        };
+        assert!(is_lifecycle_event(&blocked));
+        let spawned = DashboardEvent::AgentSpawned {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 1,
+            role: "implementer".to_string(),
+            model: String::new(),
+            provider: String::new(),
+        };
+        assert!(!is_lifecycle_event(&spawned));
     }
 
     #[tokio::test]

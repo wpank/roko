@@ -197,7 +197,7 @@ impl GraphTaskDispatcher {
                         "-o".into(),
                         "pipefail".into(),
                         "-c".into(),
-                        step.command.clone(),
+                        self.verify_command(&step.command),
                     ],
                 )
                 .with_timeout_ms(step.timeout_ms)
@@ -433,7 +433,7 @@ impl GraphTaskDispatcher {
             // caller sees the corrected result without waiting for a full agent
             // retry loop. Only applies when promise-tracker did NOT terminate
             // early (those failures are structural, not fixable by `cargo fix`).
-            if !failures.is_empty() && !promise_terminated && self.config.gates.cargo_fix_enabled {
+            if !failures.is_empty() && !promise_terminated && self.auto_fix_enabled() {
                 // Use the phase of the first failing step as the gate name so
                 // `attempt_auto_fix` can pick the right fix command.
                 let first_fail_phase = step_outcomes

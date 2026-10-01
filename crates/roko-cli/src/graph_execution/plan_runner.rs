@@ -1272,6 +1272,8 @@ async fn run_graph_plan_body(
     )
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
+    // FAST lane (`./dev.sh fast`): bound each attempt (gap-4a6dcb).
+    .with_fast_bounds(super::fast_lane::FastAttemptBounds::from_env(workdir))
     .with_feedback(graph_feedback)
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)

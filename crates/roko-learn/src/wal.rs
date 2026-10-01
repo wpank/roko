@@ -335,8 +335,6 @@ pub const SEGMENTS_DIR: &str = "wal";
 /// saved snapshot holds its entries, so the segment stays bounded however
 /// long the writer runs (bug-7a2630). The lock tells an opener that the
 /// entries are a live writer's to save, not orphans to replay (bug-84de98).
-/// The writer releases the lock when it drops the segment, rather than
-/// leaving that to the file's close (bug-779ae7).
 #[derive(Debug)]
 pub struct WalSegment {
     path: PathBuf,
@@ -403,10 +401,10 @@ impl Drop for WalSegment {
         if self.entry_count == 0 {
             let _ = std::fs::remove_file(&self.path);
         }
-        // Closing the file does not release the lock while another process
-        // shares the open file: any child process forked while the segment
-        // was open does, until its exec. An opener would then skip the gone
-        // writer's entries as a live writer's (bug-779ae7).
+        // Closing the file alone would keep the lock while another copy of
+        // the descriptor lives, such as the one a child process spawned right
+        // now holds until it execs, and an opener would skip the segment as
+        // a live writer's (bug-779ae7).
         let _ = self.file.unlock();
     }
 }
@@ -701,6 +699,30 @@ mod tests {
         let orphans = orphans.unwrap();
         assert_eq!(orphans.len(), 1, "the writer is gone");
         assert_eq!(orphans[0].entries().len(), 1);
+    }
+
+    #[test]
+    fn a_gone_writer_leaves_no_lock_in_a_descriptor_that_outlives_it() {
+        // bug-779ae7: a child process spawned while the writer lived holds a
+        // copy of its descriptor until it execs.
+        let dir = TempDir::new().unwrap();
+        let mut writer = WalSegment::create(dir.path()).unwrap();
+        writer
+            .append(&WalEntry::GateThresholdUpdate {
+                rung: 1,
+                passed: true,
+                ts_ms: 1,
+            })
+            .unwrap();
+        let inherited = writer.file.try_clone().unwrap();
+
+        drop(writer);
+        assert_eq!(
+            orphaned_segments(dir.path()).unwrap().len(),
+            1,
+            "the writer is gone, so its segment is an orphan"
+        );
+        drop(inherited);
     }
 
     #[test]

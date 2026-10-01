@@ -35,8 +35,12 @@ pub struct TaskMeta {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
-    #[serde(default = "default_max_parallel")]
-    pub max_parallel: u32,
+    /// Tasks of this plan that may run at the same time. Omitted, the plan
+    /// runs as wide as its DAG allows when every task that can write
+    /// declares its `files`, and one task at a time otherwise
+    /// ([`crate::plan_policy::plan_max_parallel`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u32>,
     #[serde(default)]
     pub estimated_total_minutes: u32,
     /// When `true`, skip the enrichment pipeline and transition directly to
@@ -58,19 +62,44 @@ pub struct TaskMeta {
     /// out; unset runs them ([`Self::runs_workspace_rungs`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_rungs: Option<bool>,
+    /// The whole-plan gate (gap-60233f): steps that check the plan's
+    /// integrated result once every task has passed, in the same shape as a
+    /// task's `[[task.verify]]`. Unset, a Cargo workspace checks formatting,
+    /// lints and tests over the crates the plan affects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify: Vec<VerifyStep>,
+    /// Whether a person approves each verified task before its work merges
+    /// (gap-0d64d5, `approval = "per_task"`). Unset, nothing is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalMode>,
+}
+
+/// When a plan's verified tasks wait for a person's approval before their
+/// work merges into the plan branch (`[meta] approval`, gap-0d64d5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Nothing waits: verified work merges at once.
+    None,
+    /// Each verified task waits, with its diff, until someone approves or
+    /// rejects it.
+    PerTask,
 }
 
 impl TaskMeta {
+    /// Whether each verified task of this plan waits for a person's
+    /// approval before its work merges.
+    #[must_use]
+    pub fn holds_each_task_for_approval(&self) -> bool {
+        self.approval == Some(ApprovalMode::PerTask)
+    }
+
     /// Whether this plan's tasks run the workspace's required
     /// `[[gates.rungs]]`: yes unless `[meta] workspace_rungs = false`.
     #[must_use]
     pub fn runs_workspace_rungs(&self) -> bool {
         self.workspace_rungs != Some(false)
     }
-}
-
-fn default_max_parallel() -> u32 {
-    1
 }
 
 /// A single task definition.
@@ -918,6 +947,13 @@ pub struct VerifyStep {
     /// Timeout in milliseconds.
     #[serde(default = "default_verify_timeout")]
     pub timeout_ms: u64,
+    /// Paths this step reads, relative to the working tree; a directory
+    /// covers what it holds. Tasks that share the tree and write elsewhere
+    /// may edit while the step runs. Omitted, the scope is inferred from
+    /// `command`, and a command whose reads are unknown reads the whole
+    /// project, so it waits for every sibling that is mid-edit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
 }
 
 pub(crate) fn default_verify_timeout() -> u64 {
@@ -936,6 +972,7 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
             command: rung.command.clone(),
             fail_msg: None,
             timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+            scope: Vec::new(),
         }
     }
 }
@@ -1188,6 +1225,13 @@ impl TasksFile {
             }
 
             // Check numeric bounds.
+        }
+
+        // The whole-plan gate's steps need a command, like a task's.
+        for (index, step) in self.meta.verify.iter().enumerate() {
+            if step.command.trim().is_empty() {
+                issues.push(format!("meta: verify step #{} has no 'command'", index + 1));
+            }
         }
 
         issues
@@ -2696,12 +2740,14 @@ depends_on = []
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
                 source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
+                verify: Vec::new(),
+                approval: None,
             },
             tasks: Vec::new(),
         };
@@ -2745,6 +2791,7 @@ depends_on = []
                     command: "cargo check".into(),
                     fail_msg: None,
                     timeout_ms: 60_000,
+                    scope: Vec::new(),
                 }],
                 timeout_secs: 600,
                 max_retries: 3,

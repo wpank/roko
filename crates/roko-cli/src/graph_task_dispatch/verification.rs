@@ -5,26 +5,19 @@ use super::tui_forward::append_jsonl_line_async;
 use super::*;
 
 impl GraphTaskDispatcher {
-    /// Run a task's verify steps, its authored `[[task.verify]]` steps and
-    /// then the workspace's required `[[gates.rungs]]` unless its plan opts
-    /// out ([`attempt_verify_steps`]), and settle every gate-dependent
-    /// learning record for this attempt.
+    /// Screen an attempt, run its verify steps, and settle every
+    /// gate-dependent learning record for it.
     ///
     /// Shared by the batch and streaming dispatch paths so both reach the same
     /// verdict. The pre-verify screen (`red_flags`) goes first: an attempt
-    /// with runaway or malformed output, or an implementer attempt that
-    /// changed nothing, is rejected before any step runs, as a
-    /// `RokoError::Verify` of gate `pre_verify:<check>`, whether or not the
-    /// task has verify steps. Verify steps are deterministic: any
-    /// failure returns `RokoError::Verify` (the Graph engine retries up to the task's
-    /// `max_retries`, then fails the task) and is never force-accepted. Steps
-    /// run fail-fast; the rest are reported as skipped. A step that fails
-    /// while sibling tasks edit the same working tree waits for them to
-    /// settle and re-runs once; only that result counts (`sibling_settle`).
-    /// A step that ran out of time is recorded as a timeout. The caller
-    /// releases any worktree lease and settles episode feedback with the
-    /// result.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    /// with runaway or malformed output, or one that tampered with its checks,
+    /// is rejected before any step runs, as a `RokoError::Verify` of gate
+    /// `pre_verify:<check>`, whether or not the task has verify steps. An
+    /// implementer attempt that changed nothing is rejected there too, unless
+    /// the task has authored verify steps: they probe the unchanged tree, and
+    /// when they pass the task was already satisfied
+    /// (`TaskGateVerdict::AlreadySatisfied`, gap-9eb1e1).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_task_verification(
         &self,
         spec: &TaskExecutionSpec,
@@ -36,18 +29,80 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> Result<TaskGateVerdict> {
+        let screened = self
+            .screen_attempt(
+                spec,
+                task,
+                dispatch,
+                effective_workdir,
+                attempt_key,
+                attempt_number,
+                progress_tx,
+            )
+            .await?;
+        let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));
+        let verified = self
+            .run_verify_steps(
+                spec,
+                task,
+                dispatch,
+                effective_workdir,
+                retry_key,
+                attempt_number,
+                attempt_key,
+                progress_tx,
+                unchanged_tree,
+            )
+            .await;
+        match screened {
+            red_flags::Screened::Clear => verified,
+            red_flags::Screened::UnchangedTree(unchanged) => {
+                self.settle_unchanged_tree(
+                    spec,
+                    task,
+                    attempt_number,
+                    progress_tx,
+                    unchanged,
+                    verified,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Run a task's verify steps, its authored `[[task.verify]]` steps and
+    /// then the workspace's required `[[gates.rungs]]` unless its plan opts
+    /// out ([`attempt_verify_steps`]), and settle every gate-dependent
+    /// learning record for this attempt.
+    ///
+    /// Verify steps are deterministic: any
+    /// failure returns `RokoError::Verify` (the Graph engine retries up to the task's
+    /// `max_retries`, then fails the task) and is never force-accepted. Steps
+    /// run fail-fast; the rest are reported as skipped. A step that fails
+    /// while sibling tasks edit the same working tree waits for them to
+    /// settle and re-runs once; only that result counts (`sibling_settle`).
+    /// A step that ran out of time is recorded as a timeout. The caller
+    /// releases any worktree lease and settles episode feedback with the
+    /// result.
+    ///
+    /// With `unchanged_tree` the attempt changed nothing, and its steps only
+    /// probe whether the task's work was already there: their result stands
+    /// as it is, with no auto-fix and no learning record (gap-9eb1e1).
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn run_verify_steps(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        effective_workdir: &Path,
+        retry_key: &str,
+        attempt_number: u32,
+        attempt_key: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        unchanged_tree: bool,
+    ) -> Result<TaskGateVerdict> {
         let effective_workdir = effective_workdir.to_path_buf();
         let retry_key = retry_key.to_string();
-        self.screen_attempt(
-            spec,
-            task,
-            dispatch,
-            &effective_workdir,
-            attempt_key,
-            attempt_number,
-            progress_tx,
-        )
-        .await?;
         let steps = self.verify_steps(spec, task);
         if !steps.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
@@ -60,6 +115,12 @@ impl GraphTaskDispatcher {
                 )
                 .build();
             let gate_ctx = Context::now();
+            // While this attempt runs its verify steps it edits nothing, so
+            // its siblings' verify steps do not wait for it (gap-1920ba).
+            let verify_key = format!("{}/{}", spec.plan_id, task.id);
+            let verifying = self.in_flight.begin_verify(&verify_key);
+            let sibling_wait =
+                std::time::Duration::from_secs(self.config.gates.sibling_settle_secs);
 
             let mut failures: Vec<String> = Vec::new();
             // Whether a failed step ran out of time. Its verdict says so even
@@ -136,6 +197,21 @@ impl GraphTaskDispatcher {
                 .with_timeout_ms(step.timeout_ms)
                 .with_name(step_label);
 
+                // Wait until no sibling is mid-edit on what this step reads,
+                // and keep siblings from starting to edit it while the step
+                // runs (gap-1920ba).
+                let step_scope = sibling_settle::StepScope::of(step, &effective_workdir);
+                let _reading = self
+                    .in_flight
+                    .begin_step(&sibling_settle::StepRead {
+                        plan_id: &spec.plan_id,
+                        task_id: &task.id,
+                        label: step_label,
+                        workdir: &effective_workdir,
+                        scope: &step_scope,
+                        limit: sibling_wait,
+                    })
+                    .await;
                 let compile_permit = verify_compile_permit(
                     &effective_workdir,
                     self.config.gates.compile_concurrency,
@@ -293,6 +369,23 @@ impl GraphTaskDispatcher {
                 }
             }
 
+            // A probe of an unchanged tree settles here: nothing auto-fixes
+            // the tree for it, and what it found teaches no learner.
+            if unchanged_tree {
+                if failures.is_empty() {
+                    self.gate_retry_context.clear(&spec.plan_id, &task.id);
+                    self.retrieval_ctx.lock().remove(&retry_key);
+                    self.forget_diff_base(attempt_key);
+                    return Ok(TaskGateVerdict::Passed);
+                }
+                let message =
+                    verify_failure_summary(&spec.title, steps.len(), &failures, &skipped_steps);
+                return Err(RokoError::Verify {
+                    gate: "graph-verify".to_string(),
+                    message,
+                });
+            }
+
             // ── P1-CLI-2: Compile auto-fix before agent retry ────────────
             //
             // Mirror the Runner-v2 path in gate_dispatch.rs: when verify steps
@@ -310,6 +403,8 @@ impl GraphTaskDispatcher {
                     .find(|(phase, passed)| !passed && !phase.is_empty())
                     .map_or("compile", |(phase, _)| phase.as_str());
                 let raw_failures = failures.join("\n---\n");
+                // `cargo fix` writes files: meanwhile this attempt is editing.
+                drop(verifying);
                 match crate::runner::gate_dispatch::attempt_auto_fix(
                     &effective_workdir,
                     first_fail_phase,
@@ -336,6 +431,7 @@ impl GraphTaskDispatcher {
                         let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
+                        let _verifying = self.in_flight.begin_verify(&verify_key);
                         for (i, (step_label, step)) in steps.iter().enumerate() {
                             let shown = crate::task_accept::prompt_command(&step.command);
                             if !retry_failures.is_empty() {
@@ -357,6 +453,19 @@ impl GraphTaskDispatcher {
                             )
                             .with_timeout_ms(step.timeout_ms)
                             .with_name(step_label);
+                            let step_scope =
+                                sibling_settle::StepScope::of(step, &effective_workdir);
+                            let _reading = self
+                                .in_flight
+                                .begin_step(&sibling_settle::StepRead {
+                                    plan_id: &spec.plan_id,
+                                    task_id: &task.id,
+                                    label: step_label,
+                                    workdir: &effective_workdir,
+                                    scope: &step_scope,
+                                    limit: sibling_wait,
+                                })
+                                .await;
                             let retry_verdict = retry_gate.verify(&gate_signal, &gate_ctx).await;
                             tracing::info!(
                                 plan_id = %spec.plan_id,
@@ -712,7 +821,7 @@ impl GraphTaskDispatcher {
                         };
                         if let Ok(line) = serde_json::to_string(&row) {
                             let path = eff_path.clone();
-                            tokio::spawn(async move {
+                            crate::background_writes::spawn(&eff_path, async move {
                                 if let Err(error) = append_jsonl_line_async(path, line).await {
                                     tracing::warn!(
                                         %error,
@@ -832,7 +941,7 @@ impl GraphTaskDispatcher {
                     );
                     if let Ok(line) = serde_json::to_string(&record) {
                         let path = gf_path.clone();
-                        tokio::spawn(async move {
+                        crate::background_writes::spawn(&gf_path, async move {
                             if let Err(error) = append_jsonl_line_async(path, line).await {
                                 tracing::warn!(
                                     %error,
@@ -933,7 +1042,7 @@ impl GraphTaskDispatcher {
                                     false,
                                 )
                                 .with_latency_ms(latency_ms);
-                            tokio::spawn(async move {
+                            crate::background_writes::spawn(&path.clone(), async move {
                                 if let Err(error) =
                                     roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                                         .without_fsync()
@@ -1022,7 +1131,7 @@ impl GraphTaskDispatcher {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&eff_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -1061,7 +1170,7 @@ impl GraphTaskDispatcher {
                                 true,
                             )
                             .with_latency_ms(latency_ms);
-                        tokio::spawn(async move {
+                        crate::background_writes::spawn(&path.clone(), async move {
                             if let Err(error) =
                                 roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                                     .without_fsync()
@@ -1357,8 +1466,7 @@ mod tests {
     /// Sorted `(attempt_id, outcome)` of every efficiency record, once
     /// `expected` records have landed from the background writers.
     async fn efficiency_records(path: &Path, expected: usize) -> Vec<(String, String)> {
-        // Generous deadline: the writers are background tasks, and a loaded
-        // test run can starve them for seconds. Returns as soon as they land.
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let mut records: Vec<(String, String)> = std::fs::read_to_string(path)
                 .unwrap_or_default()
@@ -1608,7 +1716,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
     /// Dispatches `task` beside a fake sibling `T12` of the same plan that
     /// edits `web/src/PlanView.tsx` in the same working tree and finishes its
-    /// attempt once `failed_once` exists, first creating `sibling_done`.
+    /// attempt, first creating `sibling_done`, once the dispatcher has begun
+    /// to settle the step that failed beside it (it created `failed_once`).
     async fn dispatch_beside_editing_sibling(
         dispatcher: &GraphTaskDispatcher,
         task: &TaskDef,
@@ -1621,15 +1730,22 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             &dispatcher.workdir,
             &["web/src/PlanView.tsx".to_string()],
         );
+        let key = format!("{}/{}", spec.plan_id, task.id);
         let finish_sibling = async {
-            while !failed_once.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+            // The failing step creates `failed_once` before the dispatcher
+            // sees it fail: ending the sibling then could leave the settle no
+            // writer to wait for (bug-779ae7).
+            dispatcher.in_flight.settling_began(&key).await;
+            assert!(
+                failed_once.exists(),
+                "the settled step failed beside the sibling"
+            );
             std::fs::write(sibling_done, "").expect("sibling edit");
             drop(sibling);
         };
         let ctx = CellContext::new();
-        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        // Only a hang guard: the sibling ends on the settle signal, not a clock.
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(300), async {
             tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
         })
         .await
@@ -1717,6 +1833,113 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
     }
 
+    /// Dispatch `task` while a sibling `T12` edits `web/src/PlanView.tsx` in
+    /// the same working tree; the sibling ends its attempt after `edit_for`,
+    /// first creating `sibling_done`.
+    async fn dispatch_while_sibling_edits(
+        dispatcher: &GraphTaskDispatcher,
+        task: &TaskDef,
+        sibling_done: &Path,
+        edit_for: std::time::Duration,
+    ) -> Result<Vec<Signal>> {
+        let spec = make_spec(task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
+        let finish_sibling = async {
+            tokio::time::sleep(edit_for).await;
+            std::fs::write(sibling_done, "").expect("sibling edit");
+            drop(sibling);
+        };
+        let ctx = CellContext::new();
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
+        })
+        .await
+        .expect("the attempt ends within the settle limit");
+        outcome
+    }
+
+    /// gap-1920ba: a verify step that reads the whole project (here hidden
+    /// behind `bash -c`) waits until a sibling sharing the working tree has
+    /// finished editing, so it never checks a half-written file. It runs
+    /// once, after the sibling, and passes; without the wait it would fail
+    /// first and pass only on the settle re-run.
+    #[tokio::test]
+    async fn a_whole_project_verify_never_runs_while_a_sibling_edits() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let sibling_done = temp.path().join("sibling-done");
+        let runs = temp.path().join("verify-runs");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "bash -c 'echo run >> {}; test -f {}'",
+                runs.display(),
+                sibling_done.display()
+            ),
+        )];
+
+        let outputs = dispatch_while_sibling_edits(
+            &dispatcher,
+            &task,
+            &sibling_done,
+            std::time::Duration::from_millis(500),
+        )
+        .await
+        .expect("the step ran after the sibling's edit");
+
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        let runs = std::fs::read_to_string(&runs).expect("verify runs");
+        assert_eq!(runs.lines().count(), 1, "the step ran once: {runs:?}");
+    }
+
+    /// A verify step whose scope the sibling does not write runs at once,
+    /// while the sibling is still editing.
+    #[tokio::test]
+    async fn a_scoped_verify_runs_beside_a_sibling_editing_elsewhere() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let sibling_done = temp.path().join("sibling-done");
+        let mut step = verify_step(
+            "typecheck",
+            &format!("bash -c 'test ! -f {}'", sibling_done.display()),
+        );
+        step.scope = vec!["crates/own".to_string()];
+        task.verify = vec![step];
+
+        let outputs = dispatch_while_sibling_edits(
+            &dispatcher,
+            &task,
+            &sibling_done,
+            std::time::Duration::from_secs(3),
+        )
+        .await
+        .expect("the step ran while the sibling was still editing");
+
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
     #[tokio::test]
     async fn verified_outcome_drives_output_verdict_and_feedback() {
         let temp = tempdir().expect("tempdir");
@@ -1801,6 +2024,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         path: &Path,
         expected: usize,
     ) -> Vec<roko_gate::GateFailureRecord> {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let records: Vec<roko_gate::GateFailureRecord> = std::fs::read_to_string(path)
                 .unwrap_or_default()

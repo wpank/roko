@@ -316,7 +316,8 @@ The server exposes ~85 REST endpoints, SSE streaming, and WebSocket connections 
 ```toml
 [serve.auth]
 enabled = true
-api_key = "your-secret-key"
+# The key goes in ROKO__SERVE__AUTH__API_KEY (for example in .roko/.env), never in
+# roko.toml: `roko config set serve.auth.api_key <key>` stores it there.
 ```
 
 When enabled, all `/api/` endpoints require the `Authorization: Bearer <key>` header.
@@ -484,8 +485,8 @@ auto_plan = false   # Auto-generate plan when PRD is promoted
 auto_orchestrate = false
 
 [serve.auth]
-enabled = false
-api_key = ""
+enabled = true            # the default
+# api_key: set ROKO__SERVE__AUTH__API_KEY in .roko/.env, never here
 
 [serve.deploy]
 provider = "manual"
@@ -496,7 +497,7 @@ environment = []
 
 ```toml
 [webhooks.github]
-secret = "your-webhook-secret"
+# secret: set ROKO__WEBHOOKS__GITHUB__SECRET in .roko/.env, never here
 ```
 
 ---

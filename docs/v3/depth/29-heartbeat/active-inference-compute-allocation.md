@@ -227,7 +227,7 @@ Target: `ActiveInferenceRouter` replaces UCB1 with full EFE computation.
 - **Sims 2003** -- "Implications of rational inattention" (Journal of Monetary
   Economics 50(3)).
 - **Chen et al. 2023** -- FrugalGPT (arXiv:2305.05176).
-- **Koudahl et al. 2024** -- Factorized discrete POMDP (arXiv:2412.10425).
+- **Prakki 2024** -- Factorized discrete POMDP (arXiv:2412.10425).
 
 ---
 

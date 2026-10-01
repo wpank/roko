@@ -730,6 +730,7 @@ pub(super) fn focused_verify_steps(
             command,
             fail_msg: Some("impact-selected Cargo check failed".into()),
             timeout_ms: timeout_secs.max(1).saturating_mul(1_000),
+            scope: Vec::new(),
         })
         .collect::<Vec<_>>();
     selected.extend(authored);

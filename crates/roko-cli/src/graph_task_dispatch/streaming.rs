@@ -91,7 +91,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── P3-AGT-2: Express mode check (streaming) ─────────────────────
         let express_active = is_express_task(&self.config, &task);
-        let max_turns = task_turn_limit(&self.config, &task, express_active);
+        let max_turns = task_turn_limit_with(
+            &self.config,
+            Some(self.learned_tier_limits()),
+            &task,
+            express_active,
+        );
         if express_active {
             tracing::info!(
                 plan_id = %spec.plan_id,
@@ -104,10 +109,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── W10: Enrichment pipeline (streaming) ─────────────────────────
-        let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+        let mut routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
         // Clone before the move into DispatchContext so emit_feedback can pass
         // the real dispatch-time context to the routing observation sink.
-        let routing_ctx_for_feedback = routing_ctx.clone();
+        let mut routing_ctx_for_feedback = routing_ctx.clone();
 
         let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
             self.static_prompt_cache.get_or_init(|| {
@@ -138,11 +143,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
         self.record_diff_base(&attempt_key, &lease.path, None).await;
+        // bug-cae1e1: as on the batch path, the router and its observations
+        // know a retry from a first attempt.
+        let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
+        routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
+        routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
+
         let prompt_experiment = self
             .feedback
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -157,6 +169,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: 0,
+            ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
@@ -172,10 +185,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
         attempt.prompt_assembled();
+        self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         let contract = effective_agent_contract(role, &task, &self.config);
-        let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
+        let timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         let request = AgentDispatchRequest {
-            model_key: dispatch_plan.model.slug.clone(),
+            model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt: dispatch_plan.prompt.user_prompt.clone(),
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: lease.path.clone(),
@@ -208,44 +223,71 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         )
         .await;
 
-        // ── Live output forwarder (streaming path) ────────────────────────
-        let request = {
-            let mut req = request;
-            if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
-                let (live_tx, mut live_rx) =
-                    tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
-                let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
-                req.live_output = Some(roko_agent::live_output::LiveOutput {
-                    sink: live_tx,
-                    trusted,
-                });
-                let tui_clone = tui.clone();
-                let agent_id_s = format!(
-                    "{}/{}",
-                    spec.plan_id,
-                    ctx.cell_id.as_deref().unwrap_or(&task.id)
-                );
-                let plan_id_s = spec.plan_id.clone();
-                let task_id_s = task.id.clone();
-                tokio::spawn(async move {
-                    while let Some(event) = live_rx.recv().await {
-                        forward_live_event_to_tui(
-                            &tui_clone,
-                            &agent_id_s,
-                            &plan_id_s,
-                            &task_id_s,
-                            event,
-                        );
-                    }
-                });
-            }
-            req
+        // ── Live output tap and stall watchdog (streaming path) ───────────
+        let mut request = request;
+        let agent_id = request.agent_id.clone();
+        let watched = WatchedAttempt {
+            agent_id: &agent_id,
+            plan_id: &spec.plan_id,
+            task_id: &task.id,
+            attempt_key: &attempt_key,
         };
+        let stall_watch = self.stall_watch();
+        let supervised = self.supervise_attempt(&watched);
+        request.live_output = self.live_output_tap(
+            &watched,
+            stall_watch.as_ref().map(StallWatch::progress),
+            supervised.as_ref().map(SupervisedAttempt::feed),
+        );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let mut dispatch_result = self.factory.run_shared_agent_bridge(request).await;
+        let watched_result = self
+            .run_watched(
+                self.factory.run_shared_agent_bridge(request),
+                stall_watch,
+                supervised.as_ref(),
+                &watched,
+            )
+            .await;
         attempt.dispatch_ended();
+        let mut dispatch_result = match watched_result {
+            Ok(dispatch_result) => dispatch_result,
+            // The stall watchdog or the conductor cancelled the provider
+            // call: the attempt ends timed out or cancelled, and the engine
+            // retries it.
+            Err(interrupted) => {
+                let error = interrupted.error(&watched);
+                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
+                self.publish_settlement(spec, &task, &settled).await;
+                let interrupted_outcome = TaskDispatchOutcome {
+                    attempt_id: attempt_id.clone(),
+                    outcome: interrupted.outcome(),
+                    provider_id: "graph-task-executor".to_string(),
+                    model: String::new(),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    changed_files: Vec::new(),
+                    wall_duration: started_at.elapsed(),
+                    output: Vec::new(),
+                };
+                let _ = recorder
+                    .record_terminal(&attempt_id, &interrupted_outcome)
+                    .await;
+                let _ = event_tx
+                    .send(GraphTaskEvent::AttemptTerminal {
+                        attempt_id,
+                        outcome: interrupted.outcome(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Some(supervised) = supervised {
+            supervised.end(matches!(&dispatch_result, Ok(dispatch) if dispatch.result.success));
+        }
         // A model the provider substituted is priced by the model that
         // served (bug-31438d). Under a `--model` pin it fails the attempt,
         // as on the batch path (bug-b2dd44); this path runs no failover.
@@ -766,6 +808,112 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-opus-4-6","tota
             }
         }
         assert_eq!(terminal, vec![TaskDispatchOutcomeKind::Failed]);
+    }
+
+    /// bug-cae1e1: like the batch path, the streaming path routes a retry of
+    /// a task whose verify step failed as a retry after a failure, and runs
+    /// the task's own agent on its `preferred_provider`.
+    #[tokio::test]
+    async fn streaming_dispatch_marks_retries_and_honours_preferred_provider() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::graph_task_dispatch::tests::{
+            RoutingContextLog, cli_provider, make_bare_dispatcher, make_task_def, model,
+        };
+
+        /// The provider each attempt's terminal receipt names: the one that
+        /// ran the task's agent, never one a helper call used.
+        #[derive(Default)]
+        struct TerminalProviders(parking_lot::Mutex<Vec<String>>);
+
+        #[async_trait::async_trait]
+        impl ProviderAttemptRecorder for TerminalProviders {
+            async fn record_start(&self, _id: &str, _spec: &TaskExecutionSpec) -> Result<()> {
+                Ok(())
+            }
+            async fn record_terminal(
+                &self,
+                _id: &str,
+                outcome: &TaskDispatchOutcome,
+            ) -> Result<()> {
+                self.0.lock().push(outcome.provider_id.clone());
+                Ok(())
+            }
+            async fn has_terminal_evidence(&self, _id: &str) -> bool {
+                false
+            }
+            async fn has_started_evidence(&self, _id: &str) -> bool {
+                false
+            }
+        }
+
+        const PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+        let temp = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        no_auto_fix(&mut config);
+        // Two CLI providers serve the same model.
+        for provider in ["default-cli", "preferred-cli"] {
+            let script = temp.path().join(format!("{provider}.sh"));
+            std::fs::write(&script, PROVIDER).expect("write script");
+            let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).expect("chmod");
+            config.providers.insert(
+                provider.to_string(),
+                cli_provider(&script.display().to_string()),
+            );
+            config.models.insert(
+                format!("sonnet-{provider}"),
+                model(provider, "claude-sonnet-4-6", None),
+            );
+        }
+        config.agent.default_model = "sonnet-default-cli".to_string();
+        let contexts = Arc::new(RoutingContextLog::default());
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(RoutingContextLog::feedback(&contexts));
+        let mut task = make_task_def("focused");
+        task.model_hint = Some("sonnet-default-cli".to_string());
+        task.hints.preferred_provider = Some("preferred-cli".to_string());
+        // The verify step fails once, then passes.
+        task.verify = vec![verify_step(
+            "structural",
+            "test -f retried || { touch retried; exit 1; }",
+        )];
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let cell = CellContext::new().with_cell_id("T-RETRY".to_string());
+        let recorder = TerminalProviders::default();
+
+        let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let error = dispatcher
+            .dispatch_streaming(&spec, Vec::new(), &cell, &lease, event_tx, &recorder)
+            .await
+            .expect_err("the first attempt fails its verify step");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        dispatcher
+            .dispatch_streaming(&spec, Vec::new(), &cell, &lease, event_tx, &recorder)
+            .await
+            .expect("the retry passes");
+
+        assert_eq!(contexts.marks(), [(0, false), (1, true)]);
+        // Both attempts ran on the preferred provider. The helper calls after
+        // the failed gate run on the cheap helper model instead, as their own
+        // cost line (`select_cheap_model_key`).
+        assert_eq!(*recorder.0.lock(), ["preferred-cli", "preferred-cli"]);
     }
 
     #[tokio::test]

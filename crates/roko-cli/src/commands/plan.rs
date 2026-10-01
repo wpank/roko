@@ -1287,6 +1287,32 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Review {
+            plan_id,
+            task_id,
+            approve,
+            reject: _,
+            note,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let decision = if approve { "approved" } else { "rejected" };
+            let attempt_key = record_held_review(&wd, &plan_id, &task_id, decision, &note)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "plan_id": plan_id,
+                        "task_id": task_id,
+                        "decision": decision,
+                        "attempt_key": attempt_key,
+                    })
+                );
+            } else if !cli.quiet {
+                println!("{decision} task {task_id} of plan {plan_id} (attempt {attempt_key})");
+            }
+            Ok(EXIT_SUCCESS)
+        }
 
         PlanCmd::Status { plan_dir, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -1390,6 +1416,49 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 ///
 /// Reads `tasks.toml` in the plan directory and, when executor state is
 /// available, overlays runtime completion counts from the snapshot.
+/// Record `decision` (`approved` or `rejected`) with `note` on the attempt
+/// of `task_id` that `plan_id`'s run holds for review (gap-0d64d5), in the
+/// review log the run reads; `roko serve`'s review route writes the same
+/// entry. Returns the attempt's key.
+fn record_held_review(
+    workdir: &std::path::Path,
+    plan_id: &str,
+    task_id: &str,
+    decision: &str,
+    note: &str,
+) -> Result<String> {
+    use std::io::Write as _;
+
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let hold_path = layout.review_hold(plan_id, task_id);
+    let hold: serde_json::Value = std::fs::read(&hold_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            anyhow!("task `{task_id}` of plan `{plan_id}` is not waiting for a review")
+        })?;
+    let attempt_key = hold["attempt_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("the review hold {} names no attempt", hold_path.display()))?
+        .to_string();
+    let entry = serde_json::json!({
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "decision": decision,
+        "comment": note,
+        "attempt_key": attempt_key,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let log = layout.reviews_log();
+    std::fs::create_dir_all(layout.state_dir())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    writeln!(file, "{entry}")?;
+    Ok(attempt_key)
+}
+
 async fn cmd_plan_dir_status(
     cli: &Cli,
     workdir: &std::path::Path,
@@ -1521,6 +1590,10 @@ async fn cmd_plan_dir_status(
         "in progress"
     };
 
+    // Why the plan's whole-plan check failed, when it did (gap-60233f).
+    let plan_check_failure =
+        roko_cli::graph_checkpoint::recorded_plan_check_failure(workdir, &plan_id);
+
     if cli.json {
         let task_entries: Vec<serde_json::Value> = tasks_file
             .tasks
@@ -1545,6 +1618,7 @@ async fn cmd_plan_dir_status(
                 "tasks_total": effective_total,
                 "completed": status_str == "complete",
                 "status": status_str,
+                "plan_check_failure": plan_check_failure,
                 "tasks": task_entries,
             }))?
         );
@@ -1553,6 +1627,9 @@ async fn cmd_plan_dir_status(
         println!("directory:       {}", plan_dir.display());
         println!("tasks:           {done_tasks}/{effective_total}");
         println!("status:          {status_str}");
+        if let Some(failure) = &plan_check_failure {
+            println!("plan check:      {failure}");
+        }
         println!();
         if tasks_file.tasks.is_empty() {
             println!("  (no tasks)");
@@ -2005,12 +2082,28 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
         return None;
     }
 
-    let code = report.exit_code(false);
-    if code != 0 {
+    // An advisory finding does not stop the run: tasks that could run
+    // together but write overlapping files only cost parallelism, since the
+    // engine runs them one after the other.
+    let (advisory, blocking): (Vec<_>, Vec<_>) = report
+        .plans
+        .iter()
+        .flat_map(|plan| &plan.diagnostics)
+        .filter(|diagnostic| diagnostic.severity == plan_validate::Severity::Error)
+        .partition(|diagnostic| roko_cli::plan_policy::is_advisory_code(&diagnostic.rule_id));
+    for diagnostic in advisory {
+        tracing::warn!(
+            rule = %diagnostic.rule_id,
+            plan_id = diagnostic.plan_id.as_deref().unwrap_or_default(),
+            message = %diagnostic.message,
+            "plan validation finding; the plan still runs"
+        );
+    }
+    if blocking.is_empty() {
+        None
+    } else {
         tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
         Some(1)
-    } else {
-        None
     }
 }
 

@@ -2539,6 +2539,8 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "skip_enrichment",
     "failure_policy",
     "workspace_rungs",
+    "verify",
+    "approval",
 ];
 
 /// Required field names for the `[meta]` section.
@@ -2606,7 +2608,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
 /// Known field names for each `[[task.verify]]` entry.
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms"];
+const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
 
 /// Required field names for each `[[task.verify]]` entry.
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
@@ -2917,21 +2919,11 @@ fn validate_and_fix_generated_plan(
 
                     // gap-dbf2a6: keep a `rung` hint that names one of the
                     // task's ladder rungs; drop any other.
-                    if let Some(rung_val) = task.get("rung").cloned() {
-                        let role = task
-                            .get("role")
-                            .and_then(toml::Value::as_str)
-                            .unwrap_or("implementer");
-                        if !rung_val
-                            .as_str()
-                            .is_some_and(|rung| ladder.has_rung(role, rung))
-                        {
-                            task.remove("rung");
-                            eprintln!(
-                                "warning: {task_id_label}: removing rung {rung_val}: no rung of \
-                                 the routing ladder has that name"
-                            );
-                        }
+                    if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
+                        eprintln!(
+                            "warning: {task_id_label}: removing rung {rung}: no rung of the \
+                             routing ladder has that name"
+                        );
                     }
 
                     // Validate [[task.verify]] sub-entries.

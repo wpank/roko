@@ -14,8 +14,9 @@
 #   directly in a .roko directory (.roko/*);
 # - a word names a .roko directory itself (cd ~/.roko) and another ends in
 #   a key file's name (.env) or is a bare glob (*);
-# - a word, resolved against the working directory with symlinks followed
-#   and a glob expanded (cat *), is a key file, or a roko config file that
+# - a word, with its braces and glob expanded (cat roko.{toml,lock}, cat *)
+#   and resolved with symlinks followed against the working directory and
+#   each cd target in the command, is a key file, or a roko config file that
 #   holds a secret (see below).
 #
 # The destructive commands are:
@@ -56,12 +57,14 @@
 #
 # A roko config file outside .roko (roko.toml, the file ROKO_CONFIG names,
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
-# such as serve.auth.api_key, and so is a recursive search of a tree that
-# holds one (a Grep, grep -r, rg), unless the search's glob or type leaves
-# the file out. roko itself refuses to load such a file (the secret belongs
-# in .roko/.env), so this matters for a secret added while roko runs. A
-# search after cd is judged from the call's directory, and a read through
-# find, xargs, git grep or a script is not caught.
+# such as serve.auth.api_key, and so are a recursive search of a tree that
+# holds one (a Grep, grep -r, rg, ag, ack, git grep), unless the search's
+# glob or type leaves the file out, and a read (cat, grep, cp) of what find,
+# fd or xargs lists from such a tree, unless a find or fd name filter leaves
+# the file out. A command after a cd is judged where it runs. roko itself
+# refuses to load such a file (the secret belongs in .roko/.env), so this
+# matters for a secret added while roko runs; a script or a variable can
+# still hide the read.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -137,6 +140,48 @@ RG_LONG_VALUES = {
     "--max-filesize", "--dfa-size-limit", "--regex-size-limit", "--ignore-file",
     "--hostname-bin", "--hyperlink-format",
 }
+AG_LONG_VALUES = {
+    "--after", "--before", "--context", "--file-search-regex", "--max-count", "--path-to-ignore",
+    "--depth", "--ignore", "--ignore-dir", "--pager", "--width",
+}
+ACK_LONG_VALUES = {
+    "--after-context", "--before-context", "--context", "--max-count", "--type", "--ignore-dir",
+    "--ignore-file", "--match", "--output", "--pager",
+}
+GIT_GREP_LONG_VALUES = {
+    "--max-count", "--after-context", "--before-context", "--context", "--max-depth", "--threads",
+}
+# Per searcher: its options that take a value (short letters, long names),
+# those with which it lists file names and reads none, and those that give
+# the pattern, so that no operand is.
+SEARCH_OPTIONS = {
+    "grep": (GREP_SHORT_VALUES, GREP_LONG_VALUES, set(), {"-e", "-f", "--regexp", "--file"}),
+    "rg": (
+        RG_SHORT_VALUES, RG_LONG_VALUES, {"--files", "--type-list"},
+        {"-e", "-f", "--regexp", "--file"},
+    ),
+    "ag": (set("ABCGgmpW"), AG_LONG_VALUES, {"-g", "--list-file-types"}, set()),
+    "ack": (set("ABCgmt"), ACK_LONG_VALUES, {"-g", "-f", "--help-types"}, {"--match"}),
+}
+SEARCHERS = GREPS | RIPGREPS | {"ag", "ack"}
+# Programs that print or copy the files they are given, and so read a secret
+# when a list the guard cannot see (find -exec, xargs) names one.
+READERS = SEARCHERS | {
+    "cat", "tac", "head", "tail", "less", "more", "nl", "sed", "awk", "gawk", "cut", "sort",
+    "uniq", "strings", "od", "xxd", "hexdump", "base64", "diff", "paste", "jq", "yq", "cp",
+    "rsync", "tar", "zip",
+}
+# find's tests on a file's name or path, and fd's options that take a value.
+FIND_NAME_TESTS = {
+    "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
+}
+FD_SHORT_VALUES = set("etEdSojc")
+FD_LONG_VALUES = {
+    "--extension", "--type", "--exclude", "--max-depth", "--min-depth", "--exact-depth", "--size",
+    "--changed-within", "--changed-before", "--owner", "--threads", "--max-results", "--color",
+    "--base-directory", "--path-separator", "--search-path", "--format", "--batch-size",
+    "--ignore-file",
+}
 # Words that open and close a compound command, to follow a pipe into a loop
 # (find . | while read f; do rm "$f"; done).
 BLOCK_OPENERS = {"while", "until", "for", "select", "if", "case", "{"}
@@ -151,7 +196,7 @@ SSH_COMMAND_OPTION = re.compile(
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 # Programs whose arguments this guard checks.
 CHECKED_PROGRAMS = (
-    {"git", "rm", "unlink", "shred", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL | GREPS | RIPGREPS
+    {"git", "rm", "unlink", "shred", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL | READERS
 )
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
@@ -189,10 +234,13 @@ FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 MAX_DEPTH = 8
 
 # The Bash call being checked (check_bash sets it): the directory git
-# aliases are looked up in, and the whole command. bulk is set, to why a
+# aliases are looked up in, and the whole command. dir is the directory the
+# command being checked runs in, after the cd commands before it, and dirs
+# every directory the call may run a command in. bulk is set, to why a
 # delete may not run, while a command that runs on a list the guard cannot
-# see is checked: what find or fd lists, or what xargs reads.
-BASH_CALL = {"cwd": None, "command": "", "bulk": None}
+# see is checked: what find or fd lists, or what xargs reads; list is then
+# where that list comes from ([roots], whether a filter leaves roko.toml out).
+BASH_CALL = {"cwd": None, "dir": None, "dirs": [], "command": "", "bulk": None, "list": None}
 FIND_BULK = "rm on what find or fd lists is forbidden: it deletes files across a whole tree"
 XARGS_BULK = (
     "a delete run by xargs is forbidden: it deletes every file in a list the guard cannot see"
@@ -219,10 +267,11 @@ def tokens(text):
 
 def simple_commands(text):
     """The commands in `text`, split at its operators, as (words, fed)
-    pairs: fed when a pipe brings the command what find or fd lists,
-    directly or into a loop (find . | while read f; do rm "$f"; done)."""
+    pairs: fed, the words of the find or fd command, when a pipe brings the
+    command what it lists, directly or into a loop (find . | while read f;
+    do rm "$f"; done)."""
     commands, words = [], []
-    finds = fed = False
+    finds = fed = None
     blocks = 0  # compound commands opened since the pipe
     for token in tokens(text.replace("\\\n", " ")):
         characters = set(token)
@@ -236,7 +285,7 @@ def simple_commands(text):
             continue
         if words:
             commands.append((words, fed))
-            finds = finds or runs_finder(words)
+            finds = finds or (words if runs_finder(words) else None)
         words = []
         if token in ("|", "|&"):
             fed = fed or finds
@@ -247,7 +296,7 @@ def simple_commands(text):
             if fed and blocks:
                 blocks -= 1
         elif not blocks:
-            finds = fed = False
+            finds = fed = None
     if words:
         commands.append((words, fed))
     return commands
@@ -256,17 +305,59 @@ def simple_commands(text):
 def check_command(text, depth=0):
     if depth > MAX_DEPTH:
         block("the command nests shells too deeply to check")
+    # A nested command (sh -c '...', $(...)) runs in the directory it starts
+    # in, and its cd does not move the commands after it.
+    start = BASH_CALL["dir"]
     # A substitution can hand a command what find lists (rm $(find . -name x)).
-    listed = False
+    listed = None
     for match in SUBSTITUTION.finditer(text):
         inner = match.group(1) if match.group(1) is not None else match.group(2)
         check_command(inner, depth + 1)
-        listed = listed or any(runs_finder(words) for words, _ in simple_commands(inner))
+        finders = (words for words, _ in simple_commands(inner) if runs_finder(words))
+        listed = listed or next(finders, None)
     for words, fed in simple_commands(text):
         if fed or listed:
-            check_found(words, depth)
+            check_found(words, depth, source=fed or listed)
         else:
             check_words(words, depth)
+        change_directory(words)
+    if depth:
+        BASH_CALL["dir"] = start
+
+
+def cd_target(words):
+    """The directory `words` moves to when it is a cd or pushd to a literal
+    one (home when it names none), else None: cd - and a variable are
+    unknown."""
+    words = command_start(words)
+    if not words or program_name(words[0]) not in ("cd", "pushd") or "-" in words:
+        return None
+    targets = [word for word in words[1:] if not word.startswith("-")]
+    target = targets[0] if targets else "~"
+    return None if re.search(r"[$`]", target) else os.path.expanduser(target)
+
+
+def change_directory(words):
+    """Follow `words` when it is a cd or pushd, so the commands after it
+    are judged where they run."""
+    target = cd_target(words)
+    if target is not None and BASH_CALL["dir"] is not None:
+        BASH_CALL["dir"] = os.path.normpath(os.path.join(BASH_CALL["dir"], target))
+
+
+def call_directories(command, cwd, depth=0):
+    """The directories the commands of a Bash call may run in: cwd, and each
+    literal cd or pushd target in it, nested command lines included."""
+    directories, current = [cwd], cwd
+    for words, _ in simple_commands(command):
+        target = cd_target(words)
+        if target is not None:
+            current = os.path.normpath(os.path.join(current, target))
+            directories.append(current)
+        for word in words:
+            if depth < MAX_DEPTH and re.search(r"\s", word):
+                directories += call_directories(word, current, depth + 1)[1:]
+    return directories
 
 
 def program_name(word):
@@ -298,6 +389,8 @@ def check_words(words, depth, maybe_argument=False):
     if not words:
         return
     program = program_name(words[0])
+    if program in READERS and BASH_CALL["list"]:
+        check_listed_read()
     if program in MULTICALL:
         check_words(words[1:], depth, maybe_argument)
     elif program in WRAPPERS:
@@ -314,7 +407,7 @@ def check_words(words, depth, maybe_argument=False):
         check_fd(words[1:], depth)
     elif program == "ssh":
         check_ssh(words[1:], depth)
-    elif program in GREPS or program in RIPGREPS:
+    elif program in SEARCHERS:
         check_search(program, words[1:])
     elif program in SHELLS:
         for argument in words[1:]:
@@ -382,23 +475,108 @@ def git_argument_indices(words, index):
 
 
 @contextlib.contextmanager
-def bulk(reason):
+def bulk(reason, source=None):
     """While the block checks a command that runs on a list the guard cannot
-    see, deny any delete in it, for `reason`; None changes nothing."""
-    previous = BASH_CALL["bulk"]
-    BASH_CALL["bulk"] = previous or reason
+    see, deny any delete in it, for `reason`, and judge a read in it by where
+    the list comes from: `source`, as (roots, whether a filter leaves
+    roko.toml out), or the call's directory. None changes nothing."""
+    previous = BASH_CALL["bulk"], BASH_CALL["list"]
+    if reason:
+        BASH_CALL["bulk"] = previous[0] or reason
+        BASH_CALL["list"] = previous[1] or source or (["."], False)
     try:
         yield
     finally:
-        BASH_CALL["bulk"] = previous
+        BASH_CALL["bulk"], BASH_CALL["list"] = previous
 
 
-def check_found(command, depth, reason=FIND_BULK, maybe_argument=False):
+def check_found(command, depth, reason=FIND_BULK, maybe_argument=False, source=None):
     """Check a command that runs on a list the guard cannot see: what find
-    or fd lists (find -exec, fd -x, find . | xargs). Any delete in it is
-    denied, for `reason`."""
-    with bulk(reason):
+    or fd lists (find -exec, fd -x, find . | xargs), `source` being the
+    finder's words when known. Any delete in it is denied, for `reason`."""
+    with bulk(reason, finder_list(source) if source else None):
         check_words(command, depth, maybe_argument)
+
+
+def check_listed_read():
+    """Deny a read (cat, grep) run on a list the guard cannot see when the
+    list may name a roko config file that holds a secret: one in the tree
+    the list comes from, unless a finder's filter leaves roko.toml out."""
+    roots, excludes_config = BASH_CALL["list"]
+    if not excludes_config:
+        check_search_roots(roots, BASH_CALL["dir"] or os.getcwd())
+
+
+def finder_list(words):
+    """Where the list a find or fd command prints comes from: its starting
+    points, and whether its name filters leave roko.toml out."""
+    words = command_start(words)
+    for index, word in enumerate(words):
+        name = program_name(word)
+        if name == "find":
+            return find_list(words[index + 1:])
+        if name in FINDERS:
+            return fd_list(words[index + 1:])
+    return None
+
+
+def find_list(arguments):
+    """find's starting points and whether its name tests leave roko.toml
+    out: at least one test, none matching it, and no -not or ! to turn one
+    around."""
+    index = 0
+    while index < len(arguments) and (
+        arguments[index] in ("-H", "-L", "-P", "-D") or arguments[index].startswith("-O")
+    ):
+        index += 2 if arguments[index] == "-D" else 1
+    roots = []
+    for argument in arguments[index:]:
+        if argument.startswith("-") or argument in ("(", "!", ","):
+            break
+        roots.append(argument)
+    tests = [
+        (test, arguments[position + 1])
+        for position, test in enumerate(arguments[:-1])
+        if test in FIND_NAME_TESTS
+    ]
+    excludes = bool(tests) and not ({"-not", "!"} & set(arguments)) and not any(
+        find_test_matches_config(test, pattern) for test, pattern in tests
+    )
+    return roots or ["."], excludes
+
+
+def find_test_matches_config(test, pattern):
+    """Whether a find name test (-name '*.toml') can match roko.toml."""
+    if test in ("-iname", "-ipath", "-iwholename", "-iregex"):
+        pattern = pattern.lower()
+    if test in ("-name", "-iname"):
+        return fnmatch.fnmatchcase("roko.toml", pattern)
+    if test in ("-regex", "-iregex"):
+        try:
+            return re.search(pattern, "./roko.toml") is not None
+        except re.error:
+            return True
+    return any(fnmatch.fnmatchcase(path, pattern) for path in ("./roko.toml", "roko.toml"))
+
+
+def fd_list(arguments):
+    """fd's search paths, and whether its pattern (a regex, or a glob with
+    -g) or its extensions (-e) leave roko.toml out."""
+    options, operands = search_arguments(arguments, FD_SHORT_VALUES, FD_LONG_VALUES)
+    names = {name for name, _ in options}
+    extensions = [value for name, value in options if name in ("-e", "--extension")]
+    roots = operands[1:] + [value for name, value in options if name == "--search-path"]
+    excludes = bool(extensions) and "toml" not in extensions
+    if operands and operands[0]:
+        pattern = operands[0]
+        if names & {"-g", "--glob"}:
+            excludes = excludes or not fnmatch.fnmatch("roko.toml", pattern)
+        else:
+            try:
+                excludes = excludes or re.search(pattern, "roko.toml") is None
+            except re.error:
+                pass
+    return roots or ["."], excludes
 
 
 def check_find(arguments, depth):
@@ -411,7 +589,7 @@ def check_find(arguments, depth):
                 if word in (";", "+"):
                     break
                 command.append(word)
-            check_found(command, depth)
+            check_found(command, depth, source=["find"] + arguments)
 
 
 def check_fd(arguments, depth):
@@ -419,7 +597,8 @@ def check_fd(arguments, depth):
     for index, argument in enumerate(arguments):
         option, _, value = argument.partition("=")
         if option in FD_EXEC:
-            check_found(([value] if value else []) + arguments[index + 1:], depth)
+            command = ([value] if value else []) + arguments[index + 1:]
+            check_found(command, depth, source=["fd"] + arguments[:index])
             return
 
 
@@ -443,33 +622,58 @@ def check_ssh(arguments, depth):
 
 
 def check_search(program, arguments):
-    """Deny a recursive search (grep -r, rg) that would read a roko config
-    file holding a secret, unless its filters leave the file out."""
-    ripgrep = program in RIPGREPS
-    options, operands = search_arguments(
-        arguments,
-        RG_SHORT_VALUES if ripgrep else GREP_SHORT_VALUES,
-        RG_LONG_VALUES if ripgrep else GREP_LONG_VALUES,
-    )
+    """Deny a recursive search (grep -r, rg, ag, ack) that would read a roko
+    config file holding a secret, unless its filters leave the file out."""
+    kind = program if program in SEARCH_OPTIONS else "grep"
+    short_values, long_values, lists_names, pattern_options = SEARCH_OPTIONS[kind]
+    options, operands = search_arguments(arguments, short_values, long_values)
     names = {name for name, _ in options}
-    if ripgrep:
-        if names & {"--files", "--type-list"}:
-            return  # lists names, reads no file
-    elif program != "rgrep" and not (
+    if names & lists_names:
+        return  # lists file names, reads no file
+    if kind == "grep" and program != "rgrep" and not (
         names & {"-r", "-R", "--recursive", "--dereference-recursive"}
         or any(name in ("-d", "--directories") and value == "recurse" for name, value in options)
     ):
         return  # a file it names is checked with the other words
-    if not names & {"-e", "-f", "--regexp", "--file"}:
+    if not names & pattern_options:
         operands = operands[1:]  # the first is the pattern
-    if search_skips_config(options, ripgrep):
-        return
-    cwd = BASH_CALL["cwd"] or os.getcwd()
-    for operand in operands or ["."]:
-        if re.search(r"[$`{]", operand):
-            continue
-        if any(reads_secret_config(path, cwd) for path in expand(operand, cwd)):
-            block(CONFIG_SECRET_REASON)
+    if not search_skips_config(options, kind):
+        check_search_roots(operands or ["."], BASH_CALL["dir"] or os.getcwd())
+
+
+def check_search_roots(roots, directory):
+    """Deny a search of `roots`, resolved against `directory`, that reads a
+    roko config file holding a secret (reads_secret_config); a brace or a
+    glob in a root is expanded as the shell would."""
+    for root in roots:
+        for variant in expand_braces(root):
+            if re.search(r"[$`{]", variant):
+                continue
+            if any(reads_secret_config(path, directory) for path in expand(variant, directory)):
+                block(CONFIG_SECRET_REASON)
+
+
+def check_git_grep(arguments, options):
+    """git grep reads the tracked files under the directory git runs in (git
+    -C), or under the paths and pathspecs it names; a revision it names reads
+    that commit's tree of the same directory."""
+    grep_options, operands = search_arguments(arguments, set("efmABC"), GIT_GREP_LONG_VALUES)
+    if not {name for name, _ in grep_options} & {"-e", "-f"}:
+        operands = operands[1:]  # the first is the pattern
+    directory = BASH_CALL["dir"] or os.getcwd()
+    for position, option in enumerate(options[:-1]):
+        if option == "-C":
+            directory = os.path.join(directory, os.path.expanduser(options[position + 1]))
+    roots, narrowed = [], False
+    for operand in operands:
+        if re.search(r"[*?\[]", operand):
+            narrowed = True
+            if glob_matches_config(operand, False):
+                roots.append(".")
+        elif os.path.exists(os.path.join(directory, operand)):
+            narrowed = True
+            roots.append(operand)
+    check_search_roots(roots if narrowed else ["."], directory)
 
 
 def search_arguments(arguments, short_values, long_values):
@@ -505,24 +709,36 @@ def search_arguments(arguments, short_values, long_values):
     return options, operands
 
 
-def search_skips_config(options, ripgrep):
+def search_skips_config(options, kind):
     """Whether a search's filters leave roko.toml out: grep's --include and
-    --exclude, rg's -g (! excludes), -t and -T."""
+    --exclude, rg's -g (! excludes), -t and -T, ag's -G and --ignore, and
+    ack's -t and --ignore-file."""
     includes, excludes, types, skipped_types = [], [], set(), set()
     for name, value in options:
-        if name == "--include":
+        if name == "--include" and kind == "grep":
             includes.append(value)
-        elif name == "--exclude":
+        elif name == "--exclude" and kind == "grep" or name == "--ignore" and kind == "ag":
             excludes.append(value)
-        elif ripgrep and name in ("-g", "--glob", "--iglob"):
+        elif kind == "rg" and name in ("-g", "--glob", "--iglob"):
             if value.startswith("!"):
                 excludes.append(value[1:])
             else:
                 includes.append(value)
-        elif ripgrep and name in ("-t", "--type"):
-            types.add(value)
-        elif ripgrep and name in ("-T", "--type-not"):
+        elif kind in ("rg", "ack") and name in ("-t", "--type"):
+            if value.startswith("no"):
+                skipped_types.add(value[2:])
+            else:
+                types.add(value)
+        elif kind == "rg" and name in ("-T", "--type-not"):
             skipped_types.add(value)
+        elif kind == "ag" and name in ("-G", "--file-search-regex"):
+            try:
+                if re.search(value, "roko.toml") is None:
+                    return True
+            except re.error:
+                pass
+        elif kind == "ack" and name == "--ignore-file" and value in ("ext:toml", "is:roko.toml"):
+            return True
     return bool(
         (includes and not any(glob_matches_config(pattern, False) for pattern in includes))
         or any(glob_matches_config(pattern, True) for pattern in excludes)
@@ -589,6 +805,8 @@ def check_git(arguments, depth, maybe_argument=False):
     if alias is not None:
         check_git_alias(subcommand, alias, options, rest, depth)
         return
+    if subcommand == "grep":
+        check_git_grep(rest, options)
     flags = short_flags(rest)
     if subcommand == "checkout":
         block("git checkout forbidden: agents must not switch branches or discard changes")
@@ -713,21 +931,54 @@ SECRET_ENV_SEGMENTS = {
 
 
 def command_words(text, depth=0):
-    """The words of `text` with quotes removed, and the words of each word
-    that is itself a command line (sh -c '...')."""
+    """The words of `text` with quotes removed, each brace expansion's words
+    as well (roko.{toml,lock}), and the words of each word that is itself a
+    command line (sh -c '...')."""
     words = []
     for token in tokens(text.replace("\\\n", " ")):
         if set(token) <= OPERATOR_CHARS:
             continue
         words.append(token)
+        words += [word for word in expand_braces(token) if word != token]
         if depth < MAX_DEPTH and re.search(r"[\s'\"\\]", token):
             words += command_words(token, depth + 1)
     return words
 
 
-def names_key_file(command, cwd):
+def expand_braces(word, limit=64):
+    """The words a shell brace expansion makes of `word` (a{b,c}d gives abd
+    and acd), at most `limit`, or `word` itself when it has none. A ${...}
+    is no brace expansion, and neither is a {} without a comma in it."""
+    depth, start = 0, None
+    for index, character in enumerate(word):
+        if character == "{" and not (index and word[index - 1] == "$"):
+            if depth == 0:
+                start, commas = index, []
+            depth += 1
+        elif character == "}" and depth:
+            depth -= 1
+            if depth == 0 and commas:
+                parts, last = [], start + 1
+                for comma in commas:
+                    parts.append(word[last:comma])
+                    last = comma + 1
+                parts.append(word[last:index])
+                words = []
+                for part in parts:
+                    for expanded in expand_braces(word[:start] + part + word[index + 1:], limit):
+                        words.append(expanded)
+                        if len(words) >= limit:
+                            return words
+                return words
+        elif character == "," and depth == 1:
+            commas.append(index)
+    return [word]
+
+
+def names_key_file(command, directories):
     """Why a Bash command may not run, if it names a provider key file or a
-    roko config file that holds a secret (see the top), else None."""
+    roko config file that holds a secret (see the top), else None. A word is
+    resolved against each of `directories`, those the call may run in."""
     words = command_words(command)
     if any(KEY_PATH_TEXT.search(text) for text in [command] + words):
         return KEY_FILE_REASON
@@ -736,17 +987,18 @@ def names_key_file(command, cwd):
     ):
         return KEY_FILE_REASON
     for word in words:
-        # The word, a glob's matches as the shell would expand it (cat *),
-        # and an option's or assignment's value (--env-file=x).
-        paths = [] if not word or re.search(r"[$`{]", word) else expand(word, cwd)
-        value = word.split("=", 1)[-1]
-        if value != word and value and not re.search(r"[$`*?\[{]", value):
-            paths.append(value)
-        for path in paths:
-            if is_key_path(path, cwd, False):
-                return KEY_FILE_REASON
-            if is_secret_config_path(path, cwd):
-                return CONFIG_SECRET_REASON
+        for cwd in directories:
+            # The word, a glob's matches as the shell would expand it (cat *),
+            # and an option's or assignment's value (--env-file=x).
+            paths = [] if not word or re.search(r"[$`{]", word) else expand(word, cwd)
+            value = word.split("=", 1)[-1]
+            if value != word and value and not re.search(r"[$`*?\[{]", value):
+                paths.append(value)
+            for path in paths:
+                if is_key_path(path, cwd, False):
+                    return KEY_FILE_REASON
+                if is_secret_config_path(path, cwd):
+                    return CONFIG_SECRET_REASON
     return None
 
 
@@ -900,10 +1152,11 @@ def check_bash(tool_input, data):
     if not isinstance(command, str):
         block("the Bash command is not a string")
     cwd = hook_cwd(data)
-    reason = names_key_file(command, cwd)
+    directories = call_directories(command, cwd)
+    reason = names_key_file(command, directories)
     if reason:
         block(reason)
-    BASH_CALL.update(cwd=cwd, command=command)
+    BASH_CALL.update(cwd=cwd, dir=cwd, dirs=directories, command=command)
     check_command(command)
 
 

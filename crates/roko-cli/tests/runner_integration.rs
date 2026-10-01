@@ -1,26 +1,18 @@
-//! Integration test wiring task_dag, merge, projection, and contract together.
+//! Integration test wiring task_dag, projection, and contract together.
 //!
 //! Exercises the new runner modules end-to-end to prove the primitives
-//! compose correctly under realistic scheduling, merge, observability, and
-//! safety scenarios.
+//! compose correctly under realistic scheduling, observability, and safety
+//! scenarios.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
-use roko_cli::orchestrator::{MergeQueue, MergeRequest};
-use roko_cli::runner::merge::{
-    MergeBackend, MergeBackendOutcome, MergeDispatch, PlanMerger, PlanMergerConfig, RegressionGate,
-    RegressionOutcome,
-};
 use roko_cli::runner::projection::{Projection, RawRuntimeEvent};
 use roko_cli::runner::task_dag::{DagConfig, SkippedReason, TaskDag};
-use roko_cli::runner::types::{
-    AgentEvent, EventCategory, GateCompletion, RunnerEvent, RunnerFailureKind, StderrSeverity,
-};
+use roko_cli::runner::types::{AgentEvent, EventCategory, RunnerEvent, StderrSeverity};
 use roko_cli::task_parser::TaskDef;
 use roko_core::tool::ToolCall;
-use tempfile::tempdir;
 
 fn task(id: &str, deps: &[&str]) -> TaskDef {
     TaskDef {
@@ -57,7 +49,7 @@ fn task(id: &str, deps: &[&str]) -> TaskDef {
 }
 
 #[tokio::test]
-async fn end_to_end_dag_merge_projection_pipeline() {
+async fn end_to_end_dag_projection_pipeline() {
     // ────────────────────────────────────────────────────────────────────
     // 1. DAG scheduling — A and B run in parallel; C waits for both.
     //    Verify ready-task resolution + double-dispatch guard + cleanup.
@@ -110,56 +102,7 @@ async fn end_to_end_dag_merge_projection_pipeline() {
     ));
 
     // ────────────────────────────────────────────────────────────────────
-    // 3. PlanMerger — first plan reserved, second plan touching the same
-    //    file is blocked. Stub regression gate fails the reserved plan.
-    // ────────────────────────────────────────────────────────────────────
-    let workdir = tempdir().expect("tempdir");
-    let mut config = PlanMergerConfig::new(workdir.path().to_path_buf(), Duration::from_secs(30));
-    let stub_gate: Arc<dyn RegressionGate> = Arc::new(StubFailingGate);
-    let stub_merge: Arc<dyn MergeBackend> = Arc::new(StubPassingMerge);
-    config = config
-        .with_regression_gate(stub_gate)
-        .with_merge_backend(stub_merge);
-
-    let queue = MergeQueue::default();
-    let merger = PlanMerger::new(queue, config);
-
-    let req1 = MergeRequest::new("alpha", "alpha-branch", vec!["src/foo.rs".into()], 10);
-    let req2 = MergeRequest::new("beta", "beta-branch", vec!["src/foo.rs".into()], 10);
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<GateCompletion>(8);
-    match merger.submit(req1) {
-        MergeDispatch::Reserved { launch } => {
-            assert_eq!(launch.plan_id(), "alpha");
-            let producer = merger.prepare(launch, tx.clone());
-            producer.start.send(()).unwrap();
-        }
-        other => panic!("first merge must be reserved, got {other:?}"),
-    }
-
-    // Second plan competes for the same file lock — must block.
-    match merger.submit(req2) {
-        MergeDispatch::Blocked { plan_id, launch } => {
-            assert_eq!(plan_id, "beta");
-            assert!(launch.is_none());
-        }
-        other => panic!("second merge must be blocked, got {other:?}"),
-    }
-
-    // The stub gate emits a failure GateCompletion for the reserved plan.
-    let completion = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("regression gate emits completion within 5s")
-        .expect("channel still open");
-    assert_eq!(completion.plan_id, "alpha");
-    assert!(!completion.passed, "stub gate forces failure");
-    assert!(matches!(
-        completion.failure_kind,
-        Some(RunnerFailureKind::Permanent)
-    ));
-
-    // ────────────────────────────────────────────────────────────────────
-    // 4. Projection facade — runner event → ProjectionEvent on broadcast.
+    // 3. Projection facade — runner event → ProjectionEvent on broadcast.
     // ────────────────────────────────────────────────────────────────────
     let projection = Projection::new("test-run");
     let mut subscriber = projection.subscribe();
@@ -210,7 +153,7 @@ async fn end_to_end_dag_merge_projection_pipeline() {
     );
 
     // ────────────────────────────────────────────────────────────────────
-    // 5. Safety contract — bundled architect contract enforces capability
+    // 4. Safety contract — bundled architect contract enforces capability
     //    intersection; restricted fallback denies every tool.
     // ────────────────────────────────────────────────────────────────────
     let architect = AgentContract::load_for_role_with_mode("architect", ContractLoadMode::Strict)
@@ -241,38 +184,6 @@ async fn end_to_end_dag_merge_projection_pipeline() {
     };
     assert!(role.permits_tool("read_file"));
     assert!(!role.permits_tool("write_file"));
-}
-
-// ─── Stub regression gate that always fails ──────────────────────────────
-
-#[derive(Debug)]
-struct StubFailingGate;
-
-#[async_trait::async_trait]
-impl RegressionGate for StubFailingGate {
-    async fn run(&self, _request: &MergeRequest, _config: &PlanMergerConfig) -> RegressionOutcome {
-        RegressionOutcome::fail(
-            "stub regression gate forced failure",
-            RunnerFailureKind::Permanent,
-            42,
-        )
-    }
-}
-
-/// Stub merge backend that always reports a successful merge so the
-/// regression gate (which only runs on a successful merge) is exercised.
-#[derive(Debug)]
-struct StubPassingMerge;
-
-#[async_trait::async_trait]
-impl MergeBackend for StubPassingMerge {
-    async fn merge(
-        &self,
-        request: &MergeRequest,
-        _config: &PlanMergerConfig,
-    ) -> MergeBackendOutcome {
-        MergeBackendOutcome::pass(format!("stub merge accepted {}", request.branch_name), 5)
-    }
 }
 
 #[test]

@@ -601,7 +601,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         )
         .await;
         task.files = vec!["src/lib.rs".to_string()];
-        task.verify = vec![verify_step("structural", "true")];
+        task.verify = vec![verify_step("structural", "grep -q 'fn two' src/lib.rs")];
         let lease = TaskLease {
             path: temp.path().to_path_buf(),
             fingerprint: "test-fingerprint".to_string(),
@@ -622,8 +622,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
     #[tokio::test]
     async fn streaming_attempts_record_their_diff_base_and_changed_files() {
         // With a base recorded, the screen's diff checks see a streamed
-        // attempt: one that changes nothing is rejected before its verify
-        // steps.
+        // attempt: one that changes nothing, on a tree that does not already
+        // pass its verify steps, is rejected.
         let error = stream_attempt(VERIFY_PROVIDER)
             .await
             .expect_err("a streamed attempt that changed nothing");

@@ -1267,6 +1267,58 @@ mod tests {
         plan_conflicts(&footprints)
     }
 
+    /// gap-60233f: without `[meta] verify`, a plan in a Cargo workspace checks
+    /// formatting, lints and tests over the crates it affects (those it
+    /// writes and their dependents), never the whole workspace's tests. An
+    /// authored `[meta] verify` replaces the default.
+    #[test]
+    fn default_meta_verify_covers_the_touched_crates() {
+        use super::super::plan_verify::plan_verify_steps;
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        std::fs::write(workspace.path().join("Cargo.toml"), "[workspace]\n").expect("manifest");
+        let cargo = cargo();
+        let commands = |plan: &Plan, cargo: Option<&CargoWorkspace>| {
+            let footprint = PlanFootprint::of(plan, workspace.path(), cargo);
+            plan_verify_steps(plan, Some(&footprint))
+                .into_iter()
+                .map(|step| step.command)
+                .collect::<Vec<_>>()
+        };
+        let core_change = plan("core-change", &[], &["crates/core/src/lib.rs"], &[]);
+
+        assert_eq!(
+            commands(&core_change, Some(&cargo)),
+            [
+                "cargo fmt -p cli -p core -p serve -- --check",
+                "cargo clippy -p cli -p core -p serve --no-deps -- -D warnings",
+                "cargo test -p cli -p core -p serve",
+            ]
+        );
+        // Without the package graph: formatting and lints over the
+        // workspace, and no tests.
+        assert_eq!(
+            commands(&core_change, None),
+            [
+                "cargo fmt --all -- --check",
+                "cargo clippy --workspace --no-deps -- -D warnings",
+            ]
+        );
+        // A plan that writes no crate gets no default.
+        let docs_change = plan("docs-change", &[], &["docs/guide.md"], &[]);
+        assert!(commands(&docs_change, Some(&cargo)).is_empty());
+        // An authored `[meta] verify` wins.
+        let authored = Plan {
+            tasks: crate::task_parser::TasksFile::parse_str(
+                "[meta]\nplan = \"authored\"\n\n[[meta.verify]]\ncommand = \"make check\"\n\n\
+                 [[task]]\nid = \"T1\"\ntitle = \"Task\"\nfiles = [\"crates/core/src/lib.rs\"]\n",
+            )
+            .expect("parse"),
+            ..plan("authored", &[], &[], &[])
+        };
+        assert_eq!(commands(&authored, Some(&cargo)), ["make check"]);
+    }
+
     #[test]
     fn upstream_writer_conflicts_with_downstream_builder_but_not_siblings() {
         let workspace = tempfile::tempdir().expect("tempdir");

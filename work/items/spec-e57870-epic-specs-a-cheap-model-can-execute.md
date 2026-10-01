@@ -99,7 +99,7 @@ This is the implementation plan.
 - [x] gap-1cd8d3: speclint first slice: static spec-quality rules SQ01–SQ12 with hard fails (S07.1)
 - [x] gap-b3fa0a: Red-on-base checker: prove each task's verify step fails on a clean base (S07.2)
 - [ ] find-70edcb: Plan generation/validation does not flag weak verify gates (existing item)
-- [ ] gap-a8d786: Plan lint: tasks that can run at the same time must not share files
+- [x] gap-a8d786: Plan lint: tasks that can run at the same time must not share files
 - [x] gap-1d1fa6: Task size limits per executor tier in plan validate
 - [x] gap-46ab3f: plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)
 - [x] bug-477ede: prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model
@@ -109,7 +109,7 @@ This is the implementation plan.
 - [x] bug-019f02: speclint and roko_gate::spec_quality ignore [task.accept], so plans that pin acceptance tests lose verify steps and acceptance credit
 - [x] bug-05d1ac: verification.rs quotes each step's full command in skipped-step lists, progress events and gate output, so a pinned step repeats its script in retry feedback
 - [x] bug-c1b845: speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests
-- [ ] gap-9ca898: plan_generator.rs's DefaultPlanGenerator doesn't know rung
+- [x] gap-9ca898: plan_generator.rs's DefaultPlanGenerator doesn't know rung
 - [ ] gap-f7ebd4: The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint
 - [ ] The epic's `[[verify]]` command (the weak and fixed fixture pair) passes on the merged branch.
 

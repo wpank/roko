@@ -6,8 +6,8 @@
 
 **Parent:** [05-AGENT](../../05-AGENT.md)
 
-**Source:** Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for
-LLM Agents." arXiv:2603.28052.
+**Source:** Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of
+Model Harnesses." arXiv:2603.28052.
 
 ---
 
@@ -20,7 +20,7 @@ on a weaker model often outperforms a worse harness on a stronger model.
 
 The key paper:
 
-> Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM Agents."
+> Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
 > arXiv:2603.28052.
 
 ### Benchmark evidence
@@ -251,9 +251,9 @@ runtime. Harness improvements benefit all models simultaneously.
 
 ## 10. Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Six principles, benchmark evidence.
-2. Lee, S. Y. et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
+1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Six principles, benchmark evidence.
+2. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
    framework, composition rules, transfer analysis.
 3. arXiv:2605.27922. "Harness-Bench." -- Standardized harness evaluation.
 4. arXiv:2607.04528. "Belief Divergence in Language Agent Systems." --
@@ -262,9 +262,9 @@ runtime. Harness improvements benefit all models simultaneously.
    Comprehensive survey of agent mechanisms.
 6. Jimenez, C. E. et al. (2024). "SWE-bench: Can Language Models Resolve
    Real-World GitHub Issues?" -- Benchmark showing harness variance.
-7. arXiv:2603.18897. "PASTE: Pattern-Aware Speculative Tool Execution." --
+7. arXiv:2603.18897. "Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving." --
    48.5% latency reduction via speculative execution.
-8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for LLM Agents."
+8. arXiv:2511.14650. "AutoTool: Efficient Tool Selection for Large Language Model Agents."
    AAAI 2026. -- Graph-based tool prediction.
 9. `crates/roko-agent/src/dispatcher/mod.rs` -- 7-step pipeline.
 10. `crates/roko-compose/src/system_prompt_builder.rs` -- 9-layer prompts.

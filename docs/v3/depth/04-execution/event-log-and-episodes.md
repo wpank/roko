@@ -38,8 +38,15 @@ pub struct RecordEntry {
     pub node_id: String,
     pub tick: u64,
     pub signals: Vec<Signal>,
+    /// Unix ms: every node it depends on had settled.
+    pub ready_at_ms: Option<u64>,
+    /// Unix ms: it got a slot and its cell started.
+    pub dispatched_at_ms: Option<u64>,
 }
 ```
+
+`dispatched_at_ms - ready_at_ms` is the time the node waited for a slot.
+Records written before these fields existed have neither.
 
 ### Recording behavior
 

@@ -648,6 +648,7 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .gate_test()
             .as_secs()
             .saturating_mul(1_000),
+        scope: Vec::new(),
     }]
 }
 
@@ -669,13 +670,15 @@ fn prompt_tasks_file(
             done: 0,
             status: "ready".to_string(),
             superseded_by: None,
-            max_parallel: 1,
+            max_parallel: Some(1),
             estimated_total_minutes: 0,
             // The prompt is the whole task definition.
             skip_enrichment: true,
             source_prd: None,
             failure_policy: None,
             workspace_rungs: None,
+            verify: Vec::new(),
+            approval: None,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),
@@ -1157,6 +1160,7 @@ command = "true"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 5_000,
+            scope: Vec::new(),
         }];
         prompt_tasks_file(
             "run-1",

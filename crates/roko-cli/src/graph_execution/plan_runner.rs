@@ -848,6 +848,22 @@ async fn run_graph_plan_body(
     // Pin planner-written acceptance tests outside the working tree and run
     // them first, before anything is dispatched (gap-d14a43).
     crate::task_accept::pin_plans(&mut plans, workdir)?;
+    // A plan that holds each verified task for a person's approval
+    // (gap-0d64d5) needs per-task worktrees: the hold sits between a task's
+    // verified attempt and its acceptance onto the plan branch. The rich
+    // topology's plan gate accepts on its own, so it cannot hold.
+    let held_plans: Vec<String> = plans
+        .iter()
+        .filter(|plan| plan.tasks.meta.holds_each_task_for_approval())
+        .map(|plan| plan.id.clone())
+        .collect();
+    if !held_plans.is_empty() && (!worktree_per_task || rich_topology) {
+        anyhow::bail!(
+            "plan(s) {} hold each task for approval ([meta] approval = \"per_task\"), which \
+             needs --worktree-per-task and the default topology",
+            held_plans.join(", ")
+        );
+    }
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
@@ -1040,6 +1056,27 @@ async fn run_graph_plan_body(
     .with_tui_bridge(dispatcher_tui_bridge)
     .with_live_agent_output(live_agent_output);
 
+    // ── Whole-plan checks (gap-60233f) ──
+    // Each plan's `[meta] verify`, or the default for a Cargo workspace,
+    // runs on the plan's integrated result once its tasks all passed.
+    let rust_workspace = workdir.join("Cargo.toml").is_file();
+    let cargo = if rust_workspace && plans.iter().any(|plan| plan.tasks.meta.verify.is_empty()) {
+        super::plan_set::CargoWorkspace::load(workdir).await
+    } else {
+        None
+    };
+    let plan_checks: HashMap<String, Vec<crate::task_parser::VerifyStep>> = plans
+        .iter()
+        .map(|plan| {
+            let footprint = rust_workspace
+                .then(|| super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref()));
+            (
+                plan.id.clone(),
+                super::plan_verify::plan_verify_steps(plan, footprint.as_ref()),
+            )
+        })
+        .collect();
+
     // ── Batch integration (spec-f830c4) ──
     // Under --worktree-per-task every plan whose tasks all passed is
     // delivered into one batch branch, and every plan's attempts start from
@@ -1071,6 +1108,9 @@ async fn run_graph_plan_body(
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
     let mut workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>> =
         None;
+    // The attempt checkouts' manager, which each plan tells its run
+    // (bug-056b40).
+    let mut worktrees: Option<crate::orchestrator::worktree::WorktreeManager> = None;
     if worktree_per_task {
         use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
         let worktree_manager = WorktreeManager::new(WorktreeConfig {
@@ -1082,6 +1122,7 @@ async fn run_graph_plan_body(
             max_live: None,
             idle_ttl: std::time::Duration::from_hours(1),
         });
+        worktrees = Some(worktree_manager.clone());
         let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
@@ -1093,9 +1134,41 @@ async fn run_graph_plan_body(
     }
     // The same provider settles the worktrees the rich topology's executors
     // hand on to their gates.
-    let cell_resources = plan_cell_resources(rich_topology, workspace_provider);
+    let cell_resources = plan_cell_resources(rich_topology, &roko_config.gates, workspace_provider);
 
+    // ── Conductor supervision (spec-a0403b) ───────────────────────────
+    //
+    // The run's conductor watches each running attempt's live output, and
+    // the ticker evaluates it every `SUPERVISION_INTERVAL`: a `Restart`
+    // cancels that attempt, which retries; a `Fail` stops the run the way
+    // SIGTERM does, and the run returns an error naming the watcher. With
+    // `[conductor] silence_timeout_secs` and `task_stall_secs` both 0 there
+    // is no conductor and no ticker.
+    if let (Some(conductor), Some(ring)) = (
+        graph_run_config.conductor.clone(),
+        graph_run_config.conductor_ring.clone(),
+    ) {
+        dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
+    }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    for plan_id in &held_plans {
+        graph_task_dispatcher.hold_for_approval(plan_id);
+    }
+    let conductor_stop = Arc::new(parking_lot::Mutex::new(
+        None::<crate::graph_task_dispatch::ConductorStop>,
+    ));
+    let _conductor_ticker = graph_task_dispatcher.spawn_conductor_ticker(
+        crate::graph_task_dispatch::SUPERVISION_INTERVAL,
+        {
+            let conductor_stop = Arc::clone(&conductor_stop);
+            let interrupt = interrupt.clone();
+            move |stop| {
+                tracing::error!(%stop, "the conductor is stopping the plan run");
+                *conductor_stop.lock() = Some(stop);
+                interrupt.request(PlanRunInterrupt::Terminate);
+            }
+        },
+    );
     // `[conductor] max_agents` caps concurrently executing tasks across
     // every plan of the run.
     let task_dispatcher: Arc<dyn TaskDispatcher> =
@@ -1253,8 +1326,11 @@ async fn run_graph_plan_body(
         max_retries,
         max_tasks,
         rich_topology,
+        worktree_per_task,
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
+        plan_checks: &plan_checks,
+        worktrees: worktrees.as_ref(),
         quiet,
         json,
         launch_tui,
@@ -1387,6 +1463,10 @@ async fn run_graph_plan_body(
             Some("plan finished — re-run to apply".into()),
         );
         let _ = tui_ack_tx.try_send(ack);
+    }
+    // A conductor `Fail` stopped the run: it fails, naming the watcher.
+    if let Some(stop) = conductor_stop.lock().take() {
+        return Err(anyhow!("{stop}"));
     }
     if let Some(error) = first_error {
         return Err(error);
@@ -1571,6 +1651,8 @@ async fn run_graph_plan_body(
         }
         .unwrap_or_else(|| format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)));
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
+        let tasks_already_satisfied: usize =
+            per_plan.iter().map(|p| p.tasks_already_satisfied).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
         let tasks_unverified: usize = per_plan.iter().map(|p| p.tasks_unverified).sum();
         let tasks_skipped: usize = per_plan.iter().map(|p| p.tasks_skipped).sum();
@@ -1585,6 +1667,7 @@ async fn run_graph_plan_body(
             duration_ms,
             total_tasks,
             tasks_completed,
+            tasks_already_satisfied,
             tasks_failed,
             tasks_unverified,
             tasks_skipped,
@@ -1647,6 +1730,16 @@ async fn run_graph_plan_body(
                 "Graph Engine complete: {} plan(s), {} task(s), ${:.2}",
                 plan_count, total_tasks, total_cost_usd,
             );
+        }
+        // Name the plans that did not succeed, such as one whose delivery
+        // into the batch branch failed its regression check (spec-f830c4).
+        let failed_plans = plan_outcomes
+            .iter()
+            .filter(|(_, succeeded)| !**succeeded)
+            .map(|(plan_id, _)| plan_id.as_str())
+            .collect::<Vec<_>>();
+        if !failed_plans.is_empty() {
+            println!("Plans that did not succeed: {}", failed_plans.join(", "));
         }
     }
 
@@ -1923,11 +2016,17 @@ struct PlanRunContext<'a> {
     max_retries: Option<u32>,
     max_tasks: usize,
     rich_topology: bool,
+    /// `--worktree-per-task`: each task writes its own checkout.
+    worktree_per_task: bool,
     /// Services the cells of each plan's graph run with (see
     /// [`plan_cell_resources`]).
     cell_resources: &'a roko_graph::cell::CellResources,
     /// The run's batch branch, under `--worktree-per-task` (spec-f830c4).
     batch: Option<&'a super::batch::BatchIntegration>,
+    /// Each plan's whole-plan check (gap-60233f), by plan id.
+    plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
+    /// The attempt checkouts' manager, under `--worktree-per-task`.
+    worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -1949,18 +2048,39 @@ struct PlanRunContext<'a> {
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
-/// topology's `plan.gate` cells run the gates, and settle the worktree each
-/// task executor hands on through `workspaces`, the provider the executors
-/// acquire them from. The default topology needs neither.
+/// topology's `plan.gate` cells run the gates, with the run's `[gates]`,
+/// and settle the worktree each task executor hands on through `workspaces`,
+/// the provider the executors acquire them from. The default topology needs
+/// neither.
 fn plan_cell_resources(
     rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
     workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+) -> roko_graph::cell::CellResources {
+    plan_cell_resources_with(
+        rich_topology,
+        gates,
+        workspaces,
+        Arc::new(roko_gate::production_service::ProductionGateService::new()),
+    )
+}
+
+/// [`plan_cell_resources`], with the gate pipeline `service` the rich
+/// topology's gates run on.
+fn plan_cell_resources_with(
+    rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
+    workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
 ) -> roko_graph::cell::CellResources {
     if !rich_topology {
         return roko_graph::cell::CellResources::default();
     }
     roko_graph::cell::CellResources {
-        gates: Some(Arc::new(crate::runner::gate_adapter::default_gate_adapter())),
+        gates: Some(Arc::new(
+            crate::runner::gate_adapter::RunnerProductionGateAdapter::new(service)
+                .with_gates_config(gates.clone()),
+        )),
         workspaces,
     }
 }
@@ -2156,6 +2276,19 @@ async fn run_admitted_plan(
 /// A plan that cannot be converted or validated still gets a terminal
 /// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
 /// failures, which stop the whole run.
+/// With `--worktree-per-task` each task writes its own checkout, so no two
+/// tasks share a tree: drop the exclusive paths that keep tasks writing the
+/// same files apart, and let them run together (gap-19e596). The paths are
+/// not part of the checkpoint identity.
+fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task: bool) {
+    if !worktree_per_task {
+        return;
+    }
+    for node in graph.inner.node_weights_mut() {
+        node.exclusive.clear();
+    }
+}
+
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
@@ -2204,10 +2337,14 @@ async fn run_one_plan(
         })
         .collect();
 
+    // An omitted `max_parallel` converts as 1, as it did before it meant "as
+    // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
+    // the converted concurrency. The width is applied once the identity is
+    // taken, below.
     let max_parallel = if ctx.max_tasks > 0 {
         u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
     } else {
-        plan.tasks.meta.max_parallel
+        plan.tasks.meta.max_parallel.unwrap_or(1)
     };
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
@@ -2290,6 +2427,7 @@ async fn run_one_plan(
             }
         }
     };
+    drop_exclusion_for_worktrees(&mut graph, ctx.worktree_per_task);
     let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
@@ -2306,6 +2444,25 @@ async fn run_one_plan(
     if let Some(inv) = ctx.run_manifests.open(&run_id, &plan.id) {
         ctx.graph_task_dispatcher
             .attach_run_invocation(&run_id, inv);
+    }
+    // A resumed run's attempts continue from the plan branch its earlier
+    // process accepted work onto, and re-attach the checkouts it kept
+    // (bug-056b40).
+    if let Some(worktrees) = ctx.worktrees {
+        match worktrees.begin_plan_run(&plan.id, &run_id).await {
+            Ok(Some(tip)) => tracing::info!(
+                plan_id = %plan.id,
+                %run_id,
+                %tip,
+                "resumed run: the plan's attempts start from its plan branch"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                plan_id = %plan.id,
+                %error,
+                "could not read the plan branch; the plan's attempts start from the run's base"
+            ),
+        }
     }
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
@@ -2327,6 +2484,28 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
+    // A plan that omits `max_parallel` runs as wide as its DAG allows when
+    // every task that can write declares its files: the engine keeps tasks
+    // whose files overlap apart. Set after the identity is taken, like the
+    // failure strategy, so checkpoints of such plans keep resuming.
+    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+        let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
+        if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
+            tracing::info!(
+                plan_id = %plan.id,
+                task_id = %task.id,
+                "max_parallel is omitted and this task declares no files: one task at a time"
+            );
+        } else {
+            tracing::info!(
+                plan_id = %plan.id,
+                width,
+                "max_parallel is omitted and every writing task declares its files; running tasks \
+                 as wide as the DAG allows"
+            );
+        }
+        graph.policy.max_concurrent_nodes = usize::try_from(width.max(1)).unwrap_or(usize::MAX);
+    }
     ctx.graph_task_dispatcher.attach_retry_feedback(
         &plan.id,
         checkpoint.paths().retry_feedback(),
@@ -2543,11 +2722,25 @@ async fn run_one_plan(
         interrupted_by.is_some(),
         was_cancelled_by_tui,
     );
-    // spec-f830c4: a plan whose tasks all passed is delivered into the run's
-    // batch branch, and succeeds only when that delivery does.
+    // A plan whose tasks all passed is checked as a whole (gap-60233f): under
+    // --worktree-per-task by its delivery into the run's batch branch, whose
+    // regression check runs its steps on the merge (spec-f830c4); otherwise
+    // in the shared working tree. It succeeds only when that check passes.
+    let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
-            deliver_plan_to_batch(batch, plan, &mut checkpoint, graph_tui_bridge).await?
+            deliver_plan_to_batch(batch, plan, plan_checks, &mut checkpoint, graph_tui_bridge)
+                .await?
+        }
+        None if outcome.succeeded() && !plan_checks.is_empty() => {
+            check_plan_in_place(
+                ctx.workdir,
+                plan,
+                plan_checks,
+                &mut checkpoint,
+                graph_tui_bridge,
+            )
+            .await?
         }
         _ => outcome,
     };
@@ -2680,6 +2873,7 @@ async fn run_one_plan(
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
+    checks: &[crate::task_parser::VerifyStep],
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -2690,9 +2884,12 @@ async fn deliver_plan_to_batch(
         );
         return Ok(PlanOutcome::Succeeded);
     };
+    // The regression check is the plan's whole-plan check (gap-60233f).
+    let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
+        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
-        Arc::new(plan_regression_backend(batch.repo(), plan)),
+        Arc::new(backend),
     );
     let request = batch.request(&plan.id, verified);
     let receipt = match batch
@@ -2737,18 +2934,40 @@ async fn deliver_plan_to_batch(
     Ok(PlanOutcome::Failed)
 }
 
-/// The delivery backend for `plan` in `repo`: its regression check runs
-/// `cargo check` over a Cargo workspace, and nothing elsewhere.
-fn plan_regression_backend(
-    repo: &Path,
-    _plan: &crate::runner::plan_loader::Plan,
-) -> super::delivery::GitDeliveryBackend {
-    let steps = if repo.join("Cargo.toml").is_file() {
-        vec!["cargo check --workspace --quiet".to_string()]
-    } else {
-        Vec::new()
-    };
-    super::delivery::GitDeliveryBackend::new(repo.to_path_buf()).with_regression_steps(steps)
+/// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
+/// `workdir`, which its tasks edited, and record it in the plan's
+/// checkpoint. The plan succeeds only when the check passes. `Err` only when
+/// the checkpoint cannot record it.
+async fn check_plan_in_place(
+    workdir: &Path,
+    plan: &crate::runner::plan_loader::Plan,
+    checks: &[crate::task_parser::VerifyStep],
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) -> anyhow::Result<PlanOutcome> {
+    let result = super::plan_verify::run_plan_verify(workdir, checks).await;
+    let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
+    checkpoint.record_plan_verify(serde_json::json!({
+        "passed": result.is_ok(),
+        "steps": commands,
+        "failure": result.as_ref().err(),
+    }))?;
+    match result {
+        Ok(()) => {
+            tracing::info!(plan_id = %plan.id, steps = checks.len(), "plan check passed");
+            Ok(PlanOutcome::Succeeded)
+        }
+        Err(failure) => {
+            tracing::error!(
+                plan_id = %plan.id,
+                step = %failure.command,
+                output = %failure.output,
+                "plan check failed: its tasks passed, but not together"
+            );
+            graph_tui_bridge.error(&format!("plan '{}': [meta] verify {failure}", plan.id));
+            Ok(PlanOutcome::Failed)
+        }
+    }
 }
 
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
@@ -2796,6 +3015,10 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 struct TaskVerdictCounts {
     /// Completed with a `passed` gate verdict: every verify step passed.
     passed: usize,
+    /// Completed with an `already_satisfied` gate verdict: the attempt
+    /// changed nothing, and every verify step passed on the tree as it was
+    /// (gap-9eb1e1). Verified, but not counted as passed.
+    already_satisfied: usize,
     /// Completed without a verify step running: the task declares none, its
     /// role is disabled, or its output carries no gate verdict.
     unverified: usize,
@@ -2820,6 +3043,9 @@ impl TaskVerdictCounts {
             let verdict = output.gate_verdicts.get(&result.node_id).copied();
             match (result.status, verdict) {
                 (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
+                    counts.already_satisfied += 1;
+                }
                 (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
                 | (NodeStatus::Failed, _) => counts.failed += 1,
                 (NodeStatus::Complete, _) => counts.unverified += 1,
@@ -2834,6 +3060,7 @@ impl TaskVerdictCounts {
     const fn not_run(task_count: usize) -> Self {
         Self {
             passed: 0,
+            already_satisfied: 0,
             unverified: 0,
             skipped: task_count,
             failed: 0,
@@ -2841,9 +3068,9 @@ impl TaskVerdictCounts {
     }
 
     /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
-    /// succeeded only when every task passed its verify steps, and is
-    /// unverified when the rest passed but some ran no verify step. Anything
-    /// else failed.
+    /// succeeded only when every task passed its verify steps (an
+    /// already-satisfied task did), and is unverified when the rest passed but
+    /// some ran no verify step. Anything else failed.
     const fn outcome(self) -> PlanOutcome {
         if self.failed > 0 || self.skipped > 0 {
             PlanOutcome::Failed
@@ -2866,6 +3093,7 @@ fn plan_metrics(
         plan_id: plan_id.to_string(),
         completed: succeeded,
         tasks_completed: tasks.passed,
+        tasks_already_satisfied: tasks.already_satisfied,
         tasks_failed: tasks.failed,
         tasks_unverified: tasks.unverified,
         tasks_skipped: tasks.skipped,
@@ -3026,7 +3254,8 @@ files = ["README.md"]
 
         let state_dir = RokoLayout::for_project(dir.path()).state_dir();
         let read = crate::runner::status_file::read_runner_status(&state_dir);
-        assert!(read.is_live(), "{read:?}");
+        // Finished, though this process, its writer, still runs (bug-f7f3bb).
+        assert!(read.is_finished(), "{read:?}");
         let status = read.status().expect("status.json after a Graph run");
         let expected_phase = if exit_code == EXIT_SUCCESS {
             "completed"
@@ -3457,6 +3686,123 @@ max_retries = 0
         }
     }
 
+    /// The identity a checkpoint records for plan `plan_id` in `dir` when its
+    /// graph is converted with `max_parallel`.
+    #[cfg(unix)]
+    fn plan_identity(dir: &Path, plan_id: &str, max_parallel: u32) -> String {
+        let plan_dir = dir.join("plans").join(plan_id);
+        let content = std::fs::read_to_string(plan_dir.join("tasks.toml")).expect("tasks.toml");
+        let tasks_file = crate::task_parser::TasksFile::parse_str(&content).expect("parse plan");
+        let tasks: Vec<(String, roko_graph::convert::PlanTaskInfo)> = tasks_file
+            .tasks
+            .iter()
+            .map(|task| {
+                let info = roko_graph::convert::PlanTaskInfo {
+                    title: task.title.clone(),
+                    description: None,
+                    role: task.role.clone(),
+                    tier: task.tier.clone(),
+                    model_hint: None,
+                    files: task.files.clone(),
+                    depends_on: task.depends_on.clone(),
+                    depends_on_plan: Vec::new(),
+                    timeout_secs: task.timeout_secs,
+                    max_retries: task.max_retries,
+                    domain: None,
+                    sequence: task.sequence,
+                    full_config_json: serde_json::Value::Null,
+                };
+                (task.id.clone(), info)
+            })
+            .collect();
+        let graph = roko_graph::convert::plan_to_graph(
+            plan_id,
+            &plan_dir.display().to_string(),
+            &tasks,
+            max_parallel,
+        )
+        .expect("convert plan");
+        let authored = roko_graph::AuthoredPlan::from_tasks_toml(&content).expect("authored");
+        roko_graph::plan_graph_fingerprint(&graph, &authored).expect("fingerprint")
+    }
+
+    /// gap-272448: a plan that omits `max_parallel` runs its independent
+    /// tasks together when every task declares its files. Each verify step
+    /// here waits until all three tasks have started, so it passes only when
+    /// they run at the same time. When a task that can write declares no
+    /// files, the plan runs one task at a time: a `mkdir` lock fails whenever
+    /// two verify steps overlap. The checkpoint records the identity the plan
+    /// had when an omitted `max_parallel` meant 1, so older checkpoints still
+    /// resume.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn omitted_max_parallel_runs_disjoint_tasks_together() {
+        const IDS: [&str; 3] = ["T1", "T2", "T3"];
+        let no_dependencies: &[&str] = &[];
+        let verified = |dir: &Path, id: &str| dir.join(format!("{id}.verified")).exists();
+
+        let wide = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(wide.path(), 0.0, "");
+        let barrier = IDS.map(|id| {
+            format!(
+                "touch {id}.started; for _ in $(seq 100); do test -f T1.started && \
+                 test -f T2.started && test -f T3.started && touch {id}.verified && exit 0; \
+                 sleep 0.1; done; exit 1"
+            )
+        });
+        let tasks: Vec<(&str, &[&str], &str)> = IDS
+            .iter()
+            .zip(&barrier)
+            .map(|(id, verify)| (*id, no_dependencies, verify.as_str()))
+            .collect();
+        write_verify_plan(wide.path(), "wide", "", &tasks);
+
+        let (exit_code, _, _) = run_plan_set(wide.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS, "the tasks ran together");
+        for id in IDS {
+            assert!(verified(wide.path(), id), "{id}");
+        }
+        let manifest = std::fs::read(wide.path().join(".roko/state/graph/wide/checkpoint.json"))
+            .expect("checkpoint manifest");
+        let manifest: crate::graph_checkpoint::GraphCheckpointManifest =
+            serde_json::from_slice(&manifest).expect("parse checkpoint manifest");
+        assert_eq!(
+            manifest.graph_fingerprint,
+            plan_identity(wide.path(), "wide", 1)
+        );
+        assert_ne!(
+            manifest.graph_fingerprint,
+            plan_identity(wide.path(), "wide", 3)
+        );
+
+        let narrow = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(narrow.path(), 0.0, "");
+        let lock = IDS
+            .map(|id| format!("mkdir lock.d && sleep 0.5 && rmdir lock.d && touch {id}.verified"));
+        let tasks: Vec<(&str, &[&str], &str)> = IDS
+            .iter()
+            .zip(&lock)
+            .map(|(id, verify)| (*id, no_dependencies, verify.as_str()))
+            .collect();
+        write_verify_plan(narrow.path(), "narrow", "", &tasks);
+        // T3 becomes a scribe that declares no files: what it writes is unknown.
+        let tasks_toml = narrow.path().join("plans/narrow/tasks.toml");
+        let content = std::fs::read_to_string(&tasks_toml).expect("tasks.toml");
+        let (head, task_t3) = content.split_at(content.find("id = \"T3\"").expect("T3"));
+        let task_t3 = task_t3
+            .replacen("role = \"implementer\"", "role = \"scribe\"", 1)
+            .replace("files = [\"T3.txt\"]", "files = []");
+        std::fs::write(&tasks_toml, format!("{head}{task_t3}")).expect("rewrite tasks.toml");
+
+        let (exit_code, _, _) = run_plan_set(narrow.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS, "no two verify steps overlapped");
+        for id in IDS {
+            assert!(verified(narrow.path(), id), "{id}");
+        }
+    }
+
     /// Once a plan's settled spend reaches `[budget] max_plan_usd`, no further
     /// task starts, even under the default `skip_failed` policy: the tasks
     /// waiting on the spent one are recorded as not started, not failed.
@@ -3772,6 +4118,7 @@ max_retries = 0
     fn plan_outcome_follows_task_verdicts() {
         let counts = |passed, unverified, skipped, failed| TaskVerdictCounts {
             passed,
+            already_satisfied: 0,
             unverified,
             skipped,
             failed,
@@ -3782,6 +4129,13 @@ max_retries = 0
         assert_eq!(counts(0, 1, 0, 0).outcome(), PlanOutcome::Unverified);
         assert_eq!(counts(2, 1, 1, 0).outcome(), PlanOutcome::Failed);
         assert_eq!(counts(2, 1, 0, 1).outcome(), PlanOutcome::Failed);
+
+        // gap-9eb1e1: a task whose work was already there was verified.
+        let rerun = TaskVerdictCounts {
+            already_satisfied: 2,
+            ..counts(1, 0, 0, 0)
+        };
+        assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not
@@ -3800,6 +4154,7 @@ max_retries = 0
             output_count: 0,
             is_stub: false,
             blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
         };
         let output = roko_graph::GraphOutput {
             graph_name: "verdicts".to_string(),
@@ -3812,6 +4167,7 @@ max_retries = 0
                     blocked_by: Some("T3".to_string()),
                     ..node("T4", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Skipped)
                 },
+                node("T5", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Complete),
                 // A helper node of the rich topology is not a task.
                 node("task.T1.gate", "passthrough", NodeStatus::Complete),
             ],
@@ -3819,6 +4175,7 @@ max_retries = 0
             gate_verdicts: BTreeMap::from([
                 ("T1".to_string(), TaskGateVerdict::Passed),
                 ("T2".to_string(), TaskGateVerdict::Unverified),
+                ("T5".to_string(), TaskGateVerdict::AlreadySatisfied),
                 ("task.T1.gate".to_string(), TaskGateVerdict::Passed),
             ]),
         };
@@ -3828,11 +4185,16 @@ max_retries = 0
         assert!(!metrics.completed);
         let counts = [
             metrics.tasks_completed,
+            metrics.tasks_already_satisfied,
             metrics.tasks_unverified,
             metrics.tasks_skipped,
             metrics.tasks_failed,
         ];
-        assert_eq!(counts, [1, 1, 1, 1], "passed, unverified, skipped, failed");
+        assert_eq!(
+            counts,
+            [1, 1, 1, 1, 1],
+            "passed, already satisfied, unverified, skipped, failed"
+        );
     }
 
     fn wait_until_finished(session: &TuiSession) {
@@ -3896,6 +4258,71 @@ max_retries = 0
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// gap-19e596: with per-task worktrees no two tasks share a tree, so the
+    /// plan graph keeps no exclusive paths, in the simple and in the rich
+    /// topology. In a shared tree each task keeps the files it declares.
+    #[test]
+    fn worktree_per_task_clears_exclusive_paths() {
+        let plan_task = |id: &str| roko_graph::convert::PlanTaskInfo {
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let topology_task = |id: &str| roko_graph::TopologyTaskInfo {
+            task_id: id.to_string(),
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let simple = roko_graph::convert::plan_to_graph(
+            "p",
+            "plans/p",
+            &[
+                ("T1".to_string(), plan_task("T1")),
+                ("T2".to_string(), plan_task("T2")),
+            ],
+            2,
+        )
+        .expect("simple topology");
+        let (rich, _) = roko_graph::ProductionPlanTopology::new("p", "plans/p", 2)
+            .build(&[topology_task("T1"), topology_task("T2")])
+            .expect("rich topology");
+
+        let holds_paths = |graph: &roko_graph::Graph| {
+            graph
+                .inner
+                .node_weights()
+                .any(|node| !node.exclusive.is_empty())
+        };
+        for graph in [simple, rich] {
+            let mut shared = graph.clone();
+            drop_exclusion_for_worktrees(&mut shared, false);
+            assert!(holds_paths(&shared));
+            let mut isolated = graph;
+            drop_exclusion_for_worktrees(&mut isolated, true);
+            assert!(!holds_paths(&isolated));
+        }
     }
 
     /// Stands in for a rich-topology task executor under
@@ -3973,6 +4400,56 @@ max_retries = 0
     /// manifest cargo cannot parse), fails its task, and keeps that worktree
     /// for post-mortem instead of accepting it. The default topology gets
     /// neither service.
+    /// Records the `[gates]` config of each gate pipeline it is asked to
+    /// run, and fails it.
+    #[derive(Default)]
+    struct GatesConfigRecorder(parking_lot::Mutex<Vec<roko_core::config::GatesConfig>>);
+
+    #[async_trait::async_trait]
+    impl roko_gate::production_service::ProductionGateRunner for GatesConfigRecorder {
+        async fn run(
+            &self,
+            request: roko_gate::ProductionGateRequest,
+            _progress_sink: Arc<dyn roko_gate::production_service::ProgressSink>,
+        ) -> roko_core::Result<roko_gate::ProductionGateVerdictV1> {
+            self.0.lock().push(request.gates_config);
+            Err(roko_core::RokoError::Invalid("recorded".to_string()))
+        }
+    }
+
+    /// bug-4862cf: the rich topology's gates run with the run's `[gates]`,
+    /// not `GatesConfig::default()`; the run's `max_rung` bounds each
+    /// pipeline.
+    #[tokio::test]
+    async fn rich_topology_gates_use_the_runs_gates_config() {
+        let mut gates = roko_core::config::GatesConfig::default();
+        gates.env_passthrough = vec!["FROM_THE_RUN".to_string()];
+        gates.max_rung = Some(1);
+        let recorder = Arc::new(GatesConfigRecorder::default());
+        let resources = plan_cell_resources_with(true, &gates, None, Arc::clone(&recorder) as _);
+        let evaluator = resources.gates.expect("the rich topology runs gates");
+        let request = roko_core::SharedGateRequest {
+            task_id: "T1".to_string(),
+            attempt_id: 1,
+            rung: "compile".to_string(),
+            plan_dir: "plans/p".to_string(),
+            worktree_path: PathBuf::from("/wt/attempt"),
+            changed_files: Vec::new(),
+            context: HashMap::new(),
+        };
+        assert!(evaluator.verify_rung(&request).await.is_err());
+
+        let configs = recorder.0.lock();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].env_passthrough, ["FROM_THE_RUN"]);
+        assert_eq!(configs[0].max_rung, Some(1));
+        assert!(
+            plan_cell_resources_with(false, &gates, None, Arc::clone(&recorder) as _)
+                .gates
+                .is_none()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rich_topology_gates_run_with_cell_resources() {
         use roko_graph::engine::{GraphEngine, NodeStatus};
@@ -4005,9 +4482,10 @@ max_retries = 0
             ),
         );
 
-        let resources = plan_cell_resources(true, Some(provider.clone()));
+        let gates = roko_core::config::GatesConfig::default();
+        let resources = plan_cell_resources(true, &gates, Some(provider.clone()));
         assert!(resources.gates.is_some() && resources.workspaces.is_some());
-        let default_topology = plan_cell_resources(false, Some(provider.clone()));
+        let default_topology = plan_cell_resources(false, &gates, Some(provider.clone()));
         assert!(default_topology.gates.is_none() && default_topology.workspaces.is_none());
 
         let task = roko_graph::TopologyTaskInfo {
@@ -4072,6 +4550,37 @@ max_retries = 0
         );
     }
 
+    /// gap-0d64d5: a plan that holds its tasks for approval needs per-task
+    /// worktrees and the default topology, whose acceptance the hold sits
+    /// before; otherwise the run is refused before anything starts.
+    #[tokio::test]
+    async fn approval_needs_worktrees_and_the_default_topology() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = dir.path().join("plans").join("01-held");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"01-held\"\napproval = \"per_task\"\n\n[[task]]\nid = \"T1\"\n\
+             title = \"Write held.txt\"\nfiles = [\"held.txt\"]\n\n[[task.verify]]\n\
+             phase = \"structural\"\n\
+             command = \"test -f held.txt\"\n",
+        )
+        .expect("tasks.toml");
+        for (worktree_per_task, rich_topology) in [(false, false), (true, true)] {
+            let error = run_graph_plan(GraphPlanRunParams {
+                worktree_per_task,
+                rich_topology,
+                ..worktree_run_params(dir.path())
+            })
+            .await
+            .expect_err("the run is refused");
+            assert!(
+                error.to_string().contains("hold each task for approval"),
+                "{error}"
+            );
+        }
+    }
+
     /// The rich topology's gates judge each attempt's own worktree, so a run
     /// without per-task worktrees is refused before anything starts.
     #[tokio::test]
@@ -4121,8 +4630,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
 "#;
 
     /// A committed repository with `WRITES_NAMED_FILE_AGENT` configured as the
-    /// provider, and one plan per name whose one task writes `<name>.txt`.
-    fn repo_with_file_plans(names: &[&str]) -> tempfile::TempDir {
+    /// provider, and one plan per name whose one task writes `<name>.txt`,
+    /// each with `meta_verify` as its `[meta] verify` step when given.
+    fn repo_with_file_plans(names: &[&str], meta_verify: Option<&str>) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4140,6 +4650,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         )
         .expect("config");
         std::fs::write(repo.join(".gitignore"), ".roko/\n").expect("gitignore");
+        let meta_verify = meta_verify
+            .map(|command| format!("\n[[meta.verify]]\ncommand = {command:?}\n"))
+            .unwrap_or_default();
         for (index, name) in names.iter().enumerate() {
             let plan_id = format!("{:02}-{name}", index + 1);
             let plan_dir = repo.join("plans").join(&plan_id);
@@ -4147,7 +4660,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             std::fs::write(
                 plan_dir.join("tasks.toml"),
                 format!(
-                    "[meta]\nplan = \"{plan_id}\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
+                    "[meta]\nplan = \"{plan_id}\"\nmax_parallel = 1\nskip_enrichment = true\n{meta_verify}\n\
                      [[task]]\nid = \"T1\"\ntitle = \"Write {name}.txt\"\n\
                      description = \"Write {name}.txt.\"\nrole = \"implementer\"\n\
                      status = \"ready\"\ntier = \"focused\"\nfiles = [\"{name}.txt\"]\n\n\
@@ -4215,7 +4728,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// never changes the operator's checkout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_worktree_run_delivers_each_plan_into_its_batch_branch() {
-        let dir = repo_with_file_plans(&["alpha", "beta"]);
+        let dir = repo_with_file_plans(&["alpha", "beta"], None);
         let repo = dir.path();
         let head = git_stdout(repo, &["rev-parse", "HEAD"]);
         git_in(repo, &["branch", "release", "main"]);
@@ -4266,5 +4779,52 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`
+    /// fails does not succeed, whether the check runs in the shared working
+    /// tree or as the regression of its delivery into the batch branch, which
+    /// then keeps its old tip. The checkpoint records why, for
+    /// `roko plan status`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn meta_verify_failure_fails_a_plan_whose_tasks_passed() {
+        for worktree_per_task in [false, true] {
+            let dir = repo_with_file_plans(&["alpha"], Some("test -f together.txt"));
+            let repo = dir.path();
+            let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-check".into()))
+                .await
+                .expect("run the plan");
+
+            let mode = if worktree_per_task {
+                "worktree"
+            } else {
+                "shared tree"
+            };
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            let failure = crate::graph_checkpoint::recorded_plan_check_failure(repo, "01-alpha")
+                .unwrap_or_else(|| panic!("{mode}: no recorded plan check failure"));
+            assert!(
+                failure.contains("test -f together.txt"),
+                "{mode}: {failure}"
+            );
+            if worktree_per_task {
+                assert_eq!(
+                    git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
+                    head,
+                    "the failed plan was taken back out of the batch"
+                );
+            }
+        }
     }
 }

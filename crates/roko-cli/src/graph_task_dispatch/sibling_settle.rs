@@ -20,6 +20,12 @@ use regex::Regex;
 use roko_core::Verdict;
 use tokio::sync::watch;
 
+mod verify_lease;
+mod verify_scope;
+
+pub(crate) use verify_lease::StepRead;
+pub(crate) use verify_scope::StepScope;
+
 /// Task attempts in flight, so a failed verify step can tell whether a
 /// sibling editing the same working tree may have caused it.
 pub(crate) struct InFlightTasks {
@@ -62,6 +68,12 @@ struct InFlightAttempt {
     /// Waiting for its own siblings to settle: it writes nothing meanwhile,
     /// and waiting on it could deadlock.
     settling: bool,
+    /// Running its verify steps: it writes nothing meanwhile, so no verify
+    /// step waits for it ([`InFlightTasks::begin_verify`]).
+    verifying: bool,
+    /// What its current verify step reads, while one runs: a sibling that
+    /// would write there waits before it starts editing.
+    reading: Option<StepScope>,
 }
 
 /// A sibling attempt that may be editing the working tree.
@@ -136,6 +148,8 @@ impl InFlightTasks {
                 workdir: workdir.to_path_buf(),
                 files: files.to_vec(),
                 settling: false,
+                verifying: false,
+                reading: None,
             },
         );
         InFlightGuard { tasks: self, id }
@@ -304,7 +318,8 @@ impl InFlightTasks {
     }
 
     /// Siblings that may be editing `workdir` beside `key`: other attempts
-    /// there that declare files and are not settling themselves. When any
+    /// there that declare files and are neither settling themselves nor
+    /// running their verify steps. When any
     /// exist, `key` starts settling under the same lock, so two failing
     /// tasks never wait on each other.
     fn begin_settle(&self, key: &str, workdir: &Path) -> Vec<SiblingWriter> {
@@ -316,6 +331,7 @@ impl InFlightTasks {
                     && attempt.workdir == workdir
                     && !attempt.files.is_empty()
                     && !attempt.settling
+                    && !attempt.verifying
             })
             .map(|(id, attempt)| SiblingWriter {
                 id: *id,
@@ -344,8 +360,8 @@ impl InFlightTasks {
         }
     }
 
-    /// Wait up to `limit` until every writer has finished its attempt or is
-    /// settling itself. Returns whether they did in time.
+    /// Wait up to `limit` until every writer has finished its attempt, or is
+    /// settling itself or verifying. Returns whether they did in time.
     async fn wait_settled(&self, writers: &[SiblingWriter], limit: Duration) -> bool {
         let mut changed = self.changed.subscribe();
         tokio::time::timeout(limit, async {
@@ -364,13 +380,30 @@ impl InFlightTasks {
         writers.iter().all(|writer| {
             attempts
                 .get(&writer.id)
-                .is_none_or(|attempt| attempt.settling)
+                .is_none_or(|attempt| attempt.settling || attempt.verifying)
         })
     }
 
     fn bump(&self) {
         self.changed
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// Wait until an attempt of `key` (`"{plan_id}/{task_id}"`) begins to
+    /// settle a step that failed beside its siblings.
+    #[cfg(test)]
+    pub(crate) async fn settling_began(&self, key: &str) {
+        let mut changed = self.changed.subscribe();
+        while !self
+            .attempts
+            .lock()
+            .values()
+            .any(|attempt| attempt.key == key && attempt.settling)
+        {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #4);
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog", "crates/roko-cli/tests/learning_wiring_census.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4", "bug-2379dc", "bug-92f655", "bug-220385", "bug-ad5487", "bug-b2dd44", "bug-c65bfe", "gap-751ac9", "bug-0ba3d9", "bug-d5fb74", "bug-aa2044", "bug-25d24e", "bug-9a6799", "bug-a5f181", "bug-afcf63", "bug-bfd241"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4", "bug-2379dc", "bug-92f655", "bug-220385", "bug-ad5487", "bug-b2dd44", "bug-c65bfe", "gap-751ac9", "bug-0ba3d9", "bug-d5fb74", "bug-aa2044", "bug-25d24e", "bug-9a6799", "bug-a5f181", "bug-afcf63", "bug-bfd241", "bug-8417d9", "bug-9bffe2"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
@@ -117,6 +117,8 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] bug-a5f181: Native Gemini records its configured slug as the model, because it doesn't parse modelVersion
 - [ ] bug-afcf63: Native Gemini counts cached tokens twice: promptTokenCount (which includes them) becomes input, and cachedContentTokenCount becomes cache reads
 - [ ] bug-bfd241: The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it
+- [ ] bug-8417d9: Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows
+- [ ] bug-9bffe2: roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.
 

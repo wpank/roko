@@ -11,7 +11,10 @@
 //! Suggestions stay within `[gates] adaptive_min_retries..=adaptive_max_retries`,
 //! and a rung with under five observations suggests their midpoint. The task
 //! gets its likeliest-to-fail rung's suggestion. A task with no such step
-//! keeps the default budget. `plan run --max-retries` overrides all of this.
+//! keeps the default budget. While the model ladder routes tasks, one that no
+//! `model_hint` or `preferred_model` pins gets at least enough retries to
+//! climb it (gap-460230).
+//! `plan run --max-retries` overrides all of this.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -36,6 +39,8 @@ pub(crate) enum RetryBudgetSource {
         ema_pass_rate: f64,
         observations: u64,
     },
+    /// Raised to what climbing the model ladder takes (gap-460230).
+    Ladder,
 }
 
 /// A task's retry budget and where it came from.
@@ -51,6 +56,10 @@ pub(crate) struct TaskRetryBudgets {
     thresholds: Option<AdaptiveThresholds>,
     /// Ids of the tasks that author `max_retries`.
     authored: BTreeSet<String>,
+    /// Least budget of a task that does not author `max_retries` and whose
+    /// model is not pinned: `0`, or what climbing the model ladder takes
+    /// while it routes tasks.
+    ladder_min_retries: u32,
 }
 
 impl TaskRetryBudgets {
@@ -82,21 +91,47 @@ impl TaskRetryBudgets {
         Self {
             thresholds,
             authored,
+            ladder_min_retries: 0,
         }
+    }
+
+    /// Give every task that does not author `max_retries` at least
+    /// `min_retries`: two attempts on each rung the model ladder lets it climb
+    /// (gap-460230). An authored budget is still kept exactly, and a task
+    /// whose `model_hint` or `preferred_model` pins its model never climbs,
+    /// so it keeps its own.
+    #[must_use]
+    pub(crate) fn with_ladder_min_retries(mut self, min_retries: u32) -> Self {
+        self.ladder_min_retries = min_retries;
+        self
     }
 
     /// `task`'s retry budget.
     pub(crate) fn for_task(&self, task: &TaskDef) -> RetryBudget {
+        if self.authored.contains(&task.id) {
+            return RetryBudget {
+                max_retries: task.max_retries,
+                source: RetryBudgetSource::Authored,
+            };
+        }
+        let budget = self.suggested(task);
+        let pinned = task.model_hint.is_some() || task.hints.preferred_model.is_some();
+        if !pinned && budget.max_retries < self.ladder_min_retries {
+            return RetryBudget {
+                max_retries: self.ladder_min_retries,
+                source: RetryBudgetSource::Ladder,
+            };
+        }
+        budget
+    }
+
+    /// Budget of a task that does not author `max_retries`: the default, or
+    /// its likeliest-to-fail rung's suggestion.
+    fn suggested(&self, task: &TaskDef) -> RetryBudget {
         let default = RetryBudget {
             max_retries: task.max_retries,
             source: RetryBudgetSource::Default,
         };
-        if self.authored.contains(&task.id) {
-            return RetryBudget {
-                source: RetryBudgetSource::Authored,
-                ..default
-            };
-        }
         let Some(thresholds) = &self.thresholds else {
             return default;
         };
@@ -143,6 +178,14 @@ impl TaskRetryBudgets {
                 ema_pass_rate,
                 observations,
                 "retry budget set by adaptive gate thresholds"
+            );
+        }
+        if budget.source == RetryBudgetSource::Ladder {
+            tracing::info!(
+                plan_id,
+                task_id = %task.id,
+                max_retries = budget.max_retries,
+                "retry budget raised so the task can climb the model ladder"
             );
         }
         budget.max_retries
@@ -273,6 +316,7 @@ command = "true"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         }];
 
         // The default floor is a task's default max_retries (3).
@@ -307,6 +351,48 @@ command = "true"
         };
         let cold = TaskRetryBudgets::load(Some(&missing), &gates, &tasks_toml);
         assert_eq!(cold.for_task(&task("TEST")).max_retries, 4);
+    }
+
+    /// gap-460230: while the ladder is on, a task that does not author
+    /// `max_retries` gets enough retries to climb it. An authored budget, a
+    /// pinned task's budget and a larger adaptive budget stay as they are.
+    #[test]
+    fn the_ladder_raises_unauthored_budgets_to_its_floor() {
+        let dir = tempdir().expect("tempdir");
+        let budgets = budgets(dir.path(), &GatesConfig::default()).with_ladder_min_retries(5);
+        let structural = budgets.for_task(&task("STRUCTURAL"));
+        assert_eq!(
+            structural,
+            RetryBudget {
+                max_retries: 5,
+                source: RetryBudgetSource::Ladder,
+            }
+        );
+        assert_eq!(budgets.for_task(&task("AUTHORED")).max_retries, 0);
+        let mut pinned = task("STRUCTURAL");
+        pinned.model_hint = Some("claude-sonnet-4-6".to_string());
+        assert_eq!(budgets.for_task(&pinned).source, RetryBudgetSource::Default);
+        let mut preferred = task("STRUCTURAL");
+        preferred.hints.preferred_model = Some("claude-sonnet-4-6".to_string());
+        assert_eq!(
+            budgets.for_task(&preferred).source,
+            RetryBudgetSource::Default
+        );
+        let gates = GatesConfig {
+            adaptive_min_retries: 6,
+            adaptive_max_retries: 8,
+            ..GatesConfig::default()
+        };
+        let generous = budgets_with(dir.path(), &gates, 5).for_task(&task("TEST"));
+        assert!(
+            matches!(generous.source, RetryBudgetSource::Adaptive { .. }),
+            "{generous:?}"
+        );
+        assert!(generous.max_retries > 5, "{generous:?}");
+    }
+
+    fn budgets_with(dir: &Path, gates: &GatesConfig, ladder_min: u32) -> TaskRetryBudgets {
+        budgets(dir, gates).with_ladder_min_retries(ladder_min)
     }
 
     #[test]

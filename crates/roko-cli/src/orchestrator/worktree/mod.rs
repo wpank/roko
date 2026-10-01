@@ -25,6 +25,7 @@
 //! - §15.9 Prune stale git metadata ([`WorktreeManager::prune`])
 
 mod acceptance;
+pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod cleanup;
 mod creation_journal;
 mod git_ops;
@@ -169,6 +170,15 @@ pub struct AcceptedWorktree {
     /// The plan branch's tip once the attempt was folded in: the base of the
     /// plan's later attempts.
     pub commit_oid: String,
+}
+
+/// The run a plan's attempts belong to in this process (bug-056b40).
+#[derive(Debug, Clone)]
+struct PlanRun {
+    run_id: String,
+    /// The plan branch's tip when the run continues it: the base of the
+    /// plan's attempts until one is accepted in this process.
+    continued_tip: Option<String>,
 }
 
 /// Why an attempt is accepted, recorded as trailers of the commits
@@ -448,6 +458,9 @@ pub struct WorktreeManager {
     pub(super) config: Arc<WorktreeConfig>,
     pub(super) active: Arc<Mutex<HashMap<String, WorktreeHandle>>>,
     pub(super) accepted: Arc<Mutex<HashMap<String, AcceptedWorktree>>>,
+    /// The run each plan's attempts belong to in this process, set by
+    /// [`WorktreeManager::begin_plan_run`] (bug-056b40).
+    plan_runs: Arc<Mutex<HashMap<String, PlanRun>>>,
     /// Shared fair reservation transferred into cancellation-independent tasks.
     pub(super) operations: Arc<AsyncMutex<()>>,
     /// Canonical executable selected once and shared by probes and mutations.
@@ -475,6 +488,7 @@ impl WorktreeManager {
             config: Arc::new(config),
             active: Arc::new(Mutex::new(HashMap::new())),
             accepted: Arc::new(Mutex::new(HashMap::new())),
+            plan_runs: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -518,6 +532,7 @@ impl WorktreeManager {
             config: Arc::new(config),
             active: Arc::new(Mutex::new(active)),
             accepted: Arc::new(Mutex::new(HashMap::new())),
+            plan_runs: Arc::new(Mutex::new(HashMap::new())),
             operations: Arc::new(AsyncMutex::new(())),
             resolved_git_executable: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -790,6 +805,10 @@ impl WorktreeManager {
     }
 
     /// Create an attempt checkout from its plan's last accepted immutable tip.
+    ///
+    /// A checkout of the attempt that an earlier process of the plan's run
+    /// kept ([`WorktreeManager::begin_plan_run`]) is re-attached instead
+    /// (bug-056b40). One kept by another run is refused, as before.
     pub async fn create_for_attempt(
         &self,
         plan_id: &str,
@@ -798,19 +817,38 @@ impl WorktreeManager {
     ) -> Result<WorktreeHandle, WorktreeError> {
         let id = format_attempt_worktree_id(plan_id, task_id, attempt);
         let branch = format_attempt_branch_name(plan_id, task_id, attempt);
-        let base = self.accepted.lock().get(plan_id).map_or_else(
-            || self.config.base_branch.clone(),
-            |accepted| accepted.commit_oid.clone(),
-        );
+        let base = self.attempt_base(plan_id);
+        let run_id = self
+            .plan_runs
+            .lock()
+            .get(plan_id)
+            .map(|run| run.run_id.clone());
         let operation = Arc::clone(&self.operations).lock_owned().await;
         let manager = self.clone();
         await_owned_operation(operation, move |lifecycle| async move {
             let repository_lock = manager.acquire_repository_mutation_lock()?;
-            let result = manager.create_locked(&id, &branch, &base, &lifecycle).await;
+            let result = manager
+                .create_attempt_locked(&id, &branch, &base, run_id.as_deref(), &lifecycle)
+                .await;
             retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
             result
         })
         .await
+    }
+
+    /// Base of `plan_id`'s next attempt: the plan branch's tip after the
+    /// plan's last acceptance in this process, else the tip its resumed run
+    /// continues ([`WorktreeManager::begin_plan_run`]), else
+    /// [`WorktreeConfig::base_branch`].
+    fn attempt_base(&self, plan_id: &str) -> String {
+        if let Some(accepted) = self.accepted.lock().get(plan_id) {
+            return accepted.commit_oid.clone();
+        }
+        self.plan_runs
+            .lock()
+            .get(plan_id)
+            .and_then(|run| run.continued_tip.clone())
+            .unwrap_or_else(|| self.config.base_branch.clone())
     }
 
     /// Ensure an exact attempt checkout is tracked, safely reattaching the
@@ -823,10 +861,7 @@ impl WorktreeManager {
     ) -> Result<WorktreeHandle, WorktreeError> {
         let id = format_attempt_worktree_id(plan_id, task_id, attempt);
         let branch = format_attempt_branch_name(plan_id, task_id, attempt);
-        let base = self.accepted.lock().get(plan_id).map_or_else(
-            || self.config.base_branch.clone(),
-            |accepted| accepted.commit_oid.clone(),
-        );
+        let base = self.attempt_base(plan_id);
         let operation = Arc::clone(&self.operations).lock_owned().await;
         let manager = self.clone();
         await_owned_operation(operation, move |lifecycle| async move {
@@ -867,10 +902,7 @@ impl WorktreeManager {
     ) -> Result<WorktreeHandle, WorktreeOperationError> {
         let id = format_attempt_worktree_id(plan_id, task_id, attempt);
         let branch = format_attempt_branch_name(plan_id, task_id, attempt);
-        let base = self.accepted.lock().get(plan_id).map_or_else(
-            || self.config.base_branch.clone(),
-            |accepted| accepted.commit_oid.clone(),
-        );
+        let base = self.attempt_base(plan_id);
         let operation = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(WorktreeOperationError::Cancelled),

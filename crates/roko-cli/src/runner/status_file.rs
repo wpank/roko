@@ -9,7 +9,8 @@
 //!
 //! The reader path (`read_runner_status`) provides staleness detection:
 //! if `status.json` is older than 60 seconds and the writer PID is dead,
-//! the file is treated as stale.
+//! the file is treated as stale. A run that ended is finished whatever its
+//! writer's PID: `roko serve` outlives the runs it writes status for.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -151,6 +152,10 @@ fn now_ms() -> u64 {
 pub enum RunnerStatusRead {
     /// The file was read and the writing process appears live.
     Live(RunnerStatusFile),
+    /// The run ended: its phase is terminal (`completed`, `failed` or
+    /// `cancelled`), which holds whether or not the writing process still
+    /// runs, as `roko serve` does after its runs (bug-f7f3bb).
+    Finished(RunnerStatusFile),
     /// The file was read but the writing process is dead or the file is
     /// older than 60 seconds with a dead PID.
     Stale(RunnerStatusFile),
@@ -163,21 +168,29 @@ impl RunnerStatusRead {
     #[must_use]
     pub fn status(&self) -> Option<&RunnerStatusFile> {
         match self {
-            Self::Live(s) | Self::Stale(s) => Some(s),
+            Self::Live(s) | Self::Finished(s) | Self::Stale(s) => Some(s),
             Self::Missing => None,
         }
     }
 
-    /// Whether the runner that wrote this file is still alive.
+    /// Whether a run is in progress: the file's run has not ended and the
+    /// runner that wrote it is still alive.
     #[must_use]
     pub fn is_live(&self) -> bool {
         matches!(self, Self::Live(_))
+    }
+
+    /// Whether the file's run ended.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        matches!(self, Self::Finished(_))
     }
 }
 
 /// Read `status.json` from `state_dir` and check staleness.
 ///
-/// A status file is considered live when:
+/// A status file whose phase is terminal is finished. Otherwise it is
+/// considered live when:
 /// - `pid` is nonzero and the process is alive, OR
 /// - `updated_at_ms` is within the staleness threshold (60s)
 ///
@@ -193,6 +206,11 @@ pub fn read_runner_status(state_dir: &Path) -> RunnerStatusRead {
         Ok(s) => s,
         Err(_) => return RunnerStatusRead::Missing,
     };
+
+    // The run's own word that it ended beats the liveness of its writer.
+    if is_terminal_phase(&status.phase) {
+        return RunnerStatusRead::Finished(status);
+    }
 
     let current_ms = now_ms();
 
@@ -437,6 +455,11 @@ fn terminal_phase(outcome: &str) -> &'static str {
         "cancelled" | "canceled" => "cancelled",
         _ => "failed",
     }
+}
+
+/// Whether `phase` says the run ended (see [`terminal_phase`]).
+fn is_terminal_phase(phase: &str) -> bool {
+    matches!(phase, "completed" | "failed" | "cancelled")
 }
 
 /// Keeps `<state_dir>/status.json` current for one Graph run.

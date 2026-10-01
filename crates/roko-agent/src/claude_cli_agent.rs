@@ -2153,6 +2153,64 @@ mod tests {
         assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
+    /// bug-69a002: the secret-read check missed git grep, ag and ack, reads
+    /// of what find or xargs lists, brace globs, and judged a search after a
+    /// cd from the call's directory.
+    #[test]
+    fn settings_hook_refuses_every_search_that_reaches_a_secret() {
+        let workdir = tempdir().unwrap();
+        let src = workdir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            workdir.path().join("roko.toml"),
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        let bash_hook = bash_hook_command();
+        let bash_code = |command: &str, cwd: &std::path::Path| {
+            let payload = serde_json::json!({
+                "cwd": cwd,
+                "tool_input": { "command": command },
+            });
+            run_hook(&bash_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+
+        for denied in [
+            "git grep api_key",
+            "ag api_key",
+            "ack api_key",
+            "find . -exec cat {} +",
+            "find . -type f | xargs cat",
+            "ls | xargs cat",
+            "cat roko.{toml,lock}",
+            "cd src && grep -r key ..",
+        ] {
+            assert_eq!(
+                bash_code(denied, workdir.path()),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "git grep key -- '*.rs'",
+            "find . -name '*.rs' -exec cat {} +",
+            "ls | xargs wc -l",
+            "cd src && grep -r key .",
+        ] {
+            assert_eq!(
+                bash_code(allowed, workdir.path()),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+        // From a subdirectory, a search above it reaches the config.
+        assert_eq!(bash_code("rg key ..", &src), Some(2));
+        assert_eq!(bash_code("rg key", &src), Some(0));
+    }
+
     #[test]
     fn settings_hooks_key_file_policy_when_home_is_workdir() {
         // With HOME set to the project, as in many containers, ~/.roko is
@@ -2991,35 +3049,44 @@ sleep 30
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
 
-        let agent =
-            ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6").with_timeout_ms(1_000);
-        let result = agent.run(&prompt("build it"), &Context::now()).await;
+        // A loaded machine may not deliver the whole stream before a short
+        // timeout: each timeout doubles the last until the run is killed
+        // after both messages arrived (bug-779ae7).
+        for timeout_ms in [1_000, 2_000, 4_000, 8_000, 16_000] {
+            let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+                .with_timeout_ms(timeout_ms);
+            let result = agent.run(&prompt("build it"), &Context::now()).await;
 
-        assert!(!result.success);
-        let text = result.output.body.as_text().expect("failure text");
-        assert_eq!(text, "timed out after 1000 ms");
-        assert!(crate::provider::error_classify::detect_attempt_timeout(
-            text
-        ));
-        assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
-        assert_eq!(result.output.tag("num_turns"), Some("2"));
-        assert_eq!(result.usage.input_tokens, 1_010);
-        assert_eq!(result.usage.output_tokens, 250);
-        assert_eq!(result.usage.cache_create_tokens, 3_000);
-        assert_eq!(result.usage.cache_read_tokens, 11_000);
-        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
-        let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
-        assert!(
-            (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
-            "{:?}",
-            result.usage
-        );
-        let observation = result.usage_obs.expect("usage observation");
-        assert_eq!(
-            observation.source,
-            UsageSource::Estimated,
-            "a killed run's usage is partial"
-        );
+            assert!(!result.success);
+            let text = result.output.body.as_text().expect("failure text");
+            assert_eq!(text, format!("timed out after {timeout_ms} ms"));
+            assert!(crate::provider::error_classify::detect_attempt_timeout(
+                text
+            ));
+            if result.output.tag("num_turns") != Some("2") {
+                continue;
+            }
+            assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
+            assert_eq!(result.usage.input_tokens, 1_010);
+            assert_eq!(result.usage.output_tokens, 250);
+            assert_eq!(result.usage.cache_create_tokens, 3_000);
+            assert_eq!(result.usage.cache_read_tokens, 11_000);
+            // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+            let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+            assert!(
+                (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
+                "{:?}",
+                result.usage
+            );
+            let observation = result.usage_obs.expect("usage observation");
+            assert_eq!(
+                observation.source,
+                UsageSource::Estimated,
+                "a killed run's usage is partial"
+            );
+            return;
+        }
+        panic!("no run was killed after both messages arrived");
     }
 
     #[tokio::test]

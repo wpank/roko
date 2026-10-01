@@ -60,6 +60,7 @@ mod failover;
 mod feedback;
 mod helper_calls;
 mod inert_settings;
+mod ladder;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -69,9 +70,11 @@ mod routing_context;
 mod served_model;
 mod sibling_settle;
 mod streaming;
+mod supervision;
 mod tui_forward;
 mod turn_policy;
 mod verification;
+mod watchdog;
 mod wiring;
 
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
@@ -79,6 +82,7 @@ pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
+pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
 pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
@@ -92,13 +96,17 @@ use routing_context::{
     build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
     upstream_outputs,
 };
+use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
-    TurnCapRetry, base_attempt_timeout_ms, is_express_task, provider_failure_outcome,
-    provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit,
+    TurnCapRetry, base_attempt_timeout_ms_with, is_express_task, provider_failure_outcome,
+    provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit_with,
     timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
+use watchdog::{StallWatch, WatchedAttempt};
 
+#[cfg(test)]
+use turn_policy::task_turn_limit;
 #[cfg(test)]
 use verification::published_gate_output;
 
@@ -182,6 +190,9 @@ pub struct GraphTaskDispatcher {
     /// cloned into every `DispatchContext` to avoid repeated blocking I/O
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
+    /// Turn caps and timeouts learned per tier from the workspace's settled
+    /// attempts, read on the first dispatch (gap-5a6e01).
+    learned_tier_limits: std::sync::OnceLock<roko_learn::tier_limits::LearnedTierLimits>,
     /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
     /// dispatch of a task that no verify step checks (neither its own nor a
     /// workspace rung) looks for a matching reflex rule before invoking the
@@ -228,6 +239,12 @@ pub struct GraphTaskDispatcher {
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
+    /// The run's conductor, which supervises running attempts (see
+    /// [`Self::with_conductor`]).
+    conductor: Option<supervision::GraphConductor>,
+    /// Plans whose verified tasks wait for a person's approval before they
+    /// are accepted (gap-0d64d5, [`Self::hold_for_approval`]).
+    approval_plans: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl GraphTaskDispatcher {
@@ -257,6 +274,7 @@ impl GraphTaskDispatcher {
             agg_tokens_out: AtomicU64::new(0),
             agg_dispatch_count: AtomicU64::new(0),
             static_prompt_cache: std::sync::OnceLock::new(),
+            learned_tier_limits: std::sync::OnceLock::new(),
             reflex_store: None,
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
@@ -268,6 +286,8 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
+            conductor: None,
+            approval_plans: parking_lot::Mutex::default(),
         }
     }
 
@@ -380,6 +400,18 @@ impl GraphTaskDispatcher {
         self.budget_ledger.attach_checkpoint(plan_id, checkpoint)
     }
 
+    /// Hold each verified task of `plan_id` for a person's approval before
+    /// it is accepted onto the plan branch (gap-0d64d5, `[meta] approval =
+    /// "per_task"`). See [`Self::await_review`].
+    pub fn hold_for_approval(&self, plan_id: &str) {
+        self.approval_plans.lock().insert(plan_id.to_string());
+    }
+
+    /// Whether `plan_id`'s verified tasks wait for approval.
+    fn holds_for_approval(&self, plan_id: &str) -> bool {
+        self.approval_plans.lock().contains(plan_id)
+    }
+
     /// Keep `plan_id`'s pending retry feedback in `path`, beside its Graph
     /// checkpoint of run `run_id`, restoring what an earlier process of that
     /// run left for its tasks' next attempts.
@@ -411,6 +443,7 @@ impl GraphTaskDispatcher {
             &self.config.gates,
             &tasks_toml,
         )
+        .with_ladder_min_retries(self.ladder_min_retries())
     }
 
     /// This process's index of the attempt of `task_key` that
@@ -815,10 +848,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .as_ref()
             .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
         // Until this attempt ends, a sibling's failed verify step in the same
-        // working tree may wait for it to settle.
+        // working tree may wait for it to settle. It starts editing once no
+        // sibling runs a verify step that reads its files (gap-1920ba).
         let _in_flight = self
             .in_flight
-            .register(&task_spend_key, &effective_workdir, &task.files);
+            .register_when_unread(
+                &task_spend_key,
+                &effective_workdir,
+                &task.files,
+                std::time::Duration::from_secs(self.config.gates.sibling_settle_secs),
+            )
+            .await;
 
         let role = task.role.as_deref().unwrap_or("implementer");
 
@@ -832,7 +872,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // A CLI `--model` override (`cli_model_override`) takes precedence over
         // express routing so manual experiments are not silently replaced.
         let express_active = is_express_task(&self.config, &task);
-        let mut max_turns = task_turn_limit(&self.config, &task, express_active);
+        let mut max_turns = task_turn_limit_with(
+            &self.config,
+            Some(self.learned_tier_limits()),
+            &task,
+            express_active,
+        );
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
         let turn_cap_resume = self.turn_cap_retries.lock().remove(&task_spend_key);
@@ -962,6 +1007,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -978,6 +1024,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: attempt_number,
+            ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
@@ -995,6 +1042,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
+        self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //
@@ -1048,7 +1096,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     results_count,
                 )
                 .with_latency_ms(prompt_assembly_latency_ms);
-                tokio::spawn(async move {
+                crate::background_writes::spawn(&path.clone(), async move {
                     if let Err(error) =
                         roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                             .without_fsync()
@@ -1065,7 +1113,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         let contract = effective_agent_contract(role, &task, &self.config);
-        let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
+        let base_timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
         // rerun the budget that already ran out.
@@ -1089,17 +1138,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
         }
         let mut request = AgentDispatchRequest {
-            // A task's `preferred_provider` picks which provider's entry runs
-            // the routed model; `--model` and express mode keep theirs.
-            model_key: if dispatch_plan.forced {
-                dispatch_plan.model.slug.clone()
-            } else {
-                routing_context::preferred_provider_model(
-                    &self.config,
-                    &dispatch_plan.model.slug,
-                    task.hints.preferred_provider.as_deref(),
-                )
-            },
+            model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
@@ -1168,74 +1207,51 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
         }
 
-        // ── Live output forwarder ──────────────────────────────────────
+        // ── Live output tap, stall watchdog and conductor ──────────────
         //
-        // When both a TUI bridge and a live-output setting are configured,
-        // create a bounded channel, attach it to the request so the immune
-        // boundary can push events while the agent runs, and spawn a task
-        // that forwards each event to the TUI before screening completes.
-        // `forward_dispatch_events_to_tui` still publishes the screened
-        // transcript after `run_bridge_with_failover` returns (§4).
-        if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
-            let (live_tx, mut live_rx) =
-                tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
-            let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
-            request.live_output = Some(roko_agent::live_output::LiveOutput {
-                sink: live_tx,
-                trusted,
-            });
-            let tui_clone = tui.clone();
-            let agent_id_clone = pre_dispatch_agent_id.clone();
-            let plan_id_clone = spec.plan_id.clone();
-            let task_id_clone = task.id.clone();
-            tokio::spawn(async move {
-                while let Some(event) = live_rx.recv().await {
-                    forward_live_event_to_tui(
-                        &tui_clone,
-                        &agent_id_clone,
-                        &plan_id_clone,
-                        &task_id_clone,
-                        event,
-                    );
-                }
-            });
-        }
+        // The agent's live output feeds the TUI, when a bridge and a
+        // live-output setting are configured, the attempt's stall watchdog
+        // (`[conductor] silence_timeout_secs`, `task_stall_secs`) and the
+        // run's conductor. `forward_dispatch_events_to_tui` still publishes
+        // the screened transcript after `run_bridge_with_failover` returns
+        // (§4).
+        let watched_key = attempt.key.attempt_key();
+        let watched = WatchedAttempt {
+            agent_id: &pre_dispatch_agent_id,
+            plan_id: &spec.plan_id,
+            task_id: &task.id,
+            attempt_key: &watched_key,
+        };
+        let stall_watch = self.stall_watch();
+        let supervised = self.supervise_attempt(&watched);
+        request.live_output = self.live_output_tap(
+            &watched,
+            stall_watch.as_ref().map(StallWatch::progress),
+            supervised.as_ref().map(SupervisedAttempt::feed),
+        );
 
         attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
-        //
-        // T04: Drive the dispatch future through a select loop so we can emit
-        // periodic `agent_heartbeat` events while waiting.  This keeps the
-        // elapsed-time counter live on the TUI even though the transcript is
-        // only available after the immune boundary screens the final result.
-        let dispatch_result = {
-            let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
-            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Consume the immediate first tick so we don't fire at t=0.
-            heartbeat.tick().await;
-            let dispatch_future =
-                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request);
-            tokio::pin!(dispatch_future);
-            loop {
-                tokio::select! {
-                    result = &mut dispatch_future => { break result; }
-                    _ = heartbeat.tick() => {
-                        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-                        if let Some(tui) = &self.tui_bridge {
-                            tui.agent_heartbeat(
-                                &pre_dispatch_agent_id,
-                                &spec.plan_id,
-                                &task.id,
-                                elapsed_ms,
-                            );
-                        }
-                    }
-                }
-            }
-        };
+        // While it runs, heartbeats keep the TUI's elapsed-time counter live.
+        // The stall watchdog cancels an attempt that goes silent and the
+        // conductor one it restarts; either then fails like a provider error
+        // and retries under `max_retries`.
+        let dispatch_result = self
+            .run_watched(
+                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request),
+                stall_watch,
+                supervised.as_ref(),
+                &watched,
+            )
+            .await
+            .unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        if let Some(supervised) = supervised {
+            supervised
+                .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
+        }
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,
             Err(error) => {
@@ -1476,7 +1492,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 handed_on = Some(lease.clone());
             } else {
                 accepted = self
-                    .accept_attempt(spec, &task, &settled, verdict, provider.as_ref(), lease)
+                    .accept_attempt(
+                        spec,
+                        &task,
+                        &settled,
+                        verdict,
+                        provider.as_ref(),
+                        lease,
+                        ctx,
+                    )
                     .await?;
             }
         }
@@ -1599,7 +1623,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
             split_into: None,
             context: None,
             verify: Vec::new(),
-            timeout_secs: 5,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 0,
             acceptance: Vec::new(),
             acceptance_contract: None,
@@ -1613,7 +1637,10 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         let config = toml::Value::Table(toml::map::Map::from_iter([
             ("plan_id".to_string(), toml::Value::String("p1".to_string())),
             ("title".to_string(), toml::Value::String(task.title.clone())),
-            ("timeout_secs".to_string(), toml::Value::Integer(5)),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
             (
                 "task_def_json".to_string(),
                 toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
@@ -1688,12 +1715,18 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
 printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
+    /// Time limit, in seconds, of a fixture's attempts and verify steps,
+    /// which finish at once. It only guards against a hang: a loaded machine
+    /// can hold up a fake provider or a step for seconds (bug-779ae7).
+    pub(super) const FIXTURE_HANG_GUARD_SECS: u64 = 120;
+
     pub(super) fn verify_step(phase: &str, command: &str) -> crate::task_parser::VerifyStep {
         crate::task_parser::VerifyStep {
             phase: phase.to_string(),
             command: command.to_string(),
             fail_msg: None,
-            timeout_ms: 10_000,
+            timeout_ms: FIXTURE_HANG_GUARD_SECS * 1_000,
+            scope: Vec::new(),
         }
     }
 
@@ -1790,7 +1823,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             split_into: None,
             context: None,
             verify: Vec::new(),
-            timeout_secs: 5,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 0,
             acceptance: Vec::new(),
             acceptance_contract: None,
@@ -1947,7 +1980,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         let mut task = make_task_def("focused");
         task.title = "Wire the batch fixture".to_string();
         task.model_hint = Some("batch-model".to_string());
-        task.timeout_secs = 5;
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
         (make_bare_dispatcher(config, temp.path()).await, task)
     }
 
@@ -2090,44 +2123,56 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         }
     }
 
+    /// Feedback sink keeping `(iteration, has_prior_failure)` of each settled
+    /// attempt's routing context, in order.
+    #[derive(Debug, Default)]
+    pub(super) struct RoutingContextLog(parking_lot::Mutex<Vec<(u32, bool)>>);
+
+    impl RoutingContextLog {
+        /// Feedback that records into `log`.
+        pub(super) fn feedback(log: &Arc<Self>) -> GraphFeedbackContext {
+            GraphFeedbackContext {
+                feedback_facade: Some(Arc::new(
+                    crate::runtime_feedback::FeedbackFacade::new().with_sink(log.clone()),
+                )),
+                ..GraphFeedbackContext::default()
+            }
+        }
+
+        /// What was recorded so far.
+        pub(super) fn marks(&self) -> Vec<(u32, bool)> {
+            self.0.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for RoutingContextLog {
+        fn name(&self) -> &'static str {
+            "routing-contexts"
+        }
+
+        async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
+            if let FeedbackEvent::TaskCompleted {
+                routing_context: Some(routing),
+                ..
+            } = event
+            {
+                self.0
+                    .lock()
+                    .push((routing.iteration, routing.has_prior_failure));
+            }
+            Ok(())
+        }
+    }
+
     /// gap-b62e95: the retry of a task whose verify step failed routes, and
     /// is recorded, as a retry after a failure; its first attempt is not.
     #[tokio::test]
     async fn routing_context_marks_retry_after_failure() {
-        /// `(iteration, has_prior_failure)` of each settled attempt's
-        /// routing context, in order.
-        #[derive(Debug, Default)]
-        struct RoutingContexts(parking_lot::Mutex<Vec<(u32, bool)>>);
-
-        #[async_trait::async_trait]
-        impl crate::runtime_feedback::FeedbackSink for RoutingContexts {
-            fn name(&self) -> &'static str {
-                "routing-contexts"
-            }
-
-            async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
-                if let FeedbackEvent::TaskCompleted {
-                    routing_context: Some(routing),
-                    ..
-                } = event
-                {
-                    self.0
-                        .lock()
-                        .push((routing.iteration, routing.has_prior_failure));
-                }
-                Ok(())
-            }
-        }
-
         let temp = tempdir().expect("tempdir");
         let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, no_auto_fix).await;
-        let contexts = Arc::new(RoutingContexts::default());
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            feedback_facade: Some(Arc::new(
-                crate::runtime_feedback::FeedbackFacade::new().with_sink(contexts.clone()),
-            )),
-            ..GraphFeedbackContext::default()
-        });
+        let contexts = Arc::new(RoutingContextLog::default());
+        let dispatcher = dispatcher.with_feedback(RoutingContextLog::feedback(&contexts));
         // The verify step fails once, then passes.
         task.verify = vec![verify_step(
             "structural",
@@ -2144,7 +2189,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
             .await
             .expect("the retry passes");
 
-        assert_eq!(*contexts.0.lock(), [(0, false), (1, true)]);
+        assert_eq!(contexts.marks(), [(0, false), (1, true)]);
     }
 
     /// Every record file a Graph attempt writes, under `workdir/.roko`.
@@ -2169,6 +2214,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         expected: usize,
         keep: impl Fn(&serde_json::Value) -> bool,
     ) -> Vec<serde_json::Value> {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
                 .unwrap_or_default()
@@ -2278,13 +2324,20 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         })
     }
 
+    /// Attempt time limits, in seconds, for a test whose scripted provider
+    /// must reach some point before its attempt runs out of time. The test
+    /// tries the next limit when the provider did not get there, as on a
+    /// loaded machine, instead of failing on a clock (bug-779ae7).
+    pub(super) const TIMEOUT_SECS_UNDER_LOAD: [u64; 5] = [1, 2, 4, 8, 16];
+
     /// A fake Claude CLI that streams one API message, then works past its
-    /// timeout without reaching its `result` event, recording each prompt.
+    /// timeout without reaching its `result` event. It records each prompt
+    /// as `prompt-<call>` once it has read all of it.
     pub(super) const STREAMS_THEN_TIMES_OUT_PROVIDER: &str = r#"#!/bin/sh
 dir=$(dirname -- "$0")
 n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$dir/calls"
-cat > "$dir/prompt-$n"
+cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
 printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
 sleep 30
 "#;

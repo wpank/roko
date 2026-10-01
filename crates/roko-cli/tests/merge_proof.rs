@@ -1,7 +1,7 @@
 //! Merge success/conflict proof harnesses (backlog #140).
 //!
-//! These tests prove that the `MergeQueue` / `PlanMerger` / executor
-//! state-machine machinery produces correct outcomes:
+//! These tests prove that the `MergeQueue` / executor state-machine
+//! machinery produces correct outcomes:
 //!
 //! 1. **Non-conflicting merge**: two plans touching different files are both
 //!    accepted by the queue and independently mergeable.
@@ -11,17 +11,14 @@
 //! 3. **Executor MergeSucceeded / MergeFailed transitions**: the state
 //!    machine correctly transitions plans between Merging, Complete, and
 //!    failure phases.
-//! 4. **PlanMerger config construction**: the merger and its config build
-//!    without panics.
-//! 5. **Auto-success stub absence**: the runner-v2 merge path always routes
-//!    through `MergeDispatch` (not an auto-success stub).
+//!
+//! Graph runs deliver plans through `GitDeliveryBackend`, whose tests live in
+//! `graph_execution::delivery`; `PlanMerger` was deleted (gap-3505fb).
 
 use roko_cli::orchestrator::{
     ExecutorConfig, ExecutorEvent, MergeQueue, MergeRequest, ParallelExecutor, PlanState,
 };
-use roko_cli::runner::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
 use roko_core::PlanPhase;
-use std::path::PathBuf;
 
 fn test_merge_queue() -> MergeQueue {
     MergeQueue::new()
@@ -166,35 +163,4 @@ fn executor_merge_failed_does_not_mark_success() {
         PlanPhase::Complete,
         "MergeFailed must not produce a Complete phase"
     );
-}
-
-// ── Test 4: PlanMerger config construction ───────────────────────────────
-
-#[test]
-fn plan_merger_config_construction() {
-    let config = PlanMergerConfig::new(
-        PathBuf::from("/tmp/test"),
-        std::time::Duration::from_mins(1),
-    );
-    let queue = test_merge_queue();
-    let merger = PlanMerger::new(queue, config);
-
-    // PlanMerger should construct without panicking.
-    // The actual merge operation requires a real git repo, so we just verify
-    // that the merger object is created successfully.
-    let _ = merger;
-}
-
-// ── Test 5: Auto-success stub is absent from runner-v2 ───────────────────
-
-/// Verify that no auto-success stub exists in the runner-v2 merge path.
-/// The merge module routes through `PlanMerger` which runs a real regression
-/// gate, preventing silent broken merges.
-#[test]
-fn no_auto_success_stub_in_runner_v2() {
-    // This is a compile-time proof: if `MergeDispatch::Reserved` exists and
-    // carries a `MergeLaunch`, then the merge is gated. The auto-success
-    // path would bypass `MergeDispatch` entirely.
-    let _: fn(MergeDispatch) -> bool =
-        |dispatch| matches!(dispatch, MergeDispatch::Reserved { .. });
 }

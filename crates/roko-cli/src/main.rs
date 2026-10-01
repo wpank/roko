@@ -406,12 +406,76 @@ struct Cli {
     #[arg(long, global = true)]
     no_serve: bool,
 
-    /// One-shot mode: execute this prompt and exit.
-    #[arg(global = false)]
+    /// One-shot mode: execute this prompt and exit. Quote a prompt of
+    /// several words; a single word is read as a subcommand.
+    #[arg(global = false, value_parser = OneShotPromptParser)]
     prompt: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// Parses the one-shot prompt (`roko "fix the bug"`). A single word is
+/// refused as an unrecognized subcommand, so a typo or a stale command
+/// (`roko dreem`, `roko dream --help`) fails instead of starting an agent
+/// run. A one-word prompt goes through `roko run <word>`.
+#[derive(Clone, Debug)]
+struct OneShotPromptParser;
+
+impl clap::builder::TypedValueParser for OneShotPromptParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+
+        let prompt = value.to_string_lossy();
+        if prompt.split_whitespace().nth(1).is_some() {
+            return Ok(prompt.into_owned());
+        }
+        let word = prompt.trim();
+        if word.is_empty() {
+            let error = clap::Error::raw(ErrorKind::InvalidValue, "the prompt is empty\n");
+            return Err(error.with_cmd(cmd));
+        }
+        Err(unknown_command_error(cmd, word))
+    }
+}
+
+/// The error for `roko <word>` when `word` names no subcommand, with the
+/// command it most likely meant.
+fn unknown_command_error(cmd: &clap::Command, word: &str) -> clap::Error {
+    use clap::error::ErrorKind;
+
+    let similar = match suggested_command(cmd, word) {
+        Some(command) => format!("  tip: a similar subcommand exists: 'roko {command}'\n"),
+        None => String::new(),
+    };
+    let message = format!(
+        "unrecognized subcommand '{word}'\n\n{similar}  tip: to send a one-word prompt, use \
+         'roko run {word}'\n\nFor more information, try '--help'.\n"
+    );
+    clap::Error::raw(ErrorKind::InvalidSubcommand, message).with_cmd(cmd)
+}
+
+/// The command a mistyped `roko <word>` most likely meant: a nested
+/// subcommand named `word` (`roko dream` is `roko knowledge dream`), or the
+/// top-level subcommand within two edits of it.
+fn suggested_command(cmd: &clap::Command, word: &str) -> Option<String> {
+    let nested = cmd.get_subcommands().find_map(|group| {
+        group
+            .get_subcommands()
+            .find(|sub| sub.get_name() == word || sub.get_all_aliases().any(|a| a == word))
+            .map(|sub| format!("{} {}", group.get_name(), sub.get_name()))
+    });
+    nested.or_else(|| {
+        let names: Vec<&str> = cmd.get_subcommands().map(|sub| sub.get_name()).collect();
+        roko_core::config::loader::find_nearest_key(word, &names).map(str::to_string)
+    })
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -2246,6 +2310,28 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Approve or reject a task held for review (`[meta] approval =
+    /// "per_task"`). The plan run holding it merges the task on approval; a
+    /// rejection fails the attempt, and the note is the next attempt's
+    /// feedback.
+    Review {
+        /// Plan id.
+        plan_id: String,
+        /// Task id.
+        task_id: String,
+        /// Approve the task's held attempt.
+        #[arg(long, conflicts_with = "reject", required_unless_present = "reject")]
+        approve: bool,
+        /// Reject the task's held attempt.
+        #[arg(long)]
+        reject: bool,
+        /// The reviewer's note, which a rejected task's next attempt gets.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Regenerate an existing plan from its source PRD / plan extract.
     Regenerate {
         /// Path to the plan directory (containing tasks.toml).
@@ -2333,6 +2419,7 @@ impl PlanCmd {
             | Self::Resume { .. }
             | Self::Cancel { .. }
             | Self::Retry { .. }
+            | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
@@ -4302,13 +4389,19 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
         // [providers.*] table) rather than the legacy agent.command field.  When
         // providers are configured the command field remains "cat" (its sentinel
         // default) even though a real backend is wired, so the original check
-        // would incorrectly gate those workspaces.
-        let has_providers = !resolved.config.providers.is_empty();
+        // would incorrectly gate those workspaces. A provider key exported in
+        // the environment is a provider too: `effective_providers` adds one
+        // for each well-known key variable, as dispatch does.
+        let mut registry = RokoConfig::default();
+        registry.providers.clone_from(&resolved.config.providers);
+        let has_providers = !registry.effective_providers().is_empty();
         if fully_default && resolved.config.agent.command == "cat" && !has_providers {
             eprintln!("error: no LLM provider configured.\n");
             eprintln!("To get started, either:");
             eprintln!("  1. Run `roko init` to create a workspace with default config");
-            eprintln!("  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY");
+            eprintln!(
+                "  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or PERPLEXITY_API_KEY"
+            );
             eprintln!("  3. Edit roko.toml to configure a provider");
             eprintln!("\n  hint: run `roko doctor` to diagnose your setup");
             std::process::exit(EXIT_FAILURE);
@@ -4858,6 +4951,45 @@ mod tests {
         let cli = Cli::try_parse_from(["roko", "fix the bug"]).unwrap();
         assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
         assert!(cli.command.is_none());
+    }
+
+    /// bug-17f0e4: a bare word that names no subcommand is an unknown
+    /// command, not a one-shot prompt, with `--help` or another subcommand
+    /// after it too.
+    #[test]
+    fn cli_rejects_unknown_single_word_command() {
+        use clap::error::ErrorKind;
+
+        for args in [
+            &["roko", "dreem"][..],
+            &["roko", "dream", "--help"],
+            &["roko", "stauts", "--json"],
+            &["roko", "fix", "status"],
+        ] {
+            let err = Cli::try_parse_from(args).expect_err("a bare word is not a prompt");
+            assert_eq!(err.kind(), ErrorKind::InvalidSubcommand, "{args:?}");
+        }
+        let message = Cli::try_parse_from(["roko", "stauts"])
+            .expect_err("a typo")
+            .to_string();
+        assert!(
+            message.contains("unrecognized subcommand 'stauts'"),
+            "{message}"
+        );
+        assert!(message.contains("'roko status'"), "{message}");
+        assert!(message.contains("'roko run stauts'"), "{message}");
+        let message = Cli::try_parse_from(["roko", "dream"])
+            .expect_err("a nested command")
+            .to_string();
+        assert!(message.contains("'roko knowledge dream'"), "{message}");
+        // A stale `roko dream run` fails too, before any agent runs.
+        assert!(Cli::try_parse_from(["roko", "dream", "run"]).is_err());
+
+        // Prompts of several words and `roko run <word>` still parse.
+        let cli = Cli::try_parse_from(["roko", "fix the bug"]).expect("a quoted prompt");
+        assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
+        let cli = Cli::try_parse_from(["roko", "run", "fix"]).expect("a one-word run");
+        assert!(matches!(cli.command, Some(Command::Run { .. })));
     }
 
     #[test]

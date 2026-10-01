@@ -761,13 +761,23 @@ fn resolve_runtime_layers_with_context(
     config.interpolate_env_vars();
     config.resolve_file_secrets();
     // The process's secret scrubber (when one is installed) also redacts the
-    // keys this config's providers read.
+    // keys this config's providers read, and the secrets the config holds:
+    // secret fields such as serve.auth.api_key, header values and file
+    // secrets.
     crate::obs::add_secret_env_values(
         config
             .providers
             .values()
             .filter_map(|provider| provider.api_key_env.as_deref()),
     );
+    if crate::obs::secret_scrubber().is_some() {
+        let secrets = config_secret_values(&config);
+        crate::obs::add_secret_values(
+            secrets
+                .iter()
+                .map(|(field, value)| (field.as_str(), value.as_str())),
+        );
+    }
 
     // Post-merge provider reference validation.
     // When strict_validation is enabled in config, dangling model->provider
@@ -1432,6 +1442,12 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "tools.profiles",
 ];
 
+/// Dynamic map sections whose entries are structs that deny unknown fields
+/// (`ProviderConfig`, `ModelProfile`). Loading strips an unknown key inside
+/// one of their entries, as it does anywhere else; serde itself ignores or
+/// collects unknown keys in the other sections' entries.
+const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models"];
+
 /// Whether the dotted `path` names a dynamic map section.
 fn is_dynamic_section(path: &str) -> bool {
     !path.is_empty()
@@ -2002,7 +2018,7 @@ fn is_likely_enum_table(schema: &toml::Value, input: &toml::Value) -> bool {
 ///
 /// Returns `Some(key)` when the distance is at most 2 edits and the key is
 /// at least 3 characters long (to avoid spurious suggestions for short keys).
-fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+pub fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
     if input.len() < 3 {
         return None;
     }
@@ -2152,12 +2168,19 @@ fn is_secret_key(key: &str) -> bool {
 /// path.
 #[must_use]
 pub fn secret_fields(value: &toml::Value) -> Vec<String> {
-    let mut fields = Vec::new();
-    collect_secret_fields(value, "", &mut fields);
+    let mut fields: Vec<String> = Vec::new();
+    visit_secrets(value, "", &mut |field, _| {
+        // The strings of one array share a field.
+        if fields.last().is_none_or(|last| last != field) {
+            fields.push(field.to_string());
+        }
+    });
     fields
 }
 
-fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<String>) {
+/// Call `found` with the dotted field and the value of each secret under
+/// `value`, at dotted `path` ([`secret_fields`]).
+fn visit_secrets(value: &toml::Value, path: &str, found: &mut dyn FnMut(&str, &str)) {
     let Some(table) = value.as_table() else {
         return;
     };
@@ -2169,24 +2192,24 @@ fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<Strin
         };
         match child {
             toml::Value::String(text) if is_secret_key(key) && is_literal_secret(text) => {
-                fields.push(child_path);
+                found(&child_path, text);
             }
             // An array of strings under a secret name; tables in it, such as
             // the hashed `serve.auth.api_keys`, hold no secret.
             toml::Value::Array(items) if is_secret_key(key) => {
-                if items
-                    .iter()
-                    .any(|item| item.as_str().is_some_and(is_literal_secret))
-                {
-                    fields.push(child_path);
+                for text in items.iter().filter_map(toml::Value::as_str) {
+                    if is_literal_secret(text) {
+                        found(&child_path, text);
+                    }
                 }
             }
             toml::Value::Table(headers) if key.eq_ignore_ascii_case("extra_headers") => {
                 for (name, header) in headers {
                     if !name.to_ascii_lowercase().ends_with("_file")
-                        && header.as_str().is_some_and(is_literal_secret)
+                        && let Some(text) = header.as_str()
+                        && is_literal_secret(text)
                     {
-                        fields.push(format!("{child_path}.{name}"));
+                        found(&format!("{child_path}.{name}"), text);
                     }
                 }
             }
@@ -2197,19 +2220,40 @@ fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<Strin
                         && crate::child_env::is_secret_env_name(name)
                         && is_literal_secret(text)
                     {
-                        fields.push(format!("{child_path}.{name}"));
+                        found(&format!("{child_path}.{name}"), text);
                     }
                 }
             }
-            toml::Value::Table(_) => collect_secret_fields(child, &child_path, fields),
+            toml::Value::Table(_) => visit_secrets(child, &child_path, found),
             toml::Value::Array(items) => {
                 for item in items {
-                    collect_secret_fields(item, &child_path, fields);
+                    visit_secrets(item, &child_path, found);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The secrets a resolved config holds, as (field, value) pairs: the
+/// [`secret_fields`] of its effective values, with references expanded and
+/// file secrets read. A header value such as `Bearer <token>` adds the
+/// credential alone as well, which a log may show without the scheme.
+fn config_secret_values(config: &RokoConfig) -> Vec<(String, String)> {
+    let Ok(tree) = toml::Value::try_from(config) else {
+        return Vec::new();
+    };
+    let mut secrets = Vec::new();
+    visit_secrets(&tree, "", &mut |field, value| {
+        secrets.push((field.to_string(), value.to_string()));
+        if field.contains(".extra_headers.")
+            && let Some((scheme, credential)) = value.split_once(' ')
+            && scheme.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            secrets.push((field.to_string(), credential.to_string()));
+        }
+    });
+    secrets
 }
 
 /// Whether a config string is a literal secret: not empty, and not an
@@ -2646,8 +2690,9 @@ fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
 /// Recursively remove keys from `input` that are absent in `schema`.
 ///
 /// Dynamic map sections (providers, models, etc.) are walked using the
-/// sentinel template value so user-defined map keys are preserved while
-/// extra fields within each value are stripped.
+/// sentinel template value so user-defined map keys are preserved. Inside a
+/// provider or model entry ([`STRICT_ENTRY_SECTIONS`]) extra fields are
+/// stripped too, as they are in every fixed section.
 fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &str) {
     let Some(input_table) = input.as_table_mut() else {
         return;
@@ -2658,8 +2703,16 @@ fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &
     if is_dynamic {
         let value_schema = schema.as_table().and_then(|t| t.values().next()).cloned();
         if let Some(ref vs) = value_schema {
-            for (_key, val) in input_table.iter_mut() {
-                strip_unknown_fields(val, vs, prefix);
+            let strict = STRICT_ENTRY_SECTIONS.contains(&prefix);
+            for (key, val) in input_table.iter_mut() {
+                // A strict section's entry is a plain table below the section
+                // (`providers.<name>`), stripped against the template.
+                let entry_prefix = if strict {
+                    format!("{prefix}.{key}")
+                } else {
+                    prefix.to_string()
+                };
+                strip_unknown_fields(val, vs, &entry_prefix);
             }
         }
         return;
@@ -2969,6 +3022,63 @@ max_agent_usd = 2.0
         assert!(loaded.diagnostics().iter().any(|diagnostic| {
             diagnostic.key == "future_section" && diagnostic.message.contains("unknown")
         }));
+    }
+
+    /// bug-ab8118: a misspelled key inside a `[providers.*]` or `[models.*]`
+    /// entry is diagnosed and stripped like one in any other section, so the
+    /// load succeeds and keeps the entry's other keys.
+    #[test]
+    fn a_typo_inside_a_provider_or_model_entry_is_handled_like_any_other() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[agent]
+default_efort = "high"
+
+[providers.local]
+kind = "openai_compat"
+base_ulr = "http://localhost:11434/v1"
+api_key_env = "LOCAL_KEY"
+
+[models.local-model]
+provider = "local"
+slug = "llama3"
+contxt_window = 8192
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options)
+            .expect("a typo in any section leaves the load working");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("unknown"))
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        for key in [
+            "agent.default_efort",
+            "providers.local.base_ulr",
+            "models.local-model.contxt_window",
+        ] {
+            assert!(unknown.contains(&key), "{key}: {unknown:?}");
+        }
+        let config = loaded.config();
+        assert_eq!(
+            config.providers["local"].api_key_env.as_deref(),
+            Some("LOCAL_KEY")
+        );
+        assert_eq!(config.models["local-model"].slug, "llama3");
+        // The global config's loader strips the same keys.
+        let global = deserialize_migrated_toml(TEXT).expect("the global loader strips them too");
+        assert!(global.providers.contains_key("local"));
     }
 
     #[test]
@@ -4339,6 +4449,84 @@ max_concurrent_plans = 3
         load_config_file(&key_file, &opts).expect("a key file may hold a secret");
     }
 
+    /// bug-ba8d42: `enabled` fell back to `bool::default()`, false, whenever
+    /// a `[serve.auth]` table left it out, while `ServeAuthConfig::default()`
+    /// says true. A table holding only the key, in the key file or through a
+    /// reference, therefore turned serve auth off. Auth now stays on unless a
+    /// config says `enabled = false`, also when the key comes only from
+    /// `ROKO__SERVE__AUTH__API_KEY`.
+    #[test]
+    fn serve_auth_table_without_enabled_keeps_auth_on() {
+        let _env_guard = super::TEST_ENV_LOCK.lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let opts = |apply_hierarchical_env| LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env,
+            strict_validation: false,
+        };
+        let load = |file: &str, text: &str, apply_env: bool| {
+            let path = dir.path().join(file);
+            std::fs::write(&path, text).expect("write config");
+            load_config_file(&path, &opts(apply_env)).expect("load config")
+        };
+
+        // Serde alone: a partial table keeps the secure default.
+        let partial: crate::config::ServeConfig =
+            toml::from_str("[auth]\napi_key = \"sk-ba8d42\"\n").expect("parse serve config");
+        assert!(partial.auth.enabled, "a table with only api_key");
+
+        // The key file, which may hold the key itself.
+        let config = load(
+            ".roko/config.toml",
+            "[serve.auth]\napi_key = \"sk-ba8d42\"\n",
+            false,
+        );
+        assert!(
+            config.serve.auth.enabled,
+            "a key-file table with only api_key"
+        );
+        assert_eq!(config.serve.auth.api_key, "sk-ba8d42");
+
+        // roko.toml tables that set other auth fields but not `enabled`.
+        for table in [
+            "[serve.auth]\napi_key = \"${ROKO_TEST_BA8D42_KEY}\"\n",
+            "[serve.auth]\nprivy_app_id = \"privy-app\"\n",
+            "[serve.auth]\nenforcement_mode = \"audit\"\n",
+        ] {
+            // SAFETY: serialized by TEST_ENV_LOCK; no other test reads it.
+            unsafe { std::env::set_var("ROKO_TEST_BA8D42_KEY", "sk-ba8d42") };
+            let config = load("roko.toml", table, false);
+            // SAFETY: serialized by TEST_ENV_LOCK.
+            unsafe { std::env::remove_var("ROKO_TEST_BA8D42_KEY") };
+            assert!(config.serve.auth.enabled, "{table}");
+        }
+
+        // Only the environment sets the key, as `.roko/.env` does.
+        // SAFETY: serialized by TEST_ENV_LOCK; removed before the asserts.
+        unsafe { std::env::set_var("ROKO__SERVE__AUTH__API_KEY", "sk-ba8d42-env") };
+        let from_env = load("roko.toml", "config_version = 2\n", true);
+        let partial_with_env = load(
+            "roko.toml",
+            "[serve.auth]\nprivy_app_id = \"privy-app\"\n",
+            true,
+        );
+        // SAFETY: serialized by TEST_ENV_LOCK.
+        unsafe { std::env::remove_var("ROKO__SERVE__AUTH__API_KEY") };
+        assert!(from_env.serve.auth.enabled, "env-only key");
+        assert_eq!(from_env.serve.auth.api_key, "sk-ba8d42-env");
+        assert!(
+            partial_with_env.serve.auth.enabled,
+            "env key over a partial table"
+        );
+        assert_eq!(partial_with_env.serve.auth.api_key, "sk-ba8d42-env");
+
+        // An explicit opt-out still turns auth off.
+        let config = load("roko.toml", "[serve.auth]\nenabled = false\n", false);
+        assert!(!config.serve.auth.enabled, "enabled = false");
+    }
+
     /// bug-8f8704: `${VAR}` was expanded only in provider fields, so a
     /// reference in `serve.auth.api_key` loaded as a literal key. A secret
     /// field that holds a reference, which the loader accepts in a readable
@@ -4395,6 +4583,59 @@ max_concurrent_plans = 3
         assert!(agent_env.contains(&rust_log), "{agent_env:?}");
         let shown = serialize_effective_redacted(&config).expect("serialize");
         assert!(!shown.contains("sk-test"), "{shown}");
+    }
+
+    /// bug-5a6636: the process scrubber learned only the keys providers read
+    /// through `api_key_env`, so a header value, a file secret or
+    /// `serve.auth.api_key` reached records and logs unredacted.
+    #[test]
+    fn the_scrubber_knows_every_config_secret() {
+        let _scrubber_guard = crate::obs::scrub::PROCESS_SCRUBBER_LOCK.lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret_file = dir.path().join("header.secret");
+        std::fs::write(&secret_file, "file-secret-5a6636\n").expect("write secret file");
+        // A key file may hold literal secrets.
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let path = dir.path().join(".roko").join("config.toml");
+        let config = format!(
+            "[serve.auth]\napi_key = \"serve-key-5a6636\"\n\n\
+             [providers.x]\nkind = \"openai_compat\"\nbase_url = \"https://x.invalid/v1\"\n\n\
+             [providers.x.extra_headers]\nAuthorization = \"Bearer header-token-5a6636\"\n\
+             token_file = \"{}\"\n\n\
+             [agent]\nenv = [[\"GITHUB_TOKEN\", \"agent-token-5a6636\"], \
+             [\"RUST_LOG\", \"plain-setting-5a6636\"]]\n",
+            secret_file.display()
+        );
+        std::fs::write(&path, config).expect("write config");
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let scrubber = std::sync::Arc::new(crate::obs::LogScrubber::new());
+        let previous = crate::obs::install_secret_scrubber(Some(std::sync::Arc::clone(&scrubber)));
+        let loaded = load_config_file(&path, &opts);
+        crate::obs::install_secret_scrubber(previous);
+        loaded.expect("a key file may hold secrets");
+
+        let record = "serve-key-5a6636 Bearer header-token-5a6636 header-token-5a6636 \
+                      file-secret-5a6636 agent-token-5a6636 plain-setting-5a6636";
+        let scrubbed = scrubber.scrub_literals(record);
+        for secret in [
+            "serve-key-5a6636",
+            "header-token-5a6636",
+            "file-secret-5a6636",
+            "agent-token-5a6636",
+        ] {
+            assert!(!scrubbed.contains(secret), "{scrubbed}");
+        }
+        assert!(
+            scrubbed.contains("[REDACTED:serve.auth.api_key]"),
+            "{scrubbed}"
+        );
+        assert!(scrubbed.contains("plain-setting-5a6636"), "{scrubbed}");
     }
 
     /// Dotted paths of every table in `value` below `prefix`.

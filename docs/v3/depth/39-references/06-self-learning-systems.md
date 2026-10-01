@@ -29,7 +29,7 @@ Code-as-action skill library; 3.3x more unique behaviors. Grounds EvoSkills and 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
 6x performance gap from scaffold changes alone. Core thesis for Roko's approach: the scaffold IS the product.
 
-**[Pan & Hashimoto, 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
+**[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Scaffold logic as natural language specifications. Makes scaffold design inspectable and portable.
 
 **[Kapoor et al., 2026]** *HAL: A Holistic Agent Leaderboard.* ICLR 2026.
@@ -65,13 +65,13 @@ Meta-agent searching agent architecture space. Roko provides the composable trai
 **[Lightman et al., 2024]** *Let's Verify Step by Step.* arXiv:2305.20050.
 Process reward models outperform outcome-only. Foundational for the Gate pipeline's per-step verification.
 
-**[Song et al., 2025]** *Mind the Gap.* ICLR 2025.
+**[Song et al., 2025]** *Mind the Gap: Examining the Self-Improvement Capabilities of Large Language Models.* ICLR 2025.
 Self-improvement works only when verification exceeds generation. Core architectural principle separating agent and Gate.
 
 **[Huang et al., 2024]** *Large Language Models Cannot Self-Correct Reasoning Yet.* ICLR 2024.
 Self-correction without external feedback worsens answers. Motivates external Gates.
 
-**[Pan et al., 2024]** *Spontaneous Reward Hacking in Iterative Self-Refinement.* ICML 2024.
+**[Pan et al., 2024]** *Spontaneous Reward Hacking in Iterative Self-Refinement.* arXiv:2407.04549.
 Same model as generator and judge leads to reward hacking. Validates generator-verifier separation.
 
 ---
@@ -85,14 +85,11 @@ Single/double/triple-loop learning. Maps to Gamma/Theta/Delta cognitive frequenc
 
 ## Bandit-Based Optimization
 
-**[Anonymous, 2025]** *TensorZero: Track-and-Stop Optimal Bandits in an LLM Gateway.* Working paper.
+**[Mishler, 2025]** *Bandits in your LLM Gateway: Improve LLM Applications Faster with Adaptive Experimentation (A/B Testing).* Working paper.
 Bandit-based model routing in production gateways. Validates the CascadeRouter approach.
 
-**[Anonymous, 2026]** *MASPOB: Multi-Agent System Prompt Optimization with Bandits.* Working paper.
+**[Hong et al., 2026]** *MASPOB: Bandit-Based Prompt Optimization for Multi-Agent Systems with Graph Neural Networks.* Working paper. arXiv:2603.02630.
 Bandit optimization for multi-agent system prompts.
-
-**[Kong et al., 2025]** *EXPO: Adversarial EXP3 Bandits for Prompt Selection.* Working paper.
-Adversarial bandits handle non-stationarity in task distributions.
 
 ---
 
@@ -114,13 +111,13 @@ Validates NeuroStore's non-parametric approach to continual knowledge management
 
 ## 2025--2026 Additions: GRASP, SiriuS, SkillZip, ReSkill
 
-**[GRASP, 2026]** *GRASP: Regression-Gated Playbook Admission.* arXiv:2605.29668.
+**[GRASP, 2026]** *GRASP: Gated Regression-Aware Skill Proposer for Self-Improving LLM Agents.* arXiv:2605.29668.
 Regression-gated admission for new strategies. 40.6% to 88.8% on MedAgentBench. Target for playbook admission quality gate.
 
-**[SiriuS, 2025]** *SiriuS: Augmenting Failed Episodes.* arXiv:2502.04780.
+**[Zhao et al., 2025]** *SiriuS: Self-improving Multi-agent Systems via Bootstrapped Reasoning.* arXiv:2502.04780.
 Augment failed episodes rather than discarding them. Informs failure-based learning: failed runs generate negative-example knowledge entries.
 
-**[SkillZip, 2026]** *SkillZip: MDL Compression for Skill Libraries.* arXiv:2608.11079.
+**[Bai et al., 2026]** *SkillZip: MDL Compression for Skill Libraries.* arXiv:2608.11079.
 Minimum Description Length compression prevents unbounded skill library growth. Target for EvoSkills pruning policy.
 
 **[Sakana AI, 2025]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.

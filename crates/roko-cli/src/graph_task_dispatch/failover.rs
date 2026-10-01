@@ -732,6 +732,10 @@ exit 1
             api_model("mock_api", "api-model-1"),
         );
         config.routing.fallback_models = fallback_models.iter().map(|m| m.to_string()).collect();
+        // The mock API answers without SSE. The stall watchdog would attach
+        // live output, over which the tool loop streams, so keep it off.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
         config
     }
 

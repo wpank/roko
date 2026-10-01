@@ -155,6 +155,40 @@ pub struct NodeResult {
     /// For a node skipped because a node it depends on failed: the failed
     /// node behind it, followed through any skipped dependencies in between.
     pub blocked_by: Option<NodeId>,
+    /// When the node became ready and when its cell started.
+    pub timing: NodeTiming,
+}
+
+/// When a node became ready to run and when it was dispatched, in
+/// milliseconds since the Unix epoch.
+///
+/// A node is ready once every node it depends on has settled, or when the
+/// run starts for a node with no dependencies. It is dispatched when it gets
+/// a slot and its cell starts, so the difference is the time it waited for a
+/// slot. Both are `None` for a node that started no cell: skipped,
+/// condition-skipped, or replayed from the Activity log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeTiming {
+    /// When every node it depends on had settled.
+    pub ready_at_ms: Option<u64>,
+    /// When its cell started.
+    pub dispatched_at_ms: Option<u64>,
+}
+
+impl NodeTiming {
+    /// A node that became ready at `ready_at_ms` and is dispatched now.
+    fn dispatched_now(ready_at_ms: u64) -> Self {
+        Self {
+            ready_at_ms: Some(ready_at_ms),
+            dispatched_at_ms: Some(crate::control::now_ms()),
+        }
+    }
+
+    /// How long the node waited for a slot once it was ready.
+    #[must_use]
+    pub fn slot_wait_ms(&self) -> Option<u64> {
+        Some(self.dispatched_at_ms?.saturating_sub(self.ready_at_ms?))
+    }
 }
 
 /// Output of a full graph execution.
@@ -501,6 +535,29 @@ impl GraphEngine {
         self.dispatch_stop.as_ref().and_then(|stop| stop())
     }
 
+    /// Append a completed Activity node's outputs to the attached recorder,
+    /// with when the node became ready and was dispatched, so a resumed run
+    /// can replay them.
+    fn record_activity(
+        &self,
+        node_id: &str,
+        tick: u64,
+        outputs: &[roko_core::Signal],
+        timing: NodeTiming,
+    ) -> Result<(), GraphError> {
+        let Some(recorder) = &self.recorder else {
+            return Ok(());
+        };
+        let graph_name = &self.graph.metadata.name;
+        recorder
+            .lock()
+            .record_timed(graph_name, node_id, tick, outputs.to_vec(), timing)
+            .map_err(|error| GraphError::NodeFailed {
+                node_id: node_id.to_string(),
+                reason: format!("persist Activity checkpoint: {error}"),
+            })
+    }
+
     /// Return a reference to the graph event sequence counter.
     ///
     /// Useful for callers that need to pre-allocate sequence numbers or
@@ -653,9 +710,15 @@ impl GraphEngine {
         // Once set, no further node starts: why the rest are skipped.
         let mut abort: Option<String> = None;
         let mut resumed_emitted = false;
+        let mut clock = SettleClock::start();
+        let mut previous: Option<&NodeId> = None;
 
         // 3. Execute each node in order
         for node_id in &order {
+            // The previous node settled when the loop moved on from it.
+            if let Some(previous) = previous.replace(node_id) {
+                clock.settle(previous);
+            }
             // SAFETY: topological_order only returns IDs that are in the graph.
             let Some(node) = self.graph.get_node(node_id) else {
                 continue;
@@ -681,6 +744,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
@@ -737,6 +801,7 @@ impl GraphEngine {
                     output_count: count,
                     is_stub: false,
                     blocked_by: None,
+                    timing: NodeTiming::default(),
                 });
                 continue;
             }
@@ -771,6 +836,7 @@ impl GraphEngine {
             .await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "executing node");
+            let timing = NodeTiming::dispatched_now(clock.ready_at_ms(&self.graph, node_id));
             let node_start = Instant::now();
 
             // Execute the cell, applying the graph's retry policy without
@@ -800,19 +866,8 @@ impl GraphEngine {
                     );
 
                     // For Activity nodes: record the output if a recorder is present.
-                    if is_activity
-                        && let Some(recorder) = &self.recorder
-                        && let Err(error) = recorder.lock().record(
-                            &graph_name,
-                            node_id,
-                            tick,
-                            output_signals.clone(),
-                        )
-                    {
-                        return Err(GraphError::NodeFailed {
-                            node_id: node_id.clone(),
-                            reason: format!("persist Activity checkpoint: {error}"),
-                        });
+                    if is_activity {
+                        self.record_activity(node_id, tick, &output_signals, timing)?;
                     }
 
                     self.emit_telemetry(
@@ -847,6 +902,7 @@ impl GraphEngine {
                         output_count: count,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
                 Err(e) => {
@@ -884,6 +940,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
             }
@@ -1133,6 +1190,8 @@ impl GraphEngine {
         let mut waiting: BTreeMap<usize, usize> = BTreeMap::new();
         let mut running: JoinSet<NodeRun> = JoinSet::new();
         let mut running_nodes: HashMap<tokio::task::Id, usize> = HashMap::new();
+        // When each running node became ready and was dispatched.
+        let mut timings: HashMap<usize, NodeTiming> = HashMap::new();
 
         loop {
             if !matches!(halt, Some(Halt::Cancelled))
@@ -1251,6 +1310,7 @@ impl GraphEngine {
                         output_count: count,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     queue.settle(pos);
                     continue;
@@ -1301,6 +1361,7 @@ impl GraphEngine {
                 }
                 let cell = self.registry.create(&node.cell_type, node.config.clone())?;
                 statuses.lock().insert(node.id.clone(), NodeStatus::Running);
+                timings.insert(pos, NodeTiming::dispatched_now(queue.ready_at_ms(pos)));
                 let task = running.spawn(run_node(NodeLaunch {
                     node_id: node.id.clone(),
                     cell_type: node.cell_type.clone(),
@@ -1344,7 +1405,7 @@ impl GraphEngine {
                 continue;
             };
             let node = queue.node(pos);
-            let run = match outcome {
+            let mut run = match outcome {
                 Ok(run) => run,
                 Err(error) => {
                     // A panicking cell fails its node, so its dependants are
@@ -1372,6 +1433,7 @@ impl GraphEngine {
                             output_count: 0,
                             is_stub: false,
                             blocked_by: None,
+                            timing: NodeTiming::default(),
                         },
                         cost_usd: 0.0,
                         outputs: Vec::new(),
@@ -1379,21 +1441,13 @@ impl GraphEngine {
                 }
             };
 
+            run.result.timing = timings.remove(&pos).unwrap_or_default();
             total_cost_usd += run.cost_usd;
             if run.result.status == NodeStatus::Complete {
                 // Persist Activity outputs so a future --resume-plan can
                 // substitute them instead of re-calling the provider.
-                if node.execution_class == ExecutionClass::Activity
-                    && let Some(recorder) = &self.recorder
-                    && let Err(error) =
-                        recorder
-                            .lock()
-                            .record(&graph_name, &node.id, tick, run.outputs.clone())
-                {
-                    return Err(GraphError::NodeFailed {
-                        node_id: node.id.clone(),
-                        reason: format!("persist Activity checkpoint: {error}"),
-                    });
+                if node.execution_class == ExecutionClass::Activity {
+                    self.record_activity(&node.id, tick, &run.outputs, run.result.timing)?;
                 }
                 outputs.insert(node.id.clone(), run.outputs);
             } else {
@@ -1567,8 +1621,14 @@ impl GraphEngine {
                 outputs.insert(node_id.clone(), signals);
             }
         }
+        let mut clock = SettleClock::start();
+        let mut previous: Option<&NodeId> = None;
 
         for node_id in &order {
+            // The previous node settled when the loop moved on from it.
+            if let Some(previous) = previous.replace(node_id) {
+                clock.settle(previous);
+            }
             let Some(node) = graph.get_node(node_id) else {
                 continue;
             };
@@ -1593,6 +1653,7 @@ impl GraphEngine {
                         output_count,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     continue;
                 }
@@ -1607,6 +1668,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     continue;
                 }
@@ -1621,6 +1683,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     continue;
                 }
@@ -1635,6 +1698,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     continue;
                 }
@@ -1654,6 +1718,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: false,
                         blocked_by: None,
+                        timing: NodeTiming::default(),
                     });
                     continue;
                 }
@@ -1675,6 +1740,7 @@ impl GraphEngine {
             let cell_is_stub = cell.is_stub();
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "resume: executing node");
+            let timing = NodeTiming::dispatched_now(clock.ready_at_ms(&graph, node_id));
             let node_start = Instant::now();
 
             let input_taint = input.clone();
@@ -1694,6 +1760,7 @@ impl GraphEngine {
                         output_count: count,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
                 Err(e) => {
@@ -1709,6 +1776,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
             }
@@ -1921,8 +1989,14 @@ impl GraphEngine {
                 statuses.insert(node_id.clone(), NodeStatus::Pending);
             }
         }
+        let mut clock = SettleClock::start();
+        let mut previous: Option<&NodeId> = None;
 
         for node_id in &order {
+            // The previous node settled when the loop moved on from it.
+            if let Some(previous) = previous.replace(node_id) {
+                clock.settle(previous);
+            }
             // Honour cancellation between nodes.
             if cancel.is_cancelled() {
                 info!(node_id = %node_id, "flow cancelled before node");
@@ -1972,6 +2046,7 @@ impl GraphEngine {
                             output_count: 0,
                             is_stub: false,
                             blocked_by: None,
+                            timing: NodeTiming::default(),
                         });
                         continue;
                     }
@@ -2025,6 +2100,7 @@ impl GraphEngine {
                     output_count: count,
                     is_stub: false,
                     blocked_by: None,
+                    timing: NodeTiming::default(),
                 });
                 continue;
             }
@@ -2057,6 +2133,7 @@ impl GraphEngine {
             .await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "flow: executing node");
+            let timing = NodeTiming::dispatched_now(clock.ready_at_ms(&self.graph, node_id));
             let node_start = Instant::now();
 
             let (execution, attempts) = execute_cell_with_retries(
@@ -2080,17 +2157,8 @@ impl GraphEngine {
                     // For Activity nodes: persist the output so a future
                     // --resume-plan can substitute it instead of re-calling
                     // the provider.
-                    if is_activity
-                        && let Some(recorder) = &self.recorder
-                        && let Err(error) =
-                            recorder
-                                .lock()
-                                .record(&graph_name, node_id, 0, output_signals.clone())
-                    {
-                        return Err(GraphError::NodeFailed {
-                            node_id: node_id.clone(),
-                            reason: format!("persist Activity checkpoint: {error}"),
-                        });
+                    if is_activity {
+                        self.record_activity(node_id, 0, &output_signals, timing)?;
                     }
 
                     self.emit_telemetry(
@@ -2126,6 +2194,7 @@ impl GraphEngine {
                         output_count: count,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
                 Err(e) => {
@@ -2160,6 +2229,7 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: cell_is_stub,
                         blocked_by: None,
+                        timing,
                     });
                 }
             }
@@ -2372,6 +2442,40 @@ impl GraphEngine {
     }
 }
 
+// ─── Node timing ────────────────────────────────────────────────────────────
+
+/// When the nodes of a sequential run settled, so that a node's ready time
+/// is known when the loop reaches it: the latest of its predecessors' settle
+/// times, or the run's start for a node with none.
+struct SettleClock {
+    started_at_ms: u64,
+    settled_at_ms: HashMap<NodeId, u64>,
+}
+
+impl SettleClock {
+    fn start() -> Self {
+        Self {
+            started_at_ms: crate::control::now_ms(),
+            settled_at_ms: HashMap::new(),
+        }
+    }
+
+    /// Record that `node_id` settled now.
+    fn settle(&mut self, node_id: &str) {
+        self.settled_at_ms
+            .insert(node_id.to_string(), crate::control::now_ms());
+    }
+
+    /// When every node that `node_id` depends on had settled.
+    fn ready_at_ms(&self, graph: &Graph, node_id: &str) -> u64 {
+        crate::topo::dependencies(graph, node_id)
+            .iter()
+            .filter_map(|dependency| self.settled_at_ms.get(dependency).copied())
+            .max()
+            .unwrap_or(self.started_at_ms)
+    }
+}
+
 // ─── Ready-queue scheduling ─────────────────────────────────────────────────
 
 /// Settings that differ between the bounded-parallel entry points.
@@ -2423,6 +2527,9 @@ struct ReadyQueue<'g> {
     unsettled_inputs: Vec<usize>,
     /// Nodes whose predecessors have all settled and that are not decided yet.
     ready: BTreeSet<usize>,
+    /// When each node became ready (Unix ms): when the run started for a
+    /// root, else when its last predecessor settled. Zero until then.
+    ready_at_ms: Vec<u64>,
 }
 
 impl<'g> ReadyQueue<'g> {
@@ -2450,15 +2557,21 @@ impl<'g> ReadyQueue<'g> {
                     .count()
             })
             .collect();
-        let ready = (0..order.len())
+        let ready: BTreeSet<usize> = (0..order.len())
             .filter(|&pos| unsettled_inputs[pos] == 0)
             .collect();
+        let started_at_ms = crate::control::now_ms();
+        let mut ready_at_ms = vec![0; order.len()];
+        for &pos in &ready {
+            ready_at_ms[pos] = started_at_ms;
+        }
         Ok(Self {
             graph,
             order,
             position,
             unsettled_inputs,
             ready,
+            ready_at_ms,
         })
     }
 
@@ -2483,8 +2596,14 @@ impl<'g> ReadyQueue<'g> {
             self.unsettled_inputs[target] -= 1;
             if self.unsettled_inputs[target] == 0 {
                 self.ready.insert(target);
+                self.ready_at_ms[target] = crate::control::now_ms();
             }
         }
+    }
+
+    /// When the node at `pos` became ready (Unix ms).
+    fn ready_at_ms(&self, pos: usize) -> u64 {
+        self.ready_at_ms[pos]
     }
 
     /// Topological position of `node_id`, used to order results.
@@ -2633,6 +2752,7 @@ async fn run_node(launch: NodeLaunch) -> NodeRun {
             output_count: outputs.len(),
             is_stub,
             blocked_by: None,
+            timing: NodeTiming::default(),
         },
         cost_usd,
         outputs,
@@ -2668,6 +2788,7 @@ fn skipped_result(node: &Node, status: NodeStatus, reason: String) -> NodeResult
         output_count: 0,
         is_stub: false,
         blocked_by: None,
+        timing: NodeTiming::default(),
     }
 }
 
@@ -6406,6 +6527,123 @@ to = "fixer"
                 "fixer ran beside broken: {:?}",
                 log.events()
             );
+        }
+    }
+
+    // ─── gap-3006e9: ready and dispatch times ───────────────────────────────
+
+    /// gap-3006e9: every node that runs records when it became ready and when
+    /// it was dispatched, in its result and in the Activity log, so the time
+    /// it waited for a slot can be measured. Three 100 ms roots compete for
+    /// the slots, and `after-first` becomes ready only once `first` has
+    /// finished. Covers the sequential loops (one slot) and the ready queue
+    /// (two slots), through `execute` and through `start`. Real time: the
+    /// stamps are wall-clock times.
+    #[tokio::test]
+    async fn tasks_record_when_they_became_ready_and_were_dispatched() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "timing"
+
+[[nodes]]
+id = "first"
+cell_type = "sleep"
+config = { label = "first", delay_ms = 100 }
+
+[[nodes]]
+id = "second"
+cell_type = "sleep"
+config = { label = "second", delay_ms = 100 }
+
+[[nodes]]
+id = "third"
+cell_type = "sleep"
+config = { label = "third", delay_ms = 100 }
+
+[[nodes]]
+id = "after-first"
+cell_type = "sleep"
+config = { label = "after-first", delay_ms = 10 }
+
+[[edges]]
+from = "first"
+to = "after-first"
+"#,
+        )
+        .unwrap();
+
+        for max_concurrent_nodes in [1_usize, 2] {
+            for through_start in [false, true] {
+                let case = format!("{max_concurrent_nodes} slots, start {through_start}");
+                let mut graph = graph.clone();
+                graph.policy.max_concurrent_nodes = max_concurrent_nodes;
+                let dir = tempfile::tempdir().unwrap();
+                let activities = dir.path().join("activities.jsonl");
+                let log = Arc::new(SleepLog::default());
+                let engine = GraphEngine::new(graph, sleep_registry(&log))
+                    .with_recorder(ActivityRecorder::create("timing", &activities).unwrap());
+                let output = if through_start {
+                    engine
+                        .start(CellContext::new())
+                        .await_completion()
+                        .await
+                        .expect("flow output")
+                } else {
+                    engine.execute(&CellContext::new()).await.unwrap()
+                };
+                assert!(output.success, "{case}");
+
+                let timing_of = |node_id: &str| {
+                    output
+                        .node_results
+                        .iter()
+                        .find(|result| result.node_id == node_id)
+                        .map(|result| result.timing)
+                        .unwrap_or_else(|| panic!("{case}: no result for {node_id}"))
+                };
+                for node_id in ["first", "second", "third", "after-first"] {
+                    let node = timing_of(node_id);
+                    assert!(node.ready_at_ms.is_some(), "{case}: {node_id} {node:?}");
+                    assert!(
+                        node.dispatched_at_ms >= node.ready_at_ms,
+                        "{case}: {node_id} {node:?}"
+                    );
+                }
+
+                // With every slot taken, the last root to start waited for
+                // one 100 ms root per slot ahead of it.
+                let last_root_wait = ["first", "second", "third"]
+                    .into_iter()
+                    .filter_map(|node_id| timing_of(node_id).slot_wait_ms())
+                    .max()
+                    .unwrap_or_default();
+                let expected_wait = 100 * (3 - max_concurrent_nodes as u64);
+                assert!(
+                    last_root_wait + 10 >= expected_wait,
+                    "{case}: the last root waited {last_root_wait} ms"
+                );
+
+                // `after-first` became ready only once `first` had finished.
+                let (first, after_first) = (timing_of("first"), timing_of("after-first"));
+                assert!(
+                    after_first.ready_at_ms >= first.dispatched_at_ms.map(|at| at + 90),
+                    "{case}: {first:?} {after_first:?}"
+                );
+
+                // The Activity log records the same times.
+                let recorded = std::fs::read_to_string(&activities).unwrap();
+                let entries: Vec<crate::replay::RecordEntry> = recorded
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert_eq!(entries.len(), 4, "{case}");
+                for entry in entries {
+                    let expected = timing_of(&entry.node_id);
+                    assert_eq!(entry.ready_at_ms, expected.ready_at_ms, "{case}");
+                    assert_eq!(entry.dispatched_at_ms, expected.dispatched_at_ms, "{case}");
+                }
+            }
         }
     }
 }

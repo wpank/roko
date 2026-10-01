@@ -2,16 +2,16 @@
 id = "spec-a0403b"
 kind = "spec"
 title = "Graph Engine Watchdog Integration"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p0"
 size = "L"
 goal = "core"
 subsystem = ["roko-cli"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "207f91da2"
 source = "tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
 discovered_from = "audit:tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/runner/conductor_adapter.rs::ConductorRing", "crates/roko-cli/src/runner/types.rs::RunConfig::from_roko_config", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter", "crates/roko-graph/src/cells/task_executor.rs::GraphTaskEvent", "crates/roko-core/src/config/schema.rs::ConductorConfig"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-ebd656", "gap-fab31c"], 
 
 [[verify]]
 command = "grep -rqw 'fn graph_watchdog_intervenes_on_stalled_task' crates/roko-cli/ && cargo test -p roko-cli graph_watchdog_intervenes_on_stalled_task"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in dd192cb82. Part A: a per-attempt stall watchdog on both dispatch paths warns at silence_timeout_secs and cancels the attempt at task_stall_secs, which retries under max_retries (silence counts only after the first live event and pauses while a tool runs; both 0 disables it). Part B: graph_task_event_to_signal feeds a per-attempt conductor ring and run_graph_plan runs a 5 s ticker; Restart cancels and retries, Fail interrupts the run with an error naming the watcher. Batch 16d gate on dd58c3db2 (MAIN 207f91da2 has the same code), after the coordinator's scope fix for plan_verify (cfed1c6f2): cargo check --workspace --tests, nightly fmt, clippy -p roko-cli -p roko-core -p roko-execution --keep-going -D warnings clean; lib tests pass: roko-cli 3236 (two known load flakes, turn_policy's 1 s test and gate_rows' writer wait), roko-core 1953, roko-execution 245; integration: --test plan_branch_integration 2 passed (C3 kill-and-resume, C4 whole-plan gate), --test merge_proof 4, --test runner_integration 6. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -114,6 +119,7 @@ Two parts. Part A is the P0 safety net and satisfies the verify command. Part B 
 - Nudge and ForceAdvance, the TUI conductor panel and an HTTP `/conductor` route are out of scope: `gap-ebd656` and later items.
 - Do not reintroduce `RunnerEvent` for this. Graph runs surface state through StateHub `DashboardEvent`s.
 - Size L overall. Part A alone is about M.
+- Implemented on `work/spec-a0403b` at `4e4572802` (part A `21f83c618`, part B `4e4572802`); cargo verification deferred to the batch check. Locally, `graph_watchdog_intervenes_on_stalled_task` and the `graph_task_dispatch::`, `graph_execution::` and `runner::conductor_adapter` lib suites pass, and clippy `-D warnings` is clean. Silence counts only after an attempt's first live event (the Codex CLI reports nothing until it finishes) and pauses while a tool call runs, so a long `cargo test` is not killed. With both thresholds 0 there is no watchdog, conductor or ticker. Part B feeds only live messages and tool calls, so in practice only the ghost-turn watcher can fire; cost and gate signals arrive after the provider call and are not evaluated. Follow-ups: bug-739dcc (Claude CLI has no cancel path), bug-aa2044 (stalled attempts record no cost).
 
 ## Original notes
 

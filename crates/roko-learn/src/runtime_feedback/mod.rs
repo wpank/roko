@@ -67,7 +67,6 @@ use crate::episode_logger::{Episode, EpisodeLogger};
 use crate::latency::LatencyRegistry;
 use crate::local_reward::LocalRewardFunction;
 use crate::model_router::RoutingContext;
-use crate::pattern_discovery::{EpisodeView, PatternMiner};
 use crate::playbook::PlaybookStore;
 use crate::playbook_rules::PlaybookRules;
 use crate::post_gate_reflection::{
@@ -99,28 +98,6 @@ use persistence::{
 use routing::{compute_reward_with_latency, sync_experiment_winner_artifact};
 
 type EpisodeCompletionHook = Arc<dyn Fn(Episode) + Send + Sync>;
-
-// ── EpisodeView adapter ───────────────────────────────────────────────
-
-/// Thin wrapper that materializes the action slice required by [`EpisodeView`]
-/// from an [`Episode`]'s gate verdicts.
-struct EpisodeActions {
-    actions: Vec<String>,
-}
-
-impl EpisodeActions {
-    fn from_episode(ep: &Episode) -> Self {
-        Self {
-            actions: ep.gate_verdicts.iter().map(|v| v.gate.clone()).collect(),
-        }
-    }
-}
-
-impl EpisodeView for EpisodeActions {
-    fn actions(&self) -> &[String] {
-        &self.actions
-    }
-}
 
 fn affect_state_path(learn_root: &Path) -> PathBuf {
     let root = learn_root.parent().unwrap_or(learn_root);
@@ -441,7 +418,6 @@ pub struct LearningRuntime {
     pub(crate) playbook_rules: PlaybookRules,
     regression: RegressionConfig,
     task_metrics: AsyncMutex<Vec<TaskMetric>>,
-    pattern_miner: parking_lot::Mutex<PatternMiner>,
     pub(crate) latency_registry: LatencyRegistry,
     cascade_router: CascadeRouter,
     context_pack_cache: ContextPackCache,
@@ -483,7 +459,6 @@ impl LearningRuntime {
         let playbook_rules = PlaybookRules::open(&paths.playbook_rules_toml)?;
         let task_metrics = load_task_metrics(&paths.task_metrics_jsonl).await?;
 
-        let pattern_miner = parking_lot::Mutex::new(PatternMiner::new(3, 0.5));
         let latency_registry = LatencyRegistry::load_or_new(&paths.latency_stats_json);
         // Save what the WAL holds but the snapshots don't, before loading them.
         recover_wal(&paths);
@@ -517,7 +492,6 @@ impl LearningRuntime {
             playbook_rules,
             regression,
             task_metrics: AsyncMutex::new(task_metrics),
-            pattern_miner,
             latency_registry,
             cascade_router,
             context_pack_cache,
@@ -559,7 +533,6 @@ impl LearningRuntime {
         let playbook_rules = PlaybookRules::open(&paths.playbook_rules_toml)?;
         let task_metrics = load_task_metrics(&paths.task_metrics_jsonl).await?;
 
-        let pattern_miner = parking_lot::Mutex::new(PatternMiner::new(3, 0.5));
         let latency_registry = LatencyRegistry::load_or_new(&paths.latency_stats_json);
         // Save what the WAL holds but the snapshots don't, before loading them.
         recover_wal(&paths);
@@ -590,7 +563,6 @@ impl LearningRuntime {
             playbook_rules,
             regression,
             task_metrics: AsyncMutex::new(task_metrics),
-            pattern_miner,
             latency_registry,
             cascade_router,
             context_pack_cache,
@@ -700,11 +672,6 @@ impl LearningRuntime {
     #[must_use]
     pub const fn latency_registry(&self) -> &LatencyRegistry {
         &self.latency_registry
-    }
-    /// Borrow pattern miner (behind `parking_lot::Mutex` for `&mut` access).
-    #[must_use]
-    pub const fn pattern_miner(&self) -> &parking_lot::Mutex<PatternMiner> {
-        &self.pattern_miner
     }
     /// Borrow cascade router.
     #[must_use]
@@ -1520,16 +1487,6 @@ impl LearningRuntime {
 
         if !skip_only && self.update_frequency.distiller_due(episode_count) {
             self.append_cfactor_snapshot().await?;
-        }
-
-        // Pattern mining
-        let actions = EpisodeActions::from_episode(&input.episode);
-        if !skip_only
-            && self.update_frequency.pattern_discovery_due(episode_count)
-            && !actions.actions.is_empty()
-        {
-            self.pattern_miner.lock().ingest_episode(&actions);
-            update.patterns_ingested = true;
         }
 
         // Cascade router observation

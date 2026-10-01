@@ -88,7 +88,7 @@ caller of `build_generation_prompt`, and bug-a5cd6b reports that `roko prd plan`
   per 2,000 tokens of another quarter, never below the old 8,000 chars and 5 files.
 - Behaviour changes: each `plan generate` or `roko do` call makes one plan (slug from the file stem or the prompt); the
   planner is read-only and roko writes the validated plan; `plan regenerate` writes only a validated plan, so it has
-  nothing to restore, and no longer runs `validate_modern_fields` afterwards (that check wants a `model_hint`, which
-  generated plans never carry); planning env comes from `[agent] env`, not the legacy gateway lines.
+  nothing to restore, and no longer runs `validate_modern_fields` afterwards (that check wanted a `model_hint`, which
+  generated plans never carry, until bug-a5cd6b); planning env comes from `[agent] env`, not the legacy gateway lines.
 - Not done: `DefaultPlanGenerator` is untouched (find-84bfa8; gap-9ca898 edits it in batch 20), and
   `plan generate --from-backlog` still builds its own prompt (`build_backlog_generation_prompt`).

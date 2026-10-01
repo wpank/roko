@@ -41,6 +41,14 @@ pub enum EvalGenerationError {
         /// Human-readable explanation of the rejection.
         reason: String,
     },
+    /// A rendered evaluation cannot fail: it has no `#[test]` function, or one
+    /// whose body is empty, comments-only, tautological or a placeholder macro.
+    VacuousTest {
+        /// The template name that failed.
+        template_name: String,
+        /// Human-readable explanation of the rejection.
+        reason: String,
+    },
 }
 
 impl fmt::Display for EvalGenerationError {
@@ -59,6 +67,15 @@ impl fmt::Display for EvalGenerationError {
                 write!(
                     f,
                     "property template '{template_name}' has vacuous body: {reason}"
+                )
+            }
+            Self::VacuousTest {
+                template_name,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "template '{template_name}' renders a test that cannot fail: {reason}"
                 )
             }
         }
@@ -198,22 +215,55 @@ impl EvalGenerator {
         crate_name: &str,
         files: &[String],
     ) -> Vec<Evaluation> {
-        let gate_types: Vec<String> = self
-            .templates
-            .iter()
-            .map(|t| t.gate_type.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-
-        gate_types
+        self.gate_types()
             .iter()
             .flat_map(|gate_type| self.generate(task_title, gate_type, crate_name, files))
             .collect()
     }
 
+    /// [`Self::generate_checked`] for every gate type the templates cover: the
+    /// evaluations that pass validation, and the error of each gate type
+    /// whose templates did not.
+    #[must_use]
+    pub fn generate_checked_all(
+        &self,
+        task_title: &str,
+        crate_name: &str,
+        files: &[String],
+        property_body: Option<&str>,
+    ) -> (Vec<Evaluation>, Vec<EvalGenerationError>) {
+        let mut evals = Vec::new();
+        let mut rejected = Vec::new();
+        for gate_type in self.gate_types() {
+            let request = EvalGenerationRequest {
+                task_title: task_title.to_string(),
+                gate_type,
+                crate_name: crate_name.to_string(),
+                files: files.to_vec(),
+                property_body: property_body.map(str::to_string),
+            };
+            match self.generate_checked(&request) {
+                Ok(generated) => evals.extend(generated),
+                Err(error) => rejected.push(error),
+            }
+        }
+        (evals, rejected)
+    }
+
+    /// The distinct gate types the templates target, sorted.
+    fn gate_types(&self) -> Vec<String> {
+        self.templates
+            .iter()
+            .map(|t| t.gate_type.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Generate evaluations with full validation. `PropertyBased` templates
-    /// require a non-empty, non-vacuous `property_body` in the request.
+    /// require a non-empty, non-vacuous `property_body` in the request, and
+    /// every rendered evaluation must hold a `#[test]` function that can
+    /// fail.
     ///
     /// Returns an error on the first template that fails validation rather
     /// than silently emitting a vacuous test.
@@ -262,6 +312,12 @@ impl EvalGenerator {
                         reason,
                     });
                 }
+                if let Some(reason) = detect_vacuous_test(&test_source) {
+                    return Err(EvalGenerationError::VacuousTest {
+                        template_name: template.name.clone(),
+                        reason,
+                    });
+                }
 
                 evals.push(Evaluation {
                     name: format!(
@@ -275,12 +331,19 @@ impl EvalGenerator {
                     expect_pre_failure: true,
                 });
             } else {
-                // Non-property templates pass through unchanged.
+                // Non-property templates need no body, but must still render
+                // a test that can fail.
                 let test_source = template
                     .template_body
                     .replace("{task_title}", &request.task_title)
                     .replace("{crate_name}", &request.crate_name)
                     .replace("{files}", &files_str);
+                if let Some(reason) = detect_vacuous_test(&test_source) {
+                    return Err(EvalGenerationError::VacuousTest {
+                        template_name: template.name.clone(),
+                        reason,
+                    });
+                }
 
                 evals.push(Evaluation {
                     name: format!(
@@ -397,6 +460,50 @@ fn detect_vacuous_rendered(source: &str) -> Option<String> {
     None
 }
 
+/// Detect a rendered evaluation that cannot fail: one with no `#[test]`
+/// function, or with a `#[test]` function whose body is vacuous (see
+/// [`detect_vacuous_body`]).
+fn detect_vacuous_test(source: &str) -> Option<String> {
+    let bodies = test_fn_bodies(source);
+    if bodies.is_empty() {
+        return Some("rendered source has no #[test] function".into());
+    }
+    bodies
+        .iter()
+        .map(String::as_str)
+        .find_map(detect_vacuous_body)
+        .map(|reason| format!("a #[test] function's {reason}"))
+}
+
+/// The bodies of the `#[test]` functions in `source`, comments stripped.
+fn test_fn_bodies(source: &str) -> Vec<String> {
+    let stripped = strip_comments(source);
+    let mut bodies = Vec::new();
+    let mut rest = stripped.as_str();
+    while let Some(at) = rest.find("#[test]") {
+        rest = &rest[at + "#[test]".len()..];
+        let Some(open) = rest.find('{') else {
+            break;
+        };
+        let after = &rest[open + 1..];
+        let mut depth = 1_usize;
+        let close = after.char_indices().find_map(|(index, c)| {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(index)
+        });
+        let Some(close) = close else {
+            break;
+        };
+        bodies.push(after[..close].to_string());
+        rest = &after[close + 1..];
+    }
+    bodies
+}
+
 /// Sanitize a task title into a valid Rust identifier fragment.
 fn sanitize(title: &str) -> String {
     title
@@ -413,59 +520,14 @@ fn sanitize(title: &str) -> String {
         .to_string()
 }
 
-/// Built-in evaluation templates for the standard gate types.
+/// Built-in evaluation templates.
+///
+/// Only the property template: it renders the caller's validated assertion
+/// body. Compile, clippy and test-suite checks belong to their gates; the
+/// empty-bodied tests that once stood in for them proved nothing
+/// (bug-017c2d).
 fn builtin_templates() -> Vec<EvalTemplate> {
     vec![
-        EvalTemplate {
-            name: "compile-check".into(),
-            gate_type: "compile".into(),
-            strategy: EvalStrategy::ExampleBased,
-            expected_behavior: "Code compiles with no errors after implementation".into(),
-            template_body: concat!(
-                "// Generated eval: {task_title}\n",
-                "// Verify: `cargo check -p {crate_name}` succeeds\n",
-                "// Files: {files}\n",
-                "#[test]\n",
-                "fn gen_compiles() {\n",
-                "    // This test validates that the crate compiles.\n",
-                "    // The compile gate itself handles verification;\n",
-                "    // this is a placeholder for the artifact store.\n",
-                "}\n",
-            )
-            .into(),
-        },
-        EvalTemplate {
-            name: "clippy-clean".into(),
-            gate_type: "clippy".into(),
-            strategy: EvalStrategy::ExampleBased,
-            expected_behavior: "No new clippy warnings introduced".into(),
-            template_body: concat!(
-                "// Generated eval: {task_title}\n",
-                "// Verify: `cargo clippy -p {crate_name}` produces no warnings\n",
-                "// Files: {files}\n",
-                "#[test]\n",
-                "fn gen_clippy_clean() {\n",
-                "    // Clippy cleanliness verified by ClippyGate.\n",
-                "}\n",
-            )
-            .into(),
-        },
-        EvalTemplate {
-            name: "test-pass".into(),
-            gate_type: "test".into(),
-            strategy: EvalStrategy::ExampleBased,
-            expected_behavior: "All existing tests continue to pass".into(),
-            template_body: concat!(
-                "// Generated eval: {task_title}\n",
-                "// Verify: `cargo test -p {crate_name}` passes\n",
-                "// Files: {files}\n",
-                "#[test]\n",
-                "fn gen_tests_pass() {\n",
-                "    // Test suite integrity verified by TestGate.\n",
-                "}\n",
-            )
-            .into(),
-        },
         EvalTemplate {
             name: "property-invariant".into(),
             gate_type: "test".into(),
@@ -489,6 +551,34 @@ fn builtin_templates() -> Vec<EvalTemplate> {
 mod tests {
     use super::*;
 
+    /// A non-property template whose test asserts something.
+    fn asserting_template(name: &str, gate_type: &str) -> EvalTemplate {
+        EvalTemplate {
+            name: name.into(),
+            gate_type: gate_type.into(),
+            strategy: EvalStrategy::ExampleBased,
+            expected_behavior: "The task's file exists".into(),
+            template_body: concat!(
+                "// Generated eval: {task_title} ({crate_name})\n",
+                "#[test]\n",
+                "fn gen_file_exists() {\n",
+                "    assert!(std::path::Path::new(\"{files}\").exists());\n",
+                "}\n",
+            )
+            .into(),
+        }
+    }
+
+    fn request(gate_type: &str, property_body: Option<&str>) -> EvalGenerationRequest {
+        EvalGenerationRequest {
+            task_title: "Task".into(),
+            gate_type: gate_type.into(),
+            crate_name: "roko-core".into(),
+            files: vec![],
+            property_body: property_body.map(str::to_string),
+        }
+    }
+
     #[test]
     fn default_generator_has_builtin_templates() {
         let generator = EvalGenerator::new();
@@ -497,7 +587,8 @@ mod tests {
 
     #[test]
     fn generate_for_compile_gate() {
-        let generator = EvalGenerator::new();
+        let template = asserting_template("compile-check", "compile");
+        let generator = EvalGenerator::with_templates(vec![template]);
         let evals = generator.generate("Add Demurrage trait", "compile", "roko-core", &[]);
         assert_eq!(evals.len(), 1);
         assert!(evals[0].name.starts_with("gen_compile_check"));
@@ -507,12 +598,15 @@ mod tests {
 
     #[test]
     fn generate_all_covers_multiple_gate_types() {
-        let generator = EvalGenerator::new();
+        let mut templates = builtin_templates();
+        templates.push(asserting_template("compile-check", "compile"));
+        templates.push(asserting_template("test-file", "test"));
+        let generator = EvalGenerator::with_templates(templates);
         let evals =
             generator.generate_all("Wire foraging", "roko-compose", &["foraging.rs".into()]);
-        // Should have compile (1) + clippy (1) + test (1, non-property) = 3.
-        // The property template is excluded by the compatibility filter.
-        assert!(evals.len() >= 3, "got {} evals", evals.len());
+        // One per non-property template: the property template is excluded by
+        // the compatibility filter.
+        assert_eq!(evals.len(), 2, "got {} evals", evals.len());
         let gate_types: Vec<&str> = evals.iter().map(|e| e.gate_type.as_str()).collect();
         assert!(gate_types.contains(&"compile"));
         assert!(gate_types.contains(&"test"));
@@ -522,9 +616,8 @@ mod tests {
     fn generate_skips_property_templates() {
         let generator = EvalGenerator::new();
         let evals = generator.generate("Task", "test", "roko-core", &[]);
-        // Only the ExampleBased "test-pass" template, not the PropertyBased one.
-        assert_eq!(evals.len(), 1);
-        assert_eq!(evals[0].strategy, EvalStrategy::ExampleBased);
+        // The only built-in "test" template is property-based.
+        assert!(evals.is_empty(), "{evals:?}");
     }
 
     #[test]
@@ -560,9 +653,8 @@ mod tests {
             property_body: Some("assert!(value >= 0 && value < max);".into()),
         };
         let evals = generator.generate_checked(&request).unwrap();
-        // Should have both the ExampleBased test-pass and the PropertyBased
-        // property-invariant templates.
-        assert_eq!(evals.len(), 2);
+        // The property-invariant template, the only built-in "test" one.
+        assert_eq!(evals.len(), 1);
         let property = evals
             .iter()
             .find(|e| e.strategy == EvalStrategy::PropertyBased)
@@ -681,18 +773,96 @@ mod tests {
 
     #[test]
     fn generate_checked_non_property_gate_ignores_body() {
-        // When targeting compile gate, the property_body is not needed.
-        let generator = EvalGenerator::new();
-        let request = EvalGenerationRequest {
-            task_title: "Task".into(),
-            gate_type: "compile".into(),
-            crate_name: "roko-core".into(),
-            files: vec![],
-            property_body: None,
-        };
-        let evals = generator.generate_checked(&request).unwrap();
+        // A non-property template needs no property_body.
+        let template = asserting_template("compile-check", "compile");
+        let generator = EvalGenerator::with_templates(vec![template]);
+        let evals = generator
+            .generate_checked(&request("compile", None))
+            .unwrap();
         assert_eq!(evals.len(), 1);
         assert_eq!(evals[0].strategy, EvalStrategy::ExampleBased);
+    }
+
+    /// bug-017c2d: no built-in template renders a test without a body, so
+    /// generation without a property body writes nothing.
+    #[test]
+    fn builtin_templates_render_no_placeholder_tests() {
+        let (evals, rejected) =
+            EvalGenerator::new().generate_checked_all("Task", "roko-core", &[], None);
+        assert!(evals.is_empty(), "{evals:?}");
+        assert!(
+            matches!(
+                rejected.as_slice(),
+                [EvalGenerationError::MissingPropertyBody { .. }]
+            ),
+            "{rejected:?}"
+        );
+        for template in builtin_templates() {
+            assert!(
+                template.template_body.contains("{property_body}"),
+                "{}",
+                template.name
+            );
+        }
+    }
+
+    /// bug-017c2d: a checked evaluation must hold a `#[test]` that can fail.
+    #[test]
+    fn generate_checked_rejects_a_test_that_cannot_fail() {
+        let empty = EvalTemplate {
+            name: "empty".into(),
+            gate_type: "compile".into(),
+            strategy: EvalStrategy::ExampleBased,
+            expected_behavior: "Nothing".into(),
+            template_body: "#[test]\nfn gen_empty() {\n    // verified elsewhere\n}\n".into(),
+        };
+        let no_test = EvalTemplate {
+            name: "no-test".into(),
+            template_body: "// Generated eval: {task_title}\n".into(),
+            ..empty.clone()
+        };
+        for template in [empty, no_test] {
+            let generator = EvalGenerator::with_templates(vec![template]);
+            let err = generator
+                .generate_checked(&request("compile", None))
+                .unwrap_err();
+            assert!(
+                matches!(err, EvalGenerationError::VacuousTest { .. }),
+                "expected VacuousTest, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_checked_all_returns_valid_evals_and_rejections() {
+        let mut templates = builtin_templates();
+        templates.push(asserting_template("compile-check", "compile"));
+        let generator = EvalGenerator::with_templates(templates);
+
+        let (evals, rejected) =
+            generator.generate_checked_all("Task", "roko-core", &["lib.rs".into()], None);
+        assert_eq!(evals.len(), 1);
+        assert_eq!(evals[0].gate_type, "compile");
+        assert_eq!(rejected.len(), 1, "the property template has no body");
+
+        let body = Some("assert!(value >= 0);");
+        let (evals, rejected) = generator.generate_checked_all("Task", "roko-core", &[], body);
+        assert_eq!(evals.len(), 2);
+        assert!(rejected.is_empty(), "{rejected:?}");
+    }
+
+    #[test]
+    fn test_fn_bodies_skips_comments_and_keeps_nested_braces() {
+        let src = concat!(
+            "#[test]\nfn a() {\n    if x { y(); }\n}\n",
+            "// #[test] fn c() {}\n",
+            "#[test]\nfn b() {}\n",
+        );
+        let bodies = test_fn_bodies(src);
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert!(bodies[0].contains("if x { y(); }"));
+        assert!(bodies[1].trim().is_empty());
+        assert!(detect_vacuous_test(src).is_some());
     }
 
     // ─── vacuity detection unit tests ───────────────────────────────
@@ -778,5 +948,12 @@ mod tests {
         };
         assert!(vacuous.to_string().contains("vacuous"));
         assert!(vacuous.to_string().contains("todo!()"));
+
+        let cannot_fail = EvalGenerationError::VacuousTest {
+            template_name: "empty".into(),
+            reason: "no #[test]".into(),
+        };
+        assert!(cannot_fail.to_string().contains("cannot fail"));
+        assert!(cannot_fail.to_string().contains("empty"));
     }
 }

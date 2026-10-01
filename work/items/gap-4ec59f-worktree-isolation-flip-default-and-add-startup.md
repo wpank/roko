@@ -248,6 +248,9 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
     `worktree_per_task_follows_the_flag_then_the_runner_config`.
   - Step 4 (results reaching the user's checkout) is waiting on a decision: the C3/C4 and proof-case-2 canaries
     assert that the operator's checkout never changes.
+- 2026-10-01 (wk-tiers): step 6, part 1: `worktree_startup_repair_clears_a_stale_index_lock` (plan_runner tests) runs
+  `repair_worktree_state` on a repository with a 2-minute-old `.git/index.lock` and checks the lock is cleared. This
+  covers step 1's repair. Cargo verification deferred to the batch check.
 
 ## Original notes
 

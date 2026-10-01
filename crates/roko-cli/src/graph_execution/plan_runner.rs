@@ -3575,6 +3575,57 @@ mod tests {
 
     /// bug-8208a6: a command `roko plan cancel` writes to control.json reaches
     /// the run's command channel, as a TUI command would, and is consumed.
+    /// gap-4ec59f: before the first dispatch, a worktree run clears what a
+    /// crashed run left behind, here a stale `index.lock`.
+    #[tokio::test]
+    async fn worktree_startup_repair_clears_a_stale_index_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = std::fs::canonicalize(dir.path()).expect("canonical repo");
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let lock = repo.join(".git/index.lock");
+        std::fs::File::create(&lock)
+            .expect("create a lock")
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+            .expect("age the lock");
+        let manager = crate::orchestrator::worktree::WorktreeManager::new(
+            crate::orchestrator::worktree::WorktreeConfig {
+                repo_root: repo.clone(),
+                base_branch: "HEAD".to_string(),
+                worktrees_root: repo.join(".roko").join("worktrees"),
+                max_live: None,
+                idle_ttl: std::time::Duration::from_secs(3600),
+            },
+        );
+
+        repair_worktree_state(&manager).await;
+
+        assert!(!lock.exists(), "the stale index.lock was cleared");
+    }
+
     #[test]
     fn a_control_file_command_reaches_the_run() {
         let state_dir = tempfile::tempdir().expect("tempdir");

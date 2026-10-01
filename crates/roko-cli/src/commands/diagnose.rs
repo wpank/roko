@@ -23,6 +23,7 @@ use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRec
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
+use roko_learn::telemetry::CostSource;
 use roko_runtime::{
     DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
 };
@@ -282,6 +283,10 @@ pub struct AttemptInfo {
     pub success: bool,
     pub duration_ms: u64,
     pub cost_usd: f64,
+    /// Where the usage behind `cost_usd` came from: `estimated` for usage the
+    /// attempt streamed before it was cut off, which no provider reported
+    /// (gap-288e38); `unknown` for a row written before the field.
+    pub cost_source: CostSource,
     /// The attempt timed out: its failure reason says so, or one of its
     /// verify steps is recorded as a timeout.
     pub timed_out: bool,
@@ -772,6 +777,7 @@ fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
                 success: record.success,
                 duration_ms: record.duration_ms,
                 cost_usd: record.cost_usd,
+                cost_source: record.cost_source,
                 timed_out: step_timeout.is_some()
                     || failure_reason.as_deref().is_some_and(mentions_timeout),
                 failure_reason,
@@ -2193,6 +2199,7 @@ title = "Tidy the changelog"
             duration_ms: 600_500,
             success,
             session_id: String::new(),
+            cost_source: CostSource::CliUsage,
         }
     }
 

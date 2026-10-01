@@ -41,6 +41,9 @@ pub struct SessionStatus {
     pub cfactor: Option<CFactor>,
     /// Total recorded cost in USD.
     pub total_cost_usd: Option<f64>,
+    /// The part of `total_cost_usd` priced from estimated usage, which no
+    /// provider reported (gap-288e38).
+    pub estimated_cost_usd: Option<f64>,
     /// Recorded cost for the current UTC day in USD.
     pub today_cost_usd: Option<f64>,
     /// Remaining ETA minutes from the critical-path computation.
@@ -71,6 +74,7 @@ impl SessionStatus {
             last_episode_passed: None,
             cfactor: None,
             total_cost_usd: None,
+            estimated_cost_usd: None,
             today_cost_usd: None,
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -120,6 +124,9 @@ impl SessionStatus {
         }
         if let Some(cost) = self.total_cost_usd {
             lines.push(format!("total cost: ${:.4}", cost.max(0.0)));
+        }
+        if let Some(cost) = self.estimated_cost_usd.filter(|cost| *cost > 0.0) {
+            lines.push(format!("  of which estimated: ${cost:.4}"));
         }
         if let Some(cost) = self.today_cost_usd {
             lines.push(format!("today cost: ${:.4}", cost.max(0.0)));
@@ -191,6 +198,7 @@ impl SessionStatus {
             "last_episode_passed": self.last_episode_passed,
             "cfactor": &self.cfactor,
             "total_cost_usd": self.total_cost_usd,
+            "estimated_cost_usd": self.estimated_cost_usd,
             "today_cost_usd": self.today_cost_usd,
             "critical_path_eta_minutes": self.critical_path_eta_minutes,
             "runner_phase": &self.runner_phase,
@@ -262,6 +270,7 @@ pub fn collect_session_status_with_process_ledger(
         last_episode_passed,
         cfactor: None,
         total_cost_usd: None,
+        estimated_cost_usd: None,
         today_cost_usd: None,
         critical_path_eta_minutes: None,
         runner_phase,
@@ -359,6 +368,7 @@ mod tests {
             last_episode_passed: Some(true),
             cfactor: None,
             total_cost_usd: Some(12.5),
+            estimated_cost_usd: None,
             today_cost_usd: Some(1.25),
             critical_path_eta_minutes: None,
             runner_phase: None,
@@ -396,6 +406,7 @@ mod tests {
             last_episode_passed: Some(false),
             cfactor: None,
             total_cost_usd: Some(4.2),
+            estimated_cost_usd: None,
             today_cost_usd: Some(0.7),
             critical_path_eta_minutes: None,
             runner_phase: None,

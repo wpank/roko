@@ -11,9 +11,9 @@
 //! their totals on the attempt's verdict and episode.
 
 use roko_learn::efficiency::ExecutedRow;
-use roko_learn::telemetry::HelperCallsUsage;
+use roko_learn::telemetry::{CostSource, HelperCallsUsage};
 
-use super::served_model::same_model;
+use super::served_model::{is_cli_backend, same_model};
 use super::tui_forward::append_jsonl_line_async;
 use super::*;
 
@@ -41,6 +41,9 @@ pub(super) struct SideCall {
     /// Model the provider reported serving, when it named one.
     model_reported: Option<String>,
     usage: roko_core::Usage,
+    /// Where `usage` came from (S01 §4.4): `estimated` for a call that
+    /// streamed it and was cut off (gap-288e38).
+    cost_source: CostSource,
     /// Model calls the agent reported, when it reported a count.
     turns: Option<u32>,
     duration_ms: u64,
@@ -53,14 +56,17 @@ impl SideCall {
         Self::from_result(
             &dispatch.target.provider_id,
             &dispatch.target.model_slug,
+            is_cli_backend(dispatch.target.provider_kind),
             &dispatch.result,
             duration_ms,
         )
     }
 
+    /// The call of `result`, on a CLI agent backend when `cli_backend`.
     fn from_result(
         provider_id: &str,
         model_slug: &str,
+        cli_backend: bool,
         result: &roko_agent::AgentResult,
         duration_ms: u64,
     ) -> Self {
@@ -72,6 +78,12 @@ impl SideCall {
                 .as_ref()
                 .and_then(|usage| usage.model.clone()),
             usage: result.usage,
+            cost_source: result
+                .usage_obs
+                .as_ref()
+                .map_or(CostSource::Unknown, |usage| {
+                    CostSource::from_usage_source(&usage.source, cli_backend)
+                }),
             turns: result
                 .output
                 .tag("num_turns")
@@ -174,6 +186,8 @@ pub(super) struct HelperAgent {
     agent: CheapFactoryAgent,
     provider_id: String,
     model_slug: String,
+    /// The helper model runs on a CLI agent backend.
+    cli_backend: bool,
     /// The attempt's helper calls; the agent is out until it is dropped.
     calls: Option<HelperCalls>,
 }
@@ -189,6 +203,7 @@ impl HelperAgent {
         }
         Self {
             agent,
+            cli_backend: is_cli_backend(target.provider_kind),
             provider_id: target.provider_id,
             model_slug: target.model_slug,
             calls,
@@ -224,6 +239,7 @@ impl roko_agent::Agent for HelperAgent {
             calls.record(SideCall::from_result(
                 &self.provider_id,
                 &self.model_slug,
+                self.cli_backend,
                 &result,
                 u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             ));
@@ -326,6 +342,7 @@ impl GraphTaskDispatcher {
                 duration_ms: call.duration_ms,
                 success: call.success,
                 session_id: String::new(),
+                cost_source: call.cost_source,
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),

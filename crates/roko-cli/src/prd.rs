@@ -4118,27 +4118,42 @@ mod tests {
             ),
         )
         .expect("planner reply");
+        // Work after a call (episode distillation) runs on the default model,
+        // a second fake that answers nothing, so the log counts planner calls.
         let calls = bin.path().join("calls.log");
         let planner = bin.path().join("planner.sh");
-        std::fs::write(
-            &planner,
-            format!(
-                "#!/bin/sh\nset -eu\ncat >/dev/null\necho call >> '{}'\ncat '{}'\n",
-                calls.display(),
-                reply.display()
+        let background = bin.path().join("background.sh");
+        for (script, body) in [
+            (
+                &planner,
+                format!(
+                    "echo call >> '{}'\ncat '{}'",
+                    calls.display(),
+                    reply.display()
+                ),
             ),
-        )
-        .expect("planner script");
-        std::fs::set_permissions(&planner, std::fs::Permissions::from_mode(0o755))
-            .expect("make the planner executable");
+            (&background, format!("sed -n 2p '{}'", reply.display())),
+        ] {
+            std::fs::write(
+                script,
+                format!("#!/bin/sh\nset -eu\ncat >/dev/null\n{body}\n"),
+            )
+            .expect("fake provider script");
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+                .expect("make the script executable");
+        }
         std::fs::write(
             workdir.join("roko.toml"),
             format!(
-                "[agent]\ndefault_model = \"planner\"\ncommand = {planner:?}\nbare_mode = false\n\n\
+                "[agent]\ndefault_model = \"background\"\ncommand = {background:?}\n\
+                 bare_mode = false\n\n\
                  [providers.fake]\nkind = \"claude_cli\"\ncommand = {planner:?}\n\n\
+                 [providers.quiet]\nkind = \"claude_cli\"\ncommand = {background:?}\n\n\
                  [models.planner]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
-                 context_window = 200000\n",
-                planner = planner.display().to_string()
+                 context_window = 200000\n\n\
+                 [models.background]\nprovider = \"quiet\"\nslug = \"claude-sonnet-4-6\"\n",
+                planner = planner.display().to_string(),
+                background = background.display().to_string()
             ),
         )
         .expect("roko.toml");

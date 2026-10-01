@@ -2453,6 +2453,7 @@ async fn cmd_plan_run_engine(
         dangerously_skip_permissions,
         log_file: log_file.map(|p| p.to_path_buf()),
         worktree_per_task,
+        worktree_per_task_explicit: worktree_flag == Some(true),
         rich_topology,
         promote,
         no_tui,

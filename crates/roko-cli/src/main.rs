@@ -2353,7 +2353,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// prerequisites have succeeded. Plans that write or build
         /// overlapping parts of the working tree never run at the same time.
         /// Defaults to `[conductor] max_parallel_plans` (1: one plan at a
-        /// time).
+        /// time). Per-task worktrees run one plan at a time for now: with
+        /// them from config, the plans run in turn with a warning, and with
+        /// `--worktree-per-task` a run of several plans is refused.
         #[arg(
             long,
             value_name = "N",

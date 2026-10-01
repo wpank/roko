@@ -311,6 +311,17 @@ Land it in this order. Steps 1-3 are safe now and keep the default `false`. Step
       tasks' uncommitted edits stay in the checkout, outside the batch; `--no-worktree-per-task` resumes it shared.
     - Attempts in a Rust workdir build in their own worktree's `target/`, unless `CARGO_TARGET_DIR` is set, and a
       failed attempt keeps its worktree. Self-hosting runs therefore cost more disk.
+- 2026-10-01 (wk-tiers): parallel plans under worktrees now run one at a time instead of failing, as the coordinator
+  decided; on work/gap-4ec59f, cargo verification deferred to the batch check.
+  - `GraphPlanRunParams.worktree_per_task_explicit` records whether `--worktree-per-task` asked for worktrees.
+  - With worktrees from the config or the default, a run of several plans with `max_parallel_plans` above 1 runs them
+    one at a time. Its warning names `--no-worktree-per-task` and `--max-parallel-plans`.
+  - With the explicit flag, such a run is still refused before anything starts.
+  - Serve, resume, `roko run`, `roko do`, PRD and cloud-worker runs never pass the flag.
+  - Test: `configured_worktrees_run_parallel_plans_one_at_a_time` (plan_runner). The `--max-parallel-plans` help and
+    `docs/v3/04-EXECUTION.md` §10 describe the behaviour.
+  - The disk risk and the resume note (in the steps 5–6 note above) go to Will through the coordinator, along with the
+    whitepaper matrix's IS1 re-pin (gap-08d9b2).
 
 ## Original notes
 

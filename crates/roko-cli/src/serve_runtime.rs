@@ -931,6 +931,7 @@ fn run_plan_on_local_runtime(
                 worktree_per_task: roko_config.runner.worktree_per_task
                     && crate::graph_execution::batch::worktree_isolation_blocker(&workdir)
                         .is_none(),
+                worktree_per_task_explicit: false,
                 rich_topology: false,
                 promote: None,
                 // Never launch an interactive TUI from an HTTP handler.

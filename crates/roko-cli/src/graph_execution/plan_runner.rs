@@ -806,6 +806,12 @@ pub struct GraphPlanRunParams {
     pub dangerously_skip_permissions: bool,
     pub log_file: Option<PathBuf>,
     pub worktree_per_task: bool,
+    /// Whether `--worktree-per-task` asked for [`Self::worktree_per_task`],
+    /// rather than `[runner] worktree_per_task` or its default (gap-4ec59f).
+    /// Per-task worktrees run one plan at a time for now: a run that asked
+    /// for them with `max_parallel_plans` above 1 is refused, and one that
+    /// has them from the config runs its plans one at a time.
+    pub worktree_per_task_explicit: bool,
     pub rich_topology: bool,
     /// With `worktree_per_task`: once every plan is delivered into the run's
     /// batch branch, promote the batch into this branch and tag the run
@@ -1025,6 +1031,7 @@ async fn run_graph_plan_body(
         // `event_log::run_recorded`, which records it and clears the field.
         log_file: _,
         worktree_per_task,
+        worktree_per_task_explicit,
         rich_topology,
         promote,
         no_tui,
@@ -1107,16 +1114,28 @@ async fn run_graph_plan_body(
     // How many independent plans may run at once: the per-run override, else
     // `[conductor] max_parallel_plans`. Never written back into the config,
     // which every checkpoint fingerprint includes.
-    let max_parallel_plans = max_parallel_plans
+    let mut max_parallel_plans = max_parallel_plans
         .unwrap_or(roko_config.conductor.max_parallel_plans)
         .max(1);
+    // Per-task worktrees run one plan at a time for now (gap-4ec59f). A run
+    // that asked for them with --worktree-per-task is refused; one that has
+    // them from `[runner] worktree_per_task` runs its plans in turn.
     if worktree_per_task && max_parallel_plans > 1 && plans.len() > 1 {
-        anyhow::bail!(
-            "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
-             {max_parallel_plans}): run with --max-parallel-plans 1, or run the tasks in the \
-             shared working tree with --no-worktree-per-task (or [runner] worktree_per_task = \
-             false)"
+        if worktree_per_task_explicit {
+            anyhow::bail!(
+                "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
+                 {max_parallel_plans}): run with --max-parallel-plans 1, or replace \
+                 --worktree-per-task with --no-worktree-per-task to run the plans in parallel \
+                 in the shared working tree"
+            );
+        }
+        tracing::warn!(
+            max_parallel_plans,
+            "per-task worktrees do not run plans in parallel yet, so the plans run one at a \
+             time: pass --no-worktree-per-task to run them in parallel in the shared working \
+             tree, or --max-parallel-plans 1 to ask for one at a time"
         );
+        max_parallel_plans = 1;
     }
 
     let (plan_budget_ceiling, budget_bypassed) = resolve_budget_ceiling(
@@ -3754,6 +3773,7 @@ files = ["README.md"]
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -3963,6 +3983,7 @@ max_retries = 0
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -5564,6 +5585,7 @@ exec sleep 60
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: true,
             promote: None,
             no_tui: true,
@@ -5708,6 +5730,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: true,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -5794,6 +5817,46 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-4ec59f: per-task worktrees run one plan at a time for now. Asked
+    /// for with `--worktree-per-task`, they refuse a run that would put two
+    /// plans in parallel before anything starts. From `[runner]
+    /// worktree_per_task`, they run the two plans in turn, the second on the
+    /// first's work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn configured_worktrees_run_parallel_plans_one_at_a_time() {
+        let dir = repo_with_file_plans(&["alpha", "beta"], None);
+        let repo = dir.path();
+        let parallel = |explicit| GraphPlanRunParams {
+            worktree_per_task_explicit: explicit,
+            max_parallel_plans: Some(2),
+            ..worktree_run_params(repo)
+        };
+
+        let error = run_graph_plan_in_run(parallel(true), Some("run-refused".into()))
+            .await
+            .expect_err("the requested run is refused");
+        assert!(
+            error.to_string().contains("--no-worktree-per-task"),
+            "{error}"
+        );
+        assert_eq!(
+            git_stdout(repo, &["for-each-ref", "refs/heads/roko/batch/"]),
+            "",
+            "the refused run started nothing"
+        );
+
+        let exit_code = run_graph_plan_in_run(parallel(false), Some("run-capped".into()))
+            .await
+            .expect("run the plans");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        // beta started from alpha's work, so the batch only fast-forwarded.
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/batch/run-capped"]),
+            git_stdout(repo, &["rev-parse", "roko/plan/02-beta"])
+        );
     }
 
     /// gap-415c54: with `[runner] delete_attempt_branches = true`, a

@@ -3,13 +3,15 @@ id = "bug-f1f814"
 kind = "bug"
 title = "graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "f1db380c6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-settle's report, checked on work/bug-dfb28f-flake at d7aaafc48)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs"]
@@ -42,3 +44,12 @@ The fake-provider fixtures in `graph_task_dispatch.rs`'s tests.
 
 - [ ] The fixtures don't time out under load, and the module passes a 20-iteration loop under load.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-childenv): Implemented on `work/bug-f1f814` at `f1db380c6`; cargo verification deferred to the batch
+  check, including the 20-iteration loop under load. The three fixtures in `graph_task_dispatch.rs` (`graph-cli`,
+  `stream-cli` and `cli_provider`, which the submodule tests share) use `FIXTURE_PROVIDER_TIMEOUT_MS`, the existing
+  `FIXTURE_HANG_GUARD_SECS` (120 s) in ms. No test relies on the 5 s limit: the timeout tests stop the provider
+  with shorter attempt limits (`TIMEOUT_SECS_UNDER_LOAD`, at most 24 s). Not changed: submodule fixtures in
+  `failover.rs`, `helper_calls.rs` and `served_model.rs` keep 15 s provider limits, and the watchdog fixture keeps 120 s.

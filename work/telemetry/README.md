@@ -14,6 +14,7 @@ work/telemetry/
   README.md             this file
   DEFINITIONS.md        the metrics, fixed before any data is analysed
   events/<session>.jsonl  append-only events, one file per session (schema roko.work_event/1)
+  events/backfill.jsonl   the items closed before the log existed, reconstructed once (tools/work_backfill.py)
   harvest/<date>.jsonl  tokens, model and time per item from Claude Code transcripts (tools/work_harvest.py)
 ```
 
@@ -55,6 +56,20 @@ Fields of one event:
 
 A field nobody gave is left out of the row. `release` and `work.py event` take `executor`, `via` and `branch` from the
 item's claim when there is one.
+
+## The backfill
+
+`tools/work_backfill.py` (gap-dc6775) reconstructs, once, what the log would have held for the items closed before it
+existed, into `events/backfill.jsonl`. Every row has `source` and `session` `backfill`, and the rollup keeps these rows
+apart from live ones. It writes one `closed` row per closed item and one `lane-start` row per lane branch whose
+creation the reflog still holds; it never edits an item.
+
+A `closed` row's executor comes from the item's `[closed].by` (`plan:` → `roko-plan`; sweep, triage, enrichment and
+reconcile closures → `verification-only`; `Will …` → `human`; a session → `claude-session`; a `wk-` worker →
+`claude-agent`), else from the `Executor:` trailers of the merge that brought its branch in, else `unknown` with a
+`reason`. The row keeps `by`, says which source decided (`executor_from`), and takes `ts` from the commit that
+closed the item (`ts_from`). A `lane-start` row has the branch's creation time from its reflog, `created_from`, and
+the item when the branch is `work/<id>`.
 
 ## Executor fields
 

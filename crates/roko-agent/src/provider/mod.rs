@@ -412,6 +412,14 @@ pub fn create_agent_for_model(
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
     }
+    // The system prompt's cache markers mean something only to the Anthropic
+    // API translators, which turn them into `cache_control` blocks; any other
+    // provider would get them as inert text (find-6ee709).
+    if provider_config.kind != ProviderKind::AnthropicApi
+        && let Some(prompt) = options.system_prompt.as_mut()
+    {
+        *prompt = crate::translate::claude::strip_cache_markers(prompt);
+    }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
             adapter.create_agent(&provider_config, &profile, &options)
@@ -2125,6 +2133,66 @@ mod tests {
         assert_eq!(parsed["model"], "glm-5.1");
         assert_eq!(parsed["max_tokens"], 1024);
         assert_eq!(parsed["messages"][1]["content"], "hello");
+
+        handle.join().expect("server thread");
+    }
+
+    /// find-6ee709: the system prompt's cache markers reach only the
+    /// Anthropic API translators; an OpenAI-compatible provider gets the
+    /// prompt without them.
+    #[tokio::test]
+    async fn cache_markers_are_stripped_for_non_anthropic_providers() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-test",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "factory-ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18
+            }
+        })
+        .to_string();
+        let (base_url, captured, handle) = spawn_chat_server(response);
+        let config = test_config(format!("{base_url}/v4"));
+        let system_prompt = "Role instructions\n\n<!-- cache:system -->\n\nWorkspace context\n\n\
+                             <!-- cache:session -->\n\nTurn notes";
+        let options = AgentOptions {
+            timeout_ms: Some(2_500),
+            name: "factory-agent".to_string(),
+            system_prompt: Some(system_prompt.to_string()),
+            ..Default::default()
+        };
+
+        let agent =
+            create_agent_for_model(&config, "glm-5-1", options).expect("create agent for model");
+        let result = agent.run(&prompt("hello"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        let request = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("captured request");
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("json request body");
+        let system = parsed["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
+            .and_then(|message| message["content"].as_str())
+            .expect("a system message");
+        assert!(!system.contains("<!-- cache:"), "{system}");
+        assert!(
+            system.contains("Role instructions\n\nWorkspace context\n\nTurn notes"),
+            "{system}"
+        );
 
         handle.join().expect("server thread");
     }

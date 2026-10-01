@@ -86,6 +86,9 @@
 - **P1** [gap-327242](items/gap-327242-pilot-b-plus-seeds-2-3-the.md) Pilot B plus seeds 2–3: the Roko and Claude Code arms on the same tasks (S09.E1b) · size S
 - **P2** [dec-1089ec](items/dec-1089ec-raise-viabilitybench-budget-line-bl0-s-cap.md) Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3 [decision] · size S
 
+### roko-compose (1)
+- **P1** [bug-4aa696](items/bug-4aa696-the-composer-s-foraging-pre-pass-keeps.md) The composer's foraging pre-pass keeps at most three optional sections, so domain_context (knowledge, episodes, playbooks) is silently dropped from real prompts [bug] · size S
+
 ### benchmarks/viabilitybench/families/plan_slice (1)
 - **P1** [gap-db9a26](items/gap-db9a26-the-plan-slice-hidden-suites-were-written.md) The plan-slice hidden suites were written by the arms' own model family and need a cross-family review · size M
 
@@ -109,9 +112,8 @@
 ### roko-learn/cascade-router (1)
 - **P2** [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) Epic: cybernetic core [spec] · size L
 
-### .claude/skills (2)
+### .claude/skills (1)
 - **P2** [gap-d6fd3c](items/gap-d6fd3c-install-the-work-skills-at-user-level.md) Install the work skills at user level so sessions in worktrees get them · size S
-- **P2** [gap-92033c](items/gap-92033c-the-work-skills-add-work-item-executor.md) The work skills add Work-Item, Executor and Conflicts trailers to merge commits · size S
 
 ### roko-acp (1)
 - **P2** [bug-31bca6](items/bug-31bca6-nothing-reads-learning-dreams-max-concurrent-so.md) Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs [bug] · size S

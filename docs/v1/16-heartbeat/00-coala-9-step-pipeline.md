@@ -1,4 +1,4 @@
-# CoALA 9-Step Cognitive Pipeline
+# CoALA Decision Cycle and the Older 9-Step Pipeline
 
 > **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
 
@@ -22,7 +22,7 @@ The organizing framework for this loop is CoALA (Cognitive Architectures for Lan
 
 Roko adopted the CoALA framework as an early organizing taxonomy because it provides a rigorous, research-grounded structure for agent cognition that maps cleanly onto the Synapse Architecture's traits. This chapter now retells that lineage against the canonical seven-step loop rather than treating the historical 9-step pipeline as the current truth.
 
-This document explains why the older 9-step CoALA-derived framing is now historical, how the heartbeat chapter maps onto the canonical seven-step universal loop, and why CoALA still matters as the theoretical lineage behind the heartbeat design.
+This document explains why the older 9-step framing (Roko's own, CoALA-inspired) is now historical, how the heartbeat chapter maps onto the canonical seven-step universal loop, and why CoALA still matters as the theoretical lineage behind the heartbeat design.
 
 ---
 
@@ -250,7 +250,7 @@ ReAct interleaves reasoning and acting but has no explicit memory retrieval step
 
 ### Reflexion (Shinn et al. 2023)
 
-Reflexion adds verbal self-reflection to trial-and-error. It provides the REFLECT step but lacks the structured OBSERVE-RETRIEVE-ANALYZE-GATE pipeline. It also uses self-assessment (LLM judges its own output) rather than external verification (compiler, tests, blockchain).
+Reflexion adds verbal self-reflection to trial-and-error. It provides the REFLECT step but lacks the structured OBSERVE-RETRIEVE-ANALYZE-GATE pipeline. Its evaluator depends on the task: exact-match grading (HotpotQA), heuristics (ALFWorld) or self-written unit tests run by an interpreter (programming) (§3, §4).
 
 ### AutoGPT / BabyAGI
 
@@ -264,7 +264,7 @@ CoALA provides the most complete mapping from cognitive science to agent impleme
 2. **Memory retrieval as a first-class step** — matches Roko's Neuro integration.
 3. **Learning from action outcomes** — matches Roko's Gate-based feedback loops.
 4. **Grounding in established cognitive architectures** (Soar, ACT-R) — provides theoretical rigor rather than ad hoc design.
-5. **Composable with active inference** — CoALA's prediction error mechanism maps directly to Friston's free energy minimization, enabling the T0/T1/T2 gating system that provides ~80% cost reduction.
+5. **Composable with active inference** — CoALA itself has no prediction-error mechanism; Roko adds one and maps it to Friston's free energy minimization (Roko's synthesis), enabling the T0/T1/T2 gating system that provides ~80% cost reduction.
 
 ---
 

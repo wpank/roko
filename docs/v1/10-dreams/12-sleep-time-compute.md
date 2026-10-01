@@ -68,7 +68,7 @@ The cascade routing ensures that if a T1 model is unavailable or the budget is d
 
 ## Sleepwalker Mode
 
-During dreaming, the agent enters **Sleepwalker mode** — a reduced-capability state where it can still respond to urgent interrupts but does not process normal tasks. Sleepwalker mode is a 3-step variant of the CoALA cognitive architecture (Sumers et al. 2023, arXiv:2309.02427):
+During dreaming, the agent enters **Sleepwalker mode** — a reduced-capability state where it can still respond to urgent interrupts but does not process normal tasks. Sleepwalker mode is a 3-step variant of Roko's loop, loosely after the CoALA decision cycle (Sumers et al. 2023, arXiv:2309.02427; the steps are Roko's):
 
 1. **Perceive**: Check for urgent signals (process supervisor events, critical errors)
 2. **Decide**: If urgent signal detected, abort dream and wake. If not, continue dreaming.

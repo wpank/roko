@@ -39,7 +39,7 @@ An agent that does not improve is an expensive cron job. The research here estab
 ## Meta-Harness and Scaffold Self-Improvement
 
 - Lee et al. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
-  *Grounds: "The scaffold IS the product" thesis — 6x performance gap from scaffold changes alone. +7.7 points on text classification, +4.7 on IMO math, at 4x fewer tokens. The foundational paper for Roko's harness engineering approach.*
+  *Grounds: "The scaffold IS the product" thesis — The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points on text classification, +4.7 on IMO math, at 4x fewer tokens. The foundational paper for Roko's harness engineering approach.*
 
 - Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
   *Grounds: Natural-language scaffolds — scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable.*

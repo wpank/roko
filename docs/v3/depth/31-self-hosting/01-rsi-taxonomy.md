@@ -16,16 +16,14 @@ distinguishes RSI from simple learning: a system that improves its weights via
 gradient descent is learning; a system that improves its *learning algorithm*
 is recursively self-improving.
 
-The RSI Survey (arXiv:2607.07663) provides the first comprehensive taxonomy of
-RSI in AI systems, identifying two orthogonal classification axes: **what is
+The RSI Survey (arXiv:2607.07663) surveys 1,250 arXiv papers (2024-2026) and organizes them on two axes (§2.2): **what is
 improved** and **degree of loop closure**.
 
 ---
 
 ## 2. What Is Improved: Four Targets
 
-The survey identifies four targets of self-improvement, ordered by increasing
-scope, risk, and difficulty:
+The survey identifies four targets of self-improvement (§2.2): deployment-time self-evolution, training-time self-iteration, self-evaluation and auto research. The ordering by scope, risk and difficulty below is Roko's reading:
 
 ### 2.1 Deployment Behavior
 

@@ -214,7 +214,7 @@ every tool call:
 
 ```
 1. VALIDATE   -- identity + args against JSON schema from registry
-2. AUTHORIZE  -- profile/task filters and role capabilities
+2. AUTHORIZE  -- task tool filters and role capabilities
 3. SAFETY     -- hooks, policy, durable immune controls
 4. EXECUTE    -- handler under timeout/cancellation, panic-catching
 5. BOUND      -- recursively scrub, recover, re-bound results
@@ -253,7 +253,6 @@ every tool call:
 | `production_safety_chain` | Production safety hook chain |
 | `result_cache` | Explicit cache primitives (dispatcher does NOT cache internally) |
 | `timeout` | Timeout enforcement |
-| `tool_selector` | Tool selection logic |
 | `truncate` | Result truncation/bounding |
 | `validate` | Input validation |
 

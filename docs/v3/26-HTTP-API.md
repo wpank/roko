@@ -1,7 +1,7 @@
 # 26 -- HTTP Control Plane
 
-> The `roko serve` HTTP control plane exposes ~376 canonical REST routes (~421
-> including aliases) plus SSE and WebSocket streams on port 6677. It is the
+> The `roko serve` HTTP control plane exposes REST routes (counts in
+> `tools/http_route_inventory.snapshot.json`) plus SSE and WebSocket streams on port 6677. It is the
 > programmatic surface through which dashboards, CI scripts, external agents,
 > and the interactive TUI observe and control every aspect of the system.
 
@@ -850,7 +850,7 @@ Supervised HTTP JSON connectors.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout; each entry names its `vault` |
+| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout. Each entry gives its review `status`, its `full_hash` and its `vault`; each vault gives its `capacity` and whether it is `full` (a full vault cannot index further withheld results) |
 | GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
 
 ### 8.28 Affect (Daimon)

@@ -221,6 +221,7 @@ impl AttemptBook {
             helpers: None,
             ladder: None,
             reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
             run,
         }
     }
@@ -243,6 +244,8 @@ pub(super) struct AttemptContext {
     ladder: Option<(AttemptLadder, bool)>,
     /// The T0 reflex rule that served the attempt in place of the provider.
     reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output shows (bug-264c41).
+    live_tool_calls: LiveToolCalls,
     run: Arc<RunAttempts>,
 }
 
@@ -285,6 +288,12 @@ impl AttemptContext {
     /// rule once it settles (gap-4468bd).
     pub(super) fn served_by_reflex(&mut self, rule_id: uuid::Uuid) {
         self.reflex_rule = Some(rule_id);
+    }
+
+    /// The record the attempt's live-output tap fills with the tool calls
+    /// the provider streams (bug-264c41).
+    pub(super) fn live_tool_calls(&self) -> LiveToolCalls {
+        self.live_tool_calls.clone()
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -331,6 +340,7 @@ impl AttemptContext {
             verdict: Arc::new(verdict),
             failure_reason,
             reflex_rule: self.reflex_rule,
+            live_tool_calls: self.live_tool_calls,
         }
     }
 }
@@ -351,7 +361,8 @@ pub(super) struct Settlement {
 impl Settlement {
     /// The verify steps' verdict on a successful provider call. An attempt
     /// the pre-verify screen rejected is a verify failure too: the agent's,
-    /// with the screen's check as its rung.
+    /// with the screen's check as its rung. A verify its stopping plan run
+    /// cut short is a cancellation, which teaches nothing (bug-82cbef).
     pub(super) fn verified(verification: &Result<TaskGateVerdict>) -> Self {
         match verification {
             Ok(verdict) => {
@@ -364,6 +375,16 @@ impl Settlement {
                     rung: None,
                 }
             }
+            Err(RokoError::Cancelled(reason)) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: true,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
             Err(error) => Self {
                 outcome: AttemptOutcome::GateFailed,
                 gate_verdict: None,
@@ -449,6 +470,9 @@ pub(super) struct SettledAttempt {
     /// The T0 reflex rule that served the attempt, which its learning label
     /// credits or demotes ([`GraphTaskDispatcher::credit_reflex_rule`]).
     pub(super) reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output showed, which its efficiency
+    /// row lists (bug-264c41).
+    pub(super) live_tool_calls: LiveToolCalls,
 }
 
 impl SettledAttempt {

@@ -601,8 +601,8 @@ roko plan run <plans-dir> [--engine graph|legacy] [--workdir <path>]
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Graph archives a mismatched fingerprint and starts a new run; legacy re-queues drifted work. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling; once the plan has spent it, no further task starts. |
-| `--no-budget` | false | Disable the per-plan cost ceiling. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling; once the plan has spent it, no further task starts. `0` removes the plan ceiling; the per-task and daily ceilings still apply. |
+| `--no-budget` | false | Turn off budget enforcement: no plan, per-task or daily ceiling stops a dispatch. |
 
 </details>
 
@@ -622,7 +622,7 @@ the last call crosses the ceiling, and reports per-plan and total spend.
 3. The `GraphEngine` executes nodes in bounded parallel topological waves.
 4. Each task runs an agent via `TaskExecutorCell`, then runs gate validation via `GatePipelineCell` (using `CellResources.gates`).
 5. Gate failures trigger the replan controller. Failure context drives revised task generation.
-6. `GuaranteedFinallyController` ensures cleanup (terminal receipt, lease release, agent stop, snapshot flush) regardless of outcome.
+6. `run_one_plan` writes the checkpoint's terminal status, and on an interrupt stops in-flight agents.
 7. The 12-row `FeedbackSettler` settles completion sinks with exactly-once idempotency.
 8. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
 
@@ -777,7 +777,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `P` | Switch to Processes sub-tab |
 | `w` | Show wave overview |
 | `p` | Toggle pause |
-| `i` | Enter inject mode (type directive to send to agent) |
+| `i` | Inject a directive (not available yet: shows a warning) |
 | `y` | Approve pending command |
 | `` ` `` | Cycle agent role tabs |
 
@@ -839,14 +839,8 @@ recovery keys are rejected with a reason until the Graph engine supports them.
 <details>
 <summary>Modal and dialog keybindings</summary>
 
-**Inject mode** (entered via `i` in Dashboard tab):
-
-| Key | Action |
-|---|---|
-| Any char | Append to inject buffer |
-| `Backspace` | Delete last character |
-| `Enter` | Submit inject (sends directive signal to agent) |
-| `Esc` | Cancel inject |
+**Inject mode** is not available yet: no transport reaches a running session, so `i` shows a
+warning instead of collecting a directive (see `roko inject`).
 
 **Filter mode** (entered via `/` in Plans or Logs tab):
 
@@ -1604,8 +1598,8 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>] [--rol
 | `--yes` | Skip all confirmation prompts. |
 | `--agent <cmd>` | Pre-select agent command (skip picker). |
 | `--model <model>` | Pre-set model name (ollama-only convenience). |
-| `--budget <n>` | Pre-set token budget. |
-| `--role <role>` | Pre-set role string. |
+| `--budget <n>` | Pre-set token budget (`budget.prompt_token_budget`). |
+| `--role <role>` | Ignored: no config key stores a role text any more. |
 | `--enable-gates` | Enable default compile+clippy gates. |
 | `--path <path>` | Write to this path instead of the resolved global path. |
 | `--non-interactive` | Skip all prompts, fail if any answer is missing. |

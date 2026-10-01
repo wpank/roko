@@ -1688,7 +1688,7 @@ roko config preset model <name> [--workdir <path>] [--dry-run] [-y] [--global] [
 
 ### `roko serve`
 
-Start the HTTP API server on `:6677` (~376 canonical REST routes, ~421 total including aliases, plus SSE and WebSocket).
+Start the HTTP API server on `:6677` (REST routes, counted in `tools/http_route_inventory.snapshot.json`, plus SSE and WebSocket).
 
 ```
 roko serve [--bind <addr>] [--port <port>] [--workdir <path>]

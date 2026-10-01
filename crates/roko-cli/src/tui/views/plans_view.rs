@@ -602,11 +602,15 @@ fn render_wave_tree(
                         continue;
                     }
                     if let Some(plan) = tui_state.plan_summaries.get(i) {
+                        let wait_reason = is_selected_at(i)
+                            .then(|| tui_state.plan_wait_reason(&plan.id))
+                            .flatten();
                         render_plan_line(
                             &mut lines,
                             plan,
                             entry,
                             is_selected_at(i),
+                            wait_reason.as_deref(),
                             theme,
                             content_width,
                             true,
@@ -626,11 +630,15 @@ fn render_wave_tree(
                 {
                     continue;
                 }
+                let wait_reason = is_selected_at(i)
+                    .then(|| tui_state.plan_wait_reason(&plan.id))
+                    .flatten();
                 render_plan_line(
                     &mut lines,
                     plan,
                     entry,
                     is_selected_at(i),
+                    wait_reason.as_deref(),
                     theme,
                     content_width,
                     grouped,
@@ -745,6 +753,7 @@ fn render_plan_line(
     plan: &crate::plan::PlanSummary,
     tui_plan: Option<&PlanEntry>,
     is_selected: bool,
+    wait_reason: Option<&str>,
     theme: &Theme,
     content_width: usize,
     indented: bool,
@@ -942,6 +951,14 @@ fn render_plan_line(
                 })
                 .bg(bg),
         ));
+
+        // Why a pending plan of the plan set has not started.
+        if let Some(reason) = wait_reason {
+            detail_spans.push(Span::styled(
+                format!(" \u{00b7} {reason}"),
+                Style::default().fg(theme.warning).bg(bg),
+            ));
+        }
 
         if task_total > 0 {
             detail_spans.push(Span::styled(
@@ -1210,6 +1227,16 @@ fn render_plan_summary(
             ),
         ]),
     ];
+    // Below the status line: why a pending plan of the plan set waits.
+    if let Some(reason) = tui_state.plan_wait_reason(&plan.id) {
+        header_lines.insert(
+            2,
+            Line::from(vec![
+                Span::styled(" waiting: ", theme.label()),
+                Span::styled(reason, Style::default().fg(theme.warning)),
+            ]),
+        );
+    }
     let cost = tui_state.plan_budget_summary(plan);
     let budget_text = if cost.budget_usd > 0.0 {
         format!(
@@ -2047,6 +2074,152 @@ mod tests {
             "{rows:#?}"
         );
         assert!(rows[row_of("03-portal")].contains("1/2"), "{rows:#?}");
+    }
+
+    #[test]
+    fn f2_lists_the_plan_set_not_earlier_runs() {
+        use roko_core::DashboardEvent;
+        use roko_core::dashboard_snapshot::{DashboardSnapshot, PlanSetEntry};
+
+        let started = |plan_id: &str| DashboardEvent::PlanStarted {
+            plan_id: plan_id.to_string(),
+            tasks_total: 1,
+        };
+        let mut snap = DashboardSnapshot::default();
+        // An earlier run, as a replayed `.roko/events.jsonl` or a long-lived
+        // serve hub still holds it.
+        snap.apply_with_ts(&started("old-run"), 1_000);
+        snap.apply_with_ts(
+            &DashboardEvent::TaskStarted {
+                plan_id: "old-run".to_string(),
+                task_id: "T1".to_string(),
+                title: String::new(),
+                phase: "graph-executing".to_string(),
+            },
+            1_100,
+        );
+        snap.apply_with_ts(
+            &DashboardEvent::PlanCompleted {
+                plan_id: "old-run".to_string(),
+                success: true,
+            },
+            1_200,
+        );
+        // Another runner's plan, still running.
+        snap.apply_with_ts(&started("other-live"), 1_300);
+        let entry = |plan_id: &str| PlanSetEntry {
+            plan_id: plan_id.to_string(),
+            tasks_total: 1,
+            ..PlanSetEntry::default()
+        };
+        snap.apply_with_ts(
+            &DashboardEvent::PlanSetLoaded {
+                plans: vec![entry("01-api"), entry("02-portal")],
+            },
+            2_000,
+        );
+
+        let mut state = TuiState::default();
+        state.update_from_dashboard_snapshot(&snap);
+
+        let ids: Vec<&str> = state.plans.iter().map(|plan| plan.id.as_str()).collect();
+        assert_eq!(ids, ["01-api", "02-portal", "other-live"]);
+        let listed: Vec<&str> = state
+            .plan_summaries
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect();
+        assert_eq!(listed, ids);
+    }
+
+    #[test]
+    fn plan_rows_say_why_a_plan_waits() {
+        use roko_core::dashboard_snapshot::PlanSetEntry;
+
+        let plan = |id: &str, status: PlanPhase| PlanEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            status,
+            active: status.is_active(),
+            tasks_total: 2,
+            ..PlanEntry::default()
+        };
+        let entry = |id: &str, depends_on: &[&str], conflicts_with: &[&str]| PlanSetEntry {
+            plan_id: id.to_string(),
+            depends_on: depends_on.iter().map(ToString::to_string).collect(),
+            conflicts_with: conflicts_with.iter().map(ToString::to_string).collect(),
+            ..PlanSetEntry::default()
+        };
+        let mut state = TuiState::default();
+        state.plan_summaries = ["01-api", "02-portal", "03-docs", "04-site"]
+            .into_iter()
+            .map(summary)
+            .collect();
+        state.plans = vec![
+            plan("01-api", PlanPhase::Active),
+            plan("02-portal", PlanPhase::Pending),
+            plan("03-docs", PlanPhase::Pending),
+            plan("04-site", PlanPhase::Pending),
+        ];
+        state.plan_set = vec![
+            entry("01-api", &[], &[]),
+            entry("02-portal", &[], &["01-api"]),
+            entry("03-docs", &["01-api"], &[]),
+            entry("04-site", &[], &["02-portal"]),
+        ];
+
+        let reason = |state: &TuiState, id: &str| state.plan_wait_reason(id);
+        assert_eq!(reason(&state, "01-api"), None, "it is running");
+        assert_eq!(
+            reason(&state, "02-portal").as_deref(),
+            Some("conflicts with 01-api")
+        );
+        assert_eq!(
+            reason(&state, "03-docs").as_deref(),
+            Some("waiting on 01-api")
+        );
+        // 02-portal comes first in the set and has not started.
+        assert_eq!(
+            reason(&state, "04-site").as_deref(),
+            Some("conflicts with 02-portal")
+        );
+
+        // The selected row and the plan detail name the reason.
+        state.plan_summaries.truncate(3);
+        state.plans.truncate(3);
+        let rows = rendered_rows(&state, 1);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("pending \u{00b7} conflicts with 01-api")),
+            "{rows:#?}"
+        );
+        state.selected_plan_idx = 1;
+        let view_state = ViewState {
+            selected: 1,
+            ..ViewState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let data = DashboardData::default();
+                render(frame, area, &data, &state, &view_state, &Theme::dark());
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let waiting = "waiting: conflicts with 01-api";
+        assert!(screen.contains(waiting), "{screen}");
+
+        // Once the plan it waits on finishes, nothing holds it back.
+        state.plans[0] = plan("01-api", PlanPhase::Done);
+        assert_eq!(reason(&state, "02-portal"), None);
+        assert_eq!(reason(&state, "03-docs"), None);
     }
 
     #[test]

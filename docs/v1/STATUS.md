@@ -11,7 +11,7 @@
 >
 > **Note (2026-09-09):** Several statistics in this document were accurate as of 2026-04-17 and
 > have since grown substantially. The key updated figures are: workspace members (36 → 39), HTTP
-> routes (200+ → ~376 canonical, ~421 incl. aliases), TUI tabs (F1–F7 → F1–F10), and test count
+> routes (200+ → the count in `tools/http_route_inventory.snapshot.json`), TUI tabs (F1–F7 → F1–F10), and test count
 > (~3,761 → 10,300+). Per-crate counts in the Detailed Breakdown reflect original audit values
 > and have not been individually re-audited. The Master Status Matrix tier values have been
 > partially updated below but detailed counts may be stale. See `CLAUDE.md` for current status.
@@ -46,7 +46,7 @@
 | 09 | [Daimon](09-daimon/INDEX.md) | **Built** | `roko-daimon` | [13-current-status-and-gaps.md](09-daimon/13-current-status-and-gaps.md) |
 | 10 | [Dreams](10-dreams/INDEX.md) | **Scaffold** | `roko-dreams` | [16-implementation-status.md](10-dreams/16-implementation-status.md) |
 | 11 | [Safety](11-safety/INDEX.md) | **Shipping** (core) / **Specified** (advanced) | `roko-agent` (safety layer) | — |
-| 12 | [Interfaces](12-interfaces/INDEX.md) | **Shipping** (CLI/TUI/API) / **Specified** (web portal) | `roko-cli` (ratatui TUI, F1–F10 tabs), `roko-serve` (~376 canonical routes) | — |
+| 12 | [Interfaces](12-interfaces/INDEX.md) | **Shipping** (CLI/TUI/API) / **Specified** (web portal) | `roko-cli` (ratatui TUI, F1–F10 tabs), `roko-serve` (routes counted in `tools/http_route_inventory.snapshot.json`) | — |
 | 13 | [Coordination](13-coordination/INDEX.md) | **Specified** | — | [12-current-status-and-gaps.md](13-coordination/12-current-status-and-gaps.md) |
 | 14 | [Identity & Economy](14-identity-economy/INDEX.md) | **Deferred** | — | — |
 | 15 | [Code Intelligence](15-code-intelligence/INDEX.md) | **Built** | `roko-index`, `roko-lang-*` | [10-current-status-and-gaps.md](15-code-intelligence/10-current-status-and-gaps.md) |
@@ -79,7 +79,7 @@ These components form the working self-hosting loop: `roko prd` → `roko plan r
 | 19 built-in tools (file, shell, search, MCP) | `roko-std` | 96 | — (tool dispatch) |
 | ProcessSupervisor + event bus + cancellation | `roko-runtime` | — | — (infra) |
 | Safety layer (role auth + pre/post checks) | `roko-agent` | — | — (integrated) |
-| HTTP control plane (~376 canonical routes, ~421 incl. aliases) + SSE/WebSocket | `roko-serve` | — | `roko serve` |
+| HTTP control plane (routes counted in `tools/http_route_inventory.snapshot.json`) + SSE/WebSocket | `roko-serve` | — | `roko serve` |
 | Interactive dashboard (ratatui TUI, F1–F10 tabs) | `roko-cli` | — | `roko dashboard` |
 | PRD lifecycle (idea/draft/plan) | `roko-cli` | 38 | `roko prd` |
 | Research agent (topic/enhance) | `roko-cli` | — | `roko research` |

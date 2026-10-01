@@ -973,6 +973,17 @@ struct LearnJsonEpisodes {
     latest: Vec<LearnJsonEpisodeEntry>,
     /// The seven compounding rates over the most recent episodes.
     compounding: roko_learn::aggregate::AutocatalyticMetrics,
+    /// Hindsight corrections, already applied to the counts above.
+    hindsight: LearnJsonHindsight,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonHindsight {
+    /// Corrections recorded in `.roko/learn/episode-adjustments.jsonl`.
+    adjustments: usize,
+    /// Episodes of the log they relabeled.
+    applied: usize,
+    latest: Vec<roko_learn::hindsight::EpisodeAdjustment>,
 }
 
 #[derive(serde::Serialize)]
@@ -1036,6 +1047,62 @@ fn format_compounding_metrics(
     }
     let cost = metrics.cost_per_success;
     lines.push(format!("    {:<22}${cost:.4}", "cost per success:"));
+    lines
+}
+
+/// An episode log's episodes with the workspace's hindsight corrections
+/// applied ([`roko_learn::hindsight::apply_adjustments`]).
+struct AdjustedEpisodes {
+    episodes: Vec<roko_learn::episode_logger::Episode>,
+    /// The corrections recorded for the workspace, in write order.
+    adjustments: Vec<roko_learn::hindsight::EpisodeAdjustment>,
+    /// How many episodes they changed.
+    applied: usize,
+}
+
+impl AdjustedEpisodes {
+    /// Parse the episode log `text` of the workspace at `workdir`, skipping
+    /// blank and malformed lines.
+    fn parse(workdir: &std::path::Path, text: &str) -> Self {
+        let mut episodes: Vec<roko_learn::episode_logger::Episode> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let path = roko_learn::hindsight::workspace_adjustments_path(workdir);
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap_or_default();
+        let applied = roko_learn::hindsight::apply_adjustments(&mut episodes, &adjustments);
+        Self {
+            episodes,
+            adjustments,
+            applied,
+        }
+    }
+}
+
+/// Human lines for the hindsight corrections in `roko learn episodes`: none
+/// when there are none, else a count and the latest three.
+fn format_hindsight_lines(
+    adjustments: &[roko_learn::hindsight::EpisodeAdjustment],
+    applied: usize,
+) -> Vec<String> {
+    if adjustments.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "  Hindsight: {} correction(s), {applied} episode(s) relabeled",
+        adjustments.len()
+    )];
+    for adjustment in adjustments.iter().rev().take(3) {
+        lines.push(format!(
+            "    {} {:?} {}: {}",
+            adjustment.timestamp.to_rfc3339(),
+            adjustment.adjustment_kind,
+            adjustment.original_episode_id,
+            adjustment.reason
+        ));
+    }
     lines
 }
 
@@ -1235,17 +1302,13 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut tail: Vec<LearnJsonEpisodeEntry> = Vec::new();
     let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         total += 1;
         if episode.success {
             passed += 1;
@@ -1280,6 +1343,11 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         last_seen: last_seen.map(|ts| ts.to_rfc3339()),
         latest: tail,
         compounding: roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window)),
+        hindsight: LearnJsonHindsight {
+            adjustments: adjustments.len(),
+            applied,
+            latest: adjustments[adjustments.len().saturating_sub(JSON_LATEST_LIMIT)..].to_vec(),
+        },
     }
 }
 
@@ -1873,17 +1941,13 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut latest: Option<String> = None;
     let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         count += 1;
         first_seen = Some(match first_seen {
             Some(current) => current.min(episode.timestamp.clone()),
@@ -1916,6 +1980,9 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     }
     println!("  Range: {}", format_range(first_seen, last_seen));
     println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
+    for line in format_hindsight_lines(&adjustments, applied) {
+        println!("{line}");
+    }
     if count > 0 {
         let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
         for line in format_compounding_metrics(&metrics) {
@@ -3007,6 +3074,49 @@ mod tests {
         assert!(json["compounding"]["cost_per_success"].is_number());
         let human = format_compounding_metrics(&episodes.compounding);
         assert_eq!(human[1], "    playbook hit rate:    25.0%");
+    }
+
+    /// gap-5be28d: a success that a later verify failure was blamed on
+    /// counts as a failure, and the correction is reported.
+    #[tokio::test]
+    async fn learn_episodes_json_applies_hindsight_adjustments() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let mut blamed = roko_learn::episode_logger::Episode::new("agent", "T1");
+        blamed.success = true;
+        let mut kept = roko_learn::episode_logger::Episode::new("agent", "T3");
+        kept.success = true;
+        let lines = [&blamed, &kept]
+            .iter()
+            .map(|episode| serde_json::to_string(episode).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(&log, lines).unwrap();
+        let regression = roko_learn::hindsight::EpisodeAdjustment {
+            original_episode_id: blamed.id.clone(),
+            adjustment_kind: roko_learn::hindsight::AdjustmentKind::Regression,
+            old_value: serde_json::json!(true),
+            new_value: serde_json::json!(false),
+            reason: "later gate failure in episode ep-2 was attributed to this task's files".into(),
+            timestamp: chrono::Utc::now(),
+        };
+        let path = roko_learn::hindsight::workspace_adjustments_path(dir.path());
+        roko_learn::hindsight::append_new_adjustments(&path, &[regression]).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, 2);
+        assert_eq!((episodes.passed, episodes.failed), (1, 1));
+        assert_eq!(episodes.hindsight.adjustments, 1);
+        assert_eq!(episodes.hindsight.applied, 1);
+        assert_eq!(episodes.hindsight.latest[0].original_episode_id, blamed.id);
+
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap();
+        let human = format_hindsight_lines(&adjustments, 1);
+        assert_eq!(
+            human[0],
+            "  Hindsight: 1 correction(s), 1 episode(s) relabeled"
+        );
+        assert!(human[1].contains("Regression"), "{human:?}");
     }
 
     #[test]

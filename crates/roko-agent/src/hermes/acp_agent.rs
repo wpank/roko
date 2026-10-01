@@ -179,6 +179,23 @@ impl HermesAcpAgent {
 }
 
 // ---------------------------------------------------------------------------
+// Server requests
+// ---------------------------------------------------------------------------
+
+/// Answer a server request from Hermes so it is not left waiting. Hermes has
+/// no approval setting, so a permission request is denied (fail closed), and
+/// any other request method is not supported.
+async fn deny_server_request(client: &mut AcpStdioClient, request: &AcpNotification) {
+    if request.server_request_id.is_none() {
+        return;
+    }
+    tracing::warn!("hermes ACP server request `{}` denied", request.method);
+    if let Err(e) = client.answer_server_request(request, false).await {
+        tracing::warn!("hermes ACP could not answer `{}`: {e}", request.method);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Notification parsing
 // ---------------------------------------------------------------------------
 
@@ -344,13 +361,25 @@ impl Agent for HermesAcpAgent {
         let mut usage_input: Option<u64> = None;
         let mut usage_output: Option<u64> = None;
         let timeout = self.config.timeout;
+        // One deadline for the whole turn: notifications do not extend it.
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
 
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
                 tokio::select! {
+                    // Biased: the deadline first, then notifications before the
+                    // completion, so what the agent sent just before it finished is
+                    // read before the turn ends.
+                    biased;
+                    () = &mut deadline => {
+                        tracing::warn!("hermes ACP turn timed out after {:?}", timeout);
+                        break;
+                    }
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
+                                deny_server_request(&mut client, &n).await;
                                 if let Some(event) = parse_notification(&n) {
                                     match event {
                                         AcpEvent::Output { text } => {
@@ -395,10 +424,6 @@ impl Agent for HermesAcpAgent {
                                 break;
                             }
                         }
-                    }
-                    _ = tokio::time::sleep(timeout) => {
-                        tracing::warn!("hermes ACP turn timed out after {:?}", timeout);
-                        break;
                     }
                 }
             }
@@ -558,13 +583,28 @@ impl Agent for HermesAcpAgent {
         let mut usage_output: Option<u64> = None;
         let mut _tool_call_index: usize = 0;
         let timeout = self.config.timeout;
+        // One deadline for the whole turn: notifications do not extend it.
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
 
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
                 tokio::select! {
+                    // Biased: the deadline first, then notifications before the
+                    // completion, so what the agent sent just before it finished is
+                    // read before the turn ends.
+                    biased;
+                    () = &mut deadline => {
+                        tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
+                        let _ = event_tx
+                            .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
+                            .await;
+                        break;
+                    }
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
+                                deny_server_request(&mut client, &n).await;
                                 if let Some(event) = parse_notification(&n) {
                                     match event {
                                         AcpEvent::Output { text } => {
@@ -643,13 +683,6 @@ impl Agent for HermesAcpAgent {
                                 break;
                             }
                         }
-                    }
-                    _ = tokio::time::sleep(timeout) => {
-                        tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
-                        let _ = event_tx
-                            .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
-                            .await;
-                        break;
                     }
                 }
             }
@@ -748,6 +781,7 @@ impl HarnessAdapter for HermesAcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::acp_client::test_servers;
     use serde_json::json;
 
     #[test]
@@ -933,5 +967,190 @@ mod tests {
         let usage_zero = HermesAcpAgent::estimate_usage(0, 0);
         assert_eq!(usage_zero.input_tokens, 1);
         assert_eq!(usage_zero.output_tokens, 1);
+    }
+
+    /// A stand-in for `hermes acp`, run with `bash -c`. It answers the
+    /// handshake and `session/new`; after a prompt it streams a
+    /// `session/update` every 50 ms and never finishes the turn. Other
+    /// requests get an empty result.
+    const CHATTY_ACP_SERVER: &str = r##"
+set -u
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            while :; do
+                printf '{"jsonrpc":"2.0","method":"session/update","params":{"text":"."}}\n'
+                sleep 0.05
+            done &
+            ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
+    /// A stand-in for `hermes acp` whose prompt turns first ask for
+    /// permission. It waits for the answer, then finishes the turn with the
+    /// option it got: `chose <optionId>`.
+    const PERMISSION_ACP_SERVER: &str = r##"
+set -u
+prompt_id=0
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            prompt_id="$id"
+            printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"c-1"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}' ;;
+        *'"id":99,'*)
+            choice="${line#*\"optionId\":\"}"
+            choice="${choice%%\"*}"
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","result":{"text":"chose %s"}}}\n' "$prompt_id" "$choice" ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
+    /// A Hermes ACP agent whose server is `script`, run with `bash -c`, and
+    /// whose turns time out after `timeout`.
+    fn agent_backed_by(script: &str, timeout: Duration) -> HermesAcpAgent {
+        let config = HermesAcpConfig {
+            cwd: std::env::temp_dir(),
+            timeout,
+            ..HermesAcpConfig::default()
+        };
+        HermesAcpAgent::with_config(test_servers::client(script), config)
+    }
+
+    /// bug-f98a13: the turn timeout covers the whole turn. A notification
+    /// every 50 ms used to restart it, so this turn never ended.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_acp_turn_timeout_ends_a_chatty_turn() {
+        let agent = agent_backed_by(CHATTY_ACP_SERVER, Duration::from_millis(300));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let started = Instant::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends at its timeout");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert!(
+            output.contains('.'),
+            "the server streamed output: {output:?}"
+        );
+    }
+
+    /// bug-f98a13: the same for a streaming turn, which still ends with a
+    /// `Done` event.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_acp_turn_timeout_ends_a_chatty_streaming_turn() {
+        let agent = agent_backed_by(CHATTY_ACP_SERVER, Duration::from_millis(300));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+        let started = Instant::now();
+
+        let turn = agent.run_streaming(&input, &ctx, event_tx);
+        let _result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends at its timeout");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let mut done = false;
+        while let Ok(event) = event_rx.try_recv() {
+            done |= matches!(event.kind, StreamEventKind::Done { .. });
+        }
+        assert!(done, "the stream ends with Done");
+    }
+
+    /// bug-192264: Hermes answers a permission request instead of leaving the
+    /// agent waiting until the turn times out. Hermes has no approval
+    /// setting, so it rejects.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn acp_permission_request_is_answered_by_hermes() {
+        let agent = agent_backed_by(PERMISSION_ACP_SERVER, Duration::from_secs(5));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, "chose no");
+    }
+
+    /// bug-7ef405: a turn reads every notification the agent sent before its
+    /// completion. Select used to take the completion as soon as it was
+    /// queued, dropping the text still waiting ahead of it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_turn_drains_notifications_before_completion() {
+        let agent = agent_backed_by(test_servers::BURST_THEN_DONE, Duration::from_secs(10));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, test_servers::burst_text());
+    }
+
+    /// bug-7ef405: the same for a streaming turn, whose text deltas carry
+    /// every notification too.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_streaming_turn_drains_notifications_before_completion() {
+        let agent = agent_backed_by(test_servers::BURST_THEN_DONE, Duration::from_secs(10));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+
+        let turn = agent.run_streaming(&input, &ctx, event_tx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, test_servers::burst_text());
+        let mut streamed = String::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let StreamEventKind::TextDelta(text) = event.kind {
+                streamed.push_str(&text);
+            }
+        }
+        assert_eq!(streamed, test_servers::burst_text());
     }
 }

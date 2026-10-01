@@ -197,6 +197,38 @@ class TestDriftAndSync(RepoTest):
         self.assertFalse((d / "gap-cccccc.json").exists())
 
 
+class TestWorktreeBusy(RepoTest):
+    def test_next_treats_files_changed_in_other_worktrees_as_busy(self):
+        # One worktree has committed a change to src/c.rs; another has an uncommitted edit to src/a.rs; a third is
+        # clean and fully merged, with only an item file edited, and adds nothing.
+        one = self.add_worktree("work/one")
+        (one / "src" / "c.rs").write_text("fn changed() {}\n")
+        subprocess.run(["git", "commit", "-qam", "change c"], cwd=one, check=True, capture_output=True)
+        two = self.add_worktree("work/two")
+        (two / "src" / "a.rs").write_text("fn edited() {}\n")
+        three = self.add_worktree("work/three")
+        (three / "work" / "items" / "gap-cccccc-x.md").write_text("edited during a sweep\n")
+        busy = work.worktree_changes()
+        self.assertEqual(busy, {"src/c.rs": "wt (work/one)", "src/a.rs": "wt (work/two)"})
+        details = []
+        picked, skipped = work.pick_next(self.items(), n=3, claims={}, details=details)
+        self.assertEqual(picked, [])
+        self.assertEqual(skipped["touches files changed in worktree wt (work/one)"], 1)
+        self.assertEqual(skipped["touches files changed in worktree wt (work/two)"], 2)
+        self.assertEqual({d["id"]: (d["worktree"], d["branch"], d["file"]) for d in details},
+                         {"bug-aaaaaa": ("wt", "work/two", "src/a.rs"), "bug-bbbbbb": ("wt", "work/two", "src/a.rs"),
+                          "gap-cccccc": ("wt", "work/one", "src/c.rs")})
+        # The CLI says which worktree holds an item back, and --ignore-worktrees turns the scan off.
+        self.assertIn("touches files changed in worktree wt (work/one)", self.run_work("next", "--n", "3").stdout)
+        picked = self.run_work("next", "--n", "3", "--ignore-worktrees", "--json").stdout
+        self.assertEqual([r["id"] for r in json.loads(picked)], ["bug-aaaaaa", "gap-cccccc"])
+
+    def test_a_worker_sees_the_main_checkouts_uncommitted_edits(self):
+        (self.root / "src" / "c.rs").write_text("fn dirty() {}\n")
+        work.set_repo(self.add_worktree("work/worker"))
+        self.assertEqual(work.worktree_changes(), {"src/c.rs": f"{self.root.name} (main)"})
+
+
 class TestEvents(RepoTest):
     def test_claim_and_release_append_events_to_the_session_file(self):
         self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")

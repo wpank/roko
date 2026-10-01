@@ -1209,6 +1209,16 @@ async fn run_graph_plan_body(
     } else {
         graph_run_config.cascade_router.clone()
     };
+    let health_registry = roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+        &RokoLayout::for_project(workdir)
+            .learn_dir()
+            .join("provider-health.json"),
+    );
+    // A run that serve hosts counts its provider failures on `/metrics`
+    // (gap-a95898).
+    if let Some(metrics) = &metrics {
+        health_registry.attach_metrics(Arc::clone(metrics));
+    }
     let shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
         roko_config.agent.mcp_config.as_ref(),
@@ -1216,13 +1226,7 @@ async fn run_graph_plan_body(
         Some(prompt_cache),
     )
     .await
-    .with_health_registry(Arc::new(
-        roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
-            &RokoLayout::for_project(workdir)
-                .learn_dir()
-                .join("provider-health.json"),
-        ),
-    ))
+    .with_health_registry(Arc::new(health_registry))
     .with_error_patterns_from_disk(workdir)
     .with_knowledge_routing(workdir);
     let mut shared_factory = attach_tool_observability(shared_factory, workdir).await;
@@ -1352,7 +1356,7 @@ async fn run_graph_plan_body(
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)
     .with_live_agent_output(live_agent_output)
-    .with_metrics(metrics);
+    .with_metrics(metrics.clone());
 
     // ── Whole-plan checks (gap-60233f) ──
     // Each plan's `[meta] verify`, or the default for a Cargo workspace,
@@ -1458,6 +1462,11 @@ async fn run_graph_plan_body(
         graph_run_config.conductor.clone(),
         graph_run_config.conductor_ring.clone(),
     ) {
+        // A run that serve hosts counts its evaluations on `/metrics`
+        // (gap-a95898).
+        if let Some(metrics) = &metrics {
+            conductor.attach_metrics(Arc::clone(metrics));
+        }
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);

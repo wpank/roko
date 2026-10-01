@@ -3,13 +3,14 @@ id = "gap-d6fd3c"
 kind = "gap"
 title = "Install the work skills at user level so sessions in worktrees get them"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = [".claude/skills"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "work/items dec-b75b96 (decided 2026-09-29: option 1)"
 anchors = [".claude/skills/work-next/SKILL.md", ".claude/skills/work-batch/SKILL.md", ".claude/skills/work-sweep/SKILL.md"]
@@ -61,3 +62,4 @@ At HEAD the skills exist only in the main checkout, and nothing is installed at 
 
 - This user-level change was approved by Will (dec-b75b96, 2026-09-29).
 - Do not track `.claude/` in git.
+- 2026-10-01 (wk-filer4): partial. The three SKILL.md files in the main checkout's .claude/skills/ (untracked, edited in place; backups in the session scratchpad) now find the main checkout with `git rev-parse --git-common-dir` (`$MAIN`), stop with a one-line message where there is no work/items/, and no longer name /Users/will/dev/nunchi/roko/roko. Added tools/install_work_skills.sh (symlinks the skills into ~/.claude/skills, or $CLAUDE_SKILLS_DIR; --check and --uninstall; never replaces anything that isn't its own link; tested against a scratch CLAUDE_SKILLS_DIR) and tools/work_skills.md. Left for Will: run `tools/install_work_skills.sh`, then `tools/install_work_skills.sh --check`, in the main checkout; start a session inside a worktree and confirm /work-next is listed; then close this item (its verify needs the user-level links).

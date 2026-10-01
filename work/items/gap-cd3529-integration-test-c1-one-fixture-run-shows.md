@@ -114,3 +114,11 @@ No such test exists. The fake-provider pattern exists, and the Graph budget and 
     main checkout's pending one (`skipped_and_unverified_tasks_are_not_counted_as_passed`) pass. Left as it was: the
     portal reducer still ignores a `task_completed` for a task it never saw start; its rows show such tasks as skipped
     once the plan ends.
+- 2026-10-01 (wk-gates): `95486b03a` gives gap-9eb1e1's `already_satisfied` outcome its own class, at its author's
+  request. It counts in `tasks_done` and in new `tasks_already_satisfied` counters, never in `tasks_passed` or
+  `tasks_completed`. The TUI shows it in teal and the portal in info cyan (`--state-satisfied`), each with a `≡`
+  glyph labelled "already satisfied". `08557bb28` merges the working branch at `a4e175c9c`. `node_outcome`
+  conflicted with gap-9eb1e1, so both arms are kept, and that one now returns `TASK_OUTCOME_ALREADY_SATISFIED`.
+  Re-verified at `08557bb28` in the worker's own target clone: the three `[[verify]]` commands, C1, nightly fmt,
+  clippy for roko-core and roko-cli, and 940 targeted lib tests all pass. The portal passes `tsc` and 789 vitest
+  tests.

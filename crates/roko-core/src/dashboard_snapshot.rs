@@ -560,6 +560,11 @@ pub struct PlanSetEntry {
     /// Human-readable plan title (the plan ID when none is declared).
     #[serde(default)]
     pub title: String,
+    /// Plan set (directory) containing the plan, relative to the workspace
+    /// `plans/` directory and `/`-separated (e.g. `"portal-programme"`).
+    /// `None` for a top-level plan or one outside `plans/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// Total tasks declared by the plan.
     #[serde(default)]
     pub tasks_total: usize,
@@ -4558,6 +4563,24 @@ mod tests {
                 }],
             }
         );
+    }
+
+    #[test]
+    fn plan_set_entry_names_its_group_only_when_it_has_one() {
+        let nested = PlanSetEntry {
+            plan_id: "01-backend".into(),
+            group: Some("portal-programme".into()),
+            ..PlanSetEntry::default()
+        };
+        let json = serde_json::to_value(&nested).unwrap();
+        assert_eq!(json["group"], "portal-programme");
+        assert_eq!(
+            serde_json::from_value::<PlanSetEntry>(json).unwrap(),
+            nested
+        );
+
+        let top_level = serde_json::to_value(PlanSetEntry::default()).unwrap();
+        assert!(top_level.get("group").is_none(), "{top_level}");
     }
 
     #[test]

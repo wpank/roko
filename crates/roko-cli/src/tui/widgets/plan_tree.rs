@@ -125,16 +125,34 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
                 .and_then(|&idx| state.plans.get(idx))
         })
         .map(|plan| plan.id.as_str());
+    // Plans inside a plan set (`plans/<group>/<plan>`): when every listed
+    // plan is in the same set the title names it; when the listed plans span
+    // several sets (or sets and top-level plans) they group under headers.
+    let mut listed_sets: Vec<Option<&str>> = Vec::new();
+    for plan in filtered_plan_indices
+        .iter()
+        .filter_map(|&idx| state.plans.get(idx))
+    {
+        let set = state.plan_group(&plan.id);
+        if !listed_sets.contains(&set) {
+            listed_sets.push(set);
+        }
+    }
+    let set_headers = listed_sets.len() > 1;
+    let label = match listed_sets.as_slice() {
+        [Some(set)] => format!("Plans \u{00b7} {set}"),
+        _ => String::from("Plans"),
+    };
     let title = if focused {
         if filter_active {
-            format!("Plans ({filtered_total}/{total}{health_suffix}) [Enter:detail h/l:tree]")
+            format!("{label} ({filtered_total}/{total}{health_suffix}) [Enter:detail h/l:tree]")
         } else {
-            format!("Plans ({completed}/{total}{health_suffix}) [Enter:detail h/l:tree]")
+            format!("{label} ({completed}/{total}{health_suffix}) [Enter:detail h/l:tree]")
         }
     } else if filter_active {
-        format!("Plans ({filtered_total}/{total}{health_suffix})")
+        format!("{label} ({filtered_total}/{total}{health_suffix})")
     } else {
-        format!("Plans ({completed}/{total}{health_suffix})")
+        format!("{label} ({completed}/{total}{health_suffix})")
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -159,9 +177,23 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
     }
 
     if state.execution_waves.is_empty() {
-        render_flat_plans(&mut lines, state, focused, area, selected_plan_id);
+        render_flat_plans(
+            &mut lines,
+            state,
+            focused,
+            area,
+            selected_plan_id,
+            set_headers,
+        );
     } else {
-        render_wave_tree(&mut lines, state, focused, area, selected_plan_id);
+        render_wave_tree(
+            &mut lines,
+            state,
+            focused,
+            area,
+            selected_plan_id,
+            set_headers,
+        );
     }
 
     // Border styling
@@ -253,6 +285,7 @@ fn render_wave_tree(
     focused: bool,
     area: Rect,
     selected_plan_id: Option<&str>,
+    set_headers: bool,
 ) {
     let selected_wave = state
         .execution_waves
@@ -403,18 +436,29 @@ fn render_wave_tree(
             continue;
         }
 
-        // Plans within wave
-        for plan in wave_plans {
-            render_plan_line(
-                lines,
-                plan,
-                state,
-                focused,
-                area,
-                true,
-                selected_plan_id,
-                wave_selected,
-            );
+        // Plans within wave, under a header per plan set when the tree has
+        // several.
+        let sets = if set_headers {
+            by_plan_set(state, wave_plans)
+        } else {
+            vec![(None, wave_plans)]
+        };
+        for (set, plans) in sets {
+            if let Some(set) = set {
+                lines.push(plan_set_header(set, &plans, "   ", area));
+            }
+            for plan in plans {
+                render_plan_line(
+                    lines,
+                    plan,
+                    state,
+                    focused,
+                    area,
+                    true,
+                    selected_plan_id,
+                    wave_selected,
+                );
+            }
         }
     }
 }
@@ -429,21 +473,100 @@ fn render_flat_plans(
     focused: bool,
     area: Rect,
     selected_plan_id: Option<&str>,
+    set_headers: bool,
 ) {
-    for plan in &state.plans {
-        if matches_filter(plan, state) {
+    let listed = state
+        .plans
+        .iter()
+        .filter(|plan| matches_filter(plan, state));
+    let sets = if set_headers {
+        by_plan_set(state, listed)
+    } else {
+        vec![(None, listed.collect())]
+    };
+    for (set, plans) in sets {
+        if let Some(set) = set {
+            lines.push(plan_set_header(set, &plans, " ", area));
+        }
+        for plan in plans {
             render_plan_line(
                 lines,
                 plan,
                 state,
                 focused,
                 area,
-                false,
+                set.is_some(),
                 selected_plan_id,
                 false,
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Plan sets (`plans/<group>/<plan>`)
+// ---------------------------------------------------------------------------
+
+/// `plans` grouped by plan set, each set where its first plan appears and
+/// each keeping the given order; top-level plans form the `None` set.
+fn by_plan_set<'a>(
+    state: &'a TuiState,
+    plans: impl IntoIterator<Item = &'a PlanEntry>,
+) -> Vec<(Option<&'a str>, Vec<&'a PlanEntry>)> {
+    let mut sets: Vec<(Option<&str>, Vec<&PlanEntry>)> = Vec::new();
+    for plan in plans {
+        let set = state.plan_group(&plan.id);
+        match sets.iter_mut().find(|(name, _)| *name == set) {
+            Some((_, members)) => members.push(plan),
+            None => sets.push((set, vec![plan])),
+        }
+    }
+    sets
+}
+
+/// Header row for the listed plans of one plan set: its name, plans done,
+/// failures, and a rule to the panel edge.
+fn plan_set_header(set: &str, plans: &[&PlanEntry], indent: &str, area: Rect) -> Line<'static> {
+    let done = plans
+        .iter()
+        .filter(|plan| !plan.active && plan.status.is_done())
+        .count();
+    let failed = plans
+        .iter()
+        .filter(|plan| !plan.active && plan.status.is_failed())
+        .count();
+    let active = plans.iter().any(|plan| plan.active);
+    let mut spans = vec![
+        Span::styled(
+            format!("{indent}\u{25c6} "),
+            Style::default().fg(if active { Theme::ROSE } else { Theme::DREAM }),
+        ),
+        Span::styled(
+            set.to_string(),
+            Style::default()
+                .fg(Theme::BONE_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" ({done}/{})", plans.len()),
+            Style::default().fg(Theme::FG_DIM),
+        ),
+    ];
+    if failed > 0 {
+        spans.push(Span::styled(
+            format!(" \u{2717}{failed}"),
+            Style::default().fg(Theme::EMBER),
+        ));
+    }
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    let avail = area.width.saturating_sub(2) as usize;
+    if avail > used + 1 {
+        spans.push(Span::styled(
+            format!(" {}", "\u{2500}".repeat(avail - used - 1)),
+            Style::default().fg(Theme::TEXT_GHOST),
+        ));
+    }
+    Line::from(spans)
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,5 +1578,56 @@ mod tests {
             rendered.contains("second task"),
             "flat expanded plan should show task 2: {rendered}"
         );
+    }
+
+    #[test]
+    fn plan_tree_groups_plans_by_plan_set() {
+        use roko_core::dashboard_snapshot::PlanSetEntry;
+
+        let render = |state: &TuiState| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_plan_tree(frame, area, state, false);
+                })
+                .unwrap();
+            rendered_text(&terminal)
+        };
+        let entry = |plan_id: &str, group: Option<&str>| PlanSetEntry {
+            plan_id: plan_id.to_string(),
+            group: group.map(str::to_string),
+            ..PlanSetEntry::default()
+        };
+        let mut state = sample_state();
+        state.plans[1].status = crate::tui::state::PlanPhase::Done;
+        state.plan_set = vec![
+            entry("plan-alpha", Some("portal-programme")),
+            entry("plan-beta", Some("portal-programme")),
+            entry("plan-gamma", None),
+        ];
+
+        // Waves: the set's plans sit under its header inside their wave.
+        let rendered = render(&state);
+        let header = "\u{25c6} portal-programme (1/2)";
+        assert!(rendered.contains(header), "{rendered}");
+
+        // No waves: the set's plans follow its header; the top-level plan
+        // keeps no header.
+        state.execution_waves.clear();
+        let rendered = render(&state);
+        let at = |text: &str| rendered.find(text).unwrap_or(usize::MAX);
+        assert!(at(header) < at("plan-alpha"), "{rendered}");
+        assert!(at("plan-beta") < at("plan-gamma"), "{rendered}");
+        assert_eq!(rendered.matches('\u{25c6}').count(), 1, "{rendered}");
+
+        // One set: the title names it instead of a header.
+        state.plans.truncate(2);
+        let rendered = render(&state);
+        assert!(
+            rendered.contains("Plans \u{00b7} portal-programme ("),
+            "{rendered}"
+        );
+        assert!(!rendered.contains('\u{25c6}'), "{rendered}");
     }
 }

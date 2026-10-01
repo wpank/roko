@@ -485,6 +485,11 @@ impl TuiState {
         // One run clock spans the whole announced plan set, including the
         // gaps between plans when nothing is active.
         self.plan_set_running = snap.plan_set.is_some() && !snap.plan_set_complete();
+        self.plan_set = snap
+            .plan_set
+            .as_ref()
+            .map(|set| set.plans.clone())
+            .unwrap_or_default();
         if let Some(duration_ms) = snap.run_duration_ms {
             self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
             self.run_started = None;
@@ -1010,9 +1015,9 @@ impl TuiState {
 
         // Synthesize plan_summaries from snapshot-built plans so the F2 left
         // panel works in approval mode (where DashboardData is never loaded).
-        // The snapshot carries no plan set, so each plan keeps the group disk
-        // discovery gave it: from the disk-loaded summaries when there are
-        // any, else from one workspace scan per unseen plan id.
+        // Each plan takes the group its plan-set entry names, else the group
+        // disk discovery gave it: from the disk-loaded summaries when there
+        // are any, else from one workspace scan per unseen plan id.
         let discovered_groups: HashMap<String, String> = self
             .plan_summaries
             .iter()
@@ -1044,9 +1049,12 @@ impl TuiState {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
-                group: discovered_groups
-                    .get(&plan.id)
-                    .cloned()
+                group: self
+                    .plan_set
+                    .iter()
+                    .find(|entry| entry.plan_id == plan.id)
+                    .and_then(|entry| entry.group.clone())
+                    .or_else(|| discovered_groups.get(&plan.id).cloned())
                     .or_else(|| self.plan_groups.get(&plan.id).cloned().flatten()),
             })
             .collect();

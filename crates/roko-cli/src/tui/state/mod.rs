@@ -1892,9 +1892,13 @@ pub struct TuiState {
     /// tail.
     pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
     /// Plan set of each plan id seen in the live snapshot, from disk
-    /// discovery (`None` for top-level or undiscovered plans). The snapshot
-    /// itself carries no plan set.
+    /// discovery (`None` for top-level or undiscovered plans). Read through
+    /// [`TuiState::plan_group`], which prefers the announced plan set's group.
     pub plan_groups: HashMap<String, Option<String>>,
+    /// Plans announced by the live snapshot's plan set, in execution order,
+    /// with each plan's group, wave, prerequisites and conflicts. Empty when
+    /// no plan set was announced.
+    pub plan_set: Vec<roko_core::dashboard_snapshot::PlanSetEntry>,
 
     // -- gate output --
     /// Streaming gate output lines from rung executions (bounded).
@@ -2370,6 +2374,7 @@ impl Default for TuiState {
             gate_recent_failures: Vec::new(),
             task_gate_outputs: Vec::new(),
             plan_groups: HashMap::new(),
+            plan_set: Vec::new(),
 
             gate_output_lines: VecDeque::new(),
             current_gate_rung: None,
@@ -3159,6 +3164,24 @@ impl TuiState {
         let mut state = Self::default();
         state.update_from_snapshot(data);
         state
+    }
+
+    /// The plan set (directory under `plans/`) containing `plan_id`: the
+    /// group its announced plan-set entry names, else the group disk
+    /// discovery gave it. `None` for a top-level plan.
+    #[must_use]
+    pub fn plan_group(&self, plan_id: &str) -> Option<&str> {
+        self.plan_set
+            .iter()
+            .find(|entry| entry.plan_id == plan_id)
+            .and_then(|entry| entry.group.as_deref())
+            .or_else(|| self.plan_groups.get(plan_id).and_then(Option::as_deref))
+            .or_else(|| {
+                self.plan_summaries
+                    .iter()
+                    .find(|summary| summary.id == plan_id)
+                    .and_then(|summary| summary.group.as_deref())
+            })
     }
 
     // -- config items cache (P3.2) ------------------------------------------

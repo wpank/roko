@@ -26,7 +26,7 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -52,7 +52,7 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-09-29
 - **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
 
-_53 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_53 more open · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -60,7 +60,7 @@ _53 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-09-29
 - **P2** [bug-1cb461](items/bug-1cb461-aggregator-truncates-content-by-byte-index-and.md) Aggregator truncates content by byte index and can panic on non-ASCII text [bug] · size S · verified 2026-09-29
 
-_24 more open · `goal = "visibility"`_
+_24 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _12 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 16 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

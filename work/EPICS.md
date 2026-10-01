@@ -36,8 +36,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt
 
-- **35/37 closed** · goal `truth` · severity p0
-- open by lane: none 1, rust-hot 1
+- **35/39 closed** · goal `truth` · severity p0
+- open by lane: rust-hot 3, none 1
 - next: [gap-ad0d39](items/gap-ad0d39-cost-records-miss-claude-per-model-usage.md) Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet
 
 ## [spec-9230a9](items/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope
@@ -112,10 +112,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 |---|---|---|---|
 | bench | 47 | 59 | 12 (0) |
 | docs | 14 | 15 | 1 (0) |
-| frontend | 1 | 1 | 0 (0) |
+| frontend | 1 | 2 | 1 (0) |
 | none | 190 | 391 | 201 (201) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 122 | 144 | 22 (0) |
-| rust-hot | 74 | 86 | 12 (0) |
+| rust-cold | 122 | 147 | 25 (0) |
+| rust-hot | 74 | 90 | 16 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 19 | 23 | 4 (0) |

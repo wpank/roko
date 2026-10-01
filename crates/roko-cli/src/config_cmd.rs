@@ -201,6 +201,47 @@ pub fn cmd_show_effective(workdir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Print one section of the fully-resolved config as TOML, secrets redacted as
+/// for `--effective`. `section` is a top-level table such as `agent` or a dotted
+/// path such as `providers.anthropic`.
+pub fn cmd_show_section(workdir: &Path, section: &str) -> Result<()> {
+    let config = roko_core::config::loader::load_config_unified(workdir)
+        .map_err(|e| anyhow::anyhow!("load config: {e}"))?;
+    print!("{}", render_config_section(&config, section)?);
+    Ok(())
+}
+
+/// The value at the dotted path `section` of the redacted effective config,
+/// rendered as TOML under its own table header.
+fn render_config_section(config: &RokoConfig, section: &str) -> Result<String> {
+    let effective = roko_core::config::loader::serialize_effective_redacted(config)
+        .map_err(|e| anyhow!("serialize config: {e}"))?;
+    let root = toml::Value::Table(toml::from_str(&effective).context("parse the config")?);
+    let keys: Vec<&str> = section.split('.').collect();
+    let mut value = &root;
+    for (depth, key) in keys.iter().enumerate() {
+        let table = value
+            .as_table()
+            .ok_or_else(|| anyhow!("`{}` is a value, not a section", keys[..depth].join(".")))?;
+        value = table.get(*key).ok_or_else(|| {
+            let known: Vec<&str> = table.keys().map(String::as_str).collect();
+            anyhow!(
+                "the config has no section `{}`; the keys at that level are: {}",
+                keys[..=depth].join("."),
+                known.join(", ")
+            )
+        })?;
+    }
+    // Nest the value under its keys again so it prints with its table header.
+    let mut wrapped = value.clone();
+    for key in keys.iter().rev() {
+        let mut table = toml::Table::new();
+        table.insert(String::from(*key), wrapped);
+        wrapped = toml::Value::Table(table);
+    }
+    toml::to_string_pretty(&wrapped).context("render the config section")
+}
+
 /// Print the resolved config paths (global + project + env override).
 pub fn cmd_path(workdir: &Path) -> Result<()> {
     let resolved = load_resolved_config(workdir)?;
@@ -2917,5 +2958,44 @@ command = "claude"
             output.contains("https://acme.test/v1"),
             "base_url was incorrectly redacted"
         );
+    }
+
+    #[test]
+    fn config_show_section_prints_only_that_section() {
+        let text = r#"
+schema_version = 2
+
+[serve.auth]
+enabled = true
+api_key = "roko-secret-api-key"
+
+[dreams]
+auto_dream = true
+"#;
+        let config = RokoConfig::from_toml(text).expect("parse config");
+        let render = |section: &str| render_config_section(&config, section).unwrap();
+
+        let dreams = render("dreams");
+        assert!(dreams.starts_with("[dreams]\n"), "{dreams}");
+        assert!(dreams.contains("auto_dream = true"), "{dreams}");
+        assert!(!dreams.contains("[serve"), "{dreams}");
+
+        let auth = render("serve.auth");
+        assert!(auth.starts_with("[serve.auth]\n"), "{auth}");
+        assert!(!auth.contains("roko-secret-api-key"), "{auth}");
+
+        assert_eq!(
+            render("dreams.auto_dream"),
+            "[dreams]\nauto_dream = true\n"
+        );
+    }
+
+    #[test]
+    fn config_show_section_names_the_keys_of_an_unknown_section() {
+        let config = RokoConfig::default();
+        let error = render_config_section(&config, "agnet").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("`agnet`"), "{message}");
+        assert!(message.contains("agent"), "{message}");
     }
 }

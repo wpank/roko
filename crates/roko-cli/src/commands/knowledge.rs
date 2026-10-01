@@ -434,7 +434,8 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             }
 
             let store = KnowledgeStore::for_workdir(&wd);
-            let entries = store.query(&topic, usize::from(limit)).with_context(|| {
+            let limit = usize::from(limit);
+            let entries = store.query(&topic, limit).with_context(|| {
                 format!(
                     "query knowledge store at {} for topic '{topic}'",
                     store.path().display()

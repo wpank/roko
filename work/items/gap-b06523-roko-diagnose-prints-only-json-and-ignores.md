@@ -10,8 +10,8 @@ size = "M"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-29
 updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/diagnose-graph-runs 05f8854ce"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::cmd_diagnose", "crates/roko-cli/src/commands/diagnose.rs::DiagnoseReport", "crates/roko-cli/src/main.rs:3807"]
@@ -63,3 +63,16 @@ Checked at 33e107da1. JSON only. Other commands read `cli.json` (for example `co
 
 - `roko diagnose <plan>` prints a readable report and `roko --json diagnose <plan>` prints the JSON report.
 - The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-10-01 (wk-climain): implemented on work/bug-28c193; cargo verification deferred to the batch check.
+  `diagnose::render_text` prints the status, the run, spend and task counts, then each task that did not complete
+  (every task with `--verbose`) with its reason (which carries the last error), the verify step it failed and that
+  step's command, and its attempts with cost, then the next steps (they include the resume command) and notes.
+  `cmd_diagnose` takes `json`, and main.rs passes `cli.json`: text is the default, `--json` prints the report.
+  Help text, `docs/v3/28-CLI.md` and the newcomer overview are updated. `scripts/run_evidence.py` now runs
+  `roko diagnose <plan> --json`, since it stores the JSON answer (`docs/v2/30-EVIDENCE-BUNDLES.md` updated); its
+  end-to-end tests (`scripts/test_run_evidence_graph.py`) need a roko built from this branch, which was not run.
+  Test: `a_graph_report_renders_as_readable_text`. CLAUDE.md's CLI table still says "structured JSON output";
+  left for Will to approve.

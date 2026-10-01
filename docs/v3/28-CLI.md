@@ -397,10 +397,13 @@ roko doctor [disk|network|clean] [--workdir <path>] [--serve-url <url>]
 
 ### `roko diagnose`
 
-Diagnose why a plan failed. Outputs structured JSON.
+Diagnose why a plan failed. Prints a readable report: the plan's status, each task that did not complete with
+why (its last error, the verify step it failed and that step's command, its attempts with their cost), and the
+next steps, including the command that resumes the run. The global `--json` flag prints the full report as
+structured JSON instead.
 
 ```
-roko diagnose <plan-id> [--verbose] [--workdir <path>]
+roko diagnose <plan-id> [--verbose] [--workdir <path>] [--json]
 ```
 
 The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
@@ -414,7 +417,8 @@ read only for a plan without a Graph checkpoint.
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Also list attempts, verify failures and episodes of tasks that completed. |
+| `--verbose` | Also list the tasks that completed, with their attempts, verify failures and episodes. |
+| `--json` | Print the report as structured JSON. |
 
 ---
 
@@ -1450,10 +1454,12 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>]
 
 #### `roko config show`
 
-Print the effective merged config with per-field source tags.
+Print the effective merged config with per-field source tags. `--effective` prints the fully-resolved config as
+TOML instead. Name a section to print only that part of the fully-resolved config, as TOML: a top-level table such
+as `agent` or `dreams`, or a dotted path such as `providers.anthropic`. Secrets are redacted either way.
 
 ```
-roko config show [--workdir <path>] [--effective]
+roko config show [<section>] [--workdir <path>] [--effective]
 ```
 
 #### `roko config path`

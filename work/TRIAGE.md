@@ -132,14 +132,14 @@
 ### roko-std/sandbox (1)
 - **P2** [bug-bb3262](items/bug-bb3262-the-rust-guard-port-fails-open-at-deep.md) The Rust guard port fails open at deep command nesting, and doesn't resolve git aliases [bug] · size S
 
+### docs/v3 (1)
+- **P2** [gap-1f72ac](items/gap-1f72ac-the-121-unread-cited-works-in-docs.md) The ~121 unread cited works in docs/v3 likely carry unsupported claims at the audited 62% rate: banner the references, cut unchecked annotations to bare citations · size M
+
 ### roko-learn (1)
 - **P2** [bug-8417d9](items/bug-8417d9-thirteen-jsonl-appenders-write-each-row-and.md) Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows [bug] · size M
 
 ### roko-cli/chat (1)
 - **P2** [bug-8a78e1](items/bug-8a78e1-chat-dispatch-v2-and-serve-load-the-cascade.md) chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens [bug] · size S
-
-### docs/v3 (1)
-- **P2** [gap-11845c](items/gap-11845c-docs-v3-s-descriptions-of-what-cited.md) docs/v3's descriptions of what cited papers say are unchecked; two harness-engineering sections checked so far were mostly invented · size M
 
 ### roko-serve/routes/runs (1)
 - **P2** [bug-54c729](items/bug-54c729-roko-serve-s-runs-route-reports-every-task.md) roko-serve's runs route reports every task status other than passed as failed [bug] · size S

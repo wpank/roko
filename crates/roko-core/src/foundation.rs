@@ -327,7 +327,9 @@ pub struct ModelCallRequest {
 }
 
 /// Extended-thinking activation mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingMode {
     /// Extended thinking is enabled.
@@ -338,7 +340,7 @@ pub enum ThinkingMode {
 }
 
 /// Provider-neutral extended-thinking configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ThinkingConfig {
     /// Activation mode (`type` on provider wire formats).
     #[serde(rename = "type")]

@@ -344,6 +344,9 @@ impl Agent for HermesAcpAgent {
         let mut usage_input: Option<u64> = None;
         let mut usage_output: Option<u64> = None;
         let timeout = self.config.timeout;
+        // One deadline for the whole turn: notifications do not extend it.
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
 
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
@@ -396,7 +399,7 @@ impl Agent for HermesAcpAgent {
                             }
                         }
                     }
-                    _ = tokio::time::sleep(timeout) => {
+                    () = &mut deadline => {
                         tracing::warn!("hermes ACP turn timed out after {:?}", timeout);
                         break;
                     }
@@ -558,6 +561,9 @@ impl Agent for HermesAcpAgent {
         let mut usage_output: Option<u64> = None;
         let mut _tool_call_index: usize = 0;
         let timeout = self.config.timeout;
+        // One deadline for the whole turn: notifications do not extend it.
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
 
         if let (Some(mut n_rx), Some(mut td_rx)) = (notif_rx.take(), turn_done_rx.take()) {
             loop {
@@ -644,7 +650,7 @@ impl Agent for HermesAcpAgent {
                             }
                         }
                     }
-                    _ = tokio::time::sleep(timeout) => {
+                    () = &mut deadline => {
                         tracing::warn!("hermes ACP streaming turn timed out after {:?}", timeout);
                         let _ = event_tx
                             .send(StreamEvent::now(StreamEventKind::Done { finish_reason: "stop".to_string() }))
@@ -748,7 +754,9 @@ impl HarnessAdapter for HermesAcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::acp_client::AcpStdioConfig;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn default_config() {
@@ -933,5 +941,95 @@ mod tests {
         let usage_zero = HermesAcpAgent::estimate_usage(0, 0);
         assert_eq!(usage_zero.input_tokens, 1);
         assert_eq!(usage_zero.output_tokens, 1);
+    }
+
+    /// A stand-in for `hermes acp`, run with `bash -c`. It answers the
+    /// handshake and `session/new`; after a prompt it streams a
+    /// `session/update` every 50 ms and never finishes the turn. Other
+    /// requests get an empty result.
+    const CHATTY_ACP_SERVER: &str = r##"
+set -u
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            while :; do
+                printf '{"jsonrpc":"2.0","method":"session/update","params":{"text":"."}}\n'
+                sleep 0.05
+            done &
+            ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
+    /// A Hermes ACP agent whose server is `script`, run with `bash -c`, and
+    /// whose turns time out after `timeout`.
+    fn agent_backed_by(script: &str, timeout: Duration) -> HermesAcpAgent {
+        let client = AcpStdioClient::new(AcpStdioConfig {
+            command: "bash".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: Some(std::env::temp_dir()),
+            env: HashMap::new(),
+            protocol_version: "1".into(),
+            timeout: Duration::from_secs(10),
+        });
+        let config = HermesAcpConfig {
+            cwd: std::env::temp_dir(),
+            timeout,
+            ..HermesAcpConfig::default()
+        };
+        HermesAcpAgent::with_config(client, config)
+    }
+
+    /// bug-f98a13: the turn timeout covers the whole turn. A notification
+    /// every 50 ms used to restart it, so this turn never ended.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_acp_turn_timeout_ends_a_chatty_turn() {
+        let agent = agent_backed_by(CHATTY_ACP_SERVER, Duration::from_millis(300));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let started = Instant::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends at its timeout");
+
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert!(output.contains('.'), "the server streamed output: {output:?}");
+    }
+
+    /// bug-f98a13: the same for a streaming turn, which still ends with a
+    /// `Done` event.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn hermes_acp_turn_timeout_ends_a_chatty_streaming_turn() {
+        let agent = agent_backed_by(CHATTY_ACP_SERVER, Duration::from_millis(300));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+        let started = Instant::now();
+
+        let turn = agent.run_streaming(&input, &ctx, event_tx);
+        let _result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends at its timeout");
+
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        let mut done = false;
+        while let Ok(event) = event_rx.try_recv() {
+            done |= matches!(event.kind, StreamEventKind::Done { .. });
+        }
+        assert!(done, "the stream ends with Done");
     }
 }

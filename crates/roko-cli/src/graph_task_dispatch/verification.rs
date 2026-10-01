@@ -1887,9 +1887,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
         let key = format!("{}/{}", spec.plan_id, task.id);
         let finish_sibling = async {
-            while !dispatcher.in_flight.reading(&key) {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+            dispatcher.in_flight.reading_began(&key).await;
             // Time for a step that did not wait to have started.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             assert!(!runs.exists(), "the step ran while its sibling edited");

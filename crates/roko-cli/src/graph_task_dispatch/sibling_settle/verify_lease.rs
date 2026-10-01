@@ -246,14 +246,21 @@ impl InFlightTasks {
         self.bump();
     }
 
-    /// Whether a verify step of `key` is running or waiting to run, for
-    /// tests that act once a step has reached its wait.
+    /// Wait until an attempt of `key` (`"{plan_id}/{task_id}"`) has a verify
+    /// step running or waiting to run.
     #[cfg(test)]
-    pub(crate) fn reading(&self, key: &str) -> bool {
-        self.attempts
+    pub(crate) async fn reading_began(&self, key: &str) {
+        let mut changed = self.changed.subscribe();
+        while !self
+            .attempts
             .lock()
             .values()
             .any(|attempt| attempt.key == key && attempt.reading.is_some())
+        {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 

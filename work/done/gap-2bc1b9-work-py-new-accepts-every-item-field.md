@@ -2,14 +2,16 @@
 id = "gap-2bc1b9"
 kind = "gap"
 title = "work.py new accepts every item field as a flag"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "d6788bec9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (§1, R3)"
 anchors = ["tools/work.py::cmd_new", "tools/work.py::main", "tools/test_work.py"]
@@ -19,6 +21,16 @@ links = { depends_on = ["gap-130a3e"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_new_writes_every_field_from_flags' tools/test_work.py && grep -qw 'def test_new_refuses_an_unguarded_verify' tools/test_work.py && python3 tools/test_work.py -k test_new_writes_every_field_from_flags -k test_new_refuses_an_unguarded_verify"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T16:17:30Z"
+commit = "d6788bec9"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T16:12:50Z"
+forced = false
+evidence = "tools/work.py new takes every item field as a flag (new_problems, new_text), validates like check plus lint_verify/valid_anchor, refuses thin gap/bug/regression items; test_new_writes_every_field_from_flags and test_new_refuses_an_unguarded_verify pass, full tools/test_work.py passes (39)"
 +++
 
 ## Problem
@@ -62,3 +74,4 @@ Checked at `41c7ffbd6`: `cmd_new` writes `anchors = []`, empty links and the bod
 
 - Keep the id rule (`make_id`) unchanged.
 - Waits for gap-130a3e.
+- 2026-10-01 (wk-filer4): implemented on work/gap-2bc1b9. `new` now takes every item field as a flag (goal, lane, parent, milestone, size, rank, hold, discovered-from, doc, repeatable --anchor and --verify, the link lists, --body-file), checks them the way `check` does (plus `lint_verify` and `valid_anchor`), refuses a gap, bug or regression without an anchor, or without a verify unless --no-verify-yet, and prints the file with --dry-run. Tests: test_new_writes_every_field_from_flags and test_new_refuses_an_unguarded_verify; `python3 tools/test_work.py` passes (39 tests).

@@ -1,0 +1,37 @@
++++
+id = "bug-6052d8"
+kind = "bug"
+title = "roko chat's own CLI invocation still sends inert cache markers"
+status = "open"
+triage = "unverified"
+severity = "p3"
+goal = "core"
+size = "S"
+subsystem = ["roko-cli/dispatch_v2"]
+created = 2026-10-01
+updated = 2026-10-01
+source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
+discovered_from = "find-6ee709"
+anchors = ["crates/roko-cli/src/dispatch_v2.rs"]
+lane = "rust-hot"
+links = { depends_on = [], blocks = [], related = ["find-6ee709"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "cargo test -p roko-cli --lib chat_strips_cache_markers"
++++
+
+## Problem
+
+find-6ee709 strips cache markers from system prompts in `create_agent_for_model` for every provider except the Anthropic API. `roko chat` builds its own CLI invocation in `dispatch_v2`, so it still sends the markers as inert text.
+
+## Plan
+
+Apply the same stripping on the dispatch_v2 path, and add a test named `chat_strips_cache_markers`.
+
+## Done when
+
+- `cargo test -p roko-cli --lib chat_strips_cache_markers` passes.
+
+## Notes
+
+- Reported on 2026-10-01 by the worker on find-6ee709, during the evening close-out round.

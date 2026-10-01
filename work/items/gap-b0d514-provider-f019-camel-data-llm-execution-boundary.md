@@ -220,8 +220,16 @@ LLM failure blocks the content instead of passing it through.
   unscreened; the OpenAI-compatible path builds it only when one of its tool loops can run. `DataLlmConfig`'s doc
   and the config docs now include ACP. Test: `acp_data_llm_is_built_from_config_or_fails_the_turn` (roko-acp
   `bridge_events/tests.rs`).
-- Left: the verify's end-to-end test, `untrusted_tool_result_never_reaches_main_model_raw`, through a
-  factory-built agent against a local HTTP server; audit records (step 7); cancellation coverage (step 8).
+- 2026-10-02 (wk-childenv): the verify's end-to-end test on work/gap-1555ac; cargo verification deferred to the
+  batch check. `untrusted_tool_result_never_reaches_main_model_raw` (roko-agent `provider/openai_compat.rs`) builds
+  an agent with `create_agent_for_model` from a config whose `[agent.data_llm]` names a second model on a local
+  HTTP server, and gives it a plugin tool whose output carries an injection. It checks that the data model's request
+  has the raw output but no tools and not the main system prompt, and that the main model's next request carries
+  the data model's extraction, marked as data, and not the raw output. With it, every Done-when line is covered;
+  the verify's grep clauses pass now, and its `cargo test` clause waits for the gate.
+- Left, outside Done-when: audit records of each routing decision (Plan step 7), and cancellation (step 8): the
+  data-LLM call is not raced against the loop's cancel token, so a cancel waits for the call or its `timeout_ms`
+  (the raw text still never passes).
 
 ## Original notes
 

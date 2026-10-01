@@ -1468,7 +1468,7 @@ pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
         status: task.status.clone(),
         depends_on: task.depends_on.clone(),
         files: task.files.clone(),
-        completed: task.status == "done",
+        completed: crate::plan::task_status_is_complete(&task.status),
         verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
         model_hint: task.model_hint.clone(),
         estimated_minutes: task.estimated_minutes,
@@ -1554,6 +1554,55 @@ mod tests {
             result, plan_dir,
             "a plan directory must run in place; got a different path"
         );
+    }
+
+    /// bug-9f340c: the plan API counts a task as completed exactly when the
+    /// CLI's plan listing does: `done`, `completed`, `passed` or `skipped`.
+    #[tokio::test]
+    async fn task_to_dto_treats_passed_and_skipped_as_completed() {
+        let workdir = tempfile::tempdir().unwrap();
+        let plan_dir = workdir.path().join("plans").join("statuses");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        let cases = [
+            ("done", true),
+            ("completed", true),
+            ("passed", true),
+            ("skipped", true),
+            ("pending", false),
+            ("ready", false),
+            ("active", false),
+            ("blocked", false),
+            ("failed", false),
+        ];
+        let tasks: String = cases
+            .iter()
+            .map(|(status, _)| {
+                format!("\n[[task]]\nid = {status:?}\ntitle = {status:?}\nstatus = {status:?}\n")
+            })
+            .collect();
+        let tasks_toml = format!("[meta]\nplan = \"statuses\"\n{tasks}");
+        std::fs::write(plan_dir.join("tasks.toml"), tasks_toml).unwrap();
+
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+        let dto = runtime
+            .load_plan_tasks(workdir.path(), "statuses")
+            .await
+            .unwrap()
+            .expect("the directory plan is found");
+        let completed: Vec<(&str, bool)> = dto
+            .tasks
+            .iter()
+            .map(|task| (task.id.as_str(), task.completed))
+            .collect();
+        assert_eq!(completed, cases);
+
+        // The plan's summary counts the same four tasks as done.
+        let summary = runtime
+            .load_plan_summary(workdir.path(), "statuses")
+            .await
+            .unwrap()
+            .expect("the directory plan is listed");
+        assert_eq!((summary.task_count, summary.tasks_done, summary.tasks_failed), (9, 4, 1));
     }
 
     /// A plan-set directory (no top-level tasks.toml) must also be returned

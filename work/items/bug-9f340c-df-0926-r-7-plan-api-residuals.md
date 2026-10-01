@@ -8,9 +8,9 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/routes/plans"]
 created = 2026-09-26
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#R-7. The plan-01 code is good where it counts, weak where it verifies"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#R-7. The plan-01 code is good where it counts, weak where it verifies"
 anchors = ["crates/roko-cli/src/serve_runtime.rs::task_to_dto", "crates/roko-cli/src/plan.rs:309", "crates/roko-serve/src/routes/plans.rs::plans_dir", "crates/roko-serve/src/routes/plans.rs::resolve_plan", "crates/roko-cli/src/serve_runtime.rs::load_plan_summary"]
@@ -31,3 +31,7 @@ Verified 2026-09-28 (static check against 3d0ee4d02): All R-7 residuals still ho
 **Partial fix landed 2026-09-29 (plan 04 T07):** `POST /api/plans` now writes `plans/<slug>/tasks.toml` (a directory plan) instead of `<uuid>.json`. The created plan is immediately visible to `GET /api/plans` (discovery-based listing) and passes `roko plan validate`. Verified: PASS "POST /api/plans creates a plan (201) and returns its slug", PASS "the created plan is a directory plan", PASS "the created plan is listed". The `find_plan` flat-file lookup backing the other nine handlers (resume, costs, gates, estimate, chat, reviews, diff, validate, source) is addressed by plan 03b T18; those handlers remain open.
 
 Re-verified 2026-09-29 at d9e79e9d8. Fixed: find_plan was removed in 5c62bf0d4 and the seven id-based handlers now resolve plans through the runtime (routes/plans.rs::resolve_plan, :2514), so directory plans no longer 404; create_plan writes plans/<slug>/tasks.toml through runtime.create_plan (6c9b8dc7a). Still open: (1) crates/roko-cli/src/serve_runtime.rs:1614 task_to_dto sets completed only for status "done", while the CLI treats "done" | "completed" | "passed" | "skipped" as complete (crates/roko-cli/src/plan.rs:309); (2) plans_dir (routes/plans.rs:2500-2506) returns plans/ whenever it exists, so plans under legacy .roko/plans are not reachable there; (3) RokoCliRuntime::load_plan_summary / load_plan_tasks (serve_runtime.rs:421, :453) still have no direct tests (serve_runtime.rs has 5 tests, none call them).
+
+## Notes
+
+2026-10-01 (wk-runstate): implemented on work/find-8872ad; cargo verification deferred to the batch check. `task_to_dto` now sets `completed` with `crate::plan::task_status_is_complete`, the predicate the CLI plan listing (`summarize_plan_info`) uses, moved into a function both call: done, completed, passed or skipped. New test `serve_runtime::tests::task_to_dto_treats_passed_and_skipped_as_completed` loads a directory plan through `RokoCliRuntime::load_plan_tasks` and `load_plan_summary` and checks each status, and that the summary counts the same four tasks as done. That covers residual (3), the runtime's untested plan loading. Residual (2) was already fixed at BASE: `plans_dir` delegates to `roko_fs::workspace_plans::workspace_plans_dir` (1e0073605), which keeps a workspace that holds plans in `.roko/plans` there (test `plans_dir_keeps_a_legacy_workspace_in_dotted_roko`, routes/plans.rs:3977).

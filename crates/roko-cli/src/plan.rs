@@ -269,6 +269,14 @@ pub fn plan_dirs_by_id(workdir: &Path) -> std::collections::BTreeMap<String, Pla
     }
 }
 
+/// Whether a task's `tasks.toml` status counts it as complete: `done`,
+/// `completed`, `passed` or `skipped`. The plan listing and the plan API both
+/// count completed tasks with it.
+#[must_use]
+pub fn task_status_is_complete(status: &str) -> bool {
+    matches!(status, "done" | "completed" | "passed" | "skipped")
+}
+
 /// Build a display summary from a discovered plan entry.
 #[must_use]
 pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
@@ -301,12 +309,7 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
                     let done = tasks_file
                         .tasks
                         .iter()
-                        .filter(|t| {
-                            matches!(
-                                t.status.as_str(),
-                                "done" | "completed" | "passed" | "skipped"
-                            )
-                        })
+                        .filter(|t| task_status_is_complete(&t.status))
                         .count();
                     let failed = tasks_file
                         .tasks

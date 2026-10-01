@@ -87,7 +87,8 @@ pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{
-    GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget, task_budget_ceiling_usd,
+    GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget,
+    task_budget_ceiling_usd,
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
@@ -206,6 +207,8 @@ pub struct GraphTaskDispatcher {
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
     task_spend: GraphTaskSpendLedger,
+    /// Today's spend before this process, for `budget.max_daily_usd`.
+    daily_budget: GraphDailyBudget,
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
@@ -282,6 +285,7 @@ impl GraphTaskDispatcher {
             reflex_store: None,
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
+            daily_budget: GraphDailyBudget::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -487,13 +491,15 @@ impl GraphTaskDispatcher {
     }
 
     /// Why no further task of `plan_id` may be dispatched in this run, when
-    /// that is so: its settled spend reached the plan ceiling (and no
-    /// explicit override lets it continue), or its cost ledger cannot be
-    /// persisted. In-flight reservations alone never stop a plan.
+    /// that is so: its settled spend reached the plan ceiling, or today's
+    /// reached `budget.max_daily_usd` (and no explicit override lets it
+    /// continue), or its cost ledger cannot be persisted. In-flight
+    /// reservations alone never stop a plan.
     #[must_use]
     pub fn plan_dispatch_stop(&self, plan_id: &str) -> Option<String> {
         self.budget_ledger
             .dispatch_stop(plan_id, self.budget_policy)
+            .or_else(|| self.daily_dispatch_stop())
     }
 
     /// Return aggregate token and dispatch counts accumulated across all
@@ -648,6 +654,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
             .reserve(&spec.plan_id, self.budget_policy)?;
@@ -1326,7 +1333,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
-                    self.task_spend.record(&task_spend_key, cost_usd);
+                    self.task_spend
+                        .record(&task_spend_key, &dispatch.result.usage);
                     if let Err(budget_error) = budget_reservation.settle(cost_usd) {
                         tracing::warn!(
                             plan_id = %spec.plan_id,
@@ -1371,7 +1379,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
         self.task_spend
-            .record(&task_spend_key, f64::from(dispatch.result.usage.cost_usd));
+            .record(&task_spend_key, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);

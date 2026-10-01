@@ -1182,6 +1182,9 @@ async fn run_graph_plan_body(
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    // `budget.max_daily_usd`: today's spend before this run, read once, so a
+    // run whose day is already spent starts no task (bug-ae28ac).
+    graph_task_dispatcher.prime_daily_budget().await;
     for plan_id in &held_plans {
         graph_task_dispatcher.hold_for_approval(plan_id);
     }

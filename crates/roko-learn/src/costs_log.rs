@@ -16,6 +16,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::costs_db::CostRecord;
 use crate::telemetry::CostSource;
 
+/// What a [`CostsLog`] recorded on one UTC calendar day.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DaySpend {
+    /// Sum of the day's priced calls, in USD.
+    pub cost_usd: f64,
+    /// Calls whose cost is unknown: recorded at $0 although they used
+    /// tokens, so never priced, or at a cost that is negative or not a
+    /// number. Their cost is unknown, not zero.
+    pub unpriced_calls: usize,
+}
+
 /// Append-only JSONL log for [`CostRecord`] values.
 #[derive(Debug, Clone)]
 pub struct CostsLog {
@@ -253,6 +264,28 @@ impl CostsLog {
             .unwrap_or(0.0))
     }
 
+    /// What the log recorded on `day` (UTC calendar day): the priced
+    /// spend, and how many calls have an unknown cost. Records whose
+    /// timestamp does not parse belong to no day.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying log cannot be read.
+    pub async fn spend_on(&self, day: chrono::NaiveDate) -> io::Result<DaySpend> {
+        let mut spend = DaySpend::default();
+        for record in self.read_all().await? {
+            if record_timestamp(&record).map(|timestamp| timestamp.date_naive()) != Some(day) {
+                continue;
+            }
+            if is_unpriced(&record) {
+                spend.unpriced_calls += 1;
+            } else {
+                spend.cost_usd += record.cost_usd;
+            }
+        }
+        Ok(spend)
+    }
+
     /// Return the recent cost rate for the last `window` of wall-clock time.
     ///
     /// The result is expressed in USD/minute.
@@ -299,6 +332,17 @@ fn recent_cost_rate_from_records(records: &[CostRecord], window: Duration) -> f6
     recent_cost / (window.as_secs_f64() / 60.0)
 }
 
+/// Whether `record`'s cost is unknown: recorded at $0 although the call used
+/// tokens, or at a cost that is negative or not a finite number.
+fn is_unpriced(record: &CostRecord) -> bool {
+    let tokens = record
+        .input_tokens
+        .saturating_add(record.output_tokens)
+        .saturating_add(record.cached_tokens);
+    let priced = record.cost_usd.is_finite() && record.cost_usd >= 0.0;
+    !priced || (record.cost_usd <= f64::EPSILON && tokens > 0)
+}
+
 fn record_timestamp(record: &CostRecord) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(&record.timestamp)
         .ok()
@@ -341,6 +385,49 @@ mod tests {
             session_id: "sess-1".to_string(),
             cost_source: CostSource::Unknown,
         }
+    }
+
+    /// A day's spend sums its priced calls, counts the calls whose cost is
+    /// unknown, and leaves other days and undated records out.
+    #[tokio::test]
+    async fn spend_on_counts_one_day_and_tells_unpriced_calls_apart() {
+        let tmp = TempDir::new().unwrap();
+        let log = CostsLog::at(tmp.path().join("costs.jsonl"));
+        let today = Utc::now();
+        let free = CostRecord {
+            input_tokens: 0,
+            output_tokens: 0,
+            ..record("free", 0.0)
+        };
+        let yesterday = CostRecord {
+            timestamp: (today - ChronoDuration::days(1)).to_rfc3339(),
+            ..record("yesterday", 5.0)
+        };
+        let undated = CostRecord {
+            timestamp: "not a timestamp".to_string(),
+            ..record("undated", 5.0)
+        };
+        log.append_all(&[
+            record("priced", 0.25),
+            record("priced", 0.5),
+            record("unpriced", 0.0),
+            record("negative", -1.0),
+            free,
+            yesterday,
+            undated,
+        ])
+        .await
+        .unwrap();
+
+        let spend = log.spend_on(today.date_naive()).await.unwrap();
+        assert!((spend.cost_usd - 0.75).abs() < 1e-9, "{spend:?}");
+        assert_eq!(spend.unpriced_calls, 2);
+
+        let missing = CostsLog::at(tmp.path().join("missing.jsonl"));
+        assert_eq!(
+            missing.spend_on(today.date_naive()).await.unwrap(),
+            DaySpend::default()
+        );
     }
 
     #[tokio::test]

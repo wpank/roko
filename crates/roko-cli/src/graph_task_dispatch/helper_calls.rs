@@ -285,7 +285,7 @@ impl GraphTaskDispatcher {
                 totals.unpriced_calls = totals.unpriced_calls.saturating_add(1);
             }
 
-            self.task_spend.record(&task_spend_key, cost_usd);
+            self.task_spend.record(&task_spend_key, &call.usage);
             if let Err(error) = self.budget_ledger.settle(&spec.plan_id, 0, cost_usd) {
                 tracing::warn!(
                     plan_id = %spec.plan_id,

@@ -283,7 +283,8 @@ fn extract_single_call(value: &serde_json::Value, index: usize) -> Option<ToolCa
 
 /// Attempt to repair common JSON malformations from LLM output.
 ///
-/// - Removes trailing commas before `}` and `]`
+/// - Removes trailing commas before `}` and `]`, outside string literals
+///   only: a string value keeps its text (bug-0a1729)
 /// - Strips trailing whitespace
 fn repair_json(input: &str) -> String {
     let trimmed = input.trim();
@@ -291,24 +292,30 @@ fn repair_json(input: &str) -> String {
     // This handles the common case: {"key": "val",}
     let mut result = String::with_capacity(trimmed.len());
     let chars: Vec<char> = trimmed.chars().collect();
-    let len = chars.len();
+    let mut in_string = false;
+    let mut escaped = false;
 
-    let mut i = 0;
-    while i < len {
-        if chars[i] == ',' {
-            // Look ahead past whitespace for `}` or `]`.
-            let mut j = i + 1;
-            while j < len && chars[j].is_whitespace() {
-                j += 1;
+    for (i, &c) in chars.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
             }
-            if j < len && (chars[j] == '}' || chars[j] == ']') {
-                // Skip the trailing comma.
-                i += 1;
-                continue;
-            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == ','
+            && chars[i + 1..]
+                .iter()
+                .find(|next| !next.is_whitespace())
+                .is_some_and(|&next| next == '}' || next == ']')
+        {
+            // Skip the trailing comma.
+            continue;
         }
-        result.push(chars[i]);
-        i += 1;
+        result.push(c);
     }
 
     result
@@ -842,6 +849,25 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&repaired).is_ok(),
             "repaired JSON should parse: {repaired}"
         );
+    }
+
+    /// bug-0a1729: only structural trailing commas go; a comma before a
+    /// bracket inside a string value, escaped quotes included, stays.
+    #[test]
+    fn repair_json_keeps_commas_inside_strings() {
+        let input = r#"{"name": "write_file", "arguments": {"content": "a, ]", "note": "say \"x, }\"",},}"#;
+        let repaired = repair_json(input);
+        let value: serde_json::Value =
+            serde_json::from_str(&repaired).expect("the repaired JSON parses");
+        assert_eq!(value["arguments"]["content"], "a, ]");
+        assert_eq!(value["arguments"]["note"], "say \"x, }\"");
+
+        let text = format!("<tool_call>\n{input}\n</tool_call>");
+        let calls = HermesXmlTranslator
+            .parse_calls(&BackendResponse::Text(text))
+            .expect("parse should succeed");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].arguments["content"], "a, ]");
     }
 
     #[test]

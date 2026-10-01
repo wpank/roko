@@ -5,15 +5,14 @@
 //! safety scoping, resume threading, and learning-episode persistence.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent_config::{command_from_config, model_from_config};
 use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, distillation_model_caller, provider_id_for_model,
-    record_persisted_provider_health, resolve_capture_model_slug,
+    capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
+    provider_id_for_model, record_persisted_provider_health, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
@@ -347,15 +346,7 @@ pub async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(Arc::clone(&distillation_caller)),
-        );
-    });
+    install_capture_distillation(&mut runtime, workdir, distillation_model_caller(workdir));
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = (!provider.trim().is_empty()).then_some(provider.clone());

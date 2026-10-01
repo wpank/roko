@@ -13,7 +13,10 @@ use crate::tool_loop::max_iter::exhausted_message;
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
-use roko_core::tool::{CancelToken, NeverCancel, ToolContext, ToolDef};
+use roko_core::tool::{
+    CancelToken, CorrelationEnvelope, MetricsSink, NeverCancel, NoopMetricsSink, NoopTraceSink,
+    ToolContext, ToolDef, TraceSink,
+};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use roko_fs::RokoLayout;
 use serde_json::Value;
@@ -155,6 +158,12 @@ pub struct PerplexityToolLoopAgent {
     /// Run-scoped cancellation token (T027). Wired from `AgentOptions::cancel_token`
     /// so that a runner-level task cancellation stops tool execution promptly.
     cancel_token: Arc<dyn CancelToken>,
+    /// Per-call trace sink for the loop's tool calls (find-f489db).
+    trace_sink: Arc<dyn TraceSink>,
+    /// Per-call metrics sink for the loop's tool calls (find-f489db).
+    metrics_sink: Arc<dyn MetricsSink>,
+    /// The run, task, attempt and agent the loop's tool calls belong to.
+    correlation: CorrelationEnvelope,
 }
 
 impl PerplexityToolLoopAgent {
@@ -175,6 +184,9 @@ impl PerplexityToolLoopAgent {
             immune_root_path: None,
             turn_cap: None,
             cancel_token: Arc::new(NeverCancel),
+            trace_sink: Arc::new(NoopTraceSink),
+            metrics_sink: Arc::new(NoopMetricsSink),
+            correlation: CorrelationEnvelope::empty(),
         }
     }
 
@@ -185,6 +197,28 @@ impl PerplexityToolLoopAgent {
     #[must_use]
     pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Attach a per-call trace sink for the loop's tool calls.
+    #[must_use]
+    pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
+        self.trace_sink = sink;
+        self
+    }
+
+    /// Attach a per-call metrics sink for the loop's tool calls.
+    #[must_use]
+    pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = sink;
+        self
+    }
+
+    /// Attach the run, task, attempt and agent the loop's tool calls belong
+    /// to, for their audit, trace and metrics records.
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: CorrelationEnvelope) -> Self {
+        self.correlation = correlation;
         self
     }
 
@@ -275,7 +309,10 @@ impl Agent for PerplexityToolLoopAgent {
                     .as_deref()
                     .unwrap_or(&self.worktree_path),
             )
-            .with_cancel_token(Arc::clone(&self.cancel_token));
+            .with_cancel_token(Arc::clone(&self.cancel_token))
+            .with_trace_sink(Arc::clone(&self.trace_sink))
+            .with_metrics_sink(Arc::clone(&self.metrics_sink))
+            .with_correlation(self.correlation.clone());
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),

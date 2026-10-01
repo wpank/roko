@@ -17,8 +17,8 @@ use crate::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
-    build_tool_dispatcher_with_audit, openai_compat::tool_registry_for_options,
-    tool_loop_max_iterations_for_options,
+    build_provider_tool_dispatcher, openai_compat::tool_registry_for_options,
+    tool_loop_max_iterations_for_options, with_tool_observability,
 };
 use crate::tool_loop::ToolLoop;
 use crate::tool_loop::agent_wrapper::ToolLoopAgent;
@@ -56,11 +56,15 @@ impl ProviderAdapter for CerebrasAdapter {
 
         if model.supports_tools {
             let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
-            let dispatcher =
-                build_tool_dispatcher_with_audit(registry, resolver, options.tool_audit.clone());
-
             // Strict translator for constrained decoding on small models.
             let translator: Arc<dyn Translator> = Arc::new(StrictOpenAiTranslator);
+            let dispatcher = build_provider_tool_dispatcher(
+                registry,
+                resolver,
+                options,
+                model,
+                translator.format(),
+            );
 
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
@@ -100,6 +104,7 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             if let Some(ref token) = options.cancel_token {
                 agent = agent.with_cancel_token(Arc::clone(token));
             }
+            agent = with_tool_observability(agent, options);
             if let Some(max_turns) = options.max_turns {
                 agent = agent.with_turn_cap(max_turns);
             }

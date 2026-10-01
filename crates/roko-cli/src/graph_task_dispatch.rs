@@ -2500,4 +2500,154 @@ cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
 printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
 sleep 30
 "#;
+
+    /// find-f489db: a Graph run attaches its tool observability to the agent
+    /// factory. A tool call an API model makes then leaves a scrubbed admit
+    /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
+    /// run and task, a closed trace under `.roko/traces/` and a metrics
+    /// record.
+    #[tokio::test]
+    async fn graph_run_writes_tool_audit_admit_and_result() {
+        // A GitHub token, which the scrubber's built-in patterns catch.
+        const SECRET: &str = "ghp_f489dbAuditCanary0123456789abcdefghi";
+        assert_eq!(SECRET.len(), 40, "ghp_ and 36 characters");
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        std::fs::write(workdir.join("notes.txt"), format!("notes {SECRET}\n")).expect("seed notes");
+        let (base_url, _requests) = spawn_openai_mock(vec![
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+            ),
+            final_turn("read the notes"),
+        ]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "mock_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                command: None,
+                args: None,
+                timeout_ms: Some(15_000),
+                ttft_timeout_ms: Some(15_000),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "mock_api".to_string(),
+                slug: "api-model-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        // The mock answers without SSE: keep the stall watchdog, which would
+        // stream over live output, off.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, None, None).await;
+        let factory = Arc::new(
+            crate::graph_execution::plan_runner::attach_tool_observability(factory, &workdir).await,
+        );
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            workdir.clone(),
+        ));
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Read the notes".to_string(),
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let cell_config = toml::Value::Table(toml::map::Map::from_iter([
+            (
+                "plan_id".to_string(),
+                toml::Value::String("p-audit".to_string()),
+            ),
+            ("title".to_string(), toml::Value::String(task.title.clone())),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
+            (
+                "task_def_json".to_string(),
+                toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
+            ),
+        ]));
+        let cell = roko_graph::cells::TaskExecutorCell::live(cell_config, dispatcher);
+        cell.execute(
+            Vec::new(),
+            &CellContext::new().with_cell_id("T01".to_string()),
+        )
+        .await
+        .expect("the task completes");
+
+        let roko_dir = workdir.join(".roko");
+        let audit =
+            std::fs::read_to_string(roko_dir.join("tool_audit.jsonl")).expect("tool audit log");
+        assert!(!audit.contains(SECRET), "{audit}");
+        let lines: Vec<serde_json::Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("audit line is JSON"))
+            .collect();
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|line| line["kind"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(kinds, ["admit", "result"], "{audit}");
+        for line in &lines {
+            assert_eq!(line["call_id"], "call-read", "{line}");
+            assert_eq!(line["call_name"], "read_file", "{line}");
+            let correlation = &line["correlation"];
+            assert_eq!(correlation["task_id"], "T01", "{line}");
+            let run_id = correlation["run_id"].as_str().unwrap_or_default();
+            assert!(!run_id.is_empty(), "{line}");
+            assert_eq!(
+                correlation["attempt_id"],
+                format!("{run_id}:p-audit:T01:1"),
+                "{line}"
+            );
+        }
+
+        // The call's trace is closed with its handler time and outcome, and
+        // its metrics sample is keyed on the model.
+        let traces: Vec<String> = std::fs::read_dir(roko_dir.join("traces"))
+            .expect("trace directory")
+            .flatten()
+            .flat_map(|day| std::fs::read_dir(day.path()).expect("trace day").flatten())
+            .map(|file| std::fs::read_to_string(file.path()).expect("trace file"))
+            .collect();
+        assert_eq!(traces.len(), 1, "{traces:#?}");
+        assert!(
+            traces[0].contains("handler_finished") && traces[0].contains("\"outcome\""),
+            "{traces:#?}"
+        );
+        let metrics = std::fs::read_to_string(roko_dir.join("metrics").join("tool_metrics.jsonl"))
+            .expect("tool metrics");
+        assert_eq!(metrics.lines().count(), 1, "{metrics}");
+        assert!(
+            metrics.contains("read_file") && metrics.contains("api-model-1"),
+            "{metrics}"
+        );
+    }
 }

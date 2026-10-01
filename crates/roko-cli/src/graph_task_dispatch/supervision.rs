@@ -5,12 +5,12 @@
 //! [`ConductorRing`] while its provider runs: its start, and the messages and
 //! tool calls of its live output, each tagged with its attempt key
 //! ([`ATTEMPT_TAG`]). Its verify run settles after the provider call, so its
-//! gate verdict and compile diagnostic join its task's evidence instead
-//! ([`GraphConductor::settle_verify`], gap-1a7f9c). The plan host runs
-//! [`GraphConductor::tick`] every [`SUPERVISION_INTERVAL`]
+//! gate verdict and compile diagnostic are kept as its task's evidence
+//! instead ([`GraphConductor::settle_verify`], gap-1a7f9c). The plan host
+//! runs [`GraphConductor::tick`] every [`SUPERVISION_INTERVAL`]
 //! ([`GraphTaskDispatcher::spawn_conductor_ticker`]), which evaluates the
-//! conductor over each running attempt's own signals, after its task's
-//! settled verify runs, and acts on the decision:
+//! conductor over each running attempt's own signals and acts on the
+//! decision:
 //!
 //! - `Restart` cancels that attempt the way the stall watchdog does: it fails
 //!   and retries under its task's `max_retries`. When the task's next attempt
@@ -20,13 +20,20 @@
 //!   watcher and the reason, which the host makes the run's error;
 //! - `Nudge` and `ForceAdvance` are not carried out yet (gap-ebd656).
 //!
-//! Each intervention is published as a dashboard diagnosis and spends its
-//! evidence, the attempt's signals in the ring and its task's settled verify
-//! runs, so the same evidence never acts twice. An attempt that ends leaves
-//! the ring too; its task's verify runs stay for the next attempt.
-//! Evaluating each attempt on its own keeps one task's signals from breaking
-//! or extending another's patterns, and lets a restart name its attempt,
-//! which the decision itself does not.
+//! When an attempt's own signals call for nothing, the conductor evaluates
+//! them again after its task's evidence, so `compile-fail-repeat` and
+//! `test-failure-budget` compare the task's verify runs across attempts.
+//! What it then calls for is only advice: until gap-ebd656 gives it a
+//! reaction to failing gates, such as a nudge or an escalation, a restart
+//! would cancel the task's fresh attempt, perhaps the one the model ladder
+//! just escalated. Advice is logged and published as an advisory diagnosis,
+//! cancels nothing, and spends the task's evidence, so it is given once.
+//!
+//! Each intervention is published as a dashboard diagnosis, and the attempt's
+//! signals leave the ring, so the same evidence never acts twice; an attempt
+//! that ends leaves the ring too. Evaluating each attempt on its own keeps
+//! one task's signals from breaking or extending another's patterns, and lets
+//! a restart name its attempt, which the decision itself does not.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -69,7 +76,7 @@ pub struct GraphConductor {
     /// Restarts whose outcome is not known yet, by task (`plan/task`).
     restarts: Arc<parking_lot::Mutex<HashMap<String, PendingRestart>>>,
     /// The signals of each task's settled verify runs, oldest first, by task
-    /// (`plan/task`): its next attempt is evaluated after them.
+    /// (`plan/task`): the evidence its next attempt is advised on.
     settled: Arc<parking_lot::Mutex<HashMap<String, Vec<Signal>>>>,
 }
 
@@ -187,10 +194,11 @@ impl GraphConductor {
         }
     }
 
-    /// Evaluate the conductor over each running attempt's signals, after its
-    /// task's settled verify runs, and act on its decisions, publishing each
-    /// intervention through `tui`. Returns the `Fail` that must stop the run,
-    /// if any.
+    /// Evaluate the conductor over each running attempt's signals and act on
+    /// its decisions, publishing each intervention through `tui`; an attempt
+    /// whose signals call for nothing gets the advice of its task's settled
+    /// verify runs (`advise`). Returns the `Fail` that must stop the run, if
+    /// any.
     pub fn tick(&self, tui: Option<&TuiBridge>) -> Option<ConductorStop> {
         let running: Vec<(String, String, String)> = self
             .running
@@ -210,26 +218,20 @@ impl GraphConductor {
         let signals = self.ring.snapshot();
         let ctx = roko_core::Context::now();
         for (attempt_key, plan_id, task_id) in running {
-            let task_key = format!("{plan_id}/{task_id}");
-            let mut stream = self
-                .settled
-                .lock()
-                .get(&task_key)
+            let stream: Vec<Signal> = signals
+                .iter()
+                .filter(|signal| signal.tag(ATTEMPT_TAG) == Some(attempt_key.as_str()))
                 .cloned()
-                .unwrap_or_default();
-            stream.extend(
-                signals
-                    .iter()
-                    .filter(|signal| signal.tag(ATTEMPT_TAG) == Some(attempt_key.as_str()))
-                    .cloned(),
-            );
+                .collect();
             if stream.is_empty() {
                 continue;
             }
             match self.conductor.evaluate_full(&stream, &ctx).decision {
-                ConductorDecision::Continue => {}
+                ConductorDecision::Continue => {
+                    self.advise(tui, &attempt_key, &plan_id, &task_id, &stream, &ctx);
+                }
                 ConductorDecision::Restart { watcher, reason } => {
-                    self.spend(&attempt_key, &task_key);
+                    self.forget(&attempt_key);
                     publish_intervention(
                         tui,
                         &attempt_key,
@@ -240,7 +242,7 @@ impl GraphConductor {
                         false,
                     );
                     self.restarts.lock().insert(
-                        task_key,
+                        format!("{plan_id}/{task_id}"),
                         PendingRestart {
                             attempt_key: attempt_key.clone(),
                             watcher: watcher.clone(),
@@ -252,7 +254,7 @@ impl GraphConductor {
                     }
                 }
                 ConductorDecision::Fail { watcher, reason } => {
-                    self.spend(&attempt_key, &task_key);
+                    self.forget(&attempt_key);
                     let reason = reason.to_string();
                     publish_intervention(
                         tui,
@@ -287,18 +289,38 @@ impl GraphConductor {
             .retain(|signal| signal.tag(ATTEMPT_TAG) != Some(attempt_key));
     }
 
-    /// Drop the evidence an intervention on `attempt_key`, an attempt at
-    /// `task_key` (`plan/task`), acted on: the attempt's signals and its
-    /// task's settled verify runs.
-    fn spend(&self, attempt_key: &str, task_key: &str) {
-        self.forget(attempt_key);
-        self.settled.lock().remove(task_key);
+    /// Evaluate a running attempt at `plan_id/task_id`, whose `own` signals
+    /// call for nothing, after its task's evidence, and publish what that
+    /// calls for as advice ([`publish_advice`]). Until gap-ebd656 gives the
+    /// conductor a reaction to failing gates, the advice acts on nothing: it
+    /// cancels no attempt, and no restart outcome is learned from it. It
+    /// spends the evidence, so it is given once.
+    fn advise(
+        &self,
+        tui: Option<&TuiBridge>,
+        attempt_key: &str,
+        plan_id: &str,
+        task_id: &str,
+        own: &[Signal],
+        ctx: &Context,
+    ) {
+        let task_key = format!("{plan_id}/{task_id}");
+        let Some(evidence) = self.settled.lock().get(&task_key).cloned() else {
+            return;
+        };
+        let stream: Vec<Signal> = evidence.into_iter().chain(own.iter().cloned()).collect();
+        let decision = self.conductor.evaluate_full(&stream, ctx).decision;
+        if decision.is_continue() {
+            return;
+        }
+        self.settled.lock().remove(&task_key);
+        publish_advice(tui, attempt_key, plan_id, task_id, &decision);
     }
 
-    /// Record the settled verify run of an attempt at `plan_id/task_id`
-    /// ([`verify_run_signals`]) as evidence the task's next attempt is
-    /// evaluated after, so `compile-fail-repeat` and `test-failure-budget`
-    /// compare the task's runs across its attempts.
+    /// Keep the settled verify run of an attempt at `plan_id/task_id`
+    /// ([`verify_run_signals`]) as its task's evidence, which the task's
+    /// later attempts are advised on: `compile-fail-repeat` and
+    /// `test-failure-budget` compare the task's runs across its attempts.
     pub(super) fn settle_verify(
         &self,
         plan_id: &str,
@@ -513,6 +535,53 @@ fn first_compiler_error(classification: &GateFailureClassification) -> Option<St
         .map(|(_, record)| record.digest)
 }
 
+/// Log and publish a decision a task's evidence drove as an advisory
+/// diagnosis: what the conductor would do to the attempt, and that it did
+/// not.
+fn publish_advice(
+    tui: Option<&TuiBridge>,
+    attempt_key: &str,
+    plan_id: &str,
+    task_id: &str,
+    decision: &ConductorDecision,
+) {
+    let (watcher, reason) = match decision {
+        ConductorDecision::Restart { watcher, reason }
+        | ConductorDecision::ForceAdvance {
+            watcher, reason, ..
+        } => (watcher.as_str(), reason.clone()),
+        ConductorDecision::Nudge {
+            watcher, message, ..
+        } => (watcher.as_str(), message.clone()),
+        ConductorDecision::Fail { watcher, reason } => (watcher.as_str(), reason.to_string()),
+        _ => ("conductor", String::new()),
+    };
+    let label = decision.label();
+    tracing::warn!(
+        plan_id,
+        task_id,
+        attempt = attempt_key,
+        watcher,
+        decision = label,
+        advisory = true,
+        "conductor advice from the task's verify runs, not carried out: {reason}"
+    );
+    if let Some(tui) = tui {
+        tui.diagnosis(DiagnosisSummary {
+            id: format!("conductor:{attempt_key}:advisory"),
+            ts: chrono::Utc::now(),
+            severity: DiagnosisSeverity::Warn,
+            subject: format!("{plan_id}/{task_id}"),
+            detail: format!("conductor watcher `{watcher}` (advisory): {reason}"),
+            suggested_action: Some(format!(
+                "{label} the attempt; decisions the task's verify runs drive are advisory \
+                 until gap-ebd656"
+            )),
+            intervention_taken: None,
+        });
+    }
+}
+
 /// Publish a conductor intervention as a dashboard diagnosis.
 fn publish_intervention(
     tui: Option<&TuiBridge>,
@@ -654,13 +723,16 @@ impl AttemptFeed {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use roko_core::{Body, Context, React};
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_bare_dispatcher, make_spec, make_test_dispatcher_with, no_auto_fix,
-        verify_step,
+        VERIFY_PROVIDER, cli_provider, make_bare_dispatcher, make_scripted_batch_dispatcher,
+        make_spec, make_test_dispatcher_with, model, no_auto_fix, verify_step,
     };
+    use crate::state_hub::StateHub;
 
     /// A watcher that fires at `severity` on any stream that has a message.
     struct FiresOnMessages {
@@ -959,57 +1031,125 @@ mod tests {
         assert!(signals(&[]).is_empty(), "no step ran, no verdict");
     }
 
-    /// Dispatches `failures` attempts at `task`, each failing its verify,
-    /// then starts the task's next attempt and ticks the conductor: the
-    /// restart it made, if any.
-    async fn restart_after_failed_verifies(
+    /// A Claude CLI stand-in that records the model of each call in
+    /// `provider-models` beside it and, while `hold` exists there, waits for
+    /// `go` before it answers.
+    const HELD_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "--model" ]; then
+    printf '%s\n' "$arg" >> "$dir/provider-models"
+  fi
+  previous=$arg
+done
+if [ -f "$dir/hold" ]; then
+  while [ ! -f "$dir/go" ]; do sleep 0.05; done
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"held-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-h","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// A verify step whose failing tests grow by two on each run, from one.
+    const GROWING_TEST_FAILURES: &str = "n=$(cat failing 2>/dev/null || echo 1); \
+         echo $((n + 2)) > failing; \
+         echo \"test result: FAILED. 4 passed; $n failed; 0 ignored\"; exit 101";
+
+    /// Dispatches `attempts` attempts at `spec`, each failing its verify.
+    async fn fail_attempts(
         dispatcher: &GraphTaskDispatcher,
-        task: &TaskDef,
-        failures: usize,
-    ) -> Option<ConductorRestart> {
-        let spec = make_spec(task);
-        for _ in 0..failures {
+        spec: &TaskExecutionSpec,
+        attempts: usize,
+    ) {
+        for _ in 0..attempts {
             let error = dispatcher
-                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .dispatch(spec, Vec::new(), &CellContext::new())
                 .await
                 .expect_err("the verify step fails");
             assert!(matches!(error, RokoError::Verify { .. }), "{error}");
         }
+    }
+
+    /// Dispatches the next attempt at `spec` and ticks the conductor while
+    /// it runs, its [`HELD_PROVIDER`] call held in `dir` until the tick is
+    /// done; returns how the attempt ended.
+    async fn attempt_under_a_tick(
+        dispatcher: &Arc<GraphTaskDispatcher>,
+        spec: &TaskExecutionSpec,
+        dir: &Path,
+    ) -> RokoError {
+        std::fs::write(dir.join("hold"), "").expect("hold the provider");
+        let attempt = tokio::spawn({
+            let dispatcher = Arc::clone(dispatcher);
+            let spec = spec.clone();
+            async move {
+                dispatcher
+                    .dispatch(&spec, Vec::new(), &CellContext::new())
+                    .await
+            }
+        });
         let conductor = dispatcher
             .conductor
             .as_ref()
             .expect("the dispatcher is supervised");
-        let next = conductor.supervise(
-            &spec.plan_id,
-            &task.id,
-            &format!("run-1/{}/{}/next", spec.plan_id, task.id),
-        );
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while conductor.running.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the attempt starts");
         assert_eq!(
-            conductor.tick(None),
+            conductor.tick(dispatcher.tui_bridge.as_ref()),
             None,
-            "a restart does not stop the run"
+            "advice never stops the run"
         );
-        tokio::time::timeout(Duration::from_millis(200), next.restarted())
+        std::fs::write(dir.join("go"), "").expect("release the provider");
+        let ended = attempt
             .await
-            .ok()
+            .expect("the attempt's task")
+            .expect_err("the attempt's verify step fails");
+        for file in ["hold", "go"] {
+            std::fs::remove_file(dir.join(file)).expect("reset the provider");
+        }
+        ended
+    }
+
+    /// The advisory diagnoses published for `plan/task`, by detail.
+    fn advice(hub: &StateHub, task: &str) -> Vec<String> {
+        hub.current_snapshot()
+            .diagnoses
+            .iter()
+            .filter(|diagnosis| {
+                diagnosis.subject == format!("stream-plan/{task}")
+                    && diagnosis.id.ends_with(":advisory")
+            })
+            .map(|diagnosis| diagnosis.detail.clone())
+            .collect()
     }
 
     /// Settled Graph verify runs reach the conductor's watchers for compile
-    /// and test failures (gap-1a7f9c): the next attempt of a task whose
-    /// verify failed three times on the same compiler error is restarted by
-    /// `compile-fail-repeat`, and that of a task whose failing tests grew by
-    /// `test-failure-budget`. A restart spends the evidence it acted on.
+    /// and test failures (gap-1a7f9c), and what they find is advice: the
+    /// next attempt of a task whose verify failed three times on the same
+    /// compiler error, or whose failing tests grew, is advised on by
+    /// `compile-fail-repeat` or `test-failure-budget` and runs to its end.
+    /// Advice spends the evidence it was given on, and teaches nothing.
     #[tokio::test]
     async fn conductor_watchers_receive_graph_gate_verdicts() {
         let temp = tempfile::tempdir().expect("tempdir");
+        let hub = StateHub::new(64);
         let (dispatcher, task) = make_test_dispatcher_with(
             &temp,
-            VERIFY_PROVIDER,
+            HELD_PROVIDER,
             no_auto_fix,
             GraphFeedbackContext::default(),
             |dispatcher| {
                 let conductor = Conductor::from_config(&dispatcher.config.conductor);
-                dispatcher.with_conductor(Arc::new(conductor), ConductorRing::new())
+                dispatcher
+                    .with_tui_bridge(TuiBridge::new(hub.sender()))
+                    .with_conductor(Arc::new(conductor), ConductorRing::new())
             },
         )
         .await;
@@ -1020,40 +1160,128 @@ mod tests {
             "compile",
             "printf 'error[E0308]: mismatched types\\n' >&2; exit 101",
         )];
-        assert_eq!(
-            restart_after_failed_verifies(&dispatcher, &compile, 2).await,
-            None,
+        let spec = make_spec(&compile);
+        fail_attempts(&dispatcher, &spec, 2).await;
+        let ended = attempt_under_a_tick(&dispatcher, &spec, temp.path()).await;
+        assert!(matches!(ended, RokoError::Verify { .. }), "{ended}");
+        assert!(
+            advice(&hub, "T-COMPILE").is_empty(),
             "two identical compile failures are not a repeat yet"
         );
-        let restart = restart_after_failed_verifies(&dispatcher, &compile, 1)
-            .await
-            .expect("the third identical compile failure restarts the next attempt");
-        assert_eq!(restart.watcher, "compile-fail-repeat");
+        let ended = attempt_under_a_tick(&dispatcher, &spec, temp.path()).await;
         assert!(
-            restart.reason.contains("E0308: mismatched types"),
-            "{}",
-            restart.reason
+            matches!(ended, RokoError::Verify { .. }),
+            "the advised attempt runs to its verify: {ended}"
+        );
+        let compile_advice = advice(&hub, "T-COMPILE");
+        assert_eq!(compile_advice.len(), 1, "{compile_advice:?}");
+        assert!(
+            compile_advice[0].contains("compile-fail-repeat")
+                && compile_advice[0].contains("E0308: mismatched types"),
+            "{compile_advice:?}"
         );
 
-        // Each attempt fails two more tests than the one before.
         let mut tests = task;
         tests.id = "T-TESTS".to_string();
-        tests.verify = vec![verify_step(
-            "test",
-            "n=$(cat failing 2>/dev/null || echo 1); echo $((n + 2)) > failing; \
-             echo \"test result: FAILED. 4 passed; $n failed; 0 ignored\"; exit 101",
-        )];
-        let restart = restart_after_failed_verifies(&dispatcher, &tests, 2)
-            .await
-            .expect("more failing tests than the first attempt had restart the next attempt");
-        assert_eq!(restart.watcher, "test-failure-budget");
-        assert!(restart.reason.contains("1 -> 3"), "{}", restart.reason);
-
-        assert_eq!(
-            restart_after_failed_verifies(&dispatcher, &tests, 0).await,
-            None,
-            "the restart spent the task's evidence"
+        tests.verify = vec![verify_step("test", GROWING_TEST_FAILURES)];
+        let spec = make_spec(&tests);
+        fail_attempts(&dispatcher, &spec, 2).await;
+        let ended = attempt_under_a_tick(&dispatcher, &spec, temp.path()).await;
+        assert!(matches!(ended, RokoError::Verify { .. }), "{ended}");
+        let test_advice = advice(&hub, "T-TESTS");
+        assert_eq!(test_advice.len(), 1, "{test_advice:?}");
+        assert!(
+            test_advice[0].contains("test-failure-budget") && test_advice[0].contains("1 -> 3"),
+            "{test_advice:?}"
         );
+        // The advice spent the runs before it: the advised attempt's own run
+        // is the next attempt's only evidence, and repeats no growth.
+        attempt_under_a_tick(&dispatcher, &spec, temp.path()).await;
+        assert_eq!(advice(&hub, "T-TESTS").len(), 1);
+
+        let diagnoses = hub.current_snapshot().diagnoses;
+        assert!(
+            diagnoses
+                .iter()
+                .all(|diagnosis| diagnosis.intervention_taken.is_none()),
+            "{diagnoses:#?}"
+        );
+        let conductor = dispatcher.conductor.as_ref().expect("supervised");
+        assert!(
+            conductor
+                .conductor
+                .with_learner(|learner| learner.intervention_history.is_empty()),
+            "advice teaches the conductor nothing"
+        );
+    }
+
+    /// The conductor's advice never cancels an attempt, here the escalation
+    /// of a task whose failing tests grew on the cheap rung of a two-rung
+    /// model ladder.
+    #[tokio::test]
+    async fn gate_advice_never_cancels_a_ladder_escalation() {
+        const CHEAP: &str = "claude-haiku-4-5";
+        const TOP: &str = "claude-sonnet-4-6";
+        let rung = |name: &str, model: &str| roko_core::config::routing::LadderRung {
+            name: name.to_string(),
+            model: model.to_string(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let helper = temp.path().join("helper.sh");
+        std::fs::write(&helper, VERIFY_PROVIDER).expect("write the helper provider");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make the helper executable");
+        let (dispatcher, mut task) =
+            make_scripted_batch_dispatcher(&temp, HELD_PROVIDER, |config| {
+                no_auto_fix(config);
+                config
+                    .models
+                    .insert("cheap-model".to_string(), model("batch-cli", CHEAP, None));
+                config.routing.ladder.rungs =
+                    vec![rung("cheap", "cheap-model"), rung("top", "batch-model")];
+                // Helper model calls go to their own provider, so the held
+                // one records only the attempts.
+                config.providers.insert(
+                    "helper-cli".to_string(),
+                    cli_provider(&helper.display().to_string()),
+                );
+                config.models.insert(
+                    "helper-model".to_string(),
+                    model("helper-cli", "helper-slug", None),
+                );
+                config.routing.fast_task_model = "helper-model".to_string();
+            })
+            .await;
+        let hub = StateHub::new(64);
+        let conductor = Conductor::from_config(&dispatcher.config.conductor);
+        let dispatcher = Arc::new(
+            dispatcher
+                .with_tui_bridge(TuiBridge::new(hub.sender()))
+                .with_conductor(Arc::new(conductor), ConductorRing::new()),
+        );
+        task.model_hint = None;
+        task.tier = "mechanical".to_string();
+        task.verify = vec![verify_step("test", GROWING_TEST_FAILURES)];
+        let mut spec = make_spec(&task);
+        spec.max_retries = 4;
+
+        fail_attempts(&dispatcher, &spec, 2).await;
+        let ended = attempt_under_a_tick(&dispatcher, &spec, temp.path()).await;
+
+        let models = std::fs::read_to_string(temp.path().join("provider-models"))
+            .expect("the provider recorded its calls");
+        assert_eq!(
+            models.lines().collect::<Vec<_>>(),
+            [CHEAP, CHEAP, TOP],
+            "the third attempt is the ladder's escalation"
+        );
+        assert!(
+            matches!(ended, RokoError::Verify { .. }),
+            "the escalated attempt runs to its verify: {ended}"
+        );
+        let advised = advice(&hub, &task.id);
+        assert_eq!(advised.len(), 1, "{advised:?}");
+        assert!(advised[0].contains("test-failure-budget"), "{advised:?}");
     }
 
     #[test]

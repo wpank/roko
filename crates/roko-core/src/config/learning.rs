@@ -125,12 +125,6 @@ pub struct LearningConfig {
     /// Whether repeated gate failures should trigger a plan revision.
     #[serde(default = "default_true")]
     pub replan_on_gate_failure: bool,
-    /// Maximum number of gate-failure-triggered plan revisions per plan.
-    #[serde(default = "default_replan_max_per_plan")]
-    pub replan_max_per_plan: u32,
-    /// Consecutive gate failures required before emitting a plan revision.
-    #[serde(default = "default_replan_gate_attempts")]
-    pub replan_gate_attempts: u32,
     /// Run dream consolidation after a plan completes.
     ///
     /// Defaults to `false`: each automatic dream costs a model call, so dreams
@@ -246,14 +240,6 @@ const fn default_warning_max() -> usize {
     5
 }
 
-const fn default_replan_max_per_plan() -> u32 {
-    2
-}
-
-const fn default_replan_gate_attempts() -> u32 {
-    3
-}
-
 impl Default for LearningConfig {
     fn default() -> Self {
         Self {
@@ -266,8 +252,6 @@ impl Default for LearningConfig {
             file_intel_max_entries: default_file_intel_max(),
             warning_max_entries: default_warning_max(),
             replan_on_gate_failure: true,
-            replan_max_per_plan: default_replan_max_per_plan(),
-            replan_gate_attempts: default_replan_gate_attempts(),
             dream_on_completion: false,
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,

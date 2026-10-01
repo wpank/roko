@@ -8,9 +8,9 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-cli/tui", "roko-serve/plans"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "plan:portal-programme/03b-backend-workspace-server#T16"
 discovered_from = "plan:portal-programme/03b-backend-workspace-server#T16"
 anchors = ["crates/roko-cli/src/serve_client.rs::follow_run_tui", "crates/roko-cli/src/tui/app/actions.rs", "crates/roko-cli/src/tui/app/modals.rs", "crates/roko-serve/src/routes/plans.rs::pause_plan"]
@@ -27,3 +27,12 @@ When `roko plan run` submits a plan to a server and follows the run via the hub 
 **Fix path.** In `follow_run_tui`, intercept the pause/cancel/retry keyboard events and route them to `WorkspaceServerClient::cancel_plan_run` (and future `pause_plan_run` / `retry_plan_run` endpoints) instead of the local controller. The TUI's action handling for these keys is in `crates/roko-cli/src/tui/app.rs`.
 
 Re-verified 2026-09-29: still open. The keys do not reach a local GraphExecutionController as the body says: follow_run_tui attaches no ExecutionCommandSender, so pause shows the warning 'Pause is available only during a connected plan run' and cancel/retry confirm actions do nothing. The key handling lives in crates/roko-cli/src/tui/app/actions.rs (TuiAction::TogglePause) and tui/app/modals.rs (confirm actions), not tui/app.rs. The server already has POST /api/plans/{id}/pause and /resume (roko-serve routes/plans.rs:30-31) besides cancel. A fix could attach a sender in follow_run_tui whose commands are forwarded to those endpoints.
+
+## Notes
+
+- 2026-10-01 (wk-childenv): implemented on work/gap-1555ac; cargo verification deferred to the batch check.
+  `follow_run_tui` attaches a command channel (`server_command_bridge`, on the new generic
+  `execution_control::spawn_command_bridge`): pause goes to `POST /api/plans/{run}/pause` (new
+  `WorkspaceServerClient::pause_plan_run`), cancel to `/cancel`, each acknowledged in the TUI. The server has no
+  resume, retry, repair, skip or approval endpoint for a run it owns, so those are rejected with that message;
+  its pause stops the run at its checkpoint, so the TUI then ends and running the plan again resumes it.

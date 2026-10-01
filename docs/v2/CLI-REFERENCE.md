@@ -601,7 +601,7 @@ roko plan run <plans-dir> [--engine graph|legacy] [--workdir <path>]
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Graph archives a mismatched fingerprint and starts a new run; legacy re-queues drifted work. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling; explicit overrides record and report overage but do not block later dispatches. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling; once the plan has spent it, no further task starts. |
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 
 </details>

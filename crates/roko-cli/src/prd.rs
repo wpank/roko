@@ -4046,8 +4046,7 @@ mod tests {
             },
         );
         let prompt = |model: &str| {
-            let budget =
-                PlannerBudget::for_context_window(planner_context_window(&models, model));
+            let budget = PlannerBudget::for_context_window(planner_context_window(&models, model));
             plan_task_prompt(&source, "parser", budget, "", "")
         };
 

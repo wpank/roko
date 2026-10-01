@@ -325,7 +325,7 @@ impl GraphTaskDispatcher {
                 })
                 .collect();
             let eff_system_prompt_tokens = dispatch_plan.prompt.diagnostics.estimated_tokens;
-            let eff_tool_calls = efficiency_tool_calls(&dispatch.events);
+            let eff_tool_calls = efficiency_tool_calls(&dispatch.events, &dispatch.tool_calls);
             let eff_tools_used = eff_tool_calls.len() as u32;
             // The tools the contract allows, or 0 (unknown) when the
             // provider's own tool set applies (gap-7a8474).
@@ -619,15 +619,20 @@ fn reported_reasoning_tokens(
         .sum()
 }
 
-/// The tool calls a dispatch's events record, one per call (bug-f9ae3e).
+/// The tool calls a dispatch made, one per call (bug-f9ae3e), with the
+/// outcome of each call the tool audit recorded (gap-4d5e2d).
 ///
 /// A streaming provider sends a call's start, each argument delta and its
 /// end as separate tool-call events under one id, and a delta may name no
 /// tool; a call without an id counts once for each event that names a
-/// tool. A call's tool output gives its result size. Nothing on this path
-/// observes whether a call succeeded, so its outcome stays unknown.
+/// tool. A call's tool output gives its result size. The events don't say
+/// whether a call succeeded. The calls roko's own tool loop ran are
+/// `audited`, with their outcomes: each one settles the call the events saw
+/// under its id, or is added when they saw none. Any other call keeps an
+/// unknown outcome.
 fn efficiency_tool_calls(
     events: &[roko_agent::AgentRuntimeEvent],
+    audited: &[crate::dispatch_v2::AuditedToolCall],
 ) -> Vec<roko_learn::efficiency::ToolCallMeta> {
     let unobserved = |name: &str| roko_learn::efficiency::ToolCallMeta {
         tool_name: name.to_string(),
@@ -665,6 +670,27 @@ fn efficiency_tool_calls(
                 }
             }
             _ => {}
+        }
+    }
+    let mut settled = vec![false; calls.len()];
+    for call in audited {
+        let seen = by_id
+            .get(call.id.as_str())
+            .copied()
+            .filter(|&index| !settled[index]);
+        match seen {
+            Some(index) => {
+                settled[index] = true;
+                let meta = &mut calls[index];
+                meta.succeeded = call.succeeded;
+                if meta.tool_name.is_empty() {
+                    meta.tool_name.clone_from(&call.name);
+                }
+            }
+            None => calls.push(roko_learn::efficiency::ToolCallMeta {
+                succeeded: call.succeeded,
+                ..unobserved(call.name.as_str())
+            }),
         }
     }
     calls
@@ -859,12 +885,55 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             },
         ];
 
-        let calls = efficiency_tool_calls(&events);
+        let calls = efficiency_tool_calls(&events, &[]);
         let names: Vec<&str> = calls.iter().map(|call| call.tool_name.as_str()).collect();
         assert_eq!(names, ["Read", "Bash", "Grep"]);
         assert_eq!(calls[0].result_tokens, 10, "40 bytes of tool output");
         assert_eq!(calls[1].result_tokens, 0, "no output observed");
         assert!(calls.iter().all(|call| call.succeeded.is_none()));
+    }
+
+    /// gap-4d5e2d: a call the tool audit recorded takes its audited outcome.
+    /// An audited call the events missed is added with its outcome, and a
+    /// call only the events saw, or one the audit holds no result for, keeps
+    /// an unknown outcome.
+    #[test]
+    fn efficiency_tool_calls_record_outcome_from_the_tool_audit() {
+        use crate::dispatch_v2::AuditedToolCall;
+        use roko_agent::AgentRuntimeEvent as Event;
+
+        let call = |id: &str, name: &str| Event::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let audited = |id: &str, name: &str, succeeded: Option<bool>| AuditedToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            succeeded,
+        };
+        let events = [call("call-1", "read_file"), call("call-2", "Bash")];
+
+        let calls = efficiency_tool_calls(
+            &events,
+            &[
+                audited("call-1", "read_file", Some(false)),
+                audited("call-3", "write_file", Some(true)),
+                audited("call-4", "grep", None),
+            ],
+        );
+        let outcomes: Vec<(&str, Option<bool>)> = calls
+            .iter()
+            .map(|call| (call.tool_name.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("read_file", Some(false)),
+                ("Bash", None),
+                ("write_file", Some(true)),
+                ("grep", None),
+            ]
+        );
     }
 
     /// gap-7a8474: the Graph efficiency row's usage fields come from what the

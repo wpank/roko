@@ -1610,6 +1610,7 @@ impl AgentDispatcherV2 {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
+        let audit_mark = self.tool_audit_mark(&request).await;
         let started = Instant::now();
         let mut result = created.agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
@@ -1642,10 +1643,15 @@ impl AgentDispatcherV2 {
 
         record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
+        let tool_calls = match audit_mark {
+            Some(mark) => mark.tool_calls().await,
+            None => Vec::new(),
+        };
         Ok(AgentResultDispatch {
             target: created.target,
             result,
             events,
+            tool_calls,
         })
     }
 
@@ -1824,6 +1830,7 @@ impl AgentDispatcherV2 {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
+        let audit_mark = self.tool_audit_mark(&request).await;
         let started = Instant::now();
         let mut result = agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
@@ -1851,11 +1858,25 @@ impl AgentDispatcherV2 {
 
         record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
+        let tool_calls = match audit_mark {
+            Some(mark) => mark.tool_calls().await,
+            None => Vec::new(),
+        };
         Ok(AgentResultDispatch {
             target,
             result,
             events,
+            tool_calls,
         })
+    }
+
+    /// Mark the tool audit before `request` runs, so the tool calls its
+    /// agent makes can be read back after it (gap-4d5e2d). `None` without an
+    /// attached audit or an attempt key to find its lines by.
+    async fn tool_audit_mark(&self, request: &AgentDispatchRequest) -> Option<ToolAuditMark> {
+        let audit = self.tool_audit.as_ref()?;
+        let attempt_key = request.attempt_key.as_deref()?;
+        Some(ToolAuditMark::at(audit.path().to_path_buf(), attempt_key).await)
     }
 
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
@@ -2150,6 +2171,125 @@ pub struct AgentResultDispatch {
     pub result: AgentResult,
     /// Provider-neutral event projection.
     pub events: Vec<DispatchEvent>,
+    /// The tool calls roko's own tool loop made for the dispatch, read back
+    /// from the tool audit with each one's outcome (gap-4d5e2d). Empty when
+    /// no audit is attached, the request names no attempt, or the provider
+    /// ran its own tools.
+    pub tool_calls: Vec<AuditedToolCall>,
+}
+
+/// A tool call roko's own tool loop made for a dispatch, as the tool audit
+/// recorded it (gap-4d5e2d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditedToolCall {
+    /// The provider's call id.
+    pub id: String,
+    /// The tool's canonical name.
+    pub name: String,
+    /// Whether the call succeeded; `None` when the audit holds no result
+    /// for it.
+    pub succeeded: Option<bool>,
+}
+
+/// Where a dispatch's tool-audit lines start: the audit file, its length
+/// before the dispatch ran, and the attempt whose lines to read back.
+struct ToolAuditMark {
+    path: PathBuf,
+    offset: u64,
+    attempt_key: String,
+}
+
+impl ToolAuditMark {
+    /// Mark the audit at `path` before a dispatch of `attempt_key` runs.
+    async fn at(path: PathBuf, attempt_key: &str) -> Self {
+        let offset = tokio::fs::metadata(&path)
+            .await
+            .map_or(0, |metadata| metadata.len());
+        Self {
+            path,
+            offset,
+            attempt_key: attempt_key.to_string(),
+        }
+    }
+
+    /// The attempt's tool calls among the lines appended since the mark. An
+    /// audit that can't be read gives none, so their outcomes stay unknown.
+    async fn tool_calls(&self) -> Vec<AuditedToolCall> {
+        match read_from(&self.path, self.offset).await {
+            Ok(appended) => {
+                audited_tool_calls(&String::from_utf8_lossy(&appended), &self.attempt_key)
+            }
+            Err(error) => {
+                tracing::debug!(
+                    path = %self.path.display(),
+                    %error,
+                    "tool audit unreadable; tool outcomes stay unknown"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// The bytes of the file at `path` from `offset` on.
+async fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+/// The tool calls of attempt `attempt_key` in the tool-audit `lines`, in the
+/// order they were admitted. A result settles the earliest call admitted
+/// under its id that has none yet, so a provider that reuses call ids still
+/// gets one record per call; a result whose admission isn't among the lines
+/// is a call of its own. Other attempts' lines, and lines that aren't audit
+/// JSON (a line another writer is still appending), are skipped.
+fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<AuditedToolCall> {
+    use roko_fs::tool_audit::AuditLine;
+
+    let mut calls: Vec<AuditedToolCall> = Vec::new();
+    for line in lines.lines() {
+        let Ok(audited) = serde_json::from_str::<AuditLine>(line) else {
+            continue;
+        };
+        match audited {
+            AuditLine::Admit {
+                call_id,
+                call_name,
+                correlation,
+                ..
+            } if correlation.attempt_id == attempt_key => calls.push(AuditedToolCall {
+                id: call_id,
+                name: call_name,
+                succeeded: None,
+            }),
+            AuditLine::Result {
+                call_id,
+                call_name,
+                ok,
+                correlation,
+                ..
+            } if correlation.attempt_id == attempt_key => {
+                let admitted = calls
+                    .iter_mut()
+                    .find(|call| call.id == call_id && call.succeeded.is_none());
+                match admitted {
+                    Some(call) => call.succeeded = Some(ok),
+                    None => calls.push(AuditedToolCall {
+                        id: call_id,
+                        name: call_name,
+                        succeeded: Some(ok),
+                    }),
+                }
+            }
+            _ => {}
+        }
+    }
+    calls
 }
 
 /// Provider-neutral events emitted by dispatch v2.
@@ -3428,6 +3568,112 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 "secret leak violations must be Block severity per E04-T05"
             );
         }
+    }
+
+    /// One tool-audit line of `attempt`: an admission, or with `ok` a result.
+    fn audit_line(call_id: &str, ok: Option<bool>, attempt: &str) -> String {
+        use roko_fs::tool_audit::AuditLine;
+
+        let correlation = roko_core::tool::CorrelationEnvelope {
+            attempt_id: attempt.to_string(),
+            ..roko_core::tool::CorrelationEnvelope::empty()
+        };
+        let line = match ok {
+            None => AuditLine::Admit {
+                ts_ms: 1,
+                call_id: call_id.to_string(),
+                call_name: "read_file".to_string(),
+                arguments_scrubbed: "{}".to_string(),
+                correlation,
+            },
+            Some(ok) => AuditLine::Result {
+                ts_ms: 2,
+                call_id: call_id.to_string(),
+                call_name: "read_file".to_string(),
+                ok,
+                content_scrubbed: String::new(),
+                correlation,
+            },
+        };
+        serde_json::to_string(&line).expect("serialize audit line")
+    }
+
+    /// gap-4d5e2d: an attempt's audit lines pair into its tool calls. A
+    /// result settles the earliest call admitted under its id that has none
+    /// yet, so reused ids still give one record per call; a call with no
+    /// result keeps an unknown outcome; other attempts' lines and stray text
+    /// are skipped.
+    #[test]
+    fn audited_tool_calls_pair_each_result_with_its_admission() {
+        let attempt = "run-1:plan:T01:1";
+        let other = "run-1:plan:T02:1";
+        let lines = [
+            audit_line("call-1", None, attempt),
+            "{\"kind\":\"res".to_string(),
+            audit_line("call-1", None, other),
+            audit_line("call-1", Some(false), other),
+            audit_line("call-1", Some(true), attempt),
+            audit_line("call-2", None, attempt),
+            audit_line("call-1", None, attempt),
+            audit_line("call-1", Some(false), attempt),
+            audit_line("call-3", Some(true), attempt),
+        ]
+        .join("\n");
+
+        let calls = audited_tool_calls(&lines, attempt);
+        let outcomes: Vec<(&str, Option<bool>)> = calls
+            .iter()
+            .map(|call| (call.id.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("call-1", Some(true)),
+                ("call-2", None),
+                ("call-1", Some(false)),
+                ("call-3", Some(true)),
+            ]
+        );
+        assert!(calls.iter().all(|call| call.name == "read_file"));
+    }
+
+    /// gap-4d5e2d: a dispatch reads back only the audit lines written after
+    /// its mark, so an earlier attempt's lines under a reused key don't
+    /// count. A missing audit gives no calls.
+    #[tokio::test]
+    async fn tool_audit_mark_reads_only_lines_written_after_it() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("tool_audit.jsonl");
+        let attempt = "run-1:plan:T01:1";
+        let missing = ToolAuditMark::at(path.clone(), attempt).await;
+        assert!(missing.tool_calls().await.is_empty());
+
+        let before = format!(
+            "{}\n{}\n",
+            audit_line("call-0", None, attempt),
+            audit_line("call-0", Some(true), attempt)
+        );
+        std::fs::write(&path, before).expect("write earlier lines");
+        let mark = ToolAuditMark::at(path.clone(), attempt).await;
+        let after = format!(
+            "{}\n{}\n",
+            audit_line("call-1", None, attempt),
+            audit_line("call-1", Some(false), attempt)
+        );
+        let mut audit = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open audit");
+        std::io::Write::write_all(&mut audit, after.as_bytes()).expect("append lines");
+
+        assert_eq!(
+            mark.tool_calls().await,
+            [AuditedToolCall {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                succeeded: Some(false),
+            }]
+        );
     }
 
     fn cost_test_target(model_slug: &str, profile: Option<ModelProfile>) -> ProviderDispatchSpec {

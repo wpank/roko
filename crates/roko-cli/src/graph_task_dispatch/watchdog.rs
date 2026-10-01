@@ -200,6 +200,7 @@ impl InterruptedCall {
             target,
             result: roko_agent::AgentResult::fail(output).with_usage_obs(usage_obs),
             events: Vec::new(),
+            tool_calls: Vec::new(),
         };
         (dispatch, self.call.failover)
     }

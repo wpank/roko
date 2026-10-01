@@ -822,7 +822,9 @@ impl Cell for TaskExecutorCell {
                         // provider is out of usage) fails identically on an
                         // immediate retry, and so does a gate's rejection
                         // (e.g. a plan branch that refused the attempt's
-                        // work), so surface them at once.
+                        // work), so surface them at once. A cancellation
+                        // means the run is stopping, which a retry would
+                        // only delay.
                         Err(error)
                             if retry < self.spec.max_retries
                                 && !matches!(
@@ -831,6 +833,7 @@ impl Cell for TaskExecutorCell {
                                         retryable: false,
                                         ..
                                     } | roko_core::error::RokoError::Rejected(_)
+                                        | roko_core::error::RokoError::Cancelled(_)
                                 ) =>
                         {
                             retry = retry.saturating_add(1);
@@ -1024,6 +1027,43 @@ task_def_json = "{}"
                 category: "provider_exhausted",
                 ..
             }
+        ));
+    }
+
+    #[derive(Default)]
+    struct StoppedDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for StoppedDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::cancelled(
+                "its plan run is stopping",
+            ))
+        }
+    }
+
+    /// An attempt its stopping run cancelled is not retried (bug-2b1ddc).
+    #[tokio::test]
+    async fn a_cancelled_dispatch_is_not_retried() {
+        let dispatcher = Arc::new(StoppedDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("a stopped attempt fails the task");
+
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            error,
+            roko_core::error::RokoError::Cancelled(_)
         ));
     }
 

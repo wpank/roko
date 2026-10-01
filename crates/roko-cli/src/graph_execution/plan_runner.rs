@@ -202,6 +202,15 @@ const INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Grace period between the first signal and a forced exit.
 const FORCED_EXIT_GRACE: Duration = Duration::from_secs(10);
 
+/// After [`INTERRUPT_DRAIN_TIMEOUT`], how long the attempts a stopping plan
+/// asked to stop may take to settle with the usage they streamed before the
+/// checkpoint is finalized without them (bug-2b1ddc).
+const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long an interrupted plan waits for its attempts' cost and learning
+/// rows to reach the disk before it returns, and the process exits.
+const INTERRUPT_WRITES_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Set while a CLI plan run handles SIGINT/SIGTERM itself.
 static CLI_OWNS_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
 
@@ -2090,11 +2099,13 @@ fn plan_cell_resources_with(
 fn plan_cell_context(
     run_id: &str,
     pause_flag: &Arc<AtomicBool>,
+    stop_flag: &Arc<AtomicBool>,
     resources: &roko_graph::cell::CellResources,
 ) -> roko_graph::cell::CellContext {
     roko_graph::cell::CellContext::new()
         .with_run_id(run_id.to_string())
         .with_pause_flag(Arc::clone(pause_flag))
+        .with_cancel_flag(Arc::clone(stop_flag))
         .with_resources(resources.clone())
 }
 
@@ -2535,7 +2546,14 @@ async fn run_one_plan(
     }
     // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
     // check it between turns and yield when the TUI sends Pause.
-    let cell_ctx = plan_cell_context(&run_id, ctx.shared_pause_flag, ctx.cell_resources);
+    // Set when a stopping plan's attempts must stop (bug-2b1ddc).
+    let stop_attempts = Arc::new(AtomicBool::new(false));
+    let cell_ctx = plan_cell_context(
+        &run_id,
+        ctx.shared_pause_flag,
+        &stop_attempts,
+        ctx.cell_resources,
+    );
 
     // Validate before running.
     let issues = engine.validate();
@@ -2605,20 +2623,27 @@ async fn run_one_plan(
         if !flow_handle.is_running() {
             break;
         }
-        // Interrupt: cancel the graph, ask in-flight agents to stop so
-        // their nodes settle, then give up on the graph after
-        // INTERRUPT_DRAIN_TIMEOUT so the checkpoint is still finalized.
+        // Interrupt: cancel the graph and ask in-flight agents to stop so
+        // their nodes settle. After INTERRUPT_DRAIN_TIMEOUT, stop the
+        // attempts still running; after a further INTERRUPT_SETTLE_TIMEOUT,
+        // give up on the graph so the checkpoint is still finalized.
         if let Some(deadline) = drain_deadline {
             if Instant::now() >= deadline {
-                // Agents that ignored SIGTERM must not outlive the run.
-                let killed = kill_in_flight_agents();
+                if stop_attempts.swap(true, Ordering::AcqRel) {
+                    tracing::warn!(
+                        plan_id = %plan.id,
+                        "stopped attempts did not settle in time; finalizing checkpoint without them"
+                    );
+                    flow_abandoned = true;
+                    break;
+                }
+                // A stopped attempt drops its provider call and settles with
+                // the usage it streamed (bug-2b1ddc).
                 tracing::warn!(
                     plan_id = %plan.id,
-                    killed,
-                    "cancelled graph did not settle in time; finalizing checkpoint without it"
+                    "cancelled graph did not settle in time; stopping its attempts"
                 );
-                flow_abandoned = true;
-                break;
+                drain_deadline = Some(Instant::now() + INTERRUPT_SETTLE_TIMEOUT);
             }
         } else if let Some(reason) = ctx.interrupt.requested() {
             flow_handle.cancel();
@@ -2663,6 +2688,15 @@ async fn run_one_plan(
         );
         previous_statuses = current_statuses;
     }
+    // Agents that ignored SIGTERM must not outlive the run. They are killed
+    // once their attempts were asked to stop, so an attempt settles as
+    // stopped rather than as a provider failure.
+    if stop_attempts.load(Ordering::Acquire) {
+        let killed = kill_in_flight_agents();
+        if killed > 0 {
+            tracing::warn!(plan_id = %plan.id, killed, "killed agents that ignored SIGTERM");
+        }
+    }
 
     // Collect the final result from the background task.
     let flow_result = if flow_abandoned {
@@ -2670,6 +2704,15 @@ async fn run_one_plan(
     } else {
         flow_handle.await_completion().await
     };
+    // The process exits soon after an interrupted run returns: let its
+    // attempts' cost and learning rows reach the disk first.
+    if interrupted_by.is_some() {
+        let _ = tokio::time::timeout(
+            INTERRUPT_WRITES_TIMEOUT,
+            crate::background_writes::settled(ctx.workdir),
+        )
+        .await;
+    }
 
     let Some(output) = flow_result else {
         // Flow was cancelled before producing a result (e.g. validation
@@ -4058,6 +4101,112 @@ max_retries = 0
         assert!(!hub.current_snapshot().plan_set_complete());
     }
 
+    /// Where [`an_interrupted_attempt_settles_the_usage_it_streamed`] tells
+    /// [`interrupted_plan_run_child`] to run its plan.
+    #[cfg(unix)]
+    const INTERRUPTED_RUN_DIR: &str = "ROKO_INTERRUPTED_RUN_CHILD_DIR";
+
+    /// An attempt whose agent outlives the interrupt's drain is stopped and
+    /// settles with the usage it streamed (bug-2b1ddc): once the interrupted
+    /// run returns, the plan's cost ledger and `costs.jsonl` hold the
+    /// estimate, which was lost when the runner gave up on the graph. The
+    /// interrupt signals every agent its process runs, so the run happens in
+    /// a child test process, away from other tests' agents.
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_attempt_settles_the_usage_it_streamed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        // Streams one priced message, then ignores SIGTERM until killed.
+        std::fs::write(
+            dir.path().join("fake-provider.sh"),
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}}}'
+trap '' TERM
+printf 'call\n' >> "$(dirname "$0")/provider-calls"
+exec sleep 60
+"#,
+        )
+        .expect("provider script");
+        write_verify_plan(dir.path(), "interrupted", "", &[("T1", &[], "true")]);
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "graph_execution::plan_runner::tests::interrupted_plan_run_child",
+                "--nocapture",
+            ])
+            .env(INTERRUPTED_RUN_DIR, dir.path())
+            .output()
+            .expect("run the child test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
+
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+        let expected = (1_000.0 * 3.0 + 200.0 * 15.0 + 4_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        let ledger: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".roko/state/graph/interrupted/costs.json"))
+                .expect("the plan's cost ledger"),
+        )
+        .expect("ledger json");
+        let spent = ledger["spent_micro_usd"].as_u64().expect("spent") as f64 / 1e6;
+        assert!((spent - expected).abs() < 1e-5, "{ledger}");
+        let costs = std::fs::read_to_string(dir.path().join(".roko/learn/costs.jsonl"))
+            .expect("costs.jsonl");
+        let row: serde_json::Value = costs
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|row: &serde_json::Value| row["task_id"] == "T1")
+            .expect("T1's cost row");
+        assert_eq!(row["cost_source"], "estimated", "{row}");
+        assert_eq!(row["outcome"], "cancelled", "{row}");
+        assert_eq!(row["learning_label"], serde_json::Value::Null, "{row}");
+        assert_eq!(row["input_tokens"], 1_000);
+        assert_eq!(row["output_tokens"], 200);
+        let cost_usd = row["cost_usd"].as_f64().expect("cost");
+        assert!((cost_usd - expected).abs() < 1e-5, "{row}");
+    }
+
+    /// The interrupted run of
+    /// [`an_interrupted_attempt_settles_the_usage_it_streamed`]: it runs the
+    /// plan in that test's workspace once the provider is running, then
+    /// returns, as the CLI would before the process exits. Without the
+    /// workspace it does nothing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_plan_run_child() {
+        let Some(workdir) = std::env::var_os(INTERRUPTED_RUN_DIR).map(PathBuf::from) else {
+            return;
+        };
+        let interrupt = PlanRunInterruptHandle::default();
+        let run = tokio::spawn({
+            let workdir = workdir.clone();
+            let interrupt = interrupt.clone();
+            async move { run_plan_set(&workdir, Some(1), Some(interrupt)).await }
+        });
+        let calls = workdir.join("provider-calls");
+        for _ in 0..400 {
+            if calls.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(calls.exists(), "the provider started");
+        // Let the streamed usage reach the attempt's live output.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        interrupt.request(PlanRunInterrupt::Interrupt);
+        let (exit_code, _, _) = run.await.expect("the plan run");
+
+        assert_eq!(exit_code, PlanRunInterrupt::Interrupt.exit_code());
+    }
+
     #[test]
     fn interrupt_exit_codes_follow_shell_convention() {
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
@@ -4518,7 +4667,12 @@ max_retries = 0
         let pause = Arc::new(AtomicBool::new(false));
 
         let output = engine
-            .execute(&plan_cell_context("rich-run", &pause, &resources))
+            .execute(&plan_cell_context(
+                "rich-run",
+                &pause,
+                &Arc::new(AtomicBool::new(false)),
+                &resources,
+            ))
             .await
             .expect("the plan runs");
 

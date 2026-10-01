@@ -231,6 +231,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             plan_id: &spec.plan_id,
             task_id: &task.id,
             attempt_key: &attempt_key,
+            stop: ctx.cancel_flag.as_deref(),
         };
         let stall_watch = self.stall_watch();
         let supervised = self.supervise_attempt(&watched);
@@ -261,12 +262,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         attempt.dispatch_ended();
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
-            // The stall watchdog or the conductor cancelled the provider
-            // call: the attempt ends timed out or cancelled, and the engine
-            // retries it.
+            // The stall watchdog, the conductor or a stopping plan run
+            // cancelled the provider call: the attempt ends timed out or
+            // cancelled, and the engine retries it unless its run is
+            // stopping.
             Err(interrupted) => {
                 let error = interrupted.error(&watched);
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement = Settlement::provider_call_error(&error);
                 // The cancelled call is accounted like any failed call, with
                 // the usage it streamed (bug-aa2044).
                 let streamed = match progress
@@ -527,7 +529,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
                 // attempt's verdict is recorded.
-                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settlement = Settlement::provider_call_error(&error);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
 

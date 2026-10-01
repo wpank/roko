@@ -1773,9 +1773,11 @@ pub struct ConductorConfig {
     // `silence_timeout_secs` and `task_stall_secs` drive the Graph
     // dispatcher's per-attempt stall watchdog. An agent is silent while it
     // waits on its model without reporting progress: silence starts counting
-    // once the attempt has reported something, and pauses while a tool call
-    // it made runs. `0` turns a threshold off; with both off a Graph run is
-    // not supervised at all. The hard `timeout_secs` stays the outer bound.
+    // when its provider call starts for a provider that streams as it goes
+    // (the Claude CLI), else once the attempt has reported something, and
+    // pauses while a tool call it made runs. `0` turns a threshold off; with
+    // both off a Graph run is not supervised at all. The hard `timeout_secs`
+    // stays the outer bound.
     /// Seconds of agent silence before its task gets a warning diagnosis
     /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]

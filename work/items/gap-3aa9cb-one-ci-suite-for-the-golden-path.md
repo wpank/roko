@@ -3,13 +3,14 @@ id = "gap-3aa9cb"
 kind = "gap"
 title = "One CI suite for the golden-path integration tests C1–C8, with a shared scripted fake provider"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests", ".github/workflows"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e11"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (package the canaries)"
 anchors = ["crates/roko-cli/tests/common/scripted_provider.rs", "crates/roko-cli/tests/golden_path_suite.rs", ".github/workflows/ci.yml"]
@@ -71,3 +72,26 @@ Checked at `41c7ffbd6`: no canary exists yet. `tests/common/mod.rs` has one fixe
 
 - Start once two canaries exist. The item closes only when all eight are on the shared provider.
 - Changing `ci.yml` changes CI for everyone; say so in the pull request.
+- Implemented on `work/gap-3aa9cb` at `8e9a5b1b2`; cargo verification deferred to the batch check. The canaries ran
+  in wk-specq's own target clone.
+- 2026-10-01 (wk-specq): six of the eight canaries are on the shared provider: C2, C3 and C4, C5, C6 and C8.
+  - `tests/common/scripted_provider.rs` installs a POSIX `sh` fake Claude CLI and the `Script` it plays. It takes a
+    call's task from roko's `Task: <id>: ` system-prompt lines, numbers the task's attempts, and logs each call
+    (prompt, argv, environment, cwd, task, attempt, `--model`). Per task and attempt, a turn writes or appends
+    files, holds while a file exists, stays silent, prints a stream-json reply (text, usage, cost, model slug) or
+    malformed or overlong output, and exits with its status. `@TASK@` and `@MODEL@` fill in edit paths and output.
+    Turns compile to plain files, so the script needs no JSON parser; `script.json` records the `Script`.
+  - Each canary's own fake is gone, and no canary file or test is renamed. C3 and C4 found their task by title,
+    C8 by the second prompt line, and C5 by a `next-action` file the test wrote; all now key on task id and
+    attempt. C5's T4 makes its honest change, then changes nothing on the `--fresh` rerun.
+  - C2's `agent_tool_shells_exclude_provider_keys` keeps its OpenAI-compatible HTTP fake, which is a different
+    provider kind. Its Claude CLI configuration uses the shared provider. `ScriptedPlanWorkspace::with_provider`
+    puts the provider outside the repository and the fixtures.
+  - Pass counts: C2 2/2, C3 and C4 2/2, C5 2/2, C6 1/1, C8 1/1. `secret_canary`, which shares
+    `ScriptedPlanWorkspace`, passes 10/10. The canaries ran in about 40 s at load 110-140.
+  - `golden_path_suite_covers_c1_to_c8` fails, as it should for now, on C1 (`honest_verdicts_canary`, on
+    work/bug-7e1b6b) and C7 (`supervision_canary`, gap-9eebcb): their files do not exist yet and the CI job does
+    not list them.
+  - CI changes for everyone: `.github/workflows/ci.yml` gains a `golden-path` job. On every pull request and push
+    to main it builds and runs the six canary targets, with a 10-minute step for the canaries in a 45-minute job.
+    Until C1 and C7 land, the guard test also fails the `test` job's `cargo test --workspace`.

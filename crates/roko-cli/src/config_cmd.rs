@@ -164,7 +164,10 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
 fn default_cargo_gate_rungs() -> Vec<GateRungConfig> {
     [
         ("compile", "cargo check --workspace"),
-        ("clippy", "cargo clippy --workspace --no-deps -- -D warnings"),
+        (
+            "clippy",
+            "cargo clippy --workspace --no-deps -- -D warnings",
+        ),
     ]
     .into_iter()
     .map(|(name, command)| GateRungConfig {

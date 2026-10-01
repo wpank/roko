@@ -1169,7 +1169,10 @@ mod tests {
             &block,
         );
         assert_eq!(without_system["messages"][0]["role"], "system");
-        assert_eq!(without_system["messages"][0]["content"], "<tools>[]</tools>");
+        assert_eq!(
+            without_system["messages"][0]["content"],
+            "<tools>[]</tools>"
+        );
         assert_eq!(without_system["messages"][1]["content"], "hello");
 
         let no_tools = body(

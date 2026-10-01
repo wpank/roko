@@ -1408,8 +1408,11 @@ mod tests {
         let start = Utc::now();
         for (n, seconds_later) in [(1, 20), (2, 10), (3, 10)] {
             assert!(vault.quarantine(dummy_hash(n), AnomalyScore::from_score(0.9)));
-            vault.entries.get_mut(&dummy_hash(n)).expect("entry").quarantined_at =
-                start + chrono::Duration::seconds(seconds_later);
+            vault
+                .entries
+                .get_mut(&dummy_hash(n))
+                .expect("entry")
+                .quarantined_at = start + chrono::Duration::seconds(seconds_later);
         }
         assert!(vault.review(&dummy_hash(3), QuarantineStatus::Escalated, None));
 

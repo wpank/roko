@@ -1051,9 +1051,16 @@ done
             .await
             .expect("the turn ends at its timeout");
 
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
         let output = result.output.body.as_text().unwrap_or_default();
-        assert!(output.contains('.'), "the server streamed output: {output:?}");
+        assert!(
+            output.contains('.'),
+            "the server streamed output: {output:?}"
+        );
     }
 
     /// bug-f98a13: the same for a streaming turn, which still ends with a
@@ -1072,7 +1079,11 @@ done
             .await
             .expect("the turn ends at its timeout");
 
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
         let mut done = false;
         while let Ok(event) = event_rx.try_recv() {
             done |= matches!(event.kind, StreamEventKind::Done { .. });

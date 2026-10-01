@@ -654,7 +654,9 @@ mod tests {
                 let (mut stream, _) = listener.accept().expect("accept");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                 let mut request_line = String::new();
-                reader.read_line(&mut request_line).expect("read request line");
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).expect("read header");
@@ -701,8 +703,14 @@ mod tests {
         assert_eq!(report.task_failure_issues.state, RemoteState::Ok);
         let requests = server.join().expect("server thread");
         assert!(requests[0].starts_with("GET /user "), "{requests:?}");
-        assert!(requests[1].starts_with("GET /repos/octo/roko/pulls"), "{requests:?}");
-        assert!(requests[2].starts_with("GET /repos/octo/roko/issues"), "{requests:?}");
+        assert!(
+            requests[1].starts_with("GET /repos/octo/roko/pulls"),
+            "{requests:?}"
+        );
+        assert!(
+            requests[2].starts_with("GET /repos/octo/roko/issues"),
+            "{requests:?}"
+        );
     }
 
     #[test]

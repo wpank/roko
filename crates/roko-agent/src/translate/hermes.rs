@@ -890,7 +890,8 @@ mod tests {
     /// bracket inside a string value, escaped quotes included, stays.
     #[test]
     fn repair_json_keeps_commas_inside_strings() {
-        let input = r#"{"name": "write_file", "arguments": {"content": "a, ]", "note": "say \"x, }\"",},}"#;
+        let input =
+            r#"{"name": "write_file", "arguments": {"content": "a, ]", "note": "say \"x, }\"",},}"#;
         let repaired = repair_json(input);
         let value: serde_json::Value =
             serde_json::from_str(&repaired).expect("the repaired JSON parses");

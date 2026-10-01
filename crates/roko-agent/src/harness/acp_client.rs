@@ -920,7 +920,8 @@ impl AcpStdioClient {
         // nothing the server sends for this prompt can arrive first.
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.turn.begin(session, id);
-        self.write_request(id, "session/prompt", Some(params)).await?;
+        self.write_request(id, "session/prompt", Some(params))
+            .await?;
         Ok(id)
     }
 
@@ -2864,7 +2865,10 @@ done
             ..request.clone()
         };
         let cancelled = server_request_reply(&no_options, true).unwrap();
-        assert_eq!(cancelled["result"]["outcome"], serde_json::json!({"outcome": "cancelled"}));
+        assert_eq!(
+            cancelled["result"]["outcome"],
+            serde_json::json!({"outcome": "cancelled"})
+        );
 
         let other = AcpNotification {
             method: "fs/read_text_file".into(),

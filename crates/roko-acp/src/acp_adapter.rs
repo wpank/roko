@@ -226,7 +226,9 @@ impl EventConsumer for AcpAdapter {
 fn is_terminal(event: &CognitiveEvent) -> bool {
     matches!(
         event,
-        CognitiveEvent::Complete { .. } | CognitiveEvent::Failure { .. } | CognitiveEvent::MaxTokens
+        CognitiveEvent::Complete { .. }
+            | CognitiveEvent::Failure { .. }
+            | CognitiveEvent::MaxTokens
     )
 }
 

@@ -3236,7 +3236,13 @@ async fn run_one_plan(
         && !was_cancelled_by_tui
     {
         failure_issues
-            .file(&plan.id, &run_id, &output, &task_outcomes.failed, &node_titles)
+            .file(
+                &plan.id,
+                &run_id,
+                &output,
+                &task_outcomes.failed,
+                &node_titles,
+            )
             .await;
     }
     if outcome == PlanOutcome::Unverified {

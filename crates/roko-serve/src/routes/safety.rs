@@ -415,7 +415,10 @@ mod tests {
                 "{hash:?} missing: {body}"
             );
         }
-        assert_eq!(body["vaults"][0]["capacity"], DEFAULT_QUARANTINE_VAULT_CAPACITY);
+        assert_eq!(
+            body["vaults"][0]["capacity"],
+            DEFAULT_QUARANTINE_VAULT_CAPACITY
+        );
         assert_eq!(body["vaults"][0]["full"], false);
     }
 

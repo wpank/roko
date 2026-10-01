@@ -434,7 +434,8 @@ mod tests {
     /// the history.
     #[test]
     fn render_assistant_message_keeps_the_tool_call_react() {
-        let text = "Thought: I need the file.\nAction: read_file\nAction Input: {\"path\": \"x.rs\"}";
+        let text =
+            "Thought: I need the file.\nAction: read_file\nAction Input: {\"path\": \"x.rs\"}";
         assert_eq!(
             ReActTranslator.render_assistant_message(&BackendResponse::Text(text.into())),
             Some(json!({ "role": "assistant", "content": text }))

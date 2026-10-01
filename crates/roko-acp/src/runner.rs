@@ -2074,7 +2074,9 @@ mod tests {
 
         let thresholds = AdaptiveThresholds::load(&path).expect("thresholds");
         for rung in [0, 2] {
-            let observed = thresholds.rung_stats(rung).map(|stats| stats.total_observations);
+            let observed = thresholds
+                .rung_stats(rung)
+                .map(|stats| stats.total_observations);
             assert_eq!(observed, Some(8), "rung {rung}");
         }
     }

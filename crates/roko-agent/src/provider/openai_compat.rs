@@ -1386,7 +1386,11 @@ mod tests {
         assert_eq!(result.output.body.as_text().unwrap_or(""), "hermes-loop-ok");
 
         let requests = captured.lock().expect("capture lock").clone();
-        assert_eq!(requests.len(), 2, "the Hermes call runs, then the model answers");
+        assert_eq!(
+            requests.len(),
+            2,
+            "the Hermes call runs, then the model answers"
+        );
         let body = |n: usize| -> Value {
             let body = requests[n].split("\r\n\r\n").nth(1).expect("request body");
             serde_json::from_str(body).expect("request json")

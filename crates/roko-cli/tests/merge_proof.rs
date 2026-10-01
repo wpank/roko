@@ -15,7 +15,9 @@
 //! Graph runs deliver plans through `GitDeliveryBackend`, whose tests live in
 //! `graph_execution::delivery`; `PlanMerger` was deleted (gap-3505fb).
 
-use roko_cli::orchestrator::{ExecutorEvent, MergeQueue, MergeRequest, PlanState, PlanStateMachine};
+use roko_cli::orchestrator::{
+    ExecutorEvent, MergeQueue, MergeRequest, PlanState, PlanStateMachine,
+};
 use roko_core::PlanPhase;
 
 fn test_merge_queue() -> MergeQueue {

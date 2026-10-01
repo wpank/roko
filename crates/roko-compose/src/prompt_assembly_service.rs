@@ -948,6 +948,9 @@ mod tests {
             resolve_role(Some("dep-validator")),
             AgentRole::DependencyValidator
         );
+        // bug-e37197: a `reviewer` task gets the reviewer's template, not the
+        // implementer's.
+        assert_eq!(resolve_role(Some("reviewer")), AgentRole::QuickReviewer);
         assert_eq!(resolve_role(Some("unknown")), AgentRole::Implementer);
     }
 

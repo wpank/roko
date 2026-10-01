@@ -3215,7 +3215,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
     async fn force_backend_records_when_router_present() {
         let model = "ux34-model";
         let recorder = Arc::new(TestCascadeRecorder::default());
-        // An unknown model runs only through a configured command (gap-fd44df).
+        // An unknown model key needs a command to run (gap-fd44df).
         let mut config = RokoConfig::default();
         config.agent.command = Some("cat".to_string());
         let svc = ModelCallService::new("default".into())
@@ -3233,6 +3233,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
 
     #[tokio::test]
     async fn force_backend_noop_when_no_router() {
+        // An unknown model key needs a command to run (gap-fd44df).
         let mut config = RokoConfig::default();
         config.agent.command = Some("cat".to_string());
         let svc = ModelCallService::new("default".into()).with_config(config);

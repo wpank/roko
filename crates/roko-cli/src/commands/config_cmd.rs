@@ -58,9 +58,15 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
             let _ = run_init_wizard(path, &inputs)?;
             Ok(())
         }
-        ConfigCmd::Show { workdir, effective } => {
+        ConfigCmd::Show {
+            section,
+            workdir,
+            effective,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            if effective {
+            if let Some(section) = section {
+                config_cmd::cmd_show_section(&wd, &section)
+            } else if effective {
                 config_cmd::cmd_show_effective(&wd)
             } else {
                 config_cmd::cmd_show(&wd)

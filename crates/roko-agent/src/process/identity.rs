@@ -5,7 +5,8 @@
 //! start fingerprint for a PID, so code that persisted a PID can later check
 //! that it still names the same process before signaling it.
 //!
-//! macOS uses `proc_pidinfo(PROC_PIDTBSDINFO)`; Linux reads `/proc/<pid>/stat`.
+//! macOS uses `proc_pidinfo(PROC_PIDTBSDINFO)`; Linux reads `/proc/<pid>/stat`;
+//! FreeBSD, OpenBSD, NetBSD and DragonFly ask `ps` (`ps_identity`).
 //! Other targets report no identity, so callers must treat their PIDs as
 //! unverifiable.
 
@@ -109,11 +110,99 @@ fn linux_started_at_ms(start_ticks: u64) -> Option<u64> {
         .checked_add(start_ticks.checked_mul(1_000)? / ticks_per_sec)
 }
 
+/// Identity of the process currently holding `pid`, or `None` when no such
+/// process exists or it cannot be inspected; read from `ps` on these targets.
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    ps_identity(pid)
+}
+
 /// Identity of the process currently holding `pid`; always `None` on targets
 /// without a supported probe.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
 pub fn process_identity(_pid: u32) -> Option<ProcessIdentity> {
     None
+}
+
+/// Identity of `pid` as `ps -o lstart= -o ppid= -o comm=` reports it in the C
+/// locale. The start fingerprint is the start time `ps` prints, to the
+/// second, as the number `YYYYMMDDhhmmss`. The BSD targets use it, and the
+/// macOS and Linux tests check it against their native probes.
+#[cfg(any(
+    all(test, any(target_os = "macos", target_os = "linux")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn ps_identity(pid: u32) -> Option<ProcessIdentity> {
+    if pid == 0 {
+        return None;
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-o", "ppid=", "-o", "comm=", "-p"])
+        .arg(pid.to_string())
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_ps_identity(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse one line of `ps -o lstart= -o ppid= -o comm=` output, such as
+/// `Thu Oct  1 18:16:29 2026     1 sleep`.
+#[cfg(any(
+    all(test, any(target_os = "macos", target_os = "linux")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn parse_ps_identity(line: &str) -> Option<ProcessIdentity> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    // `lstart` is five words: weekday, month, day, time and year.
+    let month_name = *fields.get(1)?;
+    let month = MONTHS.iter().position(|name| *name == month_name)? + 1;
+    let day: u32 = fields.get(2)?.parse().ok()?;
+    let mut clock = fields.get(3)?.split(':').map(str::parse::<u32>);
+    let hour = clock.next()?.ok()?;
+    let minute = clock.next()?.ok()?;
+    let second = clock.next()?.ok()?;
+    let year: i32 = fields.get(4)?.parse().ok()?;
+    let started = chrono::NaiveDate::from_ymd_opt(year, u32::try_from(month).ok()?, day)?
+        .and_hms_opt(hour, minute, second)?;
+    let start = format!("{year:04}{month:02}{day:02}{hour:02}{minute:02}{second:02}");
+    let started_at_ms = chrono::TimeZone::from_local_datetime(&chrono::Local, &started)
+        .earliest()
+        .and_then(|time| u64::try_from(time.timestamp_millis()).ok());
+    Some(ProcessIdentity {
+        start: start.parse().ok()?,
+        started_at_ms,
+        ppid: fields.get(5)?.parse().ok()?,
+        command: fields
+            .get(6..)
+            .filter(|words| !words.is_empty())
+            .map(|words| words.join(" ")),
+    })
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
@@ -147,5 +236,40 @@ mod tests {
         child.wait().expect("reap sleep");
         assert_eq!(identity.ppid, std::process::id());
         assert_eq!(identity.command.as_deref(), Some("sleep"));
+    }
+
+    /// gap-e44bdf: the BSD targets read identities from `ps`; here it must
+    /// agree with the native probe.
+    #[test]
+    fn ps_identity_agrees_with_the_native_probe() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let native = process_identity(child.id()).expect("native identity");
+        let first = ps_identity(child.id()).expect("ps identity");
+        let second = ps_identity(child.id()).expect("ps identity");
+        child.kill().expect("kill sleep");
+        child.wait().expect("reap sleep");
+        assert_eq!(first.start, second.start);
+        assert_eq!(first.ppid, native.ppid);
+        let command = first.command.unwrap_or_default();
+        assert!(command.ends_with("sleep"), "{command}");
+        let ps_ms = first.started_at_ms.expect("ps start time");
+        let native_ms = native.started_at_ms.expect("native start time");
+        assert!(ps_ms.abs_diff(native_ms) < 2_000, "{ps_ms} vs {native_ms}");
+        assert!(ps_identity(0).is_none());
+        assert!(ps_identity(99_999_999).is_none());
+    }
+
+    #[test]
+    fn ps_identity_parses_bsd_ps_output() {
+        let line = "Thu Oct  1 18:16:29 2026     1 sleep\n";
+        let identity = parse_ps_identity(line).expect("parsed");
+        assert_eq!(identity.start, 20_261_001_181_629);
+        assert_eq!(identity.ppid, 1);
+        assert_eq!(identity.command.as_deref(), Some("sleep"));
+        assert!(parse_ps_identity("").is_none());
+        assert!(parse_ps_identity("Thu Foo  1 18:16:29 2026 1 sleep").is_none());
     }
 }

@@ -8,9 +8,9 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/graph-dispatch", "roko-gate/review"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e1-verdict"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-gate/src/review_verdict.rs::parse_structured_review_verdict", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -28,3 +28,22 @@ Since bug-82d47b, failing authored verify steps can no longer be force-accepted,
 - plan-level success (`execution_succeeded` in plan_runner.rs, and `GraphCheckpointStatus`) ignores verdicts and will need to show forced accepts once something produces them.
 
 Fix: parse structured review verdicts (`roko_gate::review_verdict::parse_structured_review_verdict`) on the Graph path, loop REVISE up to the cap, emit `ForcedAccept` when the cap is hit, and surface forced accepts in the plan outcome.
+
+## Notes
+
+- 2026-10-01 (wk-honestbench): blocked on design decisions; no code changed. The premise holds at BASE
+  `ebdc0f5d5`: nothing under `crates/roko-cli/src` calls `parse_structured_review_verdict`, `ForcedAccept` is
+  produced only in tests, and `settle_task_verification` says so (`graph_task_dispatch/verification.rs:756-760`).
+  Open questions:
+  - What is reviewed: the output of `reviewer`-role tasks, or a review step after an implementer task?
+  - What REVISE does in a DAG. A reviewer node that fails only retries itself, and the Graph engine cannot re-run
+    the upstream node it reviewed. Runner-v2's loop instead re-dispatched the implementer with the review, up to
+    `max_review_cycles`, inside one task.
+  - What an unstructured review means. `parse_structured_review_verdict` fails closed to `needs_human`, so gating
+    on it would fail every existing reviewer task that answers in prose.
+  - How `execution_succeeded` (`graph_execution/plan_runner.rs:2909`) and `GraphCheckpointStatus` count forced
+    accepts.
+
+  Next step: choose a review-cycle model and an unstructured-output policy. A safe first step is then to parse and
+  record reviewer verdicts in the attempt record, advisory only, and measure how often BLOCK/REVISE would fire
+  before gating on them.

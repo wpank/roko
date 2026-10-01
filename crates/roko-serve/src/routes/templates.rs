@@ -15,7 +15,8 @@ use roko_agent::mcp::workspace_mcp_config;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::{ApiJson, RequestPayload, ValidJson};
-use crate::state::{AppState, OperationHandle, OperationStatus};
+use crate::operations::{run_outcome, spawn_operation};
+use crate::state::AppState;
 use crate::templates::AgentTemplate;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -148,8 +149,7 @@ async fn deploy_template(
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
 
-    let handle = tokio::spawn({
-        let op_id = op_id.clone();
+    let work = {
         let template_name = name.clone();
         let state = Arc::clone(&state);
         async move {
@@ -166,11 +166,7 @@ async fn deploy_template(
                             trigger_kind: "template_deploy".into(),
                             success: result.success,
                         });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "template_deploy".into(),
-                        success: result.success,
-                    });
+                    run_outcome(&result, &format!("template {template_name}"))
                 }
                 Err(e) => {
                     state
@@ -184,27 +180,17 @@ async fn deploy_template(
                             trigger_kind: "template_deploy".into(),
                             success: false,
                         });
+                    let message = format!("template deploy failed: {e}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("template deploy failed: {e}"),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "template_deploy".into(),
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("template_deploy:{name}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("template_deploy:{name}");
+    spawn_operation(&state, op_id.clone(), op_kind, "template_deploy", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,

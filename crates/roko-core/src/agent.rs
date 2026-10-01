@@ -801,7 +801,9 @@ pub enum AgentRole {
     Researcher,
     /// Post-impl review for correctness and safety.
     Auditor,
-    /// Single-pass reviewer for Standard-complexity plans.
+    /// Single-pass reviewer for Standard-complexity plans. Plans may call it
+    /// `reviewer` (bug-e37197).
+    #[serde(alias = "reviewer")]
     QuickReviewer,
     /// Drafts documentation.
     Scribe,
@@ -1685,6 +1687,9 @@ mod tests {
         assert_eq!(json, "\"quick-reviewer\"");
         let decoded: AgentRole = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, r);
+        // bug-e37197: `reviewer` names the same role, and writes back as its label.
+        let reviewer: AgentRole = serde_json::from_str("\"reviewer\"").unwrap();
+        assert_eq!(reviewer, r);
     }
 
     // ── Zero-config builtin model resolution (T5) ──────────────────────

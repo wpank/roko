@@ -160,6 +160,7 @@ impl Config {
                 .timeout_ms
                 .unwrap_or(ExecAgentConfig::default_timeout()),
             env: core_agent.env.clone().unwrap_or_default(),
+            env_passthrough: core_agent.env_passthrough.clone(),
             fallback_model: core_agent.fallback_model.clone(),
             clean_output: ExecAgentConfig::default_clean(),
             mcp_config: None,
@@ -233,6 +234,10 @@ pub struct ExecAgentConfig {
     /// API keys, `OLLAMA_HOST`, etc.
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// `[agent] env_passthrough`: variables a provider CLI keeps although
+    /// roko loaded them from a `.env` file (an exact name or `PREFIX*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Whether to post-process the agent output — strip ANSI escapes and
     /// reasoning-model "thinking" traces. Default: `true` (so reasoning
     /// models like glm-4 / gemma-reasoning work out of the box).
@@ -464,6 +469,7 @@ impl Default for ExecAgentConfig {
             fallback_model: None,
             timeout_ms: Self::default_timeout(),
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             clean_output: Self::default_clean(),
             mcp_config: None,
             tier_models: std::collections::HashMap::new(),
@@ -1175,10 +1181,6 @@ pub struct LearningLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replan_on_gate_failure: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replan_max_per_plan: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replan_gate_attempts: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_playbook_refresh: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_lookahead_router: Option<bool>,
@@ -1194,8 +1196,6 @@ impl LearningLayer {
     pub fn from_core_learning(core: &roko_core::config::LearningConfig) -> Self {
         Self {
             replan_on_gate_failure: Some(core.replan_on_gate_failure),
-            replan_max_per_plan: Some(core.replan_max_per_plan),
-            replan_gate_attempts: Some(core.replan_gate_attempts),
             auto_playbook_refresh: Some(core.auto_playbook_refresh),
             use_lookahead_router: Some(core.use_lookahead_router),
             lookahead_threshold: Some(core.lookahead_threshold),
@@ -1208,8 +1208,6 @@ impl LearningLayer {
             replan_on_gate_failure: overlay
                 .replan_on_gate_failure
                 .or(self.replan_on_gate_failure),
-            replan_max_per_plan: overlay.replan_max_per_plan.or(self.replan_max_per_plan),
-            replan_gate_attempts: overlay.replan_gate_attempts.or(self.replan_gate_attempts),
             auto_playbook_refresh: overlay.auto_playbook_refresh.or(self.auto_playbook_refresh),
             use_lookahead_router: overlay.use_lookahead_router.or(self.use_lookahead_router),
             lookahead_threshold: overlay.lookahead_threshold.or(self.lookahead_threshold),
@@ -1608,14 +1606,11 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "episode_count_trigger"]
         | ["tools", "mcp_timeout_secs"]
         | ["prompt", "token_budget"]
-        | ["executor", "max_concurrent_plans"]
         | ["executor", "max_concurrent_tasks"]
         | ["executor", "max_auto_fix_iterations"]
         | ["executor", "max_merge_attempts"]
         | ["executor", "task_timeout_secs"]
         | ["runner", "plan_timeout_secs"]
-        | ["learning", "replan_max_per_plan"]
-        | ["learning", "replan_gate_attempts"]
         | ["learning", "gate_threshold_flush_interval"] => {
             let n = value
                 .parse::<i64>()
@@ -2038,9 +2033,6 @@ pub struct PromptLayer {
 /// Partial `ExecutorConfig` — every field optional.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExecutorLayer {
-    /// Maximum number of plans executing concurrently.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_plans: Option<usize>,
     /// Maximum number of tasks executing concurrently within a plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_tasks: Option<usize>,
@@ -2300,7 +2292,6 @@ impl ExecutorLayer {
     #[must_use]
     pub fn merge(self, overlay: Self) -> Self {
         Self {
-            max_concurrent_plans: overlay.max_concurrent_plans.or(self.max_concurrent_plans),
             max_concurrent_tasks: overlay.max_concurrent_tasks.or(self.max_concurrent_tasks),
             max_auto_fix_iterations: overlay
                 .max_auto_fix_iterations
@@ -3205,6 +3196,40 @@ contxt_window = 8192
             doc["authoring"]["planner_model"].as_str().unwrap(),
             "claude-opus-4-6"
         );
+    }
+
+    /// bug-9434c4: the opt-in learning flags are not in the hand-written key
+    /// list, so `config set` types them from the schema tree.
+    #[test]
+    fn config_set_accepts_learning_opt_in_keys() {
+        assert_eq!(
+            parse_value_for_key("learning.t0_reflexes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            parse_value_for_key("learning.dreams.trigger_on_acp_episodes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        for (key, value) in [
+            ("learning.t0_reflexes", "true"),
+            ("learning.dreams.trigger_on_plan_complete", "false"),
+            ("learning.dreams.trigger_on_acp_episodes", "true"),
+            ("learning.dreams.acp_episode_threshold", "4"),
+            ("learning.dreams.max_concurrent", "2"),
+        ] {
+            set_toml_dotted_key(&mut doc, key, value).unwrap();
+        }
+        let unknown = roko_core::config::loader::validate_known_config_paths(&doc);
+        assert!(unknown.is_empty(), "unknown keys: {unknown:?}");
+        let config: RokoConfig = doc.try_into().expect("the edited config loads");
+        assert!(config.learning.t0_reflexes);
+        let dreams = &config.learning.dreams;
+        assert!(!dreams.trigger_on_plan_complete);
+        assert!(dreams.trigger_on_acp_episodes);
+        assert_eq!(dreams.acp_episode_threshold, 4);
+        assert_eq!(dreams.max_concurrent, 2);
     }
 
     #[test]

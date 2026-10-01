@@ -24,10 +24,17 @@
 //!
 //! The CLI keys the registry to the resolved workspace with
 //! [`set_registry_root`]; until then it uses the current directory.
+//!
+//! A child is also tagged with the spawn scope of the thread that registered
+//! it ([`enter_spawn_scope`]), so one plan run can stop its own agents
+//! ([`registered_pids_in_scope`]) without signalling other agents the same
+//! process runs beside it.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
@@ -52,6 +59,15 @@ const CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_millis(200)
 /// This process's registry. Each mutation persists only this owner's record.
 static REGISTRY: LazyLock<Mutex<Registry>> =
     LazyLock::new(|| Mutex::new(Registry::new(Owner::current())));
+
+/// The next scope [`new_spawn_scope`] hands out.
+static NEXT_SPAWN_SCOPE: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// The spawn scope of the children this thread registers; see
+    /// [`enter_spawn_scope`].
+    static SPAWN_SCOPE: Cell<Option<u64>> = const { Cell::new(None) };
+}
 
 /// The Roko process that owns one record file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +148,10 @@ struct Registry {
     /// Canonical workspace root; defaults to the current directory on first use.
     root: Option<PathBuf>,
     children: BTreeMap<u32, ChildRecord>,
+    /// The spawn scope each child was registered under, for children
+    /// registered inside one. Kept in memory only: a scope means nothing to
+    /// another process.
+    scopes: BTreeMap<u32, u64>,
 }
 
 impl Registry {
@@ -140,6 +160,20 @@ impl Registry {
             owner,
             root: None,
             children: BTreeMap::new(),
+            scopes: BTreeMap::new(),
+        }
+    }
+
+    /// Tag `pid` with the scope it was registered under, or clear the tag a
+    /// recycled PID left behind.
+    fn set_scope(&mut self, pid: u32, scope: Option<u64>) {
+        match scope {
+            Some(scope) => {
+                self.scopes.insert(pid, scope);
+            }
+            None => {
+                self.scopes.remove(&pid);
+            }
         }
     }
 
@@ -172,6 +206,8 @@ impl Registry {
     /// Rewrite this owner's record with the children that still exist, or
     /// delete it once none do.
     fn persist(&mut self) {
+        let children = &self.children;
+        self.scopes.retain(|pid, _| children.contains_key(pid));
         let Some(path) = self.record_path() else {
             return;
         };
@@ -212,8 +248,10 @@ pub fn set_registry_root(workdir: &Path) {
 /// later cleanup can tell it apart from a process that recycles its PID.
 pub fn register_spawned_pid(pid: u32) {
     let child = ChildRecord::observe(pid);
+    let scope = current_spawn_scope();
     let mut registry = REGISTRY.lock();
     registry.children.insert(pid, child);
+    registry.set_scope(pid, scope);
     registry.persist();
 }
 
@@ -223,8 +261,10 @@ pub fn register_spawned_descendants(pids: &[u32]) {
         return;
     }
     let children: Vec<ChildRecord> = pids.iter().map(|pid| ChildRecord::observe(*pid)).collect();
+    let scope = current_spawn_scope();
     let mut registry = REGISTRY.lock();
     for child in children {
+        registry.set_scope(child.pid, scope);
         registry.children.insert(child.pid, child);
     }
     registry.persist();
@@ -241,6 +281,52 @@ pub fn unregister_pid(pid: u32) {
 /// Return a snapshot of all currently registered PIDs.
 pub fn registered_pids() -> Vec<u32> {
     REGISTRY.lock().children.keys().copied().collect()
+}
+
+/// Return the registered PIDs of one spawn scope: those registered on a
+/// thread inside [`enter_spawn_scope`] with `scope`, or, for `None`, those
+/// registered outside every scope.
+pub fn registered_pids_in_scope(scope: Option<u64>) -> Vec<u32> {
+    let registry = REGISTRY.lock();
+    registry
+        .children
+        .keys()
+        .copied()
+        .filter(|pid| registry.scopes.get(pid).copied() == scope)
+        .collect()
+}
+
+/// A spawn scope no other caller in this process holds.
+pub fn new_spawn_scope() -> u64 {
+    NEXT_SPAWN_SCOPE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Tag the children this thread registers with `scope` until the returned
+/// guard drops, which restores the thread's previous scope.
+///
+/// `roko serve` runs each plan on a thread of its own and scopes it, so a
+/// cancelled plan run signals only its own agents, never a plan generation,
+/// revision or chat agent the server runs beside it (find-65ff6b).
+pub fn enter_spawn_scope(scope: u64) -> SpawnScopeGuard {
+    let previous = SPAWN_SCOPE.with(|current| current.replace(Some(scope)));
+    SpawnScopeGuard { previous }
+}
+
+/// The spawn scope the current thread registers children under, if any.
+pub fn current_spawn_scope() -> Option<u64> {
+    SPAWN_SCOPE.with(Cell::get)
+}
+
+/// Ends a spawn scope entered with [`enter_spawn_scope`] when dropped.
+#[must_use = "the spawn scope ends when the guard is dropped"]
+pub struct SpawnScopeGuard {
+    previous: Option<u64>,
+}
+
+impl Drop for SpawnScopeGuard {
+    fn drop(&mut self) {
+        SPAWN_SCOPE.with(|current| current.set(self.previous));
+    }
 }
 
 /// Kill agent processes orphaned by Roko processes that are gone.
@@ -595,6 +681,44 @@ mod tests {
         unregister_pid(fake_pid);
         let pids = registered_pids();
         assert!(!pids.contains(&fake_pid));
+    }
+
+    /// find-65ff6b: a child registered inside a spawn scope is listed under
+    /// that scope alone, and one registered outside every scope under `None`.
+    #[test]
+    fn spawn_scopes_keep_agents_apart() {
+        let (outside, inside, nested) = (77_777_771, 77_777_772, 77_777_773);
+        let scope = new_spawn_scope();
+        let nested_scope = new_spawn_scope();
+        assert_ne!(scope, nested_scope);
+        assert_eq!(current_spawn_scope(), None);
+
+        register_spawned_pid(outside);
+        {
+            let _scope = enter_spawn_scope(scope);
+            register_spawned_pid(inside);
+            {
+                let _nested = enter_spawn_scope(nested_scope);
+                register_spawned_pid(nested);
+            }
+            assert_eq!(current_spawn_scope(), Some(scope));
+        }
+        assert_eq!(current_spawn_scope(), None);
+
+        assert_eq!(registered_pids_in_scope(Some(scope)), [inside]);
+        assert_eq!(registered_pids_in_scope(Some(nested_scope)), [nested]);
+        let unscoped = registered_pids_in_scope(None);
+        assert!(unscoped.contains(&outside));
+        assert!(!unscoped.contains(&inside) && !unscoped.contains(&nested));
+
+        // A PID registered again outside a scope loses its old tag.
+        register_spawned_pid(inside);
+        assert!(registered_pids_in_scope(Some(scope)).is_empty());
+
+        for pid in [outside, inside, nested] {
+            unregister_pid(pid);
+        }
+        assert!(registered_pids_in_scope(Some(nested_scope)).is_empty());
     }
 
     #[test]

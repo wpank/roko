@@ -24,10 +24,12 @@ pub struct DreamsConfig {
     /// `roko knowledge dream run`.
     #[serde(default = "default_true")]
     pub trigger_on_plan_complete: bool,
-    /// Maximum number of concurrent dream consolidation runs.
+    /// Maximum number of dream consolidations that ACP sessions run at once
+    /// in one process. An ACP turn that finds this many running starts none.
+    /// The plan-completion trigger keeps its own limit of one.
     ///
-    /// Additional triggers are silently dropped while a run is in progress.
-    /// Defaults to `1`.
+    /// Defaults to `1`. Zero is normalized to one at the runtime boundary
+    /// (see [`Self::effective_max_concurrent`]).
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
     /// Let ACP sessions trigger dream consolidation once
@@ -77,6 +79,16 @@ impl DreamsConfig {
             1
         } else {
             self.acp_episode_threshold
+        }
+    }
+
+    /// Return the runtime-safe limit on concurrent ACP dream consolidations.
+    #[must_use]
+    pub const fn effective_max_concurrent(&self) -> usize {
+        if self.max_concurrent == 0 {
+            1
+        } else {
+            self.max_concurrent
         }
     }
 }

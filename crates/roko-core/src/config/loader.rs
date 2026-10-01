@@ -1448,10 +1448,27 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
 /// collects unknown keys in the other sections' entries.
 const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models"];
 
+/// Tables that keep keys the schema does not name: a `[profiles.<name>]`
+/// entry collects them in its flattened `DomainProfile::extra` map.
+/// Validation still checks the keys the schema names and accepts the rest.
+/// A `*` segment matches any one user-defined key.
+const OPEN_TABLES: &[&str] = &["profiles.*"];
+
 /// Whether the dotted `path` names a dynamic map section.
 fn is_dynamic_section(path: &str) -> bool {
+    matches_section_pattern(path, DYNAMIC_MAP_SECTIONS)
+}
+
+/// Whether the dotted `path` names an [`OPEN_TABLES`] table.
+fn is_open_table(path: &str) -> bool {
+    matches_section_pattern(path, OPEN_TABLES)
+}
+
+/// Whether the dotted `path` matches one of `patterns`, where a `*` segment
+/// matches any one key.
+fn matches_section_pattern(path: &str, patterns: &[&str]) -> bool {
     !path.is_empty()
-        && DYNAMIC_MAP_SECTIONS.iter().any(|pattern| {
+        && patterns.iter().any(|pattern| {
             let mut keys = path.split('.');
             pattern
                 .split('.')
@@ -1476,13 +1493,53 @@ const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Config keys removed from the schema because nothing read them, each with
+/// the reason. Validation reports one as removed rather than unknown.
+/// Loading, and a strict parse ([`RokoConfig::from_toml`]), drop it with that
+/// warning, so an old roko.toml that still sets one keeps working.
+const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[(
+    "runner.max_concurrent_plans",
+    "runner.max_concurrent_plans was removed because nothing read it; \
+     conductor.max_parallel_plans (or `roko plan run --max-parallel-plans`) \
+     sets how many plans run at once",
+)];
+
+/// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
+/// for each key removed.
+pub fn drop_removed_config_keys(value: &mut toml::Value) -> Vec<ConfigDiagnostic> {
+    let mut removed = Vec::new();
+    for (key, message) in REMOVED_CONFIG_KEYS {
+        if remove_dotted_key(value, key) {
+            removed.push(ConfigDiagnostic {
+                key: (*key).to_string(),
+                message: (*message).to_string(),
+            });
+        }
+    }
+    removed
+}
+
+/// Remove the dotted `path`, below the top level, from `tree`, and return
+/// whether the tree had it.
+fn remove_dotted_key(tree: &mut toml::Value, path: &str) -> bool {
+    let Some((parent, leaf)) = path.rsplit_once('.') else {
+        return false;
+    };
+    parent
+        .split('.')
+        .try_fold(tree, |node, key| node.get_mut(key))
+        .and_then(toml::Value::as_table_mut)
+        .is_some_and(|table| table.remove(leaf).is_some())
+}
+
 /// Validate every path in the input TOML against the `RokoConfig` schema.
 ///
 /// Builds an allowed-key tree by serializing a default `RokoConfig` to a
 /// `toml::Value`, then walks the input recursively. Dynamic map sections
 /// (providers, models, profiles, agent.roles, tools.profiles) treat their
 /// keys as user-defined names and validate each value against the map's
-/// value schema. Legacy removed sections produce targeted diagnostics.
+/// value schema. [`OPEN_TABLES`] accept keys the schema does not name.
+/// Legacy removed sections produce targeted diagnostics.
 ///
 /// This replaces the previous top-level-only `unknown_field_diagnostics`.
 pub fn validate_known_config_paths(value: &toml::Value) -> Vec<ConfigDiagnostic> {
@@ -1540,6 +1597,7 @@ fn build_schema_tree() -> toml::Value {
     use super::routing::RewardWeights;
     use super::schema::{DomainProfile, GateProfileConfig};
     use super::subscriptions::SubscriptionConfig;
+    use super::tools::ToolProfileConfig;
 
     let mut config = RokoConfig::default();
 
@@ -1794,7 +1852,6 @@ fn build_schema_tree() -> toml::Value {
     relay.workspace_name = Some(String::new());
     relay.public_url = Some(String::new());
     config.runner.max_concurrent_tasks = Some(0);
-    config.runner.max_concurrent_plans = Some(0);
     config.resources.per_plan_disk_budget_mb = Some(0);
     config.dreams.scheduled_cron = Some(String::new());
     // `role_token_budgets` maps roles to budgets (a dynamic map section).
@@ -1802,6 +1859,11 @@ fn build_schema_tree() -> toml::Value {
         .retrieval
         .role_token_budgets
         .insert("_schema_sentinel".to_string(), 0);
+    // `tools.profiles` maps domains to tool profiles (a dynamic map section).
+    config
+        .tools
+        .profiles
+        .insert("_schema_sentinel".to_string(), ToolProfileConfig::default());
 
     let mut value =
         toml::Value::try_from(config).expect("sentinel RokoConfig must serialize to toml::Value");
@@ -1928,6 +1990,8 @@ fn walk_config_paths(
     };
 
     let known_keys: Vec<&str> = schema_table.keys().map(String::as_str).collect();
+    // An open table keeps the keys its schema does not name.
+    let open = is_open_table(prefix);
 
     for (key, val) in input_table {
         let dotted = if prefix.is_empty() {
@@ -1936,9 +2000,10 @@ fn walk_config_paths(
             format!("{prefix}.{key}")
         };
 
-        // Check for legacy removed sections first.
+        // Check for legacy removed sections and keys first.
         if let Some((_, message)) = LEGACY_REMOVED_SECTIONS
             .iter()
+            .chain(REMOVED_CONFIG_KEYS)
             .find(|(section, _)| *section == dotted)
         {
             diagnostics.push(ConfigDiagnostic {
@@ -1979,7 +2044,7 @@ fn walk_config_paths(
             } else {
                 walk_config_paths(val, schema_val, &child_path, diagnostics);
             }
-        } else {
+        } else if !open {
             // Unknown key. Suggest nearest match if edit distance is small.
             let suggestion = find_nearest_key(key, &known_keys);
             let msg = match suggestion {
@@ -4394,9 +4459,6 @@ scheduled_cron = "0 0 3 * * * *"
 
 [learning]
 override_learning_dampening = 0.5
-
-[runner]
-max_concurrent_plans = 3
 "#,
         )
         .expect("write config");
@@ -4439,7 +4501,29 @@ max_concurrent_plans = 3
         let cron = config.dreams.scheduled_cron.as_deref();
         assert_eq!(cron, Some("0 0 3 * * * *"));
         assert_eq!(config.learning.override_learning_dampening, Some(0.5));
-        assert_eq!(config.runner.max_concurrent_plans, Some(3));
+    }
+
+    /// gap-6bc156: `runner.max_concurrent_plans` was removed. Validation
+    /// names it as removed, and an old file that sets it still loads and
+    /// still parses strictly, with a warning.
+    #[test]
+    fn removed_runner_max_concurrent_plans_still_loads() {
+        let text = "[runner]\nmax_concurrent_plans = 3\nplan_timeout_secs = 99\n";
+        let value: toml::Value = text.parse().expect("parse runner toml");
+        let diags = validate_known_config_paths(&value);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].key, "runner.max_concurrent_plans");
+        assert!(diags[0].message.contains("removed"));
+        assert!(diags[0].message.contains("max_parallel_plans"));
+
+        let loaded = deserialize_migrated_toml(text).expect("load the old file");
+        assert_eq!(loaded.runner.plan_timeout_secs, 99);
+        let parsed = RokoConfig::from_toml(text).expect("parse the old file");
+        assert_eq!(parsed.runner.plan_timeout_secs, 99);
+
+        // A key that was never in the schema is still an error.
+        let typo = RokoConfig::from_toml("[runner]\nmax_concurrent_plan = 3\n");
+        assert!(typo.is_err());
     }
 
     /// gap-e9660f: agents can read roko.toml, so a grep of the project would
@@ -4780,6 +4864,7 @@ max_concurrent_plans = 3
     fn every_accepted_config_field_is_in_the_schema_tree() {
         use super::super::agent::RoleOverride;
         use super::super::provider::{ProviderLimits, ProviderRouting};
+        use super::super::tools::ToolProfileConfig;
 
         const UNKNOWN_PROBE: &str = "unknown field `__probe__`, expected ";
         // Aliases serde accepts that the tree leaves out on purpose:
@@ -4793,9 +4878,9 @@ max_concurrent_plans = 3
             "gates.custom_rungs",
         ];
         // Tables that take any key but are checked against a fixed key set:
-        // `tui.effects` is free-form TOML, and a profile collects unknown
-        // keys in its flattened `extra` map.
-        const FIXED_KEY_TABLES: &[&str] = &["tui.effects", "profiles._schema_sentinel"];
+        // `tui.effects` is free-form TOML. (A profile, which collects
+        // unknown keys in its flattened `extra` map, is an open table.)
+        const FIXED_KEY_TABLES: &[&str] = &["tui.effects"];
 
         let schema = build_schema_tree();
         let parsed = schema.clone().try_into::<RokoConfig>();
@@ -4831,7 +4916,10 @@ max_concurrent_plans = 3
                 continue;
             }
 
-            if is_dynamic_section(&dotted) || FIXED_KEY_TABLES.contains(&dotted.as_str()) {
+            if is_dynamic_section(&dotted)
+                || is_open_table(&dotted)
+                || FIXED_KEY_TABLES.contains(&dotted.as_str())
+            {
                 continue;
             }
             let samples = [
@@ -4872,6 +4960,10 @@ max_concurrent_plans = 3
             (
                 "models._schema_sentinel.provider_routing",
                 struct_fields::<ProviderRouting>(),
+            ),
+            (
+                "tools.profiles._schema_sentinel",
+                struct_fields::<ToolProfileConfig>(),
             ),
         ];
         for (template, fields) in templates {
@@ -4925,6 +5017,60 @@ name = "my-domain"
             unexpected.is_empty(),
             "dynamic map keys must not produce diagnostics: {unexpected:?}"
         );
+    }
+
+    /// bug-ccfa0d: a `[profiles.<name>]` entry keeps the keys it does not
+    /// name in its flattened `extra` map, and `[tools.profiles.<name>]`
+    /// entries have a template, so validation accepts both, a typo inside a
+    /// tool profile is still reported, and a load keeps the values.
+    #[test]
+    fn profile_extra_keys_and_tools_profiles_are_known_config_paths() {
+        let text = r#"
+[profiles.docs]
+name = "docs"
+model = "haiku"
+house_style = "plain"
+
+[profiles.docs.review]
+depth = 2
+
+[tools.profiles.research]
+extra_tools = ["web_search", "web_fetch"]
+excluded_tools = ["write_file"]
+"#;
+        let value: toml::Value = text.parse().expect("parse profiles toml");
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.is_empty(),
+            "profile keys must not produce diagnostics: {diags:?}"
+        );
+
+        let typo: toml::Value = "[tools.profiles.research]\nextra_tool = [\"bash\"]\n"
+            .parse()
+            .expect("parse typo toml");
+        let diags = validate_known_config_paths(&typo);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.key == "tools.profiles.research.extra_tool"),
+            "expected a diagnostic for the tool-profile typo, got: {diags:?}"
+        );
+        assert_eq!(
+            schema_value_for_path("tools.profiles.research.extra_tools"),
+            Some(toml::Value::Array(Vec::new()))
+        );
+
+        let config = deserialize_migrated_toml(text).expect("load profiles config");
+        let docs = &config.profiles["docs"];
+        assert_eq!(docs.model.as_deref(), Some("haiku"));
+        assert_eq!(
+            docs.extra.get("house_style"),
+            Some(&toml::Value::String("plain".to_string()))
+        );
+        assert!(docs.extra.contains_key("review"));
+        let research = &config.tools.profiles["research"];
+        assert_eq!(research.extra_tools, ["web_search", "web_fetch"]);
+        assert_eq!(research.excluded_tools, ["write_file"]);
     }
 
     #[test]

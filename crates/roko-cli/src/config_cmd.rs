@@ -123,7 +123,6 @@ pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result
             .unwrap()
             .insert("gate".to_string(), gate_toml);
     }
-    set_toml_dotted_key(&mut doc, "executor.max_concurrent_plans", "4")?;
     set_toml_dotted_key(&mut doc, "executor.max_concurrent_tasks", "4")?;
     set_toml_dotted_key(&mut doc, "executor.max_auto_fix_iterations", "5")?;
     set_toml_dotted_key(&mut doc, "executor.max_merge_attempts", "3")?;
@@ -2330,12 +2329,8 @@ scheduled_cron = "invalid cron"
         assert_eq!(doc["tools"]["mcp_timeout_secs"].as_integer().unwrap(), 30);
         assert_eq!(doc["serve"]["auth"]["enabled"].as_bool().unwrap(), false);
         assert_eq!(doc["serve"]["auth"]["api_key"].as_str().unwrap(), "");
-        assert_eq!(
-            doc["executor"]["max_concurrent_plans"]
-                .as_integer()
-                .unwrap(),
-            4
-        );
+        // gap-6bc156: no plan run reads `executor.max_concurrent_plans`.
+        assert!(doc["executor"].get("max_concurrent_plans").is_none());
     }
 
     #[test]

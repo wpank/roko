@@ -1436,7 +1436,6 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "profiles",
     "agent.roles",
     "agent.tier_models",
-    "gates.domain_gates",
     "gates.max_output_tokens",
     "retrieval.role_token_budgets",
     "tools.profiles",
@@ -1497,12 +1496,34 @@ const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
 /// the reason. Validation reports one as removed rather than unknown.
 /// Loading, and a strict parse ([`RokoConfig::from_toml`]), drop it with that
 /// warning, so an old roko.toml that still sets one keeps working.
-const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[(
-    "runner.max_concurrent_plans",
-    "runner.max_concurrent_plans was removed because nothing read it; \
-     conductor.max_parallel_plans (or `roko plan run --max-parallel-plans`) \
-     sets how many plans run at once",
-)];
+const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
+    (
+        "runner.max_concurrent_plans",
+        "runner.max_concurrent_plans was removed because nothing read it; \
+         conductor.max_parallel_plans (or `roko plan run --max-parallel-plans`) \
+         sets how many plans run at once",
+    ),
+    (
+        "gates.domain_gates",
+        "gates.domain_gates was removed because no gate ran its commands; \
+         give the plan tasks of that domain their own verify commands",
+    ),
+    (
+        "learning.replan_max_per_plan",
+        "learning.replan_max_per_plan was removed because no plan run \
+         revises a plan on gate failure, so it limited nothing",
+    ),
+    (
+        "learning.replan_gate_attempts",
+        "learning.replan_gate_attempts was removed because no plan run \
+         revises a plan on gate failure, so it limited nothing",
+    ),
+    (
+        "agent.data_llm",
+        "agent.data_llm was removed because no dispatch path routed \
+         untrusted content to a separate data LLM; setting it isolated nothing",
+    ),
+];
 
 /// Remove the [`REMOVED_CONFIG_KEYS`] that `value` sets, with a diagnostic
 /// for each key removed.
@@ -1729,12 +1750,6 @@ fn build_schema_tree() -> toml::Value {
     config.agent.timeout_ms = Some(0);
     config.agent.env = Some(Vec::new());
     config.agent.env_passthrough = vec![String::new()];
-    config.agent.data_llm = Some(super::agent::DataLlmConfig {
-        // `output_schema` is free-form JSON. A scalar placeholder keeps any
-        // value a file sets, because loading never descends into it.
-        output_schema: Some(serde_json::Value::String(String::new())),
-        ..Default::default()
-    });
     config.agent.defaults.generic_agent_model = Some(String::new());
     config.agent.defaults.gate_judge_model = Some(String::new());
     config.agent.extensions = vec![String::new()];
@@ -1765,11 +1780,6 @@ fn build_schema_tree() -> toml::Value {
     // Optional keys of the other sections. The test
     // `every_accepted_config_field_is_in_the_schema_tree` fails when the
     // tree lacks one.
-    // `domain_gates` maps domains to gate commands (a dynamic map section).
-    config
-        .gates
-        .domain_gates
-        .insert("_schema_sentinel".to_string(), Vec::new());
     config.gates.max_rung = Some(0);
     // `max_output_tokens` maps roles to output-token caps (a dynamic map
     // section).
@@ -4338,9 +4348,6 @@ disabled_providers = ["gemini"]
 mechanical = "claude-haiku-4-5"
 architectural = "claude-opus-4-6"
 
-[agent.data_llm]
-model = "data-model"
-
 [routing]
 disabled_providers = ["openai"]
 fallback_models = ["claude-haiku-4-5"]
@@ -4394,8 +4401,6 @@ port = 7788
         assert_eq!(mcp_config, Some(std::path::Path::new(".mcp.json")));
         assert_eq!(agent.default_agent_id.as_deref(), Some("agent-a"));
         assert_eq!(agent.disabled_providers, vec!["gemini".to_string()]);
-        let data_model = agent.data_llm.as_ref().map(|llm| llm.model.as_str());
-        assert_eq!(data_model, Some("data-model"));
         let routing = &config.routing;
         assert_eq!(routing.disabled_providers, vec!["openai".to_string()]);
         let fallbacks = vec!["claude-haiku-4-5".to_string()];
@@ -4451,9 +4456,6 @@ implementer = 4000
 [gates]
 max_rung = 2
 
-[gates.domain_gates]
-docs = ["shell:true"]
-
 [dreams]
 scheduled_cron = "0 0 3 * * * *"
 
@@ -4496,8 +4498,6 @@ override_learning_dampening = 0.5
         let budget = config.retrieval.role_token_budgets.get("implementer");
         assert_eq!(budget, Some(&4000));
         assert_eq!(config.gates.max_rung, Some(2));
-        let docs_gates = config.gates.domain_gates.get("docs").cloned();
-        assert_eq!(docs_gates, Some(vec!["shell:true".to_string()]));
         let cron = config.dreams.scheduled_cron.as_deref();
         assert_eq!(cron, Some("0 0 3 * * * *"));
         assert_eq!(config.learning.override_learning_dampening, Some(0.5));
@@ -4524,6 +4524,51 @@ override_learning_dampening = 0.5
         // A key that was never in the schema is still an error.
         let typo = RokoConfig::from_toml("[runner]\nmax_concurrent_plan = 3\n");
         assert!(typo.is_err());
+    }
+
+    /// gap-7a3527: config keys that nothing read were removed. An old file
+    /// that sets them is told why each went, and still loads and parses.
+    #[test]
+    fn dead_config_keys_are_removed_and_old_files_still_load() {
+        let text = r#"
+[agent.data_llm]
+model = "data-model"
+
+[gates]
+max_rung = 2
+
+[gates.domain_gates]
+docs = ["shell:markdownlint ."]
+
+[learning]
+replan_max_per_plan = 2
+replan_gate_attempts = 3
+dream_on_completion = true
+"#;
+        let value: toml::Value = text.parse().expect("parse the old file");
+        let diags = validate_known_config_paths(&value);
+        assert!(
+            diags.iter().all(|d| d.message.contains("was removed")),
+            "{diags:?}"
+        );
+        let mut keys = diags.into_iter().map(|d| d.key).collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "agent.data_llm",
+                "gates.domain_gates",
+                "learning.replan_gate_attempts",
+                "learning.replan_max_per_plan",
+            ]
+        );
+
+        let loaded = deserialize_migrated_toml(text).expect("load the old file");
+        assert_eq!(loaded.gates.max_rung, Some(2));
+        assert!(loaded.learning.dream_on_completion);
+        let parsed = RokoConfig::from_toml(text).expect("parse the old file");
+        assert_eq!(parsed.gates.max_rung, Some(2));
+        assert!(parsed.learning.dream_on_completion);
     }
 
     /// gap-e9660f: agents can read roko.toml, so a grep of the project would

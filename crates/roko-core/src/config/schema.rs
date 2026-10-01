@@ -1427,16 +1427,6 @@ impl RokoConfig {
         );
         let _ = writeln!(
             out,
-            "replan_max_per_plan = {}",
-            c.learning.replan_max_per_plan
-        );
-        let _ = writeln!(
-            out,
-            "replan_gate_attempts = {}",
-            c.learning.replan_gate_attempts
-        );
-        let _ = writeln!(
-            out,
             "dream_on_completion = {}",
             c.learning.dream_on_completion
         );

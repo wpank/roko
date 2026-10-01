@@ -330,6 +330,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         provenance_sink: None,
         max_turns: None,
         thinking: None,
+        data_llm: None,
     };
 
     let agent = ClaudeCliAdapter

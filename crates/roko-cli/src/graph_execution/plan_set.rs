@@ -1597,6 +1597,30 @@ mod tests {
         assert_eq!(scheduler.admit().start, ["c"]);
     }
 
+    /// gap-7c9e48: in the diamond A → {B, C} → D the middle plans start
+    /// together as soon as A succeeds, and D starts once both have.
+    #[test]
+    fn diamond_plan_set_runs_middle_plans_together() {
+        let plans = [
+            plan("a", &[], &["a"], &[]),
+            plan("b", &["a"], &["b"], &[]),
+            plan("c", &["a"], &["c"], &[]),
+            plan("d", &["b", "c"], &["d"], &[]),
+        ];
+        let mut scheduler = scheduler(&plans, PlanConflicts::new(), 4);
+
+        assert_eq!(scheduler.admit().start, ["a"]);
+        assert!(scheduler.admit().start.is_empty(), "b and c wait for a");
+        scheduler.finish("a", PlanOutcome::Succeeded);
+        assert_eq!(scheduler.admit().start, ["b", "c"]);
+        scheduler.finish("c", PlanOutcome::Succeeded);
+        assert!(scheduler.admit().start.is_empty(), "d waits for b too");
+        scheduler.finish("b", PlanOutcome::Succeeded);
+        assert_eq!(scheduler.admit().start, ["d"]);
+        scheduler.finish("d", PlanOutcome::Succeeded);
+        assert!(scheduler.is_settled());
+    }
+
     #[test]
     fn dependents_wait_for_success_and_later_plans_do_not() {
         let plans = [

@@ -332,6 +332,12 @@ pub struct ClaudeCliAgent {
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
     resource_limits: Option<ResourceLimits>,
+    /// The provider whose `max_concurrent` caps this agent's runs, with the
+    /// shared semaphores that enforce it (bug-eba31d).
+    provider_id: Option<String>,
+    provider_semaphores: Option<Arc<crate::provider::ProviderSemaphores>>,
+    /// Where a run reports that it waits for its provider's permit.
+    live_output: Option<crate::live_output::LiveOutput>,
     name: String,
 }
 
@@ -369,6 +375,9 @@ impl ClaudeCliAgent {
             dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
+            provider_id: None,
+            provider_semaphores: None,
+            live_output: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -392,6 +401,57 @@ impl ClaudeCliAgent {
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
         self
+    }
+
+    /// Attach shared provider semaphores, so that no more `claude` processes
+    /// run at once than `[providers.<provider_id>] max_concurrent` allows: a
+    /// run waits for a permit before it spawns and holds it until it ends.
+    #[must_use]
+    pub fn with_provider_semaphores(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_semaphores: Arc<crate::provider::ProviderSemaphores>,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_semaphores = Some(provider_semaphores);
+        self
+    }
+
+    /// Report on `live_output` when a run has to wait for its provider's
+    /// concurrency permit, and when it gets it, so that a stall watchdog
+    /// counts the wait as queued rather than silent.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: crate::live_output::LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Wait for this provider's concurrency permit when a cap applies
+    /// (bug-eba31d). A run that has to wait reports it on its live output,
+    /// and reports again once it has the permit and starts.
+    async fn provider_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let (Some(provider_id), Some(provider_semaphores)) =
+            (&self.provider_id, &self.provider_semaphores)
+        else {
+            return None;
+        };
+        if let Some(permit) = provider_semaphores.try_acquire(provider_id) {
+            return Some(permit);
+        }
+        self.report_queued(true).await;
+        let permit = provider_semaphores.acquire(provider_id).await.ok();
+        self.report_queued(false).await;
+        permit
+    }
+
+    /// Tell the live output, if any, whether the run waits for its permit.
+    async fn report_queued(&self, waiting: bool) {
+        if let Some(live_output) = &self.live_output {
+            let _ = live_output
+                .sink
+                .send(crate::live_output::LiveAgentEvent::Queued { waiting })
+                .await;
+        }
     }
 
     /// Override the reasoning-effort label passed to Claude.
@@ -1220,6 +1280,9 @@ impl ClaudeCliAgent {
             tracing::warn!(agent = %self.name, "claude run not started: {reason}");
             return self.failure(input, &reason, started);
         }
+        // The provider's concurrency cap (bug-eba31d): wait for a permit
+        // before spawning, and hold it until the run ends.
+        let _permit = self.provider_permit().await;
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -1434,9 +1497,35 @@ impl ClaudeCliAgent {
 
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = stdout_handle.await.unwrap_or_default();
-        let stderr = stderr_handle.await.unwrap_or_default();
-        tree_guard.disarm();
+        // A process the run started and left running (a backgrounded shell,
+        // a dev server) can hold the output pipes open, so the readers would
+        // never see EOF and the run would hang after `claude` exited
+        // (gap-5d3b82). Give them `EXITED_OUTPUT_DRAIN_MS`, then end the
+        // run's process group and keep what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (stdout, stderr) = match drained {
+            Ok((stdout, stderr)) => {
+                tree_guard.disarm();
+                (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "claude exited but a process it started holds its output open; ending its group"
+                );
+                // The armed guard signals the run's process group: SIGTERM,
+                // then SIGKILL.
+                drop(tree_guard);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1716,6 +1805,16 @@ impl StreamedMessages {
 
 /// Longest wait for a killed run's output readers to reach end of file.
 const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// How long a run's output readers may take to reach EOF after `claude`
+/// exited, before the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
 
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
@@ -3409,6 +3508,134 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
         write("#!/bin/sh\ncat >/dev/null\necho 'a plain answer'\n");
         let plain = agent.run(&prompt("finish it"), &Context::now()).await;
         assert!(plain.success, "plain output has no `result` event to miss");
+    }
+
+    /// bug-eba31d: a run waits for its provider's concurrency permit
+    /// (`[providers.<id>] max_concurrent`) before it spawns `claude`, and says
+    /// on its live output that it is queued, then that it got the permit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_cli_waits_for_provider_permit() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+cat >/dev/null
+touch "$(dirname "$0")/launched"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut configs = indexmap::IndexMap::new();
+        configs.insert(
+            "capped".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: Some(1),
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));
+        let held = semaphores.acquire("capped").await.expect("the only permit");
+        let (sink, mut events) = mpsc::channel(8);
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6")
+            .with_provider_semaphores("capped", Arc::clone(&semaphores))
+            .with_live_output(crate::live_output::LiveOutput {
+                sink,
+                trusted: true,
+            });
+        let launched = tmp.path().join("launched");
+
+        let input = prompt("go");
+        let ctx = Context::now();
+        let run = agent.run(&input, &ctx);
+        tokio::pin!(run);
+        assert!(
+            timeout(Duration::from_millis(100), &mut run).await.is_err(),
+            "the run waits while the provider's only permit is held"
+        );
+        assert!(!launched.exists(), "claude is not spawned before a permit");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: true })
+        ));
+
+        drop(held);
+        let result = timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends once the permit is free");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert!(launched.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::live_output::LiveAgentEvent::Queued { waiting: false })
+        ));
+    }
+
+    /// gap-5d3b82: `claude` exits while a process it started still holds its
+    /// output open. The run ends soon after the exit with what `claude`
+    /// printed, and that process is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_agent_with_open_stdout_does_not_hang() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let holder = tmp.path().join("holder.pid");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+sleep 600 &
+echo $! > '{holder}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                holder = holder.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("go"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let pid = fs::read_to_string(&holder).unwrap().trim().to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = StdCommand::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
     }
 
     /// Dropping a run's future, which is how a cancel or the stall watchdog

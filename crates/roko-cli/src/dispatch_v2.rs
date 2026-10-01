@@ -1971,10 +1971,17 @@ fn validate_contract_support(
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
 pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
+    use roko_agent::provider::error_classify::{detect_provider_exhaustion, is_billing_message};
+
+    // A usage-window refusal ("you've hit your session limit · resets 4pm")
+    // mentions "limit" and sometimes "quota", so it must win over billing and
+    // rate-limit detection, as in roko-agent's CLI classifier (gap-28ceb9).
     // Billing/credit errors must be checked before generic rate-limit detection
     // so that messages containing "quota" + billing indicators are not
     // misclassified as transient rate limits.
-    if roko_agent::provider::error_classify::is_billing_message(output_text_lower) {
+    if detect_provider_exhaustion(output_text_lower).is_some() {
+        "provider_exhausted"
+    } else if is_billing_message(output_text_lower) {
         "insufficient_credits"
     } else if output_text_lower.contains("rate limit")
         || output_text_lower.contains("rate_limit")
@@ -3457,6 +3464,32 @@ exit 1
                 assert_eq!(health.consecutive_failures, 0, "{case}: {health:?}");
             }
         }
+    }
+
+    /// gap-28ceb9: a usage-window refusal is a class of its own, which the
+    /// circuit breaker records as exhaustion, ahead of the billing and
+    /// rate-limit wording it can share.
+    #[test]
+    fn classify_provider_error_detects_usage_exhaustion() {
+        for text in [
+            "You've hit your session limit · resets 4pm",
+            "You've hit your usage limit. Upgrade to Pro or try again later.",
+            "usage limit reached for this quota window",
+        ] {
+            assert_eq!(
+                classify_provider_error(&text.to_ascii_lowercase()),
+                "provider_exhausted",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            classify_provider_error("429 too many requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            classify_provider_error("insufficient credits"),
+            "insufficient_credits"
+        );
     }
 
     /// E04-T06: Verify that the default Claude CLI dispatch path exercises

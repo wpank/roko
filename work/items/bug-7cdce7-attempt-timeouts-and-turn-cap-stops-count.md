@@ -102,3 +102,6 @@ Checked statically at `33e107da1`:
   - Caveat: `detect_attempt_timeout` matches any "timed out after". So an adapter whose own request timeout uses
     that wording (Hermes: "request timed out after 90s") no longer counts against the provider either. This matches
     how `turn_policy` already classifies it. Tightening the marker to "timed out after <N> ms" would separate the two.
+- 2026-10-01 (wk-tiers): the caveat above is resolved on work/bug-7cdce7. `detect_attempt_timeout` now matches only
+  the adapters' own `"timed out after <N> ms"`, so a provider's request timeout (Hermes' "request timed out after
+  90s") counts against the provider again. Test: `a_provider_request_timeout_is_not_an_attempt_timeout`.

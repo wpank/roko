@@ -138,29 +138,38 @@ pub enum PlanRunInterrupt {
     Terminate,
     /// SIGHUP: the run's terminal hung up (bug-4641e3).
     Hangup,
+    /// The FAST run deadline (`ROKO_FAST_PLAN_DEADLINE_SECS`) elapsed
+    /// (gap-9efe8e). It exits as SIGTERM does, which `./dev.sh fast` expects.
+    Deadline,
 }
 
 impl PlanRunInterrupt {
     /// Every stop cause, e.g. to tell a stopped run's exit status apart.
-    pub const ALL: [Self; 3] = [Self::Interrupt, Self::Terminate, Self::Hangup];
+    pub const ALL: [Self; 4] = [
+        Self::Interrupt,
+        Self::Terminate,
+        Self::Hangup,
+        Self::Deadline,
+    ];
 
     /// Conventional shell status for the signal: 128 + signal number.
     #[must_use]
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
-            Self::Terminate => 143,
+            Self::Terminate | Self::Deadline => 143,
             Self::Hangup => 129,
         }
     }
 
-    /// Signal name for logs and summaries.
+    /// Signal name, or `deadline`, for logs and summaries.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Interrupt => "SIGINT",
             Self::Terminate => "SIGTERM",
             Self::Hangup => "SIGHUP",
+            Self::Deadline => "deadline",
         }
     }
 
@@ -169,6 +178,7 @@ impl PlanRunInterrupt {
             Self::Interrupt => 1,
             Self::Terminate => 2,
             Self::Hangup => 3,
+            Self::Deadline => 4,
         }
     }
 
@@ -177,6 +187,7 @@ impl PlanRunInterrupt {
             1 => Some(Self::Interrupt),
             2 => Some(Self::Terminate),
             3 => Some(Self::Hangup),
+            4 => Some(Self::Deadline),
             _ => None,
         }
     }
@@ -4661,6 +4672,9 @@ exec sleep 60
         assert_eq!(PlanRunInterrupt::Interrupt.exit_code(), 130);
         assert_eq!(PlanRunInterrupt::Terminate.exit_code(), 143);
         assert_eq!(PlanRunInterrupt::Hangup.exit_code(), 129);
+        // A FAST deadline exits as SIGTERM does, under its own label.
+        assert_eq!(PlanRunInterrupt::Deadline.exit_code(), 143);
+        assert_eq!(PlanRunInterrupt::Deadline.label(), "deadline");
         for interrupt in PlanRunInterrupt::ALL {
             assert_eq!(
                 PlanRunInterrupt::from_code(interrupt.code()),

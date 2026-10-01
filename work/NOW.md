@@ -38,7 +38,7 @@ _0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

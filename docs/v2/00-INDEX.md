@@ -248,7 +248,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | **[28](28-ROADMAP.md)** | Roadmap | Phased delivery. Implementation priorities. Phase dependencies. Current state reconciliation. |
 | **[29](29-FAST-DEVELOPMENT.md)** | FAST Development | Opt-in bounded self-development lane: task-owned verification, deadlines, evidence, trust boundaries, validation status, and deferred work. |
 | **[30](30-EVIDENCE-BUNDLES.md)** | Run Evidence Bundles | Run-scoped status/log capture, safe GET and optional visual hooks, metrics, scorecards, deterministic debriefs, and strict portable-bundle validation. |
-| **[31](31-ENGINE-CONVERGENCE-CONTRACT.md)** | Engine Convergence Contract | Post-convergence architecture: Graph is the sole engine, WorkflowEngine retired (#276), Runner-v2 as `--engine legacy`. Frozen boundary types, golden fixtures, capability matrix, RuntimeServices (7 profiles), ProductionPlanTopology, GuaranteedFinallyController, 12-row FeedbackSettler, CellResources injection. |
+| **[31](31-ENGINE-CONVERGENCE-CONTRACT.md)** | Engine Convergence Contract | Post-convergence architecture: Graph is the sole engine, WorkflowEngine retired (#276), Runner-v2 as `--engine legacy`. Frozen boundary types, golden fixtures, capability matrix, RuntimeServices (7 profiles), ProductionPlanTopology, 12-row FeedbackSettler, CellResources injection. |
 
 ---
 

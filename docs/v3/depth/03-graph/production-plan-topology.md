@@ -2,8 +2,8 @@
 
 > ProductionPlanTopology builds the canonical per-task 11-node subgraph that
 > transforms a `tasks.toml` plan into an executable Graph. This file documents
-> the subgraph structure, node roles, inter-task wiring, cell registration,
-> and the GuaranteedFinallyController.
+> the subgraph structure, node roles, inter-task wiring and cell
+> registration.
 
 ---
 
@@ -12,7 +12,6 @@
 | File | What |
 |---|---|
 | `crates/roko-graph/src/topology.rs` | ProductionPlanTopology, TopologyTaskInfo, register_topology_cells |
-| `crates/roko-graph/src/finally.rs` | GuaranteedFinallyController, TerminalReceipt, FinallyGuard |
 
 ---
 
@@ -187,113 +186,12 @@ and execute in test environments. Production starts with
 
 ---
 
-## GuaranteedFinallyController
+## Cleanup
 
-The controller wraps graph execution with an absolute guarantee that cleanup
-runs regardless of how execution ends.
-
-### Guarantees
-
-| Exit Path | Terminal Receipt | Resource Release | Snapshot Flush |
-|---|---|---|---|
-| All tasks succeed | `TerminalOutcome::Success` | Yes | Yes |
-| One or more tasks fail | `TerminalOutcome::Failure` | Yes | Yes |
-| Operator cancels | `TerminalOutcome::Cancelled` | Yes | Yes |
-| Process panic | Logged via `FinallyGuard::drop` | Requires caller retry | No |
-
-### Construction
-
-```rust
-let controller = GuaranteedFinallyController::new("plan-id", "run-id")
-    .with_releaser(releaser)     // host-provided ResourceReleaser
-    .with_flusher(flusher)       // host-provided SnapshotFlusher
-    .with_cancel(cancel_token);  // CancellationToken
-```
-
-### Resource Tracking
-
-```rust
-// Track resources as they're acquired during execution
-controller.track(TrackedResource::WorkspaceLease { lease_id, plan_id, task_id });
-controller.track(TrackedResource::AgentProcess { process_id, task_id });
-controller.track(TrackedResource::LockFile { path });
-
-// Early explicit release
-controller.untrack(|r| matches!(r, TrackedResource::WorkspaceLease { lease_id, .. } if lease_id == "L1"));
-```
-
-### TrackedResource Types
-
-| Type | Fields | What |
-|---|---|---|
-| `WorkspaceLease` | lease_id, plan_id, task_id | Git worktree lease |
-| `AgentProcess` | process_id, task_id | Running agent subprocess |
-| `LockFile` | path | Filesystem lock file |
-
-### Execution
-
-```rust
-let (receipt, cleanup) = controller.execute_with_finally(engine, ctx).await;
-```
-
-1. Runs the graph engine (with cancellation support via `tokio::select!`).
-2. Determines the terminal outcome from graph output.
-3. Runs the finally block: release resources, flush snapshot, emit receipt.
-4. The `FinallyGuard` is marked cleaned up.
-
-### TerminalReceipt
-
-Exactly one per execution:
-
-```rust
-pub struct TerminalReceipt {
-    pub run_id:           String,
-    pub plan_id:          String,
-    pub outcome:          TerminalOutcome,   // Success | Failure | Cancelled
-    pub duration:         Duration,
-    pub tasks_succeeded:  usize,
-    pub tasks_failed:     usize,
-    pub tasks_skipped:    usize,
-    pub tasks_cancelled:  usize,
-    pub error:            Option<String>,
-    pub created_at_ms:    u64,
-}
-```
-
-Downstream consumers (FeedbackSettler, delivery, GitHub integration) drive
-their workflows from this receipt.
-
-### CleanupSummary
-
-```rust
-pub struct CleanupSummary {
-    pub resources_released: usize,
-    pub resources_failed:   usize,
-    pub snapshot_flushed:   bool,
-    pub receipt_emitted:    bool,
-    pub errors:             Vec<String>,
-}
-```
-
-### FinallyGuard
-
-An explicit guard struct tracks whether cleanup has been performed. If dropped
-without `mark_cleaned_up()` (programming error or panic), it logs a diagnostic
-error via `tracing::error!`. This catches bugs where the caller forgets to
-call the finally block.
-
-### ResourceReleaser Trait
-
-```rust
-#[async_trait]
-pub trait ResourceReleaser: Send + Sync + Debug {
-    async fn release(&self, resource: &TrackedResource) -> Result<(), String>;
-}
-```
-
-Implementations must be **idempotent**: releasing an already-released resource
-is a no-op, not an error. Release failures are logged but never fatal -- they
-do not prevent other resources from being released.
+A `GuaranteedFinallyController` was drafted in `crates/roko-graph/src/finally.rs`, but
+roko-graph never compiled it (its `lib.rs` declared no `mod finally`), and it was deleted
+on 2026-10-01 (gap-ff6e83). A plan run's cleanup lives in `run_one_plan`
+(`crates/roko-cli/src/graph_execution/plan_runner.rs`).
 
 ---
 
@@ -301,7 +199,6 @@ do not prevent other resources from being released.
 
 ```bash
 cargo test -p roko-graph --lib topology::tests
-cargo test -p roko-graph --lib finally::tests
 ```
 
 Topology test coverage:
@@ -317,14 +214,3 @@ Topology test coverage:
 - Max parallel clamped to at least 1.
 - Context config contains task metadata.
 - Graph validates with topology registry.
-
-Finally controller test coverage:
-- Success produces terminal receipt with correct fields.
-- Failure still produces receipt and cleans up resources.
-- Cancel produces cancelled receipt and releases resources.
-- Resource release failure is logged, not fatal.
-- Snapshot flush failure is logged, not fatal.
-- Track and untrack resources correctly.
-- Receipt counts reflect graph output node results.
-- All tracked resources released on success.
-- Diamond DAG produces exactly one terminal receipt.

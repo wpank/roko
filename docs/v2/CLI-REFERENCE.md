@@ -622,7 +622,7 @@ the last call crosses the ceiling, and reports per-plan and total spend.
 3. The `GraphEngine` executes nodes in bounded parallel topological waves.
 4. Each task runs an agent via `TaskExecutorCell`, then runs gate validation via `GatePipelineCell` (using `CellResources.gates`).
 5. Gate failures trigger the replan controller. Failure context drives revised task generation.
-6. `GuaranteedFinallyController` ensures cleanup (terminal receipt, lease release, agent stop, snapshot flush) regardless of outcome.
+6. `run_one_plan` writes the checkpoint's terminal status, and on an interrupt stops in-flight agents.
 7. The 12-row `FeedbackSettler` settles completion sinks with exactly-once idempotency.
 8. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
 

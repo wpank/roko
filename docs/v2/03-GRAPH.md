@@ -18,7 +18,7 @@
 > Seven typed cognitive Cells, five literal Verify Cells, and a fixed immune decision Graph
 > are implemented. `ProductionPlanTopology` builds the canonical 11-node per-task subgraph
 > (TaskContext + 6 enrichers + Compose + TaskExecutor + Gate + SuccessBoundary).
-> `GuaranteedFinallyController` provides absolute cleanup guarantees. `CellResources`
+> `CellResources`
 > injects shared service handles (e.g., `SharedGateEvaluator`) into `CellContext`.
 > Parallel aggregate over-admission is closed; a single call can still disclose an actual
 > cost greater than its reservation because the provider bridge has no enforceable pre-call

@@ -660,7 +660,7 @@ The machinery that runs task DAGs.
 
 | Crate | What it does | Key types |
 |-------|-------------|-----------|
-| **roko-graph** | **Sole execution engine** since #260/#276. DAG of cells, ready-queue execution, conditional routing, cost enforcement, immune decision graph, durable checkpoints. | `GraphEngine`, `ProductionPlanTopology`, `GuaranteedFinallyController` |
+| **roko-graph** | **Sole execution engine** since #260/#276. DAG of cells, ready-queue execution, conditional routing, cost enforcement, immune decision graph, durable checkpoints. | `GraphEngine`, `ProductionPlanTopology` |
 | **roko-execution** | Shared runtime services builder. Gives CLI, serve, and ACP a common layer for safety, budget, routing, and feedback. | `RuntimeServices` |
 | **roko-runtime** | Process supervisor, typed event bus, cancellation tokens, workflow contract types (preserved from retired WorkflowEngine). | `ProcessSupervisor`, `EventBus`, `PipelineStateV2` |
 

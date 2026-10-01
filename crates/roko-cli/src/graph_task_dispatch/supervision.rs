@@ -4,10 +4,13 @@
 //! With [`GraphTaskDispatcher::with_conductor`], each attempt feeds the run's
 //! [`ConductorRing`] while its provider runs: its start, and the messages and
 //! tool calls of its live output, each tagged with its attempt key
-//! ([`ATTEMPT_TAG`]). The plan host runs [`GraphConductor::tick`] every
-//! [`SUPERVISION_INTERVAL`] ([`GraphTaskDispatcher::spawn_conductor_ticker`]),
-//! which evaluates the conductor over each running attempt's own signals and
-//! acts on the decision:
+//! ([`ATTEMPT_TAG`]). Its verify run settles after the provider call, so its
+//! gate verdict and compile diagnostic join its task's evidence instead
+//! ([`GraphConductor::settle_verify`], gap-1a7f9c). The plan host runs
+//! [`GraphConductor::tick`] every [`SUPERVISION_INTERVAL`]
+//! ([`GraphTaskDispatcher::spawn_conductor_ticker`]), which evaluates the
+//! conductor over each running attempt's own signals, after its task's
+//! settled verify runs, and acts on the decision:
 //!
 //! - `Restart` cancels that attempt the way the stall watchdog does: it fails
 //!   and retries under its task's `max_retries`. When the task's next attempt
@@ -17,11 +20,13 @@
 //!   watcher and the reason, which the host makes the run's error;
 //! - `Nudge` and `ForceAdvance` are not carried out yet (gap-ebd656).
 //!
-//! Each intervention is published as a dashboard diagnosis, and the attempt's
-//! signals leave the ring, so the same evidence never acts twice; an attempt
-//! that ends leaves the ring too. Evaluating each attempt on its own keeps
-//! one task's signals from breaking or extending another's patterns, and lets
-//! a restart name its attempt, which the decision itself does not.
+//! Each intervention is published as a dashboard diagnosis and spends its
+//! evidence, the attempt's signals in the ring and its task's settled verify
+//! runs, so the same evidence never acts twice. An attempt that ends leaves
+//! the ring too; its task's verify runs stay for the next attempt.
+//! Evaluating each attempt on its own keeps one task's signals from breaking
+//! or extending another's patterns, and lets a restart name its attempt,
+//! which the decision itself does not.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -30,21 +35,32 @@ use std::time::Duration;
 use roko_agent::StreamEventKind;
 use roko_agent::live_output::LiveAgentEvent;
 use roko_conductor::{Conductor, InterventionOutcome};
-use roko_core::{ConductorDecision, DiagnosisSeverity, DiagnosisSummary};
+use roko_core::{ConductorDecision, DiagnosisSeverity, DiagnosisSummary, TestCount, Verdict};
+use roko_gate::{BuildSystem, ErrorCategory, GateFailureClassification};
 use tokio_util::sync::CancellationToken;
 
 use crate::runner::conductor_adapter::{
-    ATTEMPT_TAG, ConductorRing, graph_task_event_to_signal, graph_text_turn_signal,
+    ATTEMPT_TAG, ConductorRing, GateRun, compile_diagnostic_signal, gate_verdict_signal,
+    graph_task_event_to_signal, graph_text_turn_signal,
 };
 
+use super::verification::verify_step_rung;
 use super::watchdog::StallThresholds;
 use super::*;
 
 /// How often the plan host runs [`GraphConductor::tick`].
 pub const SUPERVISION_INTERVAL: Duration = Duration::from_secs(5);
 
-/// A Graph run's conductor, the ring its attempts feed, and the attempts
-/// whose providers are running.
+/// How many settled-verify signals the conductor keeps for a task, the
+/// oldest dropped first: plenty for the watchers, which compare a few runs.
+const TASK_EVIDENCE_CAPACITY: usize = 32;
+
+/// The gate a verify run settles as when every step passed, as the Graph
+/// path names it elsewhere.
+const VERIFY_GATE: &str = "graph-verify";
+
+/// A Graph run's conductor, the ring its attempts feed, the attempts whose
+/// providers are running, and each task's settled verify runs.
 #[derive(Clone)]
 pub struct GraphConductor {
     conductor: Arc<Conductor>,
@@ -52,6 +68,9 @@ pub struct GraphConductor {
     running: Arc<parking_lot::Mutex<HashMap<String, RunningAttempt>>>,
     /// Restarts whose outcome is not known yet, by task (`plan/task`).
     restarts: Arc<parking_lot::Mutex<HashMap<String, PendingRestart>>>,
+    /// The signals of each task's settled verify runs, oldest first, by task
+    /// (`plan/task`): its next attempt is evaluated after them.
+    settled: Arc<parking_lot::Mutex<HashMap<String, Vec<Signal>>>>,
 }
 
 impl std::fmt::Debug for GraphConductor {
@@ -60,6 +79,7 @@ impl std::fmt::Debug for GraphConductor {
             .field("conductor", &self.conductor)
             .field("ring_len", &self.ring.len())
             .field("running", &self.running.lock().len())
+            .field("settled_tasks", &self.settled.lock().len())
             .finish_non_exhaustive()
     }
 }
@@ -126,6 +146,7 @@ impl GraphConductor {
             ring,
             running: Arc::default(),
             restarts: Arc::default(),
+            settled: Arc::default(),
         }
     }
 
@@ -166,9 +187,10 @@ impl GraphConductor {
         }
     }
 
-    /// Evaluate the conductor over each running attempt's signals and act on
-    /// its decisions, publishing each intervention through `tui`. Returns the
-    /// `Fail` that must stop the run, if any.
+    /// Evaluate the conductor over each running attempt's signals, after its
+    /// task's settled verify runs, and act on its decisions, publishing each
+    /// intervention through `tui`. Returns the `Fail` that must stop the run,
+    /// if any.
     pub fn tick(&self, tui: Option<&TuiBridge>) -> Option<ConductorStop> {
         let running: Vec<(String, String, String)> = self
             .running
@@ -188,18 +210,26 @@ impl GraphConductor {
         let signals = self.ring.snapshot();
         let ctx = roko_core::Context::now();
         for (attempt_key, plan_id, task_id) in running {
-            let stream: Vec<Signal> = signals
-                .iter()
-                .filter(|signal| signal.tag(ATTEMPT_TAG) == Some(attempt_key.as_str()))
+            let task_key = format!("{plan_id}/{task_id}");
+            let mut stream = self
+                .settled
+                .lock()
+                .get(&task_key)
                 .cloned()
-                .collect();
+                .unwrap_or_default();
+            stream.extend(
+                signals
+                    .iter()
+                    .filter(|signal| signal.tag(ATTEMPT_TAG) == Some(attempt_key.as_str()))
+                    .cloned(),
+            );
             if stream.is_empty() {
                 continue;
             }
             match self.conductor.evaluate_full(&stream, &ctx).decision {
                 ConductorDecision::Continue => {}
                 ConductorDecision::Restart { watcher, reason } => {
-                    self.forget(&attempt_key);
+                    self.spend(&attempt_key, &task_key);
                     publish_intervention(
                         tui,
                         &attempt_key,
@@ -210,7 +240,7 @@ impl GraphConductor {
                         false,
                     );
                     self.restarts.lock().insert(
-                        format!("{plan_id}/{task_id}"),
+                        task_key,
                         PendingRestart {
                             attempt_key: attempt_key.clone(),
                             watcher: watcher.clone(),
@@ -222,7 +252,7 @@ impl GraphConductor {
                     }
                 }
                 ConductorDecision::Fail { watcher, reason } => {
-                    self.forget(&attempt_key);
+                    self.spend(&attempt_key, &task_key);
                     let reason = reason.to_string();
                     publish_intervention(
                         tui,
@@ -255,6 +285,36 @@ impl GraphConductor {
     fn forget(&self, attempt_key: &str) {
         self.ring
             .retain(|signal| signal.tag(ATTEMPT_TAG) != Some(attempt_key));
+    }
+
+    /// Drop the evidence an intervention on `attempt_key`, an attempt at
+    /// `task_key` (`plan/task`), acted on: the attempt's signals and its
+    /// task's settled verify runs.
+    fn spend(&self, attempt_key: &str, task_key: &str) {
+        self.forget(attempt_key);
+        self.settled.lock().remove(task_key);
+    }
+
+    /// Record the settled verify run of an attempt at `plan_id/task_id`
+    /// ([`verify_run_signals`]) as evidence the task's next attempt is
+    /// evaluated after, so `compile-fail-repeat` and `test-failure-budget`
+    /// compare the task's runs across its attempts.
+    pub(super) fn settle_verify(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        steps: &[(String, Verdict)],
+        build: BuildSystem,
+    ) {
+        let signals = verify_run_signals(plan_id, task_id, steps, build);
+        if signals.is_empty() {
+            return;
+        }
+        let mut settled = self.settled.lock();
+        let evidence = settled.entry(format!("{plan_id}/{task_id}")).or_default();
+        evidence.extend(signals);
+        let dropped = evidence.len().saturating_sub(TASK_EVIDENCE_CAPACITY);
+        evidence.drain(..dropped);
     }
 
     /// An attempt of `plan_id/task_id` other than the one the conductor
@@ -324,6 +384,21 @@ impl GraphTaskDispatcher {
         })
     }
 
+    /// Hand the conductor, if there is one, the settled verify run of an
+    /// attempt at `task` in `workdir`: the steps that ran, in order, each
+    /// with its phase ([`GraphConductor::settle_verify`]).
+    pub(super) fn publish_verify_run(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+        steps: &[(String, Verdict)],
+    ) {
+        if let Some(conductor) = &self.conductor {
+            conductor.settle_verify(&spec.plan_id, &task.id, steps, BuildSystem::detect(workdir));
+        }
+    }
+
     /// Tick the conductor every `interval` until the returned handle drops.
     /// A `Fail` goes to `on_stop`, once, and ends the ticking. `None` without
     /// [`Self::with_conductor`].
@@ -347,6 +422,95 @@ impl GraphTaskDispatcher {
         });
         Some(ConductorTicker { task })
     }
+}
+
+/// The signals of a settled verify run at `plan_id/task_id`. `steps` are the
+/// steps that ran, in order, each with its phase, and `build` says how their
+/// test summaries read. When no step ran there is no signal.
+///
+/// - A `GateVerdict` ([`gate_verdict_signal`]). Its gate is the failed step,
+///   with that step's rung, failure kind and failure class; when every step
+///   passed, it is [`VERIFY_GATE`] at the last step's rung. Its test count
+///   sums the steps' test summaries, which `test-failure-budget` compares
+///   across runs.
+/// - A `CompileDiagnostic` ([`compile_diagnostic_signal`]) when a compiler
+///   error failed the step, naming the first one by code, message and file,
+///   which `compile-fail-repeat` compares.
+fn verify_run_signals(
+    plan_id: &str,
+    task_id: &str,
+    steps: &[(String, Verdict)],
+    build: BuildSystem,
+) -> Vec<Signal> {
+    let failed = steps.iter().find(|(_, verdict)| !verdict.passed);
+    let Some((phase, settled_by)) = failed.or_else(|| steps.last()) else {
+        return Vec::new();
+    };
+    let classification = failed.map(|(_, verdict)| failure_classification(verdict));
+    let failure_kind = classification
+        .as_ref()
+        .map(|classification| format!("{:?}", classification.failure_kind));
+    let failure_class = classification
+        .as_ref()
+        .and_then(|classification| serde_json::to_value(&classification.primary).ok())
+        .and_then(|class| class.as_str().map(str::to_owned));
+    let test_count = steps
+        .iter()
+        .filter_map(|(_, verdict)| roko_gate::parse_test_counts(verdict.detail.as_deref()?, build))
+        .reduce(|total, count| {
+            TestCount::new(
+                total.passed + count.passed,
+                total.failed + count.failed,
+                total.ignored + count.ignored,
+            )
+        });
+    let gate_verdict = gate_verdict_signal(&GateRun {
+        plan_id,
+        task_id,
+        gate: if failed.is_some() {
+            settled_by.gate.as_str()
+        } else {
+            VERIFY_GATE
+        },
+        rung: verify_step_rung(phase),
+        passed: failed.is_none(),
+        failure_kind: failure_kind.as_deref(),
+        failure_class: failure_class.as_deref(),
+        duration_ms: steps.iter().map(|(_, verdict)| verdict.duration_ms).sum(),
+        test_count,
+    });
+    let compile_diagnostic = classification
+        .as_ref()
+        .and_then(first_compiler_error)
+        .and_then(|message| compile_diagnostic_signal(plan_id, task_id, &message));
+    gate_verdict.into_iter().chain(compile_diagnostic).collect()
+}
+
+/// A failed step's classification: the one its gate recorded as the
+/// verdict's error digest, else one made from its output.
+fn failure_classification(verdict: &Verdict) -> GateFailureClassification {
+    verdict
+        .error_digest
+        .as_deref()
+        .and_then(|digest| serde_json::from_str(digest).ok())
+        .unwrap_or_else(|| {
+            roko_gate::classify_gate_failure(
+                &verdict.gate,
+                verdict.detail.as_deref().unwrap_or(&verdict.reason),
+            )
+        })
+}
+
+/// The first compiler error a failed step reported, by code, message and
+/// file. Cargo's own `could not compile` and `test failed` lines, which have
+/// no code and no category, are none.
+fn first_compiler_error(classification: &GateFailureClassification) -> Option<String> {
+    classification
+        .compile_errors
+        .iter()
+        .zip(roko_gate::records_from_classification(classification))
+        .find(|(error, _)| error.code.is_some() || error.category != ErrorCategory::Other)
+        .map(|(_, record)| record.digest)
 }
 
 /// Publish a conductor intervention as a dashboard diagnosis.
@@ -493,7 +657,10 @@ mod tests {
     use roko_core::{Body, Context, React};
 
     use super::*;
-    use crate::graph_task_dispatch::tests::make_bare_dispatcher;
+    use crate::graph_task_dispatch::tests::{
+        VERIFY_PROVIDER, make_bare_dispatcher, make_spec, make_test_dispatcher_with, no_auto_fix,
+        verify_step,
+    };
 
     /// A watcher that fires at `severity` on any stream that has a message.
     struct FiresOnMessages {
@@ -698,6 +865,194 @@ mod tests {
         assert!(
             dispatcher.live_output_tap(&watched(), None, None).is_none(),
             "no TUI, no watchdog and no conductor: no live output"
+        );
+    }
+
+    /// A step of phase `phase` that ran as gate `label` and printed `output`,
+    /// with the failure classification `ShellGate` records when it failed.
+    fn ran_step(phase: &str, label: &str, passed: bool, output: &str) -> (String, Verdict) {
+        let verdict = if passed {
+            Verdict::pass(label)
+        } else {
+            Verdict::fail(label, "exit code: 101").with_error_digest(
+                roko_gate::render_failure_classification(&roko_gate::classify_gate_failure(
+                    label, output,
+                )),
+            )
+        };
+        (
+            phase.to_string(),
+            verdict.with_detail(output).with_duration(10),
+        )
+    }
+
+    fn signal_body(signal: &Signal) -> serde_json::Value {
+        signal.body.as_json().expect("json body")
+    }
+
+    #[test]
+    fn settled_verify_runs_carry_what_the_gate_watchers_read() {
+        let signals = |steps: &[(String, Verdict)]| {
+            verify_run_signals("p1", "T01", steps, BuildSystem::Cargo)
+        };
+        let compiled = ran_step("compile", "verify[0:compile]", true, "Finished `dev`");
+
+        // A compiler error: the failed step is the gate, with its rung and
+        // class, and its first compiler error the diagnostic.
+        let compile_error = ran_step(
+            "compile",
+            "verify[0:compile]",
+            false,
+            "error[E0308]: mismatched types\n --> src/lib.rs:3:5\n\
+             error: could not compile `demo` (lib) due to 1 previous error",
+        );
+        let run = signals(std::slice::from_ref(&compile_error));
+        assert_eq!(run.len(), 2, "{run:?}");
+        assert_eq!(run[0].kind, Kind::GateVerdict);
+        assert_eq!(run[0].tag("severity"), Some("error"));
+        let verdict = signal_body(&run[0]);
+        assert_eq!(verdict["plan_id"], "p1");
+        assert_eq!(verdict["task"], "T01");
+        assert_eq!(verdict["gate"], "verify[0:compile]");
+        assert_eq!(verdict["rung"], 0);
+        assert_eq!(verdict["passed"], false);
+        assert_eq!(verdict["failure_class"], "type_error");
+        assert!(verdict["failure_kind"].is_string(), "{verdict}");
+        assert!(verdict["test_count"].is_null(), "no test ran: {verdict}");
+        assert_eq!(run[1].kind, Kind::CompileDiagnostic);
+        assert_eq!(signal_body(&run[1])["message"], "E0308: mismatched types");
+
+        // Failing tests: counted, and cargo's `test failed` line is no
+        // compiler error.
+        let failing_tests = ran_step(
+            "test",
+            "verify[1:test]",
+            false,
+            "test result: FAILED. 3 passed; 2 failed; 0 ignored\n\
+             error: test failed, to rerun pass `--lib`",
+        );
+        let run = signals(&[compiled.clone(), failing_tests]);
+        assert_eq!(run.len(), 1, "{run:?}");
+        let verdict = signal_body(&run[0]);
+        assert_eq!(verdict["gate"], "verify[1:test]");
+        assert_eq!(verdict["rung"], 2);
+        assert_eq!(verdict["duration_ms"], 20);
+        assert_eq!(verdict["test_count"]["passed"], 3);
+        assert_eq!(verdict["test_count"]["failed"], 2);
+
+        // Every step passed.
+        let passing_tests = ran_step(
+            "test",
+            "verify[1:test]",
+            true,
+            "test result: ok. 5 passed; 0 failed; 1 ignored",
+        );
+        let run = signals(&[compiled, passing_tests]);
+        assert_eq!(run.len(), 1, "{run:?}");
+        assert_eq!(run[0].tag("severity"), Some("info"));
+        let verdict = signal_body(&run[0]);
+        assert_eq!(verdict["gate"], VERIFY_GATE);
+        assert_eq!(verdict["passed"], true);
+        assert!(verdict["failure_class"].is_null(), "{verdict}");
+        assert_eq!(verdict["test_count"]["failed"], 0);
+
+        assert!(signals(&[]).is_empty(), "no step ran, no verdict");
+    }
+
+    /// Dispatches `failures` attempts at `task`, each failing its verify,
+    /// then starts the task's next attempt and ticks the conductor: the
+    /// restart it made, if any.
+    async fn restart_after_failed_verifies(
+        dispatcher: &GraphTaskDispatcher,
+        task: &TaskDef,
+        failures: usize,
+    ) -> Option<ConductorRestart> {
+        let spec = make_spec(task);
+        for _ in 0..failures {
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .await
+                .expect_err("the verify step fails");
+            assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        }
+        let conductor = dispatcher
+            .conductor
+            .as_ref()
+            .expect("the dispatcher is supervised");
+        let next = conductor.supervise(
+            &spec.plan_id,
+            &task.id,
+            &format!("run-1/{}/{}/next", spec.plan_id, task.id),
+        );
+        assert_eq!(
+            conductor.tick(None),
+            None,
+            "a restart does not stop the run"
+        );
+        tokio::time::timeout(Duration::from_millis(200), next.restarted())
+            .await
+            .ok()
+    }
+
+    /// Settled Graph verify runs reach the conductor's watchers for compile
+    /// and test failures (gap-1a7f9c): the next attempt of a task whose
+    /// verify failed three times on the same compiler error is restarted by
+    /// `compile-fail-repeat`, and that of a task whose failing tests grew by
+    /// `test-failure-budget`. A restart spends the evidence it acted on.
+    #[tokio::test]
+    async fn conductor_watchers_receive_graph_gate_verdicts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (dispatcher, task) = make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| {
+                let conductor = Conductor::from_config(&dispatcher.config.conductor);
+                dispatcher.with_conductor(Arc::new(conductor), ConductorRing::new())
+            },
+        )
+        .await;
+
+        let mut compile = task.clone();
+        compile.id = "T-COMPILE".to_string();
+        compile.verify = vec![verify_step(
+            "compile",
+            "printf 'error[E0308]: mismatched types\\n' >&2; exit 101",
+        )];
+        assert_eq!(
+            restart_after_failed_verifies(&dispatcher, &compile, 2).await,
+            None,
+            "two identical compile failures are not a repeat yet"
+        );
+        let restart = restart_after_failed_verifies(&dispatcher, &compile, 1)
+            .await
+            .expect("the third identical compile failure restarts the next attempt");
+        assert_eq!(restart.watcher, "compile-fail-repeat");
+        assert!(
+            restart.reason.contains("E0308: mismatched types"),
+            "{}",
+            restart.reason
+        );
+
+        // Each attempt fails two more tests than the one before.
+        let mut tests = task;
+        tests.id = "T-TESTS".to_string();
+        tests.verify = vec![verify_step(
+            "test",
+            "n=$(cat failing 2>/dev/null || echo 1); echo $((n + 2)) > failing; \
+             echo \"test result: FAILED. 4 passed; $n failed; 0 ignored\"; exit 101",
+        )];
+        let restart = restart_after_failed_verifies(&dispatcher, &tests, 2)
+            .await
+            .expect("more failing tests than the first attempt had restart the next attempt");
+        assert_eq!(restart.watcher, "test-failure-budget");
+        assert!(restart.reason.contains("1 -> 3"), "{}", restart.reason);
+
+        assert_eq!(
+            restart_after_failed_verifies(&dispatcher, &tests, 0).await,
+            None,
+            "the restart spent the task's evidence"
         );
     }
 

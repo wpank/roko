@@ -300,6 +300,30 @@ impl CommandAckReceiver {
     }
 }
 
+/// A command channel for `run_id` whose commands `handle` serves, one at a
+/// time, acknowledging each with the status and message it returns. It is
+/// the transport for an executor outside this process, such as a workspace
+/// server reached over HTTP (gap-1555ac). Must be called on a Tokio runtime.
+pub fn spawn_command_bridge<F, Fut>(
+    run_id: impl Into<String>,
+    mut handle: F,
+) -> (ExecutionCommandSender, CommandAckReceiver)
+where
+    F: FnMut(ExecutionCommand) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = (CommandAckStatus, Option<String>)> + Send + 'static,
+{
+    let (sender, mut commands, ack_tx, ack_rx) = ExecutionCommandSender::channel(run_id);
+    tokio::spawn(async move {
+        while let Some(command) = commands.recv().await {
+            let (status, message) = handle(command.clone()).await;
+            if ack_tx.send(ack_for(&command, status, message)).await.is_err() {
+                break;
+            }
+        }
+    });
+    (sender, CommandAckReceiver::new(ack_rx))
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -439,6 +463,41 @@ mod tests {
         let err = sender.try_send(cmd).unwrap_err();
         assert!(matches!(err, CommandSendError::Disconnected(_)));
         assert_eq!(err.to_string(), "executor disconnected");
+    }
+
+    /// gap-1555ac: a bridge serves each command with its handler and acks it
+    /// with the handler's status and message.
+    #[tokio::test]
+    async fn command_bridge_acks_each_command_with_its_handler_result() {
+        let (sender, mut acks) = spawn_command_bridge("run-bridge", |command| async move {
+            match command.kind {
+                ExecutionCommandKind::Cancel => (CommandAckStatus::Completed, Some("gone".into())),
+                other => (CommandAckStatus::Rejected, Some(format!("no {other}"))),
+            }
+        });
+        let cancel = sender
+            .send_kind(ExecutionCommandKind::Cancel, None, None)
+            .unwrap();
+        let retry = sender
+            .send_kind(ExecutionCommandKind::SoftRetry, None, None)
+            .unwrap();
+
+        let mut received = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while received.len() < 2 {
+                received.extend(acks.drain());
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("both commands are acknowledged");
+        assert_eq!(received[0].command_id, cancel);
+        assert_eq!(received[0].run_id, "run-bridge");
+        assert_eq!(received[0].status, CommandAckStatus::Completed);
+        assert_eq!(received[0].message.as_deref(), Some("gone"));
+        assert_eq!(received[1].command_id, retry);
+        assert_eq!(received[1].status, CommandAckStatus::Rejected);
+        assert_eq!(received[1].message.as_deref(), Some("no soft-retry"));
     }
 
     #[tokio::test]

@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-01T09:06:34Z", "event": "claim", "item": "gap-288e38", "executor": null, "via": null, "session": "wk-tamper", "branch": "work/gap-288e38", "concurrency": 42, "source": "live", "by": "wk-tamper", "size": "S", "claimed_at": "2026-10-01T09:06:33Z", "force": true}

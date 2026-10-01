@@ -2,14 +2,16 @@
 id = "gap-823dce"
 kind = "gap"
 title = "work.py claim re-checks the footprint under a lock, can be renewed, and expires by size"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "S"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "166e5841f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e14"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W1-work-graph-audit.md (R3); W7-orchestration-model.md (B4)"
 anchors = ["tools/work.py::cmd_claim", "tools/work.py::load_claims", "tools/work.py::prune_claims", "tools/work.py::cmd_claims", "tools/test_work.py"]
@@ -19,6 +21,19 @@ links = { depends_on = [], blocks = [], related = ["gap-d1f787"], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_claim_refuses_an_overlapping_footprint' tools/test_work.py && grep -qw 'def test_claim_renew_extends_the_ttl_by_size' tools/test_work.py && python3 tools/test_work.py -k test_claim_refuses_an_overlapping_footprint -k test_claim_renew_extends_the_ttl_by_size"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:46:11Z"
+commit = "166e5841f"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-01T08:36:20Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Premise re-checked at bdeaff586: claim only checked the id (O_EXCL), claims expired after a fixed 24 h with no renewal, and next and claims called prune_claims. 166e5841f: claim holds an flock on .roko/work-claims/.lock, reloads live claims and refuses an overlapping footprint (same branch excepted), a file another worktree is changing (own branch's worktree excepted) or an open dependency not claimed on the same branch; --force overrides and prints what it overrode; release, close and sync's pruning take the lock. TTL by size from the last renewal (S 8 h, M 24 h, L 72 h, unsized 24 h); 'claim <id> --renew --by <who>' (claimant only) sets renewed_at and logs a claim event with renew=true. next and claims are read-only; 'claims --prune' drops closed items' claims; next ignores claims on closed items. README claim text updated. tools/test_work.py: overlap refused, same-branch allowed, --force reports; open dependency refused unless claimed together; a renewed M claim made 30 h ago is live, an unrenewed S claim is stale after 8 h, only the claimant renews; next and claims delete nothing; the [[verify]] command passes."
 +++
 
 ## Problem

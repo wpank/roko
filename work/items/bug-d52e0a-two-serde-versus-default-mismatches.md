@@ -2,14 +2,16 @@
 id = "bug-d52e0a"
 kind = "bug"
 title = "Two serde-versus-Default mismatches: DeployConfig.worker_image and roko-cli's Config.gates load differently from their defaults"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-core/config/serve", "roko-cli/config"]
 created = 2026-10-01
 updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "6da161af6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-serve-sec's report)"
 anchors = ["crates/roko-core/src/config/serve.rs", "crates/roko-cli/src/config.rs"]
@@ -17,7 +19,14 @@ lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = ["bug-647249"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn partial_deploy_table_keeps_the_default_worker_image' crates/roko-core/src/ && cargo test -p roko-core --lib partial_deploy_table_keeps_the_default_worker_image && grep -rqw 'fn serde_and_default_agree_on_gates' crates/roko-cli/src/ && cargo test -p roko-cli --lib serde_and_default_agree_on_gates"
+command = "grep -rqw 'fn deploy_table_without_worker_image_keeps_the_default_image' crates/roko-core/src/ && cargo test -p roko-core --lib deploy_table_without_worker_image_keeps_the_default_image && grep -rqw 'fn config_without_gate_entries_has_the_default_gates' crates/roko-cli/src/ && cargo test -p roko-cli --lib config_without_gate_entries_has_the_default_gates"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T09:00:56Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20c gate (ca5645373 = MAIN 1bf49188d crates): lib tests pass, including roko-core deploy_table_without_worker_image_keeps_the_default_image and roko-cli config_without_gate_entries_has_the_default_gates; check, fmt, clippy clean. Merged 414fb7e40 (work/ce-l13 9c8e30a92)."
 +++
 
 ## Problem
@@ -46,3 +55,4 @@ The two fields' serde attributes and `Default` impls.
 
 - [ ] Each field loads the same value from a partial table as `Default` gives.
 - [ ] The `[[verify]]` command passes.
+- 2026-10-01 (coordinator): the verify now names the tests wk-childenv wrote before the item was filed (same coverage: a partial table equals Default for each field).

@@ -88,6 +88,11 @@ impl ActivityWindow {
             })
     }
 
+    /// Whether an event stamped `timestamp` is in the window.
+    fn contains(self, timestamp: &str) -> bool {
+        self.includes(event_time(timestamp))
+    }
+
     /// Whether an event at `time` is in the window. Under a cutoff, an event whose time is
     /// unknown is out: nothing shows that it is recent.
     fn includes(self, time: Option<DateTime<Utc>>) -> bool {
@@ -158,6 +163,22 @@ struct CostAggregate {
     input_tokens: u64,
     output_tokens: u64,
     cost_usd: f64,
+    /// Turns that carry a gate verdict, and how many of those passed.
+    verdicts: usize,
+    passed: usize,
+}
+
+impl CostAggregate {
+    fn record(&mut self, event: &AgentEfficiencyEvent) {
+        self.turns += 1;
+        self.input_tokens += event.input_tokens;
+        self.output_tokens += event.output_tokens;
+        self.cost_usd += event.cost_usd;
+        if let Some(passed) = event.gate_passed {
+            self.verdicts += 1;
+            self.passed += usize::from(passed);
+        }
+    }
 }
 
 pub(crate) async fn cmd_show(
@@ -259,14 +280,14 @@ fn render_overview(state: &ShowState) -> String {
     }
 
     push_section(&mut out, "costs");
-    let efficiency = &state.data.efficiency;
+    let total = cost_total(window_events(state));
     push_kv(
         &mut out,
         "total",
         &format!(
             "{} across {} turn(s)",
-            format_cost(efficiency.total_cost_usd),
-            efficiency.event_count
+            format_cost(total.cost_usd),
+            total.turns
         ),
     );
     push_kv(
@@ -274,8 +295,8 @@ fn render_overview(state: &ShowState) -> String {
         "tokens",
         &format!(
             "{} input, {} output",
-            format_count(efficiency.total_input_tokens),
-            format_count(efficiency.total_output_tokens)
+            format_count(total.input_tokens),
+            format_count(total.output_tokens)
         ),
     );
 
@@ -291,36 +312,39 @@ fn render_overview(state: &ShowState) -> String {
 
 fn render_costs(state: &ShowState) -> String {
     let mut out = header(state, "costs");
-    let efficiency = &state.data.efficiency;
+    push_window(&mut out, state.window);
+    let events = window_events(state);
+    let total = cost_total(events.iter().copied());
     push_section(&mut out, "summary");
-    push_kv(&mut out, "turns", &efficiency.event_count.to_string());
-    push_kv(
-        &mut out,
-        "total cost",
-        &format_cost(efficiency.total_cost_usd),
-    );
+    push_kv(&mut out, "turns", &total.turns.to_string());
+    push_kv(&mut out, "total cost", &format_cost(total.cost_usd));
     push_kv(
         &mut out,
         "avg turn cost",
-        &format_cost(if efficiency.event_count == 0 {
+        &format_cost(if total.turns == 0 {
             0.0
         } else {
-            efficiency.total_cost_usd / efficiency.event_count as f64
+            total.cost_usd / total.turns as f64
         }),
     );
-    push_kv(
-        &mut out,
-        "pass rate",
-        &format_percent(ratio(efficiency.passed_count, efficiency.event_count)),
-    );
+    push_kv(&mut out, "gate pass rate", &format_pass_rate(&total));
+    if state.window != ActivityWindow::All {
+        let all_time = cost_total(&state.data.efficiency_events);
+        push_kv(
+            &mut out,
+            "all time",
+            &format!(
+                "{} across {} turn(s)",
+                format_cost(all_time.cost_usd),
+                all_time.turns
+            ),
+        );
+    }
 
-    let by_model = cost_by_model(state);
+    let by_model = cost_by_model(&events);
     push_section(&mut out, "by model");
     if by_model.is_empty() {
-        push_empty(
-            &mut out,
-            "No model cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("model", state.window));
     } else {
         for (model, aggregate) in by_model {
             push_kv(
@@ -337,13 +361,10 @@ fn render_costs(state: &ShowState) -> String {
         }
     }
 
-    let by_task = cost_by_task(state);
+    let by_task = cost_by_task(&events);
     push_section(&mut out, "by task");
     if by_task.is_empty() {
-        push_empty(
-            &mut out,
-            "No task cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("task", state.window));
     } else {
         for (task, aggregate) in by_task.into_iter().take(12) {
             push_kv(
@@ -358,13 +379,10 @@ fn render_costs(state: &ShowState) -> String {
         }
     }
 
-    let by_day = cost_by_day(state);
+    let by_day = cost_by_day(&events);
     push_section(&mut out, "by day");
     if by_day.is_empty() {
-        push_empty(
-            &mut out,
-            "No dated cost events found in .roko/learn/efficiency.jsonl.",
-        );
+        push_empty(&mut out, &no_cost_events("dated", state.window));
     } else {
         for (day, aggregate) in by_day {
             push_kv(
@@ -878,31 +896,63 @@ fn read_json_paths(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn cost_by_model(state: &ShowState) -> BTreeMap<String, CostAggregate> {
+/// The efficiency events in the `--since` window.
+fn window_events(state: &ShowState) -> Vec<&AgentEfficiencyEvent> {
+    state
+        .data
+        .efficiency_events
+        .iter()
+        .filter(|event| state.window.contains(&event.timestamp))
+        .collect()
+}
+
+fn cost_total<'a>(events: impl IntoIterator<Item = &'a AgentEfficiencyEvent>) -> CostAggregate {
+    let mut total = CostAggregate::default();
+    for event in events {
+        total.record(event);
+    }
+    total
+}
+
+/// The gate pass rate over the turns that carry a verdict. Most turns carry none (a task's
+/// earlier turns, provider failures, ungated runs), so dividing by every turn understates it.
+fn format_pass_rate(total: &CostAggregate) -> String {
+    if total.verdicts == 0 {
+        return String::from("no gate verdicts");
+    }
+    format!(
+        "{} ({} of {} gate verdict(s))",
+        format_percent(ratio(total.passed, total.verdicts)),
+        total.passed,
+        total.verdicts
+    )
+}
+
+fn no_cost_events(kind: &str, window: ActivityWindow) -> String {
+    format!(
+        "No {kind} cost events in .roko/learn/efficiency.jsonl ({}).",
+        window.label()
+    )
+}
+
+fn cost_by_model(events: &[&AgentEfficiencyEvent]) -> BTreeMap<String, CostAggregate> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let aggregate = rows.entry(non_empty(&event.model, "unknown")).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        aggregate.record(event);
     }
     rows
 }
 
-fn cost_by_task(state: &ShowState) -> Vec<(String, CostAggregate)> {
+fn cost_by_task(events: &[&AgentEfficiencyEvent]) -> Vec<(String, CostAggregate)> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let task = if event.plan_id.is_empty() {
             non_empty(&event.task_id, "unknown-task")
         } else {
             format!("{}:{}", event.plan_id, non_empty(&event.task_id, "task"))
         };
-        let aggregate = rows.entry(task).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        rows.entry(task).or_default().record(event);
     }
     let mut rows = rows.into_iter().collect::<Vec<_>>();
     rows.sort_by(|left, right| {
@@ -916,19 +966,15 @@ fn cost_by_task(state: &ShowState) -> Vec<(String, CostAggregate)> {
     rows
 }
 
-fn cost_by_day(state: &ShowState) -> BTreeMap<String, CostAggregate> {
+fn cost_by_day(events: &[&AgentEfficiencyEvent]) -> BTreeMap<String, CostAggregate> {
     let mut rows = BTreeMap::<String, CostAggregate>::new();
-    for event in &state.data.efficiency_events {
+    for event in events {
         let day = if event.timestamp.len() >= 10 {
             event.timestamp[..10].to_string()
         } else {
             String::from("undated")
         };
-        let aggregate = rows.entry(day).or_default();
-        aggregate.turns += 1;
-        aggregate.input_tokens += event.input_tokens;
-        aggregate.output_tokens += event.output_tokens;
-        aggregate.cost_usd += event.cost_usd;
+        rows.entry(day).or_default().record(event);
     }
     rows
 }
@@ -1321,6 +1367,81 @@ mod tests {
 
     fn row_ids(agents: &AgentRows) -> Vec<&str> {
         agents.rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    fn show_state(events: &[AgentEfficiencyEvent], window: ActivityWindow) -> ShowState {
+        let mut data = DashboardData::default();
+        data.efficiency_events = events.to_vec();
+        ShowState {
+            workdir: PathBuf::from("/workspace"),
+            layout: RokoLayout::for_project("/workspace"),
+            data,
+            work_items: Vec::new(),
+            window,
+        }
+    }
+
+    /// One `push_kv` line, as the views print it.
+    fn kv(key: &str, value: &str) -> String {
+        let mut out = String::new();
+        push_kv(&mut out, key, value);
+        out
+    }
+
+    #[test]
+    fn show_costs_excludes_events_outside_window() {
+        let now = at("2026-10-01T12:00:00Z");
+        let window = ActivityWindow::parse(None, now).expect("default");
+        let events = [
+            AgentEfficiencyEvent {
+                cost_usd: 100.0,
+                gate_passed: Some(false),
+                ..efficiency_event("H11:12", "2026-05-10T09:00:00+00:00")
+            },
+            // A task's earlier turn carries no verdict, so it leaves the pass rate alone.
+            AgentEfficiencyEvent {
+                cost_usd: 0.75,
+                ..efficiency_event("T02:1", "2026-09-30T09:00:00+00:00")
+            },
+            AgentEfficiencyEvent {
+                cost_usd: 0.25,
+                gate_passed: Some(true),
+                ..efficiency_event("T02:1", "2026-09-30T10:00:00+00:00")
+            },
+        ];
+
+        let costs = render_costs(&show_state(&events, window));
+        assert!(
+            costs.contains("window: since 2026-09-24 12:00 UTC\n"),
+            "{costs}"
+        );
+        for (key, value) in [
+            ("turns", "2"),
+            ("total cost", "$1.0000"),
+            ("gate pass rate", "100.0% (1 of 1 gate verdict(s))"),
+            ("all time", "$101.0000 across 3 turn(s)"),
+            ("plan-a:T01", "$1.0000 | 2 turn(s)"),
+            ("2026-09-30", "$1.0000 | 2 turn(s)"),
+        ] {
+            assert!(costs.contains(&kv(key, value)), "{key}: {costs}");
+        }
+        assert!(!costs.contains("2026-05-10"), "{costs}");
+        let overview = render_overview(&show_state(&events, window));
+        assert!(
+            overview.contains(&kv("total", "$1.0000 across 2 turn(s)")),
+            "{overview}"
+        );
+
+        let costs = render_costs(&show_state(&events, ActivityWindow::All));
+        for (key, value) in [
+            ("turns", "3"),
+            ("total cost", "$101.0000"),
+            ("gate pass rate", "50.0% (1 of 2 gate verdict(s))"),
+            ("2026-05-10", "$100.0000 | 1 turn(s)"),
+        ] {
+            assert!(costs.contains(&kv(key, value)), "{key}: {costs}");
+        }
+        assert!(!costs.contains("all time  "), "{costs}");
     }
 
     #[test]

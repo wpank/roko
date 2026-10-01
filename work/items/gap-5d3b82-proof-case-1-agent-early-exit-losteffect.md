@@ -9,9 +9,9 @@ size = "M"
 goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs:1014", "crates/roko-agent/src/claude_cli_agent.rs:1049", "crates/roko-agent/src/exec.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::GraphTaskDispatcher::reconcile_attempt", "crates/roko-cli/src/graph_execution/agent_slots.rs::AgentSlotDispatcher", "crates/roko-runtime/src/run_ledger.rs:523"]
@@ -143,6 +143,23 @@ Checked at `a17d9d766`:
   run at the same time. The `roko-agent` part (step 2) is independent and can land separately.
 - Crash-of-the-runner itself (as opposed to crash of the agent) is covered by `reconcile_attempt` and resume.
   It is out of scope here (see `gap-01b2ff`).
+- 2026-10-01 (wk-tiers): partial, on work/bug-7cdce7; cargo verification deferred to the batch check.
+  - Plan step 1, the Graph proof: `agent_exit_before_first_event_fails_the_attempt_promptly` in
+    `graph_task_dispatch.rs` runs a fake `claude` that exits 1 on start. The task runs behind an
+    `AgentSlotDispatcher` with one slot, through `TaskExecutorCell` with `max_retries = 1`. The test asserts:
+    - the task fails long before its timeout, with the exit and its stderr in the error;
+    - the agent ran exactly twice;
+    - both attempts left failed `roko.verdict/1` rows;
+    - the next task still gets the slot.
+  - Plan step 2, the Claude CLI part: after `claude` exits, `run_impl` gives its output readers
+    `EXITED_OUTPUT_DRAIN_MS` (5 s) to reach EOF. If they don't, it drops the armed `KillTreeOnDrop` guard, which
+    sends SIGTERM and then SIGKILL to the run's process group, and keeps what the readers collected. Test:
+    `exited_agent_with_open_stdout_does_not_hang` (a `sleep 600 &` holds stdout; the run ends successfully and
+    the sleep is killed).
+  - Left:
+    - The same unbounded reader wait in the shared runner `exec.rs` (`stdout_handle.await`, :678 and :708),
+      which the Codex and Gemini CLIs use.
+    - The live closing proof of plan step 4, which needs a scratch-repo `roko plan run`.
 
 ## Original notes
 

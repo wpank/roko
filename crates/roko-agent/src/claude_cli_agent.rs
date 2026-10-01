@@ -1456,9 +1456,35 @@ impl ClaudeCliAgent {
 
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = stdout_handle.await.unwrap_or_default();
-        let stderr = stderr_handle.await.unwrap_or_default();
-        tree_guard.disarm();
+        // A process the run started and left running (a backgrounded shell,
+        // a dev server) can hold the output pipes open, so the readers would
+        // never see EOF and the run would hang after `claude` exited
+        // (gap-5d3b82). Give them `EXITED_OUTPUT_DRAIN_MS`, then end the
+        // run's process group and keep what they read.
+        let (mut stdout_handle, mut stderr_handle) = (stdout_handle, stderr_handle);
+        let drained = timeout(Duration::from_millis(EXITED_OUTPUT_DRAIN_MS), async {
+            tokio::join!(&mut stdout_handle, &mut stderr_handle)
+        })
+        .await;
+        let (stdout, stderr) = match drained {
+            Ok((stdout, stderr)) => {
+                tree_guard.disarm();
+                (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    agent = %self.name,
+                    "claude exited but a process it started holds its output open; ending its group"
+                );
+                // The armed guard signals the run's process group: SIGTERM,
+                // then SIGKILL.
+                drop(tree_guard);
+                tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
+                )
+            }
+        };
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -1738,6 +1764,16 @@ impl StreamedMessages {
 
 /// Longest wait for a killed run's output readers to reach end of file.
 const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// How long a run's output readers may take to reach EOF after `claude`
+/// exited, before the run's process group is ended (gap-5d3b82).
+#[cfg(not(test))]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 5_000;
+
+/// Tests keep the grace short: a reader that only needed more time still
+/// finishes within [`KILLED_OUTPUT_DRAIN_MS`].
+#[cfg(test)]
+const EXITED_OUTPUT_DRAIN_MS: u64 = 300;
 
 /// What `reader` collected from a killed run's pipe. A reader still blocked
 /// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
@@ -3470,6 +3506,58 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             .expect("the run ends once the permit is free");
         assert!(result.success, "{:?}", result.output.body.as_text());
         assert!(launched.exists());
+    }
+
+    /// gap-5d3b82: `claude` exits while a process it started still holds its
+    /// output open. The run ends soon after the exit with what `claude`
+    /// printed, and that process is killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_agent_with_open_stdout_does_not_hang() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let holder = tmp.path().join("holder.pid");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+sleep 600 &
+echo $! > '{holder}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                holder = holder.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+
+        let result = timeout(
+            Duration::from_secs(30),
+            agent.run(&prompt("go"), &Context::now()),
+        )
+        .await
+        .expect("the run ends although a process it started holds its output");
+        assert!(result.success, "{:?}", result.output.body.as_text());
+
+        let pid = fs::read_to_string(&holder).unwrap().trim().to_string();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = StdCommand::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "process {pid} still holds the run's output");
     }
 
     /// Dropping a run's future, which is how a cancel or the stall watchdog

@@ -1821,6 +1821,163 @@ exit 1
         assert!(matches!(blocked, RokoError::BudgetExceeded { .. }));
     }
 
+    /// gap-5d3b82 (proof case 1): an agent that exits before its first event
+    /// fails each attempt at once rather than at the task's timeout. The
+    /// task is retried `max_retries` times and then fails, naming the exit;
+    /// each attempt leaves a failed verdict; and its agent slot is freed for
+    /// the next task.
+    #[tokio::test]
+    async fn agent_exit_before_first_event_fails_the_attempt_promptly() {
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let crash = temp.path().join("crash-on-start");
+        let script = temp.path().join("fake-claude.sh");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+cat >/dev/null
+if [ -e '{crash}' ]; then
+  echo crashed >> '{calls}'
+  echo 'claude: error: unknown option --bogus' >&2
+  exit 1
+fi
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ran"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                crash = crash.display(),
+                calls = calls.display()
+            ),
+        )
+        .expect("write provider script");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make script executable");
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "graph-model".to_string();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "graph-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "graph-model".to_string(),
+            ModelProfile {
+                provider: "graph-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        // The attempt log only: no episodes, whose background distillation
+        // would call the fake CLI too.
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_feedback(feedback),
+        );
+        // `[conductor] max_agents = 1`: the next task runs only once the
+        // failed one freed its slot.
+        let slots: Arc<dyn TaskDispatcher> = Arc::new(
+            crate::graph_execution::agent_slots::AgentSlotDispatcher::new(dispatcher, 1),
+        );
+        let cell = |id: &str, max_retries: u32| {
+            let task = TaskDef {
+                id: id.to_string(),
+                title: format!("Task {id}"),
+                model_hint: Some("graph-model".to_string()),
+                timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                max_retries,
+                ..make_task_def("focused")
+            };
+            let config = toml::Value::Table(toml::map::Map::from_iter([
+                ("plan_id".to_string(), toml::Value::String("p1".to_string())),
+                ("title".to_string(), toml::Value::String(task.title.clone())),
+                (
+                    "timeout_secs".to_string(),
+                    toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+                ),
+                (
+                    "max_retries".to_string(),
+                    toml::Value::Integer(i64::from(max_retries)),
+                ),
+                (
+                    "task_def_json".to_string(),
+                    toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
+                ),
+            ]));
+            roko_graph::cells::TaskExecutorCell::live(config, Arc::clone(&slots))
+        };
+        let ctx = |id: &str| {
+            CellContext::new()
+                .with_cell_id(id.to_string())
+                .with_run_id("early-exit".to_string())
+        };
+
+        std::fs::write(&crash, "").expect("arm the crash");
+        let started = Instant::now();
+        let error = cell("T01", 1)
+            .execute(Vec::new(), &ctx("T01"))
+            .await
+            .expect_err("an agent that exits on start fails its task");
+        let elapsed = started.elapsed();
+        assert!(error.to_string().contains("exit 1"), "{error}");
+        assert!(error.to_string().contains("unknown option"), "{error}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(FIXTURE_HANG_GUARD_SECS / 2),
+            "both attempts failed after {elapsed:?}, not at the task's timeout"
+        );
+        let crashed = std::fs::read_to_string(&calls).unwrap_or_default();
+        assert_eq!(
+            crashed.lines().count(),
+            2,
+            "max_retries = 1 runs the agent twice"
+        );
+        let verdicts = jsonl_rows_where(
+            &temp.path().join(".roko/runs/early-exit/attempts.jsonl"),
+            2,
+            |row| row["schema_version"] == "roko.verdict/1" && row["task_id"] == "T01",
+        )
+        .await;
+        assert!(
+            verdicts.iter().all(|verdict| verdict["outcome"] != "passed"),
+            "{verdicts:?}"
+        );
+
+        std::fs::remove_file(&crash).expect("disarm the crash");
+        let next = cell("T02", 0);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(FIXTURE_HANG_GUARD_SECS),
+            next.execute(Vec::new(), &ctx("T02")),
+        )
+        .await
+        .expect("the failed task freed its agent slot")
+        .expect("the next task runs");
+    }
+
     pub(super) const VERIFY_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null

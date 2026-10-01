@@ -82,6 +82,16 @@ def test_accept_tests_count_as_verify_steps_and_acceptance():
     assert malformed["hard_fail"] == ["HF1"]
 
 
+def test_hf3_counts_a_pinned_acceptance_test_as_expecting_red():
+    """A task that pins an acceptance test expects red whatever its own steps declare (bug-c1b845), so HF3
+    flags it when the base passes; its own pass_on_base step alone expects green. roko-gate's
+    spec_quality.rs has the same test on the same fixture (gap-f7ebd4)."""
+    fixture = FIXTURES / "accept-tests"
+    tasks = ("T1", "T5", "T6")
+    got = lint(fixture / "tasks.toml", fixture, {("tasks.toml", task): "pass" for task in tasks})
+    assert {task: "HF3" in got[task]["hard_fail"] for task in tasks} == {"T1": True, "T5": True, "T6": False}
+
+
 def test_red_on_base_scores_sq06_and_hf3_when_supplied():
     fixture = FIXTURES / "sq06-red-on-base"
     got = lint(fixture / "tasks.toml", fixture, {("tasks.toml", "T1"): "fail", ("tasks.toml", "T2"): "pass"})

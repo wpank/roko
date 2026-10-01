@@ -2,7 +2,7 @@
 id = "bug-2a2f63"
 kind = "bug"
 title = "A dropped run's heartbeat task in graph_task_dispatch/watchdog.rs is never aborted"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch/watchdog"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "9f26fa0a5"
+last_verified_rev = "479bec688"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report, checked on work/bug-739dcc at 1efb2fddb)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/watchdog.rs"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["bug-739dcc"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_dropped_run_stops_its_heartbeat' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_dropped_run_stops_its_heartbeat"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:51Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including a_dropped_run_stops_its_heartbeat (the heartbeat lived in the Claude CLI and exec adapters, now AbortOnDropHandle). Merged 335132dd2."
 +++
 
 ## Problem

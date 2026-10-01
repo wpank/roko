@@ -2,7 +2,7 @@
 id = "bug-ea7723"
 kind = "bug"
 title = "The codex, cursor and openai_parity streaming tests stay ignored until testutil's stream events carry session ids"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/testutil"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "a040867c9"
+last_verified_rev = "479bec688"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report, checked on work/bug-739dcc at 1efb2fddb)"
 anchors = ["crates/roko-agent/src/testutil.rs", "crates/roko-agent/tests/"]
@@ -21,6 +21,13 @@ links = { depends_on = [], blocks = [], related = ["bug-25d24e"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn stream_events_carry_session_ids' crates/roko-agent/src/ && cargo test -p roko-agent --lib stream_events_carry_session_ids"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:50Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including stream_events_carry_session_ids. Merged 335132dd2 (work/mt-l3 9cc5cc469)."
 +++
 
 ## Problem

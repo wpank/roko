@@ -2,7 +2,7 @@
 id = "bug-86117a"
 kind = "bug"
 title = "Graph prompts never include durable knowledge: PromptCache loads entries with an empty query that matches nothing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "learning"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/dispatch", "roko-execution"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "faa378453"
+last_verified_rev = "479bec688"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-completion-loops 189a14e65"
 anchors = ["crates/roko-cli/src/dispatch/prompt_cache.rs::load_neuro_entries", "crates/roko-cli/src/dispatch/prompt_builder.rs::collect_neuro_knowledge_cached", "crates/roko-cli/src/dispatch/prompt_builder.rs::query_keywords", "crates/roko-cli/src/graph_execution/plan_runner.rs:867", "crates/roko-execution/src/prompt/cache.rs::load_neuro_entries", "crates/roko-neuro/src/knowledge_store/scoring.rs::score_entry_for_query"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = ["find-34a4b5", "reg-06ae9f"],
 
 [[verify]]
 command = "grep -rqw 'fn cached_prompt_surfaces_matching_durable_knowledge' crates/roko-cli/src && cargo test -p roko-cli --lib cached_prompt_surfaces_matching_durable_knowledge"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:55Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including cached_prompt_surfaces_matching_durable_knowledge and cached_knowledge_survives_a_long_domain_context. Merged 479bec688 (work/bug-86117a f124b144f + clippy fix 2729d5185)."
 +++
 
 ## Problem

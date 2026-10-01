@@ -2,7 +2,7 @@
 id = "bug-4aa696"
 kind = "bug"
 title = "The composer's foraging pre-pass keeps at most three optional sections, so domain_context (knowledge, episodes, playbooks) is silently dropped from real prompts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "cybernetic"
@@ -11,7 +11,7 @@ subsystem = ["roko-compose"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "4fba42db3"
+last_verified_rev = "479bec688"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report on bug-86117a, branch work/bug-86117a at 2082c0f3a)"
 anchors = ["crates/roko-compose/src/prompt.rs::foraging_prepass"]
@@ -21,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["bug-86117a"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn foraging_keeps_every_section_that_fits' crates/roko-compose/src/ && cargo test -p roko-compose --lib foraging_keeps_every_section_that_fits"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:56Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T08:26:58Z"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including foraging_keeps_every_section_that_fits (roko-compose foraging tests 10/10 on the re-check). Merged 479bec688."
 +++
 
 ## Problem

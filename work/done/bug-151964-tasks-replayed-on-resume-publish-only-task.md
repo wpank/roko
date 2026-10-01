@@ -2,7 +2,7 @@
 id = "bug-151964"
 kind = "bug"
 title = "Tasks replayed on resume publish only task_completed, so the dashboard, portal and snapshot never count them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph-execution", "roko-core/dashboard", "apps/portal"]
 created = 2026-09-29
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "ead2a9ae5"
+last_verified_rev = "479bec688"
 source = "session:roko-b6 2026-09-29 portal close-out"
 discovered_from = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-cli/src/runner/graph_tui_bridge.rs::poll_status_changes", "crates/roko-graph/src/engine.rs:1208", "crates/roko-core/src/dashboard_snapshot.rs::apply_with_ts", "apps/portal/src/lib/runState.ts:723", "crates/roko-cli/src/graph_execution/plan_runner.rs::PLAN_WATCH_INTERVAL"]
@@ -19,6 +19,15 @@ links = { depends_on = [], blocks = [], related = ["gap-f59fe9", "bug-7e1b6b", "
 
 [[verify]]
 command = "grep -rqw 'fn replayed_task_counts_as_done' crates/roko-cli/src && cargo test -p roko-cli --lib replayed_task_counts_as_done"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:54Z"
+by = "coordinator (session 7622b882)"
+size = "S"
+claimed_at = "2026-10-01T08:23:11Z"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including replayed_task_counts_as_done (plan step 3 chosen: snapshot and portal create the task on its completion). Merged 601997dd1."
 +++
 
 ## Problem

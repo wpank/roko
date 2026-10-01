@@ -79,11 +79,11 @@ This is the implementation plan.
 - [x] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run
 - [x] gap-a0f18a: planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run
 - [x] gap-d4466f: The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true
-- [ ] bug-54c729: roko-serve's runs route reports every task status other than passed as failed
-- [ ] bug-4e5a59: The portal's run-state reducer ignores a task completion it never saw start
+- [x] bug-54c729: roko-serve's runs route reports every task status other than passed as failed
+- [x] bug-4e5a59: The portal's run-state reducer ignores a task completion it never saw start
 - [ ] bug-acab47: A Claude CLI run that exits 0 without a result line counts as a successful provider run
-- [ ] bug-71a5e6: GraphRuntimeEventAdapter maps every NodeCompleted to TaskCompleted { passed: true }, so unverified and already_satisfied tasks would read as passed on the runtime path
-- [ ] bug-1cc498: The portal shows a task with no run record as passed when tasks.toml marks it done
+- [x] bug-71a5e6: GraphRuntimeEventAdapter maps every NodeCompleted to TaskCompleted { passed: true }, so unverified and already_satisfied tasks would read as passed on the runtime path
+- [x] bug-1cc498: The portal shows a task with no run record as passed when tasks.toml marks it done
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

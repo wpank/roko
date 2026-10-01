@@ -2,7 +2,7 @@
 id = "bug-f1f814"
 kind = "bug"
 title = "graph_task_dispatch's fake provider CLIs use a 5 s fixture timeout, so 5 to 51 tests per loop run time out under load"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-01
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "81d9379a2"
+last_verified_rev = "479bec688"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-settle's report, checked on work/bug-dfb28f-flake at d7aaafc48)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs", "crates/roko-cli/src/graph_task_dispatch/served_model.rs"]
@@ -24,6 +24,13 @@ command = "! grep -q 'timeout_ms: Some(5_000)' crates/roko-cli/src/graph_task_di
 
 [[verify]]
 command = "grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/failover.rs && grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/helper_calls.rs && grep -q 'Some(FIXTURE_PROVIDER_TIMEOUT_MS)' crates/roko-cli/src/graph_task_dispatch/served_model.rs && ! grep -qF -e 'timeout_ms: Some(5_000)' -e 'timeout_ms: Some(15_000)' crates/roko-cli/src/graph_task_dispatch/failover.rs crates/roko-cli/src/graph_task_dispatch/helper_calls.rs crates/roko-cli/src/graph_task_dispatch/served_model.rs"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:51Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10; fixtures use FIXTURE_PROVIDER_TIMEOUT_MS / FIXTURE_HANG_GUARD_SECS; the graph_task_dispatch suite passed 10 of 10 runs at --test-threads=32 under load. Merged 268e02b65 (work/bug-f1f814 e3c81656c)."
 +++
 
 ## Problem

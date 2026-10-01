@@ -2,7 +2,7 @@
 id = "bug-7c8a57"
 kind = "bug"
 title = "100-line cap on read_files context injection"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "S"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/task_parser"]
 created = 2026-09-21
 updated = 2026-10-01
 last_verified = 2026-10-01
-last_verified_rev = "faa378453"
+last_verified_rev = "479bec688"
 source = "tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-06: Remove 100-line file injection cap"
 discovered_from = "audit:tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-06: Remove 100-line file injection cap"
 anchors = ["crates/roko-cli/src/plan_policy.rs::render_declared_context", "crates/roko-cli/src/dispatch/prompt_builder.rs::build_runner_context", "crates/roko-cli/src/task_parser.rs::build_prompt", "crates/roko-neuro/src/context.rs::gather_read_files", "crates/roko-compose/src/context_provider.rs::add_inline_files"]
@@ -19,6 +19,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'lines().take(100)' crates/roko-cli/src/task_parser.rs && grep -qw 'fn renderer_injects_unranged_file_past_line_80' crates/roko-cli/src/plan_policy.rs && cargo test -p roko-cli renderer_injects_unranged_file_past_line_80"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T12:49:52Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "Batch 20d gate on fae7133cd, re-checked with the clippy fix on 9f3c184c5 (MAIN 479bec688 has the same crates and portal): check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-agent/cli/compose/core/execution/graph/neuro/runtime/serve; lib tests roko-cli 3282, roko-agent 2282, roko-core 1962, roko-serve 990, roko-compose 561, roko-graph 476, roko-runtime 288, roko-execution 245, roko-neuro 239 all pass; extras: codex/cursor/openai parity 4+4+4 (streaming tests no longer ignored), default_engine 1, C1 1, C7 2, bin 429, graph_task_dispatch loop 10/10, including renderer_injects_unranged_file_past_line_80 and renderer_marks_an_unranged_file_cut_at_the_line_limit. Merged 19db5ff24 (work/bug-7c8a57 9f22cb31f)."
 +++
 
 ## Problem

@@ -146,14 +146,6 @@ where
         .map_err(BridgeEventsError::from)
 }
 
-pub(crate) fn workflow_template_name(template: &crate::pipeline::WorkflowTemplate) -> &'static str {
-    match template {
-        crate::pipeline::WorkflowTemplate::Express => "express",
-        crate::pipeline::WorkflowTemplate::Standard => "standard",
-        crate::pipeline::WorkflowTemplate::Full => "full",
-    }
-}
-
 pub(crate) fn text_block(text: String) -> ContentBlock {
     ContentBlock::Text { text }
 }

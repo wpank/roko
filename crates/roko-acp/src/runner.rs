@@ -7,7 +7,6 @@
 //! 4. Emitting ACP session updates (plan entries, tool calls) through the event channel
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use roko_agent::claude_cli_agent::build_settings_json;
 use roko_agent::process::apply_credential_scrub;
@@ -21,7 +20,6 @@ use roko_gate::{
     AdaptiveThresholds, ClippyGate, CompileGate, GatePayload, TestGate,
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
-use roko_runtime::workflow_contract::WorkflowRunReport;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -539,156 +537,6 @@ fn similar_strings(a: &str, b: &str) -> bool {
     let overlap = words_a.intersection(&words_b).count();
     let total = words_a.len().max(words_b.len());
     total > 3 && (overlap as f64 / total as f64) > 0.5
-}
-
-/// Explicit execution route for ACP workflow callers.
-///
-/// Serializes as lowercase strings for ACP protocol compatibility.
-/// Maps 1:1 to the CLI `WorkflowExecutionRoute` enum; kept as a separate
-/// type because ACP does not depend on `roko-cli`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AcpWorkflowRoute {
-    /// Default production route — selects WorkflowEngine.
-    #[default]
-    LegacyDefault,
-    /// Graph-based canary path (#257).
-    GraphCanary,
-    /// Replay-only comparison path (#259).
-    ReplayOnly,
-    /// Explicit legacy fallback with observable warning (#277).
-    LiveFallback,
-}
-
-impl std::fmt::Display for AcpWorkflowRoute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LegacyDefault => f.write_str("legacy_default"),
-            Self::GraphCanary => f.write_str("graph_canary"),
-            Self::ReplayOnly => f.write_str("replay_only"),
-            Self::LiveFallback => f.write_str("live_fallback"),
-        }
-    }
-}
-
-impl std::str::FromStr for AcpWorkflowRoute {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "legacy_default" | "legacy-default" => Ok(Self::LegacyDefault),
-            "graph_canary" | "graph-canary" | "graph" => Ok(Self::GraphCanary),
-            "replay_only" | "replay-only" | "replay" => Ok(Self::ReplayOnly),
-            "live_fallback" | "live-fallback" | "fallback" => Ok(Self::LiveFallback),
-            other => Err(format!(
-                "unknown ACP workflow route `{other}`; expected one of: \
-                 legacy_default, graph_canary, replay_only, live_fallback"
-            )),
-        }
-    }
-}
-
-/// Options for graph-based workflow execution bridged to ACP protocol.
-///
-/// #276 retired `WorkflowEngine`. These options configure the graph template
-/// controller that replaced it.
-pub struct GraphEngineOptions {
-    pub model_key: String,
-    pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
-    pub mcp_config: Option<std::path::PathBuf>,
-    pub provenance_card: Option<String>,
-    /// Execution route selector (GraphCanary and ReplayOnly are not yet implemented).
-    pub route: AcpWorkflowRoute,
-}
-
-pub async fn run_with_workflow_engine(
-    session_id: &str,
-    prompt: &str,
-    workdir: &Path,
-    template: &str,
-    options: GraphEngineOptions,
-    event_sender: mpsc::Sender<CognitiveEvent>,
-) -> anyhow::Result<WorkflowRunReport> {
-    // Route check: GraphCanary and ReplayOnly are not yet implemented.
-    match options.route {
-        AcpWorkflowRoute::LegacyDefault => {}
-        AcpWorkflowRoute::LiveFallback => {
-            warn!(
-                route = %options.route,
-                "legacy compatibility: explicit LiveFallback route selected; \
-                 this path will be removed by #277"
-            );
-        }
-        AcpWorkflowRoute::GraphCanary => {
-            return Err(anyhow::anyhow!(
-                "AcpWorkflowRoute::GraphCanary is not yet implemented; \
-                 awaiting #257 graph template wiring"
-            ));
-        }
-        AcpWorkflowRoute::ReplayOnly => {
-            return Err(anyhow::anyhow!(
-                "AcpWorkflowRoute::ReplayOnly is not yet implemented; \
-                 awaiting #259 shadow fixture wiring"
-            ));
-        }
-    }
-
-    let runtime_run_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let roko_config = roko_core::config::loader::load_config_with_options(
-        workdir,
-        &roko_core::config::loader::LoadOptions::acp(),
-    )
-    .unwrap_or_default();
-
-    // #245: Build RuntimeServices via RuntimeServicesBuilder, then share
-    // handles with ServiceFactory instead of constructing them twice.
-    let builder_overrides = roko_execution::overrides::ExecutionOverrides::default();
-    let roko_config_arc = std::sync::Arc::new(roko_config.clone());
-    let runtime_services = roko_execution::RuntimeServicesBuilder::from_config(
-        &roko_config_arc,
-        roko_execution::profiles::RuntimeProfile::Workflow,
-        builder_overrides,
-    )
-    .build(workdir)
-    .map_err(|e| anyhow::anyhow!("RuntimeServicesBuilder: {e}"))?;
-
-    // #276: WorkflowEngine deleted — resolve template and build report via
-    // graph template controller. Full ACP graph execution wiring is product
-    // work beyond the #276 deletion scope.
-    let _ = (
-        runtime_services,
-        options,
-        runtime_run_id,
-        event_sender,
-        roko_config,
-    );
-
-    let descriptor = roko_execution::workflow::resolve_template(template)
-        .map_err(|e| anyhow::anyhow!("resolve workflow template: {e}"))?;
-
-    let run_id = format!("acp_workflow_{session_id}");
-    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
-        run_id,
-        descriptor,
-        prompt.to_string(),
-    );
-    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
-        reason: "ACP graph execution requires runtime wiring".to_string(),
-    });
-
-    Ok(roko_execution::workflow::build_report(
-        &controller,
-        std::time::Instant::now(),
-        "unconfigured".to_string(),
-        None,
-        String::new(),
-        0,
-        0,
-        None,
-        vec![],
-        vec![],
-        None,
-    ))
 }
 
 fn text_block(text: String) -> ContentBlock {

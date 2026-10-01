@@ -1255,7 +1255,7 @@ fn acp_vars() -> Vec<EnvVarSpec> {
         EnvVarSpec {
             name: "ROKO_ACP_LEGACY",
             owner: "ACP",
-            purpose: "Activate legacy ACP behavior paths",
+            purpose: "Ignored: ACP workflow sessions always run the pipeline (gap-38a529)",
             value_type: ValueType::Presence,
             default: "",
             precedence: "env only; removal planned",

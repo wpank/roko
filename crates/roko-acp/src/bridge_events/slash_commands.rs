@@ -18,7 +18,6 @@ use crate::types::{ContentBlock, StopReason, ToolCallKind, ToolCallStatus};
 use super::knowledge_helpers::{emit_knowledge_card, query_dispatch_knowledge};
 use super::provenance::{build_provenance, render_provenance_card};
 use super::{CognitiveEvent, Result};
-use crate::runner::run_with_workflow_engine;
 
 // ── Slash command dispatch ───────────────────────────────────────────
 
@@ -427,46 +426,27 @@ Use the Workflow dropdown in the status bar to select, or:
                     .as_ref()
                     .map(render_provenance_card);
             let knowledge_context = knowledge.context_text();
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                return Ok(crate::runner::run_workflow_pipeline(
-                    session_id,
-                    args,
-                    knowledge_context,
-                    provenance_card,
-                    workdir,
-                    crate::runner::PipelineConfig {
-                        template: crate::pipeline::WorkflowTemplate::Express,
-                        max_iterations: 2,
-                        clippy_enabled: true,
-                        tests_enabled: true,
-                        review_strictness: "standard".to_string(),
-                        model_slug: model_key.clone(),
-                        mcp_config: None,
-                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
-                    },
-                    cancel_token,
-                    event_sender,
-                    shared_run,
-                )
-                .await?);
-            }
-
-            run_with_workflow_engine(
+            return Ok(crate::runner::run_workflow_pipeline(
                 session_id,
                 args,
+                knowledge_context,
+                provenance_card,
                 workdir,
-                "express",
-                crate::runner::GraphEngineOptions {
-                    model_key,
+                crate::runner::PipelineConfig {
+                    template: crate::pipeline::WorkflowTemplate::Express,
+                    max_iterations: 2,
+                    clippy_enabled: true,
+                    tests_enabled: true,
+                    review_strictness: "standard".to_string(),
+                    model_slug: model_key,
                     mcp_config: None,
-                    provenance_card,
-                    input_messages: Vec::new(),
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                    sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                 },
+                cancel_token,
                 event_sender,
+                shared_run,
             )
-            .await?;
-            return Ok(());
+            .await?);
         }
         "full" => {
             require_args!("full", "<prompt>");
@@ -478,46 +458,27 @@ Use the Workflow dropdown in the status bar to select, or:
                     .as_ref()
                     .map(render_provenance_card);
             let knowledge_context = knowledge.context_text();
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                return Ok(crate::runner::run_workflow_pipeline(
-                    session_id,
-                    args,
-                    knowledge_context,
-                    provenance_card,
-                    workdir,
-                    crate::runner::PipelineConfig {
-                        template: crate::pipeline::WorkflowTemplate::Full,
-                        max_iterations: 2,
-                        clippy_enabled: true,
-                        tests_enabled: true,
-                        review_strictness: "standard".to_string(),
-                        model_slug: model_key.clone(),
-                        mcp_config: None,
-                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
-                    },
-                    cancel_token,
-                    event_sender,
-                    shared_run,
-                )
-                .await?);
-            }
-
-            run_with_workflow_engine(
+            return Ok(crate::runner::run_workflow_pipeline(
                 session_id,
                 args,
+                knowledge_context,
+                provenance_card,
                 workdir,
-                "full",
-                crate::runner::GraphEngineOptions {
-                    model_key,
+                crate::runner::PipelineConfig {
+                    template: crate::pipeline::WorkflowTemplate::Full,
+                    max_iterations: 2,
+                    clippy_enabled: true,
+                    tests_enabled: true,
+                    review_strictness: "standard".to_string(),
+                    model_slug: model_key,
                     mcp_config: None,
-                    provenance_card,
-                    input_messages: Vec::new(),
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                    sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                 },
+                cancel_token,
                 event_sender,
+                shared_run,
             )
-            .await?;
-            return Ok(());
+            .await?);
         }
         "review-this" => {
             return run_shell_command(session_id, "git diff", workdir, cancel_token, event_sender)

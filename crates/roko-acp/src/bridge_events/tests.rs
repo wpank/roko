@@ -4282,3 +4282,130 @@ fn compute_session_capabilities_empty_tool_list_is_fail_closed() {
         "empty tool list must produce all-false capabilities"
     );
 }
+
+// ── Bridge under load ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn bridge_under_load_drops_progress_but_keeps_turn_end() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender
+        .send(CognitiveEvent::TokenChunk("first".to_owned()))
+        .await
+        .expect("fill the channel");
+
+    // A progress event gives up on a channel that stays full.
+    let started = Instant::now();
+    send_cognitive_event_within(
+        &sender,
+        CognitiveEvent::TokenChunk("dropped".to_owned()),
+        Duration::from_millis(20),
+    )
+    .await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    // The turn's end waits for room, past that timeout.
+    let completion = send_cognitive_event_within(
+        &sender,
+        CognitiveEvent::Complete {
+            stop_reason: StopReason::EndTurn,
+            usage: None,
+        },
+        Duration::from_millis(20),
+    );
+    let reader = async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let first = receiver.recv().await;
+        let second = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        (first, second)
+    };
+    let ((), (first, second)) = tokio::join!(completion, reader);
+    assert!(matches!(first, Some(CognitiveEvent::TokenChunk(text)) if text == "first"));
+    assert!(matches!(
+        second,
+        Ok(Some(CognitiveEvent::Complete { .. }))
+    ));
+}
+
+#[test]
+fn bridge_under_load_caps_assistant_text() {
+    let chunk = "é".repeat(1_000);
+    let mut text = String::new();
+    let mut reached = 0;
+    for _ in 0..600 {
+        if append_assistant_text(&mut text, &chunk) {
+            reached += 1;
+        }
+    }
+    assert_eq!(text.len(), MAX_ASSISTANT_TEXT_BYTES);
+    assert!(
+        text.chars().all(|c| c == 'é'),
+        "the cap must cut on a char boundary"
+    );
+    assert_eq!(reached, 1, "the cap is reported once");
+}
+
+#[tokio::test]
+async fn bridge_under_load_keeps_requests_sent_during_a_prompt() {
+    let (mut client, server) = duplex(4096);
+    let (server_reader, server_writer) = tokio::io::split(server);
+    let mut transport = StdioTransport::from_io(server_reader, server_writer);
+    let mut session = test_session("test-model", "none");
+    let session_id = session.session_id.clone();
+    let cancel_token = CancelToken::new();
+    let (_event_sender, event_receiver) = mpsc::channel(4);
+
+    // While the prompt runs, the client asks for something else, then leaves.
+    let request = json!({ "jsonrpc": "2.0", "id": 7, "method": "session/list", "params": {} });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .expect("write mid-prompt request");
+    drop(client);
+
+    let result = stream_events_to_editor(
+        &mut transport,
+        &session_id,
+        &mut session,
+        Path::new("."),
+        event_receiver,
+        &cancel_token,
+    )
+    .await
+    .expect("the stream ends at the disconnect");
+    assert_eq!(result.prompt_result.stop_reason, StopReason::Cancelled);
+    // The request is kept for the server to answer, not dropped.
+    assert_eq!(session.deferred_requests.len(), 1);
+    assert_eq!(session.deferred_requests[0].method, "session/list");
+}
+
+#[test]
+fn bridge_under_load_drains_deferred_requests_in_order() {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let mut sessions =
+        crate::session::SessionManager::new(tmp.path().to_path_buf(), RokoConfig::default());
+    let created = sessions.create_session(SessionNewParams {
+        session_name: Some("deferred".to_owned()),
+        client_capabilities: None,
+        model: None,
+        provider: None,
+        effort: None,
+        mcp_servers: Vec::new(),
+    });
+    let request = |id: u64, method: &str| -> crate::types::JsonRpcRequest {
+        serde_json::from_value(json!({ "jsonrpc": "2.0", "id": id, "method": method }))
+            .expect("parse request")
+    };
+    let session = sessions
+        .get_session_mut(&created.session_id)
+        .expect("session exists");
+    session.deferred_requests.push(request(1, "session/new"));
+    session.deferred_requests.push(request(2, "session/list"));
+
+    let drained: Vec<String> = sessions
+        .drain_deferred_requests()
+        .into_iter()
+        .map(|request| request.method)
+        .collect();
+    assert_eq!(drained, ["session/new", "session/list"]);
+    assert!(sessions.drain_deferred_requests().is_empty());
+}

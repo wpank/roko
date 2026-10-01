@@ -212,7 +212,7 @@ impl EventConsumer for AcpAdapter {
             Ok(()) => {}
             // A full channel may drop progress, but not the event that ends the turn:
             // without it the editor waits forever.
-            Err(mpsc::error::TrySendError::Full(event)) if is_terminal(&event) => {
+            Err(mpsc::error::TrySendError::Full(event)) if event.ends_turn() => {
                 self.deliver_when_ready(event);
             }
             Err(_) => {
@@ -220,14 +220,6 @@ impl EventConsumer for AcpAdapter {
             }
         }
     }
-}
-
-/// Events that end a turn. The editor waits for one of them.
-fn is_terminal(event: &CognitiveEvent) -> bool {
-    matches!(
-        event,
-        CognitiveEvent::Complete { .. } | CognitiveEvent::Failure { .. } | CognitiveEvent::MaxTokens
-    )
 }
 
 fn gate_call_id(gate_name: &str) -> String {

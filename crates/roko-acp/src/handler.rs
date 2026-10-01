@@ -1,5 +1,6 @@
 //! Main ACP dispatch loop.
 
+use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -138,7 +139,15 @@ where
     // GC old persisted sessions at startup (7 days).
     sessions.gc_old_sessions(chrono::Duration::days(7));
 
+    // Requests that arrived while a prompt ran, answered in arrival order
+    // before anything new is read.
+    let mut deferred: VecDeque<JsonRpcRequest> = VecDeque::new();
     loop {
+        if let Some(request) = deferred.pop_front() {
+            handle_request(transport, &mut sessions, request).await?;
+            deferred.extend(sessions.drain_deferred_requests());
+            continue;
+        }
         let message = match transport.read_message().await {
             Ok(Some(message)) => message,
             Ok(None) => {
@@ -218,6 +227,7 @@ where
                     }
                 }
                 handle_request(transport, &mut sessions, request).await?;
+                deferred.extend(sessions.drain_deferred_requests());
             }
             JsonRpcMessage::Response(response) => {
                 transport.handle_incoming_response(response);

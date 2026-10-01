@@ -41,8 +41,8 @@ pub(crate) use experiments::{
     replace_experiment_section, resolve_acp_dispatch_model,
 };
 pub(crate) use helpers::{
-    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, roko_meta_update,
-    send_cognitive_event, send_session_update, workflow_template_name,
+    append_assistant_text, dispatch_failure_update, emit_dispatch_failure, map_event_to_update,
+    roko_meta_update, send_cognitive_event, send_session_update, workflow_template_name,
 };
 pub use permissions::request_permission;
 pub(crate) use permissions::request_permission_for_event;
@@ -207,7 +207,12 @@ where
                         .await;
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
-                        assistant_text.push_str(text);
+                        if append_assistant_text(&mut assistant_text, text) {
+                            warn!(
+                                session_id,
+                                "assistant text reached its cap; the rest is only streamed"
+                            );
+                        }
                         if let Some(update) = map_event_to_update(event) {
                             send_session_update(transport, session_id, update).await?;
                         }
@@ -250,11 +255,13 @@ where
                     transport.handle_incoming_response(response);
                 }
                 Some(JsonRpcMessage::Request(request)) => {
-                    warn!(
+                    // The server answers it after the prompt, in arrival order.
+                    debug!(
                         session_id,
                         method = %request.method,
-                        "ignoring inbound request while prompt was active"
+                        "deferring inbound request until the prompt finishes"
                     );
+                    session.deferred_requests.push(request);
                 }
                 None => {
                     warn!(

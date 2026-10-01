@@ -2431,11 +2431,6 @@ async fn repair_worktree_state(worktrees: &crate::orchestrator::worktree::Worktr
     }
 }
 
-/// Run one admitted plan to a terminal checkpoint.
-///
-/// A plan that cannot be converted or validated still gets a terminal
-/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
-/// failures, which stop the whole run.
 /// With `--worktree-per-task` each task writes its own checkout, so no two
 /// tasks share a tree: drop the exclusive paths that keep tasks writing the
 /// same files apart, and let them run together (gap-19e596). The paths are
@@ -2449,6 +2444,11 @@ fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task
     }
 }
 
+/// Run one admitted plan to a terminal checkpoint.
+///
+/// A plan that cannot be converted or validated still gets a terminal
+/// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
+/// failures, which stop the whole run.
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,

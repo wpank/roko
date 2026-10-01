@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
 use roko_graph::replay::{RecordEntry, retain_recorded_activities};
@@ -34,6 +35,8 @@ use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
     plan_graph_fingerprint,
 };
+use roko_learn::telemetry::report::RunRecords;
+use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
@@ -75,6 +78,10 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// Known extension namespace for the plan's whole-plan check (`[meta]
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
+/// Known extension namespace for the tasks whose latest attempt a stop cut
+/// off, as the last resume found them (gap-36f3fb).
+pub const INTERRUPTED_ATTEMPT_EXTENSION: &str = "roko.attempt.interrupted@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +252,34 @@ pub struct TaskOutcomeSummary {
     pub not_started: BTreeMap<String, String>,
 }
 
+/// Value stored under [`INTERRUPTED_ATTEMPT_EXTENSION`]: the tasks whose
+/// latest attempt a stop cut off, read on resume from the run's attempt log
+/// (`.roko/runs/<run_id>/attempts.jsonl`). Anything such an attempt wrote is
+/// still in the task's checkout, and no Activity records it; the task runs
+/// again on top of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempts {
+    /// One entry per task, in task id order.
+    #[serde(default)]
+    pub attempts: Vec<InterruptedAttempt>,
+}
+
+/// A task's latest attempt, which a stop cut off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempt {
+    /// The task the attempt ran.
+    pub task_id: String,
+    /// The attempt's S01 key, `{chain_key}:{attempt}`.
+    pub attempt_key: String,
+    /// When the attempt started (Unix ms), when its open line says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// The run cancelled the attempt. Otherwise it never settled: the
+    /// process stopped while it ran.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
 /// they may be replayed: every task with authored verify steps. A task whose
 /// definition cannot be decoded is treated as verify-bearing (fail closed).
@@ -332,6 +367,78 @@ fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
         .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
         .filter_map(|entry| {
             TaskGateVerdict::from_signals(&entry.signals).map(|verdict| (entry.node_id, verdict))
+        })
+        .collect()
+}
+
+/// The nodes whose output the Activity log at `path` records.
+fn recorded_nodes(path: &Path) -> BTreeSet<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return BTreeSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+        .map(|entry| entry.node_id)
+        .collect()
+}
+
+/// The tasks of plan `plan_id` whose latest attempt in `run_dir`'s attempt
+/// log a stop cut off: it never settled, or the run cancelled it. A task in
+/// `recorded`, whose output the Activity log holds, is left out: its attempt
+/// finished, even if the process stopped before its verdict line was written.
+fn interrupted_attempts(
+    run_dir: &Path,
+    plan_id: &str,
+    recorded: &BTreeSet<String>,
+) -> Vec<InterruptedAttempt> {
+    let records = match RunRecords::load(run_dir) {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(
+                run_dir = %run_dir.display(),
+                %error,
+                "resume: the run's attempt log is unreadable; interrupted attempts go unrecorded"
+            );
+            return Vec::new();
+        }
+    };
+    let outcomes: BTreeMap<&str, AttemptOutcome> = records
+        .verdicts
+        .iter()
+        .map(|verdict| (verdict.record.identity.attempt_key.as_str(), verdict.record.outcome))
+        .collect();
+    let mut latest: BTreeMap<&str, &AttemptOpenRecord> = BTreeMap::new();
+    for open in records.opens.iter().map(|open| &open.record) {
+        let identity = &open.identity;
+        if identity.plan_id != plan_id {
+            continue;
+        }
+        let newer = latest
+            .get(identity.task_id.as_str())
+            .is_none_or(|seen| seen.identity.attempt < identity.attempt);
+        if newer {
+            latest.insert(identity.task_id.as_str(), open);
+        }
+    }
+    latest
+        .into_values()
+        .filter(|open| {
+            let node = open.identity.node_id.as_deref();
+            !recorded.contains(node.unwrap_or(&open.identity.task_id))
+        })
+        .filter_map(|open| {
+            let cancelled = match outcomes.get(open.identity.attempt_key.as_str()) {
+                None => false,
+                Some(AttemptOutcome::Cancelled) => true,
+                Some(_) => return None,
+            };
+            Some(InterruptedAttempt {
+                task_id: open.identity.task_id.clone(),
+                attempt_key: open.identity.attempt_key.clone(),
+                started_at_ms: open.attempt_started_at,
+                cancelled,
+            })
         })
         .collect()
 }
@@ -848,6 +955,38 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record under [`INTERRUPTED_ATTEMPT_EXTENSION`] the tasks whose latest
+    /// attempt of this run a stop cut off, read from the run's attempt log in
+    /// `workdir`, replacing the previous resume's record (gap-36f3fb).
+    fn record_interrupted_attempts(&mut self, workdir: &Path) -> Result<()> {
+        let layout = RokoLayout::for_project(workdir);
+        let run_dir = layout.run_dir(&self.manifest.run_id);
+        let recorded = recorded_nodes(&self.paths.activities);
+        let attempts = interrupted_attempts(&run_dir, &self.manifest.plan_id, &recorded);
+        if attempts.is_empty() {
+            self.manifest
+                .extensions
+                .remove(INTERRUPTED_ATTEMPT_EXTENSION);
+            return Ok(());
+        }
+        for attempt in &attempts {
+            tracing::warn!(
+                task_id = %attempt.task_id,
+                attempt_key = %attempt.attempt_key,
+                cancelled = attempt.cancelled,
+                "resume: the task's last attempt stopped before it settled; anything it wrote \
+                 is still in the task's checkout, and the task runs again on top of it"
+            );
+        }
+        let value = serde_json::to_value(InterruptedAttempts { attempts })
+            .context("serialize interrupted attempts")?;
+        self.manifest.extensions.insert(
+            INTERRUPTED_ATTEMPT_EXTENSION.to_string(),
+            host_extension(INTERRUPTED_ATTEMPT_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
     // ---- Extension registration ----
 
     /// Register a namespaced extension in the checkpoint manifest.
@@ -1154,7 +1293,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         "resuming Graph checkpoint"
                     );
                 }
-                return resume_checkpoint(paths, manifest, cost_ledger, plan_id, graph);
+                return resume_checkpoint(workdir, paths, manifest, cost_ledger, plan_id, graph);
             }
         }
     } else if !fresh && (paths.activities.exists() || paths.costs.exists()) {
@@ -1173,6 +1312,7 @@ pub fn prepare_graph_checkpoint_for_run(
 
 /// Reopen a validated checkpoint for another run of the same plan graph.
 fn resume_checkpoint(
+    workdir: &Path,
     paths: GraphCheckpointPaths,
     mut manifest: GraphCheckpointManifest,
     cost_ledger: GraphCostLedgerCheckpoint,
@@ -1208,6 +1348,7 @@ fn resume_checkpoint(
         invalidated_on_resume,
     };
     prepared.refresh_gate_verdicts()?;
+    prepared.record_interrupted_attempts(workdir)?;
     prepared.manifest.updated_at_ms = unix_ms();
     write_manifest_atomic(&prepared.paths.manifest, &prepared.manifest)?;
     Ok(prepared)
@@ -3131,6 +3272,89 @@ depends_on = ["T1"]
         let receipt = resumed.receipt("r1").expect("receipt survived resume");
         assert_eq!(receipt.state, ReceiptState::Committed);
         assert_eq!(receipt.evidence_ref.as_deref(), Some("evidence-1"));
+    }
+
+    #[test]
+    fn resume_records_the_attempts_a_stop_cut_off() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        // task-1 recorded its output, but the process stopped before its
+        // verdict line was written.
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let identity = |plan: &str, task: &str, attempt: u32| {
+            AttemptIdentity::new(&AttemptKey::new(run_id.as_str(), plan, task, attempt))
+        };
+        let open = |plan: &str, task: &str, attempt: u32| {
+            AttemptOpenRecord::new(identity(plan, task, attempt), 1_000 * i64::from(attempt))
+        };
+        let settle = |task: &str, attempt: u32, outcome: AttemptOutcome| {
+            AttemptVerdictRecord::settle(identity("p", task, attempt), outcome, true)
+        };
+        let run_dir = RokoLayout::for_project(dir.path()).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        for (plan, task, attempt) in [
+            ("p", "task-1", 1),
+            ("p", "task-2", 1),
+            ("p", "task-2", 2),
+            ("p", "task-3", 1),
+            ("p", "task-4", 1),
+            ("q", "task-5", 1),
+        ] {
+            assert!(writer.submit(open(plan, task, attempt)));
+        }
+        assert!(writer.submit(settle("task-2", 1, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 1, AttemptOutcome::Cancelled)));
+        assert!(writer.submit(settle("task-4", 1, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 9);
+
+        // task-2's second attempt never settled, and the run cancelled
+        // task-3's; task-4's attempt failed, and task-5 is another plan's.
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let value = resumed
+            .extension(INTERRUPTED_ATTEMPT_EXTENSION)
+            .expect("the interrupted attempts are recorded")
+            .value
+            .clone();
+        let recorded: InterruptedAttempts = serde_json::from_value(value).expect("attempts");
+        let expected = |task: &str, attempt: u32, cancelled: bool| InterruptedAttempt {
+            task_id: task.to_string(),
+            attempt_key: identity("p", task, attempt).attempt_key,
+            started_at_ms: Some(1_000 * i64::from(attempt)),
+            cancelled,
+        };
+        assert_eq!(
+            recorded.attempts,
+            [expected("task-2", 2, false), expected("task-3", 1, true)]
+        );
+        let persisted = read_manifest(&resumed.paths().manifest).expect("manifest");
+        assert!(persisted.extensions.contains_key(INTERRUPTED_ATTEMPT_EXTENSION));
+
+        // Once every task's latest attempt has settled, the next resume drops
+        // the record.
+        resumed.finish(false).expect("finish");
+        let writer = TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(open("p", "task-3", 2)));
+        assert!(writer.submit(settle("task-2", 2, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 2, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 3);
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("second resume");
+        assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
     }
 
     #[test]

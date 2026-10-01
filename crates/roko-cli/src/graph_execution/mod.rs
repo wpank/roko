@@ -15,7 +15,6 @@
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
 //! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
 //! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
-//! | [`feedback`] | 12-row completion feedback settlement sinks |
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
 //! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
@@ -32,7 +31,6 @@ pub mod control_adapter;
 pub mod delivery;
 pub mod event_log;
 pub mod fast_lane;
-pub mod feedback;
 pub mod identity_map;
 pub mod plan_runner;
 pub mod plan_set;
@@ -50,7 +48,6 @@ pub use delivery::{
     DeliveryPublicationOutcome, DeliveryRegressionOutcome, GitDeliveryBackend,
 };
 pub use event_log::{EventTap, RunEventLog, Tapped};
-pub use feedback::{CompletionSinkResult, build_settler};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
 pub use plan_runner::{GraphPlanRunParams, compute_plan_run_order, run_graph_plan};
 pub use plan_set::{PlanSetOrder, plan_set_order};

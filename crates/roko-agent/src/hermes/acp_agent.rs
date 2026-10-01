@@ -179,6 +179,23 @@ impl HermesAcpAgent {
 }
 
 // ---------------------------------------------------------------------------
+// Server requests
+// ---------------------------------------------------------------------------
+
+/// Answer a server request from Hermes so it is not left waiting. Hermes has
+/// no approval setting, so a permission request is denied (fail closed), and
+/// any other request method is not supported.
+async fn deny_server_request(client: &mut AcpStdioClient, request: &AcpNotification) {
+    if request.server_request_id.is_none() {
+        return;
+    }
+    tracing::warn!("hermes ACP server request `{}` denied", request.method);
+    if let Err(e) = client.answer_server_request(request, false).await {
+        tracing::warn!("hermes ACP could not answer `{}`: {e}", request.method);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Notification parsing
 // ---------------------------------------------------------------------------
 
@@ -354,6 +371,7 @@ impl Agent for HermesAcpAgent {
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
+                                deny_server_request(&mut client, &n).await;
                                 if let Some(event) = parse_notification(&n) {
                                     match event {
                                         AcpEvent::Output { text } => {
@@ -571,6 +589,7 @@ impl Agent for HermesAcpAgent {
                     notif = n_rx.recv() => {
                         match notif {
                             Some(n) => {
+                                deny_server_request(&mut client, &n).await;
                                 if let Some(event) = parse_notification(&n) {
                                     match event {
                                         AcpEvent::Output { text } => {
@@ -970,6 +989,34 @@ while IFS= read -r line; do
 done
 "##;
 
+    /// A stand-in for `hermes acp` whose prompt turns first ask for
+    /// permission. It waits for the answer, then finishes the turn with the
+    /// option it got: `chose <optionId>`.
+    const PERMISSION_ACP_SERVER: &str = r##"
+set -u
+prompt_id=0
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            prompt_id="$id"
+            printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"c-1"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}' ;;
+        *'"id":99,'*)
+            choice="${line#*\"optionId\":\"}"
+            choice="${choice%%\"*}"
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","result":{"text":"chose %s"}}}\n' "$prompt_id" "$choice" ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
     /// A Hermes ACP agent whose server is `script`, run with `bash -c`, and
     /// whose turns time out after `timeout`.
     fn agent_backed_by(script: &str, timeout: Duration) -> HermesAcpAgent {
@@ -1031,5 +1078,24 @@ done
             done |= matches!(event.kind, StreamEventKind::Done { .. });
         }
         assert!(done, "the stream ends with Done");
+    }
+
+    /// bug-192264: Hermes answers a permission request instead of leaving the
+    /// agent waiting until the turn times out. Hermes has no approval
+    /// setting, so it rejects.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn acp_permission_request_is_answered_by_hermes() {
+        let agent = agent_backed_by(PERMISSION_ACP_SERVER, Duration::from_secs(5));
+        let input = Signal::builder(Kind::Prompt).body(Body::text("hi")).build();
+        let ctx = Context::now();
+
+        let turn = agent.run(&input, &ctx);
+        let result = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the turn ends");
+
+        let output = result.output.body.as_text().unwrap_or_default();
+        assert_eq!(output, "chose no");
     }
 }

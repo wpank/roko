@@ -264,6 +264,16 @@ impl OpenClawAcpAgent {
         loop {
             tokio::select! {
                 Some(notif) = notif_rx.recv() => {
+                    // Answer server requests, permission requests among them,
+                    // with the decision logged below so the agent is not left
+                    // waiting.
+                    if notif.server_request_id.is_some()
+                        && let Err(e) = client
+                            .answer_server_request(&notif, self.config.auto_approve_permissions)
+                            .await
+                    {
+                        tracing::warn!("[openclaw-acp] could not answer `{}`: {e}", notif.method);
+                    }
                     if let Some(event) = parse_notification(&notif) {
                         match event {
                             AcpEvent::Output { text } => {

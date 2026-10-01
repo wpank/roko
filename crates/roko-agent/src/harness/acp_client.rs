@@ -735,10 +735,15 @@ impl AcpStdioClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<(), AcpError> {
-        let stdin = self.stdin.as_mut().ok_or(AcpError::Disconnected)?;
         let req = JsonRpcRequest::new(id, method, params);
-        let mut json = serde_json::to_string(&req)
+        let json = serde_json::to_string(&req)
             .map_err(|e| AcpError::Protocol(format!("serialize: {e}")))?;
+        self.write_message(json).await
+    }
+
+    /// Write one JSON-RPC message, a line of JSON, to the server's stdin.
+    async fn write_message(&mut self, mut json: String) -> Result<(), AcpError> {
+        let stdin = self.stdin.as_mut().ok_or(AcpError::Disconnected)?;
         tracing::debug!("[acp] -> {}", &json[..json.floor_char_boundary(500)]);
         json.push('\n');
         stdin
@@ -747,6 +752,22 @@ impl AcpStdioClient {
             .map_err(AcpError::Io)?;
         stdin.flush().await.map_err(AcpError::Io)?;
         Ok(())
+    }
+
+    /// Answer a server request so the agent is not left waiting: a
+    /// `session/request_permission` gets the offered option that matches
+    /// `allow`, or a cancelled outcome when none does, and any other method
+    /// a JSON-RPC "method not found" error. A plain notification needs no
+    /// answer and is left alone.
+    pub async fn answer_server_request(
+        &mut self,
+        request: &AcpNotification,
+        allow: bool,
+    ) -> Result<(), AcpError> {
+        match server_request_reply(request, allow) {
+            Some(reply) => self.write_message(reply.to_string()).await,
+            None => Ok(()),
+        }
     }
 
     /// Wait for a response with the given ID.
@@ -1051,6 +1072,48 @@ impl Drop for AcpStdioClient {
             process::unregister_pid(pid);
         }
     }
+}
+
+/// The JSON-RPC response to the server request `request`, or `None` for a
+/// plain notification. See [`AcpStdioClient::answer_server_request`].
+fn server_request_reply(request: &AcpNotification, allow: bool) -> Option<serde_json::Value> {
+    let id = request.server_request_id?;
+    let reply = if request.method == "session/request_permission" {
+        let outcome = permission_outcome(request.params.as_ref(), allow);
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}})
+    } else {
+        let message = format!("method not found: {}", request.method);
+        let error = serde_json::json!({"code": -32601, "message": message});
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "error": error})
+    };
+    Some(reply)
+}
+
+/// ACP's `RequestPermissionOutcome` for a permission request with `params`:
+/// the offered option that matches `allow`, a one-time option first, or
+/// `cancelled` when none matches.
+fn permission_outcome(params: Option<&serde_json::Value>, allow: bool) -> serde_json::Value {
+    let (once, always) = if allow {
+        ("allow_once", "allow_always")
+    } else {
+        ("reject_once", "reject_always")
+    };
+    match offered_option(params, once).or_else(|| offered_option(params, always)) {
+        Some(option_id) => serde_json::json!({"outcome": "selected", "optionId": option_id}),
+        None => serde_json::json!({"outcome": "cancelled"}),
+    }
+}
+
+/// The `optionId` of the first option of kind `kind` among a permission
+/// request's `options`.
+fn offered_option<'a>(params: Option<&'a serde_json::Value>, kind: &str) -> Option<&'a str> {
+    params?
+        .get("options")?
+        .as_array()?
+        .iter()
+        .find(|option| option["kind"] == kind)?
+        .get("optionId")?
+        .as_str()
 }
 
 /// `version` as the `initialize` request sends it: a JSON number when it is
@@ -2763,6 +2826,56 @@ done
     fn protocol_version_date_string_stays_string() {
         let version = "2024-11-05";
         assert_eq!(protocol_version_json(version), serde_json::json!(version));
+    }
+
+    /// bug-192264: every server request gets an answer. A permission
+    /// request gets the offered option that matches the decision, in ACP's
+    /// response shape; another method gets "method not found"; a plain
+    /// notification gets none.
+    #[test]
+    fn acp_permission_request_is_answered() {
+        let request = AcpNotification {
+            method: "session/request_permission".into(),
+            params: Some(serde_json::json!({
+                "sessionId": "s-1",
+                "toolCall": {"toolCallId": "c-1"},
+                "options": [
+                    {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "never", "name": "Always reject", "kind": "reject_always"},
+                ],
+            })),
+            server_request_id: Some(99),
+        };
+
+        let allowed = server_request_reply(&request, true).unwrap();
+        let selected = serde_json::json!({"outcome": "selected", "optionId": "yes"});
+        assert_eq!(
+            allowed,
+            serde_json::json!({"jsonrpc": "2.0", "id": 99, "result": {"outcome": selected}})
+        );
+        let denied = server_request_reply(&request, false).unwrap();
+        assert_eq!(denied["result"]["outcome"]["optionId"], "never");
+
+        let no_options = AcpNotification {
+            params: None,
+            ..request.clone()
+        };
+        let cancelled = server_request_reply(&no_options, true).unwrap();
+        assert_eq!(cancelled["result"]["outcome"], serde_json::json!({"outcome": "cancelled"}));
+
+        let other = AcpNotification {
+            method: "fs/read_text_file".into(),
+            ..request.clone()
+        };
+        let error = server_request_reply(&other, true).unwrap();
+        assert_eq!(error["id"], 99);
+        assert_eq!(error["error"]["code"], -32601);
+
+        let notification = AcpNotification {
+            server_request_id: None,
+            ..request
+        };
+        assert!(server_request_reply(&notification, true).is_none());
     }
 
     /// bug-f6e6ae: ACP's `initialize.protocolVersion` is an integer, and a

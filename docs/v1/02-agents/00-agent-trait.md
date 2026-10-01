@@ -286,7 +286,7 @@ impure, side-effecting real world. This separation is deliberate: it keeps
 the six Synapse traits testable and deterministic while allowing agents to
 do whatever is needed to complete their task.
 
-Reference: The universal loop is derived from the CoALA 9-step cognitive
+Reference: The universal loop is derived from the CoALA-inspired 9-step cognitive
 cycle (Sumers et al., 2023, arXiv:2309.02427), adapted for Roko's
 trait-based composition model. See refactoring PRD §01-synapse-architecture
 for the full mapping.
@@ -717,10 +717,8 @@ capability warrant chain (OCaps), never bypass the supervision hierarchy.
    Capabilities." arXiv:2406.04692, ICLR 2025. — MoA layered composition.
 4. Anthropic Transformer Circuits Team (2025). "Emergent Introspective
    Awareness in Large Language Models." — ~20% accuracy, narrow circuits.
-5. arXiv:2509.19783 (2025). "Agentic Metacognition: Self-Aware Agent for
-   Failure Prediction and Human Handoff." — +7.78pp from metacognitive monitoring.
-6. arXiv:2410.15048 (2024). "MorphAgent: Self-Evolving Profiles and
-   Decentralized Collaboration." — Dynamic role switching.
+5. arXiv:2509.19783 (2025). "Agentic Metacognition: Designing a "Self-Aware" Low-Code Agent for Failure Prediction and Human Handoff." — +7.78pp from metacognitive monitoring.
+6. arXiv:2410.15048 (2024). "MorphAgent: Empowering Agents through Self-Evolving Profiles and Decentralized Collaboration." — Dynamic role switching.
 7. arXiv:2601.04748 (2025). "When Single-Agent with Skills Replace Multi-Agent
    Systems." — 53.7% token reduction, phase transition at 50–100 skills.
 8. Murray, T. "Analysing Object-Capability Security." Oxford. — OCaps model.

@@ -17,9 +17,7 @@ articulated the key reframing: the real skill in building LLM applications
 is not prompt engineering (phrasing instructions well) but context engineering
 (managing the entire information environment the model sees).
 
-The **ACE** framework (arXiv:2510.04618, Anthropic) formalized autonomous
-context engineering as the baseline for agents that maintain their own working
-memory. Roko's composition system extends ACE with the VCG auction for
+The **ACE** framework (Zhang et al., Stanford, SambaNova and UC Berkeley; arXiv:2510.04618) treats contexts as evolving playbooks that a Generator, Reflector and Curator update incrementally (§3); it is the baseline PEEK compares against. Roko's composition system extends ACE with the VCG auction for
 multi-subsystem allocation and the PEEK orientation cache for session-persistent
 context.
 
@@ -180,23 +178,25 @@ context, no conversation history, no mystery.
 
 ## 4. The Meta-Harness Evaluation
 
-Lee et al. (2026, arXiv:2603.28052) evaluated coding agents across scaffolds:
+Lee et al. (2026, arXiv:2603.28052) search over harness code with a coding-agent proposer (§3):
 
 | Finding | Measurement | Implication |
 |---------|-------------|-------------|
-| **6x performance gap** from scaffold changes alone | Same model, different scaffolds | Scaffold > model quality |
-| **4x fewer input tokens** in the best scaffolds | Token usage comparison | Better context engineering = less input |
-| **Scaffold diversity matters** | Performance across task types | No single scaffold dominates all tasks |
+| **+7.7 points** over ACE on online text classification | Same model, discovered harness vs. ACE (§4.1) | The harness alone moves accuracy |
+| **4x fewer context tokens** than ACE at that accuracy | Token usage comparison (§4.1) | Better context engineering = less input |
+| **+4.7 points** on 200 IMO-level problems | One discovered retrieval harness, five held-out models (§4.2) | A harness can transfer across models |
 
-The 6x gap validates Roko's core premise: the scaffold IS the product. Investing
-in better context engineering produces more improvement than upgrading to a more
-expensive model. The 4x token reduction means better scaffolds are also cheaper.
+The 6x gap often quoted with this paper is SWE-bench Mobile's result (Tian et al. 2026), which Meta-Harness
+cites in §1. Roko reads these results as support for its core premise that the scaffold IS the product; that
+is Roko's thesis, not a claim the paper makes. The 4x token reduction means better scaffolds can also be cheaper.
 
 ---
 
 ## 5. The CLEAR Framework
 
-The CLEAR framework (2025) defines five evaluation dimensions for AI systems:
+CLEAR (Mehta 2025, arXiv:2511.14136) is an evaluation framework for enterprise
+agent deployments with five dimensions. The context-engineering column is Roko's
+reading, not the paper's:
 
 | CLEAR Dimension | Context Engineering Impact |
 |----------------|--------------------------|
@@ -206,8 +206,9 @@ The CLEAR framework (2025) defines five evaluation dimensions for AI systems:
 | **Assurance** | Explicit context = inspectable, auditable |
 | **Reliability** | Deterministic assembly = reproducible prompts |
 
-CLEAR's most important finding: optimizing for efficacy alone produces systems
-4.4-10.8x more expensive than co-optimizing for cost and efficacy. The four
+CLEAR's most important finding: across six agents on 300 enterprise tasks,
+optimizing for accuracy alone yields agents 4.4-10.8x more expensive than
+cost-aware alternatives with comparable performance. The four
 context engineering strategies naturally co-optimize: Select reduces both cost
 and noise, Compress reduces cost while preserving quality, Isolate improves
 reliability, Write invests cost where it produces the highest return.
@@ -321,7 +322,7 @@ baseline for agents that maintain their own working memory. Roko's PEEK
 orientation cache targets 1.7-5.8x improvement over ACE.
 
 **Lee et al. (2026), "Meta-Harness: Evaluating Coding Agents Across Scaffolds."**
-arXiv:2603.28052. The 6x performance gap and 4x token reduction findings.
+arXiv:2603.28052. Its +7.7 points at 4x fewer context tokens (§4.1); the 6x harness gap it quotes in §1 is SWE-bench Mobile's result.
 
 **Zaharia et al. (2024), "The Shift to Compound AI Systems."** BAIR.
 State-of-the-art from composing components, not scaling single models.
@@ -332,9 +333,10 @@ Answer Relevance, Context Relevance.
 **ARES** (Saad-Falcon et al., NAACL 2024). Statistical confidence intervals
 for RAG evaluation from minimal human labels.
 
-**CLEAR Framework** (2025). Five-dimensional evaluation: Cost, Latency,
-Efficacy, Assurance, Reliability. Accuracy-only optimization is 4.4-10.8x
-more expensive.
+**CLEAR** (Mehta 2025, "Beyond Accuracy: A Multi-Dimensional Framework for
+Evaluating Enterprise Agentic AI Systems", arXiv:2511.14136). Five-dimensional
+evaluation: Cost, Latency, Efficacy, Assurance, Reliability. Accuracy-only
+optimization yields agents 4.4-10.8x more expensive at comparable performance.
 
 **AI Agents That Matter** (Kapoor et al., Princeton 2025). Minimum evaluation
 bar: run each condition at least 5 times, report mean with confidence intervals.

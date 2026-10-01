@@ -2,14 +2,16 @@
 id = "bug-8589fc"
 kind = "bug"
 title = "roko dream run fails with run's missing-prompt error instead of the unknown-command message"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/main"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report, checked on work/bug-17f0e4 at 6b332b25f)"
 anchors = ["crates/roko-cli/src/main.rs"]
@@ -18,6 +20,11 @@ links = { depends_on = ["bug-17f0e4"], blocks = [], related = ["bug-17f0e4"], su
 
 [[verify]]
 command = "grep -rqw 'fn dream_run_reports_an_unknown_command' crates/roko-cli/src/ && cargo test -p roko-cli dream_run_reports_an_unknown_command"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including dream_run_reports_an_unknown_command (bin). Merged 6a26c7544."
 +++
 
 ## Problem
@@ -45,3 +52,9 @@ The external-subcommand handling in `main.rs`.
 ## Notes
 
 - Build on bug-17f0e4's branch.
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-02e264` at `889f01b8c`; cargo verification deferred to the batch
+  check. The problem statement's `#[command(external_subcommand)]` belongs to `roko plan`'s shorthand; the bare-word
+  check is bug-17f0e4's value parser, which clap only runs after parsing a following subcommand. `main` now parses
+  through `try_parse_cli`: when parsing fails and the first bare word (past options and their values) names no
+  subcommand, it reports that word as unknown, with the `roko knowledge dream` suggestion. Help and version output
+  are left alone.

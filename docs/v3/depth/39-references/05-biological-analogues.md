@@ -101,7 +101,7 @@ Universal quorum sensing. Validates quorum-based triggering in Collectives.
 
 ## Swarm Robotics (2024--2025)
 
-**[Anonymous, 2024]** *Enhancing Radioactive Environment Exploration with Bio-Inspired Swarm Robotics.* Robotics and Autonomous Systems.
+**[Ardiny & Beigzadeh, 2024]** *Enhancing Radioactive Environment Exploration with Bio-Inspired Swarm Robotics.* Robotics and Autonomous Systems.
 Stigmergy outperforms Levy flight in hazardous environments. Validates stigmergic coordination for uncertain domains.
 
 ---

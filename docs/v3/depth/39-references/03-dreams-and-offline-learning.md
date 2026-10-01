@@ -36,9 +36,9 @@ Controller trained entirely inside dreams achieves competitive performance. Drea
 ## Sleep-Time Compute
 
 **[Lin et al., 2025]** *Sleep-time Compute: Beyond Inference Scaling at Test-Time.* arXiv:2504.13171.
-Dual-agent: Sleeper precomputes during downtime, Serve Agent handles live. ~5x test-time reduction, up to 18% accuracy gain. Direct validation of the Dreams subsystem.
+Lets a model think about a context offline, before queries arrive, so answering needs less test-time compute (§3): ~5x less test-time compute at equal accuracy on Stateful GSM-Symbolic and Stateful AIME, up to 13% and 18% higher accuracy with more sleep-time compute, and 2.5x lower cost per query when amortised over related queries (abstract, §5). Direct validation of the Dreams subsystem.
 
-**[Anonymous, 2024]** *Wake-Sleep Consolidated Learning.* arXiv:2401.08623.
+**[Sorrenti et al., 2024]** *Wake-Sleep Consolidated Learning.* arXiv:2401.08623.
 CLS three-phase cycle (wake/NREM/REM): 38% forgetting reduction, 17.6% zero-shot transfer. Directly grounds the three-phase dream architecture.
 
 ---
@@ -82,19 +82,19 @@ Each agent is "differently haunted" by experiential traces. Solves the Alpha Con
 
 ## Sleep-Inspired LLM Architectures (2025--2026)
 
-**[Anonymous, 2025]** *Language Models Need Sleep.* OpenReview.
+**[Behrouz et al., 2025]** *Language Models Need Sleep.* OpenReview.
 Two-stage sleep: Memory Consolidation + Dreaming. Validates the NREM/REM two-phase dream architecture.
 
 **[Tutuncuoglu, 2025]** *NeuroDream: A Sleep-Inspired Memory Consolidation Framework.* SSRN:5377250.
 38% forgetting reduction, 17.6% zero-shot transfer increase. Validates REM counterfactual generation.
 
-**[Anonymous, 2025]** *LightMem: Lightweight and Efficient Memory-Augmented Generation.* arXiv:2510.18866.
-10.9% accuracy gain, 117x token reduction via offline consolidation. Validates Delta-frequency consolidation.
+**[Fang et al., 2025]** *LightMem: Lightweight and Efficient Memory-Augmented Generation.* arXiv:2510.18866.
+Up to 10.9% accuracy gain and up to 117x fewer tokens in its v1 abstract (later versions report up to 7.7%/29.3% and 106x/117x online), with consolidation moved offline into a sleep-time update (§3.3). Validates Delta-frequency consolidation.
 
-**[Anonymous, 2025]** *SleepGate: Learning to Forget.* arXiv:2603.14517.
+**[Xie, 2025]** *SleepGate: Learning to Forget.* arXiv:2603.14517.
 Learned active forgetting resolves proactive interference. Validates the Curator cycle as active, not passive.
 
-**[Anonymous, 2025]** *CosmoCore: Affective Dream-Replay RL for Code Generation.* arXiv:2510.18895.
+**[Ravindran, 2025]** *CosmoCore: Affective Dream-Replay RL for Code Generation.* arXiv:2510.18895.
 Combines affective states with dream-replay RL. Validates the Daimon-Dreams intersection.
 
 **[Ye et al., 2026]** *Auto-Dreamer.* arXiv:2605.20616.
@@ -104,9 +104,9 @@ Learned consolidator using CLS-inspired fast/slow separation. Target architectur
 Parametric distillation during offline phases. Informs schema extraction.
 
 **[Lee et al., 2026]** *Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference.* arXiv:2605.26099.
-Offline recurrence improves knowledge integration. Further validates the dream approach.
+Offline recurrent passes consolidate context into fast weights; longer sleep improves accuracy (§5, §6). Further validates the dream approach.
 
-**[TiMem, 2026]** *TiMem: Temporal Hierarchical Memory for Agent Consolidation.* arXiv:2601.02845.
+**[Li et al., 2026]** *TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.* arXiv:2601.02845.
 Temporal hierarchical consolidation architecture. Informs tiered dream scheduling.
 
 **[Phasor Agents, 2026]** *Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning.* arXiv:2601.04362.

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for tools/work.py: verify-command parsing and lint, picking non-conflicting work, claims, drift and sync.
+"""Tests for tools/work.py: verify-command parsing and lint, picking non-conflicting work, claims, drift, sync and the
+event log.
 
 Run: python3 tools/test_work.py
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -41,6 +43,18 @@ class TestVerifyCommands(unittest.TestCase):
         self.assertEqual(work.static_prefix("grep -q x f && ! grep -q y g && cargo test -p c t"), "grep -q x f && ! grep -q y g")
         self.assertEqual(work.static_prefix("cd apps/portal && npx vitest run a.test.ts"), "")
         self.assertEqual(work.static_prefix("cargo test -p c t"), "")
+
+    def test_static_prefix_stops_at_a_heavy_command_anywhere_in_a_part(self):
+        for cmd in ("for i in $(seq 1 20); do cargo test -p roko-cli --lib x; done",
+                    "CARGO_TARGET_DIR=t cargo test -p c t",
+                    "bash -c 'cargo build -p c' && grep -q x f",
+                    'test -n "$(cargo --version)" && grep -q x f'):
+            self.assertEqual(work.static_prefix(cmd), "", cmd)
+        self.assertEqual(work.static_prefix("grep -q x f && ! grep -q s g || (grep -q z h && cargo test -p c t)"), "grep -q x f")
+        self.assertEqual(work.static_prefix("grep -q x f && (cd apps/portal && npx vitest run)"), "grep -q x f")
+        # A heavy word in a quoted pattern or a path is not a command.
+        quoted = "grep -q 'cargo test' f && grep -rq \"roko serve\" crates/roko-cli/src"
+        self.assertEqual(work.static_prefix(quoted), quoted)
 
     def test_lint_flags_head_pipeline_and_whole_suite(self):
         self.assertTrue(any("head" in w for w in work.lint_verify("grep -n 'x' f | head -5")))
@@ -105,6 +119,24 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(errs, [])
         return items
 
+    def run_work(self, *args):
+        """Run tools/work.py in the repo as a separate process, the way the skills do."""
+        env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
+        return subprocess.run([sys.executable, str(Path(work.__file__)), *args], cwd=self.root,
+                              env={**env, "WORK_REPO": str(self.root)}, check=True, capture_output=True, text=True)
+
+    def events(self, session):
+        f = self.root / "work" / "telemetry" / "events" / f"{session}.jsonl"
+        return [json.loads(ln) for ln in f.read_text().splitlines()]
+
+    def add_worktree(self, branch):
+        """A linked worktree of the repo on a new branch, removed after the test."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "wt"
+        self.git("worktree", "add", "-q", "-b", branch, str(path))
+        return path
+
 
 class TestPicking(RepoTest):
     def test_next_skips_items_that_touch_the_same_files(self):
@@ -163,6 +195,107 @@ class TestDriftAndSync(RepoTest):
         it = {i["id"]: i for i in self.items()}["gap-cccccc"]
         work.close_item(it, evidence="done in test", commit="abc1234")
         self.assertFalse((d / "gap-cccccc.json").exists())
+
+
+class TestEvents(RepoTest):
+    def test_claim_and_release_append_events_to_the_session_file(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        self.run_work("release", "gap-cccccc", "--session", "s1")
+        rows = self.events("s1")
+        self.assertEqual([r["event"] for r in rows], ["claim", "release"])
+        for r in rows:
+            self.assertEqual(work.check_event(r), [])
+            self.assertEqual((r["item"], r["session"], r["branch"], r["source"]), ("gap-cccccc", "s1", "work/gap-cccccc", "live"))
+        # The release is logged while its claim is still live, and then the claim is gone.
+        self.assertEqual([r["concurrency"] for r in rows], [1, 1])
+        self.assertFalse((work.claims_dir() / "gap-cccccc.json").exists())
+
+    def test_the_session_defaults_to_the_claimant(self):
+        self.run_work("claim", "gap-cccccc", "--by", "Batch Orchestrator")
+        self.run_work("release", "gap-cccccc")
+        self.assertEqual([r["event"] for r in self.events("batch-orchestrator")], ["claim", "release"])
+
+    def test_event_merged_appends_a_row_with_the_merge_sha(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc")
+        sha = self.git("rev-parse", "HEAD").strip()
+        self.run_work("event", "merged", "gap-cccccc", "--merge-sha", sha, "--conflicts", "2", "--session", "s1")
+        self.run_work("event", "post-verify", "gap-cccccc", "--rc", "0", "--session", "s1")
+        merged, verify = self.events("s1")[1:]
+        for r in (merged, verify):
+            self.assertEqual(work.check_event(r), [])
+        self.assertEqual((merged["event"], merged["conflicts"], merged["branch"]), ("merged", 2, "work/gap-cccccc"))
+        self.assertTrue(sha.startswith(merged["merge_sha"]))
+        self.assertEqual((verify["event"], verify["rc"]), ("post-verify", 0))
+
+    def test_a_worker_in_a_linked_worktree_logs_no_events(self):
+        work.set_repo(self.add_worktree("work/gap-cccccc"))
+        self.assertIsNone(work.log_event("claim", "gap-cccccc", session="s1"))
+        self.assertFalse((self.root / "work" / "telemetry").exists())
+
+
+class TestExecutorFields(RepoTest):
+    def test_close_copies_claim_fields_into_closed(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--branch", "work/gap-cccccc",
+                      "--executor", "claude-agent", "--via", "work-batch", "--size", "S")
+        claim = work.item_claim("gap-cccccc")
+        self.assertEqual((claim["executor"], claim["via"], claim["size"]), ("claude-agent", "work-batch", "S"))
+        self.assertRegex(claim["claimed_at"], work.TS_RE)
+        # A worker closes the item in its own worktree: the claim is read from the main checkout.
+        wt = self.add_worktree("work/gap-cccccc")
+        env = {k: v for k, v in os.environ.items() if k != "WORK_SESSION"}
+        subprocess.run([sys.executable, str(Path(work.__file__)), "close", "gap-cccccc", "--evidence", "done in test",
+                        "--commit", "HEAD", "--model", "claude-opus-5-5"], cwd=wt, env={**env, "WORK_REPO": str(wt)},
+                       check=True, capture_output=True, text=True)
+        work.set_repo(wt)
+        closed = {i["id"]: i for i in self.items()}["gap-cccccc"]["closed"]
+        self.assertEqual({k: closed.get(k) for k in ("executor", "via", "size", "claimed_at", "model", "forced")},
+                         {"executor": "claude-agent", "via": "work-batch", "size": "S", "claimed_at": claim["claimed_at"],
+                          "model": "claude-opus-5-5", "forced": False})
+        self.assertRegex(closed["at_ts"], work.TS_RE)
+        self.assertEqual(work.validate(self.items()), [])
+        # The worker's close leaves the claim for the merge, and logs nothing.
+        self.assertTrue((self.root / ".roko" / "work-claims" / "gap-cccccc.json").exists())
+        self.assertEqual([r["event"] for r in self.events("s1")], ["claim"])
+
+    def test_release_records_its_reason(self):
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1", "--executor", "claude-agent",
+                      "--via", "work-next")
+        self.run_work("release", "gap-cccccc", "--reason", "blocked")
+        claim, release = self.events("s1")
+        self.assertEqual(work.check_event(release), [])
+        self.assertEqual((release["event"], release["reason"], release["executor"], release["via"]),
+                         ("release", "blocked", "claude-agent", "work-next"))
+        self.assertNotIn("size", release)  # the item has no size, and a field nobody gave is left out
+        self.assertEqual(release["claimed_at"], claim["claimed_at"])
+
+    def test_the_claim_size_defaults_to_the_items(self):
+        self.write("gap-cccccc", item("gap-cccccc", "C", severity="p3", anchors=["src/c.rs"], extra='size = "M"'))
+        self.commit("size C")
+        self.run_work("claim", "gap-cccccc", "--by", "t", "--session", "s1")
+        self.assertEqual(self.events("s1")[0]["size"], "M")
+
+    def test_sync_records_who_closed_an_item(self):
+        # A commit trailer closes C, which nobody claimed; a passed plan task closes B.
+        (self.root / "src" / "c.rs").write_text("fn fixed() {}\n")
+        self.commit("make c work\n\nCloses: gap-cccccc")
+        plan = self.root / "plans" / "p1"
+        plan.mkdir(parents=True)
+        (plan / "tasks.toml").write_text('[meta]\nplan = "p1"\n\n[[task]]\nid = "T1"\ncloses = ["bug-bbbbbb"]\n')
+        cp = self.root / ".roko" / "state" / "graph" / "p1"
+        cp.mkdir(parents=True)
+        (cp / "checkpoint.json").write_text(json.dumps(
+            {"run_id": "r1", "extensions": {"roko.gate.verdict@1": {"value": {"verdicts": {"T1": "passed"}}}}}))
+        closed, conflicts = work.cmd_sync(type("A", (), {"dry_run": False})(), quiet=True)
+        self.assertEqual((len(closed), conflicts), (2, []))
+        by_id = {i["id"]: i for i in self.items()}
+        self.assertEqual({k: by_id["gap-cccccc"]["closed"].get(k) for k in ("executor", "forced")},
+                         {"executor": "unknown", "forced": False})
+        self.assertEqual({k: by_id["bug-bbbbbb"]["closed"].get(k) for k in ("executor", "via", "run_id")},
+                         {"executor": "roko-plan", "via": "roko-plan", "run_id": "r1"})
+        rows = self.events("sync")
+        self.assertEqual(sorted((r["item"], r["event"], r["source"], r["executor"]) for r in rows),
+                         [("bug-bbbbbb", "closed", "reconciled", "roko-plan"), ("gap-cccccc", "closed", "reconciled", "unknown")])
+        self.assertEqual([e for r in rows for e in work.check_event(r)], [])
 
 
 if __name__ == "__main__":

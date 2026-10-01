@@ -21,10 +21,10 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 
 ## Harness Engineering
 
-- Lee, H., Chen, M., Gupta, A., & Hashimoto, T. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
-  *Grounds: Core thesis — 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. An agent reads its own scaffold history, proposes improvements, benchmarks them, and iterates. The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
+- Lee et al. (2026). Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
+  *Grounds: Core thesis — The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 points IMO math, at 4x fewer tokens. A coding-agent proposer reads earlier harness candidates' code, scores and execution traces, proposes new harnesses, evaluates them and iterates (§3). The foundational paper for Roko's approach. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
-- Pan, J., Lin, Z., & Hashimoto, T. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
+- Pan et al. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
   *Grounds: Natural-language scaffolds — scaffold logic as natural language specifications interpreted by an intelligent runtime. Cross-referenced in [06-self-learning-systems.md](./06-self-learning-systems.md).*
 
 - Kapoor, S. et al. (2026). HAL: A Holistic Agent Leaderboard. _ICLR_, 2026.
@@ -44,7 +44,7 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 
 ## Multi-Agent Orchestration
 
-- Anthropic (2024). Building Effective Agents. anthropic.com.
+- Schluntz & Zhang (2024). Building Effective Agents. anthropic.com.
   *Grounds: Composition over complexity — keep individual agents simple, compose through a controller. Directly influenced Roko's architecture: each agent role does one thing, the orchestrator composes them into pipelines.*
 
 ---
@@ -54,11 +54,9 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 - Chen, L., Zaharia, M., & Zou, J. (2023). FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance. arXiv:2305.05176.
   *Grounds: 16 T0 probes — cascade architectures can achieve up to 98% cost reduction while matching top-model quality. The key is intelligent routing. Grounds Roko's T0/T1/T2 cascade.*
 
-- Ong, I., Almahairi, A., & Manning, C.D. (2024). RouteLLM: Learning to Route LLMs with Preference Data. arXiv:2406.18665.
+- Ong et al. (2024). RouteLLM: Learning to Route LLMs with Preference Data. arXiv:2406.18665.
   *Grounds: Preference-based routing — learn routing decisions from preference data. Informs the CascadeRouter's training on historical task outcomes.*
 
-- Yoshida, S., Nishida, K., & Okazaki, N. (2024). System 1 to System 2 Distillation for Efficient Tool-Using Agents. arXiv:2407.xxxxx.
-  *Grounds: Dual-process agents — distilling System 2 (slow, deliberate) capabilities into System 1 (fast, automatic) operation. Directly grounds Roko's dual-process T0/T1/T2 architecture.*
 
 ---
 
@@ -80,7 +78,7 @@ The Roko thesis — "the scaffold IS the product" — is grounded in empirical e
 - Shahul Es, S. et al. (2024). RAGAS: Automated Evaluation of Retrieval Augmented Generation. _EACL_, 2024.
   *Grounds: RAG evaluation — three metrics (faithfulness, answer relevance, context relevance) for automated RAG evaluation without human annotations.*
 
-- Saad-Falcon, J. et al. (2024). ARES: An Automated Evaluation Framework for RAG Systems. _NAACL_, 2024.
+- Saad-Falcon, J. et al. (2024). ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems. _NAACL_, 2024.
   *Grounds: Statistical RAG evaluation — Prediction-Powered Inference provides statistically valid RAG evaluation from ~300 human labels with confidence intervals.*
 
 - Liu, X. et al. (2024). AgentBench: Evaluating LLMs as Agents. _ICLR_, 2024.

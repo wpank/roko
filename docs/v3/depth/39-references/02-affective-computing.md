@@ -101,10 +101,10 @@ Emotion-tagged retrieval outperforms non-emotional retrieval across three datase
 
 ## Surveys and Frameworks (2025)
 
-**[Anonymous, 2025]** *Intelligent Agents with Emotional Intelligence.* arXiv:2511.20657.
+**[Zall et al., 2025]** *Intelligent Agents with Emotional Intelligence.* arXiv:2511.20657.
 Emotional intelligence identified as architecturally vital for agent systems.
 
-**[Anonymous, 2025]** *Emotions in the Loop.* arXiv:2505.01542.
+**[Hegde & Jayalath, 2025]** *Emotions in the Loop.* arXiv:2505.01542.
 Affect integrated into interaction loops. Validates Daimon-in-the-loop design.
 
 **[Fabiano, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.

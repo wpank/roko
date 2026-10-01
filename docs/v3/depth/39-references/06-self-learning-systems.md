@@ -27,7 +27,7 @@ Code-as-action skill library; 3.3x more unique behaviors. Grounds EvoSkills and 
 ## Meta-Harness and Scaffold Self-Improvement
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-6x performance gap from scaffold changes alone. Core thesis for Roko's approach: the scaffold IS the product.
+The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. Core thesis for Roko's approach: the scaffold IS the product.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Scaffold logic as natural language specifications. Makes scaffold design inspectable and portable.
@@ -95,16 +95,16 @@ Bandit optimization for multi-agent system prompts.
 
 ## Multi-Level Reflection (2025)
 
-**[Anonymous, 2025]** *SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection.* EMNLP 2025. arXiv:2509.20562.
+**[Ge et al., 2025]** *SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection.* EMNLP 2025. arXiv:2509.20562.
 Multi-level reflection outperforms single-trajectory Reflexion. Error clustering extracts insight from failures.
 
-**[Anonymous, 2025]** *MAR: Multi-Agent Reflexion.* arXiv:2512.20845.
+**[Ozer et al., 2025]** *MAR: Multi-Agent Reflexion.* arXiv:2512.20845.
 Addresses Reflexion's single-agent limitations with multi-agent extension.
 
-**[Anonymous, 2025]** *Self-Evolving LLMs via Continual Instruction Tuning.* arXiv:2509.18133.
+**[Kang et al., 2025]** *Self-Evolving LLMs via Continual Instruction Tuning.* arXiv:2509.18133.
 Autonomous adaptation and cross-task knowledge integration. Maps to triple-loop learning.
 
-**[Anonymous, 2025]** *The Future of Continual Learning in the Era of Foundation Models.* arXiv:2506.03320.
+**[Bell et al., 2025]** *The Future of Continual Learning in the Era of Foundation Models.* arXiv:2506.03320.
 Validates NeuroStore's non-parametric approach to continual knowledge management.
 
 ---
@@ -120,11 +120,11 @@ Augment failed episodes rather than discarding them. Informs failure-based learn
 **[Bai et al., 2026]** *SkillZip: MDL Compression for Skill Libraries.* arXiv:2608.11079.
 Minimum Description Length compression prevents unbounded skill library growth. Target for EvoSkills pruning policy.
 
-**[Sakana AI, 2025]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.
+**[Zhang et al., 2025]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.
 Open-ended self-improvement through evolutionary architecture search.
 
 **[Liu & van der Schaar, 2025]** *Truly Self-Improving Agents Require Intrinsic Metacognitive Learning.* ICML 2025. arXiv:2506.05109.
-Intrinsic metacognition required for genuine self-improvement. Validates the meta-cognition step (Step 9: Daimon.assess()).
+Intrinsic metacognition required for genuine self-improvement. Motivates the meta-cognition step (Step 9: Daimon.assess()); it is a position paper, so this is Roko's mapping, not a validation.
 
 ---
 

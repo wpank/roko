@@ -8,12 +8,12 @@ severity = "p3"
 goal = "core"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "f99e45dba"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e1-verdict"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch.rs:3200", "crates/roko-cli/src/config_helpers.rs::is_role_enabled", "crates/roko-cli/src/graph_execution/plan_runner.rs::disabled_role_plan_set"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/config_helpers.rs::is_role_enabled", "crates/roko-cli/src/graph_execution/plan_runner.rs::disabled_role_plan_set"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

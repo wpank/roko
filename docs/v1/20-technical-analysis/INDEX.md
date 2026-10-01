@@ -171,7 +171,7 @@ All academic citations used across this topic's sub-documents:
 | Bodnar, C., et al. (2022). "Neural Sheaf Diffusion." arXiv:2202.04579. | 14 |
 | Zhang, L., Naitzat, G., & Lim, L.-H. (2018). "Tropical Geometry of Deep Neural Networks." *ICML 2018*. | 14 |
 | Tran, N. M., & Yu, J. (2019). "Product-Mix Auctions and Tropical Geometry." *MOR*, 44(4). | 14 |
-| Alfarra, M., et al. (2024). "Tropical Decision Boundaries Are Robust." arXiv:2402.00576. | 14 |
+| Pasque et al.. "Tropical Decision Boundaries for Neural Networks Are Robust Against Adversarial Attacks." arXiv:2402.00576. | 14 |
 | Gebhart, T., et al. (2023). "Knowledge Sheaves." *PMLR 206*. | 14 |
 
 ---

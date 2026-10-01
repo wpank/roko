@@ -105,7 +105,7 @@ in the final solution (the agent used the information), it advanced the task. If
 it was wasted work.
 
 > **Citation**: tmp/implementation-plans/modelrouting/12-advanced-patterns.md §K
-> (Task 2J.16) — "Per-step rewards provide 10x richer signal than final pass/fail."
+> (Task 2J.16) — "Step rewards capture each action's promise and progress toward the goal (§3.2)."
 
 ### 3.2 Gate Verdicts with Rung Information
 
@@ -226,8 +226,7 @@ process rewards outperformed majority voting by 8%.
 
 ### 7.2 AgentPRM (arXiv:2502.10325)
 
-Extended process rewards to agent tool-use settings. Per-step rewards provide 10x richer
-signal than final pass/fail. The key insight: not all tool calls contribute equally to
+Extended process rewards to agent tool-use settings. Step rewards capture each action's promise and progress toward the goal (§3.2). The key insight: not all tool calls contribute equally to
 the outcome. Scoring each call identifies which calls are productive vs. wasteful.
 
 ### 7.3 Self-Refine (Madaan et al. 2023)

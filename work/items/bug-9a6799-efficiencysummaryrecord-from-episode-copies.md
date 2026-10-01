@@ -2,14 +2,16 @@
 id = "bug-9a6799"
 kind = "bug"
 title = "EfficiencySummaryRecord::from_episode copies an unknown cost into efficiency-summaries.jsonl as 0"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/runtime_feedback"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-honestbench's report)"
 anchors = ["crates/roko-learn/src/runtime_feedback/records.rs", "crates/roko-learn/src/episode_logger.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-a445eb", "bug-ac5432"], 
 
 [[verify]]
 command = "grep -rqw 'fn efficiency_summaries_keep_an_unknown_cost_unknown' crates/roko-learn/src/ && cargo test -p roko-learn --lib efficiency_summaries_keep_an_unknown_cost_unknown"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including efficiency_summaries_keep_an_unknown_cost_unknown. Merged 3dfdef519."
 +++
 
 ## Problem
@@ -46,3 +53,4 @@ One settled record per attempt (epic spec-b7303f): the summaries feed cost repor
 ## Notes
 
 - bug-ac5432 (plan generation adds a $0 cost record beside the real one) can reuse `Episode::mark_cost_unknown` for its unknown costs.
+- Implemented on `work/bug-739dcc` at `9783d8de6`; cargo verification deferred to the batch check. `efficiency_summaries_keep_an_unknown_cost_unknown` (targeted `cargo test` passed). `EfficiencySummaryRecord.cost_usd` and `cost_usd_without_cache` are `Option<f64>`: null when `Episode::cost_known()` is false, so a sum skips them; summaries from efficiency events keep their cost. No Rust code sums them, and no Python or TypeScript reads `efficiency-summaries.jsonl`, so no reader needed changing.

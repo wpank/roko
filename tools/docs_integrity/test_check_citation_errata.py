@@ -83,8 +83,49 @@ class CitationErrataTests(unittest.TestCase):
             self.assertIn(w["class"], {"I0", "I1", "I2", "I3", "I4"}, w["key"])
             self.assertTrue(w["anchors"]["arxiv"] or w["anchors"]["titles"], w["key"])
 
-    def test_docs_v3_has_no_known_erratum(self):
-        self.assertEqual(cce.main(["docs/v3"]), 0)
+    def test_an_author_wrapped_onto_the_line_before_the_identifier_is_reported(self):
+        w = work(key="arxiv:2501.02684", anchors={"arxiv": ["2501.02684"], "titles": []}, bad={"fragments": ["Kaur et al."]})
+        text = '- **Kaur et al. (2025)** "Towards Decoding Developer Cognition in the Age of AI\n  Assistants," arXiv:2501.02684.\n'
+        self.assertEqual([f.line for f in self.run_md([w], text)], [1])
+
+    def run_prose(self, works, text):
+        errata = cce.Errata({"works": works})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "doc.md"
+            path.write_text(text, encoding="utf-8")
+            return cce.check_prose(path, "doc.md", errata)
+
+    def best_route(self):
+        return work(key="arxiv:2506.09781", **{"class": "I2"}, codes=[], anchors={"arxiv": ["2506.09781", "2506.22716"],
+                    "titles": []}, bad={"arxiv": ["2506.09781"],
+                                        "titles": ["BEST-Route: Bayesian Estimation via Subspace Testing for LLM Routing"]},
+                    correct=dict(work()["correct"], title="BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute",
+                                 arxiv="2506.22716", label="Ding et al."),
+                    prose={"names": ["BEST-Route"], "phrases": ["subspace profiles"]})
+
+    def test_prose_flags_a_phrase_only_in_a_section_that_names_the_work(self):
+        text = ("## Routers\n\n**BEST-Route** (Ding et al. 2025) characterizes models\nthrough probabilistic subspace "
+                "profiles.\n\n## Elsewhere\n\nSubspace profiles also appear in linear algebra.\n")
+        found = self.run_prose([self.best_route()], text)
+        self.assertEqual([f.line for f in found], [4])
+
+    def test_prose_flags_an_invented_title_in_title_case_but_not_a_description(self):
+        text = ("## BEST-Route\n\nBEST-Route: Bayesian Estimation via Subspace Testing for LLM Routing.\n"
+                "It is not about bayesian estimation via subspace testing for llm routing at all.\n")
+        self.assertEqual([f.line for f in self.run_prose([self.best_route()], text)], [3])
+
+    def test_the_prose_option_runs_both_checks(self):
+        manifest = {"works": [self.best_route()]}
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "m.json").write_text(json.dumps(manifest), encoding="utf-8")
+            doc = Path(tmp) / "doc.md"
+            doc.write_text("## BEST-Route\n\nIt uses subspace profiles.\n", encoding="utf-8")
+            args = ["--manifest", str(Path(tmp) / "m.json"), str(doc)]
+            self.assertEqual(cce.main(args), 0)
+            self.assertEqual(cce.main(["--prose"] + args), 1)
+
+    def test_docs_v3_and_v1_have_no_known_erratum_in_citations_or_prose(self):
+        self.assertEqual(cce.main(["--prose"]), 0)
 
 
 if __name__ == "__main__":

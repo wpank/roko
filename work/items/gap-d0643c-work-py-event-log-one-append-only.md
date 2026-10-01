@@ -2,14 +2,16 @@
 id = "gap-d0643c"
 kind = "gap"
 title = "work.py event log: one append-only events file per session under work/telemetry/events/"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "13c6418bf"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (A1, A2)"
 anchors = ["tools/work.py::cmd_claim", "tools/work.py::cmd_release", "tools/work.py::main", "tools/test_work.py", "work/telemetry/README.md"]
@@ -19,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'roko.work_event/1' tools/work.py && grep -qw 'def test_claim_and_release_append_events_to_the_session_file' tools/test_work.py && python3 tools/test_work.py -k test_claim_and_release_append_events_to_the_session_file"
+
+[closed]
+at = 2026-10-01
+at_ts = "2026-10-01T08:11:36Z"
+commit = "13c6418bf"
+by = "wk-gates"
+executor = "claude-agent"
+via = "work-batch"
+model = "claude-opus-5-5"
+forced = false
+evidence = "13c6418bf: claim and release append roko.work_event/1 rows to work/telemetry/events/<session>.jsonl in the main checkout (release before deleting the claim); new 'work.py event merged|post-verify|escape|intervention' with --merge-sha/--conflicts/--fixups/--rc/--caused-by; session from --session, $WORK_SESSION or the claimant; linked worktrees log nothing; no view reads the log; work/telemetry/README.md has the layout and schema. tools/test_work.py: claim+release give two valid rows in one session file, event merged carries the merge sha, a worktree logs nothing; the [[verify]] command passes."
 +++
 
 ## Problem

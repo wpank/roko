@@ -43,8 +43,7 @@ Performance
 - **End (recency):** Models attend second-most strongly to the last tokens.
   Information placed at the end is used well.
 - **Middle (degradation):** Information in the middle of long contexts is
-  largely ignored. Performance degrades over 30% when relevant information is
-  positioned mid-context.
+  largely ignored. For GPT-3.5-Turbo, accuracy with the relevant document mid-context fell below its closed-book accuracy (§1, §2.3).
 
 This is a **positional problem**, not a capacity problem. The same information
 the model ignores in position 10 of 20 might be used correctly in position 1

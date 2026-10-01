@@ -2,14 +2,16 @@
 id = "bug-739dcc"
 kind = "bug"
 title = "The Claude CLI adapter has no cancel path: dropping a run kills only the CLI process, and its tool subprocesses keep running"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-agent/claude_cli"]
 created = 2026-09-30
-updated = 2026-09-30
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "bf40f3269"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-watchdog's report, checked on work/spec-a0403b at d5546dfc7)"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["spec-a0403b"], supersedes = 
 
 [[verify]]
 command = "grep -rqw 'fn cancelling_a_claude_run_kills_its_tool_subprocesses' crates/roko-agent/src/ && cargo test -p roko-agent --lib cancelling_a_claude_run_kills_its_tool_subprocesses"
+
+[closed]
+at = 2026-10-01
+by = "coordinator (session 7622b882)"
+evidence = "Batch 20b gate on cad1a56e1 (MAIN bf40f3269 has the same crates): check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests roko-agent 2278, roko-cli 3261, roko-core 1956, roko-learn 1207, roko-gate 690, roko-std 227 and roko-cli bin 429 all pass, including cancelling_a_claude_run_kills_its_tool_subprocesses. Merged 3dfdef519 (work/bug-739dcc 1efb2fddb)."
 +++
 
 ## Problem
@@ -42,3 +49,7 @@ The spawn and drop handling in `claude_cli_agent.rs`, next to `set_process_group
 
 - [ ] Cancelling a Claude CLI run leaves no process of its group running.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-739dcc` at `8580f7a24`; cargo verification deferred to the batch check. `cancelling_a_claude_run_kills_its_tool_subprocesses` (targeted `cargo test` passed; with the guard disarmed it fails). `process::KillTreeOnDrop` (in `process/kill.rs`, beside `kill_tree`) is armed right after the spawn. Dropped while armed, it SIGTERMs the process group and the descendants it captured while the root lived, SIGKILLs them after `GRACE_SIGTERM_MS` from a detached thread, and unregisters the pid. The run disarms it after `kill_tree`, or once its output is drained; between reaping the root and draining, it signals only the group. Not done: a dropped run's heartbeat task keeps running (its `JoinHandle` is dropped, not aborted), and roko-gate's private `ProcessGroupGuard` (SIGKILL only) could reuse the new guard.

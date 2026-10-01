@@ -216,13 +216,13 @@ Brief annotation: Long-term memory bank with Ebbinghaus-inspired forgetting. Val
 **[Xiong et al., 2025]** *How Memory Management Impacts LLM Agents: An Empirical Study of Experience-Following Behavior.* arXiv:2505.16067.
 Brief annotation: Agent memory degrades without active maintenance. Motivates the Curator cycle.
 
-**[Liu et al., 2025]** *Memory in the Age of AI Agents: A Survey.* arXiv:2512.13564.
+**[Hu et al., 2025]** *Memory in the Age of AI Agents: A Survey.* arXiv:2512.13564.
 Brief annotation: Taxonomy of factual, experiential, and working memory for agents. Validates NeuroStore knowledge types.
 
-**[Wang et al., 2025]** *Rethinking Memory in LLM-based Agents.* arXiv:2505.00675.
+**[Du et al., 2025]** *Rethinking Memory in LLM-based Agents.* arXiv:2505.00675.
 Brief annotation: Six memory operations: Consolidation, Updating, Indexing, Forgetting, Retrieval, Condensation.
 
-**[Anonymous, 2026]** *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers.* arXiv:2603.07670.
+**[Du, 2026]** *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers.* arXiv:2603.07670.
 Brief annotation: Write-manage-read formalization with five mechanism families for agent memory.
 
 **[Honda et al., 2025]** *Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture.* HAI 2025.
@@ -231,10 +231,10 @@ Brief annotation: ACT-R-inspired decay validates Ebbinghaus-based knowledge half
 **[Bartlett, 1932]** *Remembering: A Study in Experimental and Social Psychology.* Cambridge University Press.
 Brief annotation: Schema theory -- memories are reconstructive, not reproductive. Grounds schema-based knowledge representation.
 
-**[Anonymous, 2025]** *Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents.* arXiv:2502.06975.
+**[Pink et al., 2025]** *Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents.* arXiv:2502.06975.
 Brief annotation: Episodic memory (event-specific recollection) is required for long-horizon agents. Validates the Episode knowledge type.
 
-**[Anonymous, 2026]** *Continuum Memory Architectures for Long-Horizon Agents.* arXiv:2601.09913.
+**[Logan, 2026]** *Continuum Memory Architectures for Long-Horizon Agents.* arXiv:2601.09913.
 Brief annotation: Memory architecture for extended agent execution, validating tiered persistence.
 
 ---
@@ -301,10 +301,10 @@ Brief annotation: Sleep processes emotional memories. Grounds affect regulation 
 **[Huang et al., 2024b]** *Emotional RAG.* arXiv:2410.23041.
 Brief annotation: Emotion-aware retrieval-augmented generation. Informs affect-modulated context retrieval.
 
-**[Anonymous, 2025]** *Intelligent Agents with Emotional Intelligence: Current Trends, Challenges, and Future Prospects.* arXiv:2511.20657.
+**[Zall et al., 2025]** *Intelligent Agents with Emotional Intelligence: Current Trends, Challenges, and Future Prospects.* arXiv:2511.20657.
 Brief annotation: Survey identifying emotional intelligence as architecturally vital for agent systems.
 
-**[Anonymous, 2025]** *Emotions in the Loop: A Survey of Affective Computing for Emotional Support.* arXiv:2505.01542.
+**[Hegde & Jayalath, 2025]** *Emotions in the Loop: A Survey of Affective Computing for Emotional Support.* arXiv:2505.01542.
 Brief annotation: Comprehensive survey of affect integrated into interaction loops. Validates Daimon-in-the-loop design.
 
 **[Fabiano, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.
@@ -335,7 +335,7 @@ Brief annotation: Compact world models for planning in imagination. Foundational
 **[Lin et al., 2025]** *Sleep-time Compute: Beyond Inference Scaling at Test-Time.* arXiv:2504.13171.
 Brief annotation: Offline compute during idle periods improves test-time performance. Direct validation of the Dreams subsystem.
 
-**[Anonymous, 2024]** *Wake-Sleep Consolidated Learning.* arXiv:2401.08623.
+**[Sorrenti et al., 2024]** *Wake-Sleep Consolidated Learning.* arXiv:2401.08623.
 Brief annotation: Two-phase learning alternating online and offline consolidation.
 
 **[Wagner et al., 2004]** *Sleep Inspires Insight.* Nature, 427, 352--355.
@@ -365,13 +365,13 @@ Brief annotation: Two-stage sleep paradigm: Memory Consolidation + Dreaming. Val
 **[Tutuncuoglu, 2025]** *NeuroDream: A Sleep-Inspired Memory Consolidation Framework for Artificial Neural Networks.* SSRN:5377250.
 Brief annotation: 38% forgetting reduction, 17.6% zero-shot transfer increase. Quantitative validation.
 
-**[Anonymous, 2025]** *LightMem: Lightweight and Efficient Memory-Augmented Generation.* arXiv:2510.18866.
-Brief annotation: 10.9% accuracy gain, 117x token reduction via offline consolidation.
+**[Fang et al., 2025]** *LightMem: Lightweight and Efficient Memory-Augmented Generation.* arXiv:2510.18866.
+Brief annotation: Up to 10.9% accuracy gain and up to 117x fewer tokens in its v1 abstract (later versions report up to 7.7%/29.3% and 106x/117x online), with consolidation moved offline into a sleep-time update (§3.3).
 
-**[Anonymous, 2025]** *SleepGate: Learning to Forget -- Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in LLMs.* arXiv:2603.14517.
+**[Xie, 2025]** *Learning to Forget: Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in Large Language Models.* arXiv:2603.14517.
 Brief annotation: Learned active forgetting resolves proactive interference. Validates the Curator cycle.
 
-**[Anonymous, 2025]** *CosmoCore: Affective Dream-Replay Reinforcement Learning for Code Generation.* arXiv:2510.18895.
+**[Ravindran, 2025]** *CosmoCore: Affective Dream-Replay Reinforcement Learning for Code Generation.* arXiv:2510.18895.
 Brief annotation: Combines affective states with dream-replay RL. Validates the Daimon-Dreams intersection.
 
 **[Ye et al., 2026]** *Auto-Dreamer.* arXiv:2605.20616.
@@ -381,9 +381,9 @@ Brief annotation: Learned consolidator using CLS-inspired fast/slow separation. 
 Brief annotation: Parametric distillation during offline consolidation phases. Informs schema extraction.
 
 **[Lee et al., 2026]** *Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference.* arXiv:2605.26099.
-Brief annotation: Offline recurrence improves knowledge integration. Further validates the dream approach.
+Brief annotation: Offline recurrent passes consolidate context into fast weights; longer sleep improves accuracy (§5, §6). Further validates the dream approach.
 
-**[TiMem, 2026]** *TiMem: Temporal Hierarchical Memory for Agent Consolidation.* arXiv:2601.02845.
+**[Li et al., 2026]** *TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents.* arXiv:2601.02845.
 Brief annotation: Temporal hierarchical consolidation architecture. Informs tiered dream scheduling.
 
 **[Phasor Agents, 2026]** *Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning.* arXiv:2601.04362.
@@ -429,13 +429,13 @@ Brief annotation: Community as shared vulnerability. Philosophical grounding for
 **[Esposito, 2011]** *Immunitas: The Protection and Negation of Life.* Polity.
 Brief annotation: Immunity as community protection. Grounds the immune Graph concept.
 
-**[Anonymous, 2025]** *Emergence in Multi-Agent Language Models: Emergent Coordination.* arXiv:2510.05174.
+**[Riedl, 2025]** *Emergent Coordination in Multi-Agent Language Models.* arXiv:2510.05174.
 Brief annotation: Information-theoretic framework measuring dynamical emergence in multi-agent LLM systems. Validates Collective architecture.
 
-**[Anonymous, 2025]** *Multi-Agent Collaboration Mechanisms: A Survey of LLMs.* arXiv:2501.06322.
+**[Tran et al., 2025]** *Multi-Agent Collaboration Mechanisms: A Survey of LLMs.* arXiv:2501.06322.
 Brief annotation: Survey covering role-based division, debate-style refinement, and stigmergic coordination.
 
-**[Anonymous, 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
+**[Boldini et al., 2024]** *Stigmergy: From Mathematical Modelling to Control.* Proceedings of the Royal Society A.
 Brief annotation: PDE-based mathematical framework treating swarms as fluids. Rigorous foundation for the Pheromone Field.
 
 **[Salman et al., 2024]** *Automatic Design of Stigmergy-Based Behaviours for Robot Swarms.* Communications Engineering, Nature.
@@ -444,13 +444,13 @@ Brief annotation: Automatic design of stigmergic collective behaviors, validated
 **[Starominski-Uehara, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
 Brief annotation: Human citation patterns follow stigmergic dynamics. Validates digital stigmergy beyond biology.
 
-**[Anonymous, 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
+**[Parfenova et al., 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
 Brief annotation: LLM groups develop asymmetric influence patterns without explicit role prompting.
 
 **[Sudhakar, 2025]** *Multi-Agent Language Models: Advancing Cooperation, Coordination, and Adaptation.* arXiv:2506.09331.
 Brief annotation: Comprehensive multi-agent LLM cooperation survey.
 
-**[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
+**[La Malfa et al., 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 Brief annotation: Systematic failures in implicit LLM coordination. Motivates explicit coordination mechanisms.
 
 **[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning in Multi-Agent LLMs.* arXiv:2507.08616.
@@ -463,13 +463,13 @@ Brief annotation: Benchmark for multi-agent LLM coordination abilities.
 Brief annotation: Multi-agent consensus with transactive reasoning. Applicable to multi-agent decisions.
 
 **[Zou et al., 2025]** *Latent Collaboration in Multi-Agent Systems.* arXiv:2511.20639. ICML 2026 Spotlight.
-Brief annotation: Latent-space communication achieves 4x speed, 14.6% accuracy gain. Frontier for pheromone communication.
+Brief annotation: Latent-space communication achieves up to 14.6% higher accuracy, 4-4.3x faster inference. Frontier for pheromone communication.
 
 **[Yang et al., 2026]** *FederatedSkill: Federated Learning for Agentic Skill Evolution.* arXiv:2606.03143.
-Brief annotation: 44.4% improvement via semantic skill diffs. Informs cross-workspace knowledge transfer.
+Brief annotation: Up to 44.4% higher success than self-evolving baselines via semantic skill diffs. Informs cross-workspace knowledge transfer.
 
 **[Nechepurenko & Shuvalov, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
-Brief annotation: 41--87% of failures are coordination, not capability. Validates explicit coordination architecture.
+Brief annotation: Multi-agent systems fail in production at 41--87%, mostly from coordination defects (§1, citing Cemri et al. 2025). Validates explicit coordination architecture.
 
 ---
 
@@ -526,7 +526,7 @@ Brief annotation: Discovery of quorum sensing in bacteria. Foundational for thre
 **[Miller & Bassler, 2001]** *Quorum Sensing in Bacteria.* Annual Review of Microbiology, 55, 165--199.
 Brief annotation: Comprehensive quorum sensing review. Grounds threshold-based coordination in agent groups.
 
-**[Anonymous, 2024]** *Enhancing Radioactive Environment Exploration with Bio-Inspired Swarm Robotics.* Robotics and Autonomous Systems.
+**[Ardiny & Beigzadeh, 2024]** *Enhancing Radioactive Environment Exploration with Bio-Inspired Swarm Robotics.* Robotics and Autonomous Systems.
 Brief annotation: Stigmergy outperforms random exploration in hazardous environments.
 
 **[Lacosse et al., 2026]** *Emerging Human-like Strategies for Semantic Memory Foraging in Large Language Models.* arXiv:2603.01822.
@@ -549,7 +549,7 @@ Brief annotation: Learning from autonomous experience. Grounds experience extrac
 Brief annotation: Open-ended agent with skill library. Grounds EvoSkills and persistent skill accumulation.
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: 6x performance gap from scaffold changes alone. Core thesis for Roko's approach.
+Brief annotation: The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. Core thesis for Roko's approach.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic as natural language specifications. Informs declarative scaffold design.
@@ -593,16 +593,16 @@ Brief annotation: Bandit-based model routing in production LLM gateways. Validat
 **[Hong et al., 2026]** *MASPOB: Bandit-Based Prompt Optimization for Multi-Agent Systems with Graph Neural Networks.* Working paper. arXiv:2603.02630.
 Brief annotation: Bandit optimization for multi-agent system prompts.
 
-**[Anonymous, 2025]** *SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection.* EMNLP 2025. arXiv:2509.20562.
+**[Ge et al., 2025]** *SAMULE: Self-Learning Agents Enhanced by Multi-level Reflection.* EMNLP 2025. arXiv:2509.20562.
 Brief annotation: Multi-level reflection outperforms single-trajectory Reflexion. Error clustering extracts insight from failures.
 
-**[Anonymous, 2025]** *MAR: Multi-Agent Reflexion Improves Reasoning Abilities in LLMs.* arXiv:2512.20845.
+**[Ozer et al., 2025]** *MAR: Multi-Agent Reflexion Improves Reasoning Abilities in LLMs.* arXiv:2512.20845.
 Brief annotation: Addresses Reflexion's single-agent limitations with multi-agent extension.
 
-**[Anonymous, 2025]** *Self-Evolving LLMs via Continual Instruction Tuning.* arXiv:2509.18133.
+**[Kang et al., 2025]** *Self-Evolving LLMs via Continual Instruction Tuning.* arXiv:2509.18133.
 Brief annotation: Autonomous adaptation, cross-task knowledge integration, and sustained performance. Maps to triple-loop learning.
 
-**[Anonymous, 2025]** *The Future of Continual Learning in the Era of Foundation Models.* arXiv:2506.03320.
+**[Bell et al., 2025]** *The Future of Continual Learning in the Era of Foundation Models.* arXiv:2506.03320.
 Brief annotation: Survey of continual learning for foundation models. Validates NeuroStore's non-parametric approach.
 
 **[GRASP, 2026]** *GRASP: Gated Regression-Aware Skill Proposer for Self-Improving LLM Agents.* arXiv:2605.29668.
@@ -614,7 +614,7 @@ Brief annotation: Augment failed episodes rather than discarding them. Informs f
 **[Bai et al., 2026]** *SkillZip: MDL Compression for Skill Libraries.* arXiv:2608.11079.
 Brief annotation: MDL compression prevents unbounded skill library growth.
 
-**[Sakana AI, 2025]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.
+**[Zhang et al., 2025]** *Darwin Godel Machine: Open-Ended Evolution of Self-Improving Agents.* arXiv:2505.22954.
 Brief annotation: Open-ended self-improvement through evolutionary architecture search.
 
 **[Liu & van der Schaar, 2025]** *Truly Self-Improving Agents Require Intrinsic Metacognitive Learning.* ICML 2025. arXiv:2506.05109.
@@ -763,10 +763,10 @@ Brief annotation: Conservative policy update constraints. Informs bounded policy
 **[Alshiekh et al., 2018]** *Safe Reinforcement Learning via Shielding.* AAAI 2018. arXiv:1708.08611.
 Brief annotation: Runtime safety shields overriding unsafe actions. Grounds the pre/post safety checks.
 
-**[Anonymous, 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624.
+**[Dalrymple et al., 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624.
 Brief annotation: World model + safety specification + verifier = quantitative safety guarantees. Maps to NeuroStore + Policy + Gate.
 
-**[Anonymous, 2025]** *Model Checking Deep Neural Networks.* Frontiers in Computer Science.
+**[Sbai, 2025]** *Model Checking Deep Neural Networks.* Frontiers in Computer Science.
 Brief annotation: Temporal logic verification of network behavior.
 
 **[Odersky et al., 2026]** *Tracking Capabilities for Safer Agents.* arXiv:2603.00991. Best Paper ACM CAIS 2026.
@@ -830,7 +830,7 @@ Brief annotation: Streaming adaptation for continuous knowledge ingestion.
 **[Malkov & Yashunin, 2020]** *Efficient and Robust Approximate Nearest Neighbor using Hierarchical Navigable Small World Graphs.* IEEE TPAMI 2020.
 Brief annotation: HNSW search infrastructure for billion-scale vectors.
 
-**[Zhang et al., 2023]** *SPFresh: Incremental In-Place Update for Billion-Scale Vector Search.* SIGMOD 2023.
+**[Xu et al., 2023]** *SPFresh: Incremental In-Place Update for Billion-Scale Vector Search.* SIGMOD 2023.
 Brief annotation: Incremental index updates for continuous modification.
 
 **[Plate, 1994]** *Distributed Representations and Nested Compositional Structure.* PhD Dissertation, University of Toronto.
@@ -845,13 +845,13 @@ Brief annotation: Gradient-descent-based encoder learning bridges fixed and lear
 **[Arbore et al., 2024]** *HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing.* arXiv:2410.15179.
 Brief annotation: Unified CPU/GPU/FPGA HDC execution model.
 
-**[Anonymous, 2025]** *Hyperdimensional Computing in Biomedical Sciences.* PMC review.
+**[Cumbo & Chicco, 2025]** *Hyperdimensional Computing in Biomedical Sciences.* PMC review.
 Brief annotation: Production HDC deployments validating practical viability.
 
 **[Anonymous, 2025]** *Optimal Hyperdimensional Representation for Learning and Cognitive Computation.* OpenReview.
 Brief annotation: Theoretical optimal HDC representations. Informs the 10,240-bit dimensionality.
 
-**[Anonymous, 2025]** *The Hyperdimensional Transform for Distributional Modeling.* Neural Computing and Applications.
+**[Dewulf et al., 2025]** *The Hyperdimensional Transform for Distributional Modeling.* Neural Computing and Applications.
 Brief annotation: HDC for distributional modeling, regression, and classification.
 
 ---
@@ -974,7 +974,7 @@ Brief annotation: Enhanced GAT with persistent homology for inter-feature depend
 **[Yao et al., 2025]** *Change Point Detection in Financial Market Using Topological Data Analysis.* Systems, 13(10), 875.
 Brief annotation: Takens embedding + sliding window for topological change detection.
 
-**[Anonymous, 2025]** *Machine Learning of Time Series Using Persistent Homology.* Scientific Reports, Nature.
+**[Ichinomiya, 2025]** *Machine Learning of Time Series Using Persistent Homology.* Scientific Reports, Nature.
 Brief annotation: ML directly on persistent homology representations of time series.
 
 ---
@@ -1046,7 +1046,7 @@ Brief annotation: Self-producing systems. Agents are autopoietic -- they produce
 ## 14 -- Agent Harnesses and Tool Use
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 points IMO math, 4x fewer tokens.
+Brief annotation: The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. +7.7 points text classification, +4.7 points IMO math, 4x fewer tokens.
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic as natural language specifications interpreted by an intelligent runtime.
@@ -1070,7 +1070,7 @@ Brief annotation: Cascade architectures achieve up to 98% cost reduction. Ground
 Brief annotation: Preference-based routing. Informs CascadeRouter training on task outcomes.
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-Brief annotation: 9-step cognitive pipeline: perceive, retrieve, reason, act, learn.
+Brief annotation: Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's.
 
 **[Jimenez et al., 2024]** *SWE-bench: Can Language Models Resolve Real-World GitHub Issues?* ICLR 2024.
 Brief annotation: 2,294 real GitHub issues as gold standard coding agent benchmark.
@@ -1097,9 +1097,12 @@ Brief annotation: Tree-structured deliberate reasoning for complex problems.
 Brief annotation: Efficient tool selection from large toolsets.
 
 **[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
-Brief annotation: 48.5% latency reduction via speculative tool execution.
+Brief annotation: 48.5% shorter average task completion time via speculative tool execution (v1 abstract; 43.5% in the current version).
 
-**[Anonymous, 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
+**[Zhai et al., 2026]** *ToolCaching: Towards Efficient Caching for LLM Tool-calling.* arXiv:2601.15335.
+Brief annotation: Up to 11% higher cache hit ratio and 34% lower latency than standard cache policies.
+
+**[Zhang et al., 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
 Brief annotation: 50.31% cost reduction via plan-level caching.
 
 **[Red Hat, 2025]** *Tool RAG: Next Breakthrough in Scalable AI Agents.* 2025.
@@ -1203,7 +1206,7 @@ Brief annotation: Prediction error learning. Simplest form driving T0 probes and
 **[Shafiei et al., 2025]** *Distributionally Robust Free Energy Principle for Decision-Making.* Nature Communications, 17, 707.
 Brief annotation: DR-FREE model -- robust active inference under model uncertainty. Agents complete tasks when SOTA fails.
 
-**[Anonymous, 2024]** *Synthetic Active Inference Agents, Part II: Variational Message Updates.* arXiv:2306.02733.
+**[van de Laar et al., 2024]** *Synthetic Active Inference Agents, Part II: Variational Message Updates.* arXiv:2306.02733.
 Brief annotation: Message passing on Forney-style Factor Graphs for scalable active inference.
 
 **[Raffa & Acciai, 2024]** *Free Energy Principle and Active Inference in Neural Language Models.* CEUR-WS Vol-3923.
@@ -1286,10 +1289,10 @@ Brief annotation: Distributed consensus via cortical columns. Grounds multi-agen
 **[Clay, Leadholm & Hawkins, 2024]** *The Thousand Brains Project.* arXiv.
 Brief annotation: First Thousand Brains Theory implementation with learning modules and voting.
 
-**[Anonymous, 2025]** *Emergent Coordination in Multi-Agent Language Models.* arXiv:2510.05174.
+**[Riedl, 2025]** *Emergent Coordination in Multi-Agent Language Models.* arXiv:2510.05174.
 Brief annotation: Information-theoretic emergence measurement. Validates Collective architecture.
 
-**[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
+**[La Malfa et al., 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 Brief annotation: LLMs fail at implicit coordination. Motivates explicit Pheromone Field and Agent Mesh.
 
 ---
@@ -1328,7 +1331,7 @@ Brief annotation: Legal analysis of trust and liability in autonomous agent syst
 ## 20 -- Cognitive Architectures
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-Brief annotation: 9-step cognitive pipeline. Roko's universal loop extends CoALA with verification and meta-cognition.
+Brief annotation: Decision cycle of planning then execution over modular memory (§4.6); the 9-step list is Roko's own. Roko's universal loop extends CoALA with verification and meta-cognition.
 
 **[Sumers et al., 2024]** *Cognitive Architectures for Language Agents.* Transactions on Machine Learning Research.
 Brief annotation: Extended CoALA treatment with updated cognitive architecture taxonomy.
@@ -1357,7 +1360,7 @@ Brief annotation: Context window as cognitive workspace with read/write/evict op
 **[Fountas et al., 2025]** *EM-LLM: Human-Inspired Episodic Memory for Infinite Context LLMs.* ICLR 2025. arXiv:2407.09450.
 Brief annotation: Episodic memory enabling infinite effective context through retrieval.
 
-**[Anonymous, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
+**[Abou Ali & Dornaika, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
 Brief annotation: Six-module taxonomy validates Roko's modular architecture.
 
 **[Wu et al., 2025]** *Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models for Manufacturing Decision-Making.* Neurosymbolic Artificial Intelligence (SAGE Publications).
@@ -1406,7 +1409,7 @@ Brief annotation: Truthful revelation in teams. Subsystems truthfully reveal con
 **[Milgrom, 2004]** *Putting Auction Theory to Work.* Cambridge University Press.
 Brief annotation: Comprehensive applied auction theory. Foundation for efficient attention auction implementation.
 
-**[Duetting et al., 2024]** *Mechanism Design for LLMs.* ACM WWW Best Paper 2024. arXiv:2310.10826.
+**[Duetting et al., 2024]** *Mechanism Design for Large Language Models.* ACM WWW Best Paper 2024. arXiv:2310.10826.
 Brief annotation: Token auction model for multi-LLM output generation. Extends VCG to token granularity.
 
 **[Nisan et al., 2007]** *Algorithmic Game Theory.* Cambridge University Press.
@@ -1436,13 +1439,13 @@ Brief annotation: Institutional structures minimize transaction costs. Agent Mes
 **[Bakos & Brynjolfsson, 1999]** *Bundling Information Goods.* Management Science.
 Brief annotation: Economics of bundling information goods. Informs knowledge bundle design.
 
-**[Agent Exchange (AEX), 2025]** *Agent Exchange: Shaping the Future of AI Agent Economics.* arXiv:2507.03904.
+**[Yang et al., 2025]** *Agent Exchange: Shaping the Future of AI Agent Economics.* arXiv:2507.03904.
 Brief annotation: RTB-inspired auction engine for agent task allocation. Informs agent marketplace design.
 
 **[Tacchetti et al., 2024]** *Deep mechanism design: Learning social and economic policies for human benefit.* PNAS 2024.
 Brief annotation: RL-trained neural networks create desirable mechanisms. Validates learned allocation mechanisms.
 
-**[Anonymous, 2024]** *Automated Mechanism Design Survey.* ACM SIGecom Exchanges, 22(2).
+**[Curry et al., 2024]** *Automated Mechanism Design Survey.* ACM SIGecom Exchanges, 22(2).
 Brief annotation: Comprehensive survey of differentiable economics and neural auction design.
 
 **[Zeng et al., 2025]** *Regularized Proportional Fairness Mechanism for Resource Allocation Without Money.* ICLR 2025. arXiv:2501.01111.
@@ -1566,19 +1569,19 @@ This section collects ~60 cross-domain papers from the 2024--2025 research front
 
 **[An, 2025]** *Cognitive Workspace.* arXiv:2508.13171. (See 20.)
 
-**[Anonymous, 2025]** *Episodic Memory Position Paper.* arXiv:2502.06975. (See 01.)
+**[Pink et al., 2025]** *Episodic Memory Position Paper.* arXiv:2502.06975. (See 01.)
 
-**[Anonymous, 2025]** *Emergent Coordination.* arXiv:2510.05174. (See 04.)
+**[Riedl, 2025]** *Emergent Coordination.* arXiv:2510.05174. (See 04.)
 
-**[Anonymous, 2025]** *Emergent Convergence.* arXiv:2512.00047. (See 04.)
+**[Parfenova et al., 2025]** *Emergent Convergence.* arXiv:2512.00047. (See 04.)
 
 **[Sudhakar, 2025]** *Multi-Agent Language Models Survey.* arXiv:2506.09331. (See 04.)
 
-**[Anonymous, 2025]** *LLMs Miss Multi-Agent Mark.* arXiv:2505.21298. (See 04.)
+**[La Malfa et al., 2025]** *LLMs Miss Multi-Agent Mark.* arXiv:2505.21298. (See 04.)
 
 **[Groetschla et al., 2025]** *AgentsNet.* arXiv:2507.08616. (See 04.)
 
-**[Anonymous, 2025]** *Multi-Agent Collaboration Mechanisms.* arXiv:2501.06322. (See 04.)
+**[Tran et al., 2025]** *Multi-Agent Collaboration Mechanisms.* arXiv:2501.06322. (See 04.)
 
 **[Agashe et al., 2025]** *LLM-Coordination.* NAACL 2025. (See 04.)
 
@@ -1606,35 +1609,35 @@ This section collects ~60 cross-domain papers from the 2024--2025 research front
 
 **[Prakki, 2024]** *Active Inference for Self-Organizing Multi-LLM Systems: A Bayesian Thermodynamic Approach to Adaptation.* arXiv:2412.10425. (See 16.)
 
-**[Anonymous, 2024]** *Synthetic Active Inference Agents Part II.* arXiv:2306.02733. (See 16.)
+**[van de Laar et al., 2024]** *Synthetic Active Inference Agents Part II.* arXiv:2306.02733. (See 16.)
 
 **[Anonymous, 2024]** *FEP in Neural Language Models.* CEUR-WS. (See 16.)
 
-**[Anonymous, 2025]** *Agents with Emotional Intelligence.* arXiv:2511.20657. (See 02.)
+**[Zall et al., 2025]** *Agents with Emotional Intelligence.* arXiv:2511.20657. (See 02.)
 
-**[Anonymous, 2025]** *Emotions in the Loop.* arXiv:2505.01542. (See 02.)
+**[Hegde & Jayalath, 2025]** *Emotions in the Loop.* arXiv:2505.01542. (See 02.)
 
-**[Anonymous, 2025]** *CosmoCore.* arXiv:2510.18895. (See 03.)
+**[Ravindran, 2025]** *CosmoCore.* arXiv:2510.18895. (See 03.)
 
 **[Fabiano, 2025]** *Affective Privacy Regulations.* arXiv:2509.20153. (See 02.)
 
-**[Liu et al., 2025]** *Memory in the Age of AI Agents.* arXiv:2512.13564. (See 01.)
+**[Hu et al., 2025]** *Memory in the Age of AI Agents.* arXiv:2512.13564. (See 01.)
 
-**[Wang et al., 2025]** *Rethinking Memory in LLM Agents.* arXiv:2505.00675. (See 01.)
+**[Du et al., 2025]** *Rethinking Memory in LLM Agents.* arXiv:2505.00675. (See 01.)
 
-**[Anonymous, 2026]** *Memory for Autonomous LLM Agents.* arXiv:2603.07670. (See 01.)
+**[Du, 2026]** *Memory for Autonomous LLM Agents.* arXiv:2603.07670. (See 01.)
 
-**[Anonymous, 2025]** *Language Models Need Sleep.* OpenReview. (See 03.)
+**[Behrouz et al., 2025]** *Language Models Need Sleep.* OpenReview. (See 03.)
 
 **[Tutuncuoglu, 2025]** *NeuroDream.* SSRN:5377250. (See 03.)
 
-**[Anonymous, 2025]** *LightMem.* arXiv:2510.18866. (See 03.)
+**[Fang et al., 2025]** *LightMem.* arXiv:2510.18866. (See 03.)
 
-**[Anonymous, 2025]** *SleepGate.* arXiv:2603.14517. (See 03.)
+**[Xie, 2025]** *SleepGate.* arXiv:2603.14517. (See 03.)
 
 **[Honda et al., 2025]** *Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture.* HAI 2025. (See 01.)
 
-**[Anonymous, 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624. (See 08.)
+**[Dalrymple et al., 2024]** *Towards Guaranteed Safe AI.* arXiv:2405.06624. (See 08.)
 
 **[Sbai, 2025]** *Model Checking DNNs.* Frontiers in CS. (See 08.)
 
@@ -1654,7 +1657,7 @@ This section collects ~60 cross-domain papers from the 2024--2025 research front
 
 **[AEX, 2025]** *Agent Exchange.* arXiv:2507.03904. (See 21.)
 
-**[Duetting et al., 2024]** *Mechanism Design for LLMs.* WWW Best Paper. (See 21.)
+**[Duetting et al., 2024]** *Mechanism Design for Large Language Models.* WWW Best Paper. (See 21.)
 
 **[Tacchetti et al., 2024]** *Deep mechanism design: Learning social and economic policies for human benefit.* PNAS. (See 21.)
 
@@ -1662,11 +1665,11 @@ This section collects ~60 cross-domain papers from the 2024--2025 research front
 
 **[Anonymous, 2025]** *SAMULE.* EMNLP 2025. (See 06.)
 
-**[Anonymous, 2025]** *MAR.* arXiv:2512.20845. (See 06.)
+**[Ozer et al., 2025]** *MAR.* arXiv:2512.20845. (See 06.)
 
-**[Anonymous, 2025]** *Self-Evolving LLMs.* arXiv:2509.18133. (See 06.)
+**[Kang et al., 2025]** *Self-Evolving LLMs.* arXiv:2509.18133. (See 06.)
 
-**[Anonymous, 2025]** *Continual Learning Survey.* arXiv:2506.03320. (See 06.)
+**[Bell et al., 2025]** *Continual Learning Survey.* arXiv:2506.03320. (See 06.)
 
 ---
 
@@ -1713,7 +1716,7 @@ Brief annotation: Organizational sensemaking theory. Informs agent interpretatio
 New section covering the 2026 harness engineering research wave.
 
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
-Brief annotation: Core thesis paper. 6x performance gap from scaffold changes alone. Agent reads its own scaffold history, proposes improvements, benchmarks them, and iterates. (See also 06, 14.)
+Brief annotation: Core thesis paper. The 6x harness gap its §1 quotes is SWE-bench Mobile's result (Tian et al. 2026), not its own. A coding-agent proposer reads the code, scores and execution traces of earlier harness candidates from a filesystem, proposes new harnesses, evaluates them and iterates (§3). (See also 06, 14.)
 
 **[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Brief annotation: Scaffold logic expressed as natural language specifications interpreted by an intelligent runtime.
@@ -1785,7 +1788,7 @@ Brief annotation: Statistically valid RAG evaluation from ~300 human labels.
 **[Gibson, 1979]** *The Ecological Approach to Visual Perception.* Houghton Mifflin.
 Brief annotation: Affordance theory. Informs agent-environment interaction evaluation.
 
-**[Anonymous, 2025]** *AIRTBench: Measuring Autonomous AI Red Teaming.* arXiv:2506.14682.
+**[Dawson et al., 2025]** *AIRTBench: Measuring Autonomous AI Red Teaming.* arXiv:2506.14682.
 Brief annotation: Benchmark for autonomous AI red teaming capabilities.
 
 ---
@@ -1799,7 +1802,7 @@ Brief annotation: Step-level verification outperforms outcome-only verification.
 Brief annotation: Verification must exceed generation for self-improvement. (See 17.)
 
 **[Xi et al., 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
-Brief annotation: Continuous progress signals via TD estimation + GAE. 8x compute efficiency for verification. Target for gate upgrade.
+Brief annotation: Continuous progress signals via TD estimation + GAE. over 8x more compute-efficient than baseline reward models (§4.2). Target for gate upgrade.
 
 **[Agrawal et al., 2026]** *GEPA: Reflective Prompt Evolution.* ICLR Oral 2026. arXiv:2507.19457.
 Brief annotation: Process-level feedback for prompt evolution.
@@ -1838,7 +1841,7 @@ Brief annotation: Active forgetting serves adaptive purposes.
 **[Xiong et al., 2025]** *How Memory Management Impacts LLM Agents: An Empirical Study of Experience-Following Behavior.* arXiv:2505.16067.
 Brief annotation: Agent memory degrades without active maintenance. Motivates the Curator cycle.
 
-**[Anonymous, 2025]** *SleepGate: Learning to Forget.* arXiv:2603.14517.
+**[Xie, 2025]** *SleepGate: Learning to Forget.* arXiv:2603.14517.
 Brief annotation: Learned curation resolving proactive interference. Active forgetting outperforms naive accumulation.
 
 **[Lu et al., 2026]** *FluxMem: Adaptive Memory Structure Selection via Beta Mixture Model.* arXiv:2602.14038.
@@ -1932,7 +1935,7 @@ Brief annotation: Distributed low-latency task scheduling.
 **[MITRE ATLAS, 2025]** *ATLAS v5.1.0: 16 Tactics, 84 Techniques, 14 Agentic AI Attack Patterns.* atlas.mitre.org.
 Brief annotation: Comprehensive attack taxonomy for AI systems. Informs threat modeling.
 
-**[Anonymous, 2025]** *RedTWIZ: Diverse LLM Red Teaming via Adaptive Attack Planning.* Amazon Science.
+**[Horal et al., 2025]** *RedTWIZ: Diverse LLM Red Teaming via Adaptive Attack Planning.* Amazon Science.
 Brief annotation: Adaptive red teaming methodology for LLM systems.
 
 **[CMU SEI, 2025]** *What Can Generative AI Red-Teaming Learn from Cyber Red-Teaming?* 2025.
@@ -1944,7 +1947,7 @@ Brief annotation: Metamorphic testing for oracle-free LLM validation.
 **[Cho & Terragni, 2025]** *LLMORPH: Automated Metamorphic Testing of Large Language Models.* ASE 2025 Demo. arXiv:2603.23611.
 Brief annotation: Automated metamorphic testing tool for LLMs.
 
-**[Anonymous, 2025]** *Test Oracle Automation in the Era of LLMs.* ACM TOSEM. DOI:10.1145/3715107.
+**[Molina et al., 2025]** *Test Oracle Automation in the Era of LLMs.* ACM TOSEM. DOI:10.1145/3715107.
 Brief annotation: Survey of test oracle automation using LLMs.
 
 **[Fang et al., 2025]** *A Comprehensive Survey of Self-Evolving AI Agents.* arXiv:2508.07407.
@@ -2009,16 +2012,16 @@ Brief annotation: Multi-round RL-based model routing.
 **[Qian et al., 2025]** *xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning.* Salesforce. arXiv:2510.08439.
 Brief annotation: Cost-aware RL orchestration across models.
 
-**[Song et al., 2025]** *IRT-Router.* ACL 2025. arXiv:2506.01048.
+**[Song et al., 2025]** *IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory.* ACL 2025. arXiv:2506.01048.
 Brief annotation: Item Response Theory for model routing.
 
-**[Ding et al., 2025]** *BEST-Route.* ICML 2025. arXiv:2506.22716.
-Brief annotation: Best-effort routing with quality guarantees.
+**[Ding et al., 2025]** *BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute.* ICML 2025. arXiv:2506.22716.
+Brief annotation: Chooses a model and how many responses to sample from it, by query difficulty; up to 60% cheaper with under 1% performance drop.
 
-**[Dekoninck et al., 2025]** *A Unified Approach to Routing and Cascading.* ICLR 2025. arXiv:2410.10347.
-Brief annotation: +14% on SWE-Bench via unified routing/cascading.
+**[Dekoninck et al., 2025]** *A Unified Approach to Routing and Cascading for LLMs.* arXiv:2410.10347.
+Brief annotation: Cascade routing unifies routing and cascading and outperforms either alone; quality estimators are the critical factor.
 
-**[Anonymous, 2025]** *Rethinking Predictive Modeling for LLM Routing: When Simple kNN Beats Complex Learned Routers.* arXiv:2505.12601.
+**[Li, 2025]** *Rethinking Predictive Modeling for LLM Routing: When Simple kNN Beats Complex Learned Routers.* arXiv:2505.12601.
 Brief annotation: Simple kNN outperforms complex learned routers in some settings.
 
 **[Panda et al., 2025]** *PILOT: Preference-Prior Informed LinUCB.* arXiv:2508.21141.
@@ -2065,6 +2068,9 @@ Brief annotation: Temporal knowledge graph completion via LLMs.
 
 ## Additional References (Compression, Context Management)
 
+**[Mehta, 2025]** *Beyond Accuracy: A Multi-Dimensional Framework for Evaluating Enterprise Agentic AI Systems.* arXiv:2511.14136.
+Brief annotation: Proposes CLEAR (Cost, Latency, Efficacy, Assurance, Reliability); optimizing for accuracy alone yields agents 4.4-10.8x more expensive than cost-aware alternatives with comparable performance.
+
 **[Han et al., 2025]** *TALE Framework.* ACL Findings 2025. arXiv:2412.18547.
 Brief annotation: 68.9% token reduction via adaptive context management.
 
@@ -2077,7 +2083,7 @@ Brief annotation: Framework for determining context sufficiency in RAG systems.
 **[Jin et al., 2025]** *Long-context LLMs with RAG.* ICLR 2025. arXiv:2410.05983.
 Brief annotation: Integration of long-context models with retrieval augmentation.
 
-**[Anonymous, 2025]** *Lost in the Middle at Birth.* arXiv:2603.10123.
+**[Chowdhury, 2025]** *Lost in the Middle at Birth.* arXiv:2603.10123.
 Brief annotation: U-shaped bias is an algebraic property of causal decoder architectures.
 
 **[Hsieh et al., 2024]** *Found in the Middle: Positional Bias Calibration.* ACL Findings 2024. arXiv:2406.16008.
@@ -2101,7 +2107,7 @@ Brief annotation: Analysis of serial position effects in LLM context windows.
 **[Lu et al., 2024]** *MorphAgent: Empowering Agents through Self-Evolving Profiles and Decentralized Collaboration.* arXiv:2410.15048.
 Brief annotation: Dynamic role switching for self-evolving agent profiles.
 
-**[Anonymous, 2025]** *When Single-Agent with Skills Replace Multi-Agent Systems.* arXiv:2601.04748.
+**[Li, 2025]** *When Single-Agent with Skills Replace Multi-Agent Systems.* arXiv:2601.04748.
 Brief annotation: 53.7% token reduction via skill-equipped single agents vs. multi-agent systems.
 
 **[Gao et al., 2025]** *SkillReducer: Optimizing LLM Agent Skills for Token Efficiency.* arXiv:2603.29919.

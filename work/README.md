@@ -19,7 +19,8 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 3. **Claim it** before touching code:
    `python3 tools/work.py claim <id> --by "<who you are>" --branch work/<id>`.
    A claim is a small file in the main checkout's `.roko/work-claims/`. It is shared by every worktree and never
-   committed. Claims older than 24 hours count as stale. `tools/work.py claims` lists them.
+   committed. Claims older than 24 hours count as stale. `tools/work.py claims` lists them. The work skills also
+   pass `--executor`, `--via` and `--size`; `close` copies them into `[closed]`.
 4. **Work in your own worktree and branch**, never in the main checkout:
    `git worktree add ../roko-work-<id> -b work/<id>` (from the current working branch). If you were started in
    a worktree already, `git switch -c work/<id>` there. Rust: `export CARGO_TARGET_DIR=<main checkout>/target`
@@ -52,6 +53,12 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
   - Workers commit only on their own branch `work/<id>`, in their own worktree.
   - The orchestrator merges passing branches into the current working branch of the main checkout with
     `git merge --no-ff work/<id>`, without asking each time. It never merges into `main` and never pushes.
+  - Several sessions merge and commit in the main checkout, so every merge or commit there runs under the shared
+    lock, after checking that no merge is in progress, and stages explicit paths only (never `git add -A` or
+    `git add work/`):
+    `lockf -k -t 900 "$(git rev-parse --git-common-dir)/roko-merge.lock" bash -c 'test ! -e "$(git rev-parse --git-path MERGE_HEAD)" && git merge --no-ff work/<id> -m "…"'`
+    (macOS `lockf`; on Linux use `flock -w 900` with the same lock file). Workers committing in their own
+    worktree do not need the lock.
   - After each merge, re-run the item's `[[verify]]` on the merged tree. If it fails, stop merging and report.
   - The main checkout may have other sessions' uncommitted changes. Never stash, reset, restore, force or check
     out anything there. If git refuses a merge because of local changes or a conflict, run `git merge --abort`
@@ -88,6 +95,8 @@ work/
   DECISIONS.md              GENERATED — open decisions and questions
   TRIAGE.md                 GENERATED — imported items not yet verified against current code
   history/                  frozen records (old GAPS.md sections, migration summary)
+  telemetry/                the development record: events, harvest, metric definitions (not for workers;
+                            see telemetry/README.md)
 .roko/work-local/items/     same format, untracked: private/local items (e.g. application-specific work)
 .roko/work-claims/          untracked: who is working on what right now
 ```
@@ -131,6 +140,8 @@ command = "grep -rqw 'fn cancel_from_assigned_state' crates/roko-serve/ && cargo
 
 [closed]                          # filled when status leaves open: evidence of the transition
 # at = 2026-10-02, commit = "abc1234", run_id = "graph-…", by = "plan:…#T03", evidence = "…"
+# optional, from the claim (gap-0b9056): at_ts = "2026-10-02T09:15:00Z", executor = "claude-agent",
+# via = "work-batch", size = "S", claimed_at = "…Z", model = "…", assist = "…", forced = false
 +++
 ```
 

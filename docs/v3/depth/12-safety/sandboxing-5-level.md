@@ -57,23 +57,27 @@ denials, and network policy while allowing normal development operations.
 
 ---
 
-## 3. ActPlane Alignment
+## 3. Relation to ActPlane
 
-The five-level sandbox model aligns with the ActPlane framework (ActPlane, 2025,
-arXiv:2606.25189), which proposes layered execution planes for LLM agents:
+ActPlane (Zheng et al. 2026, arXiv:2606.25189) is a policy engine for agent harnesses:
+agents declare policies, and the OS kernel enforces them with eBPF. That covers system
+actions that bypass the tool layer, and a blocked agent gets semantic feedback rather than
+an opaque error. An information-flow DSL expresses policies over sequences of events.
 
-| ActPlane concept | Roko sandbox level | Enforcement |
-|---|---|---|
-| Unrestricted plane | None | Trusted kernel code |
-| Monitored plane | Observe | Audit without blocking |
-| Restricted plane | Restrict | Path/network enforcement |
-| Isolated plane | Isolate | No network, stripped env |
-| Quarantine plane | Quarantine | Memory-only, no I/O |
+Roko's five levels enforce at the application layer, per level rather than per declared
+policy:
 
-The key insight from ActPlane: each execution plane should be a complete, self-consistent
-environment with explicit boundaries, not a partial restriction layered on top of full
-access. Roko implements this: each `SandboxLevel` produces a complete `SandboxPolicy`
-with all enforcement decisions pre-computed.
+| Roko sandbox level | Enforcement |
+|---|---|
+| None | Trusted kernel code |
+| Observe | Audit without blocking |
+| Restrict | Path/network enforcement |
+| Isolate | No network, stripped env |
+| Quarantine | Memory-only, no I/O |
+
+Each `SandboxLevel` produces a complete `SandboxPolicy` with all enforcement decisions
+pre-computed. ActPlane points to two additions: kernel enforcement for actions that bypass
+the tool layer, and feedback the agent can act on when a policy blocks it.
 
 ---
 
@@ -244,7 +248,7 @@ canonical workspace, not at disposable attempt worktrees. This prevents:
 
 | Paper | Contribution |
 |---|---|
-| ActPlane (Zheng et al. 2025, arXiv:2606.25189) | Layered execution planes for LLM agents |
+| ActPlane (Zheng et al. 2026, arXiv:2606.25189) | Kernel (eBPF) enforcement of policies agents declare |
 | Saltzer & Schroeder (1975) | Principle of least privilege |
 | Provos (2003) | Preventing Privilege Escalation (systrace) |
 | Watson et al. (2010) | Capsicum -- capability-based sandboxing |

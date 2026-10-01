@@ -1307,12 +1307,7 @@ stable long-term representations. This goes beyond reorganizing stored
 records -- it modifies the model's internal representations to encode
 generalizable schemas.
 
-**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Shows that offline
-recurrence -- revisiting and reprocessing past experiences during idle
-periods -- produces measurably better downstream performance than
-continuous waking-only processing. The key finding: recurrence must be
-structured (not random replay) and must extract abstractions that transfer
-across tasks.
+**Do LMs Need Sleep?** (arXiv:2605.26099, May 2026). Proposes a sleep phase for language models: the model runs N offline recurrent passes over its accumulated context, writes the result into fast weights in its state-space blocks and then clears its KV cache (§5). On synthetic tasks and a math-reasoning task where plain transformers and SSM-attention hybrids fail, longer sleep (larger N) improves accuracy, most on examples that need deeper reasoning (abstract, §6). It is an architecture-level mechanism; it does not compare structured with random replay or test transfer across tasks.
 
 ### Target data flow
 
@@ -1466,7 +1461,7 @@ cargo run -p roko-cli -- knowledge dream schedule
 | Auto-Dreamer (Ye et al. 2026), arXiv:2605.20616 | Learned consolidator using CLS theory for schema distillation |
 | Language Models Need Sleep (2026), arXiv:2606.03979 | Parametric distillation during offline phases |
 | Do LMs Need Sleep? (2026), arXiv:2605.26099 | Offline recurrence produces structured abstractions |
-| TiMem (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
+| Li et al. (2025), arXiv:2601.02845 | Temporal hierarchical consolidation across memory tiers |
 | Phasor Agents (2025), arXiv:2601.04362 | Oscillatory sleep-staged learning validates NREM/REM distinction |
 | Ambrose et al. (2016), Science | Reverse replay of hippocampal place cells during sleep |
 | Byrne (2005), The Rational Imagination | Fault lines: controllable/recent/abnormal actions prioritized for counterfactuals |

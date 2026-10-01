@@ -26,8 +26,10 @@ Every function reads `vb.run_record/1` dicts, as `records.jsonl` holds them (S08
   delta_UR = |sum U' - sum R| / sum R are shown beside it.
 - **False greens** (D.1): a reported pass with VS- = 0. For direct and CLI arms a reported pass is `visible.passed`,
   the census's run of the visible checks on the final tree. For Roko arms it is a final gate verdict of `passed`, and
-  final verdicts of `unverified` and `forced_accept` are counted apart. The rate is a share of reported passes, not
-  of runs.
+  final verdicts of `unverified` and `forced_accept` are counted apart. So is `already_satisfied` (gap-9eb1e1): the
+  final attempt changed nothing, and Roko's checks passed on the tree as it was. S01 gives it no learning label, and
+  S05 §0.1 counts only `passed` as Roko's completion, so it is never a reported pass, a false green or a VS; it has a
+  count of its own. The rate is a share of reported passes, not of runs.
 - **The plan-level slice** (S09 §4.9, App. D.12; exploratory). Per feature and arm: the verified feature (the PL
   row's label), its cost and its makespan (`execution.finished_at` minus `started_at`). Per arm: the verified
   features out of the features run, with a Clopper-Pearson 95% interval; the cost per verified feature; and the
@@ -74,6 +76,9 @@ ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan"})
 # S09 §4.2 and §4.9: arms whose runs may switch models (routing, the tier ladder, a planner, escalation).
 ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid"})
 NOT_PASSED = ("unverified", "forced_accept")
+# gap-9eb1e1: Roko's final attempt changed nothing, and its checks passed on the tree as it was. S01's own stratum, so
+# it is neither a reported pass nor unverified: counted apart, in its own metric.
+ALREADY_SATISFIED = "already_satisfied"
 PL_RATIO = ("roko_plan", "fd_claude")  # S09 §4.9: the slice's ratios are roko_plan / fd_claude
 TASK_CLASSES = ("execute", "retry", "escalate")  # an attempt on one plan task; plan and integrate span the plan
 
@@ -497,6 +502,9 @@ def _cell_metrics(base: Cut, arm: str, ks: Sequence[int], cell: str, ladder: int
     if arm in ROKO_ARMS:
         add("unverified_runs", sum(final_verdict(row) in NOT_PASSED for row in runs), len(runs), "runs whose final "
             "gate verdict is unverified or forced_accept: counted apart, never as passes (App. D.1)")
+        add("already_satisfied_runs", sum(final_verdict(row) == ALREADY_SATISFIED for row in runs), len(runs),
+            "runs whose final gate verdict is already_satisfied: the final attempt changed nothing and Roko's checks "
+            "passed on the tree as it was (gap-9eb1e1); counted apart, never as passes or false greens (App. D.1)")
     add("cap_censored_runs", sum(row["execution"]["status"] in CENSORED for row in runs), len(runs), "runs that ended "
         "aborted_cap or timeout; they stay in with VS = 0 (App. D.1)")
     for status in EXCLUDED:

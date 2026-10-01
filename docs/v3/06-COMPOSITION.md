@@ -157,8 +157,7 @@ and Pheromone Signals (Layer 3c). Its content persists across task iterations
 within a plan execution, accumulating the agent's growing understanding of the
 workspace.
 
-**Expected impact** (from PEEK evaluation): 93-145 fewer iterations per plan,
-1.7-5.8x lower cost compared to ACE (arXiv:2510.04618) baseline. The cache
+**Evidence** (PEEK's own evaluation on long-context reasoning and aggregation benchmarks, not on plans): 93-145 fewer iterations and 1.7-5.8x lower cost than ACE (arXiv:2510.04618) (§4.3). The effect on Roko plans is untested. The cache
 eliminates redundant re-discovery of workspace structure, type signatures, and
 cross-crate dependencies that agents currently rediscover on every task.
 
@@ -167,9 +166,7 @@ Supporting research:
 - **VISTA** (arXiv:2606.30005) validates the proprioceptive context dashboard
   pattern: agents with structured self-awareness of their state outperform those
   relying on raw context alone.
-- **ECS** (arXiv:2601.11585) demonstrates that entropic context shaping --
-  actively managing the information density of the context window -- yields
-  measurable improvements in downstream task performance.
+- **ECS** (arXiv:2601.11585) scores each candidate passage by how far it shifts the model's answer distribution toward the correct answer (§3); on turn-level context selection in LoCoMo it reaches F1 0.265, 71.8% above TF-IDF (abstract, §4.2). It measures selection quality, not downstream task performance.
 - **Scroll** (arXiv:2608.21690) frames context as an executable environment
   rather than passive text, supporting the Cartographer's structured-map approach
   over flat summaries.
@@ -525,7 +522,7 @@ Two truncation strategies manage sections exceeding their budget:
 
 Language models attend to information at the beginning and end of their context
 far more effectively than information in the middle (Liu et al. 2023,
-arXiv:2307.03172). The degradation exceeds 30% for mid-context information.
+arXiv:2307.03172). For GPT-3.5-Turbo, accuracy with the answer in the middle fell below its closed-book accuracy of 56.1% (§1, §2.3).
 
 ```
 Performance
@@ -1258,7 +1255,7 @@ value). The exploration/exploitation tradeoff emerges from the mathematics.
 
 **Liu, Lin, Hewitt, Paranjape, Bevilacqua, Petroni, and Liang (2023),
 "Lost in the Middle: How Language Models Use Long Contexts."** TACL 2024,
-arXiv:2307.03172. The foundational U-shaped attention curve paper.
+arXiv:2307.03172. The foundational paper on the U-shaped performance curve (§2.3).
 
 **"Lost in the Middle at Birth"** (arXiv:2603.10123, 2025). Proved the U-shaped
 bias is an algebraic property of causal decoder architectures.

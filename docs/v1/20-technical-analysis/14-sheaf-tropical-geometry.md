@@ -561,7 +561,7 @@ Tropical methods provide EXACT adversarial distances (not bounds), but only for 
 - Robinson, M. (2014). *Topological Signal Processing*. Springer. — Sheaves for signal processing.
 - Gebhart, T., Schrater, P., & Hylton, A. (2023). "Knowledge Sheaves: A Sheaf-Theoretic Framework for Knowledge Graph Embedding." *PMLR 206*. — Knowledge representation via sheaves.
 - Zhang, L., Naitzat, G., & Lim, L.-H. (2018). "Tropical Geometry of Deep Neural Networks." *ICML 2018*. — Tropical decision boundaries.
-- Alfarra, M., et al. (2024). "Tropical Decision Boundaries for Neural Networks Are Robust Against Adversarial Attacks." arXiv:2402.00576. — Tropical adversarial robustness.
+- Pasque et al.. "Tropical Decision Boundaries for Neural Networks Are Robust Against Adversarial Attacks." arXiv:2402.00576. — Tropical adversarial robustness.
 - Tran, N. M., & Yu, J. (2019). "Product-Mix Auctions and Tropical Geometry." *Mathematics of Operations Research*, 44(4). — Tropical auction theory.
 - Maragos, P. (2024). "Tropical Geometry for Machine Learning and Optimization." *ICASSP 2024 Tutorial*. — Comprehensive tropical ML survey.
 - arXiv:2505.17190 (2025). "Tropical Attention: Neural Algorithmic Reasoning for Combinatorial Algorithms." — Tropical attention mechanism.

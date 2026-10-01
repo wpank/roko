@@ -10,7 +10,8 @@
 #
 # Usage (from the repo root, after `cargo build -p roko-cli`):
 #   bash plans/portal-programme/_harness/access-check.sh
-# Prints one PASS/FAIL line per assertion and a final ACCESS-CHECK verdict.
+# Prints one PASS/FAIL line per assertion and a final ACCESS-CHECK verdict. On a
+# build without the demo app, the two /demo checks print SKIP with the reason.
 
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
@@ -69,6 +70,9 @@ api_unknown_is_json_404() {
 }
 demo_served() { body_of "$(base)/demo/" | grep -q '/demo/assets/'; }
 demo_route_falls_back() { body_of "$(base)/demo/settings" | grep -q '/demo/assets/'; }
+# A build made without demo/demo-app/dist embeds roko-serve's fallback page in
+# place of the demo app (crates/roko-serve/build.rs), and /demo serves it.
+demo_not_built() { body_of "$(base)/demo/" | grep -q 'Roko API is running'; }
 
 require_binary
 make_workspace
@@ -102,8 +106,14 @@ check "the UI's assets are served" ui_asset_served
 check "a missing asset is a 404, not the index page" \
     [ "$(status_of "$(base)/_next/static/missing.js")" = 404 ]
 check "an unknown /api path is a JSON 404, never a UI page" api_unknown_is_json_404
-check "the demo app is served under /demo, built for that base" demo_served
-check "a demo client route falls back to the demo's index" demo_route_falls_back
+if demo_not_built; then
+    NO_DEMO="this roko was built without demo/demo-app/dist; /demo serves the fallback page"
+    skip "the demo app is served under /demo, built for that base" "$NO_DEMO"
+    skip "a demo client route falls back to the demo's index" "$NO_DEMO"
+else
+    check "the demo app is served under /demo, built for that base" demo_served
+    check "a demo client route falls back to the demo's index" demo_route_falls_back
+fi
 
 # ── The browser session ────────────────────────────────────────────────────
 check "a wrong token cannot open a session" \

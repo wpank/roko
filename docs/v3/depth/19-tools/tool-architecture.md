@@ -172,9 +172,7 @@ definition is needed -- the LLM is the pipeline controller.
 
 ## 6. Tool Audit Methodology
 
-Tool surface reduction follows the SkillReducer methodology (Chen et al. 2026,
-arXiv:2603.29919). Systematic tool pruning -- removing redundant or low-impact
-tools -- improves both task completion rates and token efficiency. Roko applies
+Tool surface reduction follows the SkillReducer methodology (Gao et al. 2026, arXiv:2603.29919). SkillReducer compresses skills (48% shorter descriptions, 39% shorter bodies) with functional quality kept or improved for 86% of 600 skills (§V); pruning whole tools is Roko's extension. Roko applies
 this through:
 
 - **Profile-based filtering** -- each profile loads only relevant categories

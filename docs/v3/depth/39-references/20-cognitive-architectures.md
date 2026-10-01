@@ -12,7 +12,7 @@
 ## Language Agent Architectures
 
 **[Sumers et al., 2023]** *Cognitive Architectures for Language Agents (CoALA).* arXiv:2309.02427.
-9-step cognitive pipeline: perceive, retrieve, reason, act, learn. Roko's universal loop extends CoALA with verification (Gate) and meta-cognition (Theta-frequency reflection).
+Modular memory, structured action spaces and a decision cycle of planning (proposal, evaluation, selection) then execution (§4). It defines no 9-step pipeline; that list is Roko's. Roko's universal loop extends CoALA with verification (Gate) and meta-cognition (Theta-frequency reflection).
 
 **[Sumers et al., 2024]** *Cognitive Architectures for Language Agents.* Transactions on Machine Learning Research.
 Extended CoALA treatment with updated cognitive architecture taxonomy. Provides the shared vocabulary for agent architecture comparisons.
@@ -92,7 +92,7 @@ Episodic memory enabling infinite effective context through retrieval. Provides 
 
 ## Agentic AI Surveys
 
-**[Anonymous, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
+**[Abou Ali & Dornaika, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
 Six-module taxonomy validates Roko's modular architecture. Identifies paradigm shift from symbolic to neural orchestration post-2022.
 
 **[Wu et al., 2025]** *Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models for Manufacturing Decision-Making.* Neurosymbolic Artificial Intelligence (SAGE Publications).

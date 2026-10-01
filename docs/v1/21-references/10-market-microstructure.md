@@ -30,7 +30,7 @@ Roko is domain-agnostic, but its first domain plugin is DeFi. This section colle
 - Adams, H. et al. (2025). am-AMM: Auction-Managed Automated Market Maker. Uniswap Research.
   *Grounds: Auction-managed AMM — winning bidder controls pool fees and captures arbitrage.*
 
-- Hasbrouck, J., Rivera, T.J., & Saleh, F. (2025). Economic Model of DEX with Concentrated Liquidity. _Management Science_.
+- Hasbrouck, J., Rivera, T.J., & Saleh, F. (2025). An Economic Model of a Decentralized Exchange with Concentrated Liquidity. _Management Science_.
   *Grounds: Concentrated liquidity economics — formal economic model of DEX with concentrated liquidity provision.*
 
 ---

@@ -14,7 +14,7 @@ last_verified = 2026-10-01
 last_verified_rev = "c58c7c2ba"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-f9ae3e"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/dispatch_v2.rs::AuditedToolCall"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/dispatch_v2.rs::ToolCallRecord"]
 lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = ["bug-f9ae3e"], supersedes = [], duplicate_of = "" }
 

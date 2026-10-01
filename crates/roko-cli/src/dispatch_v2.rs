@@ -2175,19 +2175,18 @@ pub struct AgentResultDispatch {
     /// from the tool audit with each one's outcome (gap-4d5e2d). Empty when
     /// no audit is attached, the request names no attempt, or the provider
     /// ran its own tools.
-    pub tool_calls: Vec<AuditedToolCall>,
+    pub tool_calls: Vec<ToolCallRecord>,
 }
 
-/// A tool call roko's own tool loop made for a dispatch, as the tool audit
-/// recorded it (gap-4d5e2d).
+/// A tool call a dispatch made, as the tool audit (gap-4d5e2d) or the
+/// provider's live output (bug-264c41) recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuditedToolCall {
+pub struct ToolCallRecord {
     /// The provider's call id.
     pub id: String,
-    /// The tool's canonical name.
+    /// The tool's name; empty when the record saw only the call's result.
     pub name: String,
-    /// Whether the call succeeded; `None` when the audit holds no result
-    /// for it.
+    /// Whether the call succeeded; `None` when no result for it was seen.
     pub succeeded: Option<bool>,
 }
 
@@ -2214,7 +2213,7 @@ impl ToolAuditMark {
 
     /// The attempt's tool calls among the lines appended since the mark. An
     /// audit that can't be read gives none, so their outcomes stay unknown.
-    async fn tool_calls(&self) -> Vec<AuditedToolCall> {
+    async fn tool_calls(&self) -> Vec<ToolCallRecord> {
         match read_from(&self.path, self.offset).await {
             Ok(appended) => {
                 audited_tool_calls(&String::from_utf8_lossy(&appended), &self.attempt_key)
@@ -2248,10 +2247,10 @@ async fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
 /// gets one record per call; a result whose admission isn't among the lines
 /// is a call of its own. Other attempts' lines, and lines that aren't audit
 /// JSON (a line another writer is still appending), are skipped.
-fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<AuditedToolCall> {
+fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<ToolCallRecord> {
     use roko_fs::tool_audit::AuditLine;
 
-    let mut calls: Vec<AuditedToolCall> = Vec::new();
+    let mut calls: Vec<ToolCallRecord> = Vec::new();
     for line in lines.lines() {
         let Ok(audited) = serde_json::from_str::<AuditLine>(line) else {
             continue;
@@ -2262,7 +2261,7 @@ fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<AuditedToolCall> {
                 call_name,
                 correlation,
                 ..
-            } if correlation.attempt_id == attempt_key => calls.push(AuditedToolCall {
+            } if correlation.attempt_id == attempt_key => calls.push(ToolCallRecord {
                 id: call_id,
                 name: call_name,
                 succeeded: None,
@@ -2279,7 +2278,7 @@ fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<AuditedToolCall> {
                     .find(|call| call.id == call_id && call.succeeded.is_none());
                 match admitted {
                     Some(call) => call.succeeded = Some(ok),
-                    None => calls.push(AuditedToolCall {
+                    None => calls.push(ToolCallRecord {
                         id: call_id,
                         name: call_name,
                         succeeded: Some(ok),
@@ -2448,7 +2447,7 @@ fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamC
             name_delta: Some(name),
             args_delta: None,
         },
-        StreamEventKind::ToolResult { id, output } => {
+        StreamEventKind::ToolResult { id, output, .. } => {
             // Map provider-surfaced tool results to ToolProgress so they flow
             // through to AgentRuntimeEvent::ToolOutput via agent_event_from_chunk.
             StreamChunk::ToolProgress {
@@ -3668,7 +3667,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
 
         assert_eq!(
             mark.tool_calls().await,
-            [AuditedToolCall {
+            [ToolCallRecord {
                 id: "call-1".to_string(),
                 name: "read_file".to_string(),
                 succeeded: Some(false),

@@ -63,6 +63,7 @@ mod gate_learning;
 mod helper_calls;
 mod inert_settings;
 mod ladder;
+mod live_tool_calls;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -94,6 +95,7 @@ use budget::{
 };
 use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
+use live_tool_calls::LiveToolCalls;
 use routing_context::{
     CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
     build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
@@ -1291,6 +1293,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             &watched,
             stall_watch.as_ref().map(StallWatch::progress),
             supervised.as_ref().map(SupervisedAttempt::feed),
+            Some(attempt.live_tool_calls()),
         );
 
         attempt.dispatch_started();

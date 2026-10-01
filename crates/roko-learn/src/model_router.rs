@@ -1933,8 +1933,8 @@ mod tests {
             "glm-5.1 normalized cost should be close to 0.0301, got {glm_5_1}"
         );
         assert!(
-            (claude_opus - 0.4).abs() < 0.001,
-            "claude-opus normalized cost should be close to 0.4, got {claude_opus}"
+            (claude_opus - 0.1333).abs() < 0.001,
+            "claude-opus normalized cost should be close to 0.1333, got {claude_opus}"
         );
         assert!(
             (kimi_k2_5 - 0.0157).abs() < 0.001,

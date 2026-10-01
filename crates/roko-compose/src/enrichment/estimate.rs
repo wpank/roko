@@ -497,8 +497,8 @@ mod tests {
 
     #[test]
     fn codex_priced_from_registry_not_sonnet_fallback() {
-        // Registry knows codex/gpt-5.x rates ($2/$8), which are cheaper than
-        // the sonnet default ($3/$15) unknown models get.
+        // The registry prices gpt-5.6-sol at $4/$20, above the sonnet default
+        // ($3/$15) unknown models get.
         let codex = estimate_enrichment(
             &default_plan_info(),
             TaskComplexityBand::Standard,
@@ -515,8 +515,8 @@ mod tests {
         );
 
         assert!(
-            codex.estimated_cost_usd < sonnet_fallback.estimated_cost_usd,
-            "codex ({}) should price below the sonnet fallback ({})",
+            codex.estimated_cost_usd > sonnet_fallback.estimated_cost_usd,
+            "codex ({}) should price above the sonnet fallback ({})",
             codex.estimated_cost_usd,
             sonnet_fallback.estimated_cost_usd
         );

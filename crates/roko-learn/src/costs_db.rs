@@ -799,7 +799,7 @@ mod tests {
         let glm_5 = table.lookup("glm-5").expect("glm-5 pricing");
         assert!((glm_5.input_per_m - 1.00).abs() < 1e-9);
         assert!((glm_5.output_per_m - 3.20).abs() < 1e-9);
-        assert_eq!(glm_5.cache_read_per_m, Some(0.50));
+        assert_eq!(glm_5.cache_read_per_m, Some(0.20));
 
         let glm_4_7 = table.lookup("glm-4.7").expect("glm-4.7 pricing");
         assert!((glm_4_7.input_per_m - 0.60).abs() < 1e-9);
@@ -876,7 +876,7 @@ mod tests {
             true,
             "session-1",
         );
-        assert!((calculated.cost_usd - 0.002_393_5).abs() < 1e-12);
+        assert!((calculated.cost_usd - 0.002_376).abs() < 1e-12);
 
         let reported_usage = Usage {
             cost_usd: 0.123,

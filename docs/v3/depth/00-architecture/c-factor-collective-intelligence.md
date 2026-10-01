@@ -350,7 +350,7 @@ target-state for the full Bus/Substrate instrumentation.
 c-factor appears in:
 
 - TUI and dashboard tiles (via StateHub projections)
-- HTTP API routes (roko-serve, ~376 canonical routes)
+- HTTP API routes (roko-serve; counts in `tools/http_route_inventory.snapshot.json`)
 - Metrics export: `roko.c_factor` for observability stacks
 - E33 telemetry Lens (9/9, 39/39 ingress variants)
 

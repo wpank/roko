@@ -632,6 +632,7 @@ impl App {
                 let events_path = self.workdir.join(".roko").join("events.jsonl");
                 state_hub.replay_log_into_snapshot(&events_path);
             }
+            self.reapply_hub_snapshot();
         }
         self.reseed_verdicts_aggregator().await;
         self.refresh_verdicts_from_aggregator().await;
@@ -670,6 +671,7 @@ impl App {
                 let events_path = self.workdir.join(".roko").join("events.jsonl");
                 state_hub.replay_log_into_snapshot(&events_path);
             }
+            self.reapply_hub_snapshot();
         }
         self.reseed_verdicts_aggregator_blocking();
         self.refresh_verdicts_from_aggregator_blocking();
@@ -718,6 +720,16 @@ impl App {
     // -----------------------------------------------------------------------
     // Verdicts aggregator
     // -----------------------------------------------------------------------
+
+    /// Apply the hub's snapshot to the TUI state again after a full refresh
+    /// loaded `DashboardData` from disk: that load replaced the plan lists,
+    /// which the snapshot owns (with its announced plan set).
+    fn reapply_hub_snapshot(&mut self) {
+        if let Some(snapshot_rx) = self.snapshot_rx.as_mut() {
+            snapshot_rx.mark_changed();
+        }
+        self.drain_snapshot_channel();
+    }
 
     pub(super) async fn reseed_verdicts_aggregator(&mut self) {
         self.verdicts_aggregator = VerdictsAggregator::open(&self.workdir).await.ok();

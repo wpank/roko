@@ -2,7 +2,7 @@
 
 > Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Every surface is a Lens Cell composition reading the same StateHub. CLI, TUI, HTTP, Web are projections — not separate systems.
 
-> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED. TUI (F1-F11 tabs, ratatui), HTTP control plane (~376 canonical routes / ~421 total incl. aliases on :6677), ACP server, per-agent sidecar (14 routes), named surfaces (E37 9/9: Workbench/Inbox/Canvas/Minimap/Autonomy typed projections + five dedicated StateHub-backed routes + OpenAPI + events + object types + legacy-tab mapping) are all live. Full named-surface TUI rendering and several native runtime sources remain product residuals. The "~317 routes" count in `05-http-api-and-realtime.md` is outdated.
+> **Implementation status (2026-09-10):** SUBSTANTIALLY IMPLEMENTED. TUI (F1-F11 tabs, ratatui), HTTP control plane (on :6677; routes counted in `tools/http_route_inventory.snapshot.json`), ACP server, per-agent sidecar (14 routes), named surfaces (E37 9/9: Workbench/Inbox/Canvas/Minimap/Autonomy typed projections + five dedicated StateHub-backed routes + OpenAPI + events + object types + legacy-tab mapping) are all live. Full named-surface TUI rendering and several native runtime sources remain product residuals. The "~317 routes" count in `05-http-api-and-realtime.md` is outdated.
 
 ---
 

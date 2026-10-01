@@ -1223,8 +1223,7 @@ fn read_dream_status(workdir: &Path) -> String {
 #[cfg(test)]
 pub(crate) fn tool_name_to_kind(name: &str) -> ToolCallKind {
     match name {
-        "Edit" | "MultiEdit" => ToolCallKind::Edit,
-        "Write" => ToolCallKind::Create,
+        "Edit" | "MultiEdit" | "Write" => ToolCallKind::Edit,
         "Bash" | "Terminal" => ToolCallKind::Terminal,
         _ => ToolCallKind::Other,
     }

@@ -1,7 +1,6 @@
 //! Permission request/response channels for ACP consent flow.
 
 use std::path::Path;
-use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, warn};
@@ -210,10 +209,12 @@ where
     }
 }
 
-/// Runs the editor round-trip while respecting both the enclosing prompt and
+/// Runs the editor round-trip for a tool's permission request and sends the
+/// decision back on `reply`, while respecting both the enclosing prompt and
 /// tool-handler lifetimes. The handler-side receiver disappears when the tool
-/// dispatcher times out, so observing that state prevents the parent stream
-/// from waiting for the longer editor timeout after there is nobody to answer.
+/// dispatcher times out; awaiting that closes the wait at once instead of
+/// waiting for the longer editor timeout after there is nobody to answer.
+/// Every outcome other than an editor approval is `Reject`.
 pub(crate) async fn request_permission_for_event<R, W>(
     transport: &mut StdioTransport<R, W>,
     session: &mut AcpSession,
@@ -227,6 +228,14 @@ where
     W: AsyncWrite + Unpin,
 {
     let session_id = session.session_id.clone();
+    let Some(mut sender) = reply.take_sender() else {
+        warn!(
+            session_id = %session_id,
+            action = ?payload.action,
+            "permission request was already answered; rejecting"
+        );
+        return PermissionDecision::Reject;
+    };
     let request = request_permission(
         transport,
         session,
@@ -235,29 +244,34 @@ where
         &payload.title,
         &payload.detail,
     );
-    tokio::pin!(request);
 
-    loop {
-        if reply.receiver_is_closed() {
+    // Biased: a requester that already left, or a cancelled prompt, rejects
+    // before the editor request is sent, and wins a tie with the editor's answer.
+    let decision = tokio::select! {
+        biased;
+        () = sender.closed() => {
             warn!(
                 session_id = %session_id,
                 action = ?payload.action,
                 "permission requester stopped waiting; abandoning editor request"
             );
-            return PermissionDecision::Reject;
+            PermissionDecision::Reject
         }
-
-        tokio::select! {
-            decision = &mut request => return decision,
-            _ = cancel_token.cancelled() => {
-                warn!(
-                    session_id = %session_id,
-                    action = ?payload.action,
-                    "ACP prompt cancelled while waiting for editor permission"
-                );
-                return PermissionDecision::Reject;
-            }
-            () = tokio::time::sleep(Duration::from_millis(25)) => {}
+        _ = cancel_token.cancelled() => {
+            warn!(
+                session_id = %session_id,
+                action = ?payload.action,
+                "ACP prompt cancelled while waiting for editor permission"
+            );
+            PermissionDecision::Reject
         }
+        decision = request => decision,
+    };
+    if sender.send(decision.clone()).is_err() {
+        warn!(
+            session_id = %session_id,
+            "permission requester disappeared before receiving the decision"
+        );
     }
+    decision
 }

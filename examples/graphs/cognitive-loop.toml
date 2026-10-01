@@ -11,9 +11,11 @@
 #
 # Cell types: the cell types used here (signal-reader, relevance-scorer,
 # system-prompt-builder, claude-agent, gate-pipeline, store-writer,
-# event-publisher) are legacy aliases that delegate to the real cognitive
-# Cell implementations (SenseCell, AssessCell, CognitiveComposeCell,
-# ActCell, VerifyCell, PersistCell, ReactCell) in the default registry.
+# event-publisher) are legacy aliases that delegate to the cognitive Cell
+# implementations (SenseCell, AssessCell, CognitiveComposeCell, ActCell,
+# VerifyCell, PersistCell, ReactCell) in the default registry. ActCell is
+# still a stub that dispatches nothing (gap-3d5cce), so a production start
+# refuses this graph (bug-91a34e).
 #
 # Usage:
 #   roko graph validate examples/graphs/cognitive-loop.toml

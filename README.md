@@ -410,9 +410,9 @@ debug binary instead of `cargo run`:
 ./dev.sh fast plans/my-plan
 ```
 
-FAST is only partly ported to the Graph engine; check work item `gap-4a6dcb` before relying on it.
 Every FAST task must author exactly one `verify` command. The patching agent is told not to build
-or test, and the runner owns that one check and writes a private evidence bundle under
+or test, and each attempt is capped at 6 turns and 90 s; the runner owns that one check, builds it
+in the `dev-fast` profile, never runs `cargo fix`, and writes a private evidence bundle under
 `.roko/runs/`.
 
 ```bash

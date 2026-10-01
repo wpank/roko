@@ -37,6 +37,7 @@ use roko_core::child_env::CredentialScrub;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::{Child, ChildStdin};
@@ -50,9 +51,8 @@ use tokio::time::Duration;
 /// Configuration for an ACP stdio client connection.
 ///
 /// Each ACP-speaking harness provides its own constructor that fills in
-/// the binary, args, and session prefix. The protocol version is
-/// `"2024-11-05"` (the ACP spec's date-string convention); Cursor uses
-/// integer `1` which is passed as `"1"`.
+/// the binary, args, and session prefix. ACP's protocol version is an
+/// integer; every constructor sets `"1"`, which `connect` sends as `1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpStdioConfig {
     /// Path or name of the binary to spawn (e.g. `"cursor"`, `"hermes"`,
@@ -71,9 +71,9 @@ pub struct AcpStdioConfig {
     /// Additional env vars to set on the child process.
     pub env: HashMap<String, String>,
 
-    /// Protocol version to send in the `initialize` request.
-    /// ACP spec uses date strings like `"2024-11-05"`.
-    /// Cursor uses `"1"`. Always a `String`.
+    /// Protocol version to send in the `initialize` request. ACP versions
+    /// are integers, so a numeric value goes out as a JSON number; anything
+    /// else is sent as a string. Always a `String`.
     pub protocol_version: String,
 
     /// Timeout for the `initialize` handshake and `session/new`.
@@ -290,6 +290,117 @@ const SERVER_REQUEST_RESERVE: usize = 64;
 /// Capacity of the turn-done queue: one entry per finished `session/prompt`.
 const TURN_DONE_QUEUE_CAPACITY: usize = 16;
 
+/// The prompt a turn reads for: the latest `session/prompt` that
+/// [`AcpStdioClient::send_prompt`] sent, and its session. The client, its
+/// stdout reader and the receivers it lends share it, so that a turn never
+/// reads what an earlier prompt left behind, such as the late completion of a
+/// prompt that timed out or the notifications that trail it.
+#[derive(Debug, Default)]
+struct TurnState {
+    /// Id of the latest `session/prompt` request; 0 before the first.
+    prompt_id: AtomicU64,
+    /// Session of the latest prompt.
+    session_id: parking_lot::Mutex<Option<String>>,
+}
+
+impl TurnState {
+    /// Make `prompt_id`, sent in `session`, the latest prompt.
+    fn begin(&self, session: &SessionId, prompt_id: u64) {
+        *self.session_id.lock() = Some(session.0.clone());
+        self.prompt_id.store(prompt_id, Ordering::SeqCst);
+    }
+
+    /// Whether `queued` belongs to the latest prompt: the reader queued it
+    /// after the prompt was sent, and it names the prompt's session if it
+    /// names a session at all.
+    fn owns(&self, queued: &QueuedNotification) -> bool {
+        if queued.prompt_id != self.prompt_id.load(Ordering::SeqCst) {
+            return false;
+        }
+        let Some(session) = queued
+            .notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("sessionId"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return true;
+        };
+        let latest = self.session_id.lock();
+        latest.as_deref().is_none_or(|id| id == session)
+    }
+}
+
+/// A notification as the stdout reader queued it, with the id of the latest
+/// prompt at that moment.
+#[derive(Debug)]
+struct QueuedNotification {
+    prompt_id: u64,
+    notification: AcpNotification,
+}
+
+/// Notifications and server requests, lent to one turn at a time by
+/// [`AcpStdioClient::take_notification_rx`]. It skips what earlier prompts
+/// left behind: notifications queued before the latest `session/prompt` was
+/// sent, and ones that name another session.
+#[derive(Debug)]
+pub struct AcpNotificationRx {
+    queue: mpsc::Receiver<QueuedNotification>,
+    turn: Arc<TurnState>,
+}
+
+impl AcpNotificationRx {
+    /// The next notification for the latest prompt, or `None` once the queue
+    /// is closed.
+    pub async fn recv(&mut self) -> Option<AcpNotification> {
+        loop {
+            let queued = self.queue.recv().await?;
+            if self.turn.owns(&queued) {
+                return Some(queued.notification);
+            }
+            tracing::debug!(
+                "[acp] skipping `{}` left by an earlier prompt",
+                queued.notification.method
+            );
+        }
+    }
+
+    /// The next notification for the latest prompt that is already queued,
+    /// without waiting.
+    pub fn try_recv(&mut self) -> Result<AcpNotification, mpsc::error::TryRecvError> {
+        loop {
+            let queued = self.queue.try_recv()?;
+            if self.turn.owns(&queued) {
+                return Ok(queued.notification);
+            }
+        }
+    }
+}
+
+/// Turn completions (`session/prompt` results that carry a `stopReason`),
+/// lent to one turn at a time by [`AcpStdioClient::take_turn_done_rx`]. It
+/// skips the completions of earlier prompts, such as one that timed out or
+/// was cancelled and finished late.
+#[derive(Debug)]
+pub struct AcpTurnDoneRx {
+    queue: mpsc::Receiver<(u64, serde_json::Value)>,
+    turn: Arc<TurnState>,
+}
+
+impl AcpTurnDoneRx {
+    /// The completion of the latest prompt, or `None` once the queue is
+    /// closed.
+    pub async fn recv(&mut self) -> Option<serde_json::Value> {
+        loop {
+            let (id, result) = self.queue.recv().await?;
+            if id == self.turn.prompt_id.load(Ordering::SeqCst) {
+                return Some(result);
+            }
+            tracing::debug!("[acp] skipping the completion of earlier prompt id={id}");
+        }
+    }
+}
+
 /// Shared ACP/JSON-RPC client over stdio.
 ///
 /// Extracted from `CursorConnection` in `cursor_cli_agent.rs`.
@@ -310,17 +421,21 @@ pub struct AcpStdioClient {
     /// with a warning.
     response_rx: Option<mpsc::Receiver<(u64, serde_json::Value)>>,
     /// Notifications and server requests (`server_request_id` set), at most
-    /// [`NOTIFICATION_QUEUE_CAPACITY`]. The reader never waits on it. Once
-    /// only [`SERVER_REQUEST_RESERVE`] slots are free it drops notifications,
+    /// [`NOTIFICATION_QUEUE_CAPACITY`], each tagged with the prompt it arrived
+    /// under. The reader never waits on it. Once only
+    /// [`SERVER_REQUEST_RESERVE`] slots are free it drops notifications,
     /// warning once per burst and logging the count when there is room again;
     /// it drops a server request only when the queue is completely full, and
     /// logs an error naming it.
-    notification_tx: mpsc::Sender<AcpNotification>,
-    notification_rx: Option<mpsc::Receiver<AcpNotification>>,
-    /// Results that carry a `stopReason`, at most
-    /// [`TURN_DONE_QUEUE_CAPACITY`]; the reader drops overflow with a warning.
-    turn_done_tx: mpsc::Sender<serde_json::Value>,
-    turn_done_rx: Option<mpsc::Receiver<serde_json::Value>>,
+    notification_tx: mpsc::Sender<QueuedNotification>,
+    notification_rx: Option<AcpNotificationRx>,
+    /// `(request id, result)` for each response that carries a `stopReason`,
+    /// at most [`TURN_DONE_QUEUE_CAPACITY`]; the reader drops overflow with a
+    /// warning.
+    turn_done_tx: mpsc::Sender<(u64, serde_json::Value)>,
+    turn_done_rx: Option<AcpTurnDoneRx>,
+    /// The latest prompt, the one the lent receivers deliver for.
+    turn: Arc<TurnState>,
     session_id: Option<String>,
     reader_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
@@ -335,6 +450,7 @@ impl AcpStdioClient {
     /// Does NOT spawn the process. Call `connect()` to spawn and
     /// perform the `initialize` handshake.
     pub fn new(config: AcpStdioConfig) -> Self {
+        let turn = Arc::new(TurnState::default());
         let (notification_tx, notification_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         let (turn_done_tx, turn_done_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
         Self {
@@ -344,9 +460,16 @@ impl AcpStdioClient {
             next_id: AtomicU64::new(1),
             response_rx: None,
             notification_tx,
-            notification_rx: Some(notification_rx),
+            notification_rx: Some(AcpNotificationRx {
+                queue: notification_rx,
+                turn: Arc::clone(&turn),
+            }),
             turn_done_tx,
-            turn_done_rx: Some(turn_done_rx),
+            turn_done_rx: Some(AcpTurnDoneRx {
+                queue: turn_done_rx,
+                turn: Arc::clone(&turn),
+            }),
+            turn,
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
@@ -417,7 +540,7 @@ impl AcpStdioClient {
             args: vec!["acp".into()],
             cwd: Some(cwd),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         })
         .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::Hermes))
@@ -438,7 +561,7 @@ impl AcpStdioClient {
             args,
             cwd: Some(cwd),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         })
         .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::OpenClaw))
@@ -534,6 +657,7 @@ impl AcpStdioClient {
             resp_tx,
             self.notification_tx.clone(),
             self.turn_done_tx.clone(),
+            Arc::clone(&self.turn),
         );
         let reader_handle = tokio::spawn(router.run(stdout));
 
@@ -545,22 +669,7 @@ impl AcpStdioClient {
         self.response_rx = Some(resp_rx);
 
         // --- 9. Send `initialize` request ---
-        let protocol_version: serde_json::Value =
-            if let Ok(n) = self.config.protocol_version.parse::<u64>() {
-                serde_json::json!(n)
-            } else {
-                serde_json::json!(self.config.protocol_version)
-            };
-
-        let init_params = serde_json::json!({
-            "protocolVersion": protocol_version,
-            "clientInfo": {
-                "name": "roko",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "clientCapabilities": {}
-        });
-
+        let init_params = self.initialize_params();
         let id = self.send_request("initialize", Some(init_params)).await?;
 
         // --- 10. Await response ---
@@ -589,6 +698,20 @@ impl AcpStdioClient {
         Ok(init_response)
     }
 
+    /// Params of the `initialize` request. ACP's `protocolVersion` is an
+    /// integer, so a numeric `protocol_version` goes out as a JSON number.
+    fn initialize_params(&self) -> serde_json::Value {
+        let protocol_version = protocol_version_json(&self.config.protocol_version);
+        serde_json::json!({
+            "protocolVersion": protocol_version,
+            "clientInfo": {
+                "name": "roko",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "clientCapabilities": {}
+        })
+    }
+
     // ---- Request/response primitives ----------------------------------------
 
     /// Send a JSON-RPC request and return the assigned ID.
@@ -597,19 +720,54 @@ impl AcpStdioClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<u64, AcpError> {
-        let stdin = self.stdin.as_mut().ok_or(AcpError::Disconnected)?;
+        if self.stdin.is_none() {
+            return Err(AcpError::Disconnected);
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.write_request(id, method, params).await?;
+        Ok(id)
+    }
+
+    /// Write the JSON-RPC request `id` to the server's stdin.
+    async fn write_request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), AcpError> {
         let req = JsonRpcRequest::new(id, method, params);
-        let mut json = serde_json::to_string(&req)
+        let json = serde_json::to_string(&req)
             .map_err(|e| AcpError::Protocol(format!("serialize: {e}")))?;
-        tracing::debug!("[acp] -> {}", &json[..json.len().min(500)]);
+        self.write_message(json).await
+    }
+
+    /// Write one JSON-RPC message, a line of JSON, to the server's stdin.
+    async fn write_message(&mut self, mut json: String) -> Result<(), AcpError> {
+        let stdin = self.stdin.as_mut().ok_or(AcpError::Disconnected)?;
+        tracing::debug!("[acp] -> {}", &json[..json.floor_char_boundary(500)]);
         json.push('\n');
         stdin
             .write_all(json.as_bytes())
             .await
             .map_err(AcpError::Io)?;
         stdin.flush().await.map_err(AcpError::Io)?;
-        Ok(id)
+        Ok(())
+    }
+
+    /// Answer a server request so the agent is not left waiting: a
+    /// `session/request_permission` gets the offered option that matches
+    /// `allow`, or a cancelled outcome when none does, and any other method
+    /// a JSON-RPC "method not found" error. A plain notification needs no
+    /// answer and is left alone.
+    pub async fn answer_server_request(
+        &mut self,
+        request: &AcpNotification,
+        allow: bool,
+    ) -> Result<(), AcpError> {
+        match server_request_reply(request, allow) {
+            Some(reply) => self.write_message(reply.to_string()).await,
+            None => Ok(()),
+        }
     }
 
     /// Wait for a response with the given ID.
@@ -715,6 +873,9 @@ impl AcpStdioClient {
 
     /// Send a `session/prompt` request. Returns the request ID.
     ///
+    /// This prompt becomes the latest one: from here on the lent receivers
+    /// deliver only its notifications and its completion.
+    ///
     /// The caller must:
     /// 1. Take the notification receiver via `take_notification_rx()`.
     /// 2. Take the turn-done receiver via `take_turn_done_rx()`.
@@ -754,7 +915,14 @@ impl AcpStdioClient {
             }
         }
 
-        self.send_request("session/prompt", Some(params)).await
+        // From here on the lent receivers deliver only this prompt's
+        // notifications and completion. Mark the turn before writing, so
+        // nothing the server sends for this prompt can arrive first.
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.turn.begin(session, id);
+        self.write_request(id, "session/prompt", Some(params))
+            .await?;
+        Ok(id)
     }
 
     /// Cancel an in-flight prompt via `session/cancel`.
@@ -847,12 +1015,12 @@ impl AcpStdioClient {
     /// Only one consumer can hold this at a time. Returns `None` if
     /// already taken. The caller must return it via `return_notification_rx`
     /// when done.
-    pub fn take_notification_rx(&mut self) -> Option<mpsc::Receiver<AcpNotification>> {
+    pub fn take_notification_rx(&mut self) -> Option<AcpNotificationRx> {
         self.notification_rx.take()
     }
 
     /// Return the notification receiver after use.
-    pub fn return_notification_rx(&mut self, rx: mpsc::Receiver<AcpNotification>) {
+    pub fn return_notification_rx(&mut self, rx: AcpNotificationRx) {
         self.notification_rx = Some(rx);
     }
 
@@ -861,12 +1029,12 @@ impl AcpStdioClient {
     /// The reader task sends to this channel when a response with
     /// `stopReason` is received. Used by adapters to detect turn
     /// completion in their event loops.
-    pub fn take_turn_done_rx(&mut self) -> Option<mpsc::Receiver<serde_json::Value>> {
+    pub fn take_turn_done_rx(&mut self) -> Option<AcpTurnDoneRx> {
         self.turn_done_rx.take()
     }
 
     /// Return the turn-done receiver after use.
-    pub fn return_turn_done_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {
+    pub fn return_turn_done_rx(&mut self, rx: AcpTurnDoneRx) {
         self.turn_done_rx = Some(rx);
     }
 
@@ -891,13 +1059,70 @@ impl AcpStdioClient {
 
 impl Drop for AcpStdioClient {
     fn drop(&mut self) {
-        // Best-effort synchronous cleanup. The reader tasks will be
-        // aborted when their JoinHandles are dropped. The child process
-        // will be killed by `kill_on_drop(true)` set during spawn.
-        // We just need to unregister the PID.
+        // Best-effort synchronous cleanup. Dropping a JoinHandle only
+        // detaches its task, so abort the reader tasks here. The child
+        // process is killed by `kill_on_drop(true)` set during spawn, which
+        // leaves unregistering its PID.
+        if let Some(handle) = self.reader_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.stderr_handle.take() {
+            handle.abort();
+        }
         if let Some(pid) = self.child.as_ref().and_then(|c| c.id()) {
             process::unregister_pid(pid);
         }
+    }
+}
+
+/// The JSON-RPC response to the server request `request`, or `None` for a
+/// plain notification. See [`AcpStdioClient::answer_server_request`].
+fn server_request_reply(request: &AcpNotification, allow: bool) -> Option<serde_json::Value> {
+    let id = request.server_request_id?;
+    let reply = if request.method == "session/request_permission" {
+        let outcome = permission_outcome(request.params.as_ref(), allow);
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}})
+    } else {
+        let message = format!("method not found: {}", request.method);
+        let error = serde_json::json!({"code": -32601, "message": message});
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "error": error})
+    };
+    Some(reply)
+}
+
+/// ACP's `RequestPermissionOutcome` for a permission request with `params`:
+/// the offered option that matches `allow`, a one-time option first, or
+/// `cancelled` when none matches.
+fn permission_outcome(params: Option<&serde_json::Value>, allow: bool) -> serde_json::Value {
+    let (once, always) = if allow {
+        ("allow_once", "allow_always")
+    } else {
+        ("reject_once", "reject_always")
+    };
+    match offered_option(params, once).or_else(|| offered_option(params, always)) {
+        Some(option_id) => serde_json::json!({"outcome": "selected", "optionId": option_id}),
+        None => serde_json::json!({"outcome": "cancelled"}),
+    }
+}
+
+/// The `optionId` of the first option of kind `kind` among a permission
+/// request's `options`.
+fn offered_option<'a>(params: Option<&'a serde_json::Value>, kind: &str) -> Option<&'a str> {
+    params?
+        .get("options")?
+        .as_array()?
+        .iter()
+        .find(|option| option["kind"] == kind)?
+        .get("optionId")?
+        .as_str()
+}
+
+/// `version` as the `initialize` request sends it: a JSON number when it is
+/// numeric, as ACP versions are, and a string otherwise.
+fn protocol_version_json(version: &str) -> serde_json::Value {
+    match version.parse::<u64>() {
+        Ok(number) => serde_json::json!(number),
+        Err(_) => serde_json::json!(version),
     }
 }
 
@@ -909,8 +1134,10 @@ impl Drop for AcpStdioClient {
 /// what each queue drops when it is full.
 struct ServerMessageRouter {
     responses: mpsc::Sender<(u64, serde_json::Value)>,
-    notifications: mpsc::Sender<AcpNotification>,
-    turn_done: mpsc::Sender<serde_json::Value>,
+    notifications: mpsc::Sender<QueuedNotification>,
+    turn_done: mpsc::Sender<(u64, serde_json::Value)>,
+    /// The latest prompt, which tags each queued notification.
+    turn: Arc<TurnState>,
     /// Notifications dropped since the queue last took one.
     dropped_notifications: u64,
 }
@@ -918,13 +1145,15 @@ struct ServerMessageRouter {
 impl ServerMessageRouter {
     fn new(
         responses: mpsc::Sender<(u64, serde_json::Value)>,
-        notifications: mpsc::Sender<AcpNotification>,
-        turn_done: mpsc::Sender<serde_json::Value>,
+        notifications: mpsc::Sender<QueuedNotification>,
+        turn_done: mpsc::Sender<(u64, serde_json::Value)>,
+        turn: Arc<TurnState>,
     ) -> Self {
         Self {
             responses,
             notifications,
             turn_done,
+            turn,
             dropped_notifications: 0,
         }
     }
@@ -942,13 +1171,15 @@ impl ServerMessageRouter {
         if line.trim().is_empty() {
             return;
         }
-        tracing::trace!("[acp] <- {}", &line[..line.len().min(200)]);
+        // Cut at a char boundary: a byte offset can split a character.
+        let shown = &line[..line.floor_char_boundary(200)];
+        tracing::trace!("[acp] <- {shown}");
 
         match serde_json::from_str::<RawServerMessage>(line) {
             Ok(msg) if msg.is_response() => self.route_response(msg),
             Ok(msg) => self.route_notification(&msg),
             Err(e) => {
-                tracing::warn!("[acp] parse error: {e}: {}", &line[..line.len().min(200)]);
+                tracing::warn!("[acp] parse error: {e}: {shown}");
             }
         }
     }
@@ -973,7 +1204,7 @@ impl ServerMessageRouter {
 
         // Detect turn completion: stopReason in the response.
         if val.get("stopReason").and_then(|s| s.as_str()).is_some()
-            && let Err(TrySendError::Full(_)) = self.turn_done.try_send(val.clone())
+            && let Err(TrySendError::Full(_)) = self.turn_done.try_send((id, val.clone()))
         {
             tracing::warn!("[acp] turn-done queue full; dropped the end of request id={id}");
         }
@@ -993,7 +1224,11 @@ impl ServerMessageRouter {
                 None
             },
         };
-        if notification.server_request_id.is_none() {
+        let queued = QueuedNotification {
+            prompt_id: self.turn.prompt_id.load(Ordering::SeqCst),
+            notification,
+        };
+        if queued.notification.server_request_id.is_none() {
             if self.notifications.capacity() <= SERVER_REQUEST_RESERVE {
                 if self.dropped_notifications == 0 {
                     tracing::warn!("[acp] notification queue full; dropping notifications");
@@ -1009,13 +1244,65 @@ impl ServerMessageRouter {
                 self.dropped_notifications = 0;
             }
         }
-        if let Err(TrySendError::Full(request)) = self.notifications.try_send(notification) {
+        if let Err(TrySendError::Full(dropped)) = self.notifications.try_send(queued) {
             tracing::error!(
                 "[acp] notification queue full; dropped server request `{}` (id={:?})",
-                request.method,
-                request.server_request_id
+                dropped.notification.method,
+                dropped.notification.server_request_id
             );
         }
+    }
+}
+
+// ---- Test support -----------------------------------------------------------
+
+/// Stand-in ACP servers for the agent tests, run with `bash -c`.
+#[cfg(test)]
+pub(crate) mod test_servers {
+    use super::{AcpStdioClient, AcpStdioConfig};
+    use std::collections::HashMap;
+    use tokio::time::Duration;
+
+    /// Answers the handshake and `session/new`, then answers a prompt with
+    /// twenty `session/update` notifications, "0," to "19,", followed at
+    /// once by the turn's completion. Other requests get an empty result.
+    pub(crate) const BURST_THEN_DONE: &str = r##"
+set -u
+while IFS= read -r line; do
+    id="${line#*\"id\":}"
+    id="${id%%,*}"
+    id="${id%%\}*}"
+    case "$line" in
+        *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"method":"session/new"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-1"}}\n' "$id" ;;
+        *'"method":"session/prompt"'*)
+            for ((i = 0; i < 20; i++)); do
+                printf '{"jsonrpc":"2.0","method":"session/update","params":{"text":"%s,"}}\n' "$i"
+            done
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+        *)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    esac
+done
+"##;
+
+    /// The output an agent should report for a [`BURST_THEN_DONE`] turn.
+    pub(crate) fn burst_text() -> String {
+        (0..20).map(|i| format!("{i},")).collect()
+    }
+
+    /// A client whose server is the stand-in `script`, run with `bash -c`.
+    pub(crate) fn client(script: &str) -> AcpStdioClient {
+        AcpStdioClient::new(AcpStdioConfig {
+            command: "bash".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: Some(std::env::temp_dir()),
+            env: HashMap::new(),
+            protocol_version: "1".into(),
+            timeout: Duration::from_secs(10),
+        })
     }
 }
 
@@ -1250,6 +1537,7 @@ done
             notification_rx: None,
             turn_done_tx: td_tx,
             turn_done_rx: None,
+            turn: Arc::default(),
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
@@ -1286,6 +1574,7 @@ done
             notification_rx: None,
             turn_done_tx: td_tx,
             turn_done_rx: None,
+            turn: Arc::default(),
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
@@ -1316,6 +1605,7 @@ done
             notification_rx: None,
             turn_done_tx: td_tx,
             turn_done_rx: None,
+            turn: Arc::default(),
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
@@ -1371,7 +1661,7 @@ done
         let client = AcpStdioClient::hermes("hermes", PathBuf::from("/workspace"));
         let cfg = client.config();
         assert_eq!(cfg.command, "hermes");
-        assert_eq!(cfg.protocol_version, "2024-11-05");
+        assert_eq!(cfg.protocol_version, "1");
         assert_eq!(cfg.args, vec!["acp"]);
         assert!(cfg.env.is_empty());
     }
@@ -1385,7 +1675,7 @@ done
         );
         let cfg = client.config();
         assert_eq!(cfg.command, "openclaw");
-        assert_eq!(cfg.protocol_version, "2024-11-05");
+        assert_eq!(cfg.protocol_version, "1");
         assert!(cfg.args.contains(&"--url".to_string()));
         assert!(cfg.args.contains(&"ws://localhost:18789".to_string()));
     }
@@ -1510,7 +1800,7 @@ done
         let (resp_tx, mut resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
         let (notif_tx, mut notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         let (td_tx, mut td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
-        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
+        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx, Arc::default());
 
         // These are the exact JSON-RPC lines a mock server would emit.
         let traces = vec![
@@ -1529,11 +1819,11 @@ done
         }
 
         // Verify notifications.
-        let n1 = notif_rx.recv().await.unwrap();
+        let n1 = notif_rx.recv().await.unwrap().notification;
         assert_eq!(n1.method, "session/update");
         assert!(n1.server_request_id.is_none()); // notification, not server request
 
-        let n2 = notif_rx.recv().await.unwrap();
+        let n2 = notif_rx.recv().await.unwrap().notification;
         assert_eq!(n2.method, "session/request_permission");
         assert_eq!(n2.server_request_id, Some(99)); // server request
 
@@ -1547,7 +1837,8 @@ done
         assert_eq!(val["stopReason"], "end_turn");
 
         // Verify turn_done was fired.
-        let td = td_rx.recv().await.unwrap();
+        let (td_id, td) = td_rx.recv().await.unwrap();
+        assert_eq!(td_id, 4);
         assert_eq!(td["stopReason"], "end_turn");
     }
 
@@ -1564,7 +1855,7 @@ done
         let (resp_tx, mut resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
         let (notif_tx, _notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         let (td_tx, _td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
-        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
+        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx, Arc::default());
 
         for line in &traces {
             router.route(line);
@@ -1596,7 +1887,7 @@ done
         stdout.push_str(r#"{"jsonrpc":"2.0","id":7,"result":{"sessionId":"s-007"}}"#);
         stdout.push('\n');
 
-        let router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
+        let router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx, Arc::default());
         tokio::time::timeout(Duration::from_secs(5), router.run(stdout.as_bytes()))
             .await
             .expect("the reader never waits for a turn to read notifications");
@@ -1608,8 +1899,8 @@ done
 
         let mut notifications = 0;
         let mut server_requests = Vec::new();
-        while let Ok(notification) = notif_rx.try_recv() {
-            match notification.server_request_id {
+        while let Ok(queued) = notif_rx.try_recv() {
+            match queued.notification.server_request_id {
                 Some(id) => server_requests.push(id),
                 None => notifications += 1,
             }
@@ -1619,6 +1910,82 @@ done
             NOTIFICATION_QUEUE_CAPACITY - SERVER_REQUEST_RESERVE
         );
         assert_eq!(server_requests, [99]);
+    }
+
+    /// bug-7f15df: a turn reads only its own prompt's notifications and
+    /// completion. What a timed-out prompt left behind is skipped, whether it
+    /// was queued before the next prompt was sent or arrived after it.
+    #[tokio::test]
+    async fn acp_client_turn_skips_what_an_earlier_prompt_left() {
+        let mut client = AcpStdioClient::new(test_config());
+        let (resp_tx, _resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let mut router = ServerMessageRouter::new(
+            resp_tx,
+            client.notification_tx.clone(),
+            client.turn_done_tx.clone(),
+            Arc::clone(&client.turn),
+        );
+        let mut notifications = client.take_notification_rx().unwrap();
+        let mut turn_done = client.take_turn_done_rx().unwrap();
+        let update = |session: Option<&str>, text: &str| {
+            let mut params = serde_json::json!({"update": {"text": text}});
+            if let Some(session) = session {
+                params["sessionId"] = session.into();
+            }
+            serde_json::json!({"jsonrpc": "2.0", "method": "session/update", "params": params})
+                .to_string()
+        };
+
+        // Prompt 5 in session s-old times out while its output still streams.
+        client.turn.begin(&SessionId("s-old".into()), 5);
+        router.route(&update(Some("s-old"), "old"));
+        // The next turn sends prompt 7 in session s-new.
+        client.turn.begin(&SessionId("s-new".into()), 7);
+        router.route(r#"{"jsonrpc":"2.0","id":5,"result":{"stopReason":"cancelled"}}"#);
+        router.route(&update(Some("s-old"), "late"));
+        router.route(&update(None, "no session"));
+        router.route(&update(Some("s-new"), "new"));
+        router.route(r#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn"}}"#);
+
+        let first = notifications.recv().await.unwrap();
+        assert_eq!(first.params.unwrap()["update"]["text"], "no session");
+        let second = notifications.recv().await.unwrap();
+        assert_eq!(second.params.unwrap()["update"]["text"], "new");
+        assert!(notifications.try_recv().is_err());
+        let done = turn_done.recv().await.unwrap();
+        assert_eq!(done["stopReason"], "end_turn");
+    }
+
+    /// Enables every tracing event, so that the macros evaluate their
+    /// arguments as they do under a real subscriber.
+    struct EnableAll;
+
+    impl tracing::Subscriber for EnableAll {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// bug-7f15df: the reader logs a stdout line cut at a char boundary. A
+    /// non-JSON line whose 200th byte falls inside a character used to panic
+    /// the reader task.
+    #[test]
+    fn acp_client_logs_a_multibyte_line_without_panicking() {
+        let (resp_tx, _resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, _notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
+        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx, Arc::default());
+        // U+20AC is three bytes long in UTF-8, so byte 200 falls inside one.
+        let line = "\u{20ac}".repeat(100);
+        tracing::subscriber::with_default(EnableAll, || router.route(&line));
     }
 
     // -- Integration tests (process-based) -----------------------------------
@@ -1766,7 +2133,7 @@ done
             args: vec![],
             cwd: Some(tmp.path().to_path_buf()),
             env: HashMap::new(),
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: std::time::Duration::from_secs(10),
         });
 
@@ -2395,7 +2762,7 @@ done
                 m.insert("KEY".into(), "VALUE".into());
                 m
             },
-            protocol_version: "2024-11-05".into(),
+            protocol_version: "1".into(),
             timeout: Duration::from_secs(30),
         };
 
@@ -2408,7 +2775,7 @@ done
             deserialized.env.get("KEY").map(|s| s.as_str()),
             Some("VALUE")
         );
-        assert_eq!(deserialized.protocol_version, "2024-11-05");
+        assert_eq!(deserialized.protocol_version, "1");
         assert_eq!(deserialized.timeout, Duration::from_secs(30));
     }
 
@@ -2508,24 +2875,84 @@ done
 
     #[test]
     fn protocol_version_numeric_string_parses_to_integer_json() {
-        let version_str = "1";
-        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
-            serde_json::json!(n)
-        } else {
-            serde_json::json!(version_str)
-        };
-        assert_eq!(protocol_version, serde_json::json!(1));
+        assert_eq!(protocol_version_json("1"), serde_json::json!(1));
     }
 
     #[test]
     fn protocol_version_date_string_stays_string() {
-        let version_str = "2024-11-05";
-        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
-            serde_json::json!(n)
-        } else {
-            serde_json::json!(version_str)
+        let version = "2024-11-05";
+        assert_eq!(protocol_version_json(version), serde_json::json!(version));
+    }
+
+    /// bug-192264: every server request gets an answer. A permission
+    /// request gets the offered option that matches the decision, in ACP's
+    /// response shape; another method gets "method not found"; a plain
+    /// notification gets none.
+    #[test]
+    fn acp_permission_request_is_answered() {
+        let request = AcpNotification {
+            method: "session/request_permission".into(),
+            params: Some(serde_json::json!({
+                "sessionId": "s-1",
+                "toolCall": {"toolCallId": "c-1"},
+                "options": [
+                    {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "never", "name": "Always reject", "kind": "reject_always"},
+                ],
+            })),
+            server_request_id: Some(99),
         };
-        assert_eq!(protocol_version, serde_json::json!("2024-11-05"));
+
+        let allowed = server_request_reply(&request, true).unwrap();
+        let selected = serde_json::json!({"outcome": "selected", "optionId": "yes"});
+        assert_eq!(
+            allowed,
+            serde_json::json!({"jsonrpc": "2.0", "id": 99, "result": {"outcome": selected}})
+        );
+        let denied = server_request_reply(&request, false).unwrap();
+        assert_eq!(denied["result"]["outcome"]["optionId"], "never");
+
+        let no_options = AcpNotification {
+            params: None,
+            ..request.clone()
+        };
+        let cancelled = server_request_reply(&no_options, true).unwrap();
+        assert_eq!(
+            cancelled["result"]["outcome"],
+            serde_json::json!({"outcome": "cancelled"})
+        );
+
+        let other = AcpNotification {
+            method: "fs/read_text_file".into(),
+            ..request.clone()
+        };
+        let error = server_request_reply(&other, true).unwrap();
+        assert_eq!(error["id"], 99);
+        assert_eq!(error["error"]["code"], -32601);
+
+        let notification = AcpNotification {
+            server_request_id: None,
+            ..request
+        };
+        assert!(server_request_reply(&notification, true).is_none());
+    }
+
+    /// bug-f6e6ae: ACP's `initialize.protocolVersion` is an integer, and a
+    /// spec-validating agent rejects a date string. Every built-in client
+    /// sends the integer.
+    #[test]
+    fn acp_clients_initialize_with_an_integer_protocol_version() {
+        let cwd = PathBuf::from("/workspace");
+        for client in [
+            AcpStdioClient::cursor("cursor", cwd.clone(), None),
+            AcpStdioClient::hermes("hermes", cwd.clone()),
+            AcpStdioClient::openclaw("openclaw", cwd.clone(), None),
+        ] {
+            let params = client.initialize_params();
+            let command = &client.config().command;
+            assert_eq!(params["protocolVersion"], serde_json::json!(1), "{command}");
+            assert_eq!(params["clientInfo"]["name"], "roko", "{command}");
+        }
     }
 
     // -- AtomicU64 ID generation ---------------------------------------------

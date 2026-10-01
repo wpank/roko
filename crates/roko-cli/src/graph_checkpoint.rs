@@ -30,7 +30,10 @@ use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
-use roko_graph::replay::{RecordEntry, retain_recorded_activities};
+use roko_graph::replay::{
+    RecordEntry, committed_activity_len, retain_recorded_activities,
+    set_aside_uncommitted_activities,
+};
 use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
     plan_graph_fingerprint,
@@ -71,6 +74,11 @@ pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KE
 /// Known extension namespace for the tasks the last run did not complete.
 pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
+/// Known extension namespace for what stopped the last run before its tasks
+/// settled (gap-fab2cc): `{"by": "SIGINT" | "SIGTERM" | "SIGHUP" |
+/// "deadline" | "conductor"}`. Absent when nothing stopped it.
+pub const STOP_EXTENSION: &str = "roko.run.stop@1";
+
 /// Known extension namespace for the plan's delivery into its run's batch
 /// branch (spec-f830c4).
 pub const BATCH_EXTENSION: &str = "roko.batch@1";
@@ -98,8 +106,9 @@ pub enum GraphCheckpointStatus {
     Failed,
     /// An operator cancelled the plan before every node finished.
     Cancelled,
-    /// A signal (SIGINT/SIGTERM) or a closed operator TUI stopped the run
-    /// before every node finished; recorded Activities remain resumable.
+    /// A stop request (a signal, a closed operator TUI, the FAST deadline or
+    /// the conductor) stopped the run before every node finished; recorded
+    /// Activities remain resumable. [`STOP_EXTENSION`] names the request.
     Interrupted,
 }
 
@@ -878,6 +887,13 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record what stopped this run (`by`, e.g. `deadline`) under
+    /// [`STOP_EXTENSION`], or that nothing did, replacing the previous run's
+    /// record (gap-fab2cc). The next terminal write persists it.
+    pub fn record_stop_cause(&mut self, by: Option<&str>) -> Result<()> {
+        set_stop_cause(&mut self.manifest, by)
+    }
+
     /// Record how the plan was delivered into its run's batch branch
     /// (spec-f830c4): `batch` under [`BATCH_EXTENSION`], and the whole
     /// `receipt` under [`DELIVERY_EXTENSION`] so a resume can continue that
@@ -1324,6 +1340,19 @@ fn resume_checkpoint(
     plan_id: &str,
     graph: &Graph,
 ) -> Result<PreparedGraphCheckpoint> {
+    // A record whose write did not finish, such as a line a crash tore, was
+    // never committed: set it aside rather than fail on it, so the log ends
+    // in its last complete record and its node runs again (gap-dc1d16).
+    let uncommitted = set_aside_uncommitted_activities(&paths.activities)
+        .with_context(|| format!("set aside the torn end of {}", paths.activities.display()))?;
+    if let Some(aside) = uncommitted {
+        tracing::warn!(
+            activities = %paths.activities.display(),
+            set_aside = %aside.display(),
+            "resume: the Activity log ended in a record whose write did not finish; \
+             set it aside, and its node runs again"
+        );
+    }
     // Never resume a task whose recorded output was not verified: drop those
     // records so the nodes re-run.
     let invalidated_on_resume = invalidate_unverified_activities(&paths.activities, graph)?;
@@ -1847,20 +1876,54 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
         .max()
 }
 
-/// Mark the checkpoint whose manifest is `manifest` `interrupted` if it still
-/// reads `running`, as a plan run forced out before it could write its own
-/// terminal status does on its way out (bug-4641e3), so the checkpoint does
-/// not look alive afterwards. A checkpoint its run already finalized keeps
-/// its status. Returns whether it was marked.
-pub fn mark_running_checkpoint_interrupted(manifest: &Path) -> Result<bool> {
+/// Mark the checkpoint whose manifest is `manifest` `interrupted` by the stop
+/// request `by` if it still reads `running`, as a plan run forced out before
+/// it could write its own terminal status does on its way out (bug-4641e3),
+/// so the checkpoint does not look alive afterwards. A checkpoint its run
+/// already finalized keeps its status. Returns whether it was marked.
+pub fn mark_running_checkpoint_interrupted(manifest: &Path, by: &str) -> Result<bool> {
     let mut recorded = read_manifest(manifest)?;
     if recorded.status != GraphCheckpointStatus::Running {
         return Ok(false);
     }
     recorded.status = GraphCheckpointStatus::Interrupted;
+    set_stop_cause(&mut recorded, Some(by))?;
     recorded.updated_at_ms = unix_ms();
     write_manifest_atomic(manifest, &recorded)?;
     Ok(true)
+}
+
+/// Set `manifest`'s [`STOP_EXTENSION`] to `by`, or remove it.
+fn set_stop_cause(manifest: &mut GraphCheckpointManifest, by: Option<&str>) -> Result<()> {
+    match by {
+        Some(by) => {
+            let value = serde_json::json!({ "by": by });
+            manifest.extensions.insert(
+                STOP_EXTENSION.to_string(),
+                host_extension(STOP_EXTENSION, value)?,
+            );
+        }
+        None => {
+            manifest.extensions.remove(STOP_EXTENSION);
+        }
+    }
+    Ok(())
+}
+
+/// What stopped the last run recorded in `plan_id`'s canonical checkpoint
+/// under `.roko/state/graph/`, as [`STOP_EXTENSION`] holds it; `None` when
+/// nothing did or the checkpoint cannot be read.
+#[must_use]
+pub fn canonical_stop_cause(workdir: &Path, plan_id: &str) -> Option<String> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    manifest["extensions"][STOP_EXTENSION]["value"]["by"]
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// Start `plan`'s canonical checkpoint the way a default `plan run` does.
@@ -2173,8 +2236,17 @@ fn preview_graph_checkpoint(
     if let Err(error) = GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
         return Ok(preview.unusable(force_resume, format!("{error:#}")));
     }
-    let replayer = match ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
-    {
+    // A resume sets aside a record whose write did not finish, so only the
+    // committed records count here.
+    let loaded = committed_activity_len(&paths.activities).and_then(|committed| {
+        ActivityReplayer::load_scoped_committed(
+            &paths.activities,
+            plan_id,
+            &manifest.run_id,
+            committed,
+        )
+    });
+    let replayer = match loaded {
         Ok(replayer) => replayer,
         Err(error) => {
             return Ok(preview.refused(format!(
@@ -2985,22 +3057,56 @@ depends_on = ["T1"]
             prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
                 .expect("fresh checkpoint");
         let manifest = checkpoint.paths().manifest.clone();
+        let by = "SIGHUP";
 
-        assert!(mark_running_checkpoint_interrupted(&manifest).expect("mark"));
+        assert!(mark_running_checkpoint_interrupted(&manifest, by).expect("mark"));
         assert_eq!(
             canonical_checkpoint_status(dir.path(), "p"),
             Some(GraphCheckpointStatus::Interrupted)
         );
-        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark again"));
+        assert_eq!(
+            canonical_stop_cause(dir.path(), "p").as_deref(),
+            Some("SIGHUP")
+        );
+        assert!(!mark_running_checkpoint_interrupted(&manifest, by).expect("mark again"));
 
         checkpoint
             .finish_with_status(GraphCheckpointStatus::Failed)
             .expect("finish");
-        assert!(!mark_running_checkpoint_interrupted(&manifest).expect("mark finished"));
+        assert!(!mark_running_checkpoint_interrupted(&manifest, by).expect("mark finished"));
         assert_eq!(
             canonical_checkpoint_status(dir.path(), "p"),
             Some(GraphCheckpointStatus::Failed)
         );
+    }
+
+    /// gap-fab2cc: an interrupted run's checkpoint names the stop request
+    /// that ended it, and a later run that nothing stopped clears the record.
+    #[test]
+    fn checkpoint_records_the_stop_cause() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        checkpoint
+            .record_stop_cause(Some("deadline"))
+            .expect("record the stop");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Interrupted)
+            .expect("finish");
+        assert_eq!(
+            canonical_stop_cause(dir.path(), "p").as_deref(),
+            Some("deadline")
+        );
+
+        checkpoint = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume the interrupted checkpoint");
+        checkpoint.record_stop_cause(None).expect("record no stop");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Succeeded)
+            .expect("finish");
+        assert_eq!(canonical_stop_cause(dir.path(), "p"), None);
     }
 
     // ─── v3 extension and receipt tests ──────────────────────────────────
@@ -3434,6 +3540,57 @@ depends_on = ["T1"]
         let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
             .expect("second resume");
         assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
+    }
+
+    #[test]
+    fn resume_sets_aside_a_torn_activity_record() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let activities = fresh.paths().activities.clone();
+        let committed = std::fs::read(&activities).expect("committed log");
+        // The process died while it appended a record, in the middle of a
+        // multi-byte character.
+        let torn: &[u8] = b"{\"graph_id\":\"p\",\"node_id\":\"task-2\",\"text\":\"\xe2\x82";
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, torn).expect("tear the log");
+        drop(log);
+
+        // The preview changes no file, and expects what the resume does.
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.restored_tasks, ["task-1"]);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("a torn record does not block resume");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(std::fs::read(&activities).expect("log"), committed);
+        let set_aside: Vec<Vec<u8>> = std::fs::read_dir(activities.parent().expect("dir"))
+            .expect("checkpoint dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.to_string_lossy().contains(".uncommitted."))
+            .map(|path| std::fs::read(path).expect("set-aside bytes"))
+            .collect();
+        assert_eq!(set_aside, [torn.to_vec()]);
+
+        // The resumed run appends after the last complete record.
+        resumed
+            .take_recorder()
+            .record("p", "task-2", 0, Vec::new())
+            .expect("record");
+        let replayer = ActivityReplayer::load_scoped(&activities, "p", &run_id).expect("log");
+        assert_eq!(replayer.entry_count(), 2);
     }
 
     #[test]

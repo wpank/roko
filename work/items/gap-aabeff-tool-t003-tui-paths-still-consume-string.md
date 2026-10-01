@@ -9,9 +9,9 @@ size = "L"
 goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "ebdc0f5d5"
 source = "tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-cli/src/tui/app/channels.rs:663", "crates/roko-cli/src/tui/state/signals.rs::push_agent_output_record", "crates/roko-cli/src/tui/views/agents_view.rs::render_output_body", "crates/roko-cli/src/tui/views/dashboard_view.rs::render_output_panel", "crates/roko-cli/src/tui/widgets/stream_output.rs::parse_stream_line", "crates/roko-cli/src/transcript/convert.rs::blocks_from_records", "crates/roko-core/src/transcript_store.rs::TranscriptStore", "crates/roko-cli/tests/tui_terminal_size.rs"]
@@ -125,6 +125,19 @@ Steps (Option A):
 
 ## Notes
 
+- 2026-10-01 (wk-streams): partial on work/gap-b35a57; cargo verification deferred to the batch check. The item
+  stays open: verify clauses 1 and 3 still fail.
+  - Landed (Plan step 2, "stop pushing `[tool_call] {json}`"): the sidecar stream's chunks are handled by
+    `TuiState::ingest_stream_chunk` (`tui/state/signals.rs`), and a tool call's Live Stream line is
+    `[tool ⏵ name id]`, as a StateHub tool start's is, never the call's JSON. Test:
+    `sidecar_tool_call_line_names_the_call_without_its_json`.
+  - Already done under gap-836ae9 (same branch): live StateHub lines and snapshot backfill build the same records
+    through `AgentOutputHistory::ingest_line`, and `parse_stream_line` reads the published `payload` shape, so the
+    TUI now has two ingestion paths (`ingest_agent_output`, `ingest_stream_chunk`) feeding one record history.
+  - Next: the adapter of Plan step 1 should land with the store and the block renderer (steps 2-4), so it is never
+    built unwired. It has to fold the history's live tool steps and unscreened records into the settled ones (one
+    call id appears as a live `tool_start` and again as a screened one), which `blocks_from_records` would
+    otherwise show twice. `[usage] {json}` is still pushed as a system record and a chunk.
 - Keep the secret-scrubbing behaviour of `live_output.rs` (tool steps expose only identity and target); the
   adapter must not reintroduce raw tool arguments into the pane.
 - The live-vs-replay equivalence proof belongs to `gap-836ae9`; do not duplicate it here, but design the store so

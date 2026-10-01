@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use roko_learn::cost_table::{CostTable, ModelPricing};
+use roko_learn::cost_table::CostTable;
 use serde::{Deserialize, Serialize};
 
 use crate::TokenUsage;
@@ -98,15 +98,15 @@ impl CostTracker {
         }
     }
 
-    /// Compute one request's cost using canonical model pricing.
+    /// Compute one request's cost using canonical model pricing. A model the
+    /// table does not price gets an all-zero result: its cost is unknown, not
+    /// another model's rates, and it is logged once, as roko-learn's
+    /// `CostTable::calculate` does (bug-39d15f).
     #[must_use]
     pub fn compute_cost(&self, usage: &TokenUsage, model: &str, is_batch: bool) -> CostResult {
-        let fallback;
-        let pricing = if let Some(pricing) = self.cost_table.lookup(model) {
-            pricing
-        } else {
-            fallback = sonnet_fallback();
-            &fallback
+        let Some(pricing) = self.cost_table.lookup(model) else {
+            roko_learn::cost_table::warn_unpriced_model(model);
+            return CostResult::default();
         };
         let fresh_tokens = usage
             .input_tokens
@@ -200,19 +200,11 @@ fn get(store: &RwLock<HashMap<String, CostAggregate>>, key: &str) -> CostAggrega
         .unwrap_or_default()
 }
 
-fn sonnet_fallback() -> ModelPricing {
-    ModelPricing {
-        input_per_m: 3.0,
-        output_per_m: 15.0,
-        cache_read_per_m: 0.30,
-        cache_write_per_m: 3.75,
-        tokenizer_ratio: 1.0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use roko_learn::cost_table::ModelPricing;
 
     use super::*;
 
@@ -294,8 +286,10 @@ mod tests {
         assert_eq!(tracker.session_total("session").requests, 1);
     }
 
+    /// bug-39d15f: a model the table does not price has an unknown cost, not
+    /// Sonnet's rates.
     #[test]
-    fn cost_track_unknown_model_uses_sonnet_fallback() {
+    fn cost_track_leaves_an_unknown_model_unpriced() {
         let tracker = CostTracker::new(CostTable {
             models: HashMap::new(),
         });
@@ -307,6 +301,6 @@ mod tests {
             "unknown",
             false,
         );
-        assert!((result.actual_cost - 3.0).abs() < 1e-12);
+        assert_eq!(result, CostResult::default());
     }
 }

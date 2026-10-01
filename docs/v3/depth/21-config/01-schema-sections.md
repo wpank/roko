@@ -85,6 +85,7 @@ serialized default config lacks.
 |-------|------|---------|-------------|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live enforcement: `none`, `observe`, `restrict`, `isolate`, or `quarantine` |
 | `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`roko prd`, `plan generate`, `research`, `do`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
+| `worktree_per_task` | bool | true | `roko plan run` runs each task in its own git worktree and delivers finished plans into the run's batch branch, `roko/batch/<run-id>`, never the operator's checkout; the run ends with the `git merge` that takes the work (gap-4ec59f). A workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. `--worktree-per-task` and `--no-worktree-per-task` override it per run, and a server's runs follow the server's value |
 
 ---
 
@@ -311,7 +312,7 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
 | `agent.data_llm` | No dispatch path routed untrusted content to a separate data LLM, so setting it isolated nothing. `DataLlmConfig` and `DataLlmRouter` remain for future CaMeL work (gap-7a3527) |
-| `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `roko plan run --worktree-per-task` runs each task in its own worktree (gap-666ab3) |
+| `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `runner.worktree_per_task` (on by default) runs each task in its own git worktree (gap-666ab3, gap-4ec59f) |
 | `tools.prefer_mcp`, `tools.mcp_timeout_secs` | v1 keys of the CLI-only config that nothing read (bug-d5051e) |
 | `tools.global_denied` | v1 key that nothing read; `tools.deny` is the current tool denylist (bug-d5051e) |
 | `prompt.token_budget` | v1 key that nothing read from roko.toml; `budget.prompt_token_budget` is the current key (bug-d5051e) |

@@ -342,7 +342,7 @@ high-certainty situations route to fast T0/T1, high-uncertainty to deep T2.
 The `select_compose_verify_persist` helper in `roko-core` covers only the non-ACT /
 non-BROADCAST signal-selection subset of this workflow. The full 8-stage loop is
 orchestrated by the Graph engine (for plans) and by `roko-cli`'s runner (for interactive
-execution). `roko run` uses graph templates via `WorkflowGraphController`.
+execution). `roko run` writes a one-task plan and runs it on the Graph engine.
 
 ---
 

@@ -470,7 +470,11 @@ async fn verified_commit(
 }
 
 /// Whether `ancestor` is `descendant` or one of its ancestors.
-async fn is_ancestor(workdir: &Path, ancestor: &str, descendant: &str) -> Result<bool, String> {
+pub(super) async fn is_ancestor(
+    workdir: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, String> {
     let output = git_command(workdir)
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .output()

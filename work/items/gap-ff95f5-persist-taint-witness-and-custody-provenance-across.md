@@ -9,9 +9,9 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-01
+last_verified = 2026-10-01
+last_verified_rev = "6531d787e"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 discovered_from = "audit:tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 anchors = ["crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker", "crates/roko-agent/src/safety/witness.rs::WitnessLogger", "crates/roko-agent/src/safety/provenance.rs::CustodyLogger", "crates/roko-cli/src/custody.rs::log_chained", "crates/roko-agent/src/dispatcher/mod.rs::ToolDispatcher::dispatch", "crates/roko-agent/src/provider/mod.rs::build_tool_dispatcher_with_audit", "crates/roko-graph/src/snapshot.rs::EXT_SAFETY_PROVENANCE", "crates/roko-cli/src/graph_checkpoint.rs::refresh_gate_verdicts"]
@@ -100,6 +100,42 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
 - Do not change the other EXT_* rows in `snapshot.rs`.
 - Size L (the original packet estimated 3-5 days). It conflicts with concurrent work in `crates/roko-agent/src/dispatcher/mod.rs` and `crates/roko-cli/src/graph_checkpoint.rs`, so do not run it in parallel with other items anchored there.
 - No hard dependencies remain open.
+- 2026-10-01 (wk-tamper): Plan steps 1-2 on work/gap-7147bb; cargo verification deferred to the batch check. The
+  premise still held at 6531d787e.
+  - `safety/provenance_sink.rs` adds `SafetyProvenanceSink` (`digest_key`, `record_intent` returning a
+    `ProvenanceAck`, `record_outcome`). Records carry IDs, keyed BLAKE3 digests (`ContentHash::keyed`, new in
+    roko-core; arguments are digested as RFC 8785 canonical JSON), taint levels and `tool_error_kind` reason codes,
+    nothing else. `track_intent` and `track_outcome` keep a `TaintTracker`: arguments taken in a tainted turn carry
+    its taint, and a result inherits from its arguments. `MemoryProvenanceSink` is the deterministic fake.
+  - `ToolDispatcher::with_provenance_sink`: once every safety stage has passed and the handler is resolved,
+    `record_intent` must succeed, or the call returns `PermissionDenied` without running. Every call then records
+    an outcome: succeeded, failed, or denied with its reason code (`provenance_intent_failed` for a refused intent).
+  - Tests: `safety_provenance_intent_recorded_before_handler`, `safety_provenance_records_hold_no_arguments_or_output`,
+    `safety_provenance_records_a_denied_call`, `safety_provenance_propagates_taint_to_the_result` and
+    `arguments_digest_ignores_key_order_and_depends_on_the_key` (roko-agent lib); `keyed_hash_depends_on_its_key`
+    (roko-core).
+  Still open: steps 3-7 (the roko-cli host sink and the `roko.safety-provenance@1` extension, restore and fail-closed
+  checks, replay idempotency, threading the sink through `build_tool_dispatcher_with_audit`, the restart tests).
+- 2026-10-01 (wk-tamper): Plan step 3, option (b), on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `roko-cli/src/safety_provenance.rs`: `GraphProvenanceSink` writes each intent and outcome as a witness vertex
+    in `.roko/witness.jsonl` (an outcome's parent is its intent's vertex, whose id is the intent's ack) and as a
+    custody record chained with `custody::log_chained` (SHA-256; it now returns the new head) in
+    `.roko/custody.jsonl`. Both files are synced to disk before `record_intent` returns, so the handler runs only
+    after its intent is on disk. The sink keeps the `TaintTracker`. Its digest key is
+    `.roko/state/safety-provenance.key` (32 random bytes, created 0600; a malformed key fails closed). A reopened
+    sink extends both chains.
+  - `GraphProvenanceSink::summary` gives the record count, both chain heads and the taint index
+    (`TaintTracker::to_json`/`from_json`, new). `PreparedGraphCheckpoint::attach_safety_provenance` makes every
+    manifest write (`persist_manifest`, and best effort in `finish_with_status`) rebuild `EXT_SAFETY_PROVENANCE`
+    from it.
+  - Tests: `graph_provenance_sink_writes_synced_witness_and_custody_chains`,
+    `graph_provenance_sink_refuses_a_bad_key_file`, `checkpoint_writes_store_the_safety_provenance_summary`
+    (roko-cli lib); `tracker_json_roundtrips_state_and_refuses_other_values` (roko-agent lib).
+  Still open: the policy and contract fingerprints in the summary; step 4 (restore before scheduling: rebuild the
+  tracker, walk the witness and custody chains to the stored heads, and fail closed on a mismatch, downgrade or
+  unknown version); step 5 (replay idempotency); step 6 (no run attaches the sink yet: thread it through
+  `AgentOptions` into `build_provider_tool_dispatcher`, then `DispatchFactory`/`dispatch_v2` and `run_one_plan`,
+  which should also call `attach_safety_provenance`); `safety_provenance_restores_taint_after_restart`.
 
 ## Original notes
 

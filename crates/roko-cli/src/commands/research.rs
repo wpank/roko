@@ -666,6 +666,15 @@ pub(crate) async fn cmd_research(
                 .search_batch(&[search_query])
                 .await
                 .map_err(|e| anyhow::anyhow!("search error: {e}"))?;
+            // Each query is one billed Search API request (bug-2dfd23).
+            roko_cli::research::record_search_spend(
+                &workdir,
+                &query_str,
+                resolved_role,
+                responses.len(),
+                started.elapsed().as_millis() as u64,
+            )
+            .await;
 
             let results: Vec<_> = responses.into_iter().flat_map(|r| r.results).collect();
 
@@ -742,31 +751,6 @@ pub(crate) async fn cmd_research(
 // ── Backend dispatch helpers ──────────────────────────────────────────
 
 /// Run Perplexity deep research (sonar-deep-research, async polling).
-/// Record what one research agent run cost, against the topic's research
-/// task (bug-86ff56).
-async fn record_research_spend(
-    workdir: &Path,
-    topic: &str,
-    role: &str,
-    provider: &str,
-    model: &str,
-    result: &roko_agent::AgentResult,
-    started: Instant,
-) {
-    let task_id = format!("research:topic:{}", topic.to_lowercase().replace(' ', "-"));
-    let call = roko_cli::agent_exec::AgentCapture {
-        exit_code: i32::from(!result.success),
-        output: String::new(),
-        usage: result.usage,
-        model: model.to_string(),
-        provider: provider.to_string(),
-        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-    };
-    roko_cli::plan_authoring::AuthoringSpend::operation(workdir, &task_id, role)
-        .record(&call)
-        .await;
-}
-
 async fn run_perplexity_deep(
     workdir: &Path,
     config: &RokoConfig,
@@ -832,8 +816,9 @@ async fn run_perplexity_deep(
             }
         }
     };
-    record_research_spend(
+    roko_cli::research::record_run_spend(
         workdir,
+        &routing_config,
         topic,
         role,
         "perplexity",
@@ -1031,8 +1016,9 @@ async fn run_gemini_grounded(
         .build();
     let started = Instant::now();
     let result = agent.run(&input, &Context::now()).await;
-    record_research_spend(
+    roko_cli::research::record_run_spend(
         workdir,
+        &routing_config,
         topic,
         role,
         "gemini",
@@ -1165,8 +1151,9 @@ async fn run_perplexity_standard(
         .build();
     let started = Instant::now();
     let result = agent.run(&input, &Context::now()).await;
-    record_research_spend(
+    roko_cli::research::record_run_spend(
         workdir,
+        &routing_config,
         topic,
         role,
         "perplexity",

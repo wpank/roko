@@ -3,13 +3,15 @@ id = "bug-c0602b"
 kind = "bug"
 title = "sonar-deep-research has no price row and is priced as sonar"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-core/pricing"]
 created = 2026-10-01
-updated = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "a788dfd8d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-2dfd23"
 anchors = ["crates/roko-core/src/config/model_registry.rs"]
@@ -17,7 +19,7 @@ lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = ["bug-2dfd23"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "cargo test -p roko-core --lib sonar_deep_research_price"
+command = "grep -rqw 'fn sonar_deep_research_price' crates/roko-core/src/ && cargo test -p roko-core --lib sonar_deep_research_price"
 +++
 
 ## Problem
@@ -35,3 +37,13 @@ Add the row from Perplexity's dated price page, or leave it unpriced. Add a test
 ## Notes
 
 - Reported on 2026-10-01 by wk-learn2, working on bug-2dfd23, during the evening close-out round.
+- 2026-10-02 (wk-cfg): implemented on work/bug-ccfa0d; cargo verification deferred to the batch check. Decided with the
+  coordinator: leave it unpriced. The price page (https://docs.perplexity.ai/docs/getting-started/pricing, checked
+  2026-10-02; the page carries no date) gives Sonar Deep Research $2/M input and $8/M output, plus citation tokens
+  ($2/M), reasoning tokens ($3/M) and search queries ($5 per 1K), and no request fee. `ModelPricing` cannot express the
+  last three, which dominate a deep-research call, so a $2/$8 row would understate it, and an unpriced model now has an
+  unknown cost (bug-1f81ab).
+- bug-1f81ab's snapshot rule already stopped the registry from pricing it as Sonar. This change records the decision at
+  the Perplexity rows in `model_registry.rs` and removes `costs_db`'s partial row, including its guessed $0.005
+  request fee, so both tables agree. Test `sonar_deep_research_price` (roko-core); `perplexity_costs` (roko-learn) now
+  checks that the row is gone.

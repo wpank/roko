@@ -363,15 +363,9 @@ impl CostTable {
             .and_modify(|p| {
                 p.per_request = Some(0.008);
             });
-        models.insert(
-            "sonar-deep-research".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                per_request: Some(0.005),
-                ..Default::default()
-            },
-        );
+        // Sonar Deep Research stays unpriced, as in the shared registry: it
+        // bills citation tokens, reasoning tokens and search queries, which
+        // `ModelPricing` cannot express (bug-c0602b).
 
         Self { models }
     }
@@ -1263,13 +1257,9 @@ mod tests {
         assert!((sonar_rp.output_per_m - 8.00).abs() < 1e-9);
         assert_eq!(sonar_rp.per_request, Some(0.008));
 
-        // sonar-deep-research: $2.00/M in, $8.00/M out, $0.005 per-request
-        let sonar_dr = table
-            .lookup("sonar-deep-research")
-            .expect("sonar-deep-research pricing");
-        assert!((sonar_dr.input_per_m - 2.00).abs() < 1e-9);
-        assert!((sonar_dr.output_per_m - 8.00).abs() < 1e-9);
-        assert_eq!(sonar_dr.per_request, Some(0.005));
+        // sonar-deep-research is unpriced: a price row cannot express its
+        // citation, reasoning and search-query charges (bug-c0602b).
+        assert!(!table.models.contains_key("sonar-deep-research"));
 
         // estimate_total includes the per-request fee.
         // 1M input + 1M output on sonar = $1.00 + $1.00 + $0.005 = $2.005

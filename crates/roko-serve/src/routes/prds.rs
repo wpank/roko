@@ -20,7 +20,8 @@ use validator::Validate;
 use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::state::{AppState, OperationHandle, OperationStatus};
+use crate::operations::{run_outcome, spawn_operation};
+use crate::state::AppState;
 use parking_lot::Mutex;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_runtime::event_bus::{EventBus, PublishOrigin, RokoEvent, global_event_bus};
@@ -119,14 +120,13 @@ async fn queue_plan_generation_after_publish(
     state: Arc<AppState>,
     slug: String,
     prd_path: PathBuf,
-    prd_content: String,
 ) -> Option<String> {
     if !should_queue_publish(&state.workdir, &slug, Instant::now()) {
         tracing::trace!(slug = %slug, "skipping duplicate PRD publish within 60s");
         return None;
     }
 
-    Some(queue_plan_generation_op(state, slug, prd_path, prd_content).await)
+    Some(queue_plan_generation_op(state, slug, prd_path).await)
 }
 
 fn prd_published_event_from_episode(episode: &Episode) -> Option<RokoEvent> {
@@ -169,20 +169,17 @@ async fn handle_prd_published_event(
 
     tracing::info!(slug = %slug, ?origin, "auto-orchestrating published PRD");
 
-    let prd_content = match tokio::fs::read_to_string(&path).await {
-        Ok(content) => content,
-        Err(err) => {
-            tracing::warn!(
-                slug = %slug,
-                path = %path.display(),
-                error = %err,
-                "auto-orchestrate skipped because the published PRD could not be read"
-            );
-            return;
-        }
-    };
+    if let Err(err) = tokio::fs::read_to_string(&path).await {
+        tracing::warn!(
+            slug = %slug,
+            path = %path.display(),
+            error = %err,
+            "auto-orchestrate skipped because the published PRD could not be read"
+        );
+        return;
+    }
 
-    let _ = queue_plan_generation_after_publish(state, slug, path, prd_content).await;
+    let _ = queue_plan_generation_after_publish(state, slug, path).await;
 }
 
 async fn follow_prd_published_audit(state: Arc<AppState>) {
@@ -491,50 +488,34 @@ async fn draft_prd(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         let slug = slug.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_draft".into(),
             });
 
             match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => {
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_draft".into(),
-                        success: result.success,
-                    });
-                }
+                Ok(result) => run_outcome(&result, &format!("PRD draft for {slug}")),
                 Err(err) => {
                     tracing::warn!(
                         slug = %slug,
                         error = %err,
                         "PRD draft operation failed"
                     );
+                    let message = format!("PRD draft failed for {slug}: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("PRD draft failed for {slug}: {err}"),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_draft".into(),
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("prd_draft:{slug}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("prd_draft:{slug}");
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_draft", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -589,14 +570,10 @@ async fn promote_prd(
     let config = state.load_roko_config();
     if config.prd.auto_plan && config.serve.auto_orchestrate {
         match tokio::fs::read_to_string(&dst).await {
-            Ok(prd_content) => {
-                if let Some(plan_op_id) = queue_plan_generation_after_publish(
-                    Arc::clone(&state),
-                    plan_slug,
-                    dst.clone(),
-                    prd_content,
-                )
-                .await
+            Ok(_) => {
+                if let Some(plan_op_id) =
+                    queue_plan_generation_after_publish(Arc::clone(&state), plan_slug, dst.clone())
+                        .await
                 {
                     response["plan_generation"] = json!("queued");
                     response["plan_operation_id"] = json!(plan_op_id);
@@ -629,17 +606,18 @@ async fn plan_from_prd(
     Path(slug): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Verify the PRD exists.
-    let (status, content) = read_prd_file(&state.workdir, &slug).await?;
+    let (status, _content) = read_prd_file(&state.workdir, &slug).await?;
     let prd_path = state
         .workdir
         .join(".roko")
         .join("prd")
         .join(match status.as_str() {
             "published" => "published",
-            _ => "drafts",
+            "draft" => "drafts",
+            _ => "ideas",
         })
         .join(format!("{slug}.md"));
-    let op_id = queue_plan_generation_op(Arc::clone(&state), slug, prd_path, content).await;
+    let op_id = queue_plan_generation_op(Arc::clone(&state), slug, prd_path).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -674,11 +652,11 @@ async fn consolidate_prds(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_consolidate".into(),
             });
 
@@ -688,31 +666,20 @@ async fn consolidate_prds(
                 prd_dir = workdir.join(".roko").join("prd").display(),
             );
 
-            let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => result.success,
+            match runtime.run_once(&workdir, &prompt).await {
+                Ok(result) => run_outcome(&result, "PRD consolidation"),
                 Err(err) => {
+                    let message = format!("PRD consolidation failed: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("PRD consolidation failed: {err}"),
+                        message: message.clone(),
                     });
-                    false
+                    Err(message)
                 }
-            };
-
-            bus.publish(ServerEvent::OperationCompleted {
-                op_id,
-                kind: "prd_consolidate".into(),
-                success,
-            });
+            }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: "prd_consolidate".into(),
-        status: OperationStatus::Running,
-        handle,
     };
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = "prd_consolidate".to_string();
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_consolidate", work).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -806,28 +773,6 @@ async fn count_entries_with(dir: &std::path::Path, pred: impl Fn(&str) -> bool) 
     count
 }
 
-/// Build the prompt used for PRD-to-plan generation.
-fn build_plan_generation_prompt(
-    workdir: &std::path::Path,
-    prd_path: &std::path::Path,
-    prd_content: &str,
-) -> String {
-    let plans_root = roko_fs::workspace_plans::workspace_plans_dir(workdir);
-    format!(
-        "Read the published PRD at {prd_path} and generate implementation plan directories under {plans_root}.\n\
-         Each requirement should become one or more tasks.\n\
-         Each acceptance criterion should become a task verification command.\n\
-         Search the codebase first to understand what already exists.\n\
-         Create or update plan.md and tasks.toml files directly, including per-task mcp_servers when a task needs a specific MCP server.\n\n\
-         Project workspace: {workdir}\n\n\
-         PRD content:\n{prd_content}\n",
-        prd_path = prd_path.display(),
-        plans_root = plans_root.display(),
-        workdir = workdir.display(),
-        prd_content = prd_content,
-    )
-}
-
 fn draft_scaffold(slug: &str) -> String {
     let today = chrono::Local::now().format("%Y-%m-%d");
     format!(
@@ -895,62 +840,58 @@ fn build_draft_prompt(
     prompt
 }
 
-/// Spawn a background plan-generation operation from a PRD body.
+/// Spawn a background plan-generation operation for the PRD at `prd_path`.
+///
+/// Runs the runtime's PRD planning pipeline (`generate_plan_from_prd`: fenced
+/// TOML extraction, repair, model escalation and plan validation), the same
+/// path `POST /api/plans/generate` takes, never a hand-built prompt through
+/// `run_once` (bug-8b1bf8).
 async fn queue_plan_generation_op(
     state: Arc<AppState>,
     slug: String,
     prd_path: std::path::PathBuf,
-    prd_content: String,
 ) -> String {
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    let prompt = build_plan_generation_prompt(&workdir, &prd_path, &prd_content);
 
-    let handle = tokio::spawn({
+    let work = {
         let op_id = op_id.clone();
         let slug = slug.clone();
         async move {
             bus.publish(ServerEvent::OperationStarted {
-                op_id: op_id.clone(),
+                op_id,
                 kind: "prd_plan".into(),
             });
-            match runtime.run_once(&workdir, &prompt).await {
-                Ok(result) => {
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_plan".into(),
-                        success: result.success,
-                    });
+            match runtime
+                .generate_plan_from_prd(&workdir, &slug, &prd_path)
+                .await
+            {
+                Ok(generated) if generated.plan_targets.is_empty() => {
+                    Err(format!("plan generation for {slug} wrote no plan"))
                 }
+                Ok(generated) => Ok(Some(json!({
+                    "slug": slug,
+                    "plan_count": generated.plan_targets.len(),
+                }))),
                 Err(err) => {
                     tracing::warn!(
                         slug = %slug,
                         error = %err,
                         "plan generation failed"
                     );
+                    let message = format!("plan generation failed for {slug}: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("plan generation failed for {slug}: {err}"),
+                        message: message.clone(),
                     });
-                    bus.publish(ServerEvent::OperationCompleted {
-                        op_id,
-                        kind: "prd_plan".into(),
-                        success: false,
-                    });
+                    Err(message)
                 }
             }
         }
-    });
-
-    let op = OperationHandle {
-        id: op_id.clone(),
-        kind: format!("prd_plan:{slug}"),
-        status: OperationStatus::Running,
-        handle,
     };
-
-    state.operations.write().await.insert(op_id.clone(), op);
+    let op_kind = format!("prd_plan:{slug}");
+    spawn_operation(&state, op_id.clone(), op_kind, "prd_plan", work).await;
     op_id
 }
 
@@ -972,7 +913,9 @@ mod tests {
 
     use crate::deploy::manual::ManualBackend;
     use crate::runtime::NoOpRuntime;
-    use crate::runtime::{CliRuntime, DashboardInfo, RunResult, SessionStatusInfo};
+    use crate::runtime::{
+        CliRuntime, DashboardInfo, PlanGenerationResult, RunResult, SessionStatusInfo,
+    };
     use roko_runtime::event_bus::{EventBus, PublishOrigin, RokoEvent};
 
     #[derive(Clone)]
@@ -1001,6 +944,30 @@ mod tests {
                 output_text: None,
                 usage: None,
                 gate_results: Vec::new(),
+            })
+        }
+
+        /// Recorded as `generate_plan_from_prd <slug> <prd_path>`.
+        async fn generate_plan_from_prd(
+            &self,
+            workdir: &std::path::Path,
+            slug: &str,
+            prd_path: &std::path::Path,
+        ) -> anyhow::Result<PlanGenerationResult> {
+            self.calls.lock().expect("lock calls").push((
+                workdir.to_path_buf(),
+                format!("generate_plan_from_prd {slug} {}", prd_path.display()),
+            ));
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            if !self.success {
+                anyhow::bail!("recorded plan generation failure for {slug}");
+            }
+            let plans_root = workdir.join("plans");
+            Ok(PlanGenerationResult {
+                plan_targets: vec![plans_root.join(slug)],
+                plans_root,
+                artifacts: Vec::new(),
             })
         }
 
@@ -1318,5 +1285,49 @@ mod tests {
         let op = ops.values().next().expect("operation stored");
         assert!(op.handle.is_finished());
         assert_eq!(op.kind, "prd_draft:alpha");
+    }
+
+    #[tokio::test]
+    async fn test_prd_plan_uses_generate_pipeline() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+        });
+        let calls = Arc::clone(&runtime.as_ref().calls);
+        let (_dir, state) = test_state_with_runtime(runtime);
+        let published = state.workdir.join(".roko").join("prd").join("published");
+        tokio::fs::create_dir_all(&published)
+            .await
+            .expect("create published dir");
+        tokio::fs::write(published.join("alpha.md"), "# Alpha\n")
+            .await
+            .expect("write published prd");
+
+        let response = plan_from_prd(State(Arc::clone(&state)), Path("alpha".into()))
+            .await
+            .expect("plan from prd")
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+        wait_for_events(&state, 2).await;
+
+        // One call, and it is the PRD pipeline: run_once would record a prompt.
+        let calls = calls.lock().expect("lock calls");
+        assert_eq!(calls.len(), 1, "runtime calls: {calls:?}");
+        assert_eq!(calls[0].0, state.workdir);
+        assert_eq!(
+            calls[0].1,
+            format!(
+                "generate_plan_from_prd alpha {}",
+                published.join("alpha.md").display()
+            )
+        );
+
+        let events = state.event_bus.replay_from(0);
+        assert!(matches!(
+            events[1].payload,
+            ServerEvent::OperationCompleted { success: true, ref kind, .. } if kind == "prd_plan"
+        ));
     }
 }

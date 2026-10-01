@@ -554,6 +554,11 @@ pub struct ExecutedModel {
     /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
     /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+    /// The sampling parameters roko sent with each request, by their
+    /// request-body names (`temperature`, `top_p`, `seed`). Empty, and left
+    /// out of the record, when the provider's defaults applied (gap-13bbbd).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sampling: BTreeMap<String, serde_json::Value>,
 }
 
 /// One model provider failover passed over before the one that ran

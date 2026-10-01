@@ -397,10 +397,13 @@ roko doctor [disk|network|clean] [--workdir <path>] [--serve-url <url>]
 
 ### `roko diagnose`
 
-Diagnose why a plan failed. Outputs structured JSON.
+Diagnose why a plan failed. Prints a readable report: the plan's status, each task that did not complete with
+why (its last error, the verify step it failed and that step's command, its attempts with their cost), and the
+next steps, including the command that resumes the run. The global `--json` flag prints the full report as
+structured JSON instead.
 
 ```
-roko diagnose <plan-id> [--verbose] [--workdir <path>]
+roko diagnose <plan-id> [--verbose] [--workdir <path>] [--json]
 ```
 
 The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
@@ -414,7 +417,8 @@ read only for a plan without a Graph checkpoint.
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Also list attempts, verify failures and episodes of tasks that completed. |
+| `--verbose` | Also list the tasks that completed, with their attempts, verify failures and episodes. |
+| `--json` | Print the report as structured JSON. |
 
 ---
 
@@ -710,9 +714,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget]
               [--dangerously-skip-permissions]
-              [--log-file <path>] [--skip-preflight]
-              [--screenshots] [--screenshot-interval <secs>] [--screenshot-dir <path>]
-              [--batch-size <n>] [--worktree-per-task] [--rich-topology]
+              [--log-file <path>] [--worktree-per-task] [--rich-topology]
 ```
 
 | Arg/Flag | Default | Description |
@@ -733,11 +735,6 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
-| `--skip-preflight` | false | Skip preflight environment checks. |
-| `--screenshots` | false | Capture event-driven screenshots during execution. |
-| `--screenshot-interval <secs>` | 60 | Maximum seconds between periodic screenshot captures. |
-| `--screenshot-dir <path>` | auto | Directory for screenshot timeline. |
-| `--batch-size <n>` | -- | Pause for review after every N plan completions. |
 | `--worktree-per-task` | false | Run each task in an isolated git worktree. |
 | `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
 
@@ -751,6 +748,10 @@ roko plan run plans/ --resume-plan              # Resume from last checkpoint
 roko plan run plans/ --max-retries 3            # Override retry limit
 roko plan run plans/ --budget-override 50.0     # $50 cost ceiling
 ```
+
+The Graph engine does not implement `--skip-preflight`, `--screenshots`, `--screenshot-interval`, `--screenshot-dir`,
+`--batch-size`, or the global `--resume <session>` and `--effort`. They still parse, but `plan run` stops with an error
+that names what to use instead (`--resume-plan`, `[agent] default_effort`, `roko screenshot`).
 
 #### `roko plan generate`
 
@@ -865,12 +866,30 @@ roko backlog import <path> [--draft] [--execute] [--check] [--workdir <path>]
 #### `roko backlog list`
 
 ```
-roko backlog list [--workdir <path>]
+roko backlog list [<path>] [--workdir <path>]
 ```
+
+| Flag | Description |
+|---|---|
+| `<path>` | Backlog directory (default `tmp/backlog`). Its `archive/` is listed too. |
+
+Lists each spec with its id, its `**Status**:` line (the one `mark-done` writes) and whether `backlog import` has
+recorded it as a PRD idea.
 
 #### `roko backlog audit`
 
-Reconcile plan TOML status against durable runner state.
+Reconcile plan TOML status against the Graph runs on record. The audit walks every `tasks.toml` in the plans
+directory, plan sets included, compares it with the plan's checkpoint under `.roko/state/graph/`, and reports each
+mismatch with a stable code. It exits 1 when any finding is an error.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `AUDIT_RUN_SUCCEEDED_TOML_READY` | error | A Graph run succeeded, or passed the task's gate, but `tasks.toml` still says `ready`. |
+| `AUDIT_PLAN_SKIPPED` | error | `tasks.toml` does not parse, or has no `plan` in `[meta]`. |
+| `AUDIT_CHECKPOINT_UNREADABLE` | error | The plan's checkpoint exists but cannot be read. |
+| `AUDIT_TASK_DONE_NOT_RECORDED` | warning | `tasks.toml` says `done`, but no Graph run records the task. |
+| `AUDIT_RUN_FAILED_TOML_READY` | info | The last run failed the task and `tasks.toml` still says `ready`. |
+| `AUDIT_ORPHAN_CHECKPOINT` | info | A checkpoint whose plan is not in the plans directory. |
 
 ```
 roko backlog audit [--workdir <path>] [--json] [--fix-safe]
@@ -1074,15 +1093,17 @@ custody (audit chain), and archival.
 
 ### `roko knowledge query`
 
-Query the durable knowledge store. Returns up to N matches ranked by confidence. Supports `--json`.
+Query the durable knowledge store. Returns up to N matches ranked by confidence. Each match shows its first
+two lines; `--verbose` shows it in full. Supports `--json`.
 
 ```
-roko knowledge query <topic...> [--workdir <path>] [--limit <n>]
+roko knowledge query <topic...> [--workdir <path>] [--limit <n>] [--verbose]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--limit <n>` | 10 | Maximum number of results (1-1000). |
+| `--verbose` | off | Print each match in full instead of its first two lines. |
 
 ### `roko knowledge stats`
 
@@ -1444,10 +1465,12 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>]
 
 #### `roko config show`
 
-Print the effective merged config with per-field source tags.
+Print the effective merged config with per-field source tags. `--effective` prints the fully-resolved config as
+TOML instead. Name a section to print only that part of the fully-resolved config, as TOML: a top-level table such
+as `agent` or `dreams`, or a dotted path such as `providers.anthropic`. Secrets are redacted either way.
 
 ```
-roko config show [--workdir <path>] [--effective]
+roko config show [<section>] [--workdir <path>] [--effective]
 ```
 
 #### `roko config path`

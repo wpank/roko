@@ -1269,51 +1269,22 @@ fn verify_process_identity(pid: u32, recorded_start_time: Option<u64>) -> bool {
     let Some(recorded) = recorded_start_time else {
         return true;
     };
-    match get_process_start_time(pid) {
+    match process_start_fingerprint(pid) {
         Some(current) => current == recorded,
         None => false,
     }
 }
 
-/// Get the start time of a process by PID.
-/// On macOS, uses `ps -o lstart=` and hashes the output.
-/// On Linux, reads /proc/<pid>/stat field 22.
-#[cfg(target_os = "macos")]
-fn get_process_start_time(pid: u32) -> Option<u64> {
-    let output = std::process::Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let lstart = String::from_utf8_lossy(&output.stdout);
-    let trimmed = lstart.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    trimmed.hash(&mut hasher);
-    Some(hasher.finish())
-}
-
-#[cfg(target_os = "linux")]
-fn get_process_start_time(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rfind(')')? + 2;
-    let fields: Vec<&str> = stat[after_comm..].split_whitespace().collect();
-    fields.get(19)?.parse::<u64>().ok()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn get_process_start_time(_pid: u32) -> Option<u64> {
-    None
+/// The start fingerprint of the process holding `pid`, from the identity
+/// probe the PID registry uses ([`roko_agent::process::identity`]): equal
+/// values mean the same process.
+fn process_start_fingerprint(pid: u32) -> Option<u64> {
+    roko_agent::process::identity::process_identity(pid).map(|identity| identity.start)
 }
 
 /// Get the start time of the current process.
 fn current_process_start_time() -> Option<u64> {
-    get_process_start_time(std::process::id())
+    process_start_fingerprint(std::process::id())
 }
 
 /// Send a signal only after verifying process identity.
@@ -1685,7 +1656,7 @@ pub(crate) fn run_agent_start(name: &str, bind: &str, workdir: Option<&Path>) ->
         bind: bind.to_string(),
         domain,
         started_at: now,
-        process_start_time: get_process_start_time(pid),
+        process_start_time: process_start_fingerprint(pid),
     });
     save_agent_entries(&wd, &entries)?;
 
@@ -2768,7 +2739,7 @@ mod tests {
     #[test]
     fn verify_process_identity_own_process() {
         let pid = std::process::id();
-        let start_time = get_process_start_time(pid);
+        let start_time = process_start_fingerprint(pid);
         assert!(verify_process_identity(pid, start_time));
     }
 

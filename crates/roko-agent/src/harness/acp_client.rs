@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -275,6 +276,20 @@ impl RawServerMessage {
 
 // ---- AcpStdioClient ---------------------------------------------------------
 
+/// Capacity of the response queue. Only a few responses are ever queued: the
+/// client sends one request at a time, and `recv_response` discards the stale
+/// responses it passes.
+const RESPONSE_QUEUE_CAPACITY: usize = 64;
+/// Capacity of the notification queue. Turns read it only while a prompt runs,
+/// so notifications that arrive between turns stay queued.
+const NOTIFICATION_QUEUE_CAPACITY: usize = 1024;
+/// Slots at the end of the notification queue that only server requests may
+/// use, so a backlog of notifications cannot crowd out a request the server
+/// waits on.
+const SERVER_REQUEST_RESERVE: usize = 64;
+/// Capacity of the turn-done queue: one entry per finished `session/prompt`.
+const TURN_DONE_QUEUE_CAPACITY: usize = 16;
+
 /// Shared ACP/JSON-RPC client over stdio.
 ///
 /// Extracted from `CursorConnection` in `cursor_cli_agent.rs`.
@@ -290,11 +305,22 @@ pub struct AcpStdioClient {
     child: Option<Child>,
     stdin: Option<BufWriter<ChildStdin>>,
     next_id: AtomicU64,
-    response_rx: Option<mpsc::UnboundedReceiver<(u64, serde_json::Value)>>,
-    notification_tx: mpsc::UnboundedSender<AcpNotification>,
-    notification_rx: Option<mpsc::UnboundedReceiver<AcpNotification>>,
-    turn_done_tx: mpsc::UnboundedSender<serde_json::Value>,
-    turn_done_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
+    /// Responses to our requests, at most [`RESPONSE_QUEUE_CAPACITY`]. The
+    /// stdout reader never waits on a full queue: it drops the new response
+    /// with a warning.
+    response_rx: Option<mpsc::Receiver<(u64, serde_json::Value)>>,
+    /// Notifications and server requests (`server_request_id` set), at most
+    /// [`NOTIFICATION_QUEUE_CAPACITY`]. The reader never waits on it. Once
+    /// only [`SERVER_REQUEST_RESERVE`] slots are free it drops notifications,
+    /// warning once per burst and logging the count when there is room again;
+    /// it drops a server request only when the queue is completely full, and
+    /// logs an error naming it.
+    notification_tx: mpsc::Sender<AcpNotification>,
+    notification_rx: Option<mpsc::Receiver<AcpNotification>>,
+    /// Results that carry a `stopReason`, at most
+    /// [`TURN_DONE_QUEUE_CAPACITY`]; the reader drops overflow with a warning.
+    turn_done_tx: mpsc::Sender<serde_json::Value>,
+    turn_done_rx: Option<mpsc::Receiver<serde_json::Value>>,
     session_id: Option<String>,
     reader_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
@@ -309,8 +335,8 @@ impl AcpStdioClient {
     /// Does NOT spawn the process. Call `connect()` to spawn and
     /// perform the `initialize` handshake.
     pub fn new(config: AcpStdioConfig) -> Self {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-        let (turn_done_tx, turn_done_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (turn_done_tx, turn_done_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
         Self {
             config,
             child: None,
@@ -484,7 +510,7 @@ impl AcpStdioClient {
             .ok_or_else(|| AcpError::Spawn("no stdout on child".into()))?;
 
         // --- 5. Response channel ---
-        let (resp_tx, resp_rx) = mpsc::unbounded_channel::<(u64, serde_json::Value)>();
+        let (resp_tx, resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
 
         // --- 6. Stderr reader task ---
         let stderr_handle = child.stderr.take().map(|stderr| {
@@ -504,67 +530,12 @@ impl AcpStdioClient {
         });
 
         // --- 7. Stdout reader task ---
-        let notification_tx = self.notification_tx.clone();
-        let turn_done_tx = self.turn_done_tx.clone();
-        let reader_handle = tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = reader.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                tracing::trace!("[acp] <- {}", &line[..line.len().min(200)]);
-
-                match serde_json::from_str::<RawServerMessage>(&line) {
-                    Ok(msg) => {
-                        if msg.is_response() {
-                            // Has id, no method -> response to our request.
-                            let id = msg.numeric_id().unwrap_or(0);
-                            let val = if let Some(err) = msg.error {
-                                let error_msg = if let Some(data) = &err.data {
-                                    if let Some(msg_val) =
-                                        data.get("message").and_then(|v| v.as_str())
-                                    {
-                                        format!("{} ({})", err.message, msg_val)
-                                    } else {
-                                        err.message.clone()
-                                    }
-                                } else {
-                                    err.message.clone()
-                                };
-                                serde_json::json!({"error": error_msg})
-                            } else {
-                                msg.result.unwrap_or(serde_json::Value::Null)
-                            };
-
-                            // Detect turn completion: stopReason in the response.
-                            if val.get("stopReason").and_then(|s| s.as_str()).is_some() {
-                                let _ = turn_done_tx.send(val.clone());
-                            }
-
-                            let _ = resp_tx.send((id, val));
-                        } else {
-                            // Notification or server request -> forward to adapter.
-                            let notification = AcpNotification {
-                                method: msg.method.clone().unwrap_or_default(),
-                                params: msg.params.clone(),
-                                server_request_id: if msg.is_server_request() {
-                                    msg.numeric_id()
-                                } else {
-                                    None
-                                },
-                            };
-                            let _ = notification_tx.send(notification);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("[acp] parse error: {e}: {}", &line[..line.len().min(200)]);
-                    }
-                }
-            }
-            // Process exited or stdout closed.
-        });
+        let router = ServerMessageRouter::new(
+            resp_tx,
+            self.notification_tx.clone(),
+            self.turn_done_tx.clone(),
+        );
+        let reader_handle = tokio::spawn(router.run(stdout));
 
         // --- 8. Store handles ---
         self.child = Some(child);
@@ -876,12 +847,12 @@ impl AcpStdioClient {
     /// Only one consumer can hold this at a time. Returns `None` if
     /// already taken. The caller must return it via `return_notification_rx`
     /// when done.
-    pub fn take_notification_rx(&mut self) -> Option<mpsc::UnboundedReceiver<AcpNotification>> {
+    pub fn take_notification_rx(&mut self) -> Option<mpsc::Receiver<AcpNotification>> {
         self.notification_rx.take()
     }
 
     /// Return the notification receiver after use.
-    pub fn return_notification_rx(&mut self, rx: mpsc::UnboundedReceiver<AcpNotification>) {
+    pub fn return_notification_rx(&mut self, rx: mpsc::Receiver<AcpNotification>) {
         self.notification_rx = Some(rx);
     }
 
@@ -890,12 +861,12 @@ impl AcpStdioClient {
     /// The reader task sends to this channel when a response with
     /// `stopReason` is received. Used by adapters to detect turn
     /// completion in their event loops.
-    pub fn take_turn_done_rx(&mut self) -> Option<mpsc::UnboundedReceiver<serde_json::Value>> {
+    pub fn take_turn_done_rx(&mut self) -> Option<mpsc::Receiver<serde_json::Value>> {
         self.turn_done_rx.take()
     }
 
     /// Return the turn-done receiver after use.
-    pub fn return_turn_done_rx(&mut self, rx: mpsc::UnboundedReceiver<serde_json::Value>) {
+    pub fn return_turn_done_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {
         self.turn_done_rx = Some(rx);
     }
 
@@ -926,6 +897,124 @@ impl Drop for AcpStdioClient {
         // We just need to unregister the PID.
         if let Some(pid) = self.child.as_ref().and_then(|c| c.id()) {
             process::unregister_pid(pid);
+        }
+    }
+}
+
+// ---- Stdout reader ----------------------------------------------------------
+
+/// Routes the server's stdout lines to the client's queues. It never waits on
+/// a queue, so a turn that stops reading notifications cannot hold up the
+/// responses `recv_response` waits for. The [`AcpStdioClient`] fields describe
+/// what each queue drops when it is full.
+struct ServerMessageRouter {
+    responses: mpsc::Sender<(u64, serde_json::Value)>,
+    notifications: mpsc::Sender<AcpNotification>,
+    turn_done: mpsc::Sender<serde_json::Value>,
+    /// Notifications dropped since the queue last took one.
+    dropped_notifications: u64,
+}
+
+impl ServerMessageRouter {
+    fn new(
+        responses: mpsc::Sender<(u64, serde_json::Value)>,
+        notifications: mpsc::Sender<AcpNotification>,
+        turn_done: mpsc::Sender<serde_json::Value>,
+    ) -> Self {
+        Self {
+            responses,
+            notifications,
+            turn_done,
+            dropped_notifications: 0,
+        }
+    }
+
+    /// Route each line of `stdout` until it closes.
+    async fn run(mut self, stdout: impl tokio::io::AsyncRead + Unpin) {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            self.route(&line);
+        }
+        // Process exited or stdout closed.
+    }
+
+    fn route(&mut self, line: &str) {
+        if line.trim().is_empty() {
+            return;
+        }
+        tracing::trace!("[acp] <- {}", &line[..line.len().min(200)]);
+
+        match serde_json::from_str::<RawServerMessage>(line) {
+            Ok(msg) if msg.is_response() => self.route_response(msg),
+            Ok(msg) => self.route_notification(&msg),
+            Err(e) => {
+                tracing::warn!("[acp] parse error: {e}: {}", &line[..line.len().min(200)]);
+            }
+        }
+    }
+
+    /// Has id, no method -> response to our request.
+    fn route_response(&self, msg: RawServerMessage) {
+        let id = msg.numeric_id().unwrap_or(0);
+        let val = if let Some(err) = msg.error {
+            let error_msg = if let Some(data) = &err.data {
+                if let Some(msg_val) = data.get("message").and_then(|v| v.as_str()) {
+                    format!("{} ({})", err.message, msg_val)
+                } else {
+                    err.message.clone()
+                }
+            } else {
+                err.message.clone()
+            };
+            serde_json::json!({"error": error_msg})
+        } else {
+            msg.result.unwrap_or(serde_json::Value::Null)
+        };
+
+        // Detect turn completion: stopReason in the response.
+        if val.get("stopReason").and_then(|s| s.as_str()).is_some()
+            && let Err(TrySendError::Full(_)) = self.turn_done.try_send(val.clone())
+        {
+            tracing::warn!("[acp] turn-done queue full; dropped the end of request id={id}");
+        }
+        if let Err(TrySendError::Full(_)) = self.responses.try_send((id, val)) {
+            tracing::warn!("[acp] response queue full; dropped the response to id={id}");
+        }
+    }
+
+    /// Notification or server request -> forward to adapter.
+    fn route_notification(&mut self, msg: &RawServerMessage) {
+        let notification = AcpNotification {
+            method: msg.method.clone().unwrap_or_default(),
+            params: msg.params.clone(),
+            server_request_id: if msg.is_server_request() {
+                msg.numeric_id()
+            } else {
+                None
+            },
+        };
+        if notification.server_request_id.is_none() {
+            if self.notifications.capacity() <= SERVER_REQUEST_RESERVE {
+                if self.dropped_notifications == 0 {
+                    tracing::warn!("[acp] notification queue full; dropping notifications");
+                }
+                self.dropped_notifications += 1;
+                return;
+            }
+            if self.dropped_notifications > 0 {
+                tracing::warn!(
+                    "[acp] notification queue has room again after dropping {} notifications",
+                    self.dropped_notifications
+                );
+                self.dropped_notifications = 0;
+            }
+        }
+        if let Err(TrySendError::Full(request)) = self.notifications.try_send(notification) {
+            tracing::error!(
+                "[acp] notification queue full; dropped server request `{}` (id={:?})",
+                request.method,
+                request.server_request_id
+            );
         }
     }
 }
@@ -1147,9 +1236,9 @@ done
 
     #[tokio::test]
     async fn request_id_correlation() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (notif_tx, _notif_rx) = mpsc::unbounded_channel();
-        let (td_tx, _td_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, _notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
 
         let mut client = AcpStdioClient {
             config: test_config(),
@@ -1169,11 +1258,11 @@ done
         };
 
         // Send responses out of order.
-        tx.send((3, serde_json::json!({"result": "third"})))
+        tx.try_send((3, serde_json::json!({"result": "third"})))
             .unwrap();
-        tx.send((1, serde_json::json!({"result": "first"})))
+        tx.try_send((1, serde_json::json!({"result": "first"})))
             .unwrap();
-        tx.send((2, serde_json::json!({"result": "second"})))
+        tx.try_send((2, serde_json::json!({"result": "second"})))
             .unwrap();
 
         // Request ID 1 should skip ID 3 and return.
@@ -1183,9 +1272,9 @@ done
 
     #[tokio::test]
     async fn disconnected_on_closed_channel() {
-        let (tx, rx) = mpsc::unbounded_channel::<(u64, serde_json::Value)>();
-        let (notif_tx, _) = mpsc::unbounded_channel();
-        let (td_tx, _) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel::<(u64, serde_json::Value)>(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, _) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
 
         let mut client = AcpStdioClient {
             config: test_config(),
@@ -1213,9 +1302,9 @@ done
 
     #[tokio::test]
     async fn error_response_handling() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (notif_tx, _) = mpsc::unbounded_channel();
-        let (td_tx, _) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, _) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
 
         let mut client = AcpStdioClient {
             config: test_config(),
@@ -1234,7 +1323,7 @@ done
             credential_scrub: CredentialScrub::default(),
         };
 
-        tx.send((1, serde_json::json!({"error": "auth failed"})))
+        tx.try_send((1, serde_json::json!({"error": "auth failed"})))
             .unwrap();
 
         let result = client.recv_response(1).await;
@@ -1418,10 +1507,10 @@ done
     /// JSON-RPC traces produce the expected channel outputs.
     #[tokio::test]
     async fn reader_task_routes_response_and_notification() {
-        // Simulate what the reader task does: parse JSON lines and route.
-        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<(u64, serde_json::Value)>();
-        let (notif_tx, mut notif_rx) = mpsc::unbounded_channel::<AcpNotification>();
-        let (td_tx, mut td_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let (resp_tx, mut resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, mut notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, mut td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
+        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
 
         // These are the exact JSON-RPC lines a mock server would emit.
         let traces = vec![
@@ -1436,26 +1525,7 @@ done
         ];
 
         for line in &traces {
-            let msg: RawServerMessage = serde_json::from_str(line).unwrap();
-            if msg.is_response() {
-                let id = msg.numeric_id().unwrap_or(0);
-                let val = msg.result.unwrap_or(serde_json::Value::Null);
-                if val.get("stopReason").and_then(|s| s.as_str()).is_some() {
-                    let _ = td_tx.send(val.clone());
-                }
-                let _ = resp_tx.send((id, val));
-            } else {
-                let notification = AcpNotification {
-                    method: msg.method.clone().unwrap_or_default(),
-                    params: msg.params.clone(),
-                    server_request_id: if msg.is_server_request() {
-                        msg.numeric_id()
-                    } else {
-                        None
-                    },
-                };
-                let _ = notif_tx.send(notification);
-            }
+            router.route(line);
         }
 
         // Verify notifications.
@@ -1491,27 +1561,13 @@ done
             r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"internal error","data":{"message":"disk full"}}}"#,
         ];
 
-        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<(u64, serde_json::Value)>();
+        let (resp_tx, mut resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, _notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
+        let mut router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
 
         for line in &traces {
-            let msg: RawServerMessage = serde_json::from_str(line).unwrap();
-            assert!(msg.is_response());
-            let id = msg.numeric_id().unwrap_or(0);
-            let val = if let Some(err) = msg.error {
-                let error_msg = if let Some(data) = &err.data {
-                    if let Some(msg_val) = data.get("message").and_then(|v| v.as_str()) {
-                        format!("{} ({})", err.message, msg_val)
-                    } else {
-                        err.message.clone()
-                    }
-                } else {
-                    err.message.clone()
-                };
-                serde_json::json!({"error": error_msg})
-            } else {
-                msg.result.unwrap_or(serde_json::Value::Null)
-            };
-            let _ = resp_tx.send((id, val));
+            router.route(line);
         }
 
         let (id, val) = resp_rx.recv().await.unwrap();
@@ -1521,6 +1577,48 @@ done
         let (id, val) = resp_rx.recv().await.unwrap();
         assert_eq!(id, 2);
         assert_eq!(val["error"], "internal error (disk full)");
+    }
+
+    /// bug-97c2dc: nothing reads notifications between turns. A backlog past
+    /// the queue's capacity must not hold up responses, and it must leave room
+    /// for a server request.
+    #[tokio::test]
+    async fn notification_backlog_does_not_block_responses() {
+        let (resp_tx, resp_rx) = mpsc::channel(RESPONSE_QUEUE_CAPACITY);
+        let (notif_tx, mut notif_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let (td_tx, _td_rx) = mpsc::channel(TURN_DONE_QUEUE_CAPACITY);
+        let update = r#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#;
+        let mut stdout = format!("{update}\n").repeat(2 * NOTIFICATION_QUEUE_CAPACITY);
+        stdout.push_str(
+            r#"{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{}}"#,
+        );
+        stdout.push('\n');
+        stdout.push_str(r#"{"jsonrpc":"2.0","id":7,"result":{"sessionId":"s-007"}}"#);
+        stdout.push('\n');
+
+        let router = ServerMessageRouter::new(resp_tx, notif_tx, td_tx);
+        tokio::time::timeout(Duration::from_secs(5), router.run(stdout.as_bytes()))
+            .await
+            .expect("the reader never waits for a turn to read notifications");
+
+        let mut client = AcpStdioClient::new(test_config());
+        client.response_rx = Some(resp_rx);
+        let response = client.recv_response(7).await.unwrap();
+        assert_eq!(response["sessionId"], "s-007");
+
+        let mut notifications = 0;
+        let mut server_requests = Vec::new();
+        while let Ok(notification) = notif_rx.try_recv() {
+            match notification.server_request_id {
+                Some(id) => server_requests.push(id),
+                None => notifications += 1,
+            }
+        }
+        assert_eq!(
+            notifications,
+            NOTIFICATION_QUEUE_CAPACITY - SERVER_REQUEST_RESERVE
+        );
+        assert_eq!(server_requests, [99]);
     }
 
     // -- Integration tests (process-based) -----------------------------------

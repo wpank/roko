@@ -1068,6 +1068,8 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {
@@ -3092,14 +3094,7 @@ fn validate_and_fix_generated_plan(
                     // Validate role value.
                     if let Some(role_val) = task.get("role").cloned() {
                         if let Some(r) = role_val.as_str() {
-                            const VALID_ROLES: &[&str] = &[
-                                "implementer",
-                                "architect",
-                                "researcher",
-                                "strategist",
-                                "scribe",
-                                "quick-reviewer",
-                            ];
+                            const VALID_ROLES: &[&str] = crate::task_parser::PLAN_TASK_ROLES;
                             if !VALID_ROLES.contains(&r) {
                                 eprintln!(
                                     "warning: {task_id_label}: role '{r}' is invalid; \

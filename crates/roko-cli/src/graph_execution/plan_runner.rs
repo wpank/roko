@@ -1172,9 +1172,10 @@ async fn run_graph_plan_body(
         .max(1);
     if worktree_per_task && max_parallel_plans > 1 && plans.len() > 1 {
         anyhow::bail!(
-            "--worktree-per-task cannot run plans in parallel (max_parallel_plans = \
-             {max_parallel_plans}): per-task worktrees are never merged back, so concurrent \
-             plans would not see each other's work; run with --max-parallel-plans 1"
+            "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
+             {max_parallel_plans}): run with --max-parallel-plans 1, or run the tasks in the \
+             shared working tree with --no-worktree-per-task (or [runner] worktree_per_task = \
+             false)"
         );
     }
 

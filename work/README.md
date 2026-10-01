@@ -47,8 +47,10 @@ The tool is `python3 tools/work.py` (run it from the repo root; `--help` lists e
 - **Batch:** one session runs `/work-batch N` (a Claude Code skill in `.claude/skills/`). It picks `next --n N`,
   claims the items, gives each to an agent in its own worktree, and merges the branches that pass.
 - **Independent sessions:** any number of sessions run `/work-next`. Each claims one item and does steps 3-9.
-- **No collisions:** `next` never hands out an item that is claimed, and never two items whose anchors point at
-  the same file. Items with no file anchors have an unknown footprint, so `next` flags them.
+- **No collisions:** `next` never hands out an item that is claimed, never two items whose anchors point at
+  the same file, and never an item anchored on a file that another worktree is changing (committed on its branch
+  since it forked, or uncommitted; `work/` and build output excepted). The skip reasons name that worktree;
+  `--ignore-worktrees` turns the scan off. Items with no file anchors have an unknown footprint, so `next` flags them.
 - **Git rules for workers and the orchestrator** (decided by Will, 2026-09-29):
   - Workers commit only on their own branch `work/<id>`, in their own worktree.
   - The orchestrator merges passing branches into the current working branch of the main checkout with

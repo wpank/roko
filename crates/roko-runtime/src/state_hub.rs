@@ -245,7 +245,9 @@ fn lock_event_log(path: &Path) -> std::io::Result<std::fs::File> {
 /// High-volume heartbeat variants (`FeedTick`, `ChainBlock`) are broadcast to
 /// live SSE/WS subscribers and applied to the in-memory snapshot, but skipped
 /// for on-disk persistence to avoid unbounded growth of `.roko/events.jsonl`.
-fn should_persist(event: &DashboardEvent) -> bool {
+/// Other writers of that log apply the same rule.
+#[must_use]
+pub fn should_persist(event: &DashboardEvent) -> bool {
     !matches!(
         event,
         DashboardEvent::FeedTick { .. }
@@ -696,6 +698,13 @@ impl StateHub {
             projections: Arc::new(Mutex::new(projection_store)),
             lens_runtimes: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// Whether the hub appends the events it publishes to an on-disk event
+    /// log itself ([`Self::with_event_log`], [`Self::enable_event_log`]).
+    #[must_use]
+    pub fn persists_events(&self) -> bool {
+        self.event_log.is_some()
     }
 
     /// Enable event log persistence on an existing hub.

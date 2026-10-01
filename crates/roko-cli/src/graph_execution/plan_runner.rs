@@ -714,7 +714,17 @@ pub async fn run_graph_plan_in_run(
     if params.log_file.is_some() {
         return super::event_log::run_recorded(params).await;
     }
+    let observed_run_id = super::event_log::graph_run_id(run_id.as_deref());
+    run_graph_plan_observed(params, run_id, observed_run_id).await
+}
 
+/// [`run_graph_plan_in_run`] without a `log_file`, whose `status.json` and
+/// workspace event log name the run `observed_run_id`.
+pub(crate) async fn run_graph_plan_observed(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+    observed_run_id: String,
+) -> anyhow::Result<i32> {
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
@@ -731,10 +741,11 @@ pub async fn run_graph_plan_in_run(
     let status = crate::runner::status_file::GraphStatusWriter::spawn(
         &hub,
         RokoLayout::for_project(&params.workdir).state_dir(),
-        super::event_log::evidence_run_id()
-            .or_else(|| run_id.clone())
-            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4())),
+        observed_run_id.clone(),
     );
+    // `.roko/events.jsonl` and the run's index show it to a dashboard in
+    // another terminal, serve and `roko doctor` (bug-230de6).
+    let events = super::event_log::WorkspaceEventLog::spawn(&hub, &params.workdir, observed_run_id);
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
     // one now and put it back so the body and this wrapper share the same
@@ -761,6 +772,9 @@ pub async fn run_graph_plan_in_run(
         surviving_agent_pids: vec![],
     });
     status.finish(outcome).await;
+    if let Some(events) = events {
+        events.finish().await;
+    }
 
     result
 }

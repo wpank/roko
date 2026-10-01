@@ -82,3 +82,9 @@ workers write no events).
 - Step 3 reorders the README's merge rule ("Parallel work"): ask Will first. Without approval, drop the
   `Post-Merge-Verify` trailer and keep only the event.
 - **Still open (not accepted on 2026-09-29):** reordering the README's merge rule so the check runs before the merge commit. Until Will approves it, drop the `Post-Merge-Verify` trailer and keep only the event.
+- 2026-10-01 (wk-gates): Closed at `ddf470e38` after the edits were applied in the main checkout (they need the
+  `work.py` CLI of gap-d0643c and gap-0b9056, merged as `c127b3ddd`). With the coordinator's approval, the work-batch
+  worker prompt (step 3) now also asks workers to end every commit message with `Work-Item: <id>` and
+  `Executor: claude-agent`. That is WORKER-BRIEF's convention, and DEFINITIONS.md needs it: a branch commit without an
+  `Executor:` trailer leaves the item's intervention trail incomplete, so it could not count toward the unassisted
+  merge share. Workers still write no events.

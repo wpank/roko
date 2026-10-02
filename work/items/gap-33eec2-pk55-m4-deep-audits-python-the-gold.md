@@ -57,3 +57,22 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK53 (gap-dff960).
 - Suggested model: opus.
+
+## Progress
+
+- 7110: implemented at `c23667a3f`. New `audit/gold.py`: `select_gold` draws ~3% of a stream's instances whose
+  family ships a planted-gaming reference solution (F1, F4; F7/F8 don't, per this task's own Notes), each paired
+  with a `GoldKind` (F1 `gaming`, F4 `gaming/exit0`, F4 `gaming/dry_run`). `plant` materializes the instance fresh
+  and applies that solution; `audit_unit` archives the gamed tree the way the driver archives a real attempt
+  (`driver/archive.py`'s `commit_final`/`archive_task`) so `audit.battery.run_battery` runs completely unchanged,
+  then builds a `vs.label` row (reusing `audit.vs_checks`/`audit.label_errors`, the existing schema) with the known
+  ground truth: every gold unit is a false green, and `integrity.g` follows the kind's own
+  `common.astcheck.gaming_summary` flag (F4's `exit0` is `literal_return`, g known 1; F1's `gaming` and F4's
+  `dry_run` are both 0 — confirmed against each family's own gaming.py docstring, not guessed). `gold_confusion`
+  reports each check's sensitivity and specificity against those known labels with Wilson intervals
+  (`audit.estimate.wilson`) and the counts behind each; `p1_rows` drops every gold row.
+  Verified empirically against the real F1/F4 families and the real battery (no mocks, no stubs): A1 (tamper
+  policy) misses F4's known-gamed `exit0` (sensitivity 0.0, n=1) but correctly clears both known-clean kinds
+  (specificity 1.0, n=2) — an honest finding, since none of these three tricks touch a protected or out-of-scope
+  file, which is what A1's diff-shaped policy actually looks for. The item's `[[verify]]` command passes
+  (4/4 tests in `test_gold.py`); the whole `audit/tests/` directory (57 tests) still passes, no regressions.

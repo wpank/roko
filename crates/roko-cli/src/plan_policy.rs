@@ -629,8 +629,8 @@ fn check_count(
     }
 }
 
-/// Validate paths, regular-file identity, explicit symbol anchors, and an
-/// explicitly named source PRD before the plan enters the runner.
+/// Validate paths, regular-file identity, and explicit symbol anchors before
+/// the plan enters the runner.
 #[must_use]
 pub fn validate_plan_context(
     tasks: &TasksFile,
@@ -761,36 +761,6 @@ pub fn validate_plan_context(
                     "PLAN_CONTEXT_SYMBOL",
                     format!(
                         "explicit symbol anchor `{anchor}` was not found in any declared read_files entry"
-                    ),
-                ));
-            }
-        }
-    }
-
-    if let Some(source_prd) = tasks
-        .meta
-        .source_prd
-        .as_deref()
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-    {
-        if validate_artifact_slug(source_prd).is_err() {
-            issues.push(PlanPolicyViolation::plan(
-                "PLAN_SOURCE_PRD_PATH",
-                format!("source_prd `{source_prd}` is not a safe artifact slug"),
-            ));
-        } else {
-            let prd_root = workspace_root.join(".roko").join("prd");
-            let candidates = [
-                prd_root.join("published").join(format!("{source_prd}.md")),
-                prd_root.join("drafts").join(format!("{source_prd}.md")),
-                prd_root.join("draft").join(format!("{source_prd}.md")),
-            ];
-            if !candidates.iter().any(|path| path.is_file()) {
-                issues.push(PlanPolicyViolation::plan(
-                    "PLAN_SOURCE_PRD_MISSING",
-                    format!(
-                        "source_prd `{source_prd}` is explicit but no published/drafts artifact exists"
                     ),
                 ));
             }
@@ -1072,21 +1042,6 @@ fn validate_regular_file(path: &Path, canonical_root: &Path) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_artifact_slug(slug: &str) -> Result<(), ()> {
-    if slug.is_empty()
-        || slug.starts_with('.')
-        || slug.starts_with('-')
-        || slug.contains("..")
-        || !slug
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        Err(())
-    } else {
-        Ok(())
-    }
-}
-
 fn transitive_dependency_outputs(
     task: &TaskDef,
     task_by_id: &HashMap<&str, &TaskDef>,
@@ -1360,6 +1315,27 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "PLAN_CONTEXT_SYMBOL")
         );
+    }
+
+    /// A plan that still names a `source_prd` validates exactly like one
+    /// that does not: nothing looks for the PRD any more.
+    #[test]
+    fn source_prd_does_not_change_validation() {
+        let root = tempdir().expect("root");
+        std::fs::create_dir(root.path().join("src")).expect("src");
+        std::fs::write(root.path().join("src/lib.rs"), "pub struct Widget;\n").expect("source");
+        let plan_dir = root.path().join("plans/p1");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]").expect("manifest");
+        let validate = |plan: &TasksFile| {
+            validate_plan_context(plan, root.path(), &plan_dir, PlanExecutionPolicy::normal())
+        };
+        let without = validate(&tasks(task()));
+        for source_prd in ["missing-prd", "../not a slug"] {
+            let mut plan = tasks(task());
+            plan.meta.source_prd = Some(source_prd.into());
+            assert_eq!(validate(&plan), without, "source_prd = {source_prd:?}");
+        }
     }
 
     #[test]

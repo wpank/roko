@@ -84,3 +84,26 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   policy's per-step choices this task's "Replay IO: read run records ... deterministically" is meant to provide.
   Check `fig_f9_routing.py` and `figlib.py:52-54` for the exact name/clause contract (metric name, `stream.position`
   clause) before closing this task so the already-written reader doesn't need its own follow-up fix.
+
+## Progress
+
+Wave 5, 2026-10-03, branch `work/gap-5ddf9b` (Python only; every verify passes, the whole bench suite is 562
+passed, 7 skipped).
+
+- 3335: implemented at fe2129f08. `cs.py` (the betting confidence sequence, anytime p, paired contrasts, built on
+  `audit/estimate.py`'s hedged capital), `mcnemar.py`, `cuped.py` (with the LOG1 covariate), `test_toolkit.py`.
+- 3337: implemented at 97bca1b59. Decision 3336 (a): numpy and scipy pinned with hashes in
+  `requirements-analysis.lock`, imported only under `analysis/models/` (GLMM by adaptive Gauss-Hermite ML, 2PL IRT
+  by EM, ICC); each fit matches an independent reference. The models' tests skip without the stack, so its verify
+  needs `pip install --require-hashes -r benchmarks/viabilitybench/requirements-analysis.lock` in the venv first.
+- 3338: implemented at 5729f4949. `envelope.py` (E*, Holm p per level, the F3/T7 metric names), `holm.py`
+  (graphical Holm, S09 §5's multiplicity), and an additive `bootstrap.p_value` with BCa's z0 and acceleration kept.
+- 3339: implemented at 9ce9a25b9, full run at 6d5fb847d. Done-when not met: in the full run (1,000 campaigns,
+  B = 10,000) the VS-rate interval covers 0.975 ± 0.005, above the 0.93-0.97 band (difference 0.968 and ratio 0.970
+  at its top; the other four criteria in band). S09 §4.1's two-stage bootstrap counts the seeds' noise twice;
+  resampling n_h − 1 tasks per stratum, tasks alone, covered about 0.95 in 300-campaign checks. Needs Will's choice.
+- 3340: implemented at 53a2c1f68. `replay.py` on `report.load_runs`, with S01 copies, blinding hook, stream order
+  and the `stream.position == p` cut F9 reads (checked through figlib).
+- 3341: implemented at fd3e5f3e6. `lock.py` (build, `--check`, committed, require), `blind.py`; `vb run` and
+  `vb campaign` refuse LOG1, live `E-` experiments and `requires_lock` manifests without a committed, clean lock.
+  No lock was written or taken (3345).

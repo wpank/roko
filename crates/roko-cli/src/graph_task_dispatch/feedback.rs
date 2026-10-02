@@ -1711,10 +1711,20 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         assert_eq!(verdicts, expected);
     }
 
+    /// [`VERIFY_PROVIDER`] whose agent ends its answer with a lesson, which a
+    /// verified pass stores (backlog 4216).
+    const LESSON_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"Rendered the banner.\nLesson: The greeting banner reads its text from banner.txt."}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
     /// Through the batch dispatch path: a verified attempt grows durable
-    /// knowledge and credits its prompt treatment and the playbook its prompt
-    /// used with a success; a verify failure credits both with a failure and
-    /// keeps the failing step and its output on the episode.
+    /// knowledge, the lesson its agent stated, and credits its prompt
+    /// treatment and the playbook its prompt used with a success; a verify
+    /// failure credits both with a failure and keeps the failing step and its
+    /// output on the episode.
     #[tokio::test]
     async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
         let temp = tempdir().expect("tempdir");
@@ -1737,7 +1747,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+            make_test_dispatcher(&temp, LESSON_PROVIDER, no_auto_fix, feedback).await;
         task.title = "Render the greeting banner".into();
         task.verify = vec![verify_step("structural", "true")];
         dispatcher
@@ -1762,7 +1772,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         assert!(
             knowledge.iter().any(|entry| {
                 entry.source.as_deref() == Some("runtime:gate_verdict")
-                    && entry.content.contains("Render the greeting banner")
+                    && entry.content == "The greeting banner reads its text from banner.txt."
             }),
             "{knowledge:#?}"
         );

@@ -1,0 +1,67 @@
+# Pilot B (S09 E1b; gap-327242, 3308): the Roko arm and Claude Code on S08's first slice, seeds 1-3 each (W10 rec 7),
+# and S09's two optional rows. Approved by decision 3301 (2026-10-02): pilots A and B at most $15 billed (the `pilot`
+# experiment cap), under the macOS network sandbox (3303-3305). The paid run also waits for the offline shakedown
+# (3314) and the live fd_claude probe (gap-154f93). Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/pilot_b.toml --dry-run [--include provider-fault]
+# and rehearse offline with `experiments/test_pilot_b.py`.
+#
+# Budget. Planned spend is S09 §3's: $0.075 per Roko task, $0.06 per direct task. A billed block's max_cost_usd is
+# twice its plan, the most G0 accepts. At its worst roko-fixed bills $9, so after Pilot A's $3.60 on BL0 its seeds
+# 2-3 fit only under the $14 BL0 cap of decision 3301 (dec-1089ec, which edits budget.toml); under the $10 cap the
+# campaign refuses the block before any call, and seed 1 alone ($3 at worst) still fits. fd_claude runs on the
+# subscription and bills $0. Its max_cost_usd, $40 per seed, bounds the API-equivalent spend `vb run` meters for it,
+# a guard against a runaway session.
+#
+# No block names a secret fingerprint: the campaign log pins each instance to the secret file of its first run, and
+# refuses another secret on it later, Pilot A's runs included (S09 §4.1).
+schema_version = "vb.experiment/1"
+id = "PILOT-B"
+title = "Pilot B: roko_fixed gpt-oss-120b and fd_claude claude-opus-5-5 x 3 seeds on the pilot slice"
+requires_lock = false          # the pilot is exploratory and comes before the pre-registration lock (S09 G0)
+requires_live = []
+order = { kind = "daily_interleave", seed = 2 }   # S09 §4.1: arms interleaved in randomized daily blocks
+
+[[block]]
+id = "roko-fixed"
+stream = "pilot"
+arm = "roko_fixed"             # gpt-oss-120b pinned, the routing ladder off (b167a45d8)
+model = "gpt-oss-120b"
+seeds = "1-3"
+line = "BL0"
+planned_usd = 4.50             # 60 runs x $0.075
+max_cost_usd = 9.00
+
+[[block]]
+id = "fd-claude"
+stream = "pilot"
+arm = "fd_claude"              # claude -p on the subscription, its shell behind the egress proxy (3305)
+model = "claude-opus-5-5"
+seeds = "1-3"
+line = "BL0"
+max_cost_usd = 120.00          # API-equivalent; $0 is billed
+off_hours = true               # the subscription is shared with the development agents
+
+[[block]]
+id = "provider-fault"
+stream = "pilot"
+instances = ["F1-l1-0002", "F4-l2-0002", "F1-l3-0001", "F4-l4-0001", "F1-l5-0001"]   # pilot_fd_api's five
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1"
+line = "BL0"
+disturbance = "experiments/provider_fault.toml"
+planned_usd = 0.375            # 5 runs x $0.075
+max_cost_usd = 0.75
+optional = true                # S09's optional row: run it with --include provider-fault if the budget allows
+
+[[block]]
+id = "mini-swe"
+stream = "pilot"
+arm = "cheap_direct_msa"       # mini-swe-agent as the direct loop (S08 decision 3): unavailable until 3317 lands
+model = "gpt-oss-120b"
+seeds = "1"
+line = "BL0"
+planned_usd = 1.20             # 20 runs x $0.06
+max_cost_usd = 2.40
+optional = true

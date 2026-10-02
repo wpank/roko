@@ -41,7 +41,8 @@ benchmarks/viabilitybench/
   streams/{pilot, pilot_fd_api}.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  experiments/{pilot_a}.toml  test_*.py                     # experiment manifests (vb campaign) and their rehearsals
+  experiments/{pilot_a, pilot_b}.toml  test_*.py            # experiment manifests (vb campaign) and their rehearsals
+  experiments/provider_fault.toml                           # Pilot B's provider_fault rows (vb.disturbance/1)
   driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
   driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm

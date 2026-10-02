@@ -7,28 +7,31 @@
 **The manifest** (`vb.experiment/1`, `schema/experiment.schema.json`) is a TOML file in `experiments/`: the
 experiment id every run gets (`vb run --experiment`), an optional `prereg_id`, `requires_lock` and `requires_live`
 (which 3341 and 3359 enforce; until then a manifest that sets either is refused before it runs), an `order`, and its
-blocks. A block is one cell of the experiment: a stream, an arm, a model, seeds (`vb run`'s `--seeds` form), a budget
-line and, optionally, a disturbance spec, an instance subset of the stream, the secret file's fingerprint its
-instances are audited under, the `--max-cost-usd` a network run needs, its planned billed spend (S09 §3's figures,
-required for a billed block), `optional` (run only with `--include`) and `off_hours` (a note: the subscription is
-shared).
+blocks. A block is one cell of the experiment: a stream, an arm file's name in `arms/`, a model, seeds (`vb run`'s
+`--seeds` form), a budget line and, optionally, a disturbance spec, an instance subset of the stream, the secret
+file's fingerprint its instances are audited under, `max_cost_usd` (the most the block may spend, which a network
+block needs), its planned billed spend (S09 §3's figures, required for a billed block), `optional` (run only with
+`--include`) and `off_hours` (a note: the subscription is shared).
 
 **The order.** `as_listed` runs each block as one unit, in the manifest's order. `daily_interleave` (S09 §4.1, "arms
 are interleaved in randomized daily blocks") makes one unit per (block, seed), puts a block's k-th seed on day k, and
 orders each day's units by a keyed shuffle of the manifest id, the order's seed and the day. Each unit is one
-`vb run`, whose run id is `<unit>-<attempt>`.
+`vb run`, whose run id is `<unit>-<attempt>`, and whose `--max-cost-usd` is its share of the block's `max_cost_usd`
+(its seeds over the block's).
 
 **Validation** (`--dry-run`, and before anything runs) refuses, before any call or directory:
 - an arm, a stream, a disturbance spec or a line that does not exist; a line held back (`[reserved]`) or outside
   the experiment cap's lines; an instance outside its stream; a model outside its arm's `models_allow` or without a
   row in the price snapshot;
-- a network block without `max_cost_usd`, or whose one task can cost more than it (`vb.admit`), and a billed block
-  without `planned_usd`;
-- a block whose planned spend would take its line, its experiment cap or the programme stop past the cap, counting
-  what the ledger already holds (`ledger.read_books` over the results root) and the planned spend of the blocks
-  before it that have not run; and a block whose first task could not start (`vb run`'s own admission: what is held,
-  plus those earlier blocks' plans, plus the most one task can cost). The whole block's worst case is shown and not
-  enforced: `vb run` enforces it task by task, and Pilot A's cheap_direct worst case alone ($17.40) passes BL0;
+- a network block without `max_cost_usd`, or one of whose units could not afford one task (`vb.admit`), and a
+  billed block without `planned_usd`;
+- a block whose worst case would take its line, its experiment cap or the programme stop past the cap, counting what
+  the ledger already holds (`ledger.read_books` over the results root) and the worst cases of the blocks before it
+  that have not run. A billed block's worst case is the most its runs can bill: each task's worst case under the
+  arm's caps, but never more than `max_cost_usd`, since `vb run` stops a run before any task that could take it past
+  its `--max-cost-usd`. A subscription block's is $0. A block whose planned spend alone would pass a cap is refused
+  as well, with that reason. Of a block that has partly run, only the units still to run count, since the ledger
+  holds what the others spent;
 - a secret file whose fingerprint differs from the one a block names, and an instance that a unit of any campaign
   in the results root already ran under another secret's fingerprint (S09 §4.1: each instance is audited under one
   secret file for the whole campaign). Without a readable secret file the dry run says the secret was not checked.
@@ -37,11 +40,14 @@ per line and cap what is held, planned and left, as JSON. It exits 2 when anythi
 
 **Running** (without `--dry-run`). Each unit runs `vb.py run` as a process of its own, with the operator's
 environment, so its own checks and its restart into an allowlisted environment work as when typed by hand. A network
-unit needs `--allow-network` on the campaign and gets `--allow-network --max-cost-usd <the block's>`. An offline
-rehearsal passes `--provider-url` (a loopback URL) to every unit, and may swap an arm's file for a rehearsal one
-(`--arm-file ID=PATH`, refused without a loopback `--provider-url`). The campaign appends a `start` and a `finish`
-event per unit to `$VB_RESULTS/<experiment>/campaign.jsonl`, with the run id, the secret's fingerprint and the
-instances. A block's instance subset becomes a stream file under `<experiment>/.campaign/`, which `vb report` skips.
+unit needs `--allow-network` on the campaign, and gets `--allow-network` and its `--max-cost-usd`. An offline
+rehearsal passes `--provider-url` (a loopback URL) to every unit, and `--proxy` to each unit the real run would meter
+through the proxy (a billed arm whose provider names a key, or a disturbance the proxy applies). It may swap an arm's
+file for a rehearsal one of the same arm id (`--arm-file NAME=PATH`) and run each unit on the first N instances of
+its stream (`--limit N`); both are refused without a loopback `--provider-url`. The campaign appends a `start` and a
+`finish` event per unit to `$VB_RESULTS/<experiment>/campaign.jsonl`, with the run id, the secret's fingerprint and
+the instances. A block's instance subset becomes a stream file under `<experiment>/.campaign/`, which `vb report`
+skips.
 
 **Resuming.** A rerun skips every unit whose run exited 0 and starts at the first other one. An earlier attempt of
 that unit that exited otherwise, or never finished, is retried under a new run id when its run directory holds no
@@ -225,7 +231,7 @@ def units(manifest: Manifest, include: Iterable[str] = ()) -> list[Unit]:
 
 def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, include: Iterable[str] = (),
           provider_url: str | None = None, arm_files: dict[str, str] | None = None,
-          secret_fingerprint: str | None = None, finished: Iterable[str] = ()) -> Check:
+          secret_fingerprint: str | None = None, finished: Iterable[str] = (), limit: int | None = None) -> Check:
     """Validate `manifest` against the arms, streams, snapshot, budget and ledger (module docstring). `vb` is the
     driver module; `finished` names the units already done, whose spend the ledger holds."""
     include = set(include)
@@ -239,6 +245,8 @@ def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, 
                               "provider only for an offline rehearsal")
     if arm_files and not provider_url:
         found.problems.append("--arm-file swaps an arm's file for a rehearsal, so it needs a loopback --provider-url")
+    if limit is not None and (not provider_url or limit < 1):
+        found.problems.append("--limit cuts a rehearsal's streams, so it needs a loopback --provider-url and N >= 1")
     if manifest.requires_lock:
         found.notes.append("requires_lock: the pre-registration lock is not checked by this driver (3341), so the "
                            "campaign refuses to run until it is")
@@ -250,18 +258,19 @@ def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, 
     except ledger.BudgetError as err:
         found.problems.append(f"the ledger under {results_root} cannot be read: {err}")
         books = ledger.Books([], [])
-    pending: dict[str, float] = {}  # scope -> planned spend of the included blocks before this one, not yet run
+    pending: dict[str, list[float]] = {}  # scope -> [planned, worst case] of the earlier blocks' units still to run
     for block in manifest.blocks:
         included = not block.optional or block.id in include
         entry = {"block": block.id, "included": included, "stream": block.stream, "arm": block.arm,
                  "model": block.model, "seeds": block.seeds_text, "line": block.line, "optional": block.optional,
-                 "off_hours": block.off_hours}
+                 "off_hours": block.off_hours, "planned_usd": block.planned_usd, "max_cost_usd": block.max_cost_usd}
         found.blocks[block.id] = entry
-        mine = [unit.key for unit in plan_units if unit.block.id == block.id]
-        left = sum(1 for key in mine if key not in set(finished)) / len(mine) if mine else 0.0
+        mine = [unit for unit in plan_units if unit.block.id == block.id]
+        left = sum(len(unit.seeds) for unit in mine if unit.key not in set(finished)) / len(block.seeds)
+        share = min((len(unit.seeds) for unit in mine), default=len(block.seeds)) / len(block.seeds)
         try:
             _check_block(vb, found, block, entry, budget, books, pending, provider_url, arm_files or {},
-                         secret_fingerprint, left=left)
+                         secret_fingerprint, left=left, share=share, limit=limit)
         except _Unavailable as err:
             entry["unavailable"] = str(err)
             (found.notes if block.optional and not included else found.problems).append(f"block {block.id}: {err}")
@@ -282,7 +291,7 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
     finished = {event["unit"] for event in events if event["event"] == "finish" and event.get("exit") == 0}
     found = check(vb, manifest, budget=budget, results_root=results_root, include=args.include or (),
                   provider_url=args.provider_url, arm_files=arm_files, secret_fingerprint=fingerprint,
-                  finished=finished)
+                  finished=finished, limit=args.limit)
     if fingerprint is None:
         found.notes.append(f"secret: not checked ({why})")
     if args.dry_run:
@@ -327,8 +336,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include", action="append", help="also run this optional block (repeatable)")
     parser.add_argument("--units", type=int, help="run at most this many units now (a rerun goes on)")
     parser.add_argument("--provider-url", help="an offline rehearsal: every unit's provider is this loopback URL")
-    parser.add_argument("--arm-file", action="append", metavar="ID=PATH",
-                        help="a rehearsal's arm file for arm ID (needs a loopback --provider-url)")
+    parser.add_argument("--arm-file", action="append", metavar="NAME=PATH",
+                        help="a rehearsal's file for the arm NAME, of the same arm id (needs a loopback "
+                             "--provider-url)")
+    parser.add_argument("--limit", type=int, help="a rehearsal runs each unit on its stream's first N instances (needs "
+                                                  "a loopback --provider-url)")
     parser.add_argument("--secret-file", type=Path, help="passed to every unit's vb run")
     parser.add_argument("--key-file", type=Path, help="passed to every unit's vb run")
     parser.add_argument("--results", type=Path, help="passed to every unit's vb run")
@@ -341,21 +353,24 @@ class _Unavailable(Exception):
 
 
 def _check_block(vb, found: Check, block: Block, entry: dict, budget: ledger.Budget, books: ledger.Books,
-                 pending: dict[str, float], provider_url: str | None, arm_files: dict[str, str],
-                 fingerprint: str | None, *, left: float) -> None:
-    """One block's checks (module docstring). `left` is the share of its units that have not run yet."""
+                 pending: dict[str, list[float]], provider_url: str | None, arm_files: dict[str, str],
+                 fingerprint: str | None, *, left: float, share: float, limit: int | None) -> None:
+    """One block's checks (module docstring). `left` is the share of its seeds still to run, `share` its smallest
+    unit's share of them, and `limit` a rehearsal's cut of each unit's stream."""
     where = f"block {block.id}"
     try:
         arm = vb.load_arm(arm_files.get(block.arm, block.arm))
         stream = vb.load_stream(block.stream)
+        if block.arm in arm_files and vb.load_arm(block.arm)["arm"]["id"] != arm["arm"]["id"]:
+            found.problems.append(f"{where}: --arm-file {arm['path']} is arm {arm['arm']['id']}, not the arm of "
+                                  f"{block.arm}")
     except vb.DriverError as err:
         raise _Unavailable(str(err)) from None
-    if arm["arm"]["id"] != block.arm:
-        found.problems.append(f"{where}: {arm['path']} is arm {arm['arm']['id']}, not {block.arm}")
     instances = block.instances or tuple(stream.instances)
     outside = [instance for instance in instances if instance not in stream.instances]
     if outside:
         found.problems.append(f"{where}: {', '.join(outside)} not in stream {stream.id}")
+    instances = instances[:limit] if limit else instances
     found.instances[block.id] = instances
     runs_per_seed = len(instances)
     entry.update(runs_per_seed=runs_per_seed, runs=runs_per_seed * len(block.seeds), billed=arm["arm"]["billed"])
@@ -371,17 +386,22 @@ def _check_block(vb, found: Check, block: Block, entry: dict, budget: ledger.Bud
         found.problems.append(f"{where}: {block.model} has no row in {plan.snapshot.id}, so its cost is unknown")
     network = not plan.endpoint.offline
     worst = plan.worst_task_usd
+    bound = None if worst is None else round(worst * entry["runs"], 6)  # every task at its worst
+    if bound is not None and block.max_cost_usd is not None:
+        bound = min(bound, block.max_cost_usd)  # where `vb run` stops the block's runs
+    keyed = bool(arm.get("providers", {}).get(plan.endpoint.provider, {}).get("api_key_env"))
     entry.update(network=network, provider=plan.endpoint.provider, worst_task_usd=worst,
-                 worst_case_usd=None if worst is None else round(worst * entry["runs"], 6),
-                 planned_usd=block.planned_usd if arm["arm"]["billed"] else 0.0, max_cost_usd=block.max_cost_usd)
+                 worst_case_usd=bound if arm["arm"]["billed"] else 0.0,
+                 planned_usd=block.planned_usd if arm["arm"]["billed"] else 0.0,
+                 proxied=arm["arm"]["billed"] and keyed)  # what `vb run` meters through its proxy on the network
     if network:
         if block.max_cost_usd is None:
             found.problems.append(f"{where}: a network run needs max_cost_usd, its --max-cost-usd")
         elif row is not None:
             try:
-                vb.admit(plan, allow_network=True, max_cost_usd=block.max_cost_usd)
+                vb.admit(plan, allow_network=True, max_cost_usd=round(block.max_cost_usd * share, 6))
             except vb.DriverError as err:
-                found.problems.append(f"{where}: {err}")
+                found.problems.append(f"{where}: a unit's share of max_cost_usd is too small: {err}")
     if arm["arm"]["billed"] and block.planned_usd is None:
         found.problems.append(f"{where}: a billed block needs planned_usd, its planned billed spend (S09 §3)")
     if block.disturbance:
@@ -397,13 +417,13 @@ def _check_block(vb, found: Check, block: Block, entry: dict, budget: ledger.Bud
     if block.secret_fingerprint and fingerprint and block.secret_fingerprint != fingerprint:
         found.problems.append(f"{where}: runs under secret {block.secret_fingerprint}, but the secret file is "
                               f"{fingerprint}")
-    _check_budget(found, block, entry, budget, books, pending, worst if arm["arm"]["billed"] else 0.0, left=left)
+    _check_budget(found, block, entry, budget, books, pending, left=left)
 
 
 def _check_budget(found: Check, block: Block, entry: dict, budget: ledger.Budget, books: ledger.Books,
-                  pending: dict[str, float], worst: float | None, *, left: float) -> None:
-    """The budget rules of the module docstring, for one block in run order: of its planned spend, only the share of
-    its units still to run counts, since the ledger holds what the others spent."""
+                  pending: dict[str, list[float]], *, left: float) -> None:
+    """The budget rules of the module docstring, for one block in run order: of its planned spend and its worst case,
+    only the share of its seeds still to run counts, since the ledger holds what the others spent."""
     where = f"block {block.id}"
     line = budget.lines.get(block.line)
     if line is None:
@@ -423,26 +443,26 @@ def _check_budget(found: Check, block: Block, entry: dict, budget: ledger.Budget
                        lambda item: item["experiment_id"] in group.experiment_ids))
     scopes.append(("the programme stop", budget.stop_usd, lambda item: True))
     planned = round((entry["planned_usd"] or 0.0) * left, 6)
+    worst = round((entry["worst_case_usd"] or 0.0) * left, 6)
     if not entry["included"]:
         return
     for name, cap, member in scopes:
         spent, reserved = books.sums(member)
         held = round(float(spent + reserved), 6)
-        before = pending.get(name, 0.0)
+        planned_before, worst_before = pending.get(name, [0.0, 0.0])
         scope = found.scopes.setdefault(name, {"cap_usd": cap, "held_usd": held, "planned_usd": 0.0,
-                                               "left_usd": round(cap - held, 6)})
+                                               "worst_case_usd": 0.0, "left_usd": round(cap - held, 6)})
         if not left:  # every unit ran: the ledger holds its spend
             continue
-        if round(held + before + planned, 6) > cap:
-            found.problems.append(f"{where}: {name}: ${held:.4f} held + ${before:.4f} planned before it "
+        if planned and round(held + planned_before + planned, 6) > cap:  # a block that adds nothing passes no cap
+            found.problems.append(f"{where}: {name}: ${held:.4f} held + ${planned_before:.4f} planned before it "
                                   f"+ ${planned:.4f} planned for it would pass ${cap:.2f}")
-        elif worst is not None and round(held + before + worst, 6) > cap:
-            found.problems.append(f"{where}: {name}: its first task could not start: ${held:.4f} held "
-                                  f"+ ${before:.4f} planned before it + ${worst:.4f} for one task would pass "
-                                  f"${cap:.2f}")
-        pending[name] = round(before + planned, 6)
-        scope["planned_usd"] = pending[name]
-        scope["left_usd"] = round(cap - held - pending[name], 6)
+        elif worst and round(held + worst_before + worst, 6) > cap:
+            found.problems.append(f"{where}: {name}: at its worst, ${held:.4f} held + ${worst_before:.4f} for the "
+                                  f"blocks before it + ${worst:.4f} for it would pass ${cap:.2f}")
+        pending[name] = [round(planned_before + planned, 6), round(worst_before + worst, 6)]
+        scope["planned_usd"], scope["worst_case_usd"] = pending[name]
+        scope["left_usd"] = round(cap - held - pending[name][0], 6)
 
 
 def _check_secrets(found: Check, results_root: Path, fingerprint: str | None) -> None:
@@ -477,13 +497,17 @@ def _run_unit(vb, args: argparse.Namespace, manifest: Manifest, found: Check, un
             run_id, "--stream", stream, "--arm", arm_files.get(block.arm, block.arm), "--model", block.model,
             "--seeds", unit.seeds_text, "--line", block.line]
     if plan["network"]:
-        argv += ["--allow-network", "--max-cost-usd", f"{block.max_cost_usd:g}"]
+        argv.append("--allow-network")
+    if block.max_cost_usd is not None:  # the unit's share of the block's ceiling (module docstring)
+        argv += ["--max-cost-usd", f"{round(block.max_cost_usd * len(unit.seeds) / len(block.seeds), 6):g}"]
     if args.provider_url:
         argv += ["--provider-url", args.provider_url]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
     if block.disturbance:
         argv += ["--disturbance", str(_config(block.disturbance))]
-        if set(plan.get("disturbances", ())) & set(NEEDS_PROXY) and not plan["network"]:
-            argv.append("--proxy")
+    if not plan["network"] and (plan["proxied"] or set(plan.get("disturbances", ())) & set(NEEDS_PROXY)):
+        argv.append("--proxy")  # a rehearsal meets the metering proxy wherever the real run would
     for flag, value in (("--secret-file", args.secret_file), ("--key-file", args.key_file),
                         ("--results", results_root), ("--work", args.work)):
         if value is not None:

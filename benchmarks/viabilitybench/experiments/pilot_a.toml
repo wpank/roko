@@ -6,8 +6,9 @@
 # and rehearse offline with `experiments/test_pilot_a.py`. The paid run adds --allow-network and the key file.
 #
 # Planned spend is S09 §3's: $0.06 per direct task, and $1.50 of BL8 for fd_api's five runs. Each block's
-# max_cost_usd, its `vb run --max-cost-usd`, is twice its plan: G0 fails a pilot whose measured $/task passes twice
-# the plan, so spend beyond it buys nothing. The ledger's caps (BL0, BL8, the pilot's $15) bind as well.
+# max_cost_usd, the most it may bill, is twice its plan: G0 fails a pilot whose measured $/task passes twice the
+# plan, so spend beyond it buys nothing. Each daily unit's `vb run --max-cost-usd` is its share of it, and the
+# ledger's caps (BL0, BL8, the pilot's $15) bind as well.
 #
 # No block names a secret fingerprint. The campaign log pins each instance to the secret file of its first run, and
 # refuses another secret on it later, in this experiment or any other in the results root (S09 §4.1).

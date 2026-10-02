@@ -79,7 +79,7 @@ def test_campaign_refuses_a_block_over_its_line_cap(places, capsys):
         assert run_campaign(places, over, stub.url) == 2  # and the run is refused the same way
         assert "line BL0" in capsys.readouterr().err
 
-        # The ledger already holds all but $0.10 of BL0, so the first task (worst case $0.29) could not start.
+        # The ledger already holds all but $0.10 of BL0, and the block's two tasks can bill $0.29 each at their worst.
         book = ledger.Ledger(places["results"] / "OTHER" / "run-x" / "ledger.jsonl", line="BL0", experiment_id="OTHER",
                              run_id="run-x", price_snapshot_id=ledger.DEFAULT_SNAPSHOT)
         book.path.parent.mkdir(parents=True)
@@ -89,7 +89,8 @@ def test_campaign_refuses_a_block_over_its_line_cap(places, capsys):
         tight = manifest(places, block("small", planned_usd=0.01), name="tight.toml")
         code, shown = dry_run(places, tight, stub.url, capsys)
         assert code == 2 and shown["budget"]["line BL0"]["held_usd"] == pytest.approx(cap - 0.10)
-        assert shown["problems"][0].startswith("block small: line BL0: its first task could not start")
+        assert shown["problems"][0].startswith(f"block small: line BL0: at its worst, ${cap - 0.10:.4f} held")
+        assert "+ $0.5786 for it would pass" in shown["problems"][0]  # two tasks at $0.28932, under max_cost_usd $1
         assert run_campaign(places, tight, stub.url) == 2
         assert stub.requests == [] and not (places["results"] / EXPERIMENT).exists()
 

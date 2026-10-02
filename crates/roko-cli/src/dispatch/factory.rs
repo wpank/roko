@@ -271,6 +271,24 @@ impl SharedAgentFactory {
         self.dispatcher.warm_pool()
     }
 
+    /// Skip the ladder rungs whose models `failed` their tool-use probe, by
+    /// model with the reason (backlog 1121); with no rung left the router
+    /// picks.
+    #[must_use]
+    pub fn skip_failed_rungs(
+        mut self,
+        failed: &std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        if failed.is_empty() {
+            return self;
+        }
+        if let Some(ladder) = self.dispatcher.routing_ladder().cloned() {
+            self.dispatcher
+                .replace_routing_ladder(ladder.without_models(failed));
+        }
+        self
+    }
+
     /// Use a caller-owned provider health registry for all subsequent
     /// dispatches from this factory.
     ///

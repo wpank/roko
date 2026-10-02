@@ -314,6 +314,49 @@ mod tests {
         assert_eq!(all[0].tier, KnowledgeTier::Consolidated);
     }
 
+    /// A prompt's access is counted (S01 P0-9) without the spaced half-life
+    /// extension, which is knowledge decay, held for now; `record_access`
+    /// still applies it.
+    #[test]
+    fn record_access_counts_without_changing_half_life() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let (kind, now) = (KnowledgeKind::Insight, Utc::now());
+        for (id, content) in [
+            ("counted", "Prompt inclusions count as accesses"),
+            ("spaced", "Spaced retrieval stretches the half-life"),
+            ("untouched", "Unrelated deployment checklist for releases"),
+        ] {
+            let knowledge = entry(kind, id, content, &[], 0.9, &["ep1"], now);
+            store.add(knowledge).expect("add knowledge");
+        }
+        let half_life = kind.default_half_life_days();
+        let state = |id: &str| {
+            let entries = store.read_all().expect("read the store");
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap_or_else(|| panic!("no entry {id}: {entries:?}"));
+            let accessed = entry.last_accessed.is_some();
+            (entry.access_count, entry.half_life_days, accessed)
+        };
+
+        assert_eq!(
+            store.count_access(&["counted", "missing"]).expect("count"),
+            1
+        );
+        assert_eq!(store.count_access(&["counted"]).expect("count again"), 1);
+        assert_eq!(state("counted"), (2, half_life, true));
+        assert_eq!(store.count_access(&[]).expect("count nothing"), 0);
+
+        store.record_access(&["spaced"]).expect("first access");
+        store.record_access(&["spaced"]).expect("second access");
+        let (accesses, spaced, accessed) = state("spaced");
+        assert_eq!((accesses, accessed), (2, true));
+        assert!(spaced > half_life, "{spaced} <= {half_life}");
+        assert_eq!(state("untouched"), (0, half_life, false));
+    }
+
     #[test]
     fn record_usage_demotes_low_confidence_entry() {
         let tmp = TempDir::new().expect("tempdir");

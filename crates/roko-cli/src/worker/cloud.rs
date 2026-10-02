@@ -600,6 +600,7 @@ pub async fn run_code_implementer_cloud(
                 force_disk_check: false,
                 effort: None,
                 no_cascade: false,
+                frozen_learning: false,
                 metrics: None,
             })
             .await?;

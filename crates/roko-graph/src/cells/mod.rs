@@ -45,7 +45,7 @@ pub use stubs::PassthroughCell;
 pub use task_context::{TaskContextCell, TaskContextConfig};
 pub use task_executor::{
     AttemptReconcileDecision, AttemptReconciliation, GraphTaskEvent, NoopAttemptRecorder,
-    PROGRESS_MESSAGE_MAX_BYTES, ProviderAttemptReceipt, ProviderAttemptRecorder,
+    PROGRESS_MESSAGE_MAX_BYTES, ProviderAttemptReceipt, ProviderAttemptRecorder, RetryBackoff,
     StreamingTaskDispatcher, TaskAttempt, TaskDispatchEvent, TaskDispatchOutcome,
     TaskDispatchOutcomeKind, TaskDispatchRequest, TaskDispatchStatus, TaskDispatcher,
     TaskExecutionSpec, TaskExecutorCell, TaskLease, truncate_utf8,

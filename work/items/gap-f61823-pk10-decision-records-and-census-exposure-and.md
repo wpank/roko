@@ -111,3 +111,19 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK09 (gap-cc5051).
 - Existing work items this package covers or touches: gap-644040. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+Cargo verification of every task is deferred to the batch gate (no cargo on the worker).
+
+- 2211: implemented at 2959afbd9.
+- 2212: implemented at e955e3534.
+- 2213: implemented at 799095ff4. Knowledge, episodes and playbooks all render into the canonical `domain_context` section, so one budget cannot drop the knowledge and keep a playbook: the test drops that section with a budget that fits only the critical sections, and checks the included case (with digests) under the default budget.
+- 2214: implemented at 201e92451. The verdict's `exposures` counts retrieved content items; section items get rows but are not counted, or `included > 0` would hold for every attempt.
+- 2215: implemented at 9eb733abf; test fix at f4c002395 (the 2216 access count makes the second attempt's knowledge digest racy).
+- 2216: implemented at 91d049ecc.
+- 2217: implemented at dd9877e09.
+- 2219: implemented at 3b8daad5e, CLI reference at fe1007f5c. `--frozen-learning` rides a task-local scope (`plan_runner::with_frozen_learning`) instead of a `GraphPlanRunParams` field: `prd.rs`, `commands/do_cmd.rs` and `run.rs` build those params, and roko-7d is rewriting them. `[learning] frozen` covers `roko run`.
+- 2220: implemented at 8699ca81d.
+- 2221: implemented at 5007eaa22.
+- Gate 4c fix (work/gap-f61823-fix): the frozen-attempt test now matches its reflex rule before crediting it (the store caps a rule's passes at its hits); with roko-7d landed, `--frozen-learning` moved from the task-local scope into `GraphPlanRunParams::frozen_learning`.

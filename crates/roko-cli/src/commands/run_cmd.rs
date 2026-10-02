@@ -426,6 +426,9 @@ async fn run_plan_dir(
         worktree_per_task: false,
         no_worktree_per_task: false,
         rich_topology: false,
+        // A one-task run learns as usual (2219: `--frozen-learning` is a
+        // `plan run` flag).
+        frozen_learning: false,
         promote: None,
         max_parallel_plans: None,
         fail_fast: false,
@@ -757,6 +760,7 @@ pub(crate) async fn run_plan_execution(
         force_disk_check: false,
         effort: cli.effort.map(|effort| effort.to_string()),
         no_cascade,
+        frozen_learning: false,
         metrics: None,
     })
     .await

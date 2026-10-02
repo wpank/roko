@@ -77,7 +77,7 @@ server.
 
 Captured components:
 - `Arc<LensRegistry>` (the default three-lens registry)
-- `Arc<JsonlTelemetryObservationSink>` (JSONL file writer)
+- `Arc<DebugLogTelemetryObservationSink>` (logs each sample at debug level)
 - `CancelToken` (server-lifetime cancellation)
 - `Option<PathBuf>` (cost log path for spike detection)
 
@@ -96,18 +96,14 @@ Each cycle:
 
 1. Wait for ticker or cancellation (biased toward cancellation)
 2. Call `PeriodicObserver::observe(&registry)` to snapshot all Lenses
-3. Persist the batch to JSONL via `spawn_blocking` (I/O-heavy)
+3. Hand the batch to the sink via `spawn_blocking`
 4. Check cost spike threshold against 15-minute rolling rate
-
-Step 3 uses `spawn_blocking` because the JSONL sink involves file I/O
-(seek, write, potential rotation). Keeping this off the async
-executor prevents blocking other tasks.
 
 ### 2.4 Error Handling
 
 | Failure | Behavior |
 |---------|----------|
-| JSONL write fails | `tracing::warn` + continue |
+| Sink emit fails | `tracing::warn` + continue |
 | `spawn_blocking` panics | `tracing::warn` + continue |
 | Cost spike check fails (file not found) | Silent (expected on first run) |
 | Cost spike check fails (other I/O) | `tracing::debug` + continue |
@@ -117,54 +113,11 @@ observer is derived telemetry -- it is expendable.
 
 ---
 
-## 3. JSONL Rotation
+## 3. Where Samples Go
 
-### 3.1 Sink Architecture
-
-```rust
-struct JsonlTelemetryObservationSink {
-    path: PathBuf,
-    max_mb: u64,
-}
-```
-
-The sink serializes the complete observation batch to a byte buffer
-before touching the file. This ensures that all Lenses from one cycle
-are written atomically under one rotation lock, preventing split
-across archived and live generations.
-
-### 3.2 Rotation Protocol
-
-The sink delegates to `roko_fs::log_rotation::append_jsonl_line_sync`,
-which enforces the canonical resource log-size limit:
-
-1. Check file size against `max_mb`
-2. If over limit, rotate: rename current file with timestamp suffix
-3. Append the pre-serialized batch
-4. Sync to disk
-
-The `max_mb` value comes from `resources.log_rotation_max_mb` in the
-workspace config.
-
-### 3.3 Output Path
-
-```
-.roko/metrics/telemetry-observations.jsonl
-```
-
-Resolved via `AppState.layout.telemetry_observations_path()`.
-
-### 3.4 Record Format
-
-Each line is one JSON-serialized `TelemetryObservation`:
-
-```json
-{"lens_name":"token-usage","timestamp":"2026-09-15T12:00:00Z","data":{...}}
-{"lens_name":"latency","timestamp":"2026-09-15T12:00:00Z","data":{...}}
-{"lens_name":"cost","timestamp":"2026-09-15T12:00:00Z","data":{...}}
-```
-
-All three lines from one cycle share the same timestamp.
+Each sample goes to the debug log (`telemetry lens sample`, with the lens name and its data); serve keeps none on
+disk. Serve used to append them to `.roko/metrics/telemetry-observations.jsonl`, which nothing read (backlog 2124).
+An old file of that name is left in place.
 
 ---
 
@@ -290,7 +243,7 @@ references are fully released after shutdown.
 | `crates/roko-core/src/obs/telemetry_observe.rs` | `TelemetryObserve` trait, `TelemetryObservation`, `PeriodicObserver` |
 | `crates/roko-core/src/obs/lens.rs` | `LensRegistry`, `default_registry`, concrete Lens impls |
 | `crates/roko-core/src/obs/schema.rs` | `CanonicalMetricSchema`, 16 `MetricDescriptor` entries, label constants |
-| `crates/roko-serve/src/telemetry_observer.rs` | `start_periodic_telemetry_observer`, JSONL sink, cost spike detection |
+| `crates/roko-serve/src/telemetry_observer.rs` | `start_periodic_telemetry_observer`, debug-log sink, cost spike detection |
 
 ---
 
@@ -310,7 +263,7 @@ cargo test -p roko-core telemetry_observation_roundtrips_via_json
 # Server observer emits initial snapshot and shuts down cleanly
 cargo test -p roko-serve periodic_observer_emits_all_lens_snapshots
 cargo test -p roko-serve cancellation_stops_waiting_task_and_releases_captured_state
-cargo test -p roko-serve jsonl_sink_persists_one_parseable_record_per_lens
+cargo test -p roko-serve run_server_with_state_persists_no_telemetry_and_shuts_down
 
 # Canonical schema size
 cargo test -p roko-core canonical_metrics_count_is_15

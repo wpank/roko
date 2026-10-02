@@ -914,6 +914,10 @@ pub struct GraphPlanRunParams {
     /// gap-9980c6): the routing ladder, else the default model, routes each
     /// task. The run's outcomes still teach the router.
     pub no_cascade: bool,
+    /// Hold learned state fixed for this run alone (`roko plan run
+    /// --frozen-learning`, decision 2218): the run's config reads
+    /// `[learning] frozen = true` whatever `roko.toml` says.
+    pub frozen_learning: bool,
     /// Registry that counts this run's verify verdicts and durations
     /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
@@ -1038,8 +1042,8 @@ fn graph_run_outcome(
 
 /// Attach the run's tool observability to `factory` (find-f489db). Every tool
 /// call roko's own tool loops make then leaves a scrubbed admit and result
-/// pair in `.roko/tool_audit.jsonl`, a closed trace under `.roko/traces/` and
-/// a record in `.roko/metrics/tool_metrics.jsonl`, all under `workdir`. The
+/// pair in `.roko/tool_audit.jsonl` and a closed trace under `.roko/traces/`,
+/// both under `workdir`; no tool metrics are written (backlog 2123). The
 /// audit scrubs with the process's secret scrubber, which holds the
 /// configured secrets, or the built-in patterns when none is installed. The
 /// audit is observability, not a gate: when its log cannot be opened, the run
@@ -1103,6 +1107,7 @@ async fn run_graph_plan_body(
         force_disk_check,
         effort,
         no_cascade,
+        frozen_learning,
         metrics,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
@@ -1161,6 +1166,18 @@ async fn run_graph_plan_body(
     // `--effort` sets this run's reasoning effort (gap-9980c6).
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
+    }
+    // `--frozen-learning` freezes this run alone, before the manifest, the
+    // feedback facade and the dispatcher are built, so every reader sees one
+    // value.
+    if frozen_learning {
+        roko_config.learning.frozen = true;
+    }
+    if roko_config.learning.frozen {
+        tracing::info!(
+            "learning is frozen for this run: it reads learned state and writes none \
+             (decision 2218)"
+        );
     }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
@@ -1259,6 +1276,17 @@ async fn run_graph_plan_body(
     )?;
     if !plugin_catalog.plugin_tools().is_empty() {
         shared_factory = shared_factory.with_local_tool_runtime(plugin_catalog.local_runtime());
+    }
+    // Decision 1119 (3-A): give each API rung of the model ladder one
+    // tool-use call at most once a day, and skip a rung that cannot do agent
+    // work (backlog 1121). FAST and `--no-budget` runs never probe.
+    let probe_rungs = roko_config.routing.ladder.probe
+        && !no_budget
+        && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    if probe_rungs && let Some(ladder) = shared_factory.dispatcher().routing_ladder().cloned() {
+        let failed =
+            crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
+        shared_factory = shared_factory.skip_failed_rungs(&failed);
     }
     let shared_factory = Arc::new(shared_factory);
     if dangerously_skip_permissions {
@@ -1714,6 +1742,8 @@ async fn run_graph_plan_body(
     // `roko inject` reaches the run through a socket of its own, and what it
     // sends is routed like a TUI command (gap-f118b3).
     let operator_directives = graph_task_dispatcher.operator_directives();
+    // `roko plan budget raise` raises a running plan's ceiling (backlog 2118).
+    let budget_control = graph_task_dispatcher.plan_budget_control();
     let (inject_sender, mut inject_rx, inject_ack_tx, inject_acks) =
         ExecutionCommandSender::channel("graph-engine");
     let inject_target = Arc::clone(&graph_task_dispatcher);
@@ -1757,6 +1787,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            &budget_control,
             workdir,
         );
         routed.merge(route_execution_commands(
@@ -1767,6 +1798,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            &budget_control,
             workdir,
         ));
         for plan_id in routed.cancelled_before_start {
@@ -1782,6 +1814,19 @@ async fn run_graph_plan_body(
             graph_tui_bridge.log_event("graph.plan_rerun", &rerun.describe(&plan_id));
             pending_reruns.insert(plan_id, rerun);
             reran_plans = true;
+        }
+        // The event log and the plan's run manifest say who raised a plan's
+        // ceiling, and to what (backlog 2118); its costs.json keeps it.
+        for raised in routed.budget_raises {
+            graph_tui_bridge.log_event("graph.plan_budget_raised", &raised.describe());
+            if let Some(run_id) = graph_task_dispatcher.plan_run_id(&raised.plan_id) {
+                run_manifests.record_budget_raise(
+                    &run_id,
+                    &raised.plan_id,
+                    &raised.raise,
+                    &raised.requested_by,
+                );
+            }
         }
 
         // A paused run starts no plan (decision 1206).
@@ -2029,8 +2074,9 @@ async fn run_graph_plan_body(
     // routing observations survive across runs. Saving through the run's
     // journal truncates it once the snapshot holds its observations, so a
     // later load does not replay them again (bug-dfb28f). If the save fails,
-    // the journal keeps them for that load.
-    if let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
+    // the journal keeps them for that load. A frozen run saves none.
+    if !roko_config.learning.frozen
+        && let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
         && let Err(err) = journal.save(cascade)
     {
         tracing::warn!(
@@ -2260,6 +2306,11 @@ pub fn build_graph_feedback_context(
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
     let _ = std::fs::create_dir_all(&graph_learn_dir);
+    // A frozen run (decision 2218) sets none of the paths that only write
+    // learned state: playbook outcomes (prompts read playbooks from the
+    // workdir), prompt treatments, post-gate reflections and the holdout
+    // split. Paths that are also read stay; their writers check the flag.
+    let learning = !config.learning.frozen;
 
     // #144: one daimon state, shared by the feedback facade (plan-completion
     // persistence) and dispatch (affect modulation).
@@ -2302,6 +2353,7 @@ pub fn build_graph_feedback_context(
         graph_learn_dir.join("shadow-results.jsonl"),
     ));
 
+    let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
             workdir,
@@ -2313,17 +2365,17 @@ pub fn build_graph_feedback_context(
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
-        playbook_dir: Some(graph_learn_dir.join("playbooks")),
+        playbook_dir: learning.then(|| graph_learn_dir.join("playbooks")),
         // Reuse the daimon state constructed above so the feedback facade
         // persistence sink and dispatch-time modulation share the same
         // mutable state (#144).
         daimon_state: shared_daimon_state,
-        experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
+        experiment_store_path: learning.then(|| graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
+        post_gate_reflection_path: learning.then_some(post_gate_reflections),
         replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        holdout_experiment: Some(holdout_experiment),
+        holdout_experiment: learning.then_some(holdout_experiment),
         shadow_runner: Some(shadow_runner),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
@@ -2394,6 +2446,14 @@ pub fn build_graph_feedback_facade(
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
+    // A frozen run (decision 2218) registers no sink. Each learning sink
+    // writes learned state: episodes, hindsight, knowledge, error patterns,
+    // the router, dreams and the daimon state. The theta and delta sinks
+    // keep only in-memory state and wait for plan completion, which Graph
+    // runs never emit (q-6b7cca).
+    if config.learning.frozen {
+        return std::sync::Arc::new(crate::runtime_feedback::FeedbackFacade::new());
+    }
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
     let graph_episodes_path = graph_layout.root_episodes_path();
@@ -2646,6 +2706,8 @@ struct RoutedCommands {
     /// Plans the operator runs again, each with how
     /// ([`PlanSetScheduler::retry`]).
     reruns: Vec<(String, PlanRerun)>,
+    /// Running plans whose budget ceiling the operator raised.
+    budget_raises: Vec<RaisedBudget>,
 }
 
 impl RoutedCommands {
@@ -2654,6 +2716,33 @@ impl RoutedCommands {
         self.cancelled_before_start
             .extend(other.cancelled_before_start);
         self.reruns.extend(other.reruns);
+        self.budget_raises.extend(other.budget_raises);
+    }
+}
+
+/// A raise of a running plan's budget ceiling that
+/// [`route_execution_commands`] applied (backlog 2118).
+#[derive(Debug)]
+struct RaisedBudget {
+    plan_id: String,
+    raise: crate::graph_task_dispatch::PlanBudgetRaise,
+    /// Who asked: the control surface the raise came through.
+    requested_by: String,
+}
+
+impl RaisedBudget {
+    /// What the event log says of it.
+    fn describe(&self) -> String {
+        let Self {
+            plan_id,
+            raise,
+            requested_by,
+        } = self;
+        format!(
+            "plan '{plan_id}' budget ceiling raised from ${:.4} to ${:.4} by {requested_by}, \
+             with ${:.4} spent",
+            raise.from_usd, raise.to_usd, raise.spent_usd
+        )
     }
 }
 
@@ -2743,6 +2832,8 @@ fn report_blocked_plan(
 ///   review that the approval id names (`<plan>/<task>`), as `roko plan
 ///   review` does; the held attempt in `workdir` reads it
 ///   ([`record_held_task_review`]).
+/// - A budget raise (`roko plan budget raise`) lifts the ceiling of the
+///   running plan it names for the rest of its run (`budget`, backlog 2118).
 ///
 /// Every other command, and one these cannot carry out, is rejected with
 /// the reason ([`reject_command`]): none is acknowledged and then dropped.
@@ -2754,6 +2845,7 @@ fn route_execution_commands(
     pause: &AtomicBool,
     task_stops: &crate::graph_task_dispatch::OperatorStops,
     directives: &crate::graph_task_dispatch::OperatorDirectives,
+    budget: &crate::graph_task_dispatch::PlanBudgetControl,
     workdir: &Path,
 ) -> RoutedCommands {
     let mut routed = RoutedCommands::default();
@@ -2849,6 +2941,29 @@ fn route_execution_commands(
                 approval_id,
                 reason,
             } => record_held_task_review(workdir, &cmd, approval_id, "rejected", reason),
+            ExecutionCommandKind::RaiseBudget {
+                ceiling_micro_usd,
+                requested_by,
+            } => match cmd.plan_id.as_deref() {
+                Some(plan_id) if controls.contains_key(plan_id) => {
+                    match budget.raise(plan_id, *ceiling_micro_usd) {
+                        Ok(raise) => {
+                            let raised = RaisedBudget {
+                                plan_id: plan_id.to_string(),
+                                raise,
+                                requested_by: requested_by.clone(),
+                            };
+                            let note = raised.describe();
+                            tracing::info!(command_id = %cmd.command_id, "{note}");
+                            routed.budget_raises.push(raised);
+                            (CommandAckStatus::Completed, Some(note))
+                        }
+                        Err(reason) => reject_command(&cmd, &reason),
+                    }
+                }
+                Some(plan_id) => reject_command(&cmd, &format!("plan '{plan_id}' is not running")),
+                None => reject_command(&cmd, "name the running plan whose ceiling to raise"),
+            },
         };
         if matches!(cmd.kind, ExecutionCommandKind::Cancel) {
             tracing::info!(
@@ -3141,6 +3256,10 @@ async fn run_one_plan(
         ctx.graph_task_dispatcher
             .attach_run_invocation(&run_id, inv);
     }
+    // The learning components the run's dispatcher has (S01 §5.8); a resume
+    // rewrites them, since its build may differ.
+    ctx.run_manifests
+        .write_census(&run_id, &ctx.graph_task_dispatcher.wiring_report());
     // A resumed run's attempts continue from the plan branch its earlier
     // process accepted work onto, and re-attach the checkouts it kept
     // (bug-056b40).
@@ -4001,6 +4120,7 @@ mod tests {
             command: crate::runner::types::ControlAction::Cancel,
             plan_id: Some("p1".to_string()),
             task_id: None,
+            budget_usd: None,
         }
         .write(state_dir.path())
         .expect("write control.json");
@@ -4161,6 +4281,7 @@ files = ["README.md"]
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         })
         .await
@@ -4331,16 +4452,18 @@ max_retries = 0
         max_parallel_plans: Option<usize>,
         interrupt: Option<PlanRunInterruptHandle>,
     ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
-        run_plan_set_with(dir, max_parallel_plans, interrupt, true).await
+        run_plan_set_with(dir, max_parallel_plans, interrupt, true, false).await
     }
 
     /// [`run_plan_set`], enforcing the workspace's `[budget]` unless
-    /// `no_budget`.
+    /// `no_budget`, and freezing learning for the run when
+    /// `frozen_learning`.
     async fn run_plan_set_with(
         dir: &Path,
         max_parallel_plans: Option<usize>,
         interrupt: Option<PlanRunInterruptHandle>,
         no_budget: bool,
+        frozen_learning: bool,
     ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
         let hub = crate::state_hub::shared_state_hub();
         let exit_code = run_graph_plan(GraphPlanRunParams {
@@ -4372,6 +4495,7 @@ max_retries = 0
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning,
             metrics: None,
         })
         .await
@@ -4795,7 +4919,7 @@ max_retries = 0
             ],
         );
 
-        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, false).await;
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, false, false).await;
 
         assert_eq!(exit_code, EXIT_FAILURE);
         assert!(
@@ -4955,6 +5079,202 @@ max_retries = 0
         );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// S01 §5.8: a plan run writes its run's `census.json` from the
+    /// dispatcher it built: every learning component S01 names, in census
+    /// order, with the attempt log wired, stamped with this harness build.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_run_writes_census_report() {
+        use roko_learn::telemetry::CensusReport;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        let runs_dir = dir.path().join(".roko/runs");
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs_dir)
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        let census = CensusReport::load(&run_dirs[0])
+            .expect("read the census")
+            .expect("the run wrote a census");
+        let run_id = run_dirs[0].file_name().and_then(|name| name.to_str());
+        assert_eq!(Some(census.run_id.as_str()), run_id);
+        assert_eq!(census.schema_version, "roko.census/1");
+        assert_eq!(census.harness_sha, env!("ROKO_GIT_HASH"));
+        let ids: Vec<&str> = census
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "sink.episode",
+                "sink.routing",
+                "sink.knowledge_ingestion",
+                "sink.playbook_outcome",
+                "sink.error_pattern",
+                "sink.section_effect",
+                "store.attempt_log",
+                "store.prompt_experiment",
+                "store.holdout",
+                "store.decision_writer",
+                "store.exposure_writer",
+                "store.record_access",
+                "reader.gate_thresholds",
+            ]
+        );
+        let attempt_log = census.component("store.attempt_log");
+        assert!(
+            attempt_log.is_some_and(|component| component.wired),
+            "{census:?}"
+        );
+        assert_eq!(
+            attempt_log.map(|component| component.kind.as_str()),
+            Some("store")
+        );
+    }
+
+    /// The manifest of the one run in workspace `dir`.
+    #[cfg(unix)]
+    fn only_run_manifest(dir: &Path) -> roko_learn::telemetry::RunProvenanceManifest {
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(dir.join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        roko_learn::telemetry::RunProvenanceManifest::load(&run_dirs[0])
+            .expect("read the manifest")
+            .expect("the run wrote a manifest")
+    }
+
+    /// Decision 2218: `--frozen-learning` freezes a run's learning (the
+    /// params' `frozen_learning`), and `[learning] frozen = true` every
+    /// run's. Either reaches the run's config, so its fingerprint is a frozen
+    /// one, and its manifest records `ablation_flags = ["learning_frozen"]`;
+    /// neither leaves the flags empty.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let live = only_run_manifest(dir.path());
+        assert!(
+            live.experiment.ablation_flags.is_empty(),
+            "{:?}",
+            live.experiment
+        );
+
+        // The run resumes with the flag: that invocation's config is frozen.
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, true).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let frozen = only_run_manifest(dir.path());
+        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        let hashes: Vec<&str> = frozen
+            .invocations
+            .iter()
+            .filter_map(|invocation| invocation.config.as_ref())
+            .map(|config| config.hash.as_str())
+            .collect();
+        assert_eq!(hashes.len(), 2, "{:?}", frozen.invocations);
+        assert_ne!(hashes[0], hashes[1], "a frozen config is another config");
+        assert!(frozen.mixed_provenance, "a live run resumed frozen");
+
+        let configured = verified_plan_set(&[("a", "a.txt", &[])], "\n[learning]\nfrozen = true\n");
+        let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let manifest = only_run_manifest(configured.path());
+        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+    }
+
+    /// The wiring of the dispatcher a plan run builds for `config` in
+    /// `workdir`, with a cascade router and its journal, as a run builds
+    /// them. A frozen config leaves the write-only learning paths unset.
+    async fn production_wiring(
+        workdir: &Path,
+        config: &roko_core::config::schema::RokoConfig,
+    ) -> crate::graph_task_dispatch::WiringReport {
+        use crate::graph_task_dispatch::GraphTaskDispatcher;
+        use roko_learn::cascade_router::CascadeRouter;
+        use roko_learn::model_call_feedback::ModelCallJournal;
+
+        let shared = Arc::new(config.clone());
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()]));
+        let learn_dir = workdir.join(".roko/learn");
+        let journal = Arc::new(ModelCallJournal::for_learn_dir(&learn_dir));
+        let factory = crate::dispatch::SharedAgentFactory::new(
+            Arc::clone(&shared),
+            None,
+            Some(Arc::clone(&router)),
+            None,
+        )
+        .await;
+        let feedback = build_graph_feedback_context(
+            workdir,
+            config,
+            Some(&router),
+            Some(&journal),
+            factory.error_pattern_store(),
+        );
+        let frozen = config.learning.frozen;
+        assert_eq!(feedback.playbook_dir.is_none(), frozen);
+        assert_eq!(feedback.experiment_store_path.is_none(), frozen);
+        assert_eq!(feedback.post_gate_reflection_path.is_none(), frozen);
+        assert_eq!(feedback.holdout_experiment.is_none(), frozen);
+        assert!(feedback.runs_dir.is_some());
+        assert!(feedback.gate_thresholds_path.is_some());
+        let workdir = workdir.to_path_buf();
+        GraphTaskDispatcher::new(Arc::new(factory), shared, workdir)
+            .with_feedback(feedback)
+            .wiring_report()
+    }
+
+    /// Decision 2218: a frozen run's dispatcher has no learning sink, and
+    /// none of the paths that only write learned state (playbook outcomes,
+    /// prompt treatments, post-gate reflections, the holdout split). Its
+    /// telemetry and the state it also reads stay. A live run has them all.
+    #[tokio::test]
+    async fn frozen_run_registers_no_learning_sinks() {
+        const LEARNING: [&str; 7] = [
+            "sink.episode",
+            "sink.routing",
+            "sink.knowledge_ingestion",
+            "sink.playbook_outcome",
+            "sink.error_pattern",
+            "store.prompt_experiment",
+            "store.holdout",
+        ];
+        const KEPT: [&str; 4] = [
+            "store.attempt_log",
+            "store.decision_writer",
+            "store.exposure_writer",
+            "reader.gate_thresholds",
+        ];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        let live = production_wiring(temp.path(), &config).await;
+        config.learning.frozen = true;
+        let frozen = production_wiring(temp.path(), &config).await;
+
+        let wired = |report: &crate::graph_task_dispatch::WiringReport, id: &str| {
+            report
+                .component(id)
+                .is_some_and(|component| component.wired)
+        };
+        for id in LEARNING {
+            assert!(wired(&live, id), "a live run has {id}");
+            assert!(!wired(&frozen, id), "a frozen run has {id}");
+        }
+        assert!(frozen.facade_sinks.is_empty(), "{:?}", frozen.facade_sinks);
+        for id in KEPT {
+            assert!(wired(&live, id) && wired(&frozen, id), "{id}");
+        }
     }
 
     /// bug-0ba3d9: attempt records carry the invocation ordinal the run's
@@ -5658,6 +5978,17 @@ exec sleep 60
         commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
         task_stops: &crate::graph_task_dispatch::OperatorStops,
     ) -> RoutedTui {
+        let budget = crate::graph_task_dispatch::PlanBudgetControl::default();
+        route_tui_commands_with(workdir, commands, task_stops, &budget)
+    }
+
+    /// [`route_tui_commands_in`], with `budget` the plans' budget ledger.
+    fn route_tui_commands_with(
+        workdir: &Path,
+        commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
+        task_stops: &crate::graph_task_dispatch::OperatorStops,
+        budget: &crate::graph_task_dispatch::PlanBudgetControl,
+    ) -> RoutedTui {
         let (sender, mut receiver, ack_tx, ack_rx) = ExecutionCommandSender::channel("graph");
         for (kind, plan_id, task_id) in commands {
             let command = sender.build_command(
@@ -5698,6 +6029,7 @@ exec sleep 60
             &pause,
             task_stops,
             &directives,
+            budget,
             workdir,
         );
         RoutedTui {
@@ -5777,6 +6109,57 @@ exec sleep 60
         let (kind, _, _) = inject("01-run");
         let shown = format!("{kind:?} {kind}");
         assert!(!shown.contains("SECRET-71d0"), "{shown}");
+    }
+
+    /// backlog 2118: a budget raise lifts the ceiling of the running plan it
+    /// names and is acknowledged with what changed, for the driver to record.
+    /// One for a plan that is not running, one naming no plan, and one that
+    /// does not raise the ceiling are rejected with the reason.
+    #[test]
+    fn a_budget_raise_reaches_only_a_running_plan() {
+        let raise = |plan_id: Option<&'static str>, ceiling_micro_usd: u64| {
+            let kind = ExecutionCommandKind::RaiseBudget {
+                ceiling_micro_usd,
+                requested_by: "the test".to_string(),
+            };
+            (kind, plan_id, None::<&str>)
+        };
+        let budget =
+            crate::graph_task_dispatch::PlanBudgetControl::spent_for_test("01-run", 0.05, 0.05);
+        let workdir = tempfile::tempdir().expect("workdir");
+
+        let seen = route_tui_commands_with(
+            workdir.path(),
+            vec![
+                raise(Some("02-wait"), 100_000),
+                raise(None, 100_000),
+                raise(Some("01-run"), 50_000),
+                raise(Some("01-run"), 100_000),
+            ],
+            &crate::graph_task_dispatch::OperatorStops::default(),
+            &budget,
+        );
+
+        let answers: Vec<_> = seen
+            .acks
+            .iter()
+            .map(|ack| (ack.status, ack.message.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(answers[0].0, CommandAckStatus::Rejected);
+        assert!(answers[0].1.contains("is not running"), "{answers:?}");
+        assert_eq!(answers[1].0, CommandAckStatus::Rejected);
+        assert_eq!(answers[2].0, CommandAckStatus::Rejected);
+        assert!(answers[2].1.contains("does not raise"), "{answers:?}");
+        assert_eq!(
+            answers[3],
+            (
+                CommandAckStatus::Completed,
+                "plan '01-run' budget ceiling raised from $0.0500 to $0.1000 by the test, with \
+                 $0.0500 spent"
+                    .to_string()
+            )
+        );
+        assert_eq!(seen.routed.budget_raises.len(), 1);
     }
 
     /// gap-c002bb: a Graph run rejects, with its reason, every TUI command
@@ -6339,6 +6722,7 @@ exec sleep 60
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         })
         .await
@@ -6522,6 +6906,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         }
     }

@@ -252,6 +252,11 @@ pub struct LadderConfig {
     /// config loader's schema keeps `[[routing.ladder.roles]]`.
     #[serde(default)]
     pub roles: Vec<LadderRoleConfig>,
+    /// Probe each rung run by roko's tool loop with one tool-use call at plan
+    /// start, at most once a day, and skip a rung that cannot do agent work
+    /// (decision 1119, backlog 1121). FAST and `--no-budget` runs never probe.
+    #[serde(default = "super::agent::default_true")]
+    pub probe: bool,
 }
 
 /// D11's cascade plus Sonnet, cheapest first.
@@ -277,6 +282,7 @@ impl Default for LadderConfig {
             rungs: default_ladder_rungs(),
             start: LadderStart::d11(),
             roles: Vec::new(),
+            probe: true,
         }
     }
 }

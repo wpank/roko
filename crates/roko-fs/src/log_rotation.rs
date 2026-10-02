@@ -286,9 +286,7 @@ pub fn rotatable_jsonl_paths(layout: &RokoLayout) -> Vec<PathBuf> {
         layout.episodes_path(),
         layout.signals_path(),
         layout.efficiency_path(),
-        layout.gate_verdicts_path(),
         layout.events_jsonl_path(),
-        layout.telemetry_observations_path(),
     ]);
 
     // Learning adds new append-only streams over time. Discover them rather
@@ -738,8 +736,10 @@ mod tests {
         assert!(names.contains(&"episodes.jsonl".to_string()));
         assert!(names.contains(&"signals.jsonl".to_string()));
         assert!(names.contains(&"efficiency.jsonl".to_string()));
-        assert!(names.contains(&"gate-verdicts.jsonl".to_string()));
+        // Runner-v2's gate verdict log has no writer (backlog 2128).
+        assert!(!names.contains(&"gate-verdicts.jsonl".to_string()));
         assert!(names.contains(&"events.jsonl".to_string()));
-        assert!(names.contains(&"telemetry-observations.jsonl".to_string()));
+        // Serve no longer writes Lens samples (backlog 2124).
+        assert!(!names.contains(&"telemetry-observations.jsonl".to_string()));
     }
 }

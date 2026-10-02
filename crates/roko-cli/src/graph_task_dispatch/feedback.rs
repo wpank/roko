@@ -546,8 +546,11 @@ impl GraphTaskDispatcher {
 
         // ── W09: DaimonState affect feedback ─────────────────────────────
         //
-        // Only an attempt with a learning label moves affect.
-        if let (Some(daimon), Some(success)) = (&self.feedback.daimon_state, learning) {
+        // Only an attempt with a learning label moves affect, and none does
+        // while learning is frozen (decision 2218).
+        if let (Some(daimon), Some(success)) = (&self.feedback.daimon_state, learning)
+            && !self.learning_frozen()
+        {
             use roko_daimon::AffectEngine;
             let event = roko_daimon::AffectEvent::TaskOutcome {
                 task_id: task.id.clone(),
@@ -619,6 +622,9 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         settled: &SettledAttempt,
     ) {
+        // Spend the attempt settled on any path, its helper calls included,
+        // raises the plan's budget alerts it crossed (backlog 2116).
+        self.announce_budget_alerts(&spec.plan_id);
         self.credit_reflex_rule(spec, task, settled).await;
         self.note_ladder_outcome(spec, task, settled);
         let Some(facade) = &self.feedback.feedback_facade else {
@@ -1518,9 +1524,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 
     /// bug-07bc75: a Graph dispatch teaches the router only through its
     /// settled verdict. The provider bridge still records every call's
-    /// efficiency row and the provider's health, but it no longer observes
-    /// or saves `cascade-router.json` from the provider's own success,
-    /// before any gate ran.
+    /// efficiency row and, in the factory's registry, the provider's health,
+    /// but it no longer observes or saves `cascade-router.json` from the
+    /// provider's own success, before any gate ran.
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1563,7 +1569,11 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .filter(|line| line.contains(r#""kind":"model_call""#))
             .count();
         assert!(model_calls >= 3, "one efficiency row per provider call");
-        assert!(learn.join("provider-health.json").exists());
+        // The factory's registry is the bridge's one provider-health writer
+        // (backlog 1114).
+        let health = dispatcher.factory.health_registry.get("stream-cli");
+        assert!(health.total_requests >= 3, "{health:?}");
+        assert_eq!(health.total_failures, 1, "{health:?}");
     }
 
     /// S01 §4.1 through the batch dispatch path: an unverified attempt, a

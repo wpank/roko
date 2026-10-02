@@ -1292,6 +1292,7 @@ impl PlanCmd {
             | Self::Resume { .. }
             | Self::Cancel { .. }
             | Self::Retry { .. }
+            | Self::Budget { .. }
             | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
@@ -2579,12 +2580,7 @@ fn bootstrap_observability_dirs(workdir: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     roko_core::Workspace::create(workdir).map_err(std::io::Error::other)?;
-    let sinks = FsObservabilitySinks::for_workdir(workdir);
-    std::fs::create_dir_all(sinks.trace_sink.root())?;
-    if let Some(parent) = sinks.metrics_sink.path().parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(())
+    FsObservabilitySinks::for_workdir(workdir).initialize()
 }
 
 fn run_process_lifecycle_hooks(workdir: &Path, quiet: bool) {

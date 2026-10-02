@@ -105,6 +105,14 @@ pub enum ExecutionCommandKind {
         /// The operator's text, which no log shows.
         text: InjectedText,
     },
+    /// Raise the budget ceiling of the running plan `plan_id` names for the
+    /// rest of its run (`roko plan budget raise`, backlog 2118).
+    RaiseBudget {
+        /// The new ceiling, in millionths of one USD.
+        ceiling_micro_usd: u64,
+        /// Who asked: the control surface the command came through.
+        requested_by: String,
+    },
 }
 
 /// What an [`ExecutionCommandKind::Inject`] gives the next task.
@@ -171,6 +179,9 @@ impl fmt::Display for ExecutionCommandKind {
             } => write!(f, "reject-approval({}, {})", approval_id, reason),
             Self::Reset => write!(f, "reset"),
             Self::Inject { kind, .. } => write!(f, "inject({})", kind.as_str()),
+            Self::RaiseBudget {
+                ceiling_micro_usd, ..
+            } => write!(f, "raise-budget(${:.4})", *ceiling_micro_usd as f64 / 1e6),
         }
     }
 }
@@ -436,6 +447,15 @@ pub fn control_command_to_execution(
         ControlAction::Resume => ExecutionCommandKind::Resume,
         ControlAction::Cancel => ExecutionCommandKind::Cancel,
         ControlAction::Retry => ExecutionCommandKind::SoftRetry,
+        // A raise naming no positive amount asks for $0, which no plan
+        // takes.
+        ControlAction::RaiseBudget => ExecutionCommandKind::RaiseBudget {
+            ceiling_micro_usd: ctrl
+                .budget_usd
+                .and_then(crate::graph_task_dispatch::plan_ceiling_micro_usd)
+                .unwrap_or(0),
+            requested_by: "control.json".to_string(),
+        },
     };
 
     ExecutionCommand {
@@ -618,11 +638,42 @@ mod tests {
             command: crate::runner::types::ControlAction::Pause,
             plan_id: Some("p1".into()),
             task_id: None,
+            budget_usd: None,
         };
         let exec_cmd = control_command_to_execution(&ctrl, "run-42");
         assert_eq!(exec_cmd.kind, ExecutionCommandKind::Pause);
         assert_eq!(exec_cmd.run_id, "run-42");
         assert_eq!(exec_cmd.plan_id.as_deref(), Some("p1"));
+    }
+
+    /// backlog 2118: a raise written to control.json reaches the run as a
+    /// raise of the plan it names, in micro-USD; one that names no positive
+    /// amount asks for $0, which no plan takes.
+    #[test]
+    fn control_command_conversion_carries_a_budget_raise() {
+        use crate::runner::types::{ControlAction, ControlCommand};
+
+        let mut ctrl = ControlCommand {
+            command: ControlAction::RaiseBudget,
+            plan_id: Some("p1".into()),
+            task_id: None,
+            budget_usd: Some(0.25),
+        };
+        let raise = |ceiling_micro_usd| ExecutionCommandKind::RaiseBudget {
+            ceiling_micro_usd,
+            requested_by: "control.json".to_string(),
+        };
+        let kind = control_command_to_execution(&ctrl, "run-42").kind;
+        assert_eq!(kind, raise(250_000));
+        assert_eq!(kind.to_string(), "raise-budget($0.2500)");
+        ctrl.budget_usd = Some(-1.0);
+        let kind = control_command_to_execution(&ctrl, "run-42").kind;
+        assert_eq!(kind, raise(0));
+
+        let json = r#"{"command":"raise_budget","plan_id":"p1","budget_usd":2.5}"#;
+        let parsed: ControlCommand = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.command, ControlAction::RaiseBudget);
+        assert_eq!(parsed.budget_usd, Some(2.5));
     }
 
     #[test]

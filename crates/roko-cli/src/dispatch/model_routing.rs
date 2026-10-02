@@ -38,7 +38,7 @@
 //!
 //! [`runtime_feedback`]: crate::runtime_feedback
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -400,6 +400,11 @@ impl ModelRouter {
     #[must_use]
     pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
         self.ladder.as_ref()
+    }
+
+    /// Route by `ladder` from now on, or by the router when it is `None`.
+    pub fn replace_routing_ladder(&mut self, ladder: Option<RoutingLadder>) {
+        self.ladder = ladder;
     }
 
     /// Clone the inner cascade router `Arc` (for factory cache swap).
@@ -1052,21 +1057,63 @@ impl RoutingLadder {
     /// `0` or no rung above it can run (gap-460230).
     #[must_use]
     pub fn climb(&self, role: &str, start: LadderStartRung, steps: u32) -> LadderStartRung {
+        let steps = usize::try_from(steps).unwrap_or(usize::MAX);
+        let mut above = self.rung_models_above(role, start.index);
+        above.truncate(steps);
+        above.pop().unwrap_or(start)
+    }
+
+    /// The runnable rungs above rung `index` on `role`'s ladder, cheapest
+    /// first, each with the model dispatch runs for it. Failover of a task
+    /// the ladder routed moves up these and never down (decision 1119,
+    /// backlog 1120).
+    #[must_use]
+    pub fn rung_models_above(&self, role: &str, index: usize) -> Vec<LadderStartRung> {
         let rungs = self.config.role_rungs(role);
-        let above = rungs
+        rungs
             .iter()
             .enumerate()
-            .skip(start.index.saturating_add(1))
-            .filter_map(|(index, rung)| Some((index, rung, self.runnable.get(&rung.model)?)));
-        let steps = usize::try_from(steps).unwrap_or(usize::MAX);
-        match above.take(steps).last() {
-            Some((index, rung, model)) => LadderStartRung {
-                index,
-                name: rung.name.clone(),
-                model: model.clone(),
-            },
-            None => start,
+            .skip(index.saturating_add(1))
+            .filter_map(|(at, rung)| {
+                Some(LadderStartRung {
+                    index: at,
+                    name: rung.name.clone(),
+                    model: self.runnable.get(&rung.model)?.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// The models dispatch runs for the ladder's runnable rungs, each once,
+    /// sorted.
+    #[must_use]
+    pub fn rung_models(&self) -> Vec<String> {
+        let models: BTreeSet<&String> = self.runnable.values().collect();
+        models.into_iter().cloned().collect()
+    }
+
+    /// This ladder without the rungs whose model `failed` names, each logged
+    /// with the reason it gives: rungs whose agent-work probe failed (backlog
+    /// 1121). `None` when no rung is left, which leaves routing to the
+    /// router.
+    #[must_use]
+    pub fn without_models(mut self, failed: &BTreeMap<String, String>) -> Option<Self> {
+        self.runnable.retain(|rung_model, model| {
+            let Some(reason) = failed.get(model.as_str()) else {
+                return true;
+            };
+            tracing::warn!(
+                model = %rung_model,
+                reason = %reason,
+                "routing ladder: skipping a rung whose model failed its tool-use probe"
+            );
+            false
+        });
+        if self.runnable.is_empty() {
+            tracing::warn!("routing ladder: no rung passed its probe; the router picks");
+            return None;
         }
+        Some(self)
     }
 
     /// How many runnable rungs sit above rung `index` on `role`'s ladder.
@@ -1651,6 +1698,26 @@ mod tests {
             routed(&choice),
             ("claude-haiku-4-5", ModelChoiceSource::TaskHint)
         );
+    }
+
+    /// backlog 1120: the rungs failover may move a task the ladder routed to
+    /// are the runnable ones above its rung, cheapest first.
+    #[test]
+    fn rung_models_above_lists_runnable_rungs_in_order() {
+        let no_glm = ladder(&ladder_config(), |key| key != "glm-4-7");
+        let above: Vec<(usize, String, String)> = no_glm
+            .rung_models_above("implementer", 0)
+            .into_iter()
+            .map(|rung| (rung.index, rung.name, rung.model))
+            .collect();
+        assert_eq!(
+            above,
+            [
+                (2, "strong".to_string(), "gpt-5.4-mini".to_string()),
+                (3, "top".to_string(), "claude-sonnet-4-6".to_string()),
+            ]
+        );
+        assert!(no_glm.rung_models_above("implementer", 3).is_empty());
     }
 
     // ── Conductor routing bias tests (E08-T07) ─────────────────────────

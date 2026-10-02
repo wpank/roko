@@ -23,8 +23,6 @@ use ratatui::style::Color;
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
 use roko_core::ExperimentWinnerSummary;
-#[cfg(test)]
-use roko_core::metric::TaskMetric;
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_learn::aggregate::{CFactorBucket, EfficiencyBucket, cfactor_trend, efficiency_trend};
 pub use roko_learn::cfactor::{CFactor, CFactorComponents};
@@ -60,9 +58,9 @@ pub(crate) use super::dashboard_types::{
 };
 
 // Re-export TuiDashboardModel and import shared functions from dashboard_model.
-pub use super::dashboard_model::TuiDashboardModel;
 #[cfg(test)]
 use super::dashboard_model::load_snapshot_blocking;
+pub use super::dashboard_model::{TuiDashboardModel, attempt_ledger_metrics};
 use super::dashboard_model::{
     count_to_f64, load_json_opt, load_knowledge_browse_entries, load_snapshot_best_effort,
     resolve_snapshot_root,
@@ -70,7 +68,6 @@ use super::dashboard_model::{
 
 pub(super) const MEMORY_DIR: &str = ".roko/memory";
 pub(super) const EPISODES_FILE: &str = "episodes.jsonl";
-pub(super) const TASK_METRICS_FILE: &str = "task-metrics.jsonl";
 
 pub(super) const LEARN_DIR: &str = ".roko/learn";
 pub(super) const EFFICIENCY_FILE: &str = "efficiency.jsonl";
@@ -3474,29 +3471,55 @@ mod tests {
         episode
     }
 
+    /// Attempt `attempt` of `plan`/`task` in run `run-1`, settled as passed
+    /// or as a failed verify step, on `model`, with `input_tokens` of which
+    /// `cache_hit_rate` came from the prompt cache, billed `cost_usd`.
     fn sample_metric(
         plan: &str,
         task: &str,
-        iteration: u32,
+        attempt: u32,
         passed: bool,
         model: &str,
         input_tokens: u64,
         cache_hit_rate: f64,
         cost_usd: f64,
-    ) -> TaskMetric {
-        let mut metric = TaskMetric::new(
-            roko_core::metric::ConfigHash::from("hash".to_string()),
-            plan,
-            task,
+    ) -> roko_learn::telemetry::AttemptVerdictRecord {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let key = AttemptKey::new("run-1", plan, task, attempt);
+        let outcome = if passed {
+            AttemptOutcome::Passed
+        } else {
+            AttemptOutcome::GateFailed
+        };
+        let mut verdict = roko_learn::telemetry::AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            outcome,
+            true,
         );
-        metric.iteration = iteration;
-        metric.gate_passed = passed;
-        metric.model = model.to_string();
-        metric.input_tokens = input_tokens;
-        metric.cached_tokens = (input_tokens as f64 * cache_hit_rate).round() as u64;
-        metric.cache_hit_rate = cache_hit_rate;
-        metric.cost_usd = cost_usd;
-        metric
+        verdict.executed.model_dispatched = Some(model.to_string());
+        let cached = (input_tokens as f64 * cache_hit_rate).round() as u64;
+        verdict.usage.tokens_cache_read = Some(cached);
+        verdict.usage.tokens_in = Some(input_tokens - cached);
+        verdict.cost.billed_usd = Some(cost_usd);
+        verdict
+    }
+
+    /// Write `verdicts` to the attempt ledger of run `run-1` under `root`.
+    fn write_attempt_ledger(
+        root: &Path,
+        verdicts: Vec<roko_learn::telemetry::AttemptVerdictRecord>,
+    ) {
+        use roko_learn::telemetry::{TelemetryWriter, TelemetryWriterConfig};
+
+        let run_dir = roko_fs::RokoLayout::for_project(root).run_dir("run-1");
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn the attempt writer");
+        let count = verdicts.len() as u64;
+        for verdict in verdicts {
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, count);
     }
 
     fn sample_efficiency_event(
@@ -3727,7 +3750,6 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let memory_dir = tempdir.path().join(MEMORY_DIR);
         let episodes_path = memory_dir.join(EPISODES_FILE);
-        let metrics_path = memory_dir.join(TASK_METRICS_FILE);
 
         let episodes = vec![
             serde_json::to_string(&sample_episode("agent-a", "task-a", true, 1.50, 1_000))
@@ -3751,13 +3773,7 @@ mod tests {
             ),
             sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30),
         ];
-        write_jsonl(
-            &metrics_path,
-            &metrics
-                .iter()
-                .map(|metric| metric.to_jsonl().expect("metric json"))
-                .collect::<Vec<_>>(),
-        );
+        write_attempt_ledger(tempdir.path(), metrics);
 
         let snapshot = load_snapshot_blocking(tempdir.path()).expect("snapshot should load");
 
@@ -3779,7 +3795,6 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let memory_dir = tempdir.path().join(MEMORY_DIR);
         let episodes_path = memory_dir.join(EPISODES_FILE);
-        let metrics_path = memory_dir.join(TASK_METRICS_FILE);
 
         write_jsonl(
             &episodes_path,
@@ -3790,12 +3805,10 @@ mod tests {
                     .expect("episode json"),
             ],
         );
-        write_jsonl(
-            &metrics_path,
-            &[
-                sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10)
-                    .to_jsonl()
-                    .expect("metric json"),
+        write_attempt_ledger(
+            tempdir.path(),
+            vec![
+                sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10),
                 sample_metric(
                     "plan-a",
                     "t1",
@@ -3805,12 +3818,8 @@ mod tests {
                     300,
                     0.50,
                     0.20,
-                )
-                .to_jsonl()
-                .expect("metric json"),
-                sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30)
-                    .to_jsonl()
-                    .expect("metric json"),
+                ),
+                sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30),
             ],
         );
 
@@ -3825,7 +3834,7 @@ mod tests {
         assert!(health.contains("haiku share: 66.7%"));
         assert!(health.contains("cache hit rate: 31.7%"));
 
-        assert!(trends.contains("task metrics: 3"));
+        assert!(trends.contains("attempts: 3"));
         assert!(trends.contains("first-attempt pass rate: 100.0%"));
         assert!(trends.contains("avg iterations per plan: 1.50"));
         assert!(trends.contains("avg cost per plan: $0.3000"));

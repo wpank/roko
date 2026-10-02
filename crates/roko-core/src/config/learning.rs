@@ -177,6 +177,23 @@ pub struct LearningConfig {
     /// P3-26: Knowledge tier progression thresholds.
     #[serde(default)]
     pub knowledge: KnowledgeProgressionConfig,
+    /// Hold learned state fixed (decision 2218): a frozen run reads learned
+    /// state as usual and never writes it, so it starts and ends with the
+    /// same state. `roko plan run --frozen-learning` freezes one run.
+    ///
+    /// Learned state is whatever a later prompt, route, retry budget, gate
+    /// threshold or reflex reads: in `.roko/learn/`, the cascade router and
+    /// its journal, `gate-thresholds.json`, `playbooks/`, `experiments.json`,
+    /// `error-patterns.json`, `post-gate-reflections.json`, the hindsight
+    /// adjustments, `reflexes.jsonl`, `holdout-state.json` and the daimon
+    /// state; the knowledge store in `.roko/neuro/`, with its access counts;
+    /// and `.roko/episodes.jsonl`. A frozen run assigns no prompt
+    /// experiments. Telemetry stays on: the run's `.roko/runs/<run_id>/`
+    /// files, `learn/costs.jsonl`, `learn/efficiency.jsonl`,
+    /// `learn/run-metrics.jsonl` and `retrieval-outcomes.jsonl`. A frozen
+    /// run's manifest records `ablation_flags = ["learning_frozen"]`.
+    #[serde(default)]
+    pub frozen: bool,
 }
 
 /// P3-26: Configurable thresholds for knowledge tier promotion/demotion.
@@ -260,6 +277,7 @@ impl Default for LearningConfig {
             override_learning_dampening: None,
             gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
             knowledge: KnowledgeProgressionConfig::default(),
+            frozen: false,
         }
     }
 }
@@ -302,6 +320,16 @@ mod tests {
         let zero: LearningConfig =
             toml::from_str("gate_threshold_flush_interval = 0").expect("parse zero interval");
         assert_eq!(zero.effective_gate_threshold_flush_interval(), 1);
+    }
+
+    /// Learning runs unless a config asks to freeze it (decision 2218).
+    #[test]
+    fn frozen_learning_defaults_to_off() {
+        assert!(!LearningConfig::default().frozen);
+        let omitted: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert!(!omitted.frozen);
+        let frozen: LearningConfig = toml::from_str("frozen = true").expect("parse frozen");
+        assert!(frozen.frozen);
     }
 
     #[test]

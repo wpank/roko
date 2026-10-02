@@ -89,7 +89,10 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
-pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
+pub use budget::{
+    GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
+    plan_ceiling_micro_usd,
+};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub use operator_directives::OperatorDirectives;
@@ -158,7 +161,8 @@ pub struct GraphTaskDispatcher {
     config: Arc<RokoConfig>,
     workdir: PathBuf,
     budget_policy: GraphPlanBudgetPolicy,
-    budget_ledger: GraphPlanBudgetLedger,
+    /// Shared with the operator's [`PlanBudgetControl`] (backlog 2118).
+    budget_ledger: Arc<GraphPlanBudgetLedger>,
     /// CLI model override (from `--model`). When set, this replaces the
     /// config default and any per-task `model_hint` in dispatch.
     cli_model_override: Option<String>,
@@ -312,7 +316,7 @@ impl GraphTaskDispatcher {
             config,
             workdir,
             budget_policy: GraphPlanBudgetPolicy::unlimited(),
-            budget_ledger: GraphPlanBudgetLedger::default(),
+            budget_ledger: Arc::default(),
             cli_model_override: None,
             dangerously_skip_permissions: false,
             fast: None,
@@ -1223,7 +1227,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
-        self.record_planned_attempt(&attempt, &task, &dispatch_plan);
+        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //
@@ -1440,6 +1444,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
+                    failover::LadderRoute::of(&task, &dispatch_plan),
                 ),
                 &progress,
                 stall_watch,
@@ -1551,6 +1556,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
         }
+        // The plan's budget alerts this call's spend crossed (backlog 2116).
+        self.announce_budget_alerts(&spec.plan_id);
 
         // ── TUI streaming output ─────────────────────────────────────────
         //
@@ -1662,6 +1669,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
                 self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
+            }
+            // A denial no retry can change fails the task at once, saying how
+            // to recover (backlog 1116).
+            if let Some(denial) = failover::permanent_provider_denial(&dispatch) {
+                return Err(denial);
             }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,
@@ -3199,8 +3211,8 @@ sleep 30
     /// find-f489db: a Graph run attaches its tool observability to the agent
     /// factory. A tool call an API model makes then leaves a scrubbed admit
     /// and result pair in `.roko/tool_audit.jsonl` that names the attempt's
-    /// run and task, a closed trace under `.roko/traces/` and a metrics
-    /// record.
+    /// run and task, and a closed trace under `.roko/traces/`. No tool
+    /// metrics file is written: nothing read it (backlog 2123).
     #[tokio::test]
     async fn graph_run_writes_tool_audit_admit_and_result() {
         // A GitHub token, which the scrubber's built-in patterns catch.
@@ -3246,8 +3258,7 @@ sleep 30
             );
         }
 
-        // The call's trace is closed with its handler time and outcome, and
-        // its metrics sample is keyed on the model.
+        // The call's trace is closed with its handler time and outcome.
         let traces: Vec<String> = std::fs::read_dir(roko_dir.join("traces"))
             .expect("trace directory")
             .flatten()
@@ -3259,13 +3270,7 @@ sleep 30
             traces[0].contains("handler_finished") && traces[0].contains("\"outcome\""),
             "{traces:#?}"
         );
-        let metrics = std::fs::read_to_string(roko_dir.join("metrics").join("tool_metrics.jsonl"))
-            .expect("tool metrics");
-        assert_eq!(metrics.lines().count(), 1, "{metrics}");
-        assert!(
-            metrics.contains("read_file") && metrics.contains("api-model-1"),
-            "{metrics}"
-        );
+        assert!(!roko_dir.join("metrics/tool_metrics.jsonl").exists());
     }
 
     /// bug-28b604: once the plan run began to stop, an agent that exits on

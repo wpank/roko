@@ -102,8 +102,10 @@ slug = "gpt-oss-120b"
 context_window = 128000
 max_output = 8192
 tool_format = "openai_json"
-cost_input_per_m = 0.5
-cost_output_per_m = 1.5
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.35
+cost_output_per_m = 0.75
+cost_cache_read_per_m = 0.35
 
 [models.cerebras-qwen]
 provider = "cerebras"
@@ -154,8 +156,10 @@ slug = "glm-4.7"
 context_window = 128000
 max_output = 16384
 tool_format = "openai_json"
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
 cost_input_per_m = 0.6
 cost_output_per_m = 2.2
+cost_cache_read_per_m = 0.11
 
 [models.glm51]
 provider = "zai"
@@ -194,8 +198,10 @@ slug = "gpt-5.4-mini"
 context_window = 200000
 max_output = 16384
 tool_format = "openai_json"
-cost_input_per_m = 0.4
-cost_output_per_m = 1.6
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.75
+cost_output_per_m = 4.5
+cost_cache_read_per_m = 0.075
 
 [models.groq-llama70b]
 provider = "groq"
@@ -213,9 +219,10 @@ context_window = 256000
 max_output = 65535
 supports_thinking = true
 tool_format = "openai_json"
-cost_input_per_m = 0.6
-cost_output_per_m = 3.0
-cost_cache_read_per_m = 0.1
+# Rates from prices-2026-09-28 (config/prices/2026-09-28.toml), USD per 1M tokens.
+cost_input_per_m = 0.95
+cost_output_per_m = 4.0
+cost_cache_read_per_m = 0.16
 
 [models.sonar]
 provider = "perplexity"

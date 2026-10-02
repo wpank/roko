@@ -272,16 +272,6 @@ impl RokoLayout {
         canonical
     }
 
-    /// `.roko/gate-verdicts.jsonl` — typed gate verdict log.
-    ///
-    /// Gate verdicts are written here by the runner and read by
-    /// serve dashboard routes. This replaces the legacy practice
-    /// of appending flat verdict rows to `signals.jsonl`.
-    #[must_use]
-    pub fn gate_verdicts_path(&self) -> PathBuf {
-        self.root.join("gate-verdicts.jsonl")
-    }
-
     /// `.roko/episodes.jsonl` — canonical root episode log.
     #[must_use]
     pub fn root_episodes_path(&self) -> PathBuf {
@@ -292,14 +282,6 @@ impl RokoLayout {
     #[must_use]
     pub fn events_jsonl_path(&self) -> PathBuf {
         self.root.join("events.jsonl")
-    }
-
-    /// `.roko/metrics/telemetry-observations.jsonl` — periodic Lens snapshots.
-    #[must_use]
-    pub fn telemetry_observations_path(&self) -> PathBuf {
-        self.root
-            .join("metrics")
-            .join("telemetry-observations.jsonl")
     }
 
     /// `.roko/roko.log` — main log file.
@@ -489,12 +471,6 @@ impl RokoLayout {
     #[must_use]
     pub fn run_state_path(&self) -> PathBuf {
         self.state_dir().join("run-state.json")
-    }
-
-    /// `.roko/state/run-ledger.jsonl` — typed run ledger (task starts, completions, gate outcomes).
-    #[must_use]
-    pub fn run_ledger_path(&self) -> PathBuf {
-        self.state_dir().join("run-ledger.jsonl")
     }
 
     /// `.roko/state/events.json` — event log snapshot for crash recovery.
@@ -939,10 +915,6 @@ mod tests {
         assert_eq!(
             layout.context_pack_cache_dir(),
             PathBuf::from("/c/.roko/cache/context-pack-cache")
-        );
-        assert_eq!(
-            layout.telemetry_observations_path(),
-            PathBuf::from("/c/.roko/metrics/telemetry-observations.jsonl")
         );
     }
 

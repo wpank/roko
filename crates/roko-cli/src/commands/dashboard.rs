@@ -176,24 +176,6 @@ pub(crate) fn format_duration(ms: f64) -> String {
     }
 }
 
-pub(crate) async fn load_task_metrics(path: PathBuf) -> Vec<TaskMetric> {
-    let Ok(text) = tokio::fs::read_to_string(&path).await else {
-        return Vec::new();
-    };
-
-    let mut records = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(metric) = TaskMetric::from_jsonl(line) {
-            records.push(metric);
-        }
-    }
-    records
-}
-
 pub(crate) async fn load_cfactor_history(path: PathBuf) -> Vec<CFactor> {
     let Ok(text) = tokio::fs::read_to_string(&path).await else {
         return Vec::new();
@@ -208,6 +190,8 @@ pub(crate) async fn load_cfactor_history(path: PathBuf) -> Vec<CFactor> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CommandDashboardSnapshot {
     episodes: Vec<Episode>,
+    /// One record per settled attempt in the newest runs' attempt ledgers
+    /// (backlog 2126).
     task_metrics: Vec<TaskMetric>,
     headlines: Headlines,
     cfactor_history: Vec<CFactor>,
@@ -218,7 +202,7 @@ impl CommandDashboardSnapshot {
     async fn load(workdir: &Path) -> Result<Self> {
         let layout = RokoLayout::for_project(workdir);
         let episodes = EpisodeLogger::read_all_lossy(layout.episodes_path()).await?;
-        let task_metrics = load_task_metrics(layout.memory_dir().join("task-metrics.jsonl")).await;
+        let task_metrics = roko_cli::tui::dashboard::attempt_ledger_metrics(workdir);
         let cfactor_history =
             load_cfactor_history(workdir.join(".roko").join("learn").join("c-factor.jsonl")).await;
         let cfactor = cfactor_history.last().cloned();
@@ -316,7 +300,7 @@ impl CommandDashboardSnapshot {
             "Time-series learning signals from the current snapshot.",
             &[
                 format!(
-                    "focus: {} records across {} plans, {} pass rate",
+                    "focus: {} attempts across {} plans, {} first-attempt pass rate",
                     headlines.n_records,
                     headlines.n_plans,
                     format_percent(headlines.first_attempt_pass_rate)
@@ -463,5 +447,47 @@ mod tests {
 
         shutdown.cancel();
         server.await.expect("hub server task");
+    }
+
+    /// backlog 2126: the headline numbers come from the attempt ledger plan
+    /// runs write. One run of three verdicts, two of them passed, shows 3
+    /// attempts and a 67% first-attempt pass rate.
+    #[tokio::test]
+    async fn dashboard_headlines_come_from_attempt_verdicts() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let run_dir = RokoLayout::for_project(workdir.path()).run_dir("run-1");
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn the attempt writer");
+        for (task, outcome) in [
+            ("T1", AttemptOutcome::Passed),
+            ("T2", AttemptOutcome::GateFailed),
+            ("T3", AttemptOutcome::Passed),
+        ] {
+            let key = AttemptKey::new("run-1", "plan-a", task, 1);
+            let identity = AttemptIdentity::new(&key);
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.cost.billed_usd = Some(0.25);
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 3);
+
+        let snapshot = CommandDashboardSnapshot::load(workdir.path())
+            .await
+            .expect("load the dashboard snapshot");
+
+        assert_eq!(snapshot.headlines.n_records, 3);
+        let trends = snapshot.render_trends_page_text();
+        for line in [
+            "focus: 3 attempts across 1 plans, 66.7% first-attempt pass rate",
+            "first-attempt pass rate: 66.7%",
+            "avg cost per plan: $0.7500",
+        ] {
+            assert!(trends.contains(line), "{line}: {trends}");
+        }
     }
 }

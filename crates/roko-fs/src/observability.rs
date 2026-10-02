@@ -1,9 +1,10 @@
 //! Convenience wiring for filesystem-backed observability sinks.
 //!
-//! Runtime callers usually need both a persistent trace sink and a persistent
-//! tool-metrics sink. [`FsObservabilitySinks`] constructs both from either a
-//! workspace root or an existing `.roko/` directory and exposes typed and
-//! trait-object handles.
+//! Runtime callers attach a persistent trace sink. [`FsObservabilitySinks`]
+//! constructs it from either a workspace root or an existing `.roko/`
+//! directory and exposes typed and trait-object handles. Tool calls keep no
+//! separate metrics file: each call's trace and its tool-audit record say
+//! what it did (backlog 2123).
 //!
 //! # Additional contracts
 //!
@@ -12,9 +13,9 @@
 //! - **[`SinkTelemetry`]** (T020): lightweight counters for queue depth and
 //!   write throughput, queryable at runtime.
 //! - **[`RetentionPolicy`]** (T021): configurable retention/quota/disk-failure
-//!   contract shared by audit, traces, and metrics.
+//!   contract shared by audit and traces.
 //! - **[`CorrelationQuery`]** (T022): read-only lookup from a tool-call ID to
-//!   its audit record, trace file, and metrics entry.
+//!   its audit record and trace file.
 //! - **Metric cardinality** (T023): testable rules ([`validate_metric_key`],
 //!   [`validate_cardinality`]) ensuring metric keys never contain secrets
 //!   and cardinality stays bounded.
@@ -26,62 +27,49 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use roko_core::obs::LogScrubber;
 use roko_core::obs::scrub::MIN_SECRET_LEN;
-use roko_core::tool::{MetricsSink, TraceSink};
+use roko_core::tool::TraceSink;
 use serde::{Deserialize, Serialize};
 
+use crate::JsonlTraceSink;
 use crate::trace_sink::TraceSinkHealth;
-use crate::{JsonlMetricsSink, JsonlTraceSink};
 
 // ─── FsObservabilitySinks ────────────────────────────────────────────────────
 
-/// Paired filesystem-backed sinks used by runtime dispatch code.
+/// The filesystem-backed trace sink runtime dispatch code attaches.
 #[derive(Debug, Clone)]
 pub struct FsObservabilitySinks {
     /// Persistent JSONL trace sink.
     pub trace_sink: Arc<JsonlTraceSink>,
-    /// Persistent JSONL metrics sink.
-    pub metrics_sink: Arc<JsonlMetricsSink>,
 }
 
 impl FsObservabilitySinks {
-    /// Build sinks rooted at a workspace directory.
-    ///
-    /// - traces: `<workdir>/.roko/traces/`
-    /// - tool metrics: `<workdir>/.roko/metrics/tool_metrics.jsonl`
+    /// Build sinks rooted at a workspace directory: traces go to
+    /// `<workdir>/.roko/traces/`.
     #[must_use]
     pub fn for_workdir(workdir: impl AsRef<Path>) -> Self {
-        let trace_sink = Arc::new(JsonlTraceSink::for_workdir(workdir.as_ref()));
-        let metrics_sink = Arc::new(JsonlMetricsSink::for_workdir(workdir.as_ref()));
         Self {
-            trace_sink,
-            metrics_sink,
+            trace_sink: Arc::new(JsonlTraceSink::for_workdir(workdir.as_ref())),
         }
     }
 
-    /// Build sinks rooted at an existing `.roko/` directory.
-    ///
-    /// - traces: `<roko_dir>/traces/`
-    /// - tool metrics: `<roko_dir>/metrics/tool_metrics.jsonl`
+    /// Build sinks rooted at an existing `.roko/` directory: traces go to
+    /// `<roko_dir>/traces/`.
     #[must_use]
     pub fn for_roko_dir(roko_dir: impl AsRef<Path>) -> Self {
-        let trace_sink = Arc::new(JsonlTraceSink::for_roko_dir(roko_dir.as_ref()));
-        let metrics_sink = Arc::new(JsonlMetricsSink::for_roko_dir(roko_dir.as_ref()));
         Self {
-            trace_sink,
-            metrics_sink,
+            trace_sink: Arc::new(JsonlTraceSink::for_roko_dir(roko_dir.as_ref())),
         }
     }
 
     /// Build sinks rooted at a workspace directory and create their
-    /// backing directories immediately.
+    /// backing directory immediately.
     ///
     /// This is idempotent: calling it repeatedly only re-validates that the
     /// directory structure exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if the trace directory or metrics parent directory
-    /// cannot be created.
+    /// Returns an error if the trace directory cannot be created.
     pub fn initialized_for_workdir(workdir: impl AsRef<Path>) -> io::Result<Self> {
         let sinks = Self::for_workdir(workdir);
         sinks.initialize()?;
@@ -89,38 +77,32 @@ impl FsObservabilitySinks {
     }
 
     /// Build sinks rooted at an existing `.roko/` directory and create their
-    /// backing directories immediately.
+    /// backing directory immediately.
     ///
     /// This is idempotent: calling it repeatedly only re-validates that the
     /// directory structure exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if the trace directory or metrics parent directory
-    /// cannot be created.
+    /// Returns an error if the trace directory cannot be created.
     pub fn initialized_for_roko_dir(roko_dir: impl AsRef<Path>) -> io::Result<Self> {
         let sinks = Self::for_roko_dir(roko_dir);
         sinks.initialize()?;
         Ok(sinks)
     }
 
-    /// Create the backing directories for both sinks.
+    /// Create the trace directory.
     ///
     /// This makes startup initialization explicit for callers that want to
-    /// prepare observability before the first trace or metrics write.
+    /// prepare observability before the first trace write.
     ///
-    /// The operation is idempotent: existing directories are left untouched.
+    /// The operation is idempotent: an existing directory is left untouched.
     ///
     /// # Errors
     ///
-    /// Returns an error if the trace directory or metrics parent directory
-    /// cannot be created.
+    /// Returns an error if the trace directory cannot be created.
     pub fn initialize(&self) -> io::Result<()> {
-        std::fs::create_dir_all(self.trace_sink.root())?;
-        if let Some(parent) = self.metrics_sink.path().parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        Ok(())
+        std::fs::create_dir_all(self.trace_sink.root())
     }
 
     /// Clone as a dynamic trace sink trait object.
@@ -129,50 +111,12 @@ impl FsObservabilitySinks {
         self.trace_sink.clone()
     }
 
-    /// Clone as a dynamic metrics sink trait object.
-    #[must_use]
-    pub fn metrics_sink_dyn(&self) -> Arc<dyn MetricsSink> {
-        self.metrics_sink.clone()
-    }
-
     /// Flush all open trace writers to disk.
     ///
     /// Ensures buffered data from in-progress traces lands on disk even when
     /// the run terminates before every trace calls `finish()`.
     pub fn flush_traces(&self) {
         self.trace_sink.flush_all();
-    }
-
-    /// Persist a [`MetricRegistry`](roko_core::obs::metrics::MetricRegistry)
-    /// snapshot to `<metrics_dir>/registry_snapshot.json`.
-    ///
-    /// This writes the full Prometheus-compatible metric state (counters,
-    /// gauges, histograms) collected during a run so it survives process
-    /// exit and can be queried offline or loaded by dashboards.
-    ///
-    /// Best-effort: returns `Ok(())` on success, `Err` on I/O failure.
-    /// The caller should log and swallow the error rather than abort the run.
-    pub fn flush_registry_snapshot(
-        &self,
-        registry: &roko_core::obs::metrics::MetricRegistry,
-    ) -> io::Result<()> {
-        let snapshot = registry.snapshot();
-        let json = serde_json::to_string_pretty(&snapshot)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        // Write next to the tool_metrics.jsonl file.
-        let snapshot_path = self
-            .metrics_sink
-            .path()
-            .parent()
-            .map(|p| p.join("registry_snapshot.json"))
-            .unwrap_or_else(|| Path::new("registry_snapshot.json").to_path_buf());
-
-        if let Some(parent) = snapshot_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&snapshot_path, json)?;
-        Ok(())
     }
 }
 
@@ -296,8 +240,8 @@ pub fn is_env_file_secret(name: &str, value: &str) -> bool {
 
 /// Lightweight atomic counters for observing sink throughput and failures.
 ///
-/// Each sink type (audit, trace, metrics) can share one of these. Counters
-/// are monotonic and lock-free.
+/// Each sink type (audit, trace) can share one of these. Counters are
+/// monotonic and lock-free.
 #[derive(Debug)]
 pub struct SinkTelemetry {
     /// Total events successfully written.
@@ -361,7 +305,7 @@ pub struct SinkTelemetrySnapshot {
 // ─── RetentionPolicy (T021) ─────────────────────────────────────────────────
 
 /// Configurable retention/quota/disk-failure contract that applies uniformly
-/// to audit, traces, and metrics JSONL files.
+/// to audit and trace JSONL files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionPolicy {
     /// Maximum age of files before they are eligible for cleanup (days).
@@ -404,7 +348,7 @@ impl RetentionPolicy {
 // ─── CorrelationQuery (T022) ────────────────────────────────────────────────
 
 /// Read-only query surface for correlating a tool call ID to its audit
-/// record, trace file, and metrics entry.
+/// record and trace file.
 ///
 /// This does not hold open file handles; each query scans the relevant
 /// JSONL file(s).
@@ -415,14 +359,12 @@ pub struct CorrelationQuery {
 }
 
 /// Result of a correlation lookup.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CorrelationResult {
     /// Lines from the audit log matching the call ID.
     pub audit_lines: Vec<serde_json::Value>,
     /// Paths to trace files that reference the call ID.
     pub trace_files: Vec<PathBuf>,
-    /// Metrics records matching the call's tool name.
-    pub metric_records: Vec<crate::ToolMetricsRecord>,
 }
 
 impl CorrelationQuery {
@@ -436,8 +378,8 @@ impl CorrelationQuery {
 
     /// Look up all observability records for a given tool call ID.
     ///
-    /// Scans the audit log, trace directories, and metrics log. This is
-    /// a read-only, best-effort operation — missing files are not errors.
+    /// Scans the audit log and the trace directories. This is a read-only,
+    /// best-effort operation — missing files are not errors.
     ///
     /// # Errors
     ///
@@ -445,11 +387,9 @@ impl CorrelationQuery {
     pub fn lookup(&self, call_id: &str) -> io::Result<CorrelationResult> {
         let audit_lines = self.scan_audit(call_id)?;
         let trace_files = self.scan_traces(call_id)?;
-        let metric_records = self.scan_metrics(call_id)?;
         Ok(CorrelationResult {
             audit_lines,
             trace_files,
-            metric_records,
         })
     }
 
@@ -503,14 +443,6 @@ impl CorrelationQuery {
             }
         }
         Ok(matching_files)
-    }
-
-    fn scan_metrics(&self, _call_id: &str) -> io::Result<Vec<crate::ToolMetricsRecord>> {
-        // Metrics are keyed by (tool, model, role, format), not by call_id.
-        // We return an empty vec since individual call-level correlation is
-        // not meaningful for aggregate metrics. Callers wanting tool-level
-        // metrics should use the metrics sink's read_all() directly.
-        Ok(Vec::new())
     }
 }
 
@@ -583,28 +515,25 @@ mod tests {
     fn for_workdir_builds_expected_paths() {
         let sinks = FsObservabilitySinks::for_workdir("/repo");
         assert_eq!(sinks.trace_sink.root(), Path::new("/repo/.roko/traces"),);
-        assert_eq!(
-            sinks.metrics_sink.path(),
-            Path::new("/repo/.roko/metrics/tool_metrics.jsonl"),
-        );
     }
 
     #[test]
     fn dyn_accessors_return_trait_objects() {
         let sinks = FsObservabilitySinks::for_roko_dir("/repo/.roko");
         let _trace: Arc<dyn TraceSink> = sinks.trace_sink_dyn();
-        let _metrics: Arc<dyn MetricsSink> = sinks.metrics_sink_dyn();
     }
 
+    /// backlog 2123: the sinks keep traces only; no tool metrics directory
+    /// is made.
     #[test]
-    fn initialize_creates_trace_and_metrics_directories() {
+    fn initialize_creates_the_trace_directory_only() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sinks = FsObservabilitySinks::for_workdir(tmp.path());
 
         sinks.initialize().expect("initialize observability");
 
         assert!(tmp.path().join(".roko").join("traces").is_dir());
-        assert!(tmp.path().join(".roko").join("metrics").is_dir());
+        assert!(!tmp.path().join(".roko").join("metrics").exists());
     }
 
     #[test]
@@ -617,46 +546,6 @@ mod tests {
         sinks.initialize().expect("reinitialize");
 
         assert!(roko_dir.join("traces").is_dir());
-        assert!(roko_dir.join("metrics").is_dir());
-    }
-
-    #[test]
-    fn flush_registry_snapshot_writes_json_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let sinks =
-            FsObservabilitySinks::initialized_for_workdir(tmp.path()).expect("initialize sinks");
-
-        let registry = roko_core::obs::metrics::MetricRegistry::new();
-        let counter = registry.register_counter(
-            "roko_test_total",
-            "test counter",
-            roko_core::obs::metrics::LabelSet::new(),
-        );
-        counter.inc_by(42);
-
-        sinks
-            .flush_registry_snapshot(&registry)
-            .expect("flush snapshot");
-
-        let snapshot_path = tmp
-            .path()
-            .join(".roko")
-            .join("metrics")
-            .join("registry_snapshot.json");
-        assert!(
-            snapshot_path.is_file(),
-            "registry_snapshot.json must exist: {snapshot_path:?}"
-        );
-
-        let contents = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
-        assert!(
-            contents.contains("roko_test_total"),
-            "snapshot must contain the registered metric"
-        );
-        assert!(
-            contents.contains("42"),
-            "snapshot must contain the counter value"
-        );
     }
 
     #[test]
@@ -932,7 +821,6 @@ mod tests {
         let result = query.lookup("nonexistent").expect("lookup");
         assert!(result.audit_lines.is_empty());
         assert!(result.trace_files.is_empty());
-        assert!(result.metric_records.is_empty());
     }
 
     // ── T023: MetricCardinality tests ───────────────────────────────────────

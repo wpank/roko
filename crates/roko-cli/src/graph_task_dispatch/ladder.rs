@@ -97,6 +97,11 @@ impl GraphTaskDispatcher {
                     step,
                     reason,
                     exhausted: false,
+                    // The cascade router's shadow pick beside the rung (G56).
+                    router_pick: plan
+                        .route_decision
+                        .as_ref()
+                        .and_then(|decision| decision.proposals.learned.clone()),
                 };
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -129,6 +134,7 @@ impl GraphTaskDispatcher {
                     step: 0,
                     reason: LadderReason::Pinned,
                     exhausted: false,
+                    router_pick: None,
                 };
                 (pinned, false)
             }
@@ -144,7 +150,8 @@ impl GraphTaskDispatcher {
     /// the ladder put it on counts, and the second such failure moves the
     /// task one runnable rung up, unless it already climbed
     /// [`MAX_ESCALATIONS`] rungs or stands on its top rung. Other failures,
-    /// and pinned attempts, change nothing.
+    /// pinned attempts, and attempts a failover substitute ran in place of
+    /// the rung's model (backlog 1118), change nothing.
     pub(super) fn note_ladder_outcome(
         &self,
         spec: &TaskExecutionSpec,
@@ -161,6 +168,16 @@ impl GraphTaskDispatcher {
             return;
         };
         if verdict.blame != Blame::Agent || ladder.reason == LadderReason::Pinned {
+            return;
+        }
+        if !verdict.executed.failover_chain.is_empty() {
+            tracing::debug!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung = ladder.rung.as_deref().unwrap_or("-"),
+                substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
+                "a substitute ran; the rung's standing is unchanged"
+            );
             return;
         }
         let Some(routing) = self.routing_ladder() else {
@@ -241,6 +258,7 @@ mod tests {
 
     use roko_core::config::routing::LadderRung;
     use roko_graph::cells::NoopAttemptRecorder;
+    use roko_learn::cascade_router::CascadeRouter;
     use tempfile::tempdir;
 
     use super::*;
@@ -423,6 +441,63 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         assert_eq!(diagnoses, ["ladder_exhausted:stream-plan/T-EXP"]);
     }
 
+    /// A settled turn-cap stop of `task` on the cheap rung. `substitute`
+    /// names the routed model failover replaced, when a substitute ran.
+    fn turn_cap_on_cheap_rung(
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        substitute: Option<&str>,
+    ) -> SettledAttempt {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let key = AttemptKey::new(RUN, &spec.plan_id, &task.id, 1);
+        let identity = AttemptIdentity::new(&key);
+        let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::TurnCap, true);
+        verdict.ladder = Some(AttemptLadder {
+            rung: Some("cheap".to_string()),
+            index: Some(0),
+            step: 0,
+            reason: LadderReason::Start,
+            exhausted: false,
+            router_pick: None,
+        });
+        verdict.executed.failover_chain = substitute.map(str::to_string).into_iter().collect();
+        SettledAttempt {
+            verdict: Arc::new(verdict),
+            failure_reason: None,
+            reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
+        }
+    }
+
+    /// backlog 1118: an agent-blamed failure of a failover substitute says
+    /// nothing about the rung whose model it replaced, so it leaves the
+    /// task's standing alone; the same failures on the rung's own model
+    /// climb it.
+    #[tokio::test]
+    async fn substitute_failure_does_not_count_against_routed_rung() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let substituted = turn_cap_on_cheap_rung(&spec, &task, Some("cheap-model"));
+        assert_eq!(substituted.verdict.blame, Blame::Agent);
+
+        for _ in 0..FAILURES_PER_RUNG {
+            dispatcher.note_ladder_outcome(&spec, &task, &substituted);
+        }
+        let standing = dispatcher
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        assert_eq!(standing.failures_on_rung, 0);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+
+        let own = turn_cap_on_cheap_rung(&spec, &task, None);
+        for _ in 0..FAILURES_PER_RUNG {
+            dispatcher.note_ladder_outcome(&spec, &task, &own);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+    }
+
     /// The streaming path climbs the same ladder.
     #[tokio::test]
     async fn two_failed_attempts_escalate_one_rung_when_streaming() {
@@ -449,5 +524,68 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 .expect_err("every attempt fails verification");
         }
         assert_eq!(called_models(&temp), [CHEAP, CHEAP, TOP]);
+    }
+
+    /// While the ladder routes, an attempt's verdict names the cascade
+    /// router's shadow pick beside its rung (G56): the router's own pick its
+    /// route row records. Without a cascade router the verdict names none.
+    #[tokio::test]
+    async fn ladder_attempt_records_router_pick() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = || GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (plain, task) = ladder_fixture(&temp).await;
+        let config = Arc::clone(&plain.config);
+        let models = vec![CHEAP.to_string(), TOP.to_string()];
+        let router = Arc::new(CascadeRouter::new(models));
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, Some(router), None).await;
+        let routed = GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf())
+            .with_feedback(feedback());
+        let plain = plain.with_feedback(feedback());
+        let spec = make_spec(&task);
+        for (dispatcher, run) in [(&routed, "routed"), (&plain, "plain")] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("the attempt fails its verify step");
+            dispatcher.close_run_attempts(run);
+        }
+        let rows = |run: &str, file: &str| -> Vec<serde_json::Value> {
+            std::fs::read_to_string(runs_dir.join(run).join(file))
+                .expect("the run's log")
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect()
+        };
+        let verdict = |run: &str| {
+            rows(run, "attempts.jsonl")
+                .into_iter()
+                .find(|row| row["schema_version"] == "roko.verdict/1")
+                .expect("the attempt's verdict")
+        };
+
+        let routed_verdict = verdict("routed");
+        assert_eq!(routed_verdict["ladder"]["reason"], "start");
+        let pick = routed_verdict["ladder"]["router_pick"]
+            .as_str()
+            .expect("the cascade router's shadow pick");
+        let decisions = rows("routed", "decisions.jsonl");
+        let route = decisions
+            .iter()
+            .find(|row| row["decision_point"] == "route")
+            .expect("the attempt's route row");
+        assert_eq!(route["source"], "ladder");
+        assert_eq!(route["proposals"]["learned"], pick);
+
+        let plain_verdict = verdict("plain");
+        assert_eq!(plain_verdict["ladder"]["reason"], "start");
+        assert!(
+            plain_verdict["ladder"].get("router_pick").is_none(),
+            "{plain_verdict}"
+        );
     }
 }

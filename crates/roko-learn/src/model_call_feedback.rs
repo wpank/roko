@@ -55,7 +55,8 @@ pub struct ModelCallFeedback {
     /// Provider transport outcome. When omitted, uses [`Self::success`].
     pub provider_success: Option<bool>,
     /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
-    /// `None` on success.
+    /// `None` on success. A failure's provider-health record takes its class
+    /// ([`ErrorClass::from_kind`]).
     pub error_class: Option<String>,
     /// Model the provider reported serving the call; `None` when it named
     /// none.
@@ -84,6 +85,9 @@ pub struct ModelCallFeedbackRecorder {
     save_cascade_router: bool,
     /// Whether each call is also recorded in `costs.jsonl` (bug-c1f6b8).
     record_costs: bool,
+    /// Whether each call's outcome is written to `provider-health.json`; off
+    /// when the caller records provider health itself (backlog 1114).
+    write_provider_health: bool,
 }
 
 impl ModelCallFeedbackRecorder {
@@ -111,6 +115,7 @@ impl ModelCallFeedbackRecorder {
             cascade_router,
             save_cascade_router: true,
             record_costs: false,
+            write_provider_health: true,
         }
     }
 
@@ -126,6 +131,7 @@ impl ModelCallFeedbackRecorder {
             cascade_router: Some(cascade_router),
             save_cascade_router: true,
             record_costs: false,
+            write_provider_health: true,
         }
     }
 
@@ -138,6 +144,7 @@ impl ModelCallFeedbackRecorder {
             cascade_router: None,
             save_cascade_router: false,
             record_costs: false,
+            write_provider_health: true,
         }
     }
 
@@ -150,7 +157,18 @@ impl ModelCallFeedbackRecorder {
         self
     }
 
+    /// Leave provider health to the caller, which records each call's
+    /// outcome in a registry of its own, so that a call is counted once
+    /// (backlog 1114).
+    #[must_use]
+    pub const fn without_provider_health(mut self) -> Self {
+        self.write_provider_health = false;
+        self
+    }
+
     /// Record model-call feedback, provider health, and cascade observation.
+    /// Provider health is left to a caller that records it itself
+    /// ([`Self::without_provider_health`]).
     ///
     /// The cascade observation is journaled in the learning WAL before it is
     /// applied, and dropped from the journal once the router snapshot is
@@ -160,7 +178,9 @@ impl ModelCallFeedbackRecorder {
     ///
     /// Returns an error if any durable write fails.
     pub async fn record(&self, feedback: ModelCallFeedback) -> Result<()> {
-        self.record_provider_health(&feedback)?;
+        if self.write_provider_health {
+            self.record_provider_health(&feedback)?;
+        }
 
         let mut feedback_service = FeedbackService::new(self.learn_dir.clone());
         if self.record_costs {
@@ -208,11 +228,18 @@ impl ModelCallFeedbackRecorder {
         Ok(())
     }
 
+    /// Persist the call's provider outcome, a failure under the class its
+    /// [`ModelCallFeedback::error_class`] names (backlog 1114).
     fn record_provider_health(&self, feedback: &ModelCallFeedback) -> Result<()> {
-        record_provider_health_at(
+        let error = feedback
+            .error_class
+            .as_deref()
+            .map_or(ErrorClass::Unknown, ErrorClass::from_kind);
+        record_provider_outcome_at(
             &self.learn_dir,
             &feedback.provider,
             feedback.provider_health_success(),
+            error,
         )
     }
 }
@@ -231,13 +258,30 @@ pub fn record_provider_health_for_workdir(
     record_provider_health_at(&workdir.join(".roko").join("learn"), provider, success)
 }
 
-/// Persist one provider-health outcome under a `.roko/learn` directory.
+/// Persist one provider-health outcome under a `.roko/learn` directory, a
+/// failure as [`ErrorClass::Unknown`].
 ///
 /// # Errors
 ///
 /// Returns an error when the health registry directory or JSON file cannot be
 /// written.
 pub fn record_provider_health_at(learn_dir: &Path, provider: &str, success: bool) -> Result<()> {
+    record_provider_outcome_at(learn_dir, provider, success, ErrorClass::Unknown)
+}
+
+/// Persist one provider-health outcome under a `.roko/learn` directory, a
+/// failure under the class `error`.
+///
+/// # Errors
+///
+/// Returns an error when the health registry directory or JSON file cannot be
+/// written.
+pub fn record_provider_outcome_at(
+    learn_dir: &Path,
+    provider: &str,
+    success: bool,
+    error: ErrorClass,
+) -> Result<()> {
     let provider = provider.trim();
     if provider.is_empty() {
         return Ok(());
@@ -249,7 +293,7 @@ pub fn record_provider_health_at(learn_dir: &Path, provider: &str, success: bool
     if success {
         registry.record_success(provider);
     } else {
-        registry.record_failure(provider, ErrorClass::Unknown);
+        registry.record_failure(provider, error);
     }
     registry.save(&path)?;
     Ok(())

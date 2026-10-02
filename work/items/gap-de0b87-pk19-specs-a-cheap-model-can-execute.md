@@ -96,3 +96,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK10 (gap-f61823), PK17 (gap-cb5133), PK18 (gap-e4bfbf).
 - Suggested model: opus.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The generator prompt and its retries moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed); a task that names `prd.rs` means that file. Hold lifted.
+
+## Progress
+
+Worker claude-agent on `work/gap-de0b87` from `e9f81ad1e`, 2026-10-03. Rust and TypeScript tasks are implemented, not
+done: cargo, vitest and the TypeScript check are deferred to the batch gate. Anchors re-checked at BASE (prd.rs is now
+`plan_generate/pipeline.rs`).
+
+- 3224: implemented at 3ba1f80a5 (the three cohesion phrases are gone; the tier limits bind)
+- 3225: implemented at 1d4116847 (`validate_tier_sizes` in the generation pipeline's validation; tiers never raised)
+- 3226: implemented at 353fd5004 (`roko learn sizing`, `commands/learn_sizing.rs`; roko-learn gains `wilson_interval_at` and `Z95`)
+- 3227: blocked: waits on data. This workspace has no `.roko/runs/*/attempts.jsonl` (0 verified first tries); 3203 needs at least 20 per tier bucket, and a binary built with 3226 to run `roko learn sizing --json`
+- 3228: implemented at 2389e65e9 (`roko plan revise`; `plan regenerate` passes the last failure and prints the diff)
+- 3229: implemented at 8f92854e7 (`RevisionDiff`; roko-serve's revise operation result now carries `diff`)
+- 3230: implemented at 275a4919d (evaluator and evidence types deleted, review-verdict types kept; PLAN_046; two contract tests now expect that warning)
+- 3231: implemented at aac91158e (plan-load gate in `run_graph_plan_body`; `.roko/runs/<run_id>/spec.jsonl`; the CLI pre-check no longer repeats red-on-base)
+- 3232: implemented at 7cfb542c7 (holdout on the `spec.gate` layer; no `--no-holdout` flag exists yet)
+- 3233: implemented at 1541687d4 (`benchmarks/viabilitybench/specops/`; 16 Python tests pass)

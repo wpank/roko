@@ -57,6 +57,7 @@ benchmarks/viabilitybench/
   analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
   analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
   analysis/simulate.py                                      # synthetic campaigns: coverage, FWER, anytime coverage
+  analysis/replay.py                                        # replay IO: run records and S01 copies, in one order
   analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
@@ -66,7 +67,7 @@ $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
 toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
-families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and `analysis/replay.py`.
+families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arms.
 
 ## The driver
 

@@ -79,16 +79,17 @@ def write_csv(path: Path, header: list[str], rows: list[list]) -> Path:
     return path
 
 
-def test_budget_is_s09_v1_5():
+def test_budget_is_s09_v1_6():
     budget = ledger.load_budget()
     caps = {line.id: line.cap_usd for line in budget.lines.values()}
     planned = {line.id: line.planned_usd for line in budget.lines.values()}
     assert caps == {"BL0": 14, "BL1": 160, "BL2": 0, "BL3": 30, "BL4": 40, "BL5": 26, "BL6": 44, "BL7": 26, "BL8": 8,
-                    "BL9": 20, "BL10": 2, "BL11": 18, "BL13": 6}
+                    "BL9": 20, "BL10": 2, "BL11": 18, "BL13": 6, "BL14": 6}
     assert planned == {"BL0": 6, "BL1": 152, "BL2": 0, "BL3": 27, "BL4": 36, "BL5": 23, "BL6": 42, "BL7": 24,
-                       "BL8": 6, "BL9": 15, "BL10": 1.2, "BL11": 16.2, "BL13": 5}
-    assert budget.caps_usd == 394 and budget.planned_usd == 353.4  # S09 §4.6's totals
-    assert budget.stop_usd == 400 and budget.total_usd - budget.caps_usd == 106 >= budget.floor_usd  # S09 SC3
+                       "BL8": 6, "BL9": 15, "BL10": 1.2, "BL11": 16.2, "BL13": 5, "BL14": 5.4}
+    # S09 §4.6's totals; v1.6 adds Pilot C's BL14 ($5.4 planned, $6 cap; decision 3302, task 3313).
+    assert budget.caps_usd == 400 and round(budget.planned_usd, 2) == 358.8
+    assert budget.stop_usd == 400 and budget.total_usd - budget.caps_usd == 100 >= budget.floor_usd  # S09 SC3
     assert "D43" in budget.reserved["BL12"]
     # v1.2's rebalance is a default the author confirms at the lock, and it leaves the caps' sum unchanged.
     lowered = [budget.lines[line_id] for line_id in ("BL1", "BL6", "BL7")]
@@ -97,9 +98,11 @@ def test_budget_is_s09_v1_5():
     # W10 rec 7's raise of BL0 is in force (dec-1089ec, v1.5): no proposal is left, and the caps fit the stop.
     assert [line.id for line in budget.lines.values() if line.proposed_cap_usd is not None] == []
     assert budget.lines["BL0"].cap_usd == 14 and budget.caps_usd <= budget.stop_usd
-    [pilot] = budget.experiments
+    pilot, pilot_c = budget.experiments
     assert (pilot.id, pilot.experiment_ids, pilot.lines, pilot.cap_usd) == ("pilot", ("PILOT-A", "PILOT-B"),
                                                                             ("BL0", "BL8"), 15)
+    assert (pilot_c.id, pilot_c.experiment_ids, pilot_c.lines, pilot_c.cap_usd) == ("pilot_c", ("PILOT-C",),
+                                                                                    ("BL14",), 6)
 
 
 def test_budget_file_is_checked(tmp_path):
@@ -223,15 +226,16 @@ def test_ledger_report_shows_spent_reserved_and_cap(tmp_path, capsys):
     assert vb.main(["ledger", "report", "--results", str(root), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     lines = {line["id"]: line for line in data["lines"]}
-    assert list(lines) == [f"BL{n}" for n in (*range(12), 13)]
+    assert list(lines) == [f"BL{n}" for n in (*range(12), 13, 14)]
     assert (lines["BL0"]["spent_usd"], lines["BL0"]["reserved_usd"], lines["BL0"]["cap_usd"]) == (2.5, 0.126, 14)
     assert lines["BL0"]["left_usd"] == pytest.approx(11.374) and lines["BL0"]["rows"] == 1
     assert lines["BL1"]["spent_usd"] == 0.13 and lines["BL8"]["spent_usd"] == 1.25
-    [pilot] = data["experiments"]
+    pilot, pilot_c = data["experiments"]
     assert (pilot["spent_usd"], pilot["reserved_usd"], pilot["cap_usd"]) == (3.75, 0.126, 15)
+    assert (pilot_c["spent_usd"], pilot_c["reserved_usd"], pilot_c["cap_usd"]) == (0, 0, 6)
     programme = data["programme"]
-    assert (programme["caps_usd"], programme["planned_usd"], programme["stop_usd"]) == (394, 353.4, 400)
-    assert (programme["unallocated_usd"], programme["caps_with_proposals_usd"]) == (106, 394)
+    assert (programme["caps_usd"], round(programme["planned_usd"], 2), programme["stop_usd"]) == (400, 358.8, 400)
+    assert (programme["unallocated_usd"], programme["caps_with_proposals_usd"]) == (100, 400)
     assert programme["spent_usd"] == pytest.approx(3.88) and data["ok"] and data["over"] == []
 
     write_row(root, line="BL2", experiment="LOG1", run="log1-a", n=2, usd=0.01)  # replays have a $0 cap

@@ -119,6 +119,13 @@ planned_usd = 5
 cap_usd = 6
 confirm = "lock"
 
+[[line]]
+id = "BL14"
+gate = "after G0"
+content = "Pilot C, exploratory (decision 3302): roko_ladder's cheap-model ladder on the pilot slice × 3 seeds"
+planned_usd = 5.40              # 60 runs x $0.09
+cap_usd = 6
+
 # Line ids held back: they fund nothing, so a dispatch on one is refused.
 [reserved]
 BL12 = "D43's proposed line for S05's first slice, still open"
@@ -130,3 +137,9 @@ id = "pilot"
 experiment_ids = ["PILOT-A", "PILOT-B"]   # S09 E1a (gap-c33709) and E1b (gap-327242)
 lines = ["BL0", "BL8"]                    # BL0, plus fd_api's five BL8 runs in Pilot A
 cap_usd = 15                              # W10 stage 1: the whole pilot stays within $15 billed
+
+[[experiment]]
+id = "pilot_c"
+experiment_ids = ["PILOT-C"]              # decision 3302; 3313
+lines = ["BL14"]
+cap_usd = 6                               # BL14's own cap: the ladder pilot stays within it

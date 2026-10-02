@@ -45,6 +45,7 @@ API:
     Metric(metric, value, n, estimator, cost_basis, cut, cell, ladder, ci, ci_method, model)
     vs_minus(record) -> int; vs_plus(record) -> int; reported_pass(record) -> bool
     check_unique(records) -> None                    # raises MetricsError when a run repeats or fits no cell
+    harness_of(record) -> str                         # "" for the arm's own harness; 3317's marker otherwise
     run_models(records) -> {(experiment_id, arm, run_id): model | None}
     with_models(records) -> list[dict]               # copies, each with its cell's `model`
     cells(records) -> list[(arm, model | None)]      # the report's cells outside the plan-level slice
@@ -72,9 +73,9 @@ PLAN_SLICE = "PL"
 EXCLUDED = ("infra_error", "leak_suspected")
 CENSORED = ("aborted_cap", "timeout")
 # S09 §4.2's arm registry: these arms run Roko, and their reported pass is the gate's final verdict.
-ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan"})
+ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan", "roko_ladder"})
 # S09 §4.2 and §4.9: arms whose runs may switch models (routing, the tier ladder, a planner, escalation).
-ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid"})
+ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid", "roko_ladder"})
 NOT_PASSED = ("unverified", "forced_accept")
 # gap-9eb1e1: Roko's final attempt changed nothing, and its checks passed on the tree as it was. S01's own stratum, so
 # it is neither a reported pass nor unverified: counted apart, in its own metric.
@@ -172,14 +173,24 @@ def task_key(record: dict) -> tuple[str, str]:
     return record["task"]["instance_id"], record["task"]["spec_variant"]
 
 
+def harness_of(record: dict) -> str:
+    """S08 decision 3 (3317): the harness that ran a record, from the runner's own `network_policy.harness` marker
+    (`run_msa.py`'s, for the cheap_direct arm's mini-swe-agent candidate); "" (the arm's own, usual one) when the
+    runner names none, which is every arm but that one today."""
+    policy = record.get("provenance", {}).get("network_policy") or {}
+    return policy.get("harness") or ""
+
+
 def check_unique(records: Iterable[dict]) -> None:
-    """Raise MetricsError when a cell ran one task twice with the same seed and replicate, or a run fits no cell."""
+    """Raise MetricsError when a cell ran one task twice with the same seed and replicate, or a run fits no cell. Two
+    harnesses of the same nominal arm (3317) are never pooled into one cell's "duplicate": harness_of joins the key."""
     seen: dict[tuple, str] = {}
     for record in with_models(records):
-        key = (record["arm"], record["model"], *task_key(record), record["seed"], record["replicate"])
+        key = (record["arm"], record["model"], harness_of(record), *task_key(record), record["seed"],
+              record["replicate"])
         if key in seen:
-            raise MetricsError(f"arm {cell_name(key[0], key[1])} ran {key[2]} ({key[3]}) with seed {key[4]} and "
-                               f"replicate {key[5]} twice (runs {seen[key]} and {record['run_id']}); a repeat is not "
+            raise MetricsError(f"arm {cell_name(key[0], key[1])} ran {key[3]} ({key[4]}) with seed {key[5]} and "
+                               f"replicate {key[6]} twice (runs {seen[key]} and {record['run_id']}); a repeat is not "
                                "an independent run")
         seen[key] = record["run_id"]
 

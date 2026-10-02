@@ -36,9 +36,9 @@ use crate::custody::{chain_violations, log_chained};
 /// File in `.roko/state/` holding the digest key.
 const KEY_FILE: &str = "safety-provenance.key";
 
-/// Serializes this process's appends to the workspace logs, so that the
-/// sinks of two runs never fork the custody chain. Other processes writing
-/// the same logs at once are not covered.
+/// Serializes this process's appends to the workspace logs, so that a
+/// record's witness vertex and custody record go in together. Other processes
+/// wait on the custody log's file lock ([`log_chained`]).
 static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// What a Graph checkpoint keeps of its run's safety provenance, under

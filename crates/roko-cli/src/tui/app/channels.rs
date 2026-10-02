@@ -220,8 +220,62 @@ impl App {
             &mut self.last_seen_plan_phases,
             &snapshot,
         );
+        self.offer_held_task(&snapshot);
         self.update_plan_completion_exit(&snapshot);
         self.render_dirty.insert(RenderDirty::SNAPSHOT);
+    }
+
+    /// Offer a task that `snapshot` shows awaiting approval, one a Graph run
+    /// holds for review, as the pending approval named `<plan>/<task>`, and
+    /// open the approval prompt when no other prompt is open. The offer, and
+    /// its prompt, go once that task no longer waits. An agent's own approval
+    /// request is never replaced.
+    pub(super) fn offer_held_task(&mut self, snapshot: &roko_core::DashboardSnapshot) {
+        use crate::graph_task_dispatch::AWAITING_APPROVAL_PHASE;
+
+        let mut waiting: Vec<(&str, &str)> = snapshot
+            .tasks
+            .values()
+            .filter(|task| task.phase == AWAITING_APPROVAL_PHASE)
+            .map(|task| (task.plan_id.as_str(), task.task_id.as_str()))
+            .collect();
+        waiting.sort_unstable();
+        let offered = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .filter(|pending| pending.held_task)
+            .and_then(|pending| pending.approval_id.clone());
+        if let Some(offered) = offered
+            && !waiting
+                .iter()
+                .any(|(plan_id, task_id)| offered == format!("{plan_id}/{task_id}"))
+        {
+            self.tui_state.pending_approval = None;
+            if matches!(
+                self.tui_state.active_modal,
+                Some(ModalState::Approval { .. })
+            ) {
+                self.tui_state.active_modal = None;
+            }
+        }
+        if self.tui_state.pending_approval.is_some() {
+            return;
+        }
+        let Some((plan_id, task_id)) = waiting.first().copied() else {
+            return;
+        };
+        let offer = PendingApproval::for_held_task(plan_id, task_id);
+        if self.tui_state.active_modal.is_none() {
+            self.tui_state.active_modal = Some(ModalState::Approval {
+                role: offer.agent_id.clone(),
+                command: offer.command.clone(),
+            });
+        }
+        let message = format!("{plan_id}/{task_id} waits for a review: y approves, n rejects");
+        self.notifications
+            .push_back(super::super::modals::Notification::info(message));
+        self.tui_state.pending_approval = Some(offer);
     }
 
     /// Drain pending command acknowledgements from the executor and update

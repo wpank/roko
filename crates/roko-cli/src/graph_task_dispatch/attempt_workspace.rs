@@ -273,7 +273,7 @@ const REVIEW_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_mill
 /// The dashboard phase of a task whose verified attempt waits for a person's
 /// review. `roko serve`'s review routes call the state `awaiting_approval`
 /// too.
-pub(crate) const AWAITING_APPROVAL_PHASE: &str = "awaiting_approval";
+pub const AWAITING_APPROVAL_PHASE: &str = "awaiting_approval";
 
 /// The phase the graph runner starts a task in, which a held task returns to
 /// once its wait ends.

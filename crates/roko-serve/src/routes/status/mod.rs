@@ -63,7 +63,7 @@ mod tests {
     use crate::deploy::create_backend;
     use crate::routes::build_router;
     use crate::runtime::NoOpRuntime;
-    use crate::state::{AppState, OperationStatus, PlanHandle};
+    use crate::state::{AppState, PlanHandle, PlanRunStatus};
     use roko_core::config::ServeAuthConfig;
     use roko_core::{Body, Kind, Provenance, Signal, Verdict};
 
@@ -453,8 +453,9 @@ mod tests {
             id: "plan-1".into(),
             plan_dir: dir.path().join(".roko/plans/plan-1"),
             members: vec!["plan-1".into()],
-            status: OperationStatus::Running,
-            handle: tokio::spawn(async {}),
+            status: PlanRunStatus::running(),
+            // Still going: only live runs count as active.
+            handle: tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(30))),
             cancel: roko_runtime::cancel::CancelToken::new(),
         };
         state

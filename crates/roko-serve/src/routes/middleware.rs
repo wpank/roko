@@ -1280,6 +1280,12 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/team/join",
         scope: "read",
     },
+    // The MCP endpoint takes every JSON-RPC call by POST; `tools/call`
+    // checks each tool's own scope (9114).
+    RouteScopeEntry {
+        prefix: "/mcp",
+        scope: "read",
+    },
     RouteScopeEntry {
         prefix: "/api/team",
         scope: "write",
@@ -1363,7 +1369,7 @@ fn is_read_only_method(method: &Method) -> bool {
 /// `"write:unclassified"` is treated identically to `"write"` so that the
 /// fallback sentinel does not change runtime behaviour — it is only detectable
 /// by the regression test.
-fn is_scope_sufficient(has: &str, required: &str) -> bool {
+pub(crate) fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if matches!(has, "owner" | "admin") {
         return true;
     }
@@ -3633,6 +3639,8 @@ mod tests {
         // --- /api/relay-tokens (admin) ---
         (Method::POST, "/api/relay-tokens"),
         (Method::DELETE, "/api/relay-tokens/tok-1"),
+        // --- /mcp (read; tools/call checks each tool's scope) ---
+        (Method::POST, "/mcp"),
     ];
 
     /// CI guard: every mutating route registered in the router must have an

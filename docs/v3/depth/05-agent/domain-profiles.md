@@ -1,10 +1,18 @@
 # 05 -- Domain Profiles
 
-> **Implementation status (2026-09):** Proposed. The profile concept is
-> specified and the underlying extension points (roles, tools, gates,
-> templates) are all live. The domain plugin enum (`DomainPlugin`) and
-> lifecycle manifests exist in `crates/roko-agent/src/lifecycle.rs`.
-> Full profile installation as a single TOML bundle is not yet wired.
+> **Implementation status (2026-10):** Proposed. What is live today is
+> the task domain: `TaskDomain` (`crates/roko-core/src/task.rs`) picks a
+> task's built-in tool set (`roko_std::roles::domain_profile`) and the
+> threshold priors its unobserved gate rungs start from. Per-domain
+> checks are pending (backlog 9120, verifier packs keyed by
+> `TaskDomain`): every domain runs the same `[[gates.rungs]]` ladder.
+> `[profiles.<name>]` (`roko_core::config::DomainProfile`) is parsed,
+> but nothing resolves it at run time yet (9125). The domain plugin
+> enum (`DomainPlugin`) and lifecycle manifests exist in
+> `crates/roko-agent/src/lifecycle.rs`. Full profile installation as a
+> single TOML bundle is not yet wired. roko-core's old `DomainProfile`
+> enum and `TypedContext` struct had no caller and were removed; the
+> per-domain gate names they listed never existed.
 
 ---
 
@@ -53,14 +61,18 @@ operation without changing the kernel.
 
 ## Canonical Profiles
 
-| Profile | Default roles | Core tools | Core gates | Memory shape |
-|---|---|---|---|---|
-| Coding | Researcher, Planner, Implementer, Reviewer, Tester | fs, git, language toolchains, code MCP | compile, unit, clippy, diff | episodes, playbooks, build history |
-| Research | Researcher, Analyst, Explorer, Reviewer | web, PDF, citation manager, note tools | citation, factuality, novelty | paper claims, replication ledger |
-| Blockchain | Architect, Implementer, Reviewer, Operator | RPC, signer, explorer, compiler, simulator | simulation, gas, invariant, approval | chain-of-custody, audit trail |
-| Data/ML | Analyst, Implementer, Tester, Reviewer | SQL, notebooks, pandas/polars, profiling | schema, sample-check, metric regression | dataset fingerprints, lineage |
-| Ops/SRE | Operator, Deployer, Monitor, Reviewer | kubectl, logs, metrics, runbooks, pager | dry-run, blast-radius, change-window | incident archive, runbook library |
-| Writing | DocWriter, Researcher, Reviewer | corpus search, style guide, fact-check, citation | style, fact, tone, plagiarism | voice fingerprint, editorial archive |
+| Profile | Default roles | Core tools | Memory shape |
+|---|---|---|---|
+| Coding | Researcher, Planner, Implementer, Reviewer, Tester | fs, git, language toolchains, code MCP | episodes, playbooks, build history |
+| Research | Researcher, Analyst, Explorer, Reviewer | web, PDF, citation manager, note tools | paper claims, replication ledger |
+| Blockchain | Architect, Implementer, Reviewer, Operator | RPC, signer, explorer, compiler, simulator | chain-of-custody, audit trail |
+| Data/ML | Analyst, Implementer, Tester, Reviewer | SQL, notebooks, pandas/polars, profiling | dataset fingerprints, lineage |
+| Ops/SRE | Operator, Deployer, Monitor, Reviewer | kubectl, logs, metrics, runbooks, pager | incident archive, runbook library |
+| Writing | DocWriter, Researcher, Reviewer | corpus search, style guide, fact-check, citation | voice fingerprint, editorial archive |
+
+No profile has gates of its own today. Every domain runs the shared
+`[[gates.rungs]]` ladder; per-domain checks (verifier packs keyed by
+`TaskDomain`) are pending (9120).
 
 ### Coding
 
@@ -79,7 +91,7 @@ speculative writing.
 
 `TypedContext` keys: `question`, `corpus`, `source_ids`, `claim_set`.
 A claim that cannot be tied back to a source remains provisional until
-the profile's citation gate resolves it.
+a citation check resolves it (no such check exists yet; 9122).
 
 ### Blockchain
 
@@ -162,6 +174,8 @@ pub struct CustomPluginConfig {
 
 ## TypedContext
 
+> Proposed: no `TypedContext` type exists in the code.
+
 `TypedContext` is the structured situation record that domain profiles
 share. It replaces ad hoc free-text task summaries whenever a domain
 needs reliable matching on situation shape.
@@ -226,20 +240,20 @@ Profiles are installable bundles:
 [profile.coding]
 roles = ["researcher", "planner", "implementer", "reviewer"]
 tools = ["fs.read", "fs.write", "git.status", "cargo.build"]
-gates = ["unit", "type", "style", "diff"]
 heuristics = "@roko/coding-heuristics-starter"
 templates = "@roko/coding-templates"
 
 [profile.research]
 roles = ["researcher", "analyst", "explorer", "reviewer"]
 tools = ["web.search", "pdf.extract", "citation.lookup"]
-gates = ["citation", "factuality", "novelty"]
 heuristics = "@roko/research-heuristics-starter"
 templates = "@roko/research-templates"
 ```
 
 The exact package format can evolve, but the contract should remain
-stable: install a profile, get a domain-shaped agent stack.
+stable: install a profile, get a domain-shaped agent stack. A profile
+names no gates: its checks would come from its domain's verifier pack
+(9120).
 
 ---
 

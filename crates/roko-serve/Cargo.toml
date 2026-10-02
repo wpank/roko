@@ -41,6 +41,7 @@ roko-dreams = { path = "../roko-dreams" }
 roko-gate = { path = "../roko-gate" }
 roko-gateway = { path = "../roko-gateway" }
 roko-fs = { path = "../roko-fs" }
+roko-mcp-stdio = { path = "../roko-mcp-stdio" }
 roko-compose = { path = "../roko-compose" }
 roko-std = { path = "../roko-std" }
 roko-plugin = { path = "../roko-plugin" }

@@ -102,6 +102,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         start_run,
         run_status,
         run_observability_detail,
+        run_observability_summary,
         run_observability_events,
         run_observability_event_stream,
         run_observability_tasks,
@@ -695,6 +696,12 @@ doc_get_param!(run_status, "/run/{id}/status", "run", "id");
 doc_get_param!(
     run_observability_detail,
     "/runs/{run_id}",
+    "run-observability",
+    "run_id"
+);
+doc_get_param!(
+    run_observability_summary,
+    "/runs/{run_id}/summary",
     "run-observability",
     "run_id"
 );
@@ -2112,9 +2119,10 @@ mod tests {
 
     /// Routers `routes::build_router` mounts at the server root, not under
     /// `/api`: their paths outside `/api/` are not part of this document.
-    const ROOT_ROUTERS: [(&str, &str); 7] = [
+    const ROOT_ROUTERS: [(&str, &str); 8] = [
         ("routes/ws.rs", "routes"),
         ("routes/relay_proxy.rs", "routes"),
+        ("routes/mcp.rs", "routes"),
         ("terminal.rs", "routes"),
         ("routes/shared_runs.rs", "public_routes"),
         ("routes/webhooks.rs", "public_routes"),

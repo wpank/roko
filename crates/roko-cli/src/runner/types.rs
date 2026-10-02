@@ -2434,8 +2434,6 @@ pub struct RunConfig {
     pub daimon_state: Option<Arc<Mutex<roko_daimon::DaimonState>>>,
     /// MCP connector tracking registry.
     pub connector_registry: Option<Arc<std::sync::Mutex<roko_core::ConnectorRegistry>>>,
-    /// Agent feed tracking registry.
-    pub feed_registry: Option<Arc<std::sync::Mutex<roko_core::FeedRegistry>>>,
     /// Single feedback facade — receives every runner event and fans it
     /// out to the registered learning / knowledge / conductor / dream
     /// sinks. `None` means feedback is suppressed (tests, smoke runs).
@@ -2585,7 +2583,6 @@ impl RunConfig {
         let extension_chain = Arc::new(tokio::sync::Mutex::new(ext_chain));
         let connector_registry =
             Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
-        let feed_registry = Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
         let max_concurrent_tasks = roko_config
             .runner
             .max_concurrent_tasks
@@ -2665,7 +2662,6 @@ impl RunConfig {
             cascade_router: Some(cascade_router),
             daimon_state: Some(daimon_state),
             connector_registry: Some(connector_registry),
-            feed_registry: Some(feed_registry),
             output_sink: Arc::new(super::output_sink::NoopSink),
             batch_size: None,
             warm_cache: true,
@@ -2756,7 +2752,6 @@ impl Default for RunConfig {
             cascade_router: None,
             daimon_state: None,
             connector_registry: None,
-            feed_registry: None,
             feedback_facade: None,
             projection: None,
             http_event_sink: None,
@@ -2816,7 +2811,6 @@ impl std::fmt::Debug for RunConfig {
                 "connector_registry",
                 &self.connector_registry.as_ref().map(|_| ".."),
             )
-            .field("feed_registry", &self.feed_registry.as_ref().map(|_| ".."))
             .field(
                 "http_event_sink",
                 &self.http_event_sink.as_ref().map(|_| ".."),

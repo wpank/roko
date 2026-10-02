@@ -958,10 +958,77 @@ impl CascadeRouter {
         latency_registry: Option<&crate::latency::LatencyRegistry>,
         latency_threshold_ms: Option<f64>,
     ) -> CascadeModel {
+        let route = self.health_scored_among(
+            ctx,
+            &self.model_slugs,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            // All providers are circuit-open — route anyway so we don't stall.
+            tracing::warn!("all known providers are circuit-open; routing without health filter");
+            self.route(ctx)
+        })
+    }
+
+    /// [`Self::route_with_health_scored`] over the `eligible` models alone
+    /// (S02.P1-2): the caller masks the models that cannot run the task
+    /// before the health filter and the argmax, so the cascade picks the best
+    /// model that can. When every eligible model's provider is circuit-open,
+    /// it routes among them without the health filter. An empty `eligible`
+    /// routes over every model.
+    pub fn route_with_health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        eligible: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> CascadeModel {
+        if eligible.is_empty() {
+            return self.route_with_health_scored(
+                ctx,
+                health,
+                model_providers,
+                latency_registry,
+                latency_threshold_ms,
+            );
+        }
+        let route = self.health_scored_among(
+            ctx,
+            eligible,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            tracing::warn!(
+                "every eligible model's provider is circuit-open; routing among them without \
+                 health filter"
+            );
+            self.route_with_cfactor_among(ctx, eligible, None, None)
+        })
+    }
+
+    /// The health-scored route among `models`: `Open` providers excluded,
+    /// `HalfOpen` and slow ones demoted. `None` when no provider of `models`
+    /// is available.
+    fn health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        models: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> Option<CascadeModel> {
         // Partition candidates into available (Closed/HalfOpen) and
         // unavailable (Open / hard-down), excluding disabled providers.
-        let available: Vec<String> = self
-            .model_slugs
+        let available: Vec<String> = models
             .iter()
             .filter(|slug| {
                 if self.is_provider_disabled(slug, model_providers) {
@@ -976,9 +1043,7 @@ impl CascadeRouter {
             .collect();
 
         if available.is_empty() {
-            // All providers are circuit-open — route anyway so we don't stall.
-            tracing::warn!("all known providers are circuit-open; routing without health filter");
-            return self.route(ctx);
+            return None;
         }
 
         // Apply latency-based demotion: collect slugs whose provider p95
@@ -1056,7 +1121,7 @@ impl CascadeRouter {
             .collect();
         route.fallback_chain.extend(extra_fallbacks);
 
-        route
+        Some(route)
     }
 
     /// Remove candidates whose provider is currently unhealthy or explicitly
@@ -3825,6 +3890,54 @@ mod cascade_router_tests {
             !route.primary.slug.is_empty(),
             "fallback route must return a non-empty slug"
         );
+    }
+
+    /// S02.P1-2: health-scored routing over the caller's eligible models
+    /// picks among them alone, also once every eligible provider is
+    /// circuit-open. An empty eligible set routes over every model.
+    #[test]
+    fn health_scored_routing_stays_among_eligible_models() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+        let model_providers = two_provider_map();
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        let unmasked = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        let other = if unmasked.primary.slug == "gemini-2.5-flash" {
+            "claude-sonnet-4-5"
+        } else {
+            "gemini-2.5-flash"
+        };
+        let eligible = vec![other.to_string()];
+        let route = |health: &crate::provider_health::ProviderHealthRegistry| {
+            router.route_with_health_scored_among(
+                &ctx,
+                &eligible,
+                health,
+                &model_providers,
+                None,
+                None,
+            )
+        };
+        assert_eq!(route(&health).primary.slug, other);
+
+        for _ in 0..3 {
+            health.record_failure(&model_providers[other], ErrorClass::ServerError);
+        }
+        assert_eq!(route(&health).primary.slug, other, "an open circuit");
+
+        let all = router.route_with_health_scored_among(
+            &ctx,
+            &[],
+            &health,
+            &model_providers,
+            None,
+            None,
+        );
+        let full = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_eq!(all.primary.slug, full.primary.slug);
     }
 
     /// filter_unhealthy returns healthy candidates when available, and falls

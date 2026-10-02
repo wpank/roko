@@ -31,7 +31,7 @@ command = "grep -rqw 'fn ev_fold_dedupes_and_counts_only_passed' crates/roko-lea
 command = "grep -rqw 'fn e2_unmeasurable_on_unknown_cost' crates/roko-learn/ && grep -rqw 'fn drive_and_bands_match_hand_computed_fixture' crates/roko-learn/ && cargo test -p roko-learn e2_unmeasurable_on_unknown_cost && cargo test -p roko-learn drive_and_bands_match_hand_computed_fixture"
 
 [[verify]]
-command = "grep -q 'roko-gate' crates/roko-learn/Cargo.toml && grep -rqw 'fn cusum_arl0_at_least_100_in_bounds' crates/roko-learn/ && grep -rqw 'fn step_detected_within_10' crates/roko-learn/ && cargo test -p roko-learn cusum_arl0_at_least_100_in_bounds && cargo test -p roko-learn step_detected_within_10"
+command = "! grep -q '^roko-gate' crates/roko-learn/Cargo.toml && grep -q '^pub mod spc;' crates/roko-learn/src/homeostasis/mod.rs && grep -rqw 'fn cusum_arl0_at_least_100_in_bounds' crates/roko-learn/ && grep -rqw 'fn step_detected_within_10' crates/roko-learn/ && cargo test -p roko-learn cusum_arl0_at_least_100_in_bounds && cargo test -p roko-learn step_detected_within_10"
 
 [[verify]]
 command = "grep -rqw 'fn validator_never_admits_widening_removal_or_ceiling_raise' crates/roko-learn/ && cargo test -p roko-learn validator_never_admits_widening_removal_or_ceiling_raise"

@@ -153,12 +153,14 @@ from pathlib import Path
 import agent_env
 import archive
 import caps
+import egress
 import harness
 import layout
 import ledger
 import planemit
 import provider
 import records
+import run_cli
 from common import repo, sandbox
 
 PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
@@ -167,6 +169,8 @@ PROMPT_SHA256 = planemit.TEMPLATE_SHA256
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
 OFFLINE_KEY = "vb-offline-placeholder"
 VALIDATE_TIMEOUT_S = 120.0
+EGRESS_LOG = "egress.jsonl"  # in the run directory, for a claude_cli arm (3318), as run_cli.py's own
+CLI_CACHE_WRITE_TTL = "1h"  # 3318: fr_claude's subscription turns write the 1-hour cache, as fd_claude.toml's do
 # The stand-in task `preflight` emits a plan for: a family task's shape (one source file, visible tests run by
 # unittest), with nothing of any task in it.
 PREFLIGHT_SPEC = ("# Preflight\n\nA stand-in task: before any task runs, the driver checks that Roko accepts the "
@@ -203,6 +207,7 @@ class RokoAttempt(harness.Attempt):
     roko_calls: int | None = None  # its model calls by Roko's records: turns plus helper calls; None if unknown
     model_swapped: bool = False  # a record says the declared swap's model served it (model_swap, gap-8bdf5e)
     usage_estimated: bool = False  # S01's verdict metered it from usage a call streamed (`cost.source` estimated)
+    vendor_usd: float | None = None  # R, a claude_cli attempt's own figure (3318); None for every other provider
 
     def as_record(self) -> dict:
         record = super().as_record()
@@ -215,6 +220,8 @@ class RokoAttempt(harness.Attempt):
             record["model_swapped"] = True
         if not self.calls_known:
             record["calls"] = None
+        if self.vendor_usd is not None:
+            record["vendor_usd"] = self.vendor_usd
         return record
 
 
@@ -249,7 +256,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     max_retries = int(settings.get("max_retries", 2))
     bound = _worst_task_usd(ctx.arm, ctx.snapshot, ctx.caps, ctx.price_row)
     task_bound = ctx.caps.usd_per_task if bound is None else bound
-    network = network_rule(ctx.endpoint)
+    egress_proxy = _start_egress(ctx, settings) if settings.get("provider_kind") == "claude_cli" else None
+    network = network_rule(ctx.endpoint, egress_proxy.port if egress_proxy else None)
     jail = sandbox.command([], deny=ctx.deny, network=network, sockets=[ctx.workdir])  # every roko process's prefix
     transcript: list[dict] = []
     attempts: list[RokoAttempt] = []
@@ -265,6 +273,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
         env = _roko_env(ctx, {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)}, emitted.config_path)
+        if egress_proxy:  # 3318: Roko's claude children reach Anthropic only through this task's own egress proxy
+            env = {**env, **agent_env.proxy_env(egress_proxy.url)}
         build = _build(binary, env, settings.get("build") or None, transcript, jail)
         head = _head(binary, ctx.workdir, ctx.model)
         checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
@@ -315,17 +325,30 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                               reserved_usd=attempt.reserved_usd)
         for key in reserved:  # the attempts Roko did not make; a key whose row was just written is already free
             ctx.ledger.release(key)
+        if egress_proxy:
+            egress_proxy.close()
     saved = (ctx.ledger.path.parent / "s01" / ctx.key).is_dir()  # Roko's records, copied by _save_evidence
+    policy = {"network": network, "sandbox": sandbox.kind(ctx.deny, network), "unix_sockets": "workspace"}
+    if egress_proxy:
+        policy["egress"] = egress_proxy.summary(ctx.key)
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
                                started_at=started, finished_at=harness.utc_now(),
-                               s01_run_dir=f"s01/{ctx.key}" if saved else None,
-                               network_policy={"network": network, "sandbox": sandbox.kind(ctx.deny, network),
-                                               "unix_sockets": "workspace"})
+                               s01_run_dir=f"s01/{ctx.key}" if saved else None, network_policy=policy)
 
 
-def network_rule(endpoint: provider.Endpoint) -> str:
+def network_rule(endpoint: provider.Endpoint, egress_port: int | None = None) -> str:
     """The network rule of a task's roko processes: the loopback port of the endpoint Roko calls, the metering
-    proxy's or a stub's; "none" for a network endpoint, which `_roko_env` refuses before Roko starts."""
+    proxy's or a stub's; "none" for a network endpoint, which `_roko_env` refuses before Roko starts.
+
+    `egress_port` (3318, a claude_cli arm) is a session's own egress proxy port (`run_cli.network_rule`'s rule):
+    Roko's `claude` children reach Anthropic through it, never directly, and a loopback endpoint (an offline test's
+    stub) stays reachable beside it."""
+    if egress_port is not None:
+        ports = [egress_port]
+        if endpoint.offline:
+            parts = urllib.parse.urlsplit(endpoint.base_url)
+            ports.append(parts.port or (443 if parts.scheme == "https" else 80))
+        return sandbox.loopback(*dict.fromkeys(ports))
     if not endpoint.offline:
         return sandbox.NETWORK_NONE
     parts = urllib.parse.urlsplit(endpoint.base_url)
@@ -353,7 +376,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         except planemit.PlanEmitError as err:
             raise RunnerError(f"the arm cannot emit a plan: {err}") from None
         env = {**agent_env.build(home=Path(scratch) / "home"), "ROKO_CONFIG": str(emitted.config_path),
-               **{name: OFFLINE_KEY for name in {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)}}}
+               **{name: OFFLINE_KEY for name in {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)} if name}}
         jail = sandbox.command([], deny=(), network=sandbox.NETWORK_NONE, sockets=[workspace])  # validate needs none
         checked = _roko([*_head(binary, workspace, model), "plan", "validate", "--strict", "--dag",
                          str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S, jail)
@@ -361,6 +384,19 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         said = (checked.stdout + checked.stderr).strip()[-500:]
         raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
                           f"{'timed out' if checked.timed_out else f'exited {checked.returncode}'}: {said}")
+
+
+def _start_egress(ctx: harness.TaskContext, settings: dict) -> egress.EgressProxy:
+    """This task's own egress proxy (3318, `egress.py`): the `[roko] egress_allow` targets (`run_cli.CliConfig`'s
+    own rule), else `egress.DEFAULT_ALLOW` (Anthropic's API). Raises RunnerError on a bad allowlist."""
+    allow = settings.get("egress_allow")
+    try:
+        allow = egress.parse_allow(allow) if allow else egress.DEFAULT_ALLOW
+    except egress.EgressError as err:
+        raise RunnerError(f"[roko] egress_allow: {err}") from None
+    proxy = egress.EgressProxy(allow, log_path=ctx.ledger.path.parent / EGRESS_LOG).start()
+    proxy.configure(task=ctx.key)
+    return proxy
 
 
 def _worst_task_usd(arm: dict, snapshot: ledger.Snapshot, limits: caps.Caps, price_row: dict | None) -> float | None:
@@ -381,8 +417,8 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
     (3312: more than one `models_allow` entry) emits planemit's ladder mode instead of one pinned model, with one
     rung per allowed model, cheapest first, and `model` as the start rung."""
     settings = arm.get("roko", {})
-    api_key_env = endpoint.api_key_env or arm.get("providers", {}).get(endpoint.provider, {}).get("api_key_env")
-    if not api_key_env:
+    api_key_env = endpoint.api_key_env or arm.get("providers", {}).get(endpoint.provider, {}).get("api_key_env") or ""
+    if not api_key_env and settings.get("provider_kind", "openai_compat") != "claude_cli":
         raise RunnerError(f"the arm names no api_key_env for {endpoint.provider}")
     allowed = arm["arm"]["models_allow"]
     rungs, start = (), None
@@ -607,7 +643,7 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
         expect(executed.get("provider"), expected_provider(number), "S01's executed provider", number)
         served(executed, "S01's verdict", number)
         if number in by_number:
-            _meter_from_verdict(by_number[number], verdict)
+            _meter_from_verdict(by_number[number], verdict, snapshot)
     if evidence.unreadable:
         flag("model_unverified", f"unreadable Roko records: {', '.join(evidence.unreadable[:5])}")
     if not attempts:
@@ -624,14 +660,20 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     return attempts, problems
 
 
-def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
+def _meter_from_verdict(attempt: RokoAttempt, verdict: dict, snapshot: ledger.Snapshot) -> None:
     """S01's verdict meters the attempt when it reports the served model and every usage class, and times the whole
-    attempt, its gate included, when it has the attempt's start and settlement."""
+    attempt, its gate included, when it has the attempt's start and settlement. A claude_cli attempt's verdict
+    (3318) carries its session's own `modelUsage` and `total_cost_usd` instead (`_meter_from_cli`), the same two
+    fields `run_cli.parse_result` reads from the direct arm's raw `result` event."""
     timing = verdict.get("timing") or {}
     start, end = (_from_unix_ms(timing.get(key)) for key in ("attempt_started_at", "settled_at"))
     if start is not None and end is not None and start <= end:
         attempt.started_at, attempt.finished_at = _iso(start), _iso(end)
-    reported = (verdict.get("executed") or {}).get("model_reported")
+    executed = verdict.get("executed") or {}
+    if isinstance(executed.get("modelUsage"), dict):
+        _meter_from_cli(attempt, executed, snapshot)
+        return
+    reported = executed.get("model_reported")
     usage = verdict.get("usage") or {}
     classes = ("tokens_in", "tokens_out", "tokens_cache_read")
     if reported and all(isinstance(usage.get(name), int) for name in classes):
@@ -642,6 +684,19 @@ def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
                             if isinstance(usage.get(name), int)}}
         attempt.usage_unknown = False
         attempt.usage_estimated = (verdict.get("cost") or {}).get("source") == "estimated"
+
+
+def _meter_from_cli(attempt: RokoAttempt, executed: dict, snapshot: ledger.Snapshot) -> None:
+    """Price a claude_cli attempt (3318) from its verdict's own `modelUsage` and `total_cost_usd`: U' (the headline,
+    `run_cli.parse_result`'s own rule: tokens x the snapshot, source `cli_usage`) and R, the CLI's own figure, kept
+    as `vendor_usd` (as `run_cli.CliAttempt`'s is)."""
+    parsed = run_cli.parse_result(executed, snapshot, cache_write_ttl=CLI_CACHE_WRITE_TTL)
+    attempt.model_reported = executed.get("model_reported") or attempt.model_reported
+    if parsed.usage is not None:
+        attempt.usage = parsed.usage
+        attempt.usage_unknown = False
+    attempt.cost = parsed.cost
+    attempt.vendor_usd = parsed.r_usd
 
 
 def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag,
@@ -793,13 +848,15 @@ def _wrapper_command(ctx: harness.TaskContext) -> str | None:
 def _roko_env(ctx: harness.TaskContext, api_key_envs: str | Iterable[str], config_path: Path) -> dict[str, str]:
     """The agent environment, ROKO_CONFIG and a placeholder key for every env var the emitted roko.toml names: one
     name, or several (one per provider for a routed arm's rungs, 3312, not just the start rung's). A network
-    endpoint is refused (module docstring)."""
-    if not ctx.endpoint.offline:
+    endpoint whose provider holds a key is refused (module docstring): it must be proxied. A claude_cli arm's
+    endpoint (3318) names no key at all, since the CLI signs in by itself through the session's own egress proxy, so
+    a network endpoint there is the point, not a refusal."""
+    if not ctx.endpoint.offline and ctx.endpoint.api_key_env:
         raise RunnerError(f"{ctx.endpoint.provider} is a network provider, which Roko reaches only through the "
                           "metering proxy, the one holder of its key: run it with `vb run` (which proxies every billed "
                           "network run, and any run with --proxy) and a key file (--key-file)")
     names = [api_key_envs] if isinstance(api_key_envs, str) else list(api_key_envs)
-    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), **{name: OFFLINE_KEY for name in names}}
+    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), **{name: OFFLINE_KEY for name in names if name}}
 
 
 def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: list[dict],

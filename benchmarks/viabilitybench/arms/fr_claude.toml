@@ -1,0 +1,42 @@
+# Arm fr_claude (S08 §4.9, S09 §4.2; 3318): the D1 probe arm, the Roko arm on claude-opus-5-5 through the Claude
+# CLI, on the author's subscription (D2, D42/dec-b78874). Unlike roko_fixed/roko_ladder it has no metering proxy in
+# front of it (no key: the CLI signs in by itself) and no network sandbox restricted to a loopback port: its `claude`
+# children reach Anthropic through this task's own egress proxy (3305's allowlist, `driver/egress.py`), exactly as
+# the direct fd_claude arm's session does. The runner is driver/run_roko.py, whose planemit.py emits a claude_cli
+# provider in roko.toml instead of an openai_compat one. Costs come from S01's verdicts: U' (tokens x the snapshot,
+# source cli_usage) and R, the CLI's own total_cost_usd, kept as vendor_usd.
+schema_version = "vb.arm/1"
+
+[arm]
+id = "fr_claude"
+harness = "roko"                      # S09's harness vocabulary
+runner = "run_roko"
+models_allow = ["claude-opus-5-5"]    # D2; the arm never has a fallback model
+line = "BL1"                          # S09 §4.6: P1's live line (the pilot has no fr_claude block)
+billed = false                        # the subscription: $0 billed, U' and R both recorded
+label = "frontier·roko"
+
+[caps]                                # roko_fixed's shape; usd_per_task is the live-spend ceiling fd_claude.toml
+                                       # uses (binds before the token caps at claude-opus-5-5's rates)
+turns_per_attempt = 12
+input_tokens_per_attempt = 150000
+turns_per_task = 36
+input_tokens_per_task = 450000
+wallclock_s = 1200
+model_calls_per_task = 45
+usd_per_task = 5.00
+max_output_tokens = 8192
+command_timeout_s = 120
+
+[roko]
+binary = "target/debug/roko"          # relative to the repository root; each attempt records the build it ran
+build = ""                            # a git sha pins the binary: a different build stops the task
+provider_kind = "claude_cli"
+context_window = 200000
+tier = "architectural"                # claude-opus-5-5's own tier in roko.toml
+max_retries = 2
+skip_enrichment = true                # explicit per arm (B §2.3)
+egress_allow = ["api.anthropic.com:443"]   # 3305's allowlist (egress.DEFAULT_ALLOW); explicit here too
+
+[providers.anthropic]                 # what `vb run` admits as a network provider; claude signs in by itself
+base_url = "https://api.anthropic.com"

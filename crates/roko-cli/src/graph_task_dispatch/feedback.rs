@@ -325,19 +325,7 @@ impl GraphTaskDispatcher {
         if let Some(eff_path) = &self.feedback.efficiency_path {
             // Gather prompt diagnostics for the efficiency event so
             // telemetry reflects what the agent actually received.
-            let eff_prompt_sections: Vec<roko_learn::efficiency::PromptSectionMeta> = dispatch_plan
-                .prompt
-                .diagnostics
-                .included_sections
-                .iter()
-                .map(|name| roko_learn::efficiency::PromptSectionMeta {
-                    name: name.clone(),
-                    tokens: 0,
-                    priority: 0,
-                    was_truncated: false,
-                    was_dropped: false,
-                })
-                .collect();
+            let eff_prompt_sections = efficiency_prompt_sections(&dispatch_plan.prompt.diagnostics);
             let eff_system_prompt_tokens = dispatch_plan.prompt.diagnostics.estimated_tokens;
             let live_tool_calls = settled.live_tool_calls.finish().await;
             let eff_tool_calls =
@@ -648,6 +636,42 @@ impl GraphTaskDispatcher {
             );
         }
     }
+}
+
+/// The prompt sections an efficiency row lists (backlog 2108). With the
+/// composition manifest: each included section with the composer's token
+/// estimate, ranked by inclusion order, then each section the budget
+/// dropped. Without one only the included names are known, and their tokens
+/// stay 0 for unknown.
+fn efficiency_prompt_sections(
+    diagnostics: &crate::dispatch::PromptDiagnostics,
+) -> Vec<roko_learn::efficiency::PromptSectionMeta> {
+    let section = |name: &str, tokens: usize, priority: usize, was_dropped: bool| {
+        roko_learn::efficiency::PromptSectionMeta {
+            name: name.to_string(),
+            tokens: u64::try_from(tokens).unwrap_or(u64::MAX),
+            priority: u8::try_from(priority).unwrap_or(u8::MAX),
+            was_truncated: false,
+            was_dropped,
+        }
+    };
+    let Some(manifest) = &diagnostics.composition_manifest else {
+        return diagnostics
+            .included_sections
+            .iter()
+            .map(|name| section(name, 0, 0, false))
+            .collect();
+    };
+    let included = manifest
+        .included
+        .iter()
+        .enumerate()
+        .map(|(order, meta)| section(&meta.name, meta.estimated_tokens, order, false));
+    let dropped = manifest
+        .excluded
+        .iter()
+        .map(|meta| section(&meta.name, meta.estimated_tokens, usize::from(u8::MAX), true));
+    included.chain(dropped).collect()
 }
 
 /// What an attempt's verify steps said, for its efficiency row (backlog
@@ -1360,6 +1384,70 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         );
         let provider_failed = row(serde_json::Value::Null);
         assert_eq!(provider_failed["ttft_unknown"], true, "{provider_failed}");
+    }
+
+    /// backlog 2108: an efficiency row lists each prompt section with the
+    /// composer's token estimate, ranked by inclusion order, and each section
+    /// the budget dropped. Without a manifest only the names are known.
+    #[test]
+    fn efficiency_prompt_sections_carry_token_counts() {
+        use roko_compose::{
+            AttentionBidder, CompositionManifest, CompositionStrategy, ExcludedSectionMeta,
+            IncludedSectionMeta,
+        };
+
+        let mut diagnostics = crate::dispatch::PromptDiagnostics {
+            included_sections: vec!["role".to_string(), "task".to_string()],
+            ..crate::dispatch::PromptDiagnostics::default()
+        };
+        let names_only: Vec<(String, u64)> = efficiency_prompt_sections(&diagnostics)
+            .into_iter()
+            .map(|section| (section.name, section.tokens))
+            .collect();
+        assert_eq!(names_only, [("role".to_string(), 0), ("task".to_string(), 0)]);
+
+        let included = |name: &str, tokens: usize| IncludedSectionMeta {
+            section_id: name.to_string(),
+            action_id: name.to_string(),
+            name: name.to_string(),
+            bidder: AttentionBidder::default(),
+            estimated_tokens: tokens,
+            score: 1.0,
+            bid_value: 1.0,
+            vcg_payment: None,
+            reason: "selected".to_string(),
+        };
+        diagnostics.composition_manifest = Some(CompositionManifest {
+            requested_strategy: CompositionStrategy::Auto,
+            selected_strategy: CompositionStrategy::DensityGreedy,
+            included: vec![included("role", 120), included("task", 30)],
+            excluded: vec![ExcludedSectionMeta {
+                section_id: "episodes".to_string(),
+                action_id: "episodes".to_string(),
+                name: "episodes".to_string(),
+                bidder: AttentionBidder::default(),
+                estimated_tokens: 80,
+                score: 0.1,
+                bid_value: 0.1,
+                reason: "over budget".to_string(),
+            }],
+            scored_signals: Vec::new(),
+            vcg_diagnostics: None,
+            total_tokens: 150,
+            token_budget_limit: Some(160),
+        });
+        let sections: Vec<(String, u64, u8, bool)> = efficiency_prompt_sections(&diagnostics)
+            .into_iter()
+            .map(|section| (section.name, section.tokens, section.priority, section.was_dropped))
+            .collect();
+        assert_eq!(
+            sections,
+            [
+                ("role".to_string(), 120, 0, false),
+                ("task".to_string(), 30, 1, false),
+                ("episodes".to_string(), 80, u8::MAX, true),
+            ]
+        );
     }
 
     /// gap-7a8474: the Graph efficiency row's usage fields come from what the

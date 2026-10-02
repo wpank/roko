@@ -102,10 +102,10 @@ anti_patterns = [
     "Do not silently swallow the PlanExecutionResult::gate_results; they are available for future use.",
 ]
 
-[[task.verify]]
-phase = "structural"
-command = "grep -n 'run_once' crates/roko-serve/src/routes/plans.rs | grep -v 'fn run_once\\|impl.*run_once\\|#\\[\\|//\\|test' | grep -q 'execute_plan\\|tokio::spawn' && echo FAIL || echo PASS"
-fail_msg = "execute_plan must not call run_once after this change (structural check)"
+# A first structural step, which ended in `|| echo PASS` and so could never fail (HF2),
+# was retired on 2026-10-02: `plan run` refuses a plan with such a step (backlog 3211).
+# Its rule stays in the anti-patterns above; the steps below check that plans.rs calls
+# run_plan and that the crate compiles.
 
 [[task.verify]]
 phase = "structural"

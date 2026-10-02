@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [gap-4b890c](items/gap-4b890c-pk06-operator-control-and-guards-approval-help.md) PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-a0043b](items/gap-a0043b-pk08-attempt-ledger-roko-toml-s-cheap.md) PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more) · size L · verified 2026-10-02
 
-_9 more open · `goal = "truth"`_
+_14 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -44,7 +44,7 @@ _2 more open · on hold: gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · 
 - **P1** [gap-5ddf9b](items/gap-5ddf9b-pk27-viabilitybench-proof-confidence-sequences-mcnemar-s.md) PK27 ViabilityBench proof: Confidence sequences, McNemar's test and CUPED in analysis/ (+5 more) · size L · verified 2026-10-02
 - **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
 
-_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -65,10 +65,10 @@ _9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P3** [gap-59ebfd](items/gap-59ebfd-pk84-m3-self-model-serve-the-economics.md) PK84 M3 self-model: Serve the economics report and the calibration stream for the showcase · size S · verified 2026-10-02
+- **P1** [gap-d90a93](items/gap-d90a93-no-command-clears-a-persisted-auth-or.md) No command clears a persisted auth or billing provider quarantine; the operator has to hand-edit provider-health.json · size M · verified 2026-10-03
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_2 more open · `goal = "visibility"`_
+_3 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _2 more open · `goal = "visibility"`_
 - **P2** [gap-aea13a](items/gap-aea13a-pk33-prompt-composition-delete-roko-execution-s.md) PK33 Prompt composition: Delete roko-execution's duplicate prompt cache, which nothing reads (+13 more) · size L · verified 2026-10-02
 - **P2** [gap-222d47](items/gap-222d47-pk39-prompt-composition-prompt-relevance-canary-over.md) PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more) · size L · verified 2026-10-02
 
-_3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [gap-425d9e](items/gap-425d9e-pk79-park-and-clean-up-park-the.md) PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more) · size L · verified 2026-10-02
 - **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
 
-_11 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_12 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

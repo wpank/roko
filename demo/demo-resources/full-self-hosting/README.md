@@ -1,52 +1,52 @@
 # Full Self-Hosting Demo
 
-The complete roko loop: idea → research → draft → plan → agents → gates → learn.
+The complete roko loop: prompt → plan → agents → gates → learn.
 
 ## The loop
 
 ```
-1. Idea      →  roko prd idea "..."
-2. Research  →  roko research topic "..."
-3. Draft     →  roko prd draft new <slug>
-4. Publish   →  roko prd draft promote <slug>
-5. Plan      →  roko prd plan <slug>
-6. Match     →  roko job match "..." --skills X
-7. Post      →  roko job create "..." --type coding_task
-8. Execute   →  roko plan run plans/
-9. Learn     →  roko learn all
-10. Iterate  →  (gate failures trigger replan)
+1. Research  →  roko research topic "..."                  (optional)
+2. Plan      →  roko plan generate "..."
+3. Review    →  edit plans/<slug>/, then roko plan validate plans/<slug>
+4. Match     →  roko job match "..." --skills X
+5. Post      →  roko job create "..." --type coding_task
+6. Execute   →  roko run plans/<slug>
+7. Learn     →  roko learn all
+8. Iterate   →  (gate failures trigger replan)
 ```
+
+`roko run --plan "..."` does steps 2 and 6 in one command: it writes the plan,
+shows it, and runs it once you confirm.
 
 ## Dashboard walkthrough
 
 This is the suggested demo order for showing the full self-hosting capability:
 
-### Act 1: Capture (Atelier → Chat)
+### Act 1: Research
 ```
-/idea Wire knowledge query into agent matchmaking
-/idea Add cold storage archival on schedule
-/idea Dashboard UI for agent creation
+roko research topic "agent matchmaking algorithms in decentralized systems"
 ```
+The report lands in `.roko/research/`, with citations.
 
-### Act 2: Research (Atelier → Research)
+### Act 2: Plan (portal)
+Open the portal link `roko serve` prints and type the prompt:
 ```
-/research agent matchmaking algorithms in decentralized systems
+Wire knowledge query into agent matchmaking
 ```
-Watch the research panel progress through stages.
+The generated plan appears with its task tree. Edit its `tasks.toml` as text
+if a task needs changing; the server validates each save. The CLI equivalent is
+`roko plan generate "Wire knowledge query into agent matchmaking"`.
 
-### Act 3: Plan (Atelier → PRDs → Plans)
-```
-/draft wire-knowledge-matchmaking
-/publish wire-knowledge-matchmaking
-/plan wire-knowledge-matchmaking
-```
-Switch to Plans tab — see the generated task tree.
-
-### Act 4: Match & Execute (Atelier → Chat + Coding)
+### Act 3: Match (Nunchi dashboard chat)
 ```
 /coding implement knowledge-weighted matchmaking
 ```
 Accept the agent quote. Job appears in Coding tab.
+
+### Act 4: Execute
+Press Run on the plan in the portal, or run
+`roko run plans/wire-knowledge-query-into-agent-matchmaking`. `roko dashboard`
+shows the tasks on **F2 Plans** and the live agent output on **F3 Agents**.
 
 ### Act 5: Observe (Network tabs)
 - **Agents** — Fleet roster with tiers

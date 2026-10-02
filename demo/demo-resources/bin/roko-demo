@@ -23,7 +23,7 @@ Commands:
   verify-local [port]          Start a temp serve, seed agents, run dashboard-smoke
   bench [workdir]              Run SWE-bench proxy controls + C-factor proof
   run <name> [args...]         Run an existing demo script by short name
-  all [base-url]                Seed agents, then run bench/PRD/research/full demos
+  all [base-url]                Seed agents, then run bench/plan/research/full demos
 
 Environment:
   ROKO=/path/to/roko           Default: target/debug/roko in this repo
@@ -51,8 +51,8 @@ demo_script_path() {
         single-agent) printf '%s\n' "agent-workflows/01-single-agent.sh" ;;
         multi-agent) printf '%s\n' "agent-workflows/02-multi-agent.sh" ;;
         chat) printf '%s\n' "agent-workflows/03-chat-repl.sh" ;;
-        prd-cli|prd) printf '%s\n' "prd-workflow/demo-prd-cli.sh" ;;
-        prd-api) printf '%s\n' "prd-workflow/demo-prd-api.sh" ;;
+        plan-cli|plan) printf '%s\n' "plan-workflow/demo-plan-cli.sh" ;;
+        plan-api) printf '%s\n' "plan-workflow/demo-plan-api.sh" ;;
         research) printf '%s\n' "research-workflow/demo-research.sh" ;;
         full-loop|full) printf '%s\n' "full-self-hosting/demo-full-loop.sh" ;;
         bench|benchmark) printf '%s\n' "benchmark-flow/demo-benchmark.sh" ;;
@@ -74,9 +74,9 @@ fleet              agent-setup/setup-fleet.sh
 single-agent       agent-workflows/01-single-agent.sh
 multi-agent        agent-workflows/02-multi-agent.sh
 chat               agent-workflows/03-chat-repl.sh
-prd-cli            prd-workflow/demo-prd-cli.sh
-prd                prd-workflow/demo-prd-cli.sh
-prd-api            prd-workflow/demo-prd-api.sh
+plan-cli           plan-workflow/demo-plan-cli.sh
+plan               plan-workflow/demo-plan-cli.sh
+plan-api           plan-workflow/demo-plan-api.sh
 research           research-workflow/demo-research.sh
 full-loop          full-self-hosting/demo-full-loop.sh
 full               full-self-hosting/demo-full-loop.sh
@@ -280,7 +280,7 @@ run_all_demos() {
     local base_url="${1:-$ROKO_SERVE_URL}"
     seed_agents "$base_url"
     run_named_demo bench
-    run_named_demo prd
+    run_named_demo plan
     run_named_demo research "$base_url"
     run_named_demo full "$base_url"
 }

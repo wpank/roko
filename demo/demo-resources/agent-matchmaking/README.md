@@ -40,8 +40,8 @@ npm run dev        # opens http://localhost:5173
 ## Dashboard flow (demo walkthrough)
 
 1. Open the dashboard at `http://localhost:5173`
-2. Navigate to the **Atelier** tab
-3. Type `/coding implement walrus gateway relay` in the chat
+2. Open the chat
+3. Type `/coding implement walrus gateway relay`
 4. The dashboard calls `POST /api/jobs/match` with `{"title":"implement walrus gateway relay"}`
 5. An **agent quote** bubble appears showing matched agents, fees, and ETA
 6. Click **Accept & post** to create the job with committed candidates

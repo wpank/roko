@@ -583,7 +583,7 @@ fn agent_tool_loop_refuses_git_stash() {
         .replace("c2-canary", GUARD_PLAN)
         .replace("model_hint = \"scripted\"", "model_hint = \"fake-openai\"")
         .replace("allowed_tools = []", "allowed_tools = [\"bash\"]")
-        .replace("env >> {fixtures}/gate-env.txt", "true");
+        .replace("env >> {fixtures}/gate-env.txt", "test -d .");
     let (workspace, _provider) = workspace(GUARD_PLAN, &tasks, "");
     // The model runs `git stash`, then `git clean -fdx`, then ends its turn.
     let requests = Arc::new(Mutex::new(Vec::new()));

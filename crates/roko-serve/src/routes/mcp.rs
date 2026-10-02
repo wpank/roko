@@ -342,6 +342,14 @@ mod tests {
     use roko_core::config::schema::RokoConfig;
     use tower::ServiceExt;
 
+    /// Auth off, as a local `roko.toml` can set it.
+    fn no_auth() -> ServeAuthConfig {
+        ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        }
+    }
+
     /// The full router over a fresh workspace, with `auth`.
     fn router(auth: ServeAuthConfig) -> (tempfile::TempDir, Router) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -394,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_tools_list_returns_annotated_tools() {
         let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-        let (_dir, open) = router(ServeAuthConfig::default());
+        let (_dir, open) = router(no_auth());
 
         let (status, body) = post_mcp(&open, &list, &[]).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -448,7 +456,7 @@ mod tests {
     /// tool, is a JSON-RPC error.
     #[tokio::test]
     async fn mcp_tools_call_runs_recall_and_run_status() {
-        let (_dir, open) = router(ServeAuthConfig::default());
+        let (_dir, open) = router(no_auth());
         let call = |id: u64, name: &str, arguments: Value| {
             json!({
                 "jsonrpc": "2.0",

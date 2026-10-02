@@ -123,10 +123,10 @@ so drift is caught by snapshot tests.
 
 | Profile | Used by | Feedback required |
 |---|---|---|
-| `GraphPlan` | `roko plan run` | Yes |
+| `GraphPlan` | `roko plan run`, `roko run plans/<slug>` | Yes |
 | `FullPlan` | Legacy Runner-v2 (deprecated) | Yes |
 | `Workflow` | `roko run` | No |
-| `DirectLight` | `roko do`, `roko develop` | No |
+| `DirectLight` | No CLI caller (`roko do` and `roko develop` were folded into `roko run`) | No |
 | `AgentServer` | `roko agent serve` | No |
 | `ChatLight` | `roko chat` | No |
 | `AuthoredGraph` | `roko graph run` | No |

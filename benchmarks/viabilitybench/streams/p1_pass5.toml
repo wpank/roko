@@ -1,0 +1,18 @@
+# Stream p1_pass5 (S08 §4.7; work item gap-eb1aa3, task 3328): compiled by streams/compile.py --seed 1, 30 tasks.
+# Do not hand-edit: regenerate with the same --seed for a byte-identical file.
+schema_version = "vb.stream/1"
+
+[stream]
+id = "p1_pass5"
+spec_variant = "precise"
+families = { F1 = "families/f1_pyconv", F2 = "families/f2_apipager", F3 = "families/f3_moneyround", F4 = "families/f4_kvtool", F5 = "families/f5_sqlmigrate", F7 = "families/f7_rustiter" }
+instances = [
+  "F1-l1-0419", "F1-l2-0397", "F1-l3-0110", "F1-l4-0454",
+  "F1-l5-0257", "F2-l1-0403", "F2-l2-0328", "F2-l3-0286",
+  "F2-l4-0454", "F2-l5-0125", "F3-l1-0279", "F3-l2-0380",
+  "F3-l3-0003", "F3-l4-0310", "F3-l5-0359", "F4-l1-0204",
+  "F4-l2-0028", "F4-l3-0468", "F4-l4-0276", "F4-l5-0370",
+  "F5-l1-0011", "F5-l2-0206", "F5-l3-0239", "F5-l4-0500",
+  "F5-l5-0345", "F7-l1-0174", "F7-l2-0239", "F7-l3-0415",
+  "F7-l4-0002", "F7-l5-0451",
+]

@@ -1,6 +1,10 @@
 # ViabilityBench verifier CI (gap-44632a): checks the benchmark's own verifiers on every change under
 # benchmarks/viabilitybench/, as benchmarks/viabilitybench/ci/README.md describes. It is offline: no model or provider
 # is called, the secret is a throwaway one the CI makes, and the job needs no repository secret.
+#
+# Three jobs, split by toolchain (gap-eb1aa3, task 3327): the Python-only families share one job; F7 (Rust) and F6
+# (TypeScript) each get their own, since the verifier CI compiles and runs every kind of every family (gap-7ee7c2's
+# module docstring), and the Python-only runner has neither a Rust nor a Node toolchain.
 name: ViabilityBench verifier CI
 
 on:
@@ -19,7 +23,7 @@ permissions:
 
 jobs:
   verifier-ci:
-    name: Verify the verifiers (F1, F4, plan slice)
+    name: Verify the verifiers (F1-F5, F8, plan slice)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,9 +36,63 @@ jobs:
           python -m venv benchmarks/viabilitybench/.venv
           benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes \
             -r benchmarks/viabilitybench/requirements.lock
-      - name: Judge the known solutions of F1 and F4, latents v1 and v2, levels 1-5, seeds 1-2 (40 cells)
-        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2
+      - name: Judge the known solutions of F1-F5 and F8, levels 1-5, seeds 1-2
+        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f2,f3,f4,f5,f8 --levels 1-5 --seeds 2
       - name: Judge the plan-level slice
         run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families pl --seeds 3
       - name: Check that broken verifiers turn the CI red
         run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/ci/test_ci.py -q
+
+  verifier-ci-rust:
+    name: Verify the verifiers (F7, Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # F7's own CARGO_TARGET_DIR, never the roko workspace's target/ (gen.py's module docstring); serialized so two
+    # runs on the same ref never race on the cache below.
+    concurrency:
+      group: viabilitybench-f7-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cargo-target-f7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Cache cargo's registry and F7's target directory, keyed on F7's generator
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ${{ env.CARGO_TARGET_DIR }}
+          key: viabilitybench-f7-${{ runner.os }}-${{ hashFiles('benchmarks/viabilitybench/families/f7_rustiter/gen.py') }}
+      - name: Make the pinned venv
+        run: |
+          python -m venv benchmarks/viabilitybench/.venv
+          benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes \
+            -r benchmarks/viabilitybench/requirements.lock
+      - name: Judge the known solutions of F7, levels 1-5, seeds 1-2
+        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f7 --levels 1-5 --seeds 2
+
+  verifier-ci-ts:
+    name: Verify the verifiers (F6, TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the pinned TypeScript compiler (tsc --strict when present; S08 §4.3)
+        run: npm install --global typescript@5.7.3
+      - name: Make the pinned venv
+        run: |
+          python -m venv benchmarks/viabilitybench/.venv
+          benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes \
+            -r benchmarks/viabilitybench/requirements.lock
+      - name: Judge the known solutions of F6, latents v1 and v2, levels 1-5, seeds 1-2
+        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f6 --levels 1-5 --seeds 2

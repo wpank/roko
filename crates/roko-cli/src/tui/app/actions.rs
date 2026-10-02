@@ -2,9 +2,9 @@
 
 use super::*;
 
-/// What the inject key says while no transport delivers a directive.
+/// What the inject key says: the TUI cannot send a directive itself yet.
 const INJECT_UNAVAILABLE: &str =
-    "inject is not available: no live command transport reaches the run yet";
+    "inject is not available in the TUI yet; send it with `roko inject <plan> <text>`";
 
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) {

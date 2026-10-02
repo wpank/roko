@@ -163,8 +163,18 @@ impl GraphExecutionControlAdapter {
         cmd: &ExecutionCommand,
         running_node_ids: &[String],
     ) -> GraphCommandEffect {
-        // Map CLI command kind -> graph control command kind.
-        let graph_kind = map_command_kind(&cmd.kind);
+        // Map CLI command kind -> graph control command kind. An inject
+        // command is for the plan run's task dispatcher, which the control
+        // service does not reach (gap-f118b3).
+        let Some(graph_kind) = map_command_kind(&cmd.kind) else {
+            let reason = format!("{} is not a graph control command", cmd.kind);
+            let ack = ack_for(cmd, CommandAckStatus::Rejected, Some(reason.clone()));
+            let _ = self.ack_tx.send(ack).await;
+            return GraphCommandEffect::Rejected {
+                reason,
+                receipt: None,
+            };
+        };
 
         // Delegate to the control service for validation, receipts, and effects.
         let effect = self.control_service.process_command(
@@ -259,7 +269,7 @@ impl GraphExecutionControlAdapter {
                             &cmd.run_id,
                             cmd.plan_id.clone(),
                             cmd.task_id.clone(),
-                            map_command_kind(&cmd.kind).label(),
+                            graph_kind.label(),
                         )
                     });
                 info!(
@@ -293,12 +303,13 @@ impl std::fmt::Debug for GraphExecutionControlAdapter {
 // Command kind mapping
 // ---------------------------------------------------------------------------
 
-/// Map a CLI `ExecutionCommandKind` to a graph `ControlCommandKind`.
+/// Map a CLI `ExecutionCommandKind` to a graph `ControlCommandKind`, if it
+/// has one: an inject command does not.
 ///
 /// The two enums are intentionally separate to avoid a dependency from
 /// `roko-graph` (layer 2) to `roko-cli` (layer 4).
-fn map_command_kind(kind: &ExecutionCommandKind) -> ControlCommandKind {
-    match kind {
+fn map_command_kind(kind: &ExecutionCommandKind) -> Option<ControlCommandKind> {
+    let graph_kind = match kind {
         ExecutionCommandKind::Pause => ControlCommandKind::Pause,
         ExecutionCommandKind::Resume => ControlCommandKind::Resume,
         ExecutionCommandKind::SoftRetry => ControlCommandKind::SoftRetry,
@@ -319,7 +330,9 @@ fn map_command_kind(kind: &ExecutionCommandKind) -> ControlCommandKind {
             reason: reason.clone(),
         },
         ExecutionCommandKind::Reset => ControlCommandKind::Reset,
-    }
+        ExecutionCommandKind::Inject { .. } => return None,
+    };
+    Some(graph_kind)
 }
 
 // ---------------------------------------------------------------------------

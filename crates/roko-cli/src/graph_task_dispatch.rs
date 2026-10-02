@@ -66,6 +66,7 @@ mod helper_calls;
 mod inert_settings;
 mod ladder;
 mod live_tool_calls;
+mod operator_directives;
 mod operator_stop;
 mod prompt_experiment;
 mod red_flags;
@@ -88,6 +89,7 @@ mod wiring;
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
+pub use operator_directives::OperatorDirectives;
 pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
@@ -286,6 +288,9 @@ pub struct GraphTaskDispatcher {
     /// The attempts whose provider calls run now, which the operator can
     /// stop one task at a time ([`Self::operator_stops`]).
     operator_stops: OperatorStops,
+    /// What the operator sent each running plan with `roko inject`, for its
+    /// next task's prompt ([`Self::operator_directives`]).
+    operator_directives: OperatorDirectives,
 }
 
 impl GraphTaskDispatcher {
@@ -340,6 +345,7 @@ impl GraphTaskDispatcher {
             running_plans: parking_lot::Mutex::default(),
             metrics: None,
             operator_stops: OperatorStops::default(),
+            operator_directives: OperatorDirectives::default(),
         }
     }
 
@@ -348,6 +354,26 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn operator_stops(&self) -> OperatorStops {
         self.operator_stops.clone()
+    }
+
+    /// What `roko inject` sends the running plans: each plan's next task
+    /// gets its texts in its prompt, once (gap-f118b3).
+    #[must_use]
+    pub fn operator_directives(&self) -> OperatorDirectives {
+        self.operator_directives.clone()
+    }
+
+    /// The running plan `session` names for `roko inject`: a plan by its id,
+    /// or by the id of its Graph checkpoint run (gap-f118b3).
+    #[must_use]
+    pub fn inject_target(&self, session: &str) -> Option<String> {
+        let running: Vec<String> = self.running_plans.lock().keys().cloned().collect();
+        if running.iter().any(|plan_id| plan_id.as_str() == session) {
+            return Some(session.to_string());
+        }
+        running
+            .into_iter()
+            .find(|plan_id| self.plan_run_id(plan_id).as_deref() == Some(session))
     }
 
     /// Set the CLI model override (from `--model`).
@@ -762,7 +788,7 @@ impl GraphTaskDispatcher {
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let task = &self.prompt_task(spec, task);
-        match self.factory.dispatcher().plan(task, dispatch_ctx) {
+        let mut dispatch_plan = match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
@@ -775,7 +801,18 @@ impl GraphTaskDispatcher {
             }
             planned => planned,
         }
-        .map_err(|error| RokoError::Planning(error.to_string()))
+        .map_err(|error| RokoError::Planning(error.to_string()))?;
+        // What the operator sent the plan with `roko inject` reaches the
+        // next prompt, once (gap-f118b3).
+        if let Some(section) = self.operator_directives.take_section(&spec.plan_id) {
+            dispatch_plan.prompt.user_prompt.push_str(&section);
+            dispatch_plan
+                .prompt
+                .diagnostics
+                .included_sections
+                .push("operator_directives".to_string());
+        }
+        Ok(dispatch_plan)
     }
 }
 

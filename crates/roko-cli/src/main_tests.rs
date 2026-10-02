@@ -651,9 +651,9 @@ fn cli_parses_inject_subcommand() {
 }
 
 // -- inject fails closed (#325, gap-f118b3) --
-// No transport reaches a live executor yet, so a valid inject request exits
-// non-zero and writes nothing: no control.json or inject.json that nothing
-// reads, and no substrate (engrams.jsonl) entry.
+// With no plan run listening, a valid inject request reaches nothing: it
+// exits non-zero and writes nothing, no control.json or inject.json that
+// nothing reads, and no substrate (engrams.jsonl) entry.
 
 #[tokio::test]
 async fn inject_fail_closed_directive() {
@@ -770,8 +770,8 @@ async fn inject_fail_closed_json_output() {
     );
 }
 
-/// gap-f118b3: success needs the addressed executor's acknowledgement,
-/// and no transport carries one yet. Every kind exits non-zero and leaves
+/// gap-f118b3: success needs the addressed executor's acknowledgement.
+/// With no plan run listening, every kind exits non-zero and leaves
 /// `.roko/state/` as it was.
 #[tokio::test]
 async fn inject_fails_without_executor_ack() {
@@ -792,6 +792,57 @@ async fn inject_fails_without_executor_ack() {
         assert_eq!(code, EXIT_FAILURE, "{kind} succeeded without an ack");
     }
     assert_eq!(std::fs::read_dir(&state_dir).unwrap().count(), 0);
+}
+
+/// gap-f118b3: `roko inject` exits 0 only once the plan run its session
+/// names acknowledges the request; a session no listening run has fails.
+#[cfg(unix)]
+#[tokio::test]
+async fn inject_succeeds_only_on_the_runs_acknowledgement() {
+    use roko_cli::execution_control::{CommandAckStatus, ExecutionCommandSender, ack_for};
+    use roko_cli::inject::{InjectLink, InjectTarget, start_inject_server};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (run_commands, mut command_rx, ack_tx, acks) =
+        ExecutionCommandSender::channel("graph-engine");
+    let target: InjectTarget =
+        std::sync::Arc::new(|session: &str| (session == "plan-1").then(|| session.to_string()));
+    let link = InjectLink {
+        commands: run_commands,
+        acks,
+        target,
+        answer_timeout: Duration::from_secs(5),
+    };
+    let _server = start_inject_server(tmp.path(), link).unwrap();
+    let run = tokio::spawn(async move {
+        let command = command_rx.recv().await.unwrap();
+        let ack = ack_for(&command, CommandAckStatus::Accepted, Some("queued".into()));
+        ack_tx.send(ack).await.unwrap();
+    });
+    let cli = Cli::try_parse_from(["roko", "inject", "plan-1", "keep going"]).unwrap();
+    let workdir = || Some(tmp.path().to_path_buf());
+
+    let accepted = commands::util::cmd_inject(
+        &cli,
+        "plan-1".into(),
+        "directive",
+        "keep going".into(),
+        workdir(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted, EXIT_SUCCESS);
+    run.await.unwrap();
+    let unknown = commands::util::cmd_inject(
+        &cli,
+        "plan-9".into(),
+        "directive",
+        "keep going".into(),
+        workdir(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unknown, EXIT_FAILURE, "no running plan of that name");
 }
 
 #[test]

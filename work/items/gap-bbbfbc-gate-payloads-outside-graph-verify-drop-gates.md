@@ -9,16 +9,16 @@ goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/gate_dispatch", "roko-acp"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
 last_verified_rev = "ebdc0f5d5"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
-anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal", "crates/roko-acp/src/runner.rs::build_gate_signal", "crates/roko-gate/src/gate_service.rs:238"]
+anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal", "crates/roko-acp/src/runner.rs::build_gate_signal", "crates/roko-gate/src/gate_service.rs::run_gates"]
 links = { depends_on = [], blocks = [], related = ["bug-7d7200"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "{ ! grep -q 'fn gate_signal(' crates/roko-cli/src/runner/gate_dispatch.rs || grep -q '\\.with_env_passthrough(' crates/roko-cli/src/runner/gate_dispatch.rs; } && { ! grep -q 'fn build_gate_signal(' crates/roko-acp/src/runner.rs || grep -q '\\.with_env_passthrough(' crates/roko-acp/src/runner.rs; }"
+command = "{ ! grep -q 'fn gate_signal(' crates/roko-cli/src/runner/gate_dispatch.rs || grep -q '\\.with_env_passthrough(' crates/roko-cli/src/runner/gate_dispatch.rs; } && { ! grep -q 'fn build_gate_signal(' crates/roko-acp/src/runner.rs || grep -q '\\.with_env_passthrough(' crates/roko-acp/src/runner.rs; } && ! grep -rq 'struct DefaultGateService' crates/roko-gate/src && grep -q 'with_env_passthrough(gate_env_passthrough)' crates/roko-serve/src/service_factory.rs && cargo test -p roko-gate --lib gate_payload_carries_env_passthrough"
 +++
 
 ## Problem
@@ -99,3 +99,18 @@ Left open:
 - `ProductionGateService::verify_rung`: `SharedGateRequest` carries no config.
 - `runner/merge.rs::CargoCheckRegressionGate`.
 None of these has a production caller. Thread them or delete them in a follow-up.
+
+2026-10-02 (wk-gates): the rest is implemented on work/bug-951930; cargo verification deferred to the batch check.
+- `GateService` gains `with_env_passthrough`, and `run_gates` applies it to its payload. roko-serve's
+  `ServiceFactory::build` and `build_with_runtime_services` pass it the workspace's `[gates] env_passthrough`.
+  Nothing reads the bundle's `gate_runner` yet; once something does, the setting arrives.
+  Test: `gate_payload_carries_env_passthrough`.
+- The `verify_rung` left open above belonged to `DefaultGateService`, in production_service.rs. It built a payload
+  without the setting, and nothing constructed the service, so it is deleted with its five tests. The
+  `SharedGateEvaluator` in use is roko-cli's `RunnerProductionGateAdapter`. Its `verify_rung` runs
+  `ProductionGateService` with the run's `[gates]`, so its payloads carry the setting.
+- `CargoCheckRegressionGate` was already gone at BASE: `ace875c56` (bug-207f35) deleted it with `PlanMerger`'s
+  built-in backends.
+Every payload builder under Where now applies the setting or is gone, and the `[[verify]]` checks the two new
+cases. Outside the Plan: `generated.rs` (tautology probe) and `benchmark_gate.rs` still call
+`inherit_gate_env(&mut cmd, &[])`, because they get a path, not a payload.

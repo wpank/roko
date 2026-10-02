@@ -213,8 +213,8 @@ pub use verdict_publisher::VerdictPublisher;
 pub use graph_cell::{GatePipelineCell, GatePipelineCellInput, GraphEventProgressSink};
 pub use production_request::{GateTaskContextSpec, ProductionGateRequest, VerifyStepSpec};
 pub use production_service::{
-    DefaultGateService, GatePipelineProgress, NoopProgressSink, ProductionGateRunner,
-    ProductionGateService, ProgressSink,
+    GatePipelineProgress, NoopProgressSink, ProductionGateRunner, ProductionGateService,
+    ProgressSink,
 };
 pub use production_verdict::{
     EvidenceRef, PipelineOutcome, ProductionGateRungVerdict, ProductionGateVerdictV1, RungState,

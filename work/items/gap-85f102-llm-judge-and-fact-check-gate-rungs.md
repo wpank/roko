@@ -8,8 +8,8 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-gate/oracles"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
 last_verified_rev = "ebdc0f5d5"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
@@ -17,7 +17,7 @@ anchors = ["crates/roko-gate/src/llm_judge_gate.rs::JudgeOracle", "crates/roko-g
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'RungExecutionConfig::default()' crates/roko-gate/src/production_service.rs && grep -rlE 'impl .*JudgeOracle for' crates/*/src | grep -qv 'crates/roko-gate/src/llm_judge_gate.rs' && grep -rq 'AgentJudgeOracle' crates/roko-cli/src"
+command = "! grep -q 'RungExecutionConfig::default()' crates/roko-gate/src/production_service.rs && grep -rlE 'impl .*JudgeOracle for' crates/*/src | grep -qv 'crates/roko-gate/src/llm_judge_gate.rs' && grep -rq 'AgentJudgeOracle' crates/roko-cli/src && grep -rqw 'fn a_failing_judge_blocks_only_when_configured' crates/roko-cli/src && cargo test -p roko-cli --lib a_failing_judge_blocks_only_when_configured"
 +++
 
 `LlmJudgeGate` (rung 6) has no `JudgeOracle` implementation outside tests (`llm_judge_gate.rs:348`, `:359`, `tests/rungs.rs:141`), and `FactCheckGate` (rung 5) was wired only on the removed Runner-v2 gate path.
@@ -42,3 +42,19 @@ the attempt's diff as the `JudgePayload`. The `[[verify]]` command lost the pare
 syntax error, and it now also requires `AgentJudgeOracle` to be used in roko-cli, so it keeps failing until that
 wiring lands. (`cargo test -p roko-gate llm_judge` runs the unit tests with test oracles, which pass while the rungs
 never run in production.)
+
+2026-10-02 (wk-gates): the third part is implemented on work/bug-951930; cargo verification deferred to the batch
+check. Three new `[gates]` keys:
+- `llm_judge` (default `false`) adds a judge step to Graph verify, `graph_task_dispatch/judge_step.rs`. Once every
+  verify step passed, the dispatcher's cheap helper model, wrapped in `AgentJudgeOracle` behind an `LlmJudgeGate`,
+  scores the attempt's diff (`attempt_diff`, then `patch`) against the task's title and description.
+- `llm_judge_min_score` (default `0.8`) is the passing score.
+- `llm_judge_blocking` (default `false`) makes a low score, or a judge that cannot answer, fail the attempt. The
+  failure goes into the attempt's failures, so the retry feedback carries the judge's reason.
+The verdict is advisory by default: logged, shown on the dashboard (`gate_result`), counted in the gate metrics and
+appended to `.roko/learn/judge-calibration.jsonl`. An attempt with no diff, or a run without a helper model, is not
+judged. Documented in `docs/v3/04-EXECUTION.md`. Test: `a_failing_judge_blocks_only_when_configured`. A fake CLI edits
+the repo for the attempt, and an OpenAI-compatible mock is the helper model. The test checks four cases: off, advisory
+low score, blocking low score and blocking passing score. The verify now also runs that test.
+Not done, and not part of this item's fix list: production has no fact-check `SearchOracle`, and the rich topology's
+`ProductionGateService` (`plan_cell_resources`) still gets the default rung config.

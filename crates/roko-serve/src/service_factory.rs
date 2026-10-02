@@ -308,6 +308,7 @@ impl ServiceFactory {
         let prompt_model_router = cascade_router.clone();
         let prompt_routing_config = workspace_config.clone();
         let prompt_health_registry = Arc::clone(&provider_health_registry);
+        let gate_env_passthrough = workspace_config.gates.env_passthrough.clone();
         let mut model_call_service = ModelCallService::new(model.clone())
             .with_config(workspace_config)
             .with_working_dir(&config.workdir)
@@ -382,7 +383,8 @@ impl ServiceFactory {
         }
 
         let prompt_assembler: Arc<dyn PromptAssembler> = Arc::new(prompt_service);
-        let gate_runner: Arc<dyn GateRunner> = Arc::new(GateService::new());
+        let gate_runner: Arc<dyn GateRunner> =
+            Arc::new(GateService::new().with_env_passthrough(gate_env_passthrough));
         let affect_policy = config.affect_enabled.then(|| {
             // Canonical path: .roko/daimon/affect.json (matches serve).
             // Fall back to legacy .roko/state/daimon.json for old workspaces
@@ -493,6 +495,7 @@ impl ServiceFactory {
         let prompt_model_router = cascade_router.clone();
         let prompt_routing_config = workspace_config.clone();
         let prompt_health_registry = Arc::clone(&provider_health_registry);
+        let gate_env_passthrough = workspace_config.gates.env_passthrough.clone();
         let mut model_call_service = ModelCallService::new(model.clone())
             .with_config(workspace_config)
             .with_working_dir(&config.workdir)
@@ -566,7 +569,8 @@ impl ServiceFactory {
         }
 
         let prompt_assembler: Arc<dyn PromptAssembler> = Arc::new(prompt_service);
-        let gate_runner: Arc<dyn GateRunner> = Arc::new(GateService::new());
+        let gate_runner: Arc<dyn GateRunner> =
+            Arc::new(GateService::new().with_env_passthrough(gate_env_passthrough));
         let affect_policy = config.affect_enabled.then(|| {
             let canonical = config.roko_dir.join("daimon").join("affect.json");
             let state_path = if canonical.exists() {

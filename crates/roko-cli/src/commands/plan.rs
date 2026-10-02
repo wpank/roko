@@ -2630,7 +2630,11 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     // red-on-base check (gap-0ee70b) runs once, in the plan-load gate every
     // run passes before its first dispatch (3231), so it is not repeated.
     let red_on_base = std::collections::BTreeMap::new();
-    let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
+    let mut report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
+    // The same holdout draw as the plan-load gate (3232), so a held-out task
+    // is not refused here on its score.
+    let epoch = roko_cli::spec_gate::holdout_epoch();
+    roko_cli::spec_gate::apply_holdout(&mut report, config.holdout_frac, &epoch);
     for decision in report.blocked() {
         for finding in &decision.findings {
             tracing::error!(

@@ -99,7 +99,10 @@ fn plan_run_records_spec_quality_and_gate_per_task() {
         .task("T2", [Turn::reply().write("two.txt", "2\n")]);
     let tasks = TASKS.replace("VERIFY_T2", "test -f two.txt");
 
-    let (advise, _provider) = ScriptedPlanWorkspace::with_provider(PLAN, &tasks, &script, "");
+    // No holdout draw (3232), so every decision here is the gate's own.
+    let advise_config = "spec_quality.holdout_frac = 0.0\n";
+    let (advise, _provider) =
+        ScriptedPlanWorkspace::with_provider(PLAN, &tasks, &script, advise_config);
     let run = advise.run_plan(PLAN, &[]);
     assert!(run.status.success(), "{}", log(&run));
     let records = run_lines(&advise.repo, "spec.jsonl");

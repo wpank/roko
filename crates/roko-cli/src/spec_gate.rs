@@ -31,6 +31,8 @@ use roko_core::config::{SpecQualityConfig, SpecQualityMode};
 use roko_gate::spec_quality::{
     HARD_FAILS, RedOnBase, SpecQualityRecord, SpecQualityReport, lint_files_with,
 };
+use roko_learn::telemetry::records::AttemptKey;
+use roko_learn::telemetry::{Arm, AssignmentUnit, LayerSpec, assign};
 use serde::Serialize;
 
 /// The hard fails that block a plan at the gate: nothing else refuses them.
@@ -39,6 +41,9 @@ pub const BLOCKING_HARD_FAILS: [&str; 2] = ["HF2", "HF3"];
 /// The file in a run's directory that holds its `spec.quality` and
 /// `spec.gate` records (3231).
 pub const SPEC_RECORDS_FILE: &str = "spec.jsonl";
+
+/// The assignment layer of the gate's holdout (3232).
+pub const HOLDOUT_LAYER: &str = "spec.gate";
 
 /// What the gate decided for one task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -77,6 +82,10 @@ pub struct SpecGateDecision {
     pub band: &'static str,
     /// Why the task is blocked; empty unless `action` is `Block`.
     pub findings: Vec<SpecGateFinding>,
+    /// Whether the holdout skipped the task's score-based decisions (3232).
+    pub holdout: bool,
+    /// The holdout draw's propensity, for a task drawn into it.
+    pub propensity: Option<f64>,
 }
 
 /// The gate's decisions over a set of plans.
@@ -146,7 +155,52 @@ pub fn gate_plans(
     config: &SpecQualityConfig,
 ) -> Result<SpecGateReport, crate::spec_red_on_base::Interrupted> {
     let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
-    Ok(check_plans(files, workdir, config, &red_on_base))
+    let mut report = check_plans(files, workdir, config, &red_on_base);
+    apply_holdout(&mut report, config.holdout_frac, &holdout_epoch());
+    Ok(report)
+}
+
+/// The holdout's epoch: the UTC day, as S01 §4.6 sets for production.
+#[must_use]
+pub fn holdout_epoch() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// The 5% gate-off holdout (3232, S07 §4.3), so the M2 audit (S03) can
+/// measure what the gate does: each task is drawn on [`HOLDOUT_LAYER`] by
+/// S01's `assign`, with `holdout_frac` as the default (gate-off) arm's
+/// share. A plan-load gate runs before the run has an id, so the unit is
+/// the task within the UTC day `epoch`, keyed by its plan path and id, and
+/// the run seed is 0; the propensity is recorded. A held-out task loses its
+/// score-based block and its advice; a hard fail is never held out, so its
+/// findings still block. A `holdout_frac` of 0 holds out nothing.
+pub fn apply_holdout(report: &mut SpecGateReport, holdout_frac: f64, epoch: &str) {
+    let spec = LayerSpec {
+        run_seed: 0,
+        layer: HOLDOUT_LAYER.to_string(),
+        epoch: epoch.to_string(),
+        unit: AssignmentUnit::Chain,
+        h: holdout_frac,
+        g: 0.0,
+    };
+    for decision in &mut report.decisions {
+        let key = AttemptKey::new(
+            HOLDOUT_LAYER,
+            decision.plan_path.clone(),
+            decision.task_id.clone(),
+            1,
+        );
+        let assignment = assign(&spec, &key);
+        if assignment.arm == Arm::Learned {
+            continue;
+        }
+        decision.holdout = true;
+        decision.propensity = Some(assignment.propensity);
+        decision.findings.retain(|finding| finding.rule != "score");
+        if decision.findings.is_empty() {
+            decision.action = SpecGateAction::Allow;
+        }
+    }
 }
 
 /// Log each blocked task's findings, then that the plans are refused.
@@ -192,6 +246,8 @@ pub struct SpecGateRecord<'a> {
     pub reason: String,
     /// Whether score-based decisions skipped the task (the holdout, 3232).
     pub holdout: bool,
+    /// The holdout draw's propensity, for a task drawn into it.
+    pub propensity: Option<f64>,
     /// Unix ms the record was written, before the plan's first task starts.
     pub recorded_at_ms: i64,
 }
@@ -254,7 +310,8 @@ pub fn record_plan(
             score: decision.score,
             band: decision.band,
             reason: reason.join("; "),
-            holdout: false,
+            holdout: decision.holdout,
+            propensity: decision.propensity,
             recorded_at_ms,
         };
         lines.extend(serde_json::to_string(&quality_line).ok());
@@ -337,6 +394,8 @@ pub fn decide(record: &SpecQualityRecord, config: &SpecQualityConfig) -> SpecGat
         score: record.score,
         band: record.band,
         findings,
+        holdout: false,
+        propensity: None,
     }
 }
 
@@ -430,6 +489,46 @@ verify = [{{ phase = "test", command = "{verify}" }}]
         let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
         assert_eq!(blocked.len(), 1, "{report:?}");
         assert_eq!(blocked[0].findings[0].rule, "score");
+    }
+
+    /// 3232: with `holdout_frac = 1.0` under enforce, a low-score task is
+    /// held out of the score block, so it runs, marked as held out with its
+    /// propensity; a `|| true` task is still blocked by its hard fail; and a
+    /// `holdout_frac` of 0 holds out nothing.
+    #[test]
+    fn spec_gate_holdout_tasks_skip_score_blocks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let none = BTreeMap::new();
+        let enforce = SpecQualityConfig {
+            block_threshold: 70.0,
+            holdout_frac: 1.0,
+            ..config(SpecQualityMode::Enforce)
+        };
+        let epoch = "2026-10-03";
+
+        let scoped = write_plan(temp.path(), "cargo test -p demo --lib retry");
+        let mut report = check_plans(&[scoped.clone()], temp.path(), &enforce, &none);
+        assert!(report.blocks(), "a score below 70 blocks: {report:?}");
+        apply_holdout(&mut report, enforce.holdout_frac, epoch);
+        assert!(!report.blocks(), "{report:?}");
+        let decision = &report.decisions[0];
+        assert!(decision.holdout, "{decision:?}");
+        assert_eq!(decision.action, SpecGateAction::Allow);
+        assert_eq!(decision.propensity, Some(1.0));
+
+        let vacuous = write_plan(temp.path(), "cargo test -p demo --lib retry || true");
+        let mut report = check_plans(&[vacuous], temp.path(), &enforce, &none);
+        apply_holdout(&mut report, enforce.holdout_frac, epoch);
+        let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
+        assert_eq!(blocked.len(), 1, "{report:?}");
+        assert!(blocked[0].holdout);
+        let rules: Vec<&str> = blocked[0].findings.iter().map(|finding| finding.rule).collect();
+        assert_eq!(rules, ["HF2"]);
+
+        let scoped = write_plan(temp.path(), "cargo test -p demo --lib retry");
+        let mut report = check_plans(&[scoped], temp.path(), &enforce, &none);
+        apply_holdout(&mut report, 0.0, epoch);
+        assert!(report.blocks() && !report.decisions[0].holdout, "{report:?}");
     }
 
     /// 3211: HF3 blocks only when the red-on-base check ran and every step

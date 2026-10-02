@@ -1,0 +1,111 @@
++++
+id = "bug-e3940b"
+kind = "bug"
+title = "A streamed length finish reason is Debug-formatted as Length, so hit_length_limit never matches"
+status = "open"
+triage = "verified"
+severity = "p1"
+goal = "truth"
+size = "S"
+subsystem = ["roko-agent/streaming"]
+created = 2026-10-02
+updated = 2026-10-02
+last_verified = 2026-10-02
+source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
+discovered_from = "gap-625195 (adjacent to backlog task 1111; stream_without_finish_reason_is_not_stop already shows the capitalized string without flagging it)"
+anchors = ["crates/roko-agent/src/streaming.rs::parse_sse_frame", "crates/roko-agent/src/tool_loop/mod.rs::collect_stream_to_response"]
+lane = "rust-hot"
+parent = "spec-65c828"
+links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn collected_length_finish_reason_is_recognized_as_truncated' crates/roko-agent/ && cargo test -p roko-agent collected_length_finish_reason_is_recognized_as_truncated"
++++
+
+## Problem
+
+A streamed response that hits its output-token limit is not recognized as truncated. The tool loop's blank-answer
+diagnosis (`crates/roko-agent/src/tool_loop/mod.rs:1373-1375`) checks the response's finish reason as a raw string:
+
+```
+let hit_length_limit = finish_reason_raw.as_deref().is_some_and(|r| r == "length" || r == "max_tokens");
+```
+
+But for any backend whose stream is collected via the shared `collect_stream_to_response` helper
+(`crates/roko-agent/src/tool_loop/mod.rs:376`), the finish-reason string that reaches this check is never lowercase
+`"length"` — it's the `FinishReason` enum's Debug-derived variant name, e.g. `"Length"` (capital L), because the SSE
+parser normalizes the wire string into the enum and then immediately re-stringifies it with `{:?}` instead of the
+lowercase wire mapping:
+
+```
+// crates/roko-agent/src/streaming.rs:367-372
+let finish_reason = normalize_finish_reason(reason);
+...
+finish_reason: format!("{finish_reason:?}"),
+```
+
+`collect_stream_to_response` (`tool_loop/mod.rs`, the `StreamEventKind::Done { finish_reason: fr }` arm around line
+462-467) then copies that PascalCase string straight into the collected response's `"finish_reason"` JSON field with
+no re-lowercasing. So `"length" == "Length"` is always false, `hit_length_limit` is always false for any stream
+collected this way, and a blank, length-truncated answer falls into the generic "the model returned no text and no
+tool call; failing the run as empty_response" branch instead of the specific, actionable "model hit output token
+limit... increase max_output" diagnosis.
+
+This is already locked in by an existing test: `crates/roko-agent/src/openai_compat_backend.rs`'s
+`stream_without_finish_reason_is_not_stop` (backlog task 1111, implemented) asserts
+`finish_reasons(&items) == vec!["Length".to_string()]` for a chunk whose wire `finish_reason` was `"length"` — the
+capitalization is already observed by a test, just not connected to the `hit_length_limit` check's expectation.
+
+## Why it matters
+
+Goal: truth / safe failure diagnosis. Confirmed production call sites of the affected `collect_stream_to_response`
+path: `crates/roko-agent-server/src/state.rs:329` (the per-agent HTTP sidecar's real LLM dispatch),
+`crates/roko-agent/src/safety/data_llm.rs:428` (safety-screening LLM calls),
+`crates/roko-agent/src/hermes/http_adapter.rs:449` (Hermes HTTP adapter). A truncated answer on any of these paths
+is misdiagnosed as a generic empty response rather than "hit the output token limit," which hides the actual cause
+and the fix (raise `max_output`) from both operators and any automatic retry/escalation logic keyed on the
+distinction.
+
+## Where
+
+- Root cause: `crates/roko-agent/src/streaming.rs::parse_sse_frame` (around lines 360-373), the
+  `finish_reason: format!("{finish_reason:?}")` line.
+- Propagation: `crates/roko-agent/src/tool_loop/mod.rs::collect_stream_to_response` (line 376), the
+  `StreamEventKind::Done { finish_reason: fr }` arm around line 462-467 and the final `"finish_reason": finish_reason`
+  JSON field it builds.
+- Consumer: `crates/roko-agent/src/tool_loop/mod.rs:1373-1375` (`hit_length_limit`).
+- Contrast: `crates/roko-agent/src/openai_compat_backend.rs::finish_reason_to_wire` (line 926) does this conversion
+  correctly (explicit lowercase match arms) for that backend's own `stream_response_to_json` aggregation path — so
+  not every streaming path is affected, only ones that go through the shared `collect_stream_to_response`.
+
+## Current state
+
+Unfixed. The behavior is implicitly pinned by `openai_compat_backend.rs`'s `stream_without_finish_reason_is_not_stop`
+test, which asserts the PascalCase string as expected output of the SSE parser layer, without exercising
+`collect_stream_to_response` or `hit_length_limit` together in the same test.
+
+## Plan
+
+1. Change `crates/roko-agent/src/streaming.rs`'s finish-reason stringification to use the same lowercase wire
+   convention as `openai_compat_backend.rs::finish_reason_to_wire` (`Stop` -> `"stop"`, `Length` -> `"length"`,
+   `ToolCalls` -> `"tool_calls"`, `ContentFilter` -> `"content_filter"`, `Error(reason)` -> `reason`), rather than
+   `format!("{finish_reason:?}")`.
+2. Update `sse_parser_reads_finish_reason` and any other test asserting the PascalCase form (e.g. the
+   `"ToolCalls"`/`"Length"` assertions in `streaming.rs` and `openai_compat_backend.rs`) to the lowercase form.
+3. Add a regression test exercising the full chain: an SSE stream with `finish_reason: "length"`, collected via
+   `collect_stream_to_response`, then checked against `hit_length_limit`'s own logic (or a shared helper),
+   confirming a truncated/blank answer is recognized as such.
+
+## Done when
+
+- A stream reporting `finish_reason: "length"` and collected via `collect_stream_to_response` is recognized by
+  `hit_length_limit` as a length-limited response.
+- The `[[verify]]` command passes.
+
+## Notes
+
+Severity p1: this silently corrupts failure diagnosis on at least three production call sites (agent-server, safety
+data-LLM calls, Hermes HTTP adapter), and likely more backends that rely on `collect_stream_to_response`. Not
+confirmed whether the CLI's main graph-dispatch path (which appears to go through `openai_compat_backend.rs`'s own,
+correctly-lowercased `stream_response_to_json`) is also affected by some other route — check for a second affected
+path when fixing this.

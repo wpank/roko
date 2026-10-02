@@ -353,6 +353,7 @@ pub(crate) fn derive_cost_record(
         session_id: extra_string(episode, "session_id").unwrap_or_default(),
         // An episode does not say where its usage came from.
         cost_source: crate::telemetry::CostSource::Unknown,
+        priced: None,
     })
 }
 

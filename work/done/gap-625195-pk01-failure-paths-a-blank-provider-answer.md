@@ -2,7 +2,7 @@
 id = "gap-625195"
 kind = "gap"
 title = "PK01 Failure paths: A blank provider answer fails as `empty_response` at the immune boundary, not as a… (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-agent/immune"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK01"
 anchors = ["crates/roko-agent/src/cursor_agent.rs", "crates/roko-agent/src/immune_boundary.rs", "crates/roko-agent/src/immune_evidence.rs", "crates/roko-agent/src/lib.rs", "crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/provider/error_classify.rs", "crates/roko-agent/src/streaming.rs", "crates/roko-agent/src/testutil.rs", "crates/roko-agent/src/tool_loop/mod.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/route_permissions.rs", "crates/roko-serve/src/routes/safety.rs"]
 lane = "rust-hot"
@@ -62,6 +63,17 @@ command = "test -s crates/roko-agent/tests/fixtures/sse/glm-4.7-agent-turn.sse &
 
 [[verify]]
 command = "grep -rqw 'fn not_logged_in_classifies_as_auth_failure' crates/roko-cli/ && cargo test -p roko-cli not_logged_in_classifies_as_auth_failure"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:13Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:53Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem
@@ -129,3 +141,17 @@ Implemented on `work/gap-625195` by a static worker (no cargo); cargo verificati
 - 1111: implemented at 0830b0814
 - 1112: blocked: no zai key in the worker's environment (`ZAI_API_KEY` unset; key files may not be read), so no raw GLM-4.7 stream was captured and no fixture was invented
 - 1113: implemented at d562b56b2
+
+### Wave 3 (2026-10-02)
+
+Static worker on `work/gap-625195-2` (base 79ba9911f); cargo verification is deferred to the batch gate.
+
+- 1112: implemented at b89d51b8e. One live `glm-4.7` call, approved by Will: `roko do` (gate binary at 660e1a8f8)
+  with the Graph implementer prompt, eight tools and a task that needs `read_file`, behind a local proxy that teed
+  Z.ai's response, roko supplying the key. 2,279 prompt + 35 completion tokens (23 reasoning), $0.0014 at roko.toml's
+  glm-4-7 prices. The fixture is the raw SSE body with only the response id scrubbed. It shows R4's **case (a)**: the
+  `read_file` call shares its chunk with `"content": ""`, and the last chunk carries the usage and
+  `finish_reason: "tool_calls"` next to another `"content": ""`. The pre-1110 parser read those chunks as empty text,
+  which left reasoning, a blank answer and a made-up `stop`. Not (b): the real finish reason is `tool_calls`. Not
+  (c): the model did call the tool. With 1110/1111 in the gate binary, roko ran the call (its tool audit shows
+  `read_file` admitted and answered) and recorded the 2,314 tokens.

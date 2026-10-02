@@ -24,6 +24,8 @@
 //!    it (shadow).
 //! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
+//!    A guard replaces a pick that cannot run here with the default, and
+//!    labels the choice [`ModelChoiceSource::Fallback`].
 //! 5. **Safe default**. With no router and no hint, fall back to the
 //!    `RunConfig.model` default. The router will eventually populate
 //!    itself from observations.
@@ -48,6 +50,11 @@ use roko_learn::cascade_router::{CascadeModel, CascadeRouter, RoutingBias};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
+use roko_learn::routing_log::{
+    CandidateEntry, DecisionState, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals,
+    RoutingDecisionLog,
+};
+use roko_learn::telemetry::DecisionSource;
 
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
@@ -184,9 +191,73 @@ pub enum ModelChoiceSource {
     },
     /// Returned by [`CascadeRouter`].
     Router,
+    /// A guard replaced the cascade router's pick with the default: the
+    /// pick had no configured provider, a disabled one, or not the tool use
+    /// the task needs (G55).
+    Fallback {
+        /// Why the guard rejected the pick.
+        reason: FallbackReason,
+    },
     /// Fallback when no other signal was available.
     Default,
 }
+
+impl ModelChoiceSource {
+    /// The route decision row's `source` for a choice of this kind (S01
+    /// §5.3).
+    #[must_use]
+    pub const fn decision_source(self) -> DecisionSource {
+        match self {
+            Self::Override => DecisionSource::Override,
+            Self::TaskHint => DecisionSource::TaskHint,
+            Self::Ladder { .. } => DecisionSource::Ladder,
+            Self::Router => DecisionSource::Router,
+            Self::Fallback { .. } => DecisionSource::Fallback,
+            Self::Default => DecisionSource::Default,
+        }
+    }
+}
+
+/// Why a guard in [`ModelRouter::route`] replaces the cascade router's pick
+/// with the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// No configured, credential-ready provider serves the model.
+    ProviderUnconfigured,
+    /// The model's provider is in `[routing] disabled_providers`.
+    ProviderDisabled,
+    /// The task needs tool use, which the model lacks.
+    NoToolSupport,
+}
+
+impl FallbackReason {
+    /// The reason as route decision rows spell it (`fallback_reason`, and a
+    /// candidate's `ineligible_reason`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderUnconfigured => "provider_unconfigured",
+            Self::ProviderDisabled => "provider_disabled",
+            Self::NoToolSupport => "no_tool_support",
+        }
+    }
+}
+
+/// A candidate the guards reject because its provider is not available in
+/// the health registry. Only candidates carry it: the health-aware pick
+/// avoids such providers itself.
+const PROVIDER_UNHEALTHY: &str = "provider_unhealthy";
+
+/// The cascade router's counts a learned-state digest was computed at: its
+/// observations, and the trials and successes of its confidence stats (a
+/// hindsight retraction lowers successes without a new observation).
+type LearnedStateCounts = (u64, u64, u64);
+
+/// The last learned-state digest, with the counts it was computed at.
+type StateDigestMemo = Option<(
+    LearnedStateCounts,
+    roko_learn::cascade_router::RouterStateDigest,
+)>;
 
 /// A picked model and the reason it was picked.
 #[derive(Debug, Clone)]
@@ -270,6 +341,10 @@ pub struct ModelRouter {
     /// The workspace's durable knowledge store. When present, what it says
     /// about each model weighs into the cascade router's pick (reg-ff6e1a).
     knowledge: Option<roko_neuro::KnowledgeStore>,
+    /// The cascade router's last learned-state digest and the counts it was
+    /// computed at, so a decision digests the state again only after the
+    /// router learned (S01 P0-10).
+    state_digest: Arc<parking_lot::Mutex<StateDigestMemo>>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -308,6 +383,7 @@ impl ModelRouter {
             models_without_tools: HashSet::new(),
             ladder: None,
             knowledge: None,
+            state_digest: Arc::default(),
         }
     }
 
@@ -444,99 +520,10 @@ impl ModelRouter {
     /// [`CascadeRouter::route_with_health_scored`] which filters `Open`-circuit
     /// providers and demotes `HalfOpen` / high-latency ones, ensuring the
     /// selected model has a healthy provider.
+    ///
+    /// [`Self::decide`] returns the same choice with its decision row.
     pub fn route(&self, inputs: &RoutingInputs) -> Result<ModelChoice, RunnerDispatchError> {
-        if let Some(slug) = inputs.force_backend.as_ref() {
-            return Ok(ModelChoice {
-                model: ModelSpec::from_slug(slug),
-                source: ModelChoiceSource::Override,
-            });
-        }
-        if let Some(slug) = inputs.task_model_hint.as_ref() {
-            return Ok(ModelChoice {
-                model: ModelSpec::from_slug(slug),
-                source: ModelChoiceSource::TaskHint,
-            });
-        }
-        if let Some(choice) = self.ladder_choice(inputs) {
-            return Ok(choice);
-        }
-        if let Some(router) = self.cascade.as_ref() {
-            if let Some(ctx) = &inputs.routing_context {
-                let cascade_model = self.cascade_pick(router, ctx, inputs);
-                // Guard: if the workspace has a known set of configured
-                // providers, reject models that lack credentials.  This
-                // prevents the cascade router from selecting a model whose
-                // provider isn't available (e.g. learned state referencing
-                // `claude-opus` when no Anthropic key is present).
-                if !self.configured_models.is_empty()
-                    && !self.configured_models.contains(&cascade_model.primary.slug)
-                {
-                    tracing::warn!(
-                        selected = %cascade_model.primary.slug,
-                        fallback = %self.default_slug,
-                        "cascade router selected model without a configured provider; \
-                         falling back to default"
-                    );
-                    return Ok(ModelChoice {
-                        model: ModelSpec::from_slug(&self.default_slug),
-                        source: ModelChoiceSource::Router,
-                    });
-                }
-                // Guard: reject models whose provider is statically disabled
-                // via `[routing] disabled_providers`.
-                if !self.disabled_providers.is_empty() {
-                    if let Some(provider_id) = self.model_providers.get(&cascade_model.primary.slug)
-                    {
-                        if self.disabled_providers.contains(provider_id) {
-                            tracing::info!(
-                                selected = %cascade_model.primary.slug,
-                                provider = %provider_id,
-                                fallback = %self.default_slug,
-                                "provider is statically disabled; falling back to default"
-                            );
-                            return Ok(ModelChoice {
-                                model: ModelSpec::from_slug(&self.default_slug),
-                                source: ModelChoiceSource::Router,
-                            });
-                        }
-                    }
-                }
-                // Guard: reject models that lack tool-use support when the
-                // task category requires tools (implementation, scaffolding,
-                // integration, verification, refactoring, infrastructure).
-                if !self.models_without_tools.is_empty()
-                    && needs_tool_use(ctx.task_category)
-                    && self
-                        .models_without_tools
-                        .contains(&cascade_model.primary.slug)
-                {
-                    tracing::warn!(
-                        selected = %cascade_model.primary.slug,
-                        fallback = %self.default_slug,
-                        task_category = ?ctx.task_category,
-                        "model does not support tool use required by task category; \
-                         falling back to default"
-                    );
-                    return Ok(ModelChoice {
-                        model: ModelSpec::from_slug(&self.default_slug),
-                        source: ModelChoiceSource::Router,
-                    });
-                }
-                return Ok(ModelChoice {
-                    model: cascade_model.primary,
-                    source: ModelChoiceSource::Router,
-                });
-            }
-            // No RoutingContext → degrade to default (CI, smoke tests).
-            return Ok(ModelChoice {
-                model: ModelSpec::from_slug(&self.default_slug),
-                source: ModelChoiceSource::Default,
-            });
-        }
-        Ok(ModelChoice {
-            model: ModelSpec::from_slug(&self.default_slug),
-            source: ModelChoiceSource::Default,
-        })
+        self.decide(inputs).map(|(choice, _)| choice)
     }
 
     /// Route with structured logging — emits `tracing::info!` for every
@@ -546,7 +533,32 @@ impl ModelRouter {
         inputs: &RoutingInputs,
         task_id: &str,
     ) -> Result<ModelChoice, RunnerDispatchError> {
-        let choice = self.route(inputs)?;
+        self.decide_logged(inputs, task_id)
+            .map(|(choice, _)| choice)
+    }
+
+    /// [`Self::route`], with the route decision row it made (S01 §5.3, P0-8):
+    /// the candidates the cascade router scored, each with its eligibility
+    /// under the guards and its probability under the policy, the router's
+    /// own pick (beside a ladder rung, its shadow pick), the default, the
+    /// ladder rung and the source of the choice. The row has no attempt key:
+    /// Graph dispatch keys it when it writes it.
+    pub fn decide(
+        &self,
+        inputs: &RoutingInputs,
+    ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
+        let (choice, learned) = self.choose(inputs);
+        let decision = self.decision_row(inputs, &choice, learned);
+        Ok((choice, decision))
+    }
+
+    /// [`Self::decide`] with [`Self::route_logged`]'s logging.
+    pub fn decide_logged(
+        &self,
+        inputs: &RoutingInputs,
+        task_id: &str,
+    ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
+        let (choice, decision) = self.decide(inputs)?;
         tracing::info!(
             task_id,
             model = %choice.model.slug,
@@ -554,32 +566,219 @@ impl ModelRouter {
             budget_pressure = inputs.budget_pressure,
             "model routed"
         );
-        if choice.source == ModelChoiceSource::Router {
-            if let Some(router) = self.cascade.as_ref() {
-                if let Some(ctx) = &inputs.routing_context {
-                    let explanation = router.explain_route(ctx, None);
-                    tracing::debug!(
-                        task_id,
-                        stage = %explanation.stage,
-                        observations = explanation.observations,
-                        "routing candidates: {:?}",
-                        explanation
-                            .candidates
-                            .iter()
-                            .take(3)
-                            .map(|c| (c.slug.as_str(), c.score))
-                            .collect::<Vec<_>>()
-                    );
-                }
-            }
+        if matches!(
+            choice.source,
+            ModelChoiceSource::Router | ModelChoiceSource::Fallback { .. }
+        ) {
+            tracing::debug!(
+                task_id,
+                stage = %decision.routing_stage,
+                "routing candidates: {:?}",
+                decision
+                    .candidates
+                    .iter()
+                    .take(3)
+                    .map(|c| (c.model.as_str(), c.score))
+                    .collect::<Vec<_>>()
+            );
         }
-        Ok(choice)
+        Ok((choice, decision))
     }
 
-    /// The task's start rung on the attached `[routing.ladder]`, logged
-    /// beside the cascade router's own pick (shadow). `None` without a
-    /// ladder, or when no rung of the task's ladder can run.
-    fn ladder_choice(&self, inputs: &RoutingInputs) -> Option<ModelChoice> {
+    /// The precedence pipeline of [`Self::route`]: the choice, and the
+    /// cascade router's own pick before the guards when it made one (beside
+    /// a ladder rung, its shadow pick).
+    fn choose(&self, inputs: &RoutingInputs) -> (ModelChoice, Option<String>) {
+        if let Some(slug) = inputs.force_backend.as_ref() {
+            let choice = ModelChoice {
+                model: ModelSpec::from_slug(slug),
+                source: ModelChoiceSource::Override,
+            };
+            return (choice, None);
+        }
+        if let Some(slug) = inputs.task_model_hint.as_ref() {
+            let choice = ModelChoice {
+                model: ModelSpec::from_slug(slug),
+                source: ModelChoiceSource::TaskHint,
+            };
+            return (choice, None);
+        }
+        if let Some(routed) = self.ladder_choice(inputs) {
+            return routed;
+        }
+        // No router, or no RoutingContext (CI, smoke tests): the default.
+        let Some((router, ctx)) = self.cascade.as_ref().zip(inputs.routing_context.as_ref()) else {
+            let choice = ModelChoice {
+                model: ModelSpec::from_slug(&self.default_slug),
+                source: ModelChoiceSource::Default,
+            };
+            return (choice, None);
+        };
+        let pick = self.cascade_pick(router, ctx, inputs).primary;
+        let learned = Some(pick.slug.clone());
+        // Guards: the pick must have a configured, credential-ready provider
+        // (learned state may name `claude-opus` when no Anthropic key is
+        // present), its provider must not be in `[routing]
+        // disabled_providers`, and it must support tool use when the task
+        // category requires tools.
+        if let Some(reason) = self.guard_rejection(&pick.slug, needs_tool_use(ctx.task_category)) {
+            tracing::warn!(
+                selected = %pick.slug,
+                fallback = %self.default_slug,
+                reason = reason.as_str(),
+                task_category = ?ctx.task_category,
+                "cascade router selected a model that cannot run this task; \
+                 falling back to default"
+            );
+            let choice = ModelChoice {
+                model: ModelSpec::from_slug(&self.default_slug),
+                source: ModelChoiceSource::Fallback { reason },
+            };
+            return (choice, learned);
+        }
+        let choice = ModelChoice {
+            model: pick,
+            source: ModelChoiceSource::Router,
+        };
+        (choice, learned)
+    }
+
+    /// `choice` as a route decision row, with `learned` the cascade router's
+    /// own pick.
+    fn decision_row(
+        &self,
+        inputs: &RoutingInputs,
+        choice: &ModelChoice,
+        learned: Option<String>,
+    ) -> RoutingDecisionLog {
+        let ctx = inputs.routing_context.as_ref();
+        let chosen = choice.model.slug.as_str();
+        let explanation = self
+            .cascade
+            .as_ref()
+            .zip(ctx)
+            .map(|(router, ctx)| router.explain_route(ctx, None));
+        let needs_tools = ctx.is_some_and(|ctx| needs_tool_use(ctx.task_category));
+        let mut candidates: Vec<CandidateEntry> = explanation
+            .iter()
+            .flat_map(|explanation| &explanation.candidates)
+            .map(|candidate| {
+                CandidateEntry::new(
+                    candidate.slug.clone(),
+                    self.provider_of(&candidate.slug),
+                    candidate.score,
+                    self.ineligible_reason(&candidate.slug, needs_tools)
+                        .map(str::to_string),
+                )
+            })
+            .collect();
+        // A pin, a rung or the default the router never scored is still a
+        // candidate, so the probabilities sum to 1; its score is 0.
+        if !candidates.iter().any(|candidate| candidate.model == chosen) {
+            candidates.push(CandidateEntry::new(
+                chosen,
+                self.provider_of(chosen),
+                0.0,
+                None,
+            ));
+        }
+        // The policy is argmax until S02.P1-3: the chosen model has p = 1.
+        for candidate in &mut candidates {
+            candidate.p = Some(if candidate.model == chosen { 1.0 } else { 0.0 });
+        }
+        let (ladder, fallback_reason) = match choice.source {
+            ModelChoiceSource::Ladder { .. } => (Some(chosen.to_string()), None),
+            ModelChoiceSource::Fallback { reason } => (None, Some(reason.as_str().to_string())),
+            _ => (None, None),
+        };
+        // Knowledge weighting and provider health move the cascade pick when
+        // they are attached; the routing bias is not logged (decision 3108
+        // removes it).
+        let cascade_picked = learned.is_some();
+        let influences = vec![
+            RouteInfluence {
+                kind: "knowledge_weighting".to_string(),
+                applied: cascade_picked && self.knowledge.is_some(),
+            },
+            RouteInfluence {
+                kind: "provider_health".to_string(),
+                applied: cascade_picked && self.health.is_some(),
+            },
+        ];
+        let source = choice.source.decision_source();
+        RoutingDecisionLog {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            trace_id: String::new(),
+            task_id: String::new(),
+            requested_model: inputs.task_model_hint.clone().unwrap_or_default(),
+            role: inputs.role.clone(),
+            task_complexity: ctx.map_or_else(
+                || inputs.task_tier.to_string(),
+                |ctx| ctx.complexity.label().to_string(),
+            ),
+            task_category: ctx
+                .map(|ctx| ctx.task_category.label().to_string())
+                .unwrap_or_default(),
+            selected_provider: self.provider_of(chosen),
+            selected_model: chosen.to_string(),
+            routing_stage: explanation
+                .as_ref()
+                .map(|explanation| explanation.stage.to_string())
+                .unwrap_or_default(),
+            routing_reason: serde_json::to_value(source)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default(),
+            candidates,
+            outcome_success: None,
+            outcome_cost_usd: None,
+            outcome_latency_ms: None,
+            attempt_key: None,
+            source: Some(source),
+            default_model: Some(self.default_slug.clone()),
+            propensity: Some(1.0),
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals {
+                learned,
+                default: Some(self.default_slug.clone()),
+                ladder,
+                aa: None,
+            },
+            fallback_reason,
+            influences,
+            state: self.learned_state(),
+        }
+    }
+
+    /// The cascade router's learned state, for a decision row: its digest,
+    /// recomputed only after the router's counts moved, and whether it had
+    /// learned anything. Every route reads it, pinned ones included, since
+    /// the router's own pick came from it. `None` without a router.
+    fn learned_state(&self) -> Option<DecisionState> {
+        let router = self.cascade.as_ref()?;
+        let confidence = router.confidence_snapshot();
+        let trials: u64 = confidence.values().map(|(trials, _)| trials).sum();
+        let successes: u64 = confidence.values().map(|(_, successes)| successes).sum();
+        let counts = (router.total_observations(), trials, successes);
+        let mut memo = self.state_digest.lock();
+        let digest = match &*memo {
+            Some((at, digest)) if *at == counts => digest.clone(),
+            _ => router.snapshot_digest(),
+        };
+        *memo = Some((counts, digest.clone()));
+        Some(DecisionState {
+            read: digest.n_obs > 0,
+            version: digest.version,
+            digest: digest.digest,
+            age_s: digest.age_s,
+            n_obs: digest.n_obs,
+        })
+    }
+
+    /// The task's start rung on the attached `[routing.ladder]`, with the
+    /// cascade router's own pick beside it (shadow), which is logged. `None`
+    /// without a ladder, or when no rung of the task's ladder can run.
+    fn ladder_choice(&self, inputs: &RoutingInputs) -> Option<(ModelChoice, Option<String>)> {
         let start = self.ladder.as_ref()?.start(
             &inputs.role,
             inputs.task_tier,
@@ -604,10 +803,11 @@ impl ModelRouter {
             router_pick = shadow.as_deref().unwrap_or("none"),
             "model routed by the ladder"
         );
-        Some(ModelChoice {
+        let choice = ModelChoice {
             model: ModelSpec::from_slug(rung.model),
             source: ModelChoiceSource::Ladder { rung: rung.index },
-        })
+        };
+        Some((choice, shadow))
     }
 
     /// The cascade router's pick for `ctx`, before the provider guards.
@@ -681,21 +881,42 @@ impl ModelRouter {
     /// model on an enabled and available provider, able to use tools when
     /// the task needs them.
     fn guards_accept(&self, slug: &str, needs_tools: bool) -> bool {
+        self.ineligible_reason(slug, needs_tools).is_none()
+    }
+
+    /// Why the guards reject `slug` as a candidate, or `None` when they
+    /// accept it ([`Self::guards_accept`]): a [`FallbackReason`], or a
+    /// provider the health registry reports unavailable.
+    fn ineligible_reason(&self, slug: &str, needs_tools: bool) -> Option<&'static str> {
+        if let Some(reason) = self.guard_rejection(slug, needs_tools) {
+            return Some(reason.as_str());
+        }
+        let provider = self.model_providers.get(slug)?;
+        let health = self.health.as_ref()?;
+        (!health.is_available(provider)).then_some(PROVIDER_UNHEALTHY)
+    }
+
+    /// Why the guards in [`Self::route`] replace the cascade router's pick
+    /// `slug` with the default, or `None` when it may run.
+    fn guard_rejection(&self, slug: &str, needs_tools: bool) -> Option<FallbackReason> {
         if !self.configured_models.is_empty() && !self.configured_models.contains(slug) {
-            return false;
+            return Some(FallbackReason::ProviderUnconfigured);
         }
-        if needs_tools && self.models_without_tools.contains(slug) {
-            return false;
+        let disabled = self
+            .model_providers
+            .get(slug)
+            .is_some_and(|provider| self.disabled_providers.contains(provider));
+        if disabled {
+            return Some(FallbackReason::ProviderDisabled);
         }
-        let Some(provider) = self.model_providers.get(slug) else {
-            return true;
-        };
-        if let Some(health) = &self.health
-            && !health.is_available(provider)
-        {
-            return false;
-        }
-        !self.disabled_providers.contains(provider)
+        (needs_tools && self.models_without_tools.contains(slug))
+            .then_some(FallbackReason::NoToolSupport)
+    }
+
+    /// The provider `slug` runs on, as far as this router knows (empty
+    /// without a provider map).
+    fn provider_of(&self, slug: &str) -> String {
+        self.model_providers.get(slug).cloned().unwrap_or_default()
     }
 
     /// Merge `budget_pressure` into the existing `routing_bias` when the
@@ -1730,10 +1951,11 @@ mod tests {
             choice.model.slug, "model-a",
             "must fall back to default when cascade picks an unconfigured model"
         );
+        let reason = FallbackReason::ProviderUnconfigured;
         assert_eq!(
             choice.source,
-            ModelChoiceSource::Router,
-            "source must remain Router (the router made the decision, just filtered)"
+            ModelChoiceSource::Fallback { reason },
+            "a guard's replacement of the router's pick is a fallback, not the router's (G55)"
         );
     }
 
@@ -1790,5 +2012,198 @@ mod tests {
             choice.model.slug,
         );
         assert_eq!(choice.source, ModelChoiceSource::Router);
+    }
+
+    // ── Route decision rows (S01 P0-8) ─────────────────────────────────
+
+    /// The choice and decision row `router` makes for `inputs`, checked for
+    /// what every route row carries: the source of the choice, the default,
+    /// and candidate probabilities that sum to 1 with the chosen model at 1.
+    fn decided(router: &ModelRouter, inputs: &RoutingInputs) -> (ModelChoice, RoutingDecisionLog) {
+        let (choice, row) = router.decide_logged(inputs, "t").unwrap();
+        let routed = router.route_logged(inputs, "t").unwrap();
+        assert_eq!(routed.model.slug, choice.model.slug);
+        assert_eq!(row.decision_point, ROUTE_DECISION_POINT);
+        assert_eq!(row.source, Some(choice.source.decision_source()));
+        assert_eq!(row.selected_model, choice.model.slug);
+        assert_eq!(row.propensity, Some(1.0));
+        assert_eq!(row.proposals.default.as_deref(), Some("default-model"));
+        assert_eq!(row.default_model.as_deref(), Some("default-model"));
+        let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "{:?}: p sums to {total}",
+            choice.source
+        );
+        let chosen: Vec<&str> = row
+            .candidates
+            .iter()
+            .filter(|c| c.p == Some(1.0))
+            .map(|c| c.model.as_str())
+            .collect();
+        assert_eq!(chosen, [choice.model.slug.as_str()]);
+        (choice, row)
+    }
+
+    /// S01 P0-8: router, ladder, hint, override and default routes each
+    /// return a decision row with candidates, their propensities, the
+    /// default and the cascade router's own pick wherever it made one.
+    #[test]
+    fn route_logged_writes_candidates_propensity_and_default() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let cascade_pick = cascade.route(&routing_context()).primary.slug;
+        let router = ModelRouter::new(Some(cascade)).with_default_slug("default-model");
+        let mut routed = RoutingInputs::from_task(&task(), &ctx());
+        routed.routing_context = Some(routing_context());
+
+        // The cascade router's own pick runs.
+        let (choice, row) = decided(&router, &routed);
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+        assert_eq!(
+            row.proposals.learned.as_deref(),
+            Some(cascade_pick.as_str())
+        );
+        assert_eq!(row.candidates.len(), 2, "{:?}", row.candidates);
+        assert!(row.candidates.iter().all(|c| c.eligible));
+
+        // Beside a ladder rung, the cascade router's pick is the shadow
+        // proposal, and the rung joins the candidates.
+        let everywhere = ladder(&ladder_config(), |_| true);
+        let laddered = router.clone().with_routing_ladder(everywhere);
+        let mut t = task();
+        t.tier = "mechanical".into();
+        let mut on_ladder = RoutingInputs::from_task(&t, &ctx());
+        on_ladder.routing_context = Some(routing_context());
+        let (choice, row) = decided(&laddered, &on_ladder);
+        assert_eq!(choice.source, ModelChoiceSource::Ladder { rung: 0 });
+        assert_eq!(row.proposals.ladder.as_deref(), Some("gpt-oss-120b"));
+        assert_eq!(
+            row.proposals.learned.as_deref(),
+            Some(cascade_pick.as_str())
+        );
+        assert_eq!(row.candidates.len(), 3, "{:?}", row.candidates);
+
+        // A task hint or an override pins the model: no cascade pick.
+        let mut hinted = routed.clone();
+        hinted.task_model_hint = Some("claude-haiku-4-5".into());
+        let (choice, row) = decided(&router, &hinted);
+        assert_eq!(choice.source, ModelChoiceSource::TaskHint);
+        assert_eq!(row.proposals.learned, None);
+        assert_eq!(row.requested_model, "claude-haiku-4-5");
+        let mut forced = routed;
+        forced.force_backend = Some("gpt-5".into());
+        let (choice, row) = decided(&router, &forced);
+        assert_eq!(choice.source, ModelChoiceSource::Override);
+        assert_eq!(row.proposals.learned, None);
+        assert_eq!(row.candidates.len(), 2, "gpt-5 is a router model");
+
+        // Without a routing context the default runs, alone.
+        let unrouted = RoutingInputs::from_task(&task(), &ctx());
+        let (choice, row) = decided(&router, &unrouted);
+        assert_eq!(choice.source, ModelChoiceSource::Default);
+        assert_eq!(row.proposals.learned, None);
+        assert_eq!(row.proposals.ladder, None);
+        assert_eq!(row.candidates.len(), 1);
+    }
+
+    /// G55: each guard that replaces the cascade router's pick with the
+    /// default labels the choice a fallback with its reason, and so does
+    /// the decision row; the pick stays the row's learned proposal.
+    #[test]
+    fn unconfigured_cascade_pick_is_not_labelled_router() {
+        let models = vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
+        let cascade = Arc::new(CascadeRouter::new(models.clone()));
+        let pick = cascade.route(&routing_context()).primary.slug;
+        let base = ModelRouter::new(Some(cascade)).with_default_slug("model-a");
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let only_a = HashSet::from(["model-a".to_string()]);
+        let unconfigured = base.clone().with_configured_models(only_a);
+        // Every model the router may land on runs on one provider, disabled.
+        let providers: HashMap<String, String> = models
+            .iter()
+            .chain([&pick])
+            .map(|slug| (slug.clone(), "provider-x".to_string()))
+            .collect();
+        let disabled = base
+            .clone()
+            .with_provider_health(Arc::new(ProviderHealthRegistry::new()), providers)
+            .with_disabled_providers(HashSet::from(["provider-x".to_string()]));
+        let no_tools = HashSet::from([pick.clone()]);
+        let toolless = base.clone().with_tool_capability_filter(no_tools);
+        for (router, reason) in [
+            (unconfigured, FallbackReason::ProviderUnconfigured),
+            (disabled, FallbackReason::ProviderDisabled),
+            (toolless, FallbackReason::NoToolSupport),
+        ] {
+            let (choice, row) = router.decide(&inputs).unwrap();
+            let fallback = ModelChoiceSource::Fallback { reason };
+            assert_eq!(routed(&choice), ("model-a", fallback), "{reason:?}");
+            assert!(!choice.forced());
+            assert_eq!(row.source, Some(DecisionSource::Fallback));
+            assert_eq!(row.fallback_reason.as_deref(), Some(reason.as_str()));
+            assert_eq!(row.selected_model, "model-a");
+            let learned = row.proposals.learned.as_deref().expect("a pick");
+            assert_ne!(learned, "model-a", "{reason:?}");
+        }
+
+        // Without a guard, the pick runs as the router's own.
+        let (choice, row) = base.decide(&inputs).unwrap();
+        assert_eq!(routed(&choice), (pick.as_str(), ModelChoiceSource::Router));
+        assert_eq!(row.source, Some(DecisionSource::Router));
+        assert_eq!(row.fallback_reason, None);
+    }
+
+    /// The learned state `router`'s decision for `inputs` names.
+    fn decided_state(router: &ModelRouter, inputs: &RoutingInputs) -> DecisionState {
+        let (_, row) = router.decide(inputs).unwrap();
+        row.state.expect("the router's learned state")
+    }
+
+    /// S01 P0-10: every route decision names the cascade router's learned
+    /// state, whatever routed it, and the digest moves only when the router
+    /// learns.
+    #[test]
+    fn decision_records_carry_learned_state_digest() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(Arc::clone(&cascade)));
+        let everywhere = ladder(&ladder_config(), |_| true);
+        let laddered = router.clone().with_routing_ladder(everywhere);
+        let mut routed = RoutingInputs::from_task(&task(), &ctx());
+        routed.routing_context = Some(routing_context());
+        let mut t = task();
+        t.tier = "mechanical".into();
+        let mut on_ladder = RoutingInputs::from_task(&t, &ctx());
+        on_ladder.routing_context = Some(routing_context());
+        let mut hinted = routed.clone();
+        hinted.task_model_hint = Some("claude-haiku-4-5".into());
+
+        // Two decisions with no learning between them name one state, and
+        // a ladder or pinned route names the state the router's pick read.
+        let before = decided_state(&router, &routed);
+        assert_eq!(decided_state(&router, &routed), before);
+        assert!(before.digest.starts_with("b3:"), "{before:?}");
+        assert_eq!((before.n_obs, before.read), (0, false));
+        assert_eq!(decided_state(&laddered, &on_ladder), before);
+        assert_eq!(decided_state(&router, &hinted), before);
+
+        // One observation moves it.
+        cascade.record_observation(&routing_context(), "gpt-5", 0.9, true);
+        let after = decided_state(&router, &routed);
+        assert_ne!(after.digest, before.digest);
+        assert_eq!((after.n_obs, after.read), (1, true));
+        assert_eq!(after.version, "cr:obs=1");
+        assert_eq!(decided_state(&laddered, &on_ladder), after);
+
+        // Without a router there is no learned state to name.
+        let (_, row) = ModelRouter::new(None).decide(&routed).unwrap();
+        assert_eq!(row.state, None);
     }
 }

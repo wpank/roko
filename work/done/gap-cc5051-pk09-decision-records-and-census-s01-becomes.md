@@ -2,7 +2,7 @@
 id = "gap-cc5051"
 kind = "gap"
 title = "PK09 Decision records and census: S01 becomes the one schema: merge the S03/S06 addenda, the ladder source and today's… (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK09"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/wiring.rs", "crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/routing_log.rs", "crates/roko-learn/src/telemetry/records.rs", "crates/roko-learn/src/telemetry/report.rs", "tmp/cybernetic-harness/specs/S01-instrumentation.md", "tmp/cybernetic-harness/specs/S03-loop-liveness-audit.md", "tmp/cybernetic-harness/specs/S06-ultrastable-controller.md"]
 lane = "rust-hot"
@@ -47,6 +48,17 @@ command = "grep -rqw 'fn decision_records_carry_learned_state_digest' crates/rok
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_routed_task_logs_fallback_decision' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census loop_census_routed_task_logs_fallback_decision"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:10Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:38Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem
@@ -93,3 +105,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+- 2202: implemented in the main checkout's untracked `tmp/cybernetic-harness/specs/` (S01 v1.3, S03 v1.2, S06 v1.2), so no commit carries it; its verify passes.
+- 2204: implemented at d74b6b16e; cargo verification deferred to the batch gate.
+- 2205: implemented at 8c479de36; cargo verification deferred to the batch gate.
+- 2206: implemented at 1eb9ec8fa; cargo verification deferred to the batch gate.
+- 2207: implemented at 7843ee713; cargo verification deferred to the batch gate.
+- 2208: implemented at 514016ca6; cargo verification deferred to the batch gate.
+- 2209: implemented at f73c70db7; cargo verification deferred to the batch gate.
+- 2210: implemented at 28eb58e54; cargo verification deferred to the batch gate.

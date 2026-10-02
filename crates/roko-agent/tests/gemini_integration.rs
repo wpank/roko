@@ -192,6 +192,7 @@ fn gemini_provider(base_url: impl Into<String>) -> ProviderConfig {
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
     }
 }
 

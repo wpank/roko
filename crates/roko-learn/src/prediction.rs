@@ -747,7 +747,9 @@ mod tests {
         CalibrationTracker, PredictionRecord, ResidualBuffer, ResidualCorrector,
         fallback_stage_probability, selected_probability,
     };
-    use crate::routing_log::{CandidateEntry, RoutingDecisionLog};
+    use crate::routing_log::{
+        CandidateEntry, ROUTE_DECISION_POINT, RouteProposals, RoutingDecisionLog,
+    };
 
     #[test]
     fn prediction_record_register_starts_unresolved() {
@@ -865,13 +867,17 @@ mod tests {
                     model: "claude-sonnet-4-5".to_string(),
                     provider: "anthropic".to_string(),
                     score: 1.4,
-                    disqualified: None,
+                    eligible: true,
+                    ineligible_reason: None,
+                    p: None,
                 },
                 CandidateEntry {
                     model: "claude-haiku-4-5".to_string(),
                     provider: "anthropic".to_string(),
                     score: 0.2,
-                    disqualified: None,
+                    eligible: true,
+                    ineligible_reason: None,
+                    p: None,
                 },
             ],
             outcome_success: Some(true),
@@ -881,6 +887,11 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
         };
 
         let probability = selected_probability(&record).expect("probability");
@@ -909,6 +920,11 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
         };
 
         assert_eq!(fallback_stage_probability(&base), 0.65);
@@ -932,7 +948,9 @@ mod tests {
                 model: "claude-sonnet-4-5".to_string(),
                 provider: "anthropic".to_string(),
                 score: 0.8,
-                disqualified: None,
+                eligible: true,
+                ineligible_reason: None,
+                p: None,
             }],
             outcome_success: Some(true),
             outcome_cost_usd: Some(0.10),
@@ -941,6 +959,11 @@ mod tests {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
         };
 
         let tracker = CalibrationTracker::from_routing_logs(&[record]);

@@ -132,7 +132,9 @@ impl GraphTaskDispatcher {
                 };
                 (pinned, false)
             }
-            ModelChoiceSource::Router | ModelChoiceSource::Default => return,
+            ModelChoiceSource::Router
+            | ModelChoiceSource::Fallback { .. }
+            | ModelChoiceSource::Default => return,
         };
         attempt.record_ladder(record, last_chance);
     }

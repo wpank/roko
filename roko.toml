@@ -9,6 +9,12 @@ fresh_base_branch = "main"
 [prd]
 auto_plan = false
 
+# Frontier plans, cheap models execute (decision 3204, task 3217): plan
+# generation and revision run on Opus through the Claude CLI subscription.
+# Built-in defaults are unchanged; this workspace opts in.
+[authoring]
+planner_model = "claude-opus"
+
 [agent]
 default_model = "claude-sonnet"
 default_backend = "claude"
@@ -120,6 +126,13 @@ cost_output_per_m = 0.1
 [models.claude-haiku]
 provider = "claude_cli"
 slug = "claude-haiku-4-5"
+context_window = 200000
+tool_format = "anthropic_blocks"
+max_tools = 32
+
+[models.claude-opus]
+provider = "claude_cli"
+slug = "claude-opus-5-5"
 context_window = 200000
 tool_format = "anthropic_blocks"
 max_tools = 32

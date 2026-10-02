@@ -867,6 +867,28 @@ pub fn analyze_step(command: &str, task_files: &BTreeSet<String>) -> StepAnalysi
     analysis
 }
 
+/// Whether a verify step runs `program` as the program of one of its simple commands.
+///
+/// It looks behind wrappers such as `env`, `timeout` and `time`, and inside `sh -c` and its kin. A
+/// word that only names it, as in `grep -q cargo notes.md`, does not count (3214, gap-0ee70b: the
+/// red-on-base check leaves the steps that run cargo to the batch gate).
+pub fn runs_program(command: &str, program: &str) -> bool {
+    parse_shell(command).iter().any(|simple| {
+        let argv = strip_wrappers(&simple.words);
+        let Some((raw, args)) = argv.split_first() else {
+            return false;
+        };
+        let name = path_name(raw);
+        if name == program {
+            return true;
+        }
+        matches!(name.as_str(), "sh" | "bash" | "zsh" | "dash")
+            && position(args, "-c")
+                .and_then(|index| args.get(index + 1))
+                .is_some_and(|script| runs_program(script, program))
+    })
+}
+
 /// A dotted Python module, such as `tests.test_slug`.
 static DOTTED_MODULE: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$"));
@@ -1371,7 +1393,7 @@ fn resolve(cwd: &str, path: &str) -> String {
 }
 
 /// Python's `posixpath.normpath`: drop empty and `.` parts and fold `..` where it can.
-fn normpath(path: &str) -> String {
+pub fn normpath(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }
@@ -1537,6 +1559,30 @@ mod tests {
         assert_eq!(scopes("cd app && npm test"), [Scope::Scoped]);
         assert_eq!(scopes("npm test"), [Scope::Workspace]);
         assert_eq!(scopes("grep -q x f"), Vec::<Scope>::new());
+    }
+
+    /// 3214: a step runs cargo when cargo is the program of one of its commands, behind a
+    /// wrapper or inside `bash -c`; a word that only names it does not count.
+    #[test]
+    fn runs_program_finds_cargo_at_a_command_boundary() {
+        for command in [
+            "cargo test -p demo --lib retry",
+            "cd crates/demo && cargo check 2>&1 | tail -5",
+            "env RUST_LOG=debug cargo test -p demo",
+            "timeout 60 cargo build -p demo",
+            "bash -c 'cargo test -p demo'",
+            "test -f Cargo.toml && ~/.cargo/bin/cargo test -p demo",
+        ] {
+            assert!(runs_program(command, "cargo"), "{command}");
+        }
+        for command in [
+            "grep -q cargo notes.md",
+            "test -f Cargo.toml",
+            "echo 'cargo test' > script.txt && bash script.sh",
+            "python3 -m unittest tests.test_cargo",
+        ] {
+            assert!(!runs_program(command, "cargo"), "{command}");
+        }
     }
 
     #[test]

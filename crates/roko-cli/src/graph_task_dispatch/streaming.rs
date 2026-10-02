@@ -191,6 +191,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        self.record_planned_attempt(&attempt, &task, &dispatch_plan);
         let contract = effective_agent_contract(role, &task, &self.config);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
@@ -449,20 +450,22 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let verification = if dispatch.result.success && pinned_model_substituted.is_none()
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
-                    Some(
-                        helper_calls
-                            .scope(self.settle_task_verification(
-                                spec,
-                                &task,
-                                &dispatch,
-                                &lease.path,
-                                &retry_key,
-                                attempt_number,
-                                &attempt_key,
-                                Some(&event_tx),
-                            ))
-                            .await,
-                    )
+                    attempt.verify_started();
+                    let report = helper_calls
+                        .scope(self.settle_task_verification(
+                            spec,
+                            &task,
+                            &dispatch,
+                            &lease.path,
+                            &retry_key,
+                            attempt_number,
+                            &attempt_key,
+                            Some(&event_tx),
+                        ))
+                        .await;
+                    attempt.verify_ended();
+                    attempt.record_verify_steps(report.steps);
+                    Some(report.result)
                 } else {
                     None
                 };

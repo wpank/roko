@@ -35,6 +35,7 @@ from stub_provider import StubServer
 from test_sandbox_net import Listener, macos_only
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
+RECORDED_PROBE = layout.DRIVER_DIR / "testdata" / "fd_claude_probe.json"  # the live probe's output, scrubbed
 MODEL = "claude-opus-5-5"
 HAIKU = "claude-haiku-4-5-20251001"
 LOOPBACK = "http://127.0.0.1:9/v1"
@@ -45,7 +46,8 @@ HIDDEN_URL = ("https://raw.githubusercontent.com/example/roko/main/benchmarks/vi
               "hidden.py")  # a truth suite, once the repository is public
 
 # A `result` event in Claude Code 2.1.282's stream-json shape (the SDK's `modelUsage` fields, cumulative for the
-# session), with background turns on the small model. The figures are made up; a live probe saves real ones.
+# session), with background turns on the small model. The figures are made up, for what one short session cannot show;
+# the field names are those of the live probe's event (RECORDED_PROBE, test_the_recorded_probe_parses).
 RESULT = {
     "type": "result", "subtype": "success", "is_error": False, "duration_ms": 48211, "duration_api_ms": 45907,
     "num_turns": 7, "result": "Implemented clamp; the visible tests pass.", "session_id": "fake-session",
@@ -301,6 +303,11 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1" and env["DISABLE_AUTOUPDATER"] == "1"
     assert env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] == "1"
     assert env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""  # keychain: the login's default entry name
+    # ...read by the session's `security`, which alone sees the operator's HOME, where the login keychain is.
+    wrapper = home / ".vb-bin" / "security"
+    assert wrapper.read_text() == run_cli.KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())),
+                                                                  security="/usr/bin/security")
+    assert os.access(wrapper, os.X_OK)
     assert set(env) - set(ctx.agent_env) == {"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
                                              "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
                                              "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "DISABLE_AUTOUPDATER"}
@@ -324,6 +331,7 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
     assert [path.name for path in by_file.config_dir.iterdir()] == [".credentials.json"]
     assert (by_file.config_dir / ".credentials.json").stat().st_mode & 0o777 == 0o600
     assert "CLAUDE_SECURESTORAGE_CONFIG_DIR" not in by_file.env and by_file.env["CLAUDE_CONFIG_DIR"] != str(login)
+    assert not (Path(by_file.env["HOME"]) / ".vb-bin" / "security").exists()  # no keychain, so no wrapper
     assert by_file.config_dir_sha256 == records.canonical_hash({".credentials.json": "login"})
 
     # Refused: a used config directory, a CLAUDE.md above the workdir, a fallback model, an unknown effort.
@@ -733,3 +741,44 @@ def test_probe_saves_the_init_event(places):
                   "--settings"]
     assert [arg for arg in report["argv"] if arg.startswith("--")] == [f for f in task_flags if f.startswith("--")]
     assert not list(places["work"].glob("claude-probe-*/_home"))  # the config directory is gone
+
+
+def test_the_recorded_probe_parses():
+    """gap-154f93: the one live probe (Claude Code 2.1.282 on the subscription, 2026-10-02), its session ids, paths
+    and user name scrubbed. The parser reads its real `modelUsage`, and U′ at the snapshot's rates is the CLI's own
+    total. The init event shows the pinned model, no MCP server, no web tool and only the plugins Claude Code ships.
+    The session signed in through the keychain wrapper (its first attempt, without it, ended "Not logged in"), and
+    reached only the API host. RESULT stays for what one short session cannot show, with the recorded field names."""
+    report = json.loads(RECORDED_PROBE.read_text())
+    init, result = report["init"], report["result"]
+    assert (report["passed"], report["status"], report["credentials"]) == (True, "completed", "keychain")
+    assert all(report["checks"].values())
+    assert init["claude_code_version"] == "2.1.282" and init["model"] == MODEL and init["mcp_servers"] == []
+    assert run_cli.web_tools(init) == [] and init["plugins"] and run_cli._added_plugins(init) == []
+    added = {"name": "extra", "path": "/plugins/extra", "source": "extra@market"}
+    assert run_cli._added_plugins({"plugins": [*init["plugins"], added]}) == [added]
+    assert (result["result"], result["num_turns"], result["is_error"]) == ("READY", 1, False)
+
+    parsed = run_cli.parse_result(result, ledger.load_snapshot(), cache_write_ttl="1h")
+    assert parsed.usage == {"tokens_in": 2, "tokens_out": 4, "tokens_cache_read": 10_118,
+                            "tokens_cache_write_1h": 4_601, "tokens_reasoning": 0}
+    u_prime = (2 * 4.00 + 10_118 * 0.20 + 4_601 * 8.00 + 4 * 20.00) / 1e6
+    assert parsed.cost.source == "cli_usage" and parsed.cost.api_equiv_usd == pytest.approx(u_prime)
+    assert parsed.r_usd == result["total_cost_usd"] == pytest.approx(u_prime)  # U′ = R: the CLI's list prices
+    assert parsed.gap == pytest.approx(0, abs=1e-9)
+    assert list(parsed.models) == [MODEL] and parsed.web_search_requests == 0
+
+    # The session got the user name and the empty secure-storage directory; its egress proxy admitted only the API
+    # host and refused Claude Code's log intake, which the session did not need.
+    env = report["env"]
+    assert env["USER"] == env["LOGNAME"] == "<user>" and env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == ""
+    assert env["CLAUDE_CONFIG_DIR"] == env["HOME"] + "/.claude"
+    policy = report["network_policy"]
+    assert (policy["sandbox"], policy["egress"]["allow"]) == ("sandbox-exec+net", list(egress.DEFAULT_ALLOW))
+    assert policy["egress"]["admitted"] == 8
+    assert [row["target"] for row in policy["egress"]["refused"]] == ["http-intake.logs.us5.datadoghq.com:443"]
+
+    # RESULT, which the fake claude plays, uses the recorded event's field names.
+    assert set(RESULT) <= set(result) and set(RESULT["usage"]) <= set(result["usage"])
+    for entry in RESULT["modelUsage"].values():
+        assert set(entry) <= set(result["modelUsage"][MODEL])

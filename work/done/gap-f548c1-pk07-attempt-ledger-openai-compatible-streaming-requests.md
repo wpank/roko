@@ -2,7 +2,7 @@
 id = "gap-f548c1"
 kind = "gap"
 title = "PK07 Attempt ledger: OpenAI-compatible streaming requests ask for usage, so OpenAI spend reaches costs and… (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK07"
 anchors = ["crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/streaming.rs", "crates/roko-agent/src/tool_loop/backends/mod.rs", "crates/roko-cli/src/commands/diagnose.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs", "crates/roko-cli/src/graph_task_dispatch/reflex_credit.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/plan_authoring.rs", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-core/src/config/provider.rs", "crates/roko-learn/src/costs_db.rs", "crates/roko-learn/src/costs_log.rs", "crates/roko-learn/src/efficiency.rs", "crates/roko-learn/src/episode_logger.rs", "crates/roko-learn/src/feedback_service.rs", "crates/roko-learn/src/runtime_feedback/episode_helpers.rs", "crates/roko-learn/src/telemetry/records.rs", "crates/roko-neuro/src/episode_completion.rs"]
 lane = "rust-hot"
@@ -74,6 +75,17 @@ command = "grep -rqw 'fn spend_counts_flagged_unpriced_rows' crates/roko-learn/s
 
 [[verify]]
 command = "grep -rqE 'fn plan_ceiling_(refuses|charges|counts)_an_unpriced_call' crates/roko-cli/src/graph_task_dispatch/ && cargo test -p roko-cli plan_ceiling_"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:09Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:51Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem
@@ -122,3 +134,34 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK01 (gap-625195).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-f548c1`; cargo verification deferred to the batch gate (2026-10-02, claude-agent). The
+static part of all 19 `[[verify]]` entries passes at the branch head.
+
+- 2101: implemented at 89b3237e0
+- 2102: implemented at 1d34a3c6d
+- 2103: implemented at 96cf1a95b
+- 2104: implemented at 24d263679
+- 2105: implemented at 39b795270
+- 2106: implemented at 66f8b03a2
+- 2107: implemented at 685c53311
+- 2108: implemented at 1f8941c30
+- 2109: implemented at 3eed76595
+- 2111: implemented at 4add4f8b0
+- b54d4ab96: hand-formatting pass over new lines of 2102, 2108 and 2109; no behaviour change.
+
+Notes for the gate:
+
+- 2101: the null-usage guard in `parse_sse_chunk` had already landed with backlog 1110; the task added its test.
+  `ProviderConfig.stream_usage` is a new field, so all 131 full literals of `ProviderConfig` across eight crates
+  set `stream_usage: None`. The opt-out is also wired in the Gemini OpenAI-compatible adapter.
+- 2103: `vendor_usd` is filled only for CLI agents. An API provider's usage cost is roko's own price, not a vendor
+  figure (S01 §4.4), so it does not fill `vendor_usd`. `billed_usd` stays null when the usage source is unknown.
+- 2104: the steps reach the verdict through `AttemptContext::record_verify_steps`, beside `record_helper_calls`,
+  so `Settlement::verified` and `reflex_credit.rs` are unchanged.
+- 2107: the unknown time to first token is marked by a `TtftRow` wrapper (`ttft_unknown`), beside `TurnsRow`.
+- 2111: plan-level unpriced calls are counted with `Usage::has_known_cost`, as the daily and task ledgers count
+  them. A model priced at 0/0 therefore still counts as unpriced for both ceilings; using 2109's `priced` flag
+  there would change `record_task_spend`'s six callers.

@@ -81,7 +81,10 @@ use crate::model_router::{
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
-use crate::routing_log::{CandidateEntry, RoutingDecisionLog, RoutingDecisionMeta, RoutingLogger};
+use crate::routing_log::{
+    CandidateEntry, ROUTE_DECISION_POINT, RouteProposals, RoutingDecisionLog, RoutingDecisionMeta,
+    RoutingLogger,
+};
 use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 
 // ─── CascadeRouter ──────────────────────────────────────────────────────────
@@ -148,6 +151,21 @@ impl std::fmt::Debug for CascadeRouter {
             .field("model_slugs", &self.model_slugs)
             .finish_non_exhaustive()
     }
+}
+
+/// Which learned state a [`CascadeRouter`] holds (S01 P0-10): its digest
+/// changes when, and only when, the router learns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterStateDigest {
+    /// `b3:` BLAKE3 hex of the RFC 8785 canonical JSON of the learned state.
+    pub digest: String,
+    /// Observations the router has learned from.
+    pub n_obs: u64,
+    /// Version label, `cr:obs=<n_obs>`.
+    pub version: String,
+    /// Seconds since the router last learned. `None` while its snapshot
+    /// records no time of observation or save.
+    pub age_s: Option<u64>,
 }
 
 impl roko_core::Cell for CascadeRouter {
@@ -2257,11 +2275,13 @@ impl CascadeRouter {
                 explanation
                     .candidates
                     .iter()
-                    .map(|candidate| CandidateEntry {
-                        model: candidate.slug.clone(),
-                        provider: log.provider_for_model(&candidate.slug),
-                        score: candidate.score,
-                        disqualified: log.disqualified_reason(&candidate.slug),
+                    .map(|candidate| {
+                        CandidateEntry::new(
+                            candidate.slug.clone(),
+                            log.provider_for_model(&candidate.slug),
+                            candidate.score,
+                            log.disqualified_reason(&candidate.slug),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -2273,21 +2293,21 @@ impl CascadeRouter {
         {
             candidates.insert(
                 0,
-                CandidateEntry {
-                    model: selected_model.to_string(),
-                    provider: log.provider_for_model(selected_model),
-                    score: 1.0,
-                    disqualified: log.disqualified_reason(selected_model),
-                },
+                CandidateEntry::new(
+                    selected_model,
+                    log.provider_for_model(selected_model),
+                    1.0,
+                    log.disqualified_reason(selected_model),
+                ),
             );
         }
         if candidates.is_empty() {
-            candidates.push(CandidateEntry {
-                model: selected_model.to_string(),
-                provider: log.provider_for_model(selected_model),
-                score: 1.0,
-                disqualified: log.disqualified_reason(selected_model),
-            });
+            candidates.push(CandidateEntry::new(
+                selected_model,
+                log.provider_for_model(selected_model),
+                1.0,
+                log.disqualified_reason(selected_model),
+            ));
         }
 
         let record = RoutingDecisionLog {
@@ -2310,6 +2330,11 @@ impl CascadeRouter {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
         };
         log.append(&record)?;
         Ok(record)
@@ -2384,6 +2409,39 @@ impl CascadeRouter {
             "cascade router snapshot built"
         );
         serde_json::to_string_pretty(&snapshot).unwrap_or_default()
+    }
+
+    /// Digest this router's learned state (S01 P0-10): the `b3:` BLAKE3 hex of
+    /// the RFC 8785 canonical JSON of its persisted snapshot, less what
+    /// changes without learning or does not survive a save and a load.
+    /// Canonical JSON sorts object keys, so the order in which the router's
+    /// maps were filled does not change the digest.
+    ///
+    /// Left out:
+    /// - `stage_transitions`, a log of stage changes with their wall-clock
+    ///   times (the stage follows from `total_observations`);
+    /// - `pareto_frontier`, a cache recomputed from the stats;
+    /// - `linucb_state.observations`, the arms' own counts, which a load does
+    ///   not restore (`total_observations` keeps the count).
+    #[must_use]
+    pub fn snapshot_digest(&self) -> RouterStateDigest {
+        let mut snapshot = self.persisted_snapshot();
+        snapshot.stage_transitions.clear();
+        snapshot.pareto_frontier.clear();
+        if let Some(linucb) = snapshot.linucb_state.as_mut() {
+            linucb.observations = 0;
+        }
+        let n_obs = snapshot.total_observations;
+        // The snapshot always serializes: `save` writes it.
+        let mut state = serde_json::to_value(&snapshot).unwrap_or_default();
+        quantize_floats(&mut state);
+        let canonical = roko_core::config::fingerprint::canonical_json(&state);
+        RouterStateDigest {
+            digest: crate::telemetry::records::b3_digest(canonical.as_bytes()),
+            n_obs,
+            version: format!("cr:obs={n_obs}"),
+            age_s: None,
+        }
     }
 
     /// The router's state in its persisted form.
@@ -3481,6 +3539,22 @@ fn apply_provider_pass_rate(
     }
 }
 
+/// Each float of `value` as a string of 12 significant digits, so a router
+/// state that went through a save and a load has the digest it had before:
+/// serde_json's default parser can move a float by one ulp.
+fn quantize_floats(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number) if number.is_f64() => {
+            if let Some(float) = number.as_f64() {
+                *value = serde_json::Value::String(format!("{float:.11e}"));
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(quantize_floats),
+        serde_json::Value::Object(map) => map.values_mut().for_each(quantize_floats),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod cascade_router_tests {
     use super::*;
@@ -4089,6 +4163,52 @@ mod cascade_router_tests {
             "higher-pass-rate google provider must be preferred over anthropic; got {}",
             route.primary.slug
         );
+    }
+
+    /// P0-10: equal learned state has one digest, however the router's maps
+    /// were filled and across a save and a load; one more observation
+    /// changes it.
+    #[test]
+    fn snapshot_digest_changes_iff_state_changes() {
+        let slugs = vec!["model-alpha".to_string(), "model-beta".to_string()];
+        let implementation = RoutingContext {
+            task_category: TaskCategory::Implementation,
+            ..RoutingContext::default()
+        };
+        let research = RoutingContext {
+            task_category: TaskCategory::Research,
+            ..RoutingContext::default()
+        };
+        // Two routers learn the same observations, each model's in the same
+        // order, and fill their maps in opposite orders.
+        let first = CascadeRouter::new(slugs.clone());
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        first.record_observation(&research, "model-beta", 0.3, false);
+        let second = CascadeRouter::new(slugs.clone());
+        second.record_observation(&research, "model-beta", 0.3, false);
+        second.record_observation(&implementation, "model-alpha", 0.8, true);
+        let digest = first.snapshot_digest();
+        assert_eq!(second.snapshot_digest(), digest);
+        assert!(digest.digest.starts_with("b3:"), "{digest:?}");
+        assert_eq!((digest.n_obs, digest.version.as_str()), (2, "cr:obs=2"));
+        assert_eq!(digest.age_s, None);
+
+        // Reading the state, which refreshes its caches, leaves it alone.
+        let _ = first.explain_route(&implementation, None);
+        assert_eq!(first.snapshot_digest(), digest);
+
+        // A save and a load keep it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cascade-router.json");
+        first.save(&path).expect("save the router");
+        let loaded = CascadeRouter::load_or_new(&path, slugs);
+        assert_eq!(loaded.snapshot_digest(), digest);
+
+        // One more observation changes it.
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        let learned = first.snapshot_digest();
+        assert_ne!(learned.digest, digest.digest);
+        assert_eq!(learned.n_obs, 3);
     }
 }
 

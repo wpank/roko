@@ -597,6 +597,7 @@ exit 1
                     max_concurrent: None,
                     limits: None,
                     require_confirmation: false,
+                    stream_usage: None,
                 }
             };
         let api_model = |provider: &str, slug: &str| ModelProfile {
@@ -1072,6 +1073,7 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();
@@ -1182,6 +1184,7 @@ exec sleep 5
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();
@@ -1292,6 +1295,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -1327,6 +1331,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                     max_concurrent: None,
                     limits: None,
                     require_confirmation: false,
+                    stream_usage: None,
                 },
             );
         }

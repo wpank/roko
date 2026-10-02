@@ -1696,6 +1696,7 @@ fn build_schema_tree() -> toml::Value {
         command: Some(String::new()),
         args: Some(Vec::new()),
         require_confirmation: true,
+        stream_usage: Some(true),
         ..ProviderConfig::default()
     };
     config
@@ -3921,6 +3922,7 @@ default_model = "claude-sonnet"
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
 

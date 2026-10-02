@@ -87,3 +87,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK10 (gap-f61823), PK12 (gap-08120e), PK20 (gap-5ebb4f), PK27 (gap-5ddf9b), PK32 (gap-b5caf3), PK34 (gap-ac2611), PK47 (gap-62e1b9), PK48 (gap-d90ef6).
 - Suggested model: opus.
+- 2026-10-02 (filer-grpD, backlog wave reports, PK96 gap-a6dab7): task 6123 is the `econ.py` producer
+  `benchmarks/viabilitybench/analysis/figlib.py`'s "Metric names" section names for `envelope_ratio_r` (and
+  probably `cc_<k>`, `envelope_ratio_c`) — `fig_f3_envelope.py:27` ("R_m = VS rate(arm) / VS rate(fd_claude) ...")
+  and `tab_t3_headline.py`/`tab_t7_envelope.py` already declare these in their `READS` with nothing emitting them
+  yet (confirmed at HEAD: no producer defines `envelope_ratio_r`). This task's own file only mentions "the
+  policy-level beta, oracle or Pareto set"; check it names the file `econ.py` and emits these exact metric names
+  (per `figlib.py:52-54`'s name/clause contract) so the already-written figure/table scripts resolve without a
+  follow-up fix. `regret_cum` is probably task 3340's (replay.py), not this one — see the note on gap-5ddf9b.

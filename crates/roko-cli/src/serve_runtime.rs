@@ -17,8 +17,8 @@ use roko_neuro::KnowledgeStore;
 use roko_runtime::cancel::CancelToken;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
 use roko_serve::plan_types::{
-    CreatePlanOutcome, PlanDiagnosticDto, PlanSourceDto, PlanSummaryDto, PlanTaskDto,
-    PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+    CreatePlanOutcome, KeyChangeDto, PlanDiagnosticDto, PlanDiffDto, PlanSourceDto, PlanSummaryDto,
+    PlanTaskDto, PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto, TaskChangeDto,
 };
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
@@ -730,11 +730,7 @@ impl CliRuntime for RokoCliRuntime {
         )
         .await?;
 
-        Ok(Some(RevisionDto {
-            revised: outcome.written,
-            task_count: outcome.task_count,
-            validation: plan_source_report_to_dto(outcome.report),
-        }))
+        Ok(Some(revision_to_dto(outcome)))
     }
 }
 
@@ -1688,6 +1684,43 @@ fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) ->
     )
 }
 
+/// The response to a plan revision: whether it was written, its validation
+/// report and, when written, what it changed task by task (3216).
+pub(crate) fn revision_to_dto(outcome: crate::plan_authoring::RevisionOutcome) -> RevisionDto {
+    RevisionDto {
+        revised: outcome.written,
+        task_count: outcome.task_count,
+        validation: plan_source_report_to_dto(outcome.report),
+        diff: outcome.diff.map(plan_diff_to_dto),
+    }
+}
+
+fn plan_diff_to_dto(diff: crate::plan_authoring::PlanDiff) -> PlanDiffDto {
+    let keys = |changes: Vec<crate::plan_authoring::KeyChange>| -> Vec<KeyChangeDto> {
+        changes
+            .into_iter()
+            .map(|change| KeyChangeDto {
+                key: change.key,
+                before: change.before,
+                after: change.after,
+            })
+            .collect()
+    };
+    PlanDiffDto {
+        meta: keys(diff.meta),
+        added: diff.added,
+        removed: diff.removed,
+        changed: diff
+            .changed
+            .into_iter()
+            .map(|task| TaskChangeDto {
+                id: task.id,
+                keys: keys(task.keys),
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2156,6 +2189,11 @@ command = {script:?}
 provider = "fake-cli"
 slug = "claude-sonnet-4-6"
 context_window = 200000
+
+# One planner call per generation: these tests count cost rows, and the
+# spec-quality gate would ask again for this minimal plan (3218).
+[spec_quality]
+mode = "off"
 "#,
                 script = script.display().to_string()
             ),

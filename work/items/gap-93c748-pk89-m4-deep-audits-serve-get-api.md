@@ -59,3 +59,10 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK60 (gap-940e44), PK83 (gap-4119fb).
 - On hold until Will takes the deferred decision(s) 9303 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: opus.
+- 2026-10-02 (filer-grpD, backlog wave reports, PK28 gap-c06ff3): when this task's live view/SSE is implemented,
+  have it call `benchmarks/viabilitybench/audit/estimate.py`'s `betting_cs`/`sequence_holds` with
+  `z_max=lottery.EPS_FLOOR/pi_min` (the window's actual minimum inclusion probability) instead of leaving the
+  default `z_max=1.0` — the narrower bound is already implemented and tested
+  (`audit/replay.py:267-275`'s `"uniform_scaled"` demonstration; `test_estimate.py::test_betting_cs_contains_the_exact_sequence_and_narrows`),
+  it just has nothing calling it from a live/served path yet. Confirmed at HEAD: no caller of `betting_cs` or
+  `sequence_holds` exists outside `estimate.py`, its tests, and `replay.py`'s offline CLI.

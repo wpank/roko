@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 /// mode = "advise"                # off | advise | enforce
 /// allow_threshold = 70.0
 /// block_threshold = 40.0
-/// red_on_base = false
+/// red_on_base = true
+/// red_on_base_cargo = false
 /// red_on_base_timeout_secs = 120
 /// holdout_frac = 0.05
 /// ```
@@ -39,11 +40,17 @@ pub struct SpecQualityConfig {
     /// is refined. At most `allow_threshold`.
     #[serde(default = "default_block_threshold")]
     pub block_threshold: f64,
-    /// Whether to run each implementer task's verify steps on the unchanged
-    /// base before dispatch, to score SQ06 and find HF3. Off by default: in a
-    /// fresh worktree most cargo steps hit the timeout and come out unknown.
-    #[serde(default)]
+    /// Whether `plan run` first runs each implementer task's verify steps on
+    /// the unchanged base, to score SQ06 and find HF3 (D14). On by default
+    /// (Will, 2026-10-02, gap-0ee70b); a step that runs cargo is left to the
+    /// batch gate unless `red_on_base_cargo` is set.
+    #[serde(default = "default_red_on_base")]
     pub red_on_base: bool,
+    /// Whether the red-on-base check also runs the steps that run cargo. Off
+    /// by default: the batch gate proves cargo checks red, and in a fresh
+    /// worktree most cargo steps hit the timeout and come out unknown.
+    #[serde(default)]
+    pub red_on_base_cargo: bool,
     /// The longest one verify step may run during the red-on-base check.
     #[serde(default = "default_red_on_base_timeout_secs")]
     pub red_on_base_timeout_secs: u64,
@@ -76,6 +83,10 @@ const fn default_block_threshold() -> f64 {
     40.0
 }
 
+const fn default_red_on_base() -> bool {
+    true
+}
+
 const fn default_red_on_base_timeout_secs() -> u64 {
     120
 }
@@ -90,7 +101,8 @@ impl Default for SpecQualityConfig {
             mode: SpecQualityMode::default(),
             allow_threshold: default_allow_threshold(),
             block_threshold: default_block_threshold(),
-            red_on_base: false,
+            red_on_base: default_red_on_base(),
+            red_on_base_cargo: false,
             red_on_base_timeout_secs: default_red_on_base_timeout_secs(),
             holdout_frac: default_holdout_frac(),
         }
@@ -161,6 +173,7 @@ mod tests {
         let defaults = SpecQualityConfig::default();
         assert_eq!(defaults.mode, SpecQualityMode::Advise);
         assert!(defaults.is_on());
+        assert!(defaults.red_on_base && !defaults.red_on_base_cargo);
         assert!(defaults.problems().is_empty());
 
         let text = toml::to_string(&defaults).expect("serialize the defaults");
@@ -169,6 +182,7 @@ mod tests {
             "allow_threshold",
             "block_threshold",
             "red_on_base",
+            "red_on_base_cargo",
             "red_on_base_timeout_secs",
             "holdout_frac",
         ] {

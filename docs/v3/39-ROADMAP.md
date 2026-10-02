@@ -90,7 +90,6 @@ Temporal Difference estimation and Generalized Advantage Estimation. This enable
 
 **Related work.**
 - AgentPRM (arXiv:2511.08325, Nov 2025; WWW 2026) -- process reward models
-- Messier (arXiv:2607.25891) -- partial-pass scoring rationale
 - PACE (arXiv:2607.02032) -- proxy capability evaluation
 
 ---

@@ -119,15 +119,20 @@ than a static evaluation set.
 **Paper insight:** Rather than discarding failed episodes outright, augment
 them with corrective annotations and reuse them as negative examples.
 
-**Roko implementation:** The hindsight relabeling system (`hindsight.rs`)
-decomposes failed trajectories into sub-goals and marks achieved sub-goals
-as positive episodes. This recovers useful learning signal from at least
-45% of otherwise-discarded episodes.
+**Roko implementation:** The hindsight relabeler
+(`crates/roko-learn/src/hindsight.rs`) appends corrections to
+`.roko/learn/episode-adjustments.jsonl`, and readers apply them as they load
+episodes (`apply_adjustments`, commit `26c592955`). A regression correction,
+written when a later failed gate blames a task, marks that task's earlier
+success failed. A later reuse of a failed attempt's approach is kept as an
+audit record and does not make the attempt pass. No recovery rate has been
+measured.
 
-**Key difference:** SiriuS augments full failed episodes with corrections.
-Roko's hindsight system extracts the portion that succeeded (sub-goal
-achieved) and relabels it as a positive episode for a different (smaller)
-goal. The original episode is never modified -- adjustments are append-only.
+**Key difference:** SiriuS augments full failed episodes with corrections and
+reuses them as negative examples. Roko's hindsight works the other way round:
+it withdraws credit from successes that a later failure blamed, and it does
+not split failed trajectories into sub-goals. The original episode is never
+modified -- adjustments are append-only.
 
 ### 2.7 SkillZip (arXiv:2608.11079, Aug 2026)
 

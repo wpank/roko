@@ -45,7 +45,7 @@ Continuous progress signals via temporal-difference estimation + Generalized Adv
 
 ## Continuous and Partial Verification
 
-**[Krsteski et al., 2026]** *Messier: Partial-Pass Scoring Rationale.* arXiv:2607.25891.
+**[Krsteski et al., 2026]** *Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation.* arXiv:2607.25891.
 
 **[Song et al., 2026]** *PACE: A Proxy for Agentic Capability Evaluation.* arXiv:2607.02032.
 

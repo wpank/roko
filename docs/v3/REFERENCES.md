@@ -914,7 +914,7 @@ Brief annotation: Step-level verification outperforms outcome-only. Grounds per-
 **[Xi et al., 2025]** *AgentPRM: Agent Process Reward Model.* arXiv:2511.08325. WWW 2026.
 Brief annotation: Continuous progress signals via TD + GAE. 8x compute efficiency. Target for gate continuous signals.
 
-**[Krsteski et al., 2026]** *Messier: Partial-Pass Scoring Rationale.* arXiv:2607.25891.
+**[Krsteski et al., 2026]** *Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation.* arXiv:2607.25891.
 
 **[Song et al., 2026]** *PACE: A Proxy for Agentic Capability Evaluation.* arXiv:2607.02032.
 
@@ -1358,7 +1358,7 @@ Brief annotation: Continuous progress signals via TD estimation + GAE. over 8x m
 
 **[Mukhal et al., 2025]** *ThinkPRM: Process Reward Model with Thinking Traces.* Working paper.
 
-**[Krsteski et al., 2026]** *Messier: Partial-Pass Scoring Rationale.* arXiv:2607.25891.
+**[Krsteski et al., 2026]** *Messier: A High-Resolution Corpus for Cross-Benchmark Agent Evaluation.* arXiv:2607.25891.
 
 **[Song et al., 2026]** *PACE: A Proxy for Agentic Capability Evaluation.* arXiv:2607.02032.
 

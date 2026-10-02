@@ -2,7 +2,7 @@
 
 > **Parent**: [00-ARCHITECTURE](../../00-ARCHITECTURE.md)
 >
-> Roko is a 39-member Cargo workspace (~1M LOC, 10,300+ tests). This depth file
+> Roko is a 36-member Cargo workspace (~1M LOC, 10,300+ tests). This depth file
 > catalogs every active crate with lines of code, test count, dependency tier,
 > status, and inter-crate dependency edges. Written fresh for v3 on 2026-09-15.
 
@@ -12,12 +12,12 @@
 
 | Metric | Value |
 |---|---|
-| Workspace members | 39 |
+| Workspace members | 36 |
 | Total Rust LOC (src/) | ~1,010,000 |
 | Total `#[test]` functions | ~10,300 |
 | Minimum rustc version | 1.91 (alloy dependency) |
 | Green release checkpoint rustc | 1.96.1 (2026-08-16) |
-| Accepted epics | 48/48 |
+| Accepted epics | 48/48 as programme manifests; most code was built outside this workflow |
 | Executable tasks complete | Withdrawn 2026-09-29: stale count (`work/history/claude-md-status-2026-09-28.md`) |
 
 ---
@@ -30,10 +30,10 @@ depth. The invariant is strict: no crate depends on a crate in a higher tier.
 | Tier | Description | Member count |
 |---|---|---|
 | **T0 -- Leaf** | No workspace dependencies | 5 |
-| **T1 -- Foundation** | Depends only on T0 crates | 7 |
+| **T1 -- Foundation** | Depends only on T0 crates | 5 |
 | **T2 -- Service** | Depends on T0 and T1 | 9 |
 | **T3 -- Integration** | Depends on T0-T2 | 9 |
-| **T4 -- Application** | Depends on T0-T3 | 8+ |
+| **T4 -- Application** | Depends on T0-T3 | 8 |
 
 ---
 

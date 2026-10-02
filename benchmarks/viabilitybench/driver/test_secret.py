@@ -45,8 +45,16 @@ CLAMP = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 CORRECT = f"cat > calc/ops.py <<'EOF'\n{CLAMP}EOF"
 ENV_PROBE = ("printf 'VB_SECRET=%s\\n' \"${VB_SECRET-unset}\"; echo \"HOME=$HOME\"; "
              "cat ~/.config/viabilitybench/secret ~/.roko/.env 2>&1; true")
-PS_PROBE = ("ps -E -ww -o command= -p $PPID 2>/dev/null; tr '\\0' '\\n' 2>/dev/null < /proc/$PPID/environ; "
-            "tr '\\0' ' ' 2>/dev/null < /proc/$PPID/cmdline; true")
+# What `ps -E` shows of a process, read with sysctl(KERN_PROCARGS2) instead: inside the agents' macOS sandbox
+# (gap-0bd49a) the setuid `ps` cannot start, and a parent's argv and environment stay readable this way.
+PROCARGS = r"""import ctypes, ctypes.util, sys
+libc = ctypes.CDLL(ctypes.util.find_library("c"))
+size = ctypes.c_size_t(1 << 20)
+buf = ctypes.create_string_buffer(size.value)
+if libc.sysctl((ctypes.c_int * 3)(1, 49, int(sys.argv[1])), 3, buf, ctypes.byref(size), None, 0) == 0:
+    print(" ".join(part.decode("utf-8", "replace") for part in buf.raw[4:size.value].split(b"\0") if part))"""
+PS_PROBE = ("ps -E -ww -o command= -p $PPID 2>/dev/null || python3 -c '" + PROCARGS + "' $PPID 2>/dev/null; "
+            "tr '\\0' '\\n' 2>/dev/null < /proc/$PPID/environ; tr '\\0' ' ' 2>/dev/null < /proc/$PPID/cmdline; true")
 SEARCH = ("grep -rIl -e vb-canary- -e VB_SECRET . .. ../.. 2>/dev/null; "
           "find . .. ../.. -iname '*secret*' 2>/dev/null; true")
 # calc/ops.py that, whenever it is imported, records its own environment and its parent's argv and environment. In
@@ -241,9 +249,17 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
     assert record["execution"]["status"] == "completed" and record["provenance"]["canary_hits"] == 0
 
 
-def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator):
+def readable_secret(monkeypatch) -> None:
+    """Leave the files the tripwire holds out of the agent's sandbox, as on a host without one: on macOS the direct
+    loop denies its agent those files (gap-0bd49a; test_sandbox_net.py), and the detection below needs a read to
+    detect."""
+    monkeypatch.setattr(vb, "_agent_deny", lambda run: (run.run_dir / "private",))
+
+
+def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator, monkeypatch):
     """Same-uid agents can read the file by path (0600 stops other users only, and the tripwire's mode 000 only until a
     chmod); the census must catch it."""
+    readable_secret(monkeypatch)
     loaded = secret.load(operator["secret"])
     path = loaded.path
     first, second = vb.load_stream(TOY_STREAM).order(1)
@@ -276,10 +292,11 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator):
         assert not loaded.find_in_file(out / name) and loaded.canary not in (out / name).read_text()
 
 
-def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys):
+def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys, monkeypatch):
     """gap-308373: an agent under the driver's user can open the secret file by path, and a read that never shows the
     secret leaves the census nothing to find. While agents run, the tripwire keeps the file at mode 000, so a read
     needs a chmod, and the chmod changes the file's ctime, which the agent cannot set back."""
+    readable_secret(monkeypatch)
     loaded = secret.load(operator["secret"])
     split = f"f='{loaded.path.parent}/sec''ret'"  # no command in the transcript names the file (census place `argv`)
     silent = f"{split}; chmod 600 \"$f\" && s=$(grep -v '^#' \"$f\") && chmod 000 \"$f\" && {CORRECT}"
@@ -351,7 +368,8 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     key = "csk-test-driver-only-8f3b2a71c9"
     key_file = secret.create_keys(operator["home"] / ".config" / "viabilitybench" / "keys", {"CEREBRAS_API_KEY": key})
     key_probe = f"cat '{key_file}'; true"
-    silent = f"chmod 600 '{key_file}' && k=$(cat '{key_file}') && chmod 000 '{key_file}' && echo VB_SUBMIT"
+    silent = (f"{{ chmod 600 '{key_file}' && k=$(cat '{key_file}') && chmod 000 '{key_file}'; }} 2>/dev/null; "
+              "echo VB_SUBMIT")
     first, second = vb.load_stream(TOY_STREAM).order(1)
     scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash(key_probe, "Read the key file."),
                        bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
@@ -389,11 +407,15 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
     assert f"HOME={operator['home']}" in seen[PS_PROBE]  # control: the probe read the driver's environment
     assert key not in seen[PS_PROBE] and "CEREBRAS_API_KEY" not in seen[PS_PROBE]
-    assert "Permission denied" in seen[key_probe] and key not in seen[key_probe]  # the key file sat at mode 000
+    assert key not in seen[key_probe]
     assert rows[first]["execution"]["status"] == "completed" and rows[first]["vs"]["label"] == 1
-    # A silent read of the key file trips the tripwire, like one of the secret file.
-    assert rows[second]["execution"]["status"] == "leak_suspected"
-    assert rows[second]["provenance"]["canary_places"] == ["key-file:ctime"]
+    if sandbox.KIND == "none":  # the key file sat at mode 000, and a silent read trips the tripwire
+        assert "Permission denied" in seen[key_probe]
+        assert rows[second]["execution"]["status"] == "leak_suspected"
+        assert rows[second]["provenance"]["canary_places"] == ["key-file:ctime"]
+    else:  # the agent's sandbox denies it the key file (gap-0bd49a): even the chmod fails, so nothing changed
+        assert "Operation not permitted" in seen[key_probe]
+        assert rows[second]["execution"]["status"] == "completed" and rows[second]["provenance"]["canary_places"] == []
     assert stat.S_IMODE(key_file.stat().st_mode) == secret.REST_MODE
     for root in (out, operator["work"]):  # records, ledger, manifest, transcripts, archives, workdirs, homes
         assert [path for path in root.rglob("*") if path.is_file() and key.encode() in path.read_bytes()] == []

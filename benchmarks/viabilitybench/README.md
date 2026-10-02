@@ -31,25 +31,31 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 ```
 benchmarks/viabilitybench/
-  schema/{task, feature, run-record, metric-record, ledger, price-snapshot}.schema.json  validate.py  examples/
+  schema/{task, feature, run-record, metric-record, ledger, price-snapshot, experiment}.schema.json  validate.py
+  schema/examples/
   families/common/{repo, knobs, hmac_seed, astcheck, mutate, canary}.py
   families/f1_pyconv/{gen, hidden, gaming}.py  ladder.toml  template/  spec/  reference/{solution, stub, gaming}/
   families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
   families/plan_slice/{slicekit, runner}.py  features/{pl01_stockroom … pl06_csvclean}/   # PL fixtures (S09 §4.9)
   speclint/{speclint, dynamic}.py  fixtures/
-  streams/pilot.toml
+  streams/{pilot, pilot_fd_api}.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  driver/vb.py                                              # vb run | estimate | materialize | ledger | report
+  experiments/{pilot_a, pilot_b}.toml  test_*.py            # experiment manifests (vb campaign) and their rehearsals
+  experiments/provider_fault.toml                           # Pilot B's provider_fault rows (vb.disturbance/1)
+  driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
+  driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
+  analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
-  proxy.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
+  proxy.jsonl  egress.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
 ```
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
@@ -64,7 +70,8 @@ families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, a
 - the direct loop (`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash
   tool, no Roko prompt;
 - the Roko arm (`run_roko.py`, harness `roko`) serves `roko_fixed`: a one-task plan (`planemit.py`) through
-  `roko plan run` on one pinned model, checked on every attempt;
+  `roko plan run` on one pinned model, checked on every attempt. `planemit.py`'s ladder mode emits the cheap-model
+  ladder instead (decision 3302), for the routed Roko arms;
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
   on the subscription.
 
@@ -95,6 +102,14 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
+- **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
+  secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
+  since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
+  only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
+  Claude Code arm reaches the network only through an egress proxy of its own (`driver/egress.py`), which admits the
+  targets of `[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The
+  record names the rule and the confinement that applied (`provenance.network_policy`), and for Claude Code every
+  refused request. Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
@@ -137,6 +152,16 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
   another model than the pin, and the model checks accept that one model as a declared swap (`model_swapped`).
+- **Campaigns** (`vb campaign`, `driver/campaign.py`). An experiment manifest in `experiments/` lists an
+  experiment's blocks: stream, arm, model, seeds, budget line and the rest of a `vb run`. `vb campaign --manifest PATH
+  --dry-run` validates every block and estimates it against the budget and what the ledger already holds, and
+  without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
+  `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
+  unit. Its module docstring has the rules.
+- **Gate G0** (`analysis/gates.py G0 --experiment PILOT-A --experiment PILOT-B ...`, S09 §4.7). It computes every
+  G0 check from the pilot's runs and the evidence files it is given (the verifier-CI JSON, `vb ledger reconcile
+  --json` per provider, the hand-filled SC2 spot check, a synthetic runaway's run), with its value, threshold and run
+  ids, and writes `go-no-go.md` and `g0.json`. A check without its evidence is "not evaluated", never passed.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
@@ -151,6 +176,7 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |
 | `schema/ledger.schema.json` | a row of `ledger.jsonl` (§4.10, §5.6) | `examples/ledger.json` |
+| `schema/experiment.schema.json` | `vb.experiment/1`, an experiment manifest that `vb campaign` runs (S09 E5) | the manifests in `experiments/` |
 | `schema/price-snapshot.schema.json` | `roko.price_snapshot/1`, a parsed `config/prices/<date>.toml` (§5.6) | `config/prices/2026-09-28.toml` |
 
 The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists. The

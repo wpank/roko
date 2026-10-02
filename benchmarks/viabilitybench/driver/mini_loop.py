@@ -19,11 +19,19 @@ Every attempt that made a model call gets one ledger row when it ends, even when
 are the provider's reported usage priced by the reported model's row (`ledger.price`); an attempt with a call whose
 usage never came back has an unknown cost.
 
+**No network** (gap-0bd49a, 3303). The driver makes every model call, so the agent's shell needs no network at all.
+Each command runs through `common.sandbox` with the rule "none" (`NETWORK`): on macOS no process it starts can open
+an outgoing connection, to the loopback, the metering proxy and DNS included, and none can touch the paths
+`ctx.deny` names (the secret file, the key file and the run's private task directories). The run record names the
+rule and the confinement that applied (`provenance.network_policy`); off macOS that is "none", and the network stays
+open (gap-29ac83).
+
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     parse_command(reply: str) -> str | None
-    run_command(command, *, cwd, env, timeout_s, observation_chars, wrapper=None) -> CommandResult
-    PROMPT_VERSION, PROMPT_SHA256, SUBMIT
+    run_command(command, *, cwd, env, timeout_s, observation_chars, wrapper=None, deny=()) -> CommandResult
+    network_policy(deny) -> dict                       # what the run record says of the agent's network
+    NETWORK, PROMPT_VERSION, PROMPT_SHA256, SUBMIT
 """
 
 from __future__ import annotations
@@ -43,9 +51,10 @@ import harness
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 import ledger
 import provider
-from common import repo
+from common import repo, sandbox
 
 PROMPT_VERSION = "mini-loop-1"
+NETWORK = sandbox.NETWORK_NONE  # the network rule of every agent command (module docstring)
 SUBMIT = "VB_SUBMIT"
 RETRIES = 2
 MESSAGE_OVERHEAD_TOKENS = 16  # chat-template tokens a message may add beyond its bytes
@@ -134,11 +143,11 @@ def parse_command(reply: str) -> str | None:
 
 
 def run_command(command: str, *, cwd: Path, env: dict[str, str], timeout_s: float,
-                observation_chars: int, wrapper: Path | None = None) -> CommandResult:
-    """Run `command` with bash, or with the visible-verify `wrapper`, in its own session; kill the whole session when
-    it ends or times out."""
+                observation_chars: int, wrapper: Path | None = None, deny: tuple[Path, ...] = ()) -> CommandResult:
+    """Run `command` with bash, or with the visible-verify `wrapper`, in its own session, with no network and none of
+    the `deny` paths (module docstring); kill the whole session when it ends or times out."""
     bash = shutil.which("bash", path=env.get("PATH")) or "/bin/bash"
-    argv = [str(wrapper), command] if wrapper else [bash, "-c", command]
+    argv = sandbox.command([str(wrapper), command] if wrapper else [bash, "-c", command], deny=deny, network=NETWORK)
     try:
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -200,7 +209,14 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         if status is None and not attempt.calls:  # an attempt that could not make a single call
             status, reason = "aborted_cap", attempt.ended_by or "no_progress"
     return harness.TaskOutcome(status=status, reason=reason, attempts=attempts, transcript=transcript,
-                               started_at=started, finished_at=harness.utc_now())
+                               started_at=started, finished_at=harness.utc_now(),
+                               network_policy=network_policy(ctx.deny))
+
+
+def network_policy(deny: tuple[Path, ...]) -> dict:
+    """The run record's `provenance.network_policy`: the rule every agent command ran under, and the confinement
+    that applied it on this host (`sandbox.kind`: "none" where nothing did)."""
+    return {"network": NETWORK, "sandbox": sandbox.kind(deny, NETWORK)}
 
 
 def _run_attempt(ctx: harness.TaskContext, governor: caps.Governor, attempt: harness.Attempt,
@@ -264,7 +280,8 @@ def _run_attempt(ctx: harness.TaskContext, governor: caps.Governor, attempt: har
             return stop.kind, stop.reason
         result = run_command(command, cwd=ctx.workdir, env=ctx.agent_env,
                              timeout_s=min(ctx.caps.command_timeout_s, max(governor.remaining_s(), 0.0)),
-                             observation_chars=ctx.caps.observation_chars, wrapper=ctx.verify_wrapper)
+                             observation_chars=ctx.caps.observation_chars, wrapper=ctx.verify_wrapper,
+                             deny=ctx.deny)
         if result.submitted:
             attempt.ended_by = "submitted"
             transcript.append({"attempt": attempt.number, "event": "submitted", "command": command})

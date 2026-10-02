@@ -86,3 +86,21 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Existing work items this package covers or touches: gap-0bd49a, gap-327242, gap-c33709. When its tasks are done, close those whose verify then passes.
 - Suggested model: sonnet.
+
+## Progress
+
+Worker claude-agent on `work/gap-5ebb4f`, 2026-10-02. All Python, no cargo; every `[[verify]]` above passes in the
+worktree, and the whole benchmark suite passes (409, with `VB_TEST_ROKO_BIN` set to the prebuilt roko a43288b5f).
+
+- 3303: implemented at a38dfcdc0 (`sandbox.command(network=...)`; the direct loop runs with no network and is denied
+  the secret file, the key file and the run's private directories; `provenance.network_policy`)
+- 3304: implemented at 6eca7b814 (every roko process under `loopback:<endpoint port>` plus Unix sockets in the
+  workspace; real Roko's `bash` tool checked against the sandbox)
+- 3305: implemented at 433d508fb (option (1): `driver/egress.py` CONNECT allowlist per session, `api.anthropic.com:443`
+  by default via `[cli] egress_allow`; refused requests in the record)
+- 3306: implemented at 47b1cb29a (`vb campaign`, `vb.experiment/1`); its budget check refined at a4e28d7b0
+- 3307: implemented at 3c979eaf6 (`experiments/pilot_a.toml`, `streams/pilot_fd_api.toml`, 65-run offline rehearsal)
+- 3308: implemented at a4e28d7b0 (`experiments/pilot_b.toml`, `experiments/provider_fault.toml`; seeds 2-3 refused under
+  BL0 $10 after Pilot A's spend and fitting under $14)
+- 3309: implemented at 3d0b45d35 (`analysis/gates.py G0`, `go-no-go.md` and `g0.json`)
+- 3310: implemented at 5f1d3bce6 (planemit ladder mode; pinned output byte-identical)

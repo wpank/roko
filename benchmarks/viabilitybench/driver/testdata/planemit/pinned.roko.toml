@@ -1,0 +1,62 @@
+# Emitted by the ViabilityBench driver (planemit-3) for one benchmark run: one provider, one pinned model, no
+# fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in the shared
+# working tree, and Roko's learning loops held off.
+config_version = 2
+schema_version = 2
+
+[agent]
+default_model = "gpt-oss-120b"
+
+[providers.cerebras]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "CEREBRAS_API_KEY"
+
+[models.gpt-oss-120b]
+provider = "cerebras"
+slug = "gpt-oss-120b"
+context_window = 128000
+max_output = 8192
+tool_format = "openai_json"
+cost_input_per_m = 0.35
+cost_output_per_m = 0.75
+
+[routing]
+fallback_models = []
+
+[routing.ladder]
+enabled = false
+
+[gates]
+cargo_fix_enabled = false
+max_review_cycles = 0
+adaptive_min_retries = 2
+adaptive_max_retries = 2
+
+[[gates.rungs]]
+name = "visible"
+command = "python3 -m unittest discover -s tests/visible"
+timeout_secs = 120
+required = true
+
+[pipeline.focused]
+max_turns = 12
+
+[conductor]
+max_agents = 1
+
+[runner]
+worktree_per_task = false
+
+[budget]
+max_plan_usd = 0.43
+max_task_retry_usd = 0.43
+max_turn_usd = 0.043
+
+[learning]
+auto_playbook_refresh = false
+replan_on_gate_failure = false
+dream_on_completion = false
+
+[learning.dreams]
+trigger_on_plan_complete = false

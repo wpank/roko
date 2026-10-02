@@ -544,49 +544,6 @@ fn set_aside_after(path: &Path, log: &[u8], kept: u64) -> std::io::Result<Option
     Ok(Some(aside))
 }
 
-/// Rewrite an Activity log keeping only the records accepted by `keep`.
-///
-/// Rejected records are removed atomically (temp file, fsync, rename) so a
-/// re-executed node can append its fresh record without tripping the
-/// duplicate-record guard on a later resume. Lines that do not parse are kept
-/// verbatim for the fail-closed loader to report. Returns the removed
-/// `(node_id, tick)` keys; the file is untouched when nothing is removed.
-///
-/// # Errors
-/// Returns an `std::io::Error` if the log cannot be read or rewritten.
-pub fn retain_recorded_activities(
-    path: impl AsRef<Path>,
-    mut keep: impl FnMut(&RecordEntry) -> bool,
-) -> std::io::Result<Vec<(String, u64)>> {
-    let path = path.as_ref();
-    let content = std::fs::read_to_string(path)?;
-    let mut kept = String::with_capacity(content.len());
-    let mut removed = Vec::new();
-    for line in content.lines() {
-        if let Ok(entry) = serde_json::from_str::<RecordEntry>(line.trim())
-            && !keep(&entry)
-        {
-            removed.push((entry.node_id, entry.tick));
-            continue;
-        }
-        kept.push_str(line);
-        kept.push('\n');
-    }
-    if removed.is_empty() {
-        return Ok(removed);
-    }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".compact");
-    let tmp = PathBuf::from(tmp);
-    {
-        let mut file = File::create(&tmp)?;
-        file.write_all(kept.as_bytes())?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-    Ok(removed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,26 +868,6 @@ mod tests {
         let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
         assert!(rep.lookup("t01", 0).is_none());
         assert_eq!(rep.entry_count(), 0);
-    }
-
-    #[test]
-    fn retain_recorded_activities_removes_rejected_records_atomically() {
-        let tmp = NamedTempFile::new().unwrap();
-        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
-        rec.record("g", "keep", 0, vec![make_signal("a")]).unwrap();
-        rec.record("g", "drop", 0, vec![make_signal("b")]).unwrap();
-        drop(rec);
-
-        let removed =
-            retain_recorded_activities(tmp.path(), |entry| entry.node_id != "drop").unwrap();
-        assert_eq!(removed, vec![("drop".to_string(), 0)]);
-        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
-        assert_eq!(rep.entry_count(), 1);
-        assert!(rep.lookup("keep", 0).is_some());
-
-        // Nothing rejected: the file is left as-is.
-        let unchanged = retain_recorded_activities(tmp.path(), |_| true).unwrap();
-        assert!(unchanged.is_empty());
     }
 
     /// gap-3006e9: `record_timed` writes when the node became ready and was

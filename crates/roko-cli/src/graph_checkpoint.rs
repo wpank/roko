@@ -17,14 +17,17 @@
 //!
 //! - **v2**: original manifest with plan/graph/run identity, Activity log, and
 //!   cost ledger references.
-//! - **v3** (this release): adds a namespaced extension map and an idempotent
-//!   receipt ledger. A v2 manifest is migrated in-memory to v3 with empty
-//!   extensions/receipts and its existing cost ledger preserved; v3 is written
-//!   on the next atomic checkpoint. Versions other than 2 or 3 fail closed.
+//! - **v3**: adds a namespaced extension map and an idempotent receipt
+//!   ledger. A v2 manifest is migrated in-memory to v3 with empty
+//!   extensions/receipts and its existing cost ledger preserved.
+//! - **v4** (this release): the manifest is the checkpoint's commit point and
+//!   names a generation (gap-dc1d16; see [`GraphCheckpointManifest`]). A v2 or
+//!   v3 manifest resumes as generation 0, and v4 is written on the next
+//!   checkpoint write. Versions other than 2, 3 or 4 fail closed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -32,8 +35,7 @@ use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
 use roko_graph::replay::{
-    RecordEntry, committed_activity_len, retain_recorded_activities,
-    set_aside_uncommitted_activities,
+    LoggedRecord, RecordEntry, activity_records, complete_records_len, set_aside_activities_after,
 };
 use roko_graph::{
     ActivityRecorder, ActivityReplayer, AuthoredPlan, EXT_SAFETY_PROVENANCE, Graph,
@@ -48,9 +50,13 @@ use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
 use crate::task_parser::{TaskDef, TasksFile};
 
-/// Current host checkpoint schema version. V2 manifests are migrated in-memory
-/// to v3 with empty extensions and receipts; other versions fail closed.
-const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+/// Current host checkpoint schema version. V2 and v3 manifests resume as
+/// generation 0 (see [`GraphCheckpointManifest`]); other versions fail closed.
+const CHECKPOINT_SCHEMA_VERSION: u32 = 4;
+
+/// Schema version of a manifest from before generations, once a v2 manifest
+/// is migrated in memory.
+const PRE_GENERATION_SCHEMA_VERSION: u32 = 3;
 
 /// Minimum schema version we can migrate from. Anything below this fails closed.
 const MIN_SUPPORTED_SCHEMA_VERSION: u32 = 2;
@@ -223,12 +229,13 @@ pub struct ReceiptLedgerEntry {
 /// Graph cell type that executes plan tasks.
 const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 
-/// A recorded Activity refused for replay on resume; its node re-runs.
+/// A recorded Activity refused for replay on resume; its node re-runs. The
+/// log keeps the record (gap-dc1d16).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvalidatedActivity {
-    /// Graph node whose record was removed.
+    /// Graph node whose record was refused.
     pub node_id: String,
-    /// Tick of the removed record.
+    /// Tick of the refused record.
     pub tick: u64,
     /// Why the record could not be trusted as a completed node.
     pub reason: String,
@@ -244,8 +251,8 @@ pub struct GateVerdictSummary {
     /// Verdict recorded for each task node, keyed by node id.
     #[serde(default)]
     pub verdicts: BTreeMap<String, TaskGateVerdict>,
-    /// Records removed by the last resume because they lacked a passing
-    /// verdict.
+    /// Records the last resume refused because they lacked a passing
+    /// verdict, and whose nodes had no other record to replay.
     #[serde(default)]
     pub invalidated_on_resume: Vec<InvalidatedActivity>,
 }
@@ -337,65 +344,96 @@ fn replay_refusal(signals: &[roko_core::Signal], verify_required: bool) -> Optio
     }
 }
 
-/// Remove recorded Activities that must not be replayed: forced accepts and
-/// verify-bearing task outputs without a passing verdict (for example records
-/// written before verdicts existed, when a failed verify could be
-/// force-accepted). Their nodes re-execute instead of resuming as successes.
+/// Refuse, by line number, the recorded Activities that must not be
+/// replayed: forced accepts and verify-bearing task outputs without a passing
+/// verdict (for example records written before verdicts existed, when a
+/// failed verify could be force-accepted). Their nodes re-execute instead of
+/// resuming as successes. The log keeps every record, and a record whose line
+/// is in `refused`, which an earlier resume refused, stays refused
+/// (gap-dc1d16).
+///
+/// Returns every refused line, and the refused records whose node has no
+/// other record to replay: the ones this resume runs again.
 fn invalidate_unverified_activities(
-    path: &Path,
+    records: &[LoggedRecord],
     graph: &Graph,
-) -> Result<Vec<InvalidatedActivity>> {
+    refused: &BTreeSet<u64>,
+) -> (BTreeSet<u64>, Vec<InvalidatedActivity>) {
     let required = verdict_required_nodes(graph);
+    let mut refused = refused.clone();
     let mut invalidated = Vec::new();
-    retain_recorded_activities(path, |entry| {
-        match replay_refusal(&entry.signals, required.contains(&entry.node_id)) {
-            Some(reason) => {
-                invalidated.push(InvalidatedActivity {
-                    node_id: entry.node_id.clone(),
-                    tick: entry.tick,
-                    reason,
-                });
-                false
-            }
-            None => true,
-        }
-    })
-    .with_context(|| format!("screen Graph Activity checkpoint {}", path.display()))?;
-    for activity in &invalidated {
-        tracing::warn!(
-            node_id = %activity.node_id,
-            tick = activity.tick,
-            reason = %activity.reason,
-            "resume: recorded task output is not verified; the node will re-run"
-        );
+    for record in records {
+        let entry = &record.entry;
+        let reason = match replay_refusal(&entry.signals, required.contains(&entry.node_id)) {
+            Some(reason) => reason,
+            None if refused.contains(&record.line) => "an earlier resume refused it".to_string(),
+            None => continue,
+        };
+        refused.insert(record.line);
+        invalidated.push(InvalidatedActivity {
+            node_id: entry.node_id.clone(),
+            tick: entry.tick,
+            reason,
+        });
     }
-    Ok(invalidated)
+    // A refused record whose node ran again and left a record to replay is
+    // superseded: this resume does not run that node again.
+    let replayable: BTreeSet<(&str, u64)> = records
+        .iter()
+        .filter(|record| !refused.contains(&record.line))
+        .map(|record| (record.entry.node_id.as_str(), record.entry.tick))
+        .collect();
+    invalidated.retain(|activity| {
+        !replayable.contains(&(activity.node_id.as_str(), activity.tick))
+    });
+    (refused, invalidated)
 }
 
-/// Read the latest recorded gate verdict for each node from an Activity log.
-fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return BTreeMap::new();
+/// The records of the Activity log at `path` that count for run `run_id` of
+/// plan `plan_id`: those in the prefix `committed` names, less the ones a
+/// resume refused, read with the parser a resume replays with (gap-dc1d16).
+/// Without a committed generation, as before generations, the prefix is the
+/// log's complete records. A missing log has none.
+fn counted_records(
+    path: &Path,
+    plan_id: &str,
+    run_id: &str,
+    committed: Option<&CommittedGeneration>,
+) -> std::io::Result<Vec<RecordEntry>> {
+    let mut log = match std::fs::read(path) {
+        Ok(log) => log,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+    let committed_len = committed.map_or_else(
+        || complete_records_len(&log),
+        |generation| generation.activity_bytes,
+    );
+    log.truncate(usize::try_from(committed_len).unwrap_or(usize::MAX));
+    let mut counted = Vec::new();
+    for record in activity_records(&log, plan_id, run_id) {
+        let record = record?;
+        if committed.is_none_or(|generation| !generation.refused_records.contains(&record.line)) {
+            counted.push(record.entry);
+        }
+    }
+    Ok(counted)
+}
+
+/// The latest gate verdict recorded for each node in `records`.
+fn recorded_gate_verdicts(records: &[RecordEntry]) -> BTreeMap<String, TaskGateVerdict> {
+    records
+        .iter()
         .filter_map(|entry| {
-            TaskGateVerdict::from_signals(&entry.signals).map(|verdict| (entry.node_id, verdict))
+            TaskGateVerdict::from_signals(&entry.signals)
+                .map(|verdict| (entry.node_id.clone(), verdict))
         })
         .collect()
 }
 
-/// The nodes whose output the Activity log at `path` records.
-fn recorded_nodes(path: &Path) -> BTreeSet<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
-        .map(|entry| entry.node_id)
-        .collect()
+/// The nodes whose output `records` hold.
+fn recorded_nodes(records: &[RecordEntry]) -> BTreeSet<String> {
+    records.iter().map(|entry| entry.node_id.clone()).collect()
 }
 
 /// The tasks of plan `plan_id` whose latest attempt in `run_dir`'s attempt
@@ -670,11 +708,42 @@ fn record_pinned_hashes(task: &mut serde_json::Value, hashes: &[String]) -> Opti
 // Manifest
 // ---------------------------------------------------------------------------
 
+/// What one generation of a Graph checkpoint commits (gap-dc1d16).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedGeneration {
+    /// Length in bytes of the committed prefix of the Activity log.
+    pub activity_bytes: u64,
+    /// BLAKE3 of that prefix, in hex.
+    pub activity_blake3: String,
+    /// Actual provider spend, in millionths of one USD.
+    pub spent_micro_usd: u64,
+    /// Spend reserved for provider calls in flight, in millionths of one USD.
+    pub reserved_micro_usd: u64,
+    /// Line numbers, from 0, of the committed records a resume refused for
+    /// replay. The log keeps them, and every reader of it skips them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub refused_records: BTreeSet<u64>,
+}
+
 /// Versioned metadata that makes an Activity JSONL file safe to resume.
 ///
-/// Schema version 3 adds `extensions` and `receipts` on top of the original
-/// v2 fields. A v2 manifest on disk is migrated in-memory to v3 with empty
-/// extension/receipt maps and its cost ledger preserved.
+/// The manifest is the checkpoint's only commit point (gap-dc1d16). Each
+/// write names the next generation: under [`Self::committed`], the length and
+/// BLAKE3 of the Activity log's committed prefix and the cost at that moment.
+/// A durable change appends and syncs its Activity record, or writes the cost
+/// ledger, first, and writes the manifest last, so a crash between the two
+/// leaves the change uncommitted. A resume uses exactly the generation the
+/// manifest names: it sets aside the log's bytes past the committed prefix
+/// and a cost the ledger holds beyond the committed one, and fails closed
+/// when committed bytes changed. It never rewrites committed bytes: it
+/// refuses a record by its line number
+/// ([`CommittedGeneration::refused_records`]) instead.
+///
+/// Schema version 3 added `extensions` and `receipts` to the v2 fields, and
+/// version 4 the generation. A v2 manifest on disk is migrated in-memory to
+/// v3 with empty extension/receipt maps and its cost ledger preserved, and a
+/// v3 manifest resumes as generation 0: its log up to the last complete
+/// record, and the cost its ledger holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphCheckpointManifest {
     /// On-disk schema version.
@@ -694,6 +763,13 @@ pub struct GraphCheckpointManifest {
     pub status: GraphCheckpointStatus,
     /// Last manifest update as Unix milliseconds.
     pub updated_at_ms: u128,
+    /// The generation this manifest commits; 0 before generations (schema
+    /// v2 or v3).
+    #[serde(default)]
+    pub generation: u64,
+    /// What the generation commits; `None` only before generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed: Option<CommittedGeneration>,
     /// Namespaced extension map. Keys are `<namespace>@<schema_version>`.
     #[serde(default)]
     pub extensions: BTreeMap<String, CheckpointExtension>,
@@ -747,6 +823,8 @@ struct GraphCostLedgerState {
 pub struct GraphCostLedgerCheckpoint {
     path: PathBuf,
     identity: GraphCostLedgerState,
+    /// The checkpoint's commit point: each persist commits a generation.
+    commits: Option<Arc<CheckpointCommits>>,
 }
 
 impl GraphCostLedgerCheckpoint {
@@ -756,14 +834,22 @@ impl GraphCostLedgerCheckpoint {
         self.identity.spent_micro_usd
     }
 
-    /// Persist the latest actual spend atomically.
+    /// Persist the latest actual spend atomically, then commit it as the
+    /// checkpoint's next generation (gap-dc1d16).
     pub(crate) fn persist(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
         let mut state = self.identity.clone();
         state.spent_micro_usd = spent_micro_usd;
         state.reserved_micro_usd = reserved_micro_usd;
-        write_cost_ledger_atomic(&self.path, &state)
+        write_cost_ledger_atomic(&self.path, &state)?;
+        match &self.commits {
+            Some(commits) => commits.commit_cost(spent_micro_usd, reserved_micro_usd),
+            None => Ok(()),
+        }
     }
 
+    /// Load the ledger at `path` for `manifest`'s checkpoint, with the cost a
+    /// resume takes: what the manifest's generation committed, or the
+    /// ledger's own before generations.
     fn load(
         path: PathBuf,
         manifest: &GraphCheckpointManifest,
@@ -771,14 +857,42 @@ impl GraphCostLedgerCheckpoint {
     ) -> Result<GraphCostLedgerCheckpoint> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("read Graph cost ledger {}", path.display()))?;
-        let state: GraphCostLedgerState = serde_json::from_slice(&bytes)
+        let mut state: GraphCostLedgerState = serde_json::from_slice(&bytes)
             .with_context(|| format!("parse Graph cost ledger {}", path.display()))?;
+        if let Some(committed) = &manifest.committed {
+            state.spent_micro_usd = committed.spent_micro_usd;
+            state.reserved_micro_usd = committed.reserved_micro_usd;
+        }
         validate_cost_ledger_state(&state, manifest, graph)
             .with_context(|| format!("validate Graph cost ledger {}", path.display()))?;
         Ok(Self {
             path,
             identity: state,
+            commits: None,
         })
+    }
+
+    /// Set aside a cost the ledger file holds beyond the committed one, which
+    /// was written after the last commit: the file is copied to
+    /// `<ledger>.uncommitted.<unix ms>` and rewritten with the committed
+    /// cost. Returns the copy, or `None` when the file holds the committed
+    /// cost.
+    fn set_aside_uncommitted(&self) -> Result<Option<PathBuf>> {
+        let bytes = std::fs::read(&self.path)
+            .with_context(|| format!("read Graph cost ledger {}", self.path.display()))?;
+        let stored: GraphCostLedgerState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse Graph cost ledger {}", self.path.display()))?;
+        if stored == self.identity {
+            return Ok(None);
+        }
+        let mut aside = self.path.as_os_str().to_owned();
+        aside.push(format!(".uncommitted.{}", unix_ms()));
+        let aside = PathBuf::from(aside);
+        std::fs::File::create_new(&aside)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes))
+            .with_context(|| format!("set aside Graph cost ledger as {}", aside.display()))?;
+        write_cost_ledger_atomic(&self.path, &self.identity)?;
+        Ok(Some(aside))
     }
 
     /// Persist `graph_fingerprint` as the graph this ledger belongs to.
@@ -788,10 +902,148 @@ impl GraphCostLedgerCheckpoint {
     }
 }
 
+/// The commit point of one Graph checkpoint (gap-dc1d16), shared by the
+/// run's Activity recorder, its cost ledger and its own manifest writes.
+///
+/// Each commit writes the manifest last, naming the next generation: after
+/// the recorder appended and synced a record, after the cost ledger was
+/// written, or when the run changes the manifest itself.
+#[derive(Debug)]
+struct CheckpointCommits {
+    /// The manifest file.
+    path: PathBuf,
+    state: parking_lot::Mutex<CommitState>,
+}
+
+#[derive(Debug)]
+struct CommitState {
+    /// The manifest as last committed.
+    manifest: GraphCheckpointManifest,
+    /// What the next commit commits.
+    committed: CommittedGeneration,
+    /// BLAKE3 state of the Activity log's committed prefix.
+    activity_hash: blake3::Hasher,
+}
+
+/// The commit points of this process's open checkpoints, by manifest path,
+/// so that a forced exit marks a running checkpoint interrupted through its
+/// commit point, and a commit that lands later keeps that status (see
+/// [`mark_running_checkpoint_interrupted`]).
+static OPEN_COMMITS: std::sync::Mutex<BTreeMap<PathBuf, Weak<CheckpointCommits>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn open_commits() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Weak<CheckpointCommits>>> {
+    OPEN_COMMITS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl CheckpointCommits {
+    /// Open the commit point of the checkpoint whose manifest is `path`, as
+    /// last committed in `manifest`, with `committed` and `activity_hash` for
+    /// the Activity log's committed prefix.
+    fn open(
+        path: PathBuf,
+        manifest: GraphCheckpointManifest,
+        committed: CommittedGeneration,
+        activity_hash: blake3::Hasher,
+    ) -> Arc<Self> {
+        let commits = Arc::new(Self {
+            path: path.clone(),
+            state: parking_lot::Mutex::new(CommitState {
+                manifest,
+                committed,
+                activity_hash,
+            }),
+        });
+        let mut open = open_commits();
+        open.retain(|_, weak| weak.strong_count() > 0);
+        open.insert(path, Arc::downgrade(&commits));
+        commits
+    }
+
+    /// What the last commit committed.
+    fn committed(&self) -> CommittedGeneration {
+        self.state.lock().committed.clone()
+    }
+
+    /// Commit `manifest`, the run's own copy, as the next generation, and
+    /// bring the copy's generation fields up to date.
+    fn commit_manifest(&self, manifest: &mut GraphCheckpointManifest) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        let generation = state.manifest.generation;
+        state.manifest.clone_from(manifest);
+        state.manifest.generation = generation;
+        let written = self.write(state);
+        manifest.clone_from(&state.manifest);
+        written
+    }
+
+    /// Commit a record the Activity recorder appended and synced.
+    fn commit_record(&self, record: &[u8]) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        state.activity_hash.update(record);
+        state.committed.activity_bytes += record.len() as u64;
+        state.committed.activity_blake3 = state.activity_hash.finalize().to_hex().to_string();
+        self.write(state)
+    }
+
+    /// Commit the cost the cost ledger now holds.
+    fn commit_cost(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        state.committed.spent_micro_usd = spent_micro_usd;
+        state.committed.reserved_micro_usd = reserved_micro_usd;
+        self.write(state)
+    }
+
+    /// Mark the checkpoint `interrupted` by the stop request `by` if it still
+    /// reads `running`, as the next generation. Returns whether it was
+    /// marked.
+    fn mark_interrupted(&self, by: &str) -> Result<bool> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        if state.manifest.status != GraphCheckpointStatus::Running {
+            return Ok(false);
+        }
+        state.manifest.status = GraphCheckpointStatus::Interrupted;
+        set_stop_cause(&mut state.manifest, Some(by))?;
+        self.write(state)?;
+        Ok(true)
+    }
+
+    /// Write the manifest as the next generation.
+    fn write(&self, state: &mut CommitState) -> Result<()> {
+        let manifest = &mut state.manifest;
+        manifest.schema_version = CHECKPOINT_SCHEMA_VERSION;
+        manifest.generation += 1;
+        manifest.committed = Some(state.committed.clone());
+        manifest.updated_at_ms = unix_ms();
+        write_manifest_atomic(&self.path, manifest)
+    }
+}
+
+/// A recorder commit hook that commits each record at `commits`.
+fn commit_hook(
+    commits: &Arc<CheckpointCommits>,
+) -> impl Fn(&[u8]) -> std::io::Result<()> + Send + Sync + 'static {
+    let commits = Arc::clone(commits);
+    move |record: &[u8]| {
+        commits
+            .commit_record(record)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))
+    }
+}
+
 /// Recorder/replayer pair prepared for one Graph execution.
 pub struct PreparedGraphCheckpoint {
     paths: GraphCheckpointPaths,
     manifest: GraphCheckpointManifest,
+    /// The checkpoint's commit point, shared with the recorder and the cost
+    /// ledger (gap-dc1d16).
+    commits: Arc<CheckpointCommits>,
     recorder: Option<ActivityRecorder>,
     replayer: Option<ActivityReplayer>,
     replayed_entries: usize,
@@ -868,8 +1120,30 @@ impl PreparedGraphCheckpoint {
         if let Err(error) = self.refresh_safety_provenance() {
             tracing::warn!(%error, "safety provenance checkpoint summary refresh failed");
         }
-        self.manifest.updated_at_ms = unix_ms();
-        write_manifest_atomic(&self.paths.manifest, &self.manifest)
+        self.commit_manifest()
+    }
+
+    /// Commit the manifest as the checkpoint's next generation (gap-dc1d16).
+    fn commit_manifest(&mut self) -> Result<()> {
+        self.commits.commit_manifest(&mut self.manifest)
+    }
+
+    /// The Activity log's records that count, as of the last commit: the
+    /// committed ones, less those a resume refused.
+    fn counted_records(&self) -> Result<Vec<RecordEntry>> {
+        let committed = self.commits.committed();
+        counted_records(
+            &self.paths.activities,
+            &self.manifest.plan_id,
+            &self.manifest.run_id,
+            Some(&committed),
+        )
+        .with_context(|| {
+            format!(
+                "read Graph Activity checkpoint {}",
+                self.paths.activities.display()
+            )
+        })
     }
 
     /// Last persisted lifecycle state.
@@ -960,10 +1234,20 @@ impl PreparedGraphCheckpoint {
 
     /// The gate verdict of each task output recorded so far, replayed outputs
     /// included. The engine records a node's output before it reports the
-    /// node complete, so a completed task's verdict is already here.
+    /// node complete, so a completed task's verdict is already here. A record
+    /// a resume refused does not count.
     #[must_use]
     pub fn recorded_gate_verdicts(&self) -> BTreeMap<String, TaskGateVerdict> {
-        recorded_gate_verdicts(&self.paths.activities)
+        match self.counted_records() {
+            Ok(records) => recorded_gate_verdicts(&records),
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "recorded gate verdicts unreadable"
+                );
+                BTreeMap::new()
+            }
+        }
     }
 
     /// Rebuild the gate-verdict extension from the durable Activity log.
@@ -971,8 +1255,9 @@ impl PreparedGraphCheckpoint {
     /// The host-owned summary is replaced wholesale, so this bypasses the
     /// write-once fingerprint guard of [`Self::register_extension`].
     fn refresh_gate_verdicts(&mut self) -> Result<()> {
+        let records = self.counted_records()?;
         let summary = GateVerdictSummary {
-            verdicts: recorded_gate_verdicts(&self.paths.activities),
+            verdicts: recorded_gate_verdicts(&records),
             invalidated_on_resume: self.invalidated_on_resume.clone(),
         };
         if summary == GateVerdictSummary::default() {
@@ -994,7 +1279,7 @@ impl PreparedGraphCheckpoint {
     fn record_interrupted_attempts(&mut self, workdir: &Path) -> Result<()> {
         let layout = RokoLayout::for_project(workdir);
         let run_dir = layout.run_dir(&self.manifest.run_id);
-        let recorded = recorded_nodes(&self.paths.activities);
+        let recorded = recorded_nodes(&self.counted_records()?);
         let attempts = interrupted_attempts(&run_dir, &self.manifest.plan_id, &recorded);
         if attempts.is_empty() {
             self.manifest
@@ -1218,8 +1503,7 @@ impl PreparedGraphCheckpoint {
     /// make the change durable before the next external call.
     pub fn persist_manifest(&mut self) -> Result<()> {
         self.refresh_safety_provenance()?;
-        self.manifest.updated_at_ms = unix_ms();
-        write_manifest_atomic(&self.paths.manifest, &self.manifest)
+        self.commit_manifest()
     }
 
     /// Keep the run's safety provenance (gap-ff95f5): every later manifest
@@ -1376,6 +1660,9 @@ pub fn prepare_graph_checkpoint_for_run(
                     }
                     Err(error) => return Err(error),
                 };
+                // Everything a resume takes from the checkpoint is read and
+                // checked before any of its files changes.
+                let selected = select_generation(&paths, &manifest, &cost_ledger.identity, graph)?;
                 if matched == FingerprintMatch::Legacy {
                     tracing::info!(
                         plan_id,
@@ -1394,7 +1681,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         "resuming Graph checkpoint"
                     );
                 }
-                return resume_checkpoint(workdir, paths, manifest, cost_ledger, plan_id, graph);
+                return resume_checkpoint(workdir, paths, manifest, cost_ledger, selected);
             }
         }
     } else if !fresh && (paths.activities.exists() || paths.costs.exists()) {
@@ -1411,61 +1698,175 @@ pub fn prepare_graph_checkpoint_for_run(
     create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
 }
 
-/// Reopen a validated checkpoint for another run of the same plan graph.
+/// The generation a resume of a checkpoint selects, read without changing a
+/// file (gap-dc1d16; see [`select_generation`]).
+struct SelectedGeneration {
+    /// What the generation committed, with this resume's refusals. A
+    /// manifest from before generations is generation 0: its log up to the
+    /// last complete record, and the cost its ledger holds.
+    committed: CommittedGeneration,
+    /// The generation's records to replay.
+    replayer: ActivityReplayer,
+    /// Refused records whose nodes this resume runs again.
+    invalidated: Vec<InvalidatedActivity>,
+    /// BLAKE3 state of the committed prefix, which the run's commits extend.
+    activity_hash: blake3::Hasher,
+}
+
+/// Select the generation `manifest` names for a resume of `graph`, with
+/// `ledger` as [`GraphCostLedgerCheckpoint::load`] read it. Fails closed when
+/// the Activity log lost or changed committed bytes, or a committed line is
+/// not a record of the run.
+fn select_generation(
+    paths: &GraphCheckpointPaths,
+    manifest: &GraphCheckpointManifest,
+    ledger: &GraphCostLedgerState,
+    graph: &Graph,
+) -> Result<SelectedGeneration> {
+    let log = std::fs::read(&paths.activities).with_context(|| {
+        format!(
+            "read Graph Activity checkpoint {}",
+            paths.activities.display()
+        )
+    })?;
+    let mut committed = manifest
+        .committed
+        .clone()
+        .unwrap_or_else(|| CommittedGeneration {
+            activity_bytes: complete_records_len(&log),
+            spent_micro_usd: ledger.spent_micro_usd,
+            reserved_micro_usd: ledger.reserved_micro_usd,
+            ..CommittedGeneration::default()
+        });
+    let prefix = usize::try_from(committed.activity_bytes)
+        .ok()
+        .and_then(|len| log.get(..len))
+        .with_context(|| {
+            format!(
+                "Graph Activity checkpoint {} holds {} bytes, fewer than the {} its generation {} committed",
+                paths.activities.display(),
+                log.len(),
+                committed.activity_bytes,
+                manifest.generation
+            )
+        })?;
+    let mut activity_hash = blake3::Hasher::new();
+    activity_hash.update(prefix);
+    let digest = activity_hash.finalize().to_hex().to_string();
+    if manifest.committed.is_some() && digest != committed.activity_blake3 {
+        bail!(
+            "the committed records of Graph Activity checkpoint {} changed after generation {} committed them; use --fresh to archive it",
+            paths.activities.display(),
+            manifest.generation
+        );
+    }
+    committed.activity_blake3 = digest;
+    let load = || {
+        format!(
+            "load Graph Activity checkpoint {}",
+            paths.activities.display()
+        )
+    };
+    let records = activity_records(prefix, &manifest.plan_id, &manifest.run_id)
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(load)?;
+    let (refused, invalidated) =
+        invalidate_unverified_activities(&records, graph, &committed.refused_records);
+    committed.refused_records = refused;
+    let replayer = ActivityReplayer::from_records(records, &committed.refused_records)
+        .with_context(load)?;
+    Ok(SelectedGeneration {
+        committed,
+        replayer,
+        invalidated,
+        activity_hash,
+    })
+}
+
+/// Reopen a validated checkpoint for another run of the same plan graph, at
+/// the generation `selected` names (gap-dc1d16).
 fn resume_checkpoint(
     workdir: &Path,
     paths: GraphCheckpointPaths,
-    mut manifest: GraphCheckpointManifest,
-    cost_ledger: GraphCostLedgerCheckpoint,
-    plan_id: &str,
-    graph: &Graph,
+    manifest: GraphCheckpointManifest,
+    mut cost_ledger: GraphCostLedgerCheckpoint,
+    selected: SelectedGeneration,
 ) -> Result<PreparedGraphCheckpoint> {
-    // A record whose write did not finish, such as a line a crash tore, was
-    // never committed: set it aside rather than fail on it, so the log ends
-    // in its last complete record and its node runs again (gap-dc1d16).
-    let uncommitted = set_aside_uncommitted_activities(&paths.activities)
-        .with_context(|| format!("set aside the torn end of {}", paths.activities.display()))?;
+    let SelectedGeneration {
+        committed,
+        replayer,
+        invalidated,
+        activity_hash,
+    } = selected;
+    // Bytes past the committed prefix were never committed, such as a record
+    // a crash tore or one whose commit did not land: set them aside rather
+    // than fail on them or replay them, so the log ends in its last committed
+    // record and those nodes run again.
+    let uncommitted = set_aside_activities_after(&paths.activities, committed.activity_bytes)
+        .with_context(|| {
+            format!(
+                "set aside the uncommitted end of {}",
+                paths.activities.display()
+            )
+        })?;
     if let Some(aside) = uncommitted {
         tracing::warn!(
             activities = %paths.activities.display(),
             set_aside = %aside.display(),
-            "resume: the Activity log ended in a record whose write did not finish; \
-             set it aside, and its node runs again"
+            generation = manifest.generation,
+            "resume: the Activity log holds records the checkpoint never committed; \
+             set them aside, and their nodes run again"
         );
     }
-    // Never resume a task whose recorded output was not verified: drop those
-    // records so the nodes re-run.
-    let invalidated_on_resume = invalidate_unverified_activities(&paths.activities, graph)?;
-    let replayer = ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
+    // So was a cost the ledger holds beyond the committed one.
+    if let Some(aside) = cost_ledger.set_aside_uncommitted()? {
+        tracing::warn!(
+            costs = %paths.costs.display(),
+            set_aside = %aside.display(),
+            spent_micro_usd = committed.spent_micro_usd,
+            "resume: the cost ledger holds spend the checkpoint never committed; \
+             set it aside, and the run resumes from the committed spend"
+        );
+    }
+    for activity in &invalidated {
+        tracing::warn!(
+            node_id = %activity.node_id,
+            tick = activity.tick,
+            reason = %activity.reason,
+            "resume: recorded task output is not verified; the node will re-run"
+        );
+    }
+    let commits = CheckpointCommits::open(
+        paths.manifest.clone(),
+        manifest.clone(),
+        committed,
+        activity_hash,
+    );
+    cost_ledger.commits = Some(Arc::clone(&commits));
+    let recorder = ActivityRecorder::create(&manifest.run_id, &paths.activities)
         .with_context(|| {
-            format!(
-                "load Graph Activity checkpoint {}",
-                paths.activities.display()
-            )
-        })?;
-    let replayed_entries = replayer.entry_count();
-    let recorder =
-        ActivityRecorder::create(&manifest.run_id, &paths.activities).with_context(|| {
             format!(
                 "open Graph Activity checkpoint {}",
                 paths.activities.display()
             )
-        })?;
-    manifest.status = GraphCheckpointStatus::Running;
+        })?
+        .with_commit_hook(commit_hook(&commits));
+    let replayed_entries = replayer.entry_count();
     let mut prepared = PreparedGraphCheckpoint {
         paths,
         manifest,
+        commits,
         recorder: Some(recorder),
         replayer: Some(replayer),
         replayed_entries,
         cost_ledger: Some(cost_ledger),
-        invalidated_on_resume,
+        invalidated_on_resume: invalidated,
         safety_provenance: None,
     };
+    prepared.manifest.status = GraphCheckpointStatus::Running;
     prepared.refresh_gate_verdicts()?;
     prepared.record_interrupted_attempts(workdir)?;
-    prepared.manifest.updated_at_ms = unix_ms();
-    write_manifest_atomic(&prepared.paths.manifest, &prepared.manifest)?;
+    prepared.commit_manifest()?;
     Ok(prepared)
 }
 
@@ -1506,11 +1907,24 @@ fn create_fresh_checkpoint(
         cost_ledger,
         status: GraphCheckpointStatus::Running,
         updated_at_ms: unix_ms(),
+        generation: 0,
+        committed: None,
         extensions: BTreeMap::new(),
         receipts: BTreeMap::new(),
     };
+    let committed = CommittedGeneration {
+        activity_blake3: blake3::hash(b"").to_hex().to_string(),
+        ..CommittedGeneration::default()
+    };
+    let commits = CheckpointCommits::open(
+        paths.manifest.clone(),
+        manifest.clone(),
+        committed,
+        blake3::Hasher::new(),
+    );
     let recorder = ActivityRecorder::create_fresh(&run_id, &paths.activities)
-        .with_context(|| format!("create Graph Activity log {}", paths.activities.display()))?;
+        .with_context(|| format!("create Graph Activity log {}", paths.activities.display()))?
+        .with_commit_hook(commit_hook(&commits));
     let cost_ledger = GraphCostLedgerCheckpoint {
         path: paths.costs.clone(),
         identity: GraphCostLedgerState {
@@ -1521,19 +1935,22 @@ fn create_fresh_checkpoint(
             spent_micro_usd: 0,
             reserved_micro_usd: 0,
         },
+        commits: Some(Arc::clone(&commits)),
     };
-    cost_ledger.persist(0, 0)?;
-    write_manifest_atomic(&paths.manifest, &manifest)?;
-    Ok(PreparedGraphCheckpoint {
+    write_cost_ledger_atomic(&cost_ledger.path, &cost_ledger.identity)?;
+    let mut prepared = PreparedGraphCheckpoint {
         paths,
         manifest,
+        commits,
         recorder: Some(recorder),
         replayer: None,
         replayed_entries: 0,
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: Vec::new(),
         safety_provenance: None,
-    })
+    };
+    prepared.commit_manifest()?;
+    Ok(prepared)
 }
 
 fn resolve_checkpoint_paths(
@@ -1593,6 +2010,10 @@ fn resolve_checkpoint_paths(
 }
 
 /// Read a checkpoint manifest, migrating a v2 manifest to v3 in memory.
+///
+/// A manifest from before generations commits none, whatever generation
+/// fields its file holds: a resume stamps it as generation 0 from the files.
+/// A v4 manifest that names no committed generation fails closed.
 fn read_manifest(path: &Path) -> Result<GraphCheckpointManifest> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read Graph checkpoint {}", path.display()))?;
@@ -1602,6 +2023,17 @@ fn read_manifest(path: &Path) -> Result<GraphCheckpointManifest> {
     // version. The upgraded manifest is written on the next atomic commit.
     if manifest.schema_version == 2 {
         migrate_v2_to_v3(&mut manifest);
+    }
+    match manifest.schema_version {
+        PRE_GENERATION_SCHEMA_VERSION => {
+            manifest.generation = 0;
+            manifest.committed = None;
+        }
+        CHECKPOINT_SCHEMA_VERSION if manifest.committed.is_none() => bail!(
+            "Graph checkpoint {} has schema version {CHECKPOINT_SCHEMA_VERSION} but names no committed generation",
+            path.display()
+        ),
+        _ => {}
     }
     Ok(manifest)
 }
@@ -1614,7 +2046,7 @@ fn checkpoint_match(
     graph: &GraphIdentity,
     paths: &GraphCheckpointPaths,
 ) -> Result<FingerprintMatch, String> {
-    // Accept v2 (will migrate in-memory to v3) and v3.
+    // Accept v2 and v3, which resume as generation 0, and v4.
     if manifest.schema_version < MIN_SUPPORTED_SCHEMA_VERSION
         || manifest.schema_version > CHECKPOINT_SCHEMA_VERSION
     {
@@ -1649,7 +2081,7 @@ fn checkpoint_match(
 /// maps while preserving all existing fields including the cost ledger.
 fn migrate_v2_to_v3(manifest: &mut GraphCheckpointManifest) {
     debug_assert_eq!(manifest.schema_version, 2);
-    manifest.schema_version = CHECKPOINT_SCHEMA_VERSION;
+    manifest.schema_version = PRE_GENERATION_SCHEMA_VERSION;
     // extensions and receipts default to empty BTreeMap via serde(default),
     // so a v2 deserialized manifest already has them empty. We just bump the
     // version to signal the next atomic write should use v3 format.
@@ -1681,9 +2113,10 @@ fn validate_cost_ledger_state(
     if state.run_id != manifest.run_id {
         bail!("cost ledger run ID does not match the checkpoint manifest");
     }
+    // The cost a resume takes (see `GraphCostLedgerCheckpoint::load`).
     if state.reserved_micro_usd > 0 {
         bail!(
-            "cost ledger contains {} unresolved reserved micro-USD from an interrupted provider call",
+            "the checkpoint committed {} unresolved reserved micro-USD from an interrupted provider call",
             state.reserved_micro_usd
         );
     }
@@ -1897,16 +2330,18 @@ pub struct CheckpointInspection {
     pub paths: GraphCheckpointPaths,
     /// The manifest; a v2 manifest is migrated in memory.
     pub manifest: GraphCheckpointManifest,
-    /// Actual provider spend in the cost ledger, in millionths of one USD.
-    /// `None` when the ledger is missing or unreadable.
+    /// Actual provider spend, in millionths of one USD, as the checkpoint
+    /// committed it (the cost ledger's own before generations). `None` when
+    /// a checkpoint from before generations has no readable ledger.
     pub spent_micro_usd: Option<u64>,
     /// Spend reserved for a provider call that never settled. Resume refuses
-    /// a ledger with an unresolved reservation.
+    /// a checkpoint that committed an unresolved reservation.
     pub reserved_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
-    /// with the gate verdict of its latest record.
+    /// with the gate verdict of its latest record. A record a resume refused
+    /// does not count.
     pub recorded: BTreeMap<String, Option<TaskGateVerdict>>,
-    /// Records the last resume removed because they lacked a passing verdict.
+    /// Records the last resume refused because they lacked a passing verdict.
     pub invalidated_on_resume: Vec<InvalidatedActivity>,
     /// When the newest checkpoint this one replaced was archived, as Unix
     /// milliseconds: records older than this belong to earlier runs of the
@@ -1929,9 +2364,31 @@ pub fn inspect_canonical_checkpoint(
         return Ok(None);
     }
     let manifest = read_manifest(&paths.manifest)?;
-    let ledger = std::fs::read(&paths.costs)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok());
+    // The cost a resume takes: what the generation committed, or the ledger's
+    // own before generations.
+    let cost = match &manifest.committed {
+        Some(committed) => Some((committed.spent_micro_usd, committed.reserved_micro_usd)),
+        None => std::fs::read(&paths.costs)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok())
+            .map(|ledger| (ledger.spent_micro_usd, ledger.reserved_micro_usd)),
+    };
+    let recorded = match counted_records(
+        &paths.activities,
+        &manifest.plan_id,
+        &manifest.run_id,
+        manifest.committed.as_ref(),
+    ) {
+        Ok(records) => recorded_outputs(&records),
+        Err(error) => {
+            tracing::warn!(
+                activities = %paths.activities.display(),
+                %error,
+                "the Activity log does not read; no task output counts as recorded"
+            );
+            BTreeMap::new()
+        }
+    };
     let invalidated_on_resume = manifest
         .extensions
         .get(GATE_VERDICT_EXTENSION)
@@ -1941,29 +2398,23 @@ pub fn inspect_canonical_checkpoint(
         .map(|summary| summary.invalidated_on_resume)
         .unwrap_or_default();
     Ok(Some(CheckpointInspection {
-        recorded: recorded_outputs(&paths.activities, &manifest.run_id),
+        recorded,
         replaced_at_ms: latest_archive_ms(&paths),
-        spent_micro_usd: ledger.as_ref().map(|ledger| ledger.spent_micro_usd),
-        reserved_micro_usd: ledger.as_ref().map(|ledger| ledger.reserved_micro_usd),
+        spent_micro_usd: cost.map(|(spent, _)| spent),
+        reserved_micro_usd: cost.map(|(_, reserved)| reserved),
         invalidated_on_resume,
         manifest,
         paths,
     }))
 }
 
-/// Node ids recorded in an Activity log for `run_id`, each with the gate
-/// verdict of its latest record.
-fn recorded_outputs(path: &Path, run_id: &str) -> BTreeMap<String, Option<TaskGateVerdict>> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return BTreeMap::new();
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
-        .filter(|entry| entry.run_id == run_id)
+/// Node ids `records` hold, each with the gate verdict of its latest record.
+fn recorded_outputs(records: &[RecordEntry]) -> BTreeMap<String, Option<TaskGateVerdict>> {
+    records
+        .iter()
         .map(|entry| {
             let verdict = TaskGateVerdict::from_signals(&entry.signals);
-            (entry.node_id, verdict)
+            (entry.node_id.clone(), verdict)
         })
         .collect()
 }
@@ -1995,6 +2446,12 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
 /// so the checkpoint does not look alive afterwards. A checkpoint its run
 /// already finalized keeps its status. Returns whether it was marked.
 pub fn mark_running_checkpoint_interrupted(manifest: &Path, by: &str) -> Result<bool> {
+    // A checkpoint this process has open is marked through its commit point,
+    // so a commit that lands later keeps the status (gap-dc1d16).
+    let open = open_commits().get(manifest).and_then(Weak::upgrade);
+    if let Some(commits) = open {
+        return commits.mark_interrupted(by);
+    }
     let mut recorded = read_manifest(manifest)?;
     if recorded.status != GraphCheckpointStatus::Running {
         return Ok(false);
@@ -2346,34 +2803,19 @@ fn preview_graph_checkpoint(
             "the manifest references a missing Activity log or cost ledger",
         ));
     }
-    if let Err(error) = GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
-        return Ok(preview.unusable(force_resume, format!("{error:#}")));
-    }
-    // A resume sets aside a record whose write did not finish, so only the
-    // committed records count here.
-    let loaded = committed_activity_len(&paths.activities).and_then(|committed| {
-        ActivityReplayer::load_scoped_committed(
-            &paths.activities,
-            plan_id,
-            &manifest.run_id,
-            committed,
-        )
-    });
-    let replayer = match loaded {
-        Ok(replayer) => replayer,
-        Err(error) => {
-            return Ok(preview.refused(format!(
-                "load Graph Activity checkpoint {}: {error}",
-                paths.activities.display()
-            )));
-        }
+    let ledger = match GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
+        Ok(ledger) => ledger,
+        Err(error) => return Ok(preview.unusable(force_resume, format!("{error:#}"))),
     };
-    let required = verdict_required_nodes(graph);
-    let (restored, to_run) = task_nodes.into_iter().partition(|node| {
-        replayer
-            .lookup(node, 0)
-            .is_some_and(|signals| replay_refusal(signals, required.contains(node)).is_none())
-    });
+    // A resume selects the generation the manifest names, so only its
+    // committed records count here, less the ones the resume refuses.
+    let selected = match select_generation(&paths, &manifest, &ledger.identity, graph) {
+        Ok(selected) => selected,
+        Err(error) => return Ok(preview.refused(format!("{error:#}"))),
+    };
+    let (restored, to_run) = task_nodes
+        .into_iter()
+        .partition(|node| selected.replayer.lookup(node, 0).is_some());
     preview.action = ResumeAction::Resume;
     preview.restored_tasks = restored;
     preview.tasks_to_run = to_run;
@@ -3704,6 +4146,263 @@ depends_on = ["T1"]
             .expect("record");
         let replayer = ActivityReplayer::load_scoped(&activities, "p", &run_id).expect("log");
         assert_eq!(replayer.entry_count(), 2);
+    }
+
+    /// Contents of the files a resume set aside from `path`
+    /// (`<name>.uncommitted.<unix ms>`), in byte order.
+    fn set_aside_from(path: &Path) -> Vec<Vec<u8>> {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("file name");
+        let prefix = format!("{name}.uncommitted.");
+        let mut found: Vec<Vec<u8>> = std::fs::read_dir(path.parent().expect("dir"))
+            .expect("checkpoint dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .map(|candidate| std::fs::read(candidate).expect("set-aside bytes"))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// gap-dc1d16: a resume uses exactly the generation the manifest names.
+    /// A record and spend that reached the files after the last commit, and
+    /// a torn record, are set aside, and the committed bytes of the log stay
+    /// as they were.
+    #[test]
+    fn resume_selects_single_immutable_generation() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let run_id = fresh.run_id().to_string();
+        let paths = fresh.paths().clone();
+        // Node A's record and the spend so far are committed.
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record node A");
+        fresh
+            .take_cost_ledger()
+            .persist(125_000, 0)
+            .expect("persist the spend");
+        let committed = std::fs::read(&paths.activities).expect("committed log");
+        let generation = read_manifest(&paths.manifest).expect("manifest").generation;
+
+        // Node B's record and more spend reach the files, but the process
+        // dies before it commits them, while it appends another record.
+        ActivityRecorder::create(&run_id, &paths.activities)
+            .expect("recorder")
+            .record("p", "task-2", 0, Vec::new())
+            .expect("record node B");
+        let torn: &[u8] = b"{\"graph_id\":\"p\",\"node_id\":\"task-3\"";
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, torn).expect("tear the log");
+        drop(log);
+        let written = std::fs::read(&paths.activities).expect("log");
+        let uncommitted = written[committed.len()..].to_vec();
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&paths.costs).expect("read")).expect("parse");
+        ledger["spent_micro_usd"] = serde_json::json!(900_000);
+        std::fs::write(&paths.costs, ledger.to_string()).expect("write the ledger");
+        drop(fresh);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume the committed generation");
+        assert_eq!(resumed.replayed_entries(), 1);
+        let replayer = resumed.take_replayer().expect("replayer");
+        assert!(replayer.lookup("task-1", 0).is_some());
+        assert!(replayer.lookup("task-2", 0).is_none());
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 125_000);
+        assert_eq!(std::fs::read(&paths.activities).expect("log"), committed);
+        assert_eq!(set_aside_from(&paths.activities), [uncommitted]);
+        let ledgers = set_aside_from(&paths.costs);
+        assert_eq!(ledgers.len(), 1);
+        let aside: serde_json::Value = serde_json::from_slice(&ledgers[0]).expect("parse");
+        assert_eq!(aside["spent_micro_usd"], 900_000);
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
+        assert!(manifest.generation > generation);
+        let stamp = manifest.committed.expect("the committed generation");
+        assert_eq!(stamp.activity_bytes, committed.len() as u64);
+        assert_eq!(
+            stamp.activity_blake3,
+            blake3::hash(&committed).to_hex().to_string()
+        );
+        assert_eq!(stamp.spent_micro_usd, 125_000);
+    }
+
+    /// gap-dc1d16: resuming the same checkpoint twice derives the same state,
+    /// and neither resume rewrites the log: the record a resume refuses stays
+    /// in it, and the second resume refuses it again.
+    #[test]
+    fn resuming_twice_derives_the_same_state() {
+        let dir = tempdir().expect("tempdir");
+        let graph = verify_graph("p");
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let mut recorder = fresh.take_recorder();
+        // task-1's verify steps never passed; task-2 has none to pass.
+        recorder
+            .record(
+                "p",
+                "task-1",
+                0,
+                verdict_output("BLOCK: not applied", None),
+            )
+            .expect("record task-1");
+        recorder
+            .record(
+                "p",
+                "task-2",
+                0,
+                verdict_output("done", Some(TaskGateVerdict::Passed)),
+            )
+            .expect("record task-2");
+        drop(recorder);
+        fresh
+            .take_cost_ledger()
+            .persist(40_000, 0)
+            .expect("persist the spend");
+        fresh.finish(false).expect("finish");
+        let log = std::fs::read(&fresh.paths().activities).expect("log");
+
+        let derive = || {
+            let mut resumed =
+                prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                    .expect("resume");
+            let replayer = resumed.take_replayer().expect("replayer");
+            let restored = ["task-1", "task-2"].map(|node| replayer.lookup(node, 0).is_some());
+            assert_eq!(
+                std::fs::read(&resumed.paths().activities).expect("log"),
+                log
+            );
+            (
+                resumed.replayed_entries(),
+                restored,
+                resumed.invalidated_activities().to_vec(),
+                resumed.gate_verdicts(),
+                resumed.take_cost_ledger().spent_micro_usd(),
+            )
+        };
+        let first = derive();
+        assert_eq!(first.1, [false, true]);
+        assert_eq!(first.2.len(), 1);
+        assert_eq!(first.2[0].node_id, "task-1");
+        assert_eq!(first.4, 40_000);
+        assert_eq!(derive(), first);
+    }
+
+    /// gap-dc1d16: a checkpoint from before generations (schema v3) resumes
+    /// as generation 0, with its log's complete records and its ledger's
+    /// cost, and carries a generation from then on.
+    #[test]
+    fn a_v3_checkpoint_resumes_as_generation_zero() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh
+            .take_cost_ledger()
+            .persist(70_000, 0)
+            .expect("persist the spend");
+        fresh.finish(false).expect("finish");
+        let paths = fresh.paths().clone();
+        let committed = std::fs::read(&paths.activities).expect("log");
+        // An older roko wrote the manifest, and died while it appended.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&paths.manifest).expect("read")).expect("parse");
+        value["schema_version"] = serde_json::json!(3);
+        let fields = value.as_object_mut().expect("manifest object");
+        fields.remove("generation");
+        fields.remove("committed");
+        std::fs::write(&paths.manifest, value.to_string()).expect("write a v3 manifest");
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, b"{\"graph_id\":").expect("tear the log");
+        drop(log);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume a v3 checkpoint");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 70_000);
+        assert_eq!(std::fs::read(&paths.activities).expect("log"), committed);
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
+        assert_eq!(manifest.schema_version, CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(manifest.generation, 1);
+        let stamp = manifest.committed.expect("the committed generation");
+        assert_eq!(stamp.activity_bytes, committed.len() as u64);
+        assert_eq!(stamp.spent_micro_usd, 70_000);
+    }
+
+    /// gap-dc1d16: a resume fails closed, and changes no file, when bytes a
+    /// generation committed have changed.
+    #[test]
+    fn resume_fails_closed_when_committed_records_change() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let paths = fresh.paths().clone();
+        let log = std::fs::read_to_string(&paths.activities).expect("log");
+        let edited = log.replace("task-1", "task-9");
+        std::fs::write(&paths.activities, &edited).expect("edit the log");
+        let manifest = std::fs::read(&paths.manifest).expect("manifest");
+
+        let error = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect_err("changed committed records must fail closed");
+        assert!(format!("{error:#}").contains("changed after generation"));
+        assert_eq!(
+            std::fs::read_to_string(&paths.activities).expect("log"),
+            edited
+        );
+        assert_eq!(std::fs::read(&paths.manifest).expect("manifest"), manifest);
+    }
+
+    /// gap-dc1d16: a forced exit marks an open checkpoint interrupted through
+    /// its commit point, so a record committed afterwards keeps the status.
+    #[test]
+    fn a_commit_after_a_forced_exit_mark_keeps_the_interrupted_status() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        assert!(mark_running_checkpoint_interrupted(&manifest, "SIGHUP").expect("mark"));
+        checkpoint
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        let committed = read_manifest(&manifest)
+            .expect("manifest")
+            .committed
+            .expect("the committed generation");
+        let log = std::fs::read(&checkpoint.paths().activities).expect("log");
+        assert_eq!(committed.activity_bytes, log.len() as u64);
     }
 
     #[test]

@@ -34,6 +34,13 @@ flipped convention of S08 §4.6's `convention_flip` (gap-98516b). A family that 
 directory. `--scratch DIR` keeps every tree for inspection, and `--json PATH` writes every judgement. `vb ci` (S08
 §5.7) is meant to wrap this.
 
+F7 (`f7_rustiter`) builds a small, dependency-free crate for every visible check and truth-suite run, with the
+host's Rust toolchain (gap-46fd19). Each step has a HOME of its own, where rustup's proxies would find no toolchain,
+so the CI resolves it once (`families/common/toolchain.py`) and gives every step the toolchain's own bin directory
+first on PATH, the real `RUSTUP_HOME`, and a `CARGO_HOME` under the step's HOME. On a host without a toolchain, F7's
+truth suite exits 2 and its cells are red, never judged. The full check of task 3324 is `--families f7 --levels 1-5
+--seeds 10` (50 cells).
+
 ## What a green cell means
 
 A task family is a directory with F1's and F4's interface:
@@ -95,6 +102,8 @@ doubled the F1 and F4 cells; the row after them ran on 2026-09-30, with a load a
 | `--families f1,f4 --seeds 2` | 40 | 46 s |
 | `--families pl --seeds 3` | 18 | 21 s |
 | `test_ci.py` | — | 25 s |
+| `--families f7 --levels 1-5 --seeds 10 --workers 6`, 2026-10-02, load average about 25 | 50 | 196 to 233 s |
 
 Cells run on a thread pool (`--workers`, 10 by default), highest level first, because F4 ℓ5 cells take the longest
-(about 15 s each).
+(about 15 s each). An F7 cell compiles its crate 15 times (three kinds, each run by the agent, re-run twice and judged
+twice), about 10 to 20 s per cell under that load.

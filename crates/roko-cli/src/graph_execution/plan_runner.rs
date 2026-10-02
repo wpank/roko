@@ -1757,6 +1757,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            workdir,
         );
         routed.merge(route_execution_commands(
             &mut inject_rx,
@@ -1766,6 +1767,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            workdir,
         ));
         for plan_id in routed.cancelled_before_start {
             graph_tui_bridge.log_event(
@@ -2748,6 +2750,10 @@ fn report_blocked_plan(
 ///   cancelled earlier in this run ([`PlanRerun`]).
 /// - Inject (`roko inject`) queues an operator directive or context for the
 ///   next task of the running plan it names (`directives`, gap-f118b3).
+/// - Approve and reject record a reviewer's decision on the task held for
+///   review that the approval id names (`<plan>/<task>`), as `roko plan
+///   review` does; the held attempt in `workdir` reads it
+///   ([`record_held_task_review`]).
 ///
 /// Every other command, and one these cannot carry out, is rejected with
 /// the reason ([`reject_command`]): none is acknowledged and then dropped.
@@ -2759,6 +2765,7 @@ fn route_execution_commands(
     pause: &AtomicBool,
     task_stops: &crate::graph_task_dispatch::OperatorStops,
     directives: &crate::graph_task_dispatch::OperatorDirectives,
+    workdir: &Path,
 ) -> RoutedCommands {
     let mut routed = RoutedCommands::default();
     while let Ok(cmd) = commands.try_recv() {
@@ -2846,12 +2853,13 @@ fn route_execution_commands(
                 Some(plan_id) => reject_command(&cmd, &format!("plan '{plan_id}' is not running")),
                 None => reject_command(&cmd, "name the running plan to send it to"),
             },
-            ExecutionCommandKind::Approve { .. } | ExecutionCommandKind::RejectApproval { .. } => {
-                reject_command(
-                    &cmd,
-                    "a Graph run takes a held task's approval from `roko plan review`",
-                )
+            ExecutionCommandKind::Approve { approval_id } => {
+                record_held_task_review(workdir, &cmd, approval_id, "approved", "")
             }
+            ExecutionCommandKind::RejectApproval {
+                approval_id,
+                reason,
+            } => record_held_task_review(workdir, &cmd, approval_id, "rejected", reason),
         };
         if matches!(cmd.kind, ExecutionCommandKind::Cancel) {
             tracing::info!(
@@ -2863,6 +2871,32 @@ fn route_execution_commands(
         let _ = acks.try_send(ack_for(&cmd, status, note));
     }
     routed
+}
+
+/// Record a reviewer's `decision` (`approved` or `rejected`) with `note` on
+/// the task held for review in `workdir` that `approval_id` names as
+/// `<plan>/<task>`, as `roko plan review` does (gap-0d64d5); the held attempt
+/// reads it from the review log. Rejected, with the reason, when the id names
+/// no task waiting for a review.
+fn record_held_task_review(
+    workdir: &Path,
+    cmd: &crate::execution_control::ExecutionCommand,
+    approval_id: &str,
+    decision: &str,
+    note: &str,
+) -> (CommandAckStatus, Option<String>) {
+    let Some((plan_id, task_id)) = approval_id.rsplit_once('/') else {
+        let reason = format!("approval `{approval_id}` names no held task: use `<plan>/<task>`");
+        return reject_command(cmd, &reason);
+    };
+    match crate::graph_task_dispatch::record_review(workdir, plan_id, task_id, decision, note) {
+        Ok(attempt_key) => {
+            let note = format!("{decision} attempt {attempt_key} of {plan_id}/{task_id}");
+            tracing::info!(command_id = %cmd.command_id, "{note}");
+            (CommandAckStatus::Completed, Some(note))
+        }
+        Err(error) => reject_command(cmd, &error.to_string()),
+    }
 }
 
 /// Why plan `plan_id` cannot run again now ([`PlanSetScheduler::retry`]).
@@ -5620,8 +5654,19 @@ exec sleep 60
     /// Route `commands`, each a kind, the plan it names and the task, through
     /// [`route_execution_commands`] while plan `01-run` runs, `02-wait` waits
     /// for it, and `03-failed` has failed. `task_stops` holds the agents
-    /// that run.
+    /// that run, and no task is held for review.
     fn route_tui_commands(
+        commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
+        task_stops: &crate::graph_task_dispatch::OperatorStops,
+    ) -> RoutedTui {
+        let workdir = tempfile::tempdir().expect("workdir");
+        route_tui_commands_in(workdir.path(), commands, task_stops)
+    }
+
+    /// [`route_tui_commands`] for a run in `workdir`, whose review holds
+    /// approve and reject commands can name.
+    fn route_tui_commands_in(
+        workdir: &Path,
         commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
         task_stops: &crate::graph_task_dispatch::OperatorStops,
     ) -> RoutedTui {
@@ -5665,6 +5710,7 @@ exec sleep 60
             &pause,
             task_stops,
             &directives,
+            workdir,
         );
         RoutedTui {
             routed,
@@ -5747,9 +5793,10 @@ exec sleep 60
 
     /// gap-c002bb: a Graph run rejects, with its reason, every TUI command
     /// it cannot carry out, and never accepts one and drops it: gate
-    /// re-verification, approvals, a cancel naming a plan that is neither
-    /// running nor waiting, a retry of a plan that is running, waiting or
-    /// unnamed, and a skip of a task with no running agent.
+    /// re-verification, approvals naming no held task, a cancel naming a
+    /// plan that is neither running nor waiting, a retry of a plan that is
+    /// running, waiting or unnamed, and a skip of a task with no running
+    /// agent.
     #[test]
     fn unsupported_tui_commands_are_rejected_with_a_reason() {
         let commands = vec![
@@ -5800,6 +5847,67 @@ exec sleep 60
                 "{ack:?}"
             );
         }
+    }
+
+    /// 1218: a Graph run takes a reviewer's decision on a held task from its
+    /// own control channel, as `roko plan review` records it. Approve and
+    /// RejectApproval name the task as `<plan>/<task>`; the decision goes to
+    /// the review log with the hold's attempt key, a rejection with its
+    /// reason, and an id naming no held task is rejected.
+    #[test]
+    fn approve_command_records_the_held_tasks_review() {
+        let workdir = tempfile::tempdir().expect("workdir");
+        let layout = RokoLayout::for_project(workdir.path());
+        for (task_id, attempt_key) in [("T1", "run-1:01-run:T1:1"), ("T2", "run-1:01-run:T2:3")] {
+            let hold = layout.review_hold("01-run", task_id);
+            std::fs::create_dir_all(hold.parent().expect("holds dir")).expect("holds dir");
+            let body = serde_json::json!({"task_id": task_id, "attempt_key": attempt_key});
+            std::fs::write(&hold, body.to_string()).expect("write the hold");
+        }
+        let approve = |approval_id: &str| ExecutionCommandKind::Approve {
+            approval_id: approval_id.to_string(),
+        };
+        let reject = ExecutionCommandKind::RejectApproval {
+            approval_id: "01-run/T2".to_string(),
+            reason: "name the file after the feature".to_string(),
+        };
+
+        let seen = route_tui_commands_in(
+            workdir.path(),
+            vec![
+                (approve("01-run/T1"), Some("01-run"), Some("T1")),
+                (reject, Some("01-run"), Some("T2")),
+                (approve("01-run/T9"), Some("01-run"), Some("T9")),
+                (approve("ap-1"), Some("01-run"), None),
+            ],
+            &crate::graph_task_dispatch::OperatorStops::default(),
+        );
+
+        let statuses: Vec<_> = seen.acks.iter().map(|ack| ack.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                CommandAckStatus::Completed,
+                CommandAckStatus::Completed,
+                CommandAckStatus::Rejected,
+                CommandAckStatus::Rejected,
+            ]
+        );
+        let not_held = seen.acks[2].message.as_deref().unwrap_or_default();
+        assert!(not_held.contains("not waiting for a review"), "{not_held}");
+        let log = std::fs::read_to_string(layout.reviews_log()).expect("review log");
+        let entries: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("review entry"))
+            .collect();
+        assert_eq!(entries.len(), 2, "{log}");
+        assert_eq!(entries[0]["task_id"], "T1");
+        assert_eq!(entries[0]["decision"], "approved");
+        assert_eq!(entries[0]["attempt_key"], "run-1:01-run:T1:1");
+        assert_eq!(entries[1]["task_id"], "T2");
+        assert_eq!(entries[1]["decision"], "rejected");
+        assert_eq!(entries[1]["attempt_key"], "run-1:01-run:T2:3");
+        assert_eq!(entries[1]["comment"], "name the file after the feature");
     }
 
     /// A TUI cancel stops the running plan it names and drops a waiting one

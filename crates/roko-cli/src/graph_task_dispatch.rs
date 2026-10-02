@@ -88,6 +88,7 @@ mod verify_focus;
 mod watchdog;
 mod wiring;
 
+pub use attempt_workspace::record_review;
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};

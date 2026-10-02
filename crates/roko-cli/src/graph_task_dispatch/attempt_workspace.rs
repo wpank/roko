@@ -316,6 +316,56 @@ fn review_decision(
         })
 }
 
+/// Record `decision` (`approved` or `rejected`) with `note` on the attempt
+/// of `task_id` that `plan_id`'s run holds for review (gap-0d64d5), in the
+/// review log the held attempt reads (`review_decision`). `roko plan
+/// review` and a Graph run's Approve and Reject commands record through it,
+/// and `roko serve`'s review route writes the same entry. Returns the
+/// attempt's key.
+///
+/// # Errors
+///
+/// When the task holds no attempt for review, or the log cannot be written.
+pub fn record_review(
+    workdir: &Path,
+    plan_id: &str,
+    task_id: &str,
+    decision: &str,
+    note: &str,
+) -> anyhow::Result<String> {
+    use anyhow::anyhow;
+    use std::io::Write as _;
+
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let hold_path = layout.review_hold(plan_id, task_id);
+    let hold: serde_json::Value = std::fs::read(&hold_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            anyhow!("task `{task_id}` of plan `{plan_id}` is not waiting for a review")
+        })?;
+    let attempt_key = hold["attempt_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("the review hold {} names no attempt", hold_path.display()))?
+        .to_string();
+    let entry = serde_json::json!({
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "decision": decision,
+        "comment": note,
+        "attempt_key": attempt_key,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let log = layout.reviews_log();
+    std::fs::create_dir_all(layout.state_dir())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    file.write_all(format!("{entry}\n").as_bytes())?;
+    Ok(attempt_key)
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command as StdCommand;

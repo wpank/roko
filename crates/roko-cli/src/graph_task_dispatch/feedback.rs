@@ -195,15 +195,14 @@ impl GraphTaskDispatcher {
         self.agg_tokens_out.fetch_add(tokens_out, Ordering::Relaxed);
         self.agg_dispatch_count.fetch_add(1, Ordering::Relaxed);
 
-        // Determine model choice source for feedback routing.
-        let model_source = if dispatch_plan.forced {
+        // The source routing returned (G32): a ladder rung, a task hint, a
+        // guard's fallback and the default reach the learners as themselves,
+        // not as router picks. A forced model (`--model`, express mode) is an
+        // override whatever routing reported.
+        let model_source = if dispatch_plan.forced || self.cli_model_override.is_some() {
             ModelChoiceSource::Override
-        } else if self.cli_model_override.is_some() {
-            ModelChoiceSource::Override
-        } else if task.model_hint.is_some() {
-            ModelChoiceSource::TaskHint
         } else {
-            ModelChoiceSource::Router
+            dispatch_plan.source
         };
         let experiment_settlement = prompt_experiment::settlement(learning);
         let diagnostics = &dispatch_plan.prompt.diagnostics;
@@ -986,6 +985,75 @@ fi
 printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
 printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
+
+    /// Feedback sink keeping the `model_source` of each completed attempt.
+    #[derive(Debug, Default)]
+    struct SourceLog(parking_lot::Mutex<Vec<ModelChoiceSource>>);
+
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for SourceLog {
+        fn name(&self) -> &'static str {
+            "model-sources"
+        }
+
+        async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
+            if let FeedbackEvent::TaskCompleted { model_source, .. } = event {
+                self.0.lock().push(*model_source);
+            }
+            Ok(())
+        }
+    }
+
+    /// The model sources the feedback events of one passing attempt carry,
+    /// for a task without a model hint in the workspace `configure` sets up.
+    async fn fed_back_sources(configure: impl FnOnce(&mut RokoConfig)) -> Vec<ModelChoiceSource> {
+        let temp = tempdir().expect("tempdir");
+        let sources = Arc::new(SourceLog::default());
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(FeedbackFacade::new().with_sink(sources.clone()))),
+            ..GraphFeedbackContext::default()
+        };
+        let workspace = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            configure(config);
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, workspace, feedback).await;
+        task.model_hint = None;
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the verify step passes");
+        sources.0.lock().clone()
+    }
+
+    /// G32: the feedback event carries the source routing returned. With no
+    /// router and no rung that can run, the default runs; on a ladder whose
+    /// second rung is the only one that can run, that rung does. Neither is
+    /// relabelled a router pick.
+    #[tokio::test]
+    async fn feedback_carries_the_routes_own_source() {
+        assert_eq!(fed_back_sources(|_| {}).await, [ModelChoiceSource::Default]);
+
+        let laddered = fed_back_sources(|config| {
+            if let Some(model) = config.models.get_mut("stream-model") {
+                model.supports_tools = true;
+            }
+            config.routing.ladder.rungs = vec![
+                roko_core::config::routing::LadderRung {
+                    name: "cheap".to_string(),
+                    model: "no-such-model".to_string(),
+                },
+                roko_core::config::routing::LadderRung {
+                    name: "mid".to_string(),
+                    model: "stream-model".to_string(),
+                },
+            ];
+        })
+        .await;
+        assert_eq!(laddered, [ModelChoiceSource::Ladder { rung: 1 }]);
+    }
 
     /// bug-c34782 through the batch dispatch path: the router learns a
     /// success from a passing verify step and a failure from a failing one,

@@ -22,12 +22,14 @@
 //!
 //! ## Override handling
 //!
-//! When [`ModelChoiceSource::Override`] tagged a task, the sink records
-//! it via `record_override_outcome` so manual operator overrides do not
-//! pollute the bandit signal that drives router decisions on
-//! non-overridden tasks. A `[routing.ladder]` rung
-//! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
-//! so the learner sees every rung.
+//! The sink credits an outcome by the source routing returned for its model
+//! (`router_credit`). When [`ModelChoiceSource::Override`] tagged a task,
+//! the sink records it via `record_override_outcome` so manual operator
+//! overrides do not pollute the bandit signal that drives router decisions
+//! on non-overridden tasks. A `[routing.ladder]` rung
+//! ([`ModelChoiceSource::Ladder`]), a task hint, a guard's fallback and the
+//! default are recorded like the router's own pick, so the learner sees
+//! every rung.
 //!
 //! ## Durability
 //!
@@ -126,6 +128,7 @@ impl FeedbackSink for RoutingObservationSink {
             return Ok(());
         }
 
+        let credit = router_credit(*model_source);
         let ctx = match routing_context {
             Some(ctx) => ctx.clone(),
             None => build_fallback_routing_context(
@@ -145,7 +148,7 @@ impl FeedbackSink for RoutingObservationSink {
             let router = Arc::clone(&self.router);
             let model = outcome.model.clone();
             let (cost_usd, duration_ms) = (outcome.cost_usd, outcome.duration_ms);
-            let overridden = *model_source == ModelChoiceSource::Override;
+            let overridden = credit == RouterCredit::Override;
             tokio::task::spawn_blocking(move || {
                 if overridden {
                     journal.observe_override_outcome(
@@ -179,7 +182,7 @@ impl FeedbackSink for RoutingObservationSink {
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path
         // instead of the full router-outcome path.
-        if *model_source == ModelChoiceSource::Override {
+        if credit == RouterCredit::Override {
             self.router.record_override_outcome(
                 &outcome.model,
                 &ctx,
@@ -200,6 +203,30 @@ impl FeedbackSink for RoutingObservationSink {
             outcome.duration_ms,
         );
         Ok(())
+    }
+}
+
+/// How the routing sink credits an outcome to the router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouterCredit {
+    /// The router's learners: category stats, confidence and the bandit.
+    Full,
+    /// An operator override: dampened, so it does not pollute the bandit
+    /// signal (audit #90).
+    Override,
+}
+
+/// The credit an outcome earns from the source routing returned for its
+/// model. Every source but an override is credited like the router's own
+/// pick.
+const fn router_credit(source: ModelChoiceSource) -> RouterCredit {
+    match source {
+        ModelChoiceSource::Override => RouterCredit::Override,
+        ModelChoiceSource::TaskHint
+        | ModelChoiceSource::Ladder { .. }
+        | ModelChoiceSource::Router
+        | ModelChoiceSource::Fallback { .. }
+        | ModelChoiceSource::Default => RouterCredit::Full,
     }
 }
 

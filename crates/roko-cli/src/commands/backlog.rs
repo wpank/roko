@@ -9,6 +9,7 @@
 //! code.
 
 use anyhow::{Context, Result};
+use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -21,7 +22,75 @@ use roko_cli::plan_generate::DEFAULT_BACKLOG_DIR;
 use roko_cli::task_parser::TasksFile;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 
-use crate::{BacklogCmd, Cli, resolve_workdir};
+use crate::{Cli, resolve_workdir};
+
+// -----------------------------------------------------------------------
+// Backlog import
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BacklogCmd {
+    /// Import backlog spec(s) as plan artifacts with eligibility checks.
+    Import {
+        /// Path to a single backlog .md file or a directory containing them.
+        path: PathBuf,
+        /// Create/update the plan artifact without execution.
+        #[arg(long)]
+        draft: bool,
+        /// Alias for --draft (deprecated; use --draft).
+        #[arg(long)]
+        plan: bool,
+        /// Create then start an eligible packet (fails on blocked packets).
+        #[arg(long)]
+        execute: bool,
+        /// Dry-run: check eligibility without side effects.
+        #[arg(long)]
+        check: bool,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// List backlog items with their status and import state.
+    List {
+        /// Backlog directory (default: tmp/backlog); its archive/ is listed too.
+        path: Option<PathBuf>,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Reconcile plan TOML status against the Graph runs on record.
+    ///
+    /// Walks every tasks.toml in the plans directory, plan sets included, and
+    /// compares its task and meta statuses with the plan's Graph checkpoint in
+    /// .roko/state/graph/. Reports each mismatch with a stable code, such as
+    /// AUDIT_RUN_SUCCEEDED_TOML_READY, and exits 1 when any is an error.
+    Audit {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Apply deterministic mechanical repairs: remove broken plan
+        /// references from the index, deduplicate IDs, and fix spec counts.
+        /// Never changes semantic status (use `mark-done` for that).
+        #[arg(long)]
+        fix_safe: bool,
+    },
+    /// Mark a backlog spec as done with explicit evidence.
+    ///
+    /// Finds the backlog file by its numeric ID (e.g. `229`) and writes or
+    /// updates the `**Status**: Done (DATE) -- EVIDENCE` line near the top.
+    MarkDone {
+        /// Numeric backlog ID (e.g. 229).
+        id: u32,
+        /// Evidence string (run-id, commit hash, PR number, etc.).
+        evidence: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
 
 /// Dispatch backlog subcommands.
 pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {

@@ -4,6 +4,248 @@ use crate::*;
 use anyhow::Context as _;
 use std::collections::HashSet;
 
+// -----------------------------------------------------------------------
+// Learn: learning state + inspection
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LearnCmd {
+    /// Show all learning state (router, experiments, efficiency, episodes, reflexes).
+    All {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show cascade router state.
+    #[command(alias = "router")]
+    Route {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Manage prompt A/B experiments (list, create, conclude, report).
+    Experiments {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Subcommand: list | create | conclude | report. Defaults to list.
+        #[command(subcommand)]
+        cmd: Option<ExperimentsSubCmd>,
+    },
+    /// Show efficiency metrics.
+    Efficiency {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Show episode summary.
+    Episodes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+        /// Filter by pass/fail status (pass or fail).
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show T0 reflex rules (count, top five by hits, and recent demotions).
+    Reflexes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show durable knowledge entry counts.
+    #[command(alias = "knowledge")]
+    KnowledgeStats {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show learned playbook store contents (name, trigger pattern, success/failure counts).
+    Playbooks {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-section prompt pass-rate statistics (worst sections first).
+    Sections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show recent post-gate reflection records.
+    Reflections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum number of recent reflections to display.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Read-only inspection of a learning subsystem (gates, routing, budget).
+    Inspect {
+        #[command(subcommand)]
+        subsystem: InspectSubsystem,
+    },
+    /// Show tool usage statistics from the tool audit log.
+    Tools {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Trace an end-to-end feedback loop: knowledge ingested -> injected -> gate pass -> confirmation.
+    FeedbackProof {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-role cost profiles (average cost, token budget, pass rate).
+    RoleCosts {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show graduation policy state (configured policies, counters, and evaluation preview).
+    Graduation {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
+    /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
+    #[command(hide = true)]
+    Tune {
+        /// Subsystem to tune: gates, routing, budget.
+        #[arg(default_value = "gates")]
+        subsystem: String,
+        /// Display current values without modifying.
+        #[arg(long)]
+        dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ExperimentsSubCmd — subcommands for `roko learn experiments`
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ExperimentsSubCmd {
+    /// List all experiments as a table (Name | Status | Variants | Observations | Best Variant | Win Rate).
+    List {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N experiments.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: Option<u32>,
+    },
+    /// Create a new prompt experiment.
+    Create {
+        /// Unique experiment identifier.
+        #[arg(long)]
+        name: String,
+        /// Prompt section under test (e.g. "constraints").
+        #[arg(long)]
+        section: String,
+        /// Comma-separated variant ids (e.g. "control,concise-v2").
+        #[arg(long)]
+        variants: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Conclude an experiment by auto-picking the best-performing variant as winner.
+    Conclude {
+        /// Experiment identifier to conclude.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Print a detailed statistical report for one experiment.
+    Report {
+        /// Experiment identifier to report on.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// InspectSubsystem — read-only learning inspection targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum InspectSubsystem {
+    /// Inspect adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect cascade routing state and model statistics.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect configured budget limits and spend history.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
 /// Format a cost value for human display.
 /// Uses the heuristic: if cost is exactly 0.0 and both token counts are 0,
 /// treat the value as unknown.

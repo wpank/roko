@@ -89,7 +89,9 @@ impl ChatFeedbackRuntime {
         // them (find-0dc1d5).
         let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
-        let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
+        // Nothing else costs a chat turn's model call (bug-724982).
+        let roko_dir = workdir.join(".roko");
+        let feedback_service = FeedbackService::from_roko_dir(&roko_dir).with_cost_records();
         let sink: Arc<dyn FeedbackSink> = match &cascade_router {
             Some(router) => Arc::new(
                 feedback_service
@@ -2631,6 +2633,65 @@ max_output = 4096
         let router =
             std::fs::read_to_string(learn_dir.join("cascade-router.json")).expect("router log");
         assert!(router.contains("mock-chat"), "{router}");
+    }
+
+    /// bug-724982: a chat turn whose model call reported usage writes one
+    /// cost row, where `roko status` and the daily budget read spend.
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_calls_write_cost_rows() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"chat cost ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.002,"usage":{"input_tokens":12,"output_tokens":5}}'
+"#,
+        );
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[providers.mock]
+kind = "claude_cli"
+command = "{}"
+
+[models.mock-chat]
+provider = "mock"
+slug = "mock-chat"
+max_output = 4096
+"#,
+                script.display()
+            ),
+        )
+        .expect("write roko.toml");
+
+        let mut session = test_session();
+        session.workdir = tmp.path().to_path_buf();
+        session.model = "mock-chat".to_string();
+        session.model_selection.requested_model = Some("mock-chat".to_string());
+        session.model_selection.effective_model_key = "mock-chat".to_string();
+        session.model_selection.provider_key = "mock".to_string();
+        session.model_selection.provider_kind = "claude_cli".to_string();
+        session.model_selection.backend_slug = "mock-chat".to_string();
+
+        session
+            .send_turn_api("hello from chat")
+            .await
+            .expect("mock chat turn");
+
+        let costs = std::fs::read_to_string(tmp.path().join(".roko/learn/costs.jsonl"))
+            .expect("the chat turn's cost row");
+        let rows: Vec<serde_json::Value> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("cost row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{costs}");
+        assert_eq!(rows[0]["role"], "chat", "{costs}");
+        assert_eq!(rows[0]["provider"], "mock", "{costs}");
+        assert_eq!(rows[0]["input_tokens"], 12, "{costs}");
+        assert_eq!(rows[0]["output_tokens"], 5, "{costs}");
     }
 
     #[test]

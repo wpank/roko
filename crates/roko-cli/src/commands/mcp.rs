@@ -1,10 +1,43 @@
 //! MCP configuration dispatch and auto-discovery helpers.
 
 use anyhow::{Context as _, Result, anyhow};
+use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::ConfigMcpCmd;
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigMcpCmd {
+    /// List configured MCP servers.
+    List {
+        /// Directory containing `roko.toml` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Test an MCP server by performing a real initialize + tools/list handshake.
+    Test {
+        /// MCP server name from the config.
+        name: String,
+        /// Per-stage timeout in seconds (applies to initialize, tools/list, and shutdown).
+        #[arg(long, default_value_t = roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..=60))]
+        timeout_secs: u64,
+        /// Directory containing `.roko/mcp-config.json` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Add an MCP server entry to `.roko/mcp-config.json`.
+    Add {
+        /// Server name (e.g. "roko").
+        name: String,
+        /// Launch command (e.g. "/usr/local/bin/roko-mcp").
+        command: String,
+        /// Optional arguments.
+        #[arg(last = true)]
+        args: Vec<String>,
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
 
 /// Dispatch `roko config mcp` subcommands.
 pub(crate) async fn dispatch_mcp_cmd(cmd: &ConfigMcpCmd, workdir: &Path) -> Result<()> {

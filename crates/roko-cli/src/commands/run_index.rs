@@ -4,8 +4,9 @@
 //! request handling. Global JSONL generations remain authoritative; indexes
 //! are disposable read projections rebuilt only after an explicit `--apply`.
 
-use crate::{Cli, EXIT_FAILURE, EXIT_SUCCESS, RunIndexCmd, resolve_workdir};
+use crate::{Cli, EXIT_FAILURE, EXIT_SUCCESS, resolve_workdir};
 use anyhow::{Context as _, Result, bail};
+use clap::Subcommand;
 use fs2::FileExt as _;
 use serde::Serialize;
 use serde_json::Value;
@@ -14,6 +15,32 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Offline maintenance for derived per-run observability indexes.
+#[derive(Debug, Subcommand)]
+pub(crate) enum RunIndexCmd {
+    /// Boundedly inspect or rebuild historical per-run indexes.
+    Repair {
+        /// Perform atomic replacements. Without this flag the command is read-only.
+        #[arg(long)]
+        apply: bool,
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum aggregate bytes read across runner/runtime generations.
+        #[arg(long, default_value_t = 512 * 1024 * 1024)]
+        max_bytes: u64,
+        /// Maximum aggregate complete JSONL records inspected.
+        #[arg(long, default_value_t = 1_000_000)]
+        max_records: u64,
+        /// Maximum number of distinct per-run index files staged.
+        #[arg(long, default_value_t = 4_096)]
+        max_indexes: usize,
+        /// Hard wall-clock budget before the bounded atomic replacement phase.
+        #[arg(long, default_value_t = 120)]
+        deadline_secs: u64,
+    },
+}
 
 const MAX_JSONL_RECORD_BYTES: usize = 256 * 1024;
 const MAX_OPEN_STAGING_WRITERS: usize = 32;

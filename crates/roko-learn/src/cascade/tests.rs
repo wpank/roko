@@ -1449,8 +1449,9 @@ fn perplexity_observations_include_citations_latency_and_total_cost() {
     assert_eq!(sonar.total_search_latency_ms, 1_200);
     assert!((sonar.avg_search_latency_ms - 1_200.0).abs() < 1e-9);
     assert_eq!(sonar.perplexity_requests, 1);
-    assert!((sonar.total_cost_usd - 0.0245).abs() < 1e-9);
-    assert!((sonar.avg_cost_usd - 0.0245).abs() < 1e-9);
+    // $0.0105 of tokens plus the low-tier $0.006 request fee (bug-e2b31a).
+    assert!((sonar.total_cost_usd - 0.0165).abs() < 1e-9);
+    assert!((sonar.avg_cost_usd - 0.0165).abs() < 1e-9);
 }
 
 #[test]

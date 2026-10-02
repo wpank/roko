@@ -18,7 +18,7 @@ anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko
 links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-34a4b5", "gap-d8c39a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "for s in observe_residual apply_profile should_skip_rung_for_temperament GateRatchet roko_gate_verdicts_total suggested_max_retries; do grep -rq \"$s\" crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_execution crates/roko-cli/src/runner/persist.rs || exit 1; done && grep -rqw 'fn graph_verify_feeds_gate_thresholds' crates/roko-cli/src/ && cargo test -p roko-cli graph_verify_feeds_gate_thresholds"
+command = "for s in observe_residual apply_profile should_skip_rung_for_temperament settle_step_regressions roko_gate_verdicts_total suggested_max_retries; do grep -rq \"$s\" crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_execution crates/roko-cli/src/runner/persist.rs || exit 1; done && grep -rqw 'fn graph_verify_feeds_gate_thresholds' crates/roko-cli/src/ && cargo test -p roko-cli graph_verify_feeds_gate_thresholds"
 
 [closed]
 at = 2026-10-01
@@ -243,3 +243,8 @@ Verified 2026-09-28: rung_for_gate_name is used on the Graph path (graph_task_di
 Checked 2026-09-29 at d9e79e9d8: unchanged. Correction: build_rung_execution_inputs still exists (crates/roko-cli/src/runner/gate_dispatch.rs:1781) but is called only from run_gate_once (:1192, :1335), which only tests reach. A grep of graph_task_dispatch.rs and graph_execution/ found no reference to Prometheus gate metrics, Evolved threshold provenance, symbol-rung oracles or inner-gate thresholds either.
 
 Checked 2026-09-29: Partly fixed in ce3bdcbb8: residual observation (runner/persist.rs:401) and retry budgets (graph_task_dispatch/retry_budget.rs) are live on the Graph path. Still not reached from it: apply_profile, should_skip_rung_for_temperament, GateRatchet and roko_gate_verdicts_total. The verify now also searches runner/persist.rs and the graph_task_dispatch/ directory.
+
+2026-10-01 (wk-gates, for gap-6dba88): P1-11 moved from the rung-ordered `GateRatchet` (`gate-ratchet.json`) to a
+per-step history in the retry feedback book (`graph_task_dispatch/step_ratchet.rs`). The rung ratchet flagged a step
+that had never passed whenever a higher rung had passed on an earlier attempt. The `[[verify]]` now greps
+`settle_step_regressions` instead of `GateRatchet`.

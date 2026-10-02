@@ -50,7 +50,7 @@
 //! | `CascadeObservation` | One cascade router LinUCB arm update (model slug, context features, reward) |
 //! | `ModelCallObservation` | The same update, journaled by a model-call surface (see below) |
 //! | `ModelCallObservationsFolded` | Ids of model-call observations already in a snapshot |
-//! | `SuccessRetraction` | A routing success that a hindsight relabel retracted (model slug) |
+//! | `SuccessRetraction` | A routing success that a hindsight relabel retracted (model slug, task category) |
 //! | `ExperimentOutcome` | One A/B prompt experiment trial (variant ID, success flag) |
 //! | `GateThresholdUpdate` | One gate rung EMA update (rung index, passed flag) |
 //!
@@ -85,6 +85,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use roko_core::task::TaskCategory;
 use serde::{Deserialize, Serialize};
 
 /// A single durable learning event.
@@ -107,6 +108,10 @@ pub enum WalEntry {
         reward: f64,
         /// Whether the task gated successfully.
         success: bool,
+        /// Task category whose per-category counts the observation moved
+        /// too (bug-a6a3cd); `None` in entries written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<TaskCategory>,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -137,6 +142,11 @@ pub enum WalEntry {
             skip_serializing_if = "is_full_observation_weight"
         )]
         weight: f64,
+        /// Task category whose per-category counts the outcome moved too, for
+        /// a Graph run's routing outcome (bug-a6a3cd); `None` for a bare
+        /// model call, and in entries written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<TaskCategory>,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -154,6 +164,10 @@ pub enum WalEntry {
     SuccessRetraction {
         /// Model slug the success was credited to.
         model_slug: String,
+        /// Task category whose per-category counts lose the success too
+        /// (bug-a6a3cd); `None` in entries written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<TaskCategory>,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -523,6 +537,7 @@ mod tests {
                 model_idx: 0,
                 reward: 0.85,
                 success: true,
+                category: None,
                 ts_ms: 1_000_000,
             })
             .unwrap();
@@ -594,6 +609,7 @@ mod tests {
             model_idx: 1,
             reward: 0.5,
             success: false,
+            category: None,
             ts_ms: 99,
         })
         .unwrap();
@@ -625,6 +641,7 @@ mod tests {
                     reward: 1.0,
                     success: true,
                     weight: 1.0,
+                    category: None,
                     ts_ms: 1,
                 },
             )
@@ -763,6 +780,7 @@ mod tests {
                 model_idx: 0,
                 reward: 1.0,
                 success: true,
+                category: Some(TaskCategory::Implementation),
                 ts_ms: 100,
             },
             WalEntry::ExperimentOutcome {
@@ -783,6 +801,7 @@ mod tests {
                 reward: 0.0,
                 success: false,
                 weight: 1.0,
+                category: None,
                 ts_ms: 400,
             },
             WalEntry::ModelCallObservation {
@@ -793,6 +812,7 @@ mod tests {
                 reward: 0.4,
                 success: true,
                 weight: 0.5,
+                category: Some(TaskCategory::Research),
                 ts_ms: 450,
             },
             WalEntry::ModelCallObservationsFolded {
@@ -801,6 +821,7 @@ mod tests {
             },
             WalEntry::SuccessRetraction {
                 model_slug: "model-c".into(),
+                category: Some(TaskCategory::Research),
                 ts_ms: 600,
             },
         ];

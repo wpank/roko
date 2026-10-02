@@ -278,6 +278,8 @@ pub async fn run_direct_provider_chat(
     let model_slug = resolve_model(config, &model_key).slug;
     let cascade_model_slugs = capture_runtime_model_slugs(config, &model_slug);
     let feedback_recorder = ModelCallFeedbackRecorder::from_workdir(workdir, cascade_model_slugs);
+    // Nothing else costs a direct chat turn's model call (bug-724982).
+    let feedback_recorder = feedback_recorder.with_cost_records();
 
     let llm_timeout_ms = config.timeouts.llm_call().as_millis() as u64;
     let options = AgentOptions {

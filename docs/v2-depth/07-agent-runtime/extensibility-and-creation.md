@@ -131,7 +131,7 @@ Agent construction was historically split across 8 places in the codebase. In un
 | 1. `orchestrate.rs::run_prepared_agent` | Primary plan execution | Migrated (routed + no-routing paths) |
 | 2. `orchestrate.rs` model selection | AgentRunConfig construction | Partially migrated |
 | 3. `run.rs` | Single-prompt execution (`roko run`) | Migrated |
-| 4. `prd.rs` | PRD draft/plan generation | Not migrated |
+| 4. `plan_generate/pipeline.rs` | Plan generation | Not migrated |
 | 5. `research.rs` | Research agents | Partially migrated |
 | 6. `agent_exec.rs` | Background task helper | Migrated |
 | 7. Test code | Mock and integration tests | N/A (direct construction correct for tests) |

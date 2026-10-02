@@ -42,12 +42,11 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 
 The following flows work today via CLI:
 
-1. **Self-hosting loop**: `prd idea` -> `prd draft` -> `prd plan` -> `plan run` -> gate validate -> persist results -> `plan run --resume`
-2. **Research-enhanced planning**: `research enhance-prd` -> `prd plan` with research context
+1. **Self-hosting loop**: `plan generate` (or `run --plan`) -> review -> `run plans/<slug>` -> gate validate -> persist results -> `plan run --resume-plan`
+2. **Research-enhanced planning**: `plan generate --context .roko/research` -> `research enhance-plan`
 3. **Automatic replan**: Gate failure triggers `build_gate_failure_plan_revision` (Loop 2)
-4. **Auto-plan on publish**: `prd.auto_plan` config triggers plan generation when PRD is published
-5. **Interactive monitoring**: `roko dashboard` TUI with F1-F10 tabs
-6. **HTTP control plane**: `roko serve` exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) for external callers
+4. **Interactive monitoring**: `roko dashboard` TUI with F1-F10 tabs
+5. **HTTP control plane**: `roko serve` exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) for external callers
 7. **Agent sidecar**: `roko agent serve` with real LLM dispatch
 8. **GitHub plan workflow**: plan runs open a draft `roko/plan/*` PR, publish terminal
    task results, track failures as issues, and merge only after local regression and

@@ -407,10 +407,8 @@ Roko ships 18 pre-built Graph templates organized by repository context:
 |---|---|---|---|
 | `pr-review-agent` | github.pull_request | reviewer | Automated code review |
 | `slack-notify-agent` | agent.completed/failed | operator | Structured Slack notifications |
-| `auto-plan-agent` | github.push + prd.published | planner | Generate plans from PRDs |
-| `code-implementer-agent` | prd.plan_approved | implementer | Execute tasks, push PRs |
+| `code-implementer-agent` | plan.approved | implementer | Execute tasks, push PRs |
 | `gate-fixer-agent` | agent.gate_failed | implementer | Auto-fix gate failures |
-| `prd-ingestion-agent` | github.push | operator | Sync PRDs across repos |
 | `review-response-agent` | github.pull_request_review | implementer | Respond to review comments |
 
 ---

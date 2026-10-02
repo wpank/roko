@@ -94,7 +94,7 @@ The data contract is the stable API; rendering targets are interchangeable imple
     HTTP routes    TUI bridge
           |           |
     Dashboard      ratatui
-     (REST)        (F1-F11)
+     (REST)        (F1-F10)
 ```
 
 Every surface projection is wrapped in a `ProjectionEnvelope<T>` that carries schema version,
@@ -541,9 +541,8 @@ pub enum V2Surface {
 | **F6 Config** | System | Compatibility shell for system/autonomy controls |
 | **F7 Inspect** | Knowledge | Existing knowledge inspector |
 | **F8 Marketplace** | *(none)* | Existing rendering-target-specific view |
-| **F9 Atelier** | *(none)* | Existing rendering-target-specific view |
-| **F10 Learning** | *(none)* | Existing rendering-target-specific view |
-| **- Providers** | *(none)* | Existing rendering-target-specific view |
+| **F9 Learning** | *(none)* | Existing rendering-target-specific view |
+| **F10 Providers** | *(none)* | Existing rendering-target-specific view |
 
 The mapping is implemented in `Tab::v2_surfaces()` which returns a `Vec<V2Surface>` per tab.
 Five tabs carry no v2 surface identity and remain purely rendering-target-specific views.

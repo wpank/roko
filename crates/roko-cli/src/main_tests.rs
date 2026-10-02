@@ -8,11 +8,11 @@ use commands::config_cmd::{
     format_provider_health_rows, format_provider_rows, select_provider_test_model,
 };
 use commands::dashboard::dashboard_output;
-use commands::learn::InspectSubsystem;
 use commands::knowledge::{
     NEURO_CONFIRMATIONS_FILE, NEURO_KNOWLEDGE_FILE, backup_neuro_store, neuro_live_files,
     restore_neuro_store,
 };
+use commands::learn::InspectSubsystem;
 use commands::util::persist_capture_episode;
 use roko_core::ConfigHash;
 use tempfile::tempdir;

@@ -449,8 +449,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let (rows, excluded) = commands::learn_sizing::load_rows(&wd);
-            let report =
-                commands::learn_sizing::sizing_report(&rows, excluded, target, min_sample);
+            let report = commands::learn_sizing::sizing_report(&rows, excluded, target, min_sample);
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {

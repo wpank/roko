@@ -3283,7 +3283,9 @@ async fn run_one_plan(
         .write_census(&run_id, &ctx.graph_task_dispatcher.wiring_report());
     // 3231: the plan's spec.quality and spec.gate records, before any of its
     // tasks starts, and one event-log line per decision for SSE.
-    let run_dir = RokoLayout::for_project(ctx.workdir).runs_dir().join(&run_id);
+    let run_dir = RokoLayout::for_project(ctx.workdir)
+        .runs_dir()
+        .join(&run_id);
     let tasks_path = plan.dir.join("tasks.toml");
     for event in
         crate::spec_gate::record_plan(ctx.spec_gate, &tasks_path, ctx.workdir, &run_dir, &run_id)

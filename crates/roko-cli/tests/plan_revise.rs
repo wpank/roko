@@ -118,7 +118,10 @@ fn plan_revise_cli_prints_the_plan_diff() {
     assert!(out.contains("\n  ~ T1\n      verify: "), "{}", log(&run));
     assert!(!out.contains("~ T2"), "{}", log(&run));
     let written = fs::read_to_string(&tasks).expect("read the plan");
-    assert!(written.contains("bash greet.sh | grep -qx hello"), "{written}");
+    assert!(
+        written.contains("bash greet.sh | grep -qx hello"),
+        "{written}"
+    );
 
     // T2 without a verify step does not validate (PLAN_035).
     let invalid = revised.replace(

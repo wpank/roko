@@ -212,7 +212,9 @@ pub(crate) fn sizing_report(
         if tier_rows.is_empty() {
             continue;
         }
-        let files = axis_cells(tier, "files", &file_buckets, &tier_rows, |row| Some(row.files));
+        let files = axis_cells(tier, "files", &file_buckets, &tier_rows, |row| {
+            Some(row.files)
+        });
         let locs = axis_cells(tier, "max_loc", &loc_buckets(tier), &tier_rows, |row| {
             row.max_loc.map(|loc| loc as usize)
         });
@@ -413,9 +415,18 @@ mod tests {
         // retry passes; T2 passes in runs 1 and 4. Run 5's rows are left out:
         // T1 ran an older spec, T9 is in no plan now, T2 was not verified.
         let runs = [
-            vec![verdict("run-1", "T1", 1, Some(1), &t1), verdict("run-1", "T2", 1, Some(1), &t2)],
-            vec![verdict("run-2", "T1", 1, Some(1), &t1), verdict("run-2", "T2", 1, Some(0), &t2)],
-            vec![verdict("run-3", "T1", 1, Some(1), &t1), verdict("run-3", "T2", 1, Some(0), &t2)],
+            vec![
+                verdict("run-1", "T1", 1, Some(1), &t1),
+                verdict("run-1", "T2", 1, Some(1), &t2),
+            ],
+            vec![
+                verdict("run-2", "T1", 1, Some(1), &t1),
+                verdict("run-2", "T2", 1, Some(0), &t2),
+            ],
+            vec![
+                verdict("run-3", "T1", 1, Some(1), &t1),
+                verdict("run-3", "T2", 1, Some(0), &t2),
+            ],
             vec![
                 verdict("run-4", "T1", 2, Some(1), &t1),
                 verdict("run-4", "T1", 1, Some(0), &t1),

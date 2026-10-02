@@ -106,7 +106,11 @@ fn plan_run_records_spec_quality_and_gate_per_task() {
     let run = advise.run_plan(PLAN, &[]);
     assert!(run.status.success(), "{}", log(&run));
     let records = run_lines(&advise.repo, "spec.jsonl");
-    assert_eq!(task_ids(&records, "spec.quality"), ["T1", "T2"], "{records:?}");
+    assert_eq!(
+        task_ids(&records, "spec.quality"),
+        ["T1", "T2"],
+        "{records:?}"
+    );
     assert_eq!(task_ids(&records, "spec.gate"), ["T1", "T2"], "{records:?}");
     for gate in records.iter().filter(|record| record["ev"] == "spec.gate") {
         assert_eq!(gate["mode"], "advise", "{gate}");

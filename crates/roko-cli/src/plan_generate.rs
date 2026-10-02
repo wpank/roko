@@ -1190,7 +1190,10 @@ mod tests {
             concat!("Cohesion and one verification ", "owner override"),
         ] {
             assert!(!prompt.contains(phrase), "the prompt still says {phrase}");
-            assert!(!guidance.contains(phrase), "the guidance still says {phrase}");
+            assert!(
+                !guidance.contains(phrase),
+                "the guidance still says {phrase}"
+            );
         }
         assert!(prompt.contains("These limits bind: generation rejects a larger task"));
         assert!(prompt.contains("independent outputs into tasks with disjoint `files`"));

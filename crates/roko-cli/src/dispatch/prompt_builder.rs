@@ -2266,9 +2266,7 @@ fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prom
 
 /// What an episode says, in order: its reasoning summary, reflection and
 /// failure reason, each when it is not empty (backlog 4213).
-fn episode_statements(
-    episode: &roko_learn::episode_logger::Episode,
-) -> impl Iterator<Item = &str> {
+fn episode_statements(episode: &roko_learn::episode_logger::Episode) -> impl Iterator<Item = &str> {
     [
         episode.reasoning_summary.as_deref(),
         episode.reflection.as_deref(),
@@ -2525,9 +2523,34 @@ const MIN_KNOWLEDGE_CONFIDENCE: f64 = 0.3;
 /// Path pieces, file extensions and verbs that say nothing about a task's
 /// topic (backlog 4211).
 const GENERIC_TOPIC_TERMS: &[&str] = &[
-    "crates", "src", "tests", "test", "lib", "mod", "main", "bin", "docs", "rs", "py", "ts", "js",
-    "md", "toml", "json", "yaml", "yml", "txt", "add", "fix", "update", "implement", "create",
-    "make", "write", "use", "new",
+    "crates",
+    "src",
+    "tests",
+    "test",
+    "lib",
+    "mod",
+    "main",
+    "bin",
+    "docs",
+    "rs",
+    "py",
+    "ts",
+    "js",
+    "md",
+    "toml",
+    "json",
+    "yaml",
+    "yml",
+    "txt",
+    "add",
+    "fix",
+    "update",
+    "implement",
+    "create",
+    "make",
+    "write",
+    "use",
+    "new",
 ];
 
 /// The words that say what `task` is about, for matching knowledge against

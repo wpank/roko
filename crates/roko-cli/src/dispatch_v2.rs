@@ -2331,17 +2331,19 @@ pub(crate) fn pricing_snapshot(
     let mut loaded = LOADED.lock();
     loaded
         .entry(key)
-        .or_insert_with(|| match PriceSnapshot::for_workspace(pricing, workspace_root) {
-            Ok(snapshot) => Some(Arc::new(snapshot)),
-            Err(error) => {
-                tracing::warn!(
-                    workspace = %workspace_root.display(),
-                    %error,
-                    "no price snapshot: calls are priced from roko.toml and built-in rates"
-                );
-                None
-            }
-        })
+        .or_insert_with(
+            || match PriceSnapshot::for_workspace(pricing, workspace_root) {
+                Ok(snapshot) => Some(Arc::new(snapshot)),
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace_root.display(),
+                        %error,
+                        "no price snapshot: calls are priced from roko.toml and built-in rates"
+                    );
+                    None
+                }
+            },
+        )
         .clone()
 }
 
@@ -4367,7 +4369,11 @@ exit 1
             Some(&unlisted),
             "qwen-3.8-27b",
         );
-        assert_eq!(pricing, CallPricing::Profile, "no snapshot row, so no snapshot id");
+        assert_eq!(
+            pricing,
+            CallPricing::Profile,
+            "no snapshot row, so no snapshot id"
+        );
         assert!(snapshot.row("qwen-3.8-27b").is_none());
         let cost = f64::from(usage.cost_usd);
         assert!((cost - 2.0).abs() < 1e-6, "{cost}");
@@ -4389,7 +4395,10 @@ exit 1
         let empty = tempfile::tempdir().expect("tempdir");
         let pricing = PricingConfig::default();
         let builtin = pricing_snapshot(&pricing, empty.path()).expect("the built-in copy");
-        assert_eq!(builtin.id(), roko_core::pricing_snapshot::BUILTIN_SNAPSHOT_ID);
+        assert_eq!(
+            builtin.id(),
+            roko_core::pricing_snapshot::BUILTIN_SNAPSHOT_ID
+        );
 
         let workspace = tempfile::tempdir().expect("tempdir");
         let prices = workspace.path().join("config/prices");

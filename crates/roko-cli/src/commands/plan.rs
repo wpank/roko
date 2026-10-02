@@ -2433,7 +2433,9 @@ pub(crate) async fn cmd_plan_dry_run(
 async fn cmd_plan_revise(cli: &Cli, plan: &str, feedback: &str) -> Result<i32> {
     let workdir = resolve_workdir(cli);
     let tasks_path = plan_tasks_path(&workdir, plan)?;
-    let plan_id = roko_cli::task_parser::TasksFile::parse(&tasks_path)?.meta.plan;
+    let plan_id = roko_cli::task_parser::TasksFile::parse(&tasks_path)?
+        .meta
+        .plan;
     let resolved = roko_cli::load_resolved_config(&workdir)?;
     let outcome = roko_cli::plan_authoring::revise_plan_source(
         &workdir,
@@ -2522,7 +2524,13 @@ fn plan_tasks_path(workdir: &Path, plan: &str) -> Result<PathBuf> {
 fn last_run_failure_for(workdir: &Path, plan_id: &str, model_key: &str) -> Option<String> {
     let window = roko_cli::load_resolved_config(workdir)
         .ok()
-        .and_then(|resolved| resolved.config.models.get(model_key).map(|model| model.context_window))
+        .and_then(|resolved| {
+            resolved
+                .config
+                .models
+                .get(model_key)
+                .map(|model| model.context_window)
+        })
         .filter(|window| *window > 0);
     let budget = roko_cli::plan_authoring::revision_failure_budget(window);
     roko_cli::plan_authoring::last_run_failure_context(workdir, plan_id, budget)

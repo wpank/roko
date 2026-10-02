@@ -2789,8 +2789,8 @@ impl CascadeRouter {
 
         // `new` asserts a configured model, so the pick always names one.
         let role_tier = ctx.role.model_tier();
-        let default_slug = static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map)
-            .unwrap_or_default();
+        let default_slug =
+            static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map).unwrap_or_default();
         let slug = if ctx.task_category == TaskCategory::Research {
             self.model_slugs
                 .iter()
@@ -2860,7 +2860,11 @@ impl CascadeRouter {
             .role_table
             .lock()
             .get(&ctx.role)
-            .filter(|slug| candidates.iter().any(|candidate| slugs_match(candidate, slug)))
+            .filter(|slug| {
+                candidates
+                    .iter()
+                    .any(|candidate| slugs_match(candidate, slug))
+            })
             .cloned()
             .or_else(|| static_slug_for_tier(candidates, role_tier, &self.tier_map))
             .or_else(|| static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map))

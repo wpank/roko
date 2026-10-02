@@ -276,7 +276,8 @@ pub fn record_plan(
     let Some(quality) = &report.quality else {
         return Vec::new();
     };
-    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (tasks_path, root) = (canonical(tasks_path), canonical(workdir));
     let plan_path = tasks_path
         .strip_prefix(&root)
@@ -522,13 +523,20 @@ verify = [{{ phase = "test", command = "{verify}" }}]
         let blocked: Vec<&SpecGateDecision> = report.blocked().collect();
         assert_eq!(blocked.len(), 1, "{report:?}");
         assert!(blocked[0].holdout);
-        let rules: Vec<&str> = blocked[0].findings.iter().map(|finding| finding.rule).collect();
+        let rules: Vec<&str> = blocked[0]
+            .findings
+            .iter()
+            .map(|finding| finding.rule)
+            .collect();
         assert_eq!(rules, ["HF2"]);
 
         let scoped = write_plan(temp.path(), "cargo test -p demo --lib retry");
         let mut report = check_plans(&[scoped], temp.path(), &enforce, &none);
         apply_holdout(&mut report, 0.0, epoch);
-        assert!(report.blocks() && !report.decisions[0].holdout, "{report:?}");
+        assert!(
+            report.blocks() && !report.decisions[0].holdout,
+            "{report:?}"
+        );
     }
 
     /// 3211: HF3 blocks only when the red-on-base check ran and every step

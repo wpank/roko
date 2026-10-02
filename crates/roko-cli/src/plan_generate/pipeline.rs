@@ -2597,9 +2597,16 @@ mod tests {
             .expect("the widget plan");
         let plan = TasksFile::parse_str(&written).expect("parse the written plan");
         assert_eq!(plan.tasks.len(), 2, "{written}");
-        assert!(plan.tasks.iter().all(|task| task.files.len() == 3), "{written}");
+        assert!(
+            plan.tasks.iter().all(|task| task.files.len() == 3),
+            "{written}"
+        );
         let log = std::fs::read_to_string(&calls).expect("planner call log");
-        assert_eq!(log.lines().count(), 2, "the oversized plan, then the split one");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the oversized plan, then the split one"
+        );
         let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
         assert!(
             retry.contains("PLAN_TIER_SIZE [T1]: mechanical task is over its tier's size limits"),

@@ -480,13 +480,11 @@ pub(super) async fn revise_plan(
                 Ok(Some(dto)) => {
                     let (event_type, success) = if dto.revised {
                         // Written successfully.
-                        let result_json = serde_json::to_string(
-                            &json!({
-                                "slug": plan_id_for_task,
-                                "task_count": dto.task_count,
-                                "diff": dto.diff,
-                            }),
-                        )
+                        let result_json = serde_json::to_string(&json!({
+                            "slug": plan_id_for_task,
+                            "task_count": dto.task_count,
+                            "diff": dto.diff,
+                        }))
                         .unwrap_or_default();
                         if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
                             h.status = crate::state::OperationStatus::Completed {

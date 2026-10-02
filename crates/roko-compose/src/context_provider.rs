@@ -25,7 +25,9 @@ use crate::symbol_resolver::SymbolResolver;
 use crate::task_brief::TaskBriefGenerator;
 use roko_core::config::RetrievalConfig;
 use roko_core::{Body, InclusionMode, Kind, OperatingFrequency, PromptPolicy, RoleProfile, Signal};
-use roko_learn::error_pattern_store::{ERROR_PATTERNS_FILE, ErrorPatternStore, FailurePatternQuery};
+use roko_learn::error_pattern_store::{
+    ERROR_PATTERNS_FILE, ErrorPatternStore, FailurePatternQuery,
+};
 use roko_learn::section_effect::{
     DEFAULT_SECTION_EFFECTS_PATH, SectionEffect, SectionEffectivenessRegistry,
 };

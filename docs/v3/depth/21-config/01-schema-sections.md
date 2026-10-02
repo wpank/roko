@@ -77,7 +77,8 @@ every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemin
 Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
 were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
 must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
-turn fails, rather than run without the boundary.
+turn fails, rather than run without the boundary. A run a chat host starts over `/mcp` is refused
+while the section is left out, unless `[serve.mcp] allow_without_data_llm = true`.
 
 ---
 
@@ -310,6 +311,16 @@ max_iterations = 5
 | `enabled` | bool | false | Enable authentication middleware |
 | `api_key` | String | `""` | Legacy single API key |
 | `api_keys` | Vec\<ApiKeyEntry\> | `[]` | Named scoped API keys |
+
+### `[serve.mcp]` -- ServeMcpConfig
+
+Runs a chat host starts through the `/mcp` endpoint's `run_prompt` and `plan_run` tools
+(`docs/v3/26-HTTP-API.md` 8.41). Runs started any other way are not affected.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_run_usd` | f64 | 5.0 | Most a run may spend; each call names its own `max_usd`, at most this, which becomes the run's budget ceiling |
+| `allow_without_data_llm` | bool | false | Let such a run start without the data-model boundary (`[agent.data_llm]`); by default it is refused |
 
 ---
 

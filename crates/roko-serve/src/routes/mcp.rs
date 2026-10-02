@@ -417,7 +417,7 @@ async fn call_tool(
         }
         "plan_generate" => {
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
-            Ok(generate_plan(state, prompt).await)
+            Ok(generate_plan(state, prompt, &mcp_origin(auth)).await)
         }
         "run_cancel" => {
             let run_id = required_str(&arguments, name, "run_id")?;
@@ -590,13 +590,25 @@ async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
     }))
 }
 
+/// Refuse a run a chat host starts while the workspace has no data-model
+/// boundary and does not allow running without one (9117): the host reads
+/// why, before anything is queued.
+fn refuse_unscreened_run(state: &AppState) -> Result<(), ApiError> {
+    match state.load_roko_config().chat_run_refusal() {
+        Some(reason) => Err(ApiError::forbidden(reason)),
+        None => Ok(()),
+    }
+}
+
 /// The `run_prompt` tool: run `prompt` as a gated one-task plan, as `POST
-/// /api/run` does (9113), and answer at once.
+/// /api/run` does (9113), and answer at once. Refused without the data-model
+/// boundary ([`refuse_unscreened_run`]).
 async fn start_prompt_run(
     state: &Arc<AppState>,
     prompt: String,
     options: PromptPlanOptions,
 ) -> Result<Value, ApiError> {
+    refuse_unscreened_run(state)?;
     let run_id = super::run::start_gated_run(state, prompt, None, options).await?;
     Ok(json!({
         "run_id": run_id,
@@ -610,7 +622,8 @@ async fn start_prompt_run(
 
 /// The `plan_run` tool: run plan `plan_id` from `origin`, capped at
 /// `max_usd`, or queue it behind the live run, as `POST
-/// /api/plans/{id}/execute` does, and answer at once.
+/// /api/plans/{id}/execute` does, and answer at once. Refused without the
+/// data-model boundary ([`refuse_unscreened_run`]).
 async fn start_plan(
     state: &Arc<AppState>,
     plan_id: String,
@@ -618,6 +631,7 @@ async fn start_plan(
     origin: RunOrigin,
     max_usd: f64,
 ) -> Result<Value, ApiError> {
+    refuse_unscreened_run(state)?;
     let started =
         super::plans::start_plan_run_with(state, plan_id, resume, origin, Some(max_usd)).await?;
     let run_id = started.run_id;
@@ -640,9 +654,10 @@ async fn start_plan(
 /// The `plan_generate` tool: have the planner write a plan for `prompt`, as
 /// `POST /api/plans/generate` does, and answer at once with the operation's
 /// id, which `run_status` follows, and the plan's id, which `plan_run` takes
-/// once the plan is written.
-async fn generate_plan(state: &Arc<AppState>, prompt: String) -> Value {
-    let (operation_id, plan_id) = super::plans::start_plan_generation(state, prompt).await;
+/// once the plan is written. The planner gets `prompt` fenced as a request
+/// from `origin`, a chat host (9117).
+async fn generate_plan(state: &Arc<AppState>, prompt: String, origin: &RunOrigin) -> Value {
+    let (operation_id, plan_id) = super::plans::start_plan_generation(state, prompt, origin).await;
     json!({
         "run_id": operation_id,
         "plan_id": plan_id,
@@ -701,10 +716,12 @@ mod tests {
         }
     }
 
-    /// A workspace config with auth off.
+    /// A workspace config with auth off, whose chat runs may start without
+    /// the data-model boundary.
     fn open_config() -> RokoConfig {
         let mut config = RokoConfig::default();
         config.serve.auth = no_auth();
+        config.serve.mcp.allow_without_data_llm = true;
         config
     }
 
@@ -1090,6 +1107,37 @@ mod tests {
         let plans = runtime.plans.lock().expect("lock plan runs").clone();
         assert_eq!(plans[0].max_usd, Some(3.0));
         assert_eq!(plans[0].origin, chat);
+        runtime.gate.add_permits(1);
+    }
+
+    /// 9117: without the data-model boundary a chat host's run is refused,
+    /// with a reason the host can read, and nothing starts; once
+    /// `[agent.data_llm]` is set it starts.
+    #[tokio::test]
+    async fn mcp_run_without_data_model_boundary_is_refused() {
+        let runtime = Arc::new(HeldPlans::new());
+        let mut config = open_config();
+        config.serve.mcp.allow_without_data_llm = false;
+        let (_dir, state, open) = state_and_router(runtime.clone(), config.clone());
+
+        let calls = [
+            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 1.0 })),
+            ("plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 })),
+        ];
+        for (id, (name, arguments)) in (1..).zip(calls) {
+            let (_, body) = post_mcp(&open, &call(id, name, arguments), &[]).await;
+            assert_eq!(body["result"]["isError"], true, "{body}");
+            let reason = body["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            assert!(reason.contains("[agent.data_llm]"), "{body}");
+        }
+        assert!(state.active_runs.read().await.is_empty());
+        assert!(state.active_plans.read().await.is_empty());
+
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
+        state.store_roko_config(config);
+        let prompt = json!({ "prompt": "fix the parser", "max_usd": 1.0 });
+        let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
     }
 }

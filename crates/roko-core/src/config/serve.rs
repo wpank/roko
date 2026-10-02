@@ -171,18 +171,40 @@ pub struct ServeMcpConfig {
     /// runs started any other way are not affected.
     #[serde(default = "default_mcp_max_run_usd")]
     pub max_run_usd: f64,
+    /// Let a chat host's run start without the data-model boundary
+    /// (`[agent.data_llm]`), which screens what the run reads (9117).
+    /// Defaults to false: such a run is refused.
+    #[serde(default)]
+    pub allow_without_data_llm: bool,
 }
 
 impl Default for ServeMcpConfig {
     fn default() -> Self {
         Self {
             max_run_usd: default_mcp_max_run_usd(),
+            allow_without_data_llm: false,
         }
     }
 }
 
 fn default_mcp_max_run_usd() -> f64 {
     5.0
+}
+
+impl super::schema::RokoConfig {
+    /// Why a run a chat host starts may not start, or `None` when it may
+    /// (9117). Its request text is untrusted data, and the data-model
+    /// boundary (`[agent.data_llm]`) screens what such a run reads, so
+    /// without the boundary the run is refused unless `[serve.mcp]
+    /// allow_without_data_llm` is set.
+    #[must_use]
+    pub fn chat_run_refusal(&self) -> Option<&'static str> {
+        let unscreened = self.agent.data_llm.is_none() && !self.serve.mcp.allow_without_data_llm;
+        unscreened.then_some(
+            "a run from a chat host needs the data-model boundary: set [agent.data_llm] in \
+             roko.toml, or [serve.mcp] allow_without_data_llm = true to run without it",
+        )
+    }
 }
 
 impl Default for ServeConfig {

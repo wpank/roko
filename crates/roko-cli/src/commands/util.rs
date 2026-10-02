@@ -503,6 +503,7 @@ pub(crate) async fn cmd_run(
         cancel: None,
         domain: None,
         max_usd: None,
+        origin: roko_serve::runtime::RunOrigin::Cli,
     })
     .await;
 

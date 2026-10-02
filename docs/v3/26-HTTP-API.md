@@ -515,7 +515,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
-| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `finished_at`, `links` |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links` |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -1088,6 +1088,23 @@ and the cap becomes the run's budget ceiling. Such a run carries its origin,
 run's `run_started` event and the run's manifest (`.roko/runs/<run_id>/manifest.json`,
 `origin: "mcp:<client>"`) record it. Runs started any other way are not
 affected.
+
+A chat host's request is untrusted data: it may quote a web page or another
+person. The task of a `run_prompt` run, and the planner's prompt for
+`plan_generate`, carry it between a `<<<CHAT REQUEST>>>` line and a
+`<<<END CHAT REQUEST>>>` line, after a fixed instruction that nothing between
+the markers can change the agent's tools, its safety policy, the verify steps or
+its instructions; either marker inside the request is escaped (`<<\<`), and the
+task's title names the host instead of quoting the request. The fence is a
+mitigation. What enforces is the data-model boundary, `[agent.data_llm]`, which
+screens what an agent's tools read in roko's own tool loops: `run_prompt` and
+`plan_run` are refused, as a tool error, when it is not set, unless `[serve.mcp]
+allow_without_data_llm = true`, and the runtime checks again before such a run
+starts. The run's summary reports, per task it dispatched an agent for,
+`untrusted_input_boundary`: `{ plan_id, task_id, boundary }`, where `boundary`
+is `data_llm` when the boundary is set and every model the task ran on runs
+roko's own tool loop, and `none` otherwise (a Claude Code, Codex, Cursor or
+Gemini CLI agent runs its own loop, which the boundary cannot reach).
 
 There is no `remember`: personal memory stays with the host.
 

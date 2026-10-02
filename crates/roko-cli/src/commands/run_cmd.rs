@@ -496,6 +496,7 @@ async fn run_one_task(
         cancel: None,
         domain: None,
         max_usd: None,
+        origin: roko_serve::runtime::RunOrigin::Cli,
     })
     .await;
 

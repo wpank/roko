@@ -2,6 +2,7 @@
 //! read, write and validate a plan's source.
 
 use super::*;
+use crate::runtime::RunOrigin;
 
 #[derive(Deserialize, Validate)]
 pub(super) struct CreatePlanRequest {
@@ -221,7 +222,7 @@ pub(super) async fn generate_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     // `validate_payload` guarantees a non-blank prompt.
     let prompt_text = body.prompt.clone().unwrap_or_default();
-    let (op_id, slug) = start_plan_generation(&state, prompt_text).await;
+    let (op_id, slug) = start_plan_generation(&state, prompt_text, &RunOrigin::Http).await;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -232,11 +233,15 @@ pub(super) async fn generate_plan(
 /// Start generating a plan from `prompt_text` in the background, as `POST
 /// /api/plans/generate` does, and return the operation's id and the new
 /// plan's slug: the route and the MCP `plan_generate` tool (9115) share it.
+/// The slug comes from the request; the planner gets a chat host's request
+/// fenced as untrusted data ([`RunOrigin::request_text`], 9117).
 pub(crate) async fn start_plan_generation(
     state: &Arc<AppState>,
     prompt_text: String,
+    origin: &RunOrigin,
 ) -> (String, String) {
     let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
+    let prompt_text = origin.request_text(&prompt_text).into_owned();
 
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();

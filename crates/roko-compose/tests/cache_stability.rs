@@ -65,11 +65,6 @@ fn build_prompt(
             16,
         ),
         workspace_map: repeated_block("## Workspace Map", "- crates/roko-compose/src/*", 22),
-        prd2_extract: repeated_block(
-            "## PRD2 Extract",
-            "- Providers with automatic prefix caching depend on byte-identical shared prefixes.",
-            14,
-        ),
         cross_plan_context: repeated_block(
             "## Cross-Plan Context",
             "- Task sequencing should not perturb stable prompt layers.",

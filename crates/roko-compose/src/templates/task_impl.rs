@@ -42,8 +42,6 @@ pub struct TaskImplInput {
     pub brief: String,
     /// Filtered workspace map (only crates relevant to this task).
     pub workspace_map: String,
-    /// PRD2 specification extract.
-    pub prd2_extract: String,
     /// Cross-plan context (completed plan registry, etc).
     pub cross_plan_context: String,
     /// Ignored tests ledger.
@@ -74,7 +72,7 @@ one task from the plan.\n\
 \n\
 Rules:\n\
 1. Implement ONLY the task assigned below. Do not touch files outside your list.\n\
-2. Read the plan and PRD2 extract for exact values, formulas, and type signatures.\n\
+2. Read the plan for exact values, formulas, and type signatures.\n\
 3. If `context/in/implementer-pack.md` exists, read it first for execution guidance.\n\
 4. Audit the assigned files first — if work is already present, keep it and fix gaps.\n\
 5. Write tests for all public items.\n\
@@ -98,7 +96,7 @@ impl RolePromptTemplate for TaskImplTemplate {
         input: &Self::Input,
         context_window_tokens: usize,
     ) -> Vec<PromptSection> {
-        let mut sections = Vec::with_capacity(14);
+        let mut sections = Vec::with_capacity(13);
         push_base_sections(&mut sections, input, context_window_tokens);
         push_optional_sections(&mut sections, input, context_window_tokens);
         sections
@@ -109,7 +107,7 @@ impl RolePromptTemplate for TaskImplTemplate {
     }
 }
 
-/// Push the 8 always-present base sections.
+/// Push the 7 always-present base sections.
 fn push_base_sections(
     sections: &mut Vec<PromptSection>,
     input: &TaskImplInput,
@@ -118,7 +116,6 @@ fn push_base_sections(
     let budget = adaptive_budget_for(AgentRole::Implementer, context_window_tokens);
     let workspace_map_cap = scaled_task_cap(1_500, context_window_tokens);
     let brief_cap = scaled_task_cap(2_000, context_window_tokens);
-    let prd2_cap = scaled_task_cap(3_000, context_window_tokens);
     let cross_plan_cap = scaled_task_cap(1_000, context_window_tokens);
     let ignored_tests_cap = scaled_task_cap(500, context_window_tokens);
     // 1. agents_instructions — System / Critical / Start
@@ -150,15 +147,7 @@ fn push_base_sections(
             .with_placement(Placement::Middle)
             .with_hard_cap(brief_cap),
     );
-    // 5. prd2_extract — Session / High / Middle / hard_cap 3k
-    sections.push(
-        PromptSection::new("prd2_extract", truncate(&input.prd2_extract, prd2_cap))
-            .with_priority(SectionPriority::High)
-            .with_cache_layer(CacheLayer::Workspace)
-            .with_placement(Placement::Middle)
-            .with_hard_cap(prd2_cap),
-    );
-    // 6. cross_plan_context — Session / Normal / Middle / hard_cap 1k
+    // 5. cross_plan_context — Session / Normal / Middle / hard_cap 1k
     sections.push(
         PromptSection::new(
             "cross_plan_context",
@@ -169,7 +158,7 @@ fn push_base_sections(
         .with_placement(Placement::Middle)
         .with_hard_cap(cross_plan_cap),
     );
-    // 7. ignored_tests — Session / Low / Middle / hard_cap 500
+    // 6. ignored_tests — Session / Low / Middle / hard_cap 500
     if !input.ignored_tests.is_empty() {
         sections.push(
             PromptSection::new(
@@ -182,7 +171,7 @@ fn push_base_sections(
             .with_hard_cap(ignored_tests_cap),
         );
     }
-    // 8. assignment — Task / Critical / End
+    // 7. assignment — Task / Critical / End
     sections.push(
         PromptSection::new("assignment", format_assignment(input))
             .with_priority(SectionPriority::Critical)
@@ -333,7 +322,6 @@ mod tests {
             ],
             brief: "Strategist brief content.".into(),
             workspace_map: "crates/roko-core/src/lib.rs".into(),
-            prd2_extract: "## PRD2\nGompertz: lambda(t) = ae^(bt).".into(),
             cross_plan_context: "plan-041: done".into(),
             ignored_tests: "test_old_feature: reason".into(),
             prior_task_outputs: Some("T1 completed: defined MortalityRate type.".into()),
@@ -360,8 +348,8 @@ mod tests {
         let template = TaskImplTemplate;
         let sections = template.sections(&full_input());
 
-        // All 14 sections present
-        assert_eq!(sections.len(), 14);
+        // All 13 sections present
+        assert_eq!(sections.len(), 13);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -371,7 +359,6 @@ mod tests {
                 "plan_spec",
                 "workspace_map",
                 "brief",
-                "prd2_extract",
                 "cross_plan_context",
                 "ignored_tests",
                 "assignment",
@@ -387,23 +374,22 @@ mod tests {
         // Critical sections
         assert_eq!(sections[0].priority, SectionPriority::Critical); // agents_instructions
         assert_eq!(sections[1].priority, SectionPriority::Critical); // plan_spec
-        assert_eq!(sections[7].priority, SectionPriority::Critical); // assignment
+        assert_eq!(sections[6].priority, SectionPriority::Critical); // assignment
 
         // Cache layers
         assert_eq!(sections[0].cache_layer, CacheLayer::Role);
         assert_eq!(sections[1].cache_layer, CacheLayer::Workspace);
-        assert_eq!(sections[7].cache_layer, CacheLayer::Plan);
-        assert_eq!(sections[8].cache_layer, CacheLayer::Volatile);
+        assert_eq!(sections[6].cache_layer, CacheLayer::Plan);
+        assert_eq!(sections[7].cache_layer, CacheLayer::Volatile);
 
         // Hard caps — task impl uses tighter budgets
         assert_eq!(sections[1].hard_cap, Some(50_000)); // plan_spec
         assert_eq!(sections[2].hard_cap, Some(1_500)); // workspace_map
         assert_eq!(sections[3].hard_cap, Some(2_000)); // brief
-        assert_eq!(sections[4].hard_cap, Some(3_000)); // prd2_extract
-        assert_eq!(sections[5].hard_cap, Some(1_000)); // cross_plan_context
+        assert_eq!(sections[4].hard_cap, Some(1_000)); // cross_plan_context
 
         // Assignment section includes task id and files
-        let assignment = &sections[7].content;
+        let assignment = &sections[6].content;
         assert!(assignment.contains("T2"));
         assert!(assignment.contains("agent-lifecycle"));
         assert!(assignment.contains("Implement Gompertz formula"));
@@ -425,16 +411,15 @@ mod tests {
             task_files: vec!["src/lib.rs".into()],
             brief: "brief".into(),
             workspace_map: "map".into(),
-            prd2_extract: "prd2".into(),
             cross_plan_context: "ctx".into(),
             ..Default::default()
         };
         let sections = template.sections(&input);
 
-        // 7 base sections: agents_instructions, plan_spec, workspace_map, brief,
-        // prd2_extract, cross_plan_context, assignment
+        // 6 base sections: agents_instructions, plan_spec, workspace_map, brief,
+        // cross_plan_context, assignment
         // ignored_tests is empty → omitted
-        assert_eq!(sections.len(), 7);
+        assert_eq!(sections.len(), 6);
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert!(!names.contains(&"prior_task_outputs"));
         assert!(!names.contains(&"verify_chain"));
@@ -460,7 +445,6 @@ mod tests {
             task_files: vec!["a.rs".into()],
             brief: "b".into(),
             workspace_map: "m".into(),
-            prd2_extract: "p".into(),
             cross_plan_context: "c".into(),
             ..Default::default()
         };

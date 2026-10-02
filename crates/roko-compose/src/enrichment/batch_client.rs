@@ -392,10 +392,10 @@ mod tests {
 
     #[tokio::test]
     async fn batch_request_api_body_structure() {
-        let req = sample_request("step-prd");
+        let req = sample_request("step-briefs");
         let body = req.to_api_body();
 
-        assert_eq!(body["custom_id"], "step-prd");
+        assert_eq!(body["custom_id"], "step-briefs");
         assert_eq!(body["params"]["model"], "claude-sonnet-4-6");
         assert_eq!(body["params"]["max_tokens"], 4096);
         assert_eq!(body["params"]["messages"][0]["role"], "user");

@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn section_effectiveness_returns_insufficient_data_until_thresholds_are_met() {
-        let mut effect = SectionEffect::new("prd_extract");
+        let mut effect = SectionEffect::new("plan_brief");
         for _ in 0..19 {
             effect.record(true, true);
         }
@@ -335,13 +335,13 @@ mod tests {
         }
 
         for _ in 0..20 {
-            registry.record_outcome("prd_extract", "Implementer", true, false);
+            registry.record_outcome("plan_brief", "Implementer", true, false);
         }
         for _ in 0..5 {
-            registry.record_outcome("prd_extract", "Implementer", false, true);
+            registry.record_outcome("plan_brief", "Implementer", false, true);
         }
         for _ in 0..5 {
-            registry.record_outcome("prd_extract", "Implementer", false, false);
+            registry.record_outcome("plan_brief", "Implementer", false, false);
         }
 
         let positive = registry.positive_lift_sections("Implementer");
@@ -353,7 +353,7 @@ mod tests {
             PriorityChange::Increase
         );
         assert_eq!(
-            registry.recommend_priority_change("prd_extract", "Implementer"),
+            registry.recommend_priority_change("plan_brief", "Implementer"),
             PriorityChange::Decrease
         );
     }

@@ -3097,7 +3097,6 @@ depends_on = ["T1"]
             id: "p".to_string(),
             dir,
             tasks: TasksFile::parse_str(content).expect("parse tasks.toml"),
-            prd_excerpt: String::new(),
         }
     }
 

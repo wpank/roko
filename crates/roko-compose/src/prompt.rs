@@ -93,7 +93,7 @@ pub enum AttentionBidder {
     PlaybookRules,
     /// Research memos and external domain context.
     Research,
-    /// Task brief, plan brief, verification, PRD slices, and related directives.
+    /// Task brief, plan brief, verification, and related directives.
     #[default]
     TaskContext,
     /// Predictions, warnings, or forecast-like oracle outputs.
@@ -1749,7 +1749,7 @@ pub enum ContextStrategy {
     /// Full budget allotted, all sections considered.
     #[default]
     Full,
-    /// Complexity-trimmed (PRD/research/decomposition dropped for simple tasks).
+    /// Complexity-trimmed (heavy context sections dropped for simple tasks).
     Trimmed,
     /// Retry iteration — prior error digest prioritized.
     Retry,
@@ -1996,7 +1996,7 @@ mod tests {
     #[test]
     fn auction_affect_multiplier_boosts_urgent_task_context() {
         let section = PromptSection::new(
-            "deadline-prd",
+            "deadline-task",
             "must ship before deadline and verify acceptance criteria",
         )
         .with_priority(SectionPriority::High)
@@ -2033,7 +2033,7 @@ mod tests {
                 .into_signal()
                 .unwrap(),
             PromptSection::new(
-                "deadline-prd",
+                "deadline-task",
                 "must ship before deadline and verify acceptance criteria",
             )
             .with_priority(SectionPriority::High)

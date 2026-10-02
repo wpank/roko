@@ -156,7 +156,7 @@ pub struct QuickFixInput {
 /// Quick fix prompt template.
 ///
 /// Minimal prompt for fixing specific issues identified by a reviewer.
-/// Does NOT re-read the plan, workspace map, or PRD2 — only includes
+/// Does NOT re-read the plan or workspace map — only includes
 /// the compressed feedback and fix directives. This keeps the prompt
 /// under ~1k tokens for maximum speed.
 pub struct QuickFixTemplate;

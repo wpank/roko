@@ -791,7 +791,7 @@ impl ToolPermissions {
 pub enum AgentRole {
     /// Meta-orchestrator that watches all other agents and intervenes.
     Conductor,
-    /// Writes the plan brief, decomposes PRDs into tasks.
+    /// Writes the plan brief, decomposes plans into tasks.
     Strategist,
     /// Writes code (the main "coding agent").
     Implementer,
@@ -826,7 +826,7 @@ pub enum AgentRole {
     /// Exercises agent lifecycle (spawn/tick/teardown).
     #[serde(alias = "golem-lifecycle-tester")]
     LifecycleTester,
-    /// Detects divergence between PRD and implementation.
+    /// Detects divergence between spec and implementation.
     SpecDriftDetector,
     /// Watches for regression in test-pass rate and cost.
     RegressionDetector,

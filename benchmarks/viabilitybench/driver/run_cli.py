@@ -59,9 +59,13 @@ with `security find-generic-password -a "$USER" -w -s "Claude Code-credentials"`
 is its own: the live probe (gap-154f93) ended "Not logged in". So the session's `security` is a wrapper in its
 `.vb-bin` (`KEYCHAIN_WRAPPER`) that runs /usr/bin/security with the operator's HOME, and the session keeps its own
 HOME. The agent's shell can run the wrapper too, as it could already run /usr/bin/security on the login keychain by
-its path: the same-uid limit `agent_env` describes. `credentials_file` copies the login's `.credentials.json` (Linux,
-or a file-based login) into the fresh directory instead. A token in the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not
-offered: Claude Code hands its environment to the agent's shell.
+its path: the same-uid limit `agent_env` describes. No host-only sandbox prevents this (gap-3cfe4f): the whole claude
+tree runs under one sandbox for the egress rule, a keychain deny there would stop Claude Code's own login, and macOS
+refuses a nested sandbox that would confine only the agent's shell (`sandbox_apply: Operation not permitted`). So the
+census detects it instead -- any run whose agent names the keychain is `leak_suspected` (`census`, place `keychain`) --
+and prevention waits on a container per task (S08 decision 4). `credentials_file` copies the login's `.credentials.json`
+(Linux, or a file-based login) into the fresh directory instead; a same-uid agent can read that copy too. A token in
+the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not offered: Claude Code hands its environment to the agent's shell.
 
 **Caps** (S08 §4.10, subscription arms: native behaviour with safety limits). `[caps] turns_per_task` goes to
 `--max-turns` and `usd_per_task` to `--max-budget-usd`, where Claude Code stops itself and still reports its usage.
@@ -105,6 +109,7 @@ API:
     parse_result(event, snapshot, *, cache_write_ttl) -> ResultCost
     Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(run_dir) -> dict; web_tools(event) -> list[str]
     ancestor_instructions(workdir) -> list[Path]; config_dir_digest(path) -> str
+    keychain_fingerprint(user, *, service, security, home) -> str | None   # token-free; for --credential-fingerprint
     main(argv) -> int                                           # `probe`
     PROMPT_VERSION, PROMPT_SHA256
 """
@@ -148,6 +153,7 @@ CREDENTIALS = ("keychain", "credentials_file")
 CACHE_WRITE_TTLS = ("5m", "1h")
 CREDENTIAL_FILE = ".credentials.json"
 SECURITY = "/usr/bin/security"  # what the session's `security` runs, under the operator's HOME (keychain credentials)
+CLAUDE_SERVICE = "Claude Code-credentials"  # the keychain service the subscription login is stored under (gap-154f93)
 KEYCHAIN_WRAPPER = '#!/bin/sh\n# macOS finds the login keychain through HOME; the session has a HOME of its own.\n' \
                    'HOME={home} exec {security} "$@"\n'
 BUILTIN_PLUGIN = "builtin"  # the `path` of a plugin Claude Code ships, in the init event's `plugins`
@@ -733,6 +739,25 @@ def _keychain_wrapper(home: Path) -> Path:
     wrapper.write_text(KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())), security=SECURITY))
     wrapper.chmod(0o755)
     return wrapper
+
+
+def keychain_fingerprint(user: str, *, service: str = CLAUDE_SERVICE, security: str = SECURITY,
+                         home: Path | None = None) -> str | None:
+    """gap-3cfe4f, token-free: a short sha256-hex fingerprint of the Claude Code login the macOS keychain holds, to
+    pass to `vb run --credential-fingerprint`, or None if it cannot be read. The credential is read into a shell
+    variable and piped into `shasum`, so it never enters this process and is never printed; only the 16-hex prefix is
+    returned, never the token. The driver never calls this -- run it out of band once to learn the fingerprint of the
+    credential the agent must not exfiltrate, so no benchmark run reads the login just to fingerprint it."""
+    pipeline = (f'cred=$({shlex.quote(security)} find-generic-password -a {shlex.quote(user)} -w '
+                f'-s {shlex.quote(service)} 2>/dev/null) || exit 7\nprintf %s "$cred" | /usr/bin/shasum -a 256\n')
+    env = {**os.environ, **({"HOME": str(home)} if home is not None else {})}
+    try:
+        done = subprocess.run(["/bin/sh", "-c", pipeline], capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    digest = (done.stdout.split() or [""])[0][:16]
+    return digest if done.returncode == 0 and len(digest) == 16 and all(c in "0123456789abcdef" for c in digest) \
+        else None
 
 
 def _added_plugins(init: Mapping) -> list:

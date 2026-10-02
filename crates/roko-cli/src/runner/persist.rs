@@ -49,8 +49,6 @@ pub struct PersistPaths {
     pub events_json: PathBuf,
     /// `.roko/events.jsonl` — append-only runner event log consumed by TUI/server.
     pub events_jsonl: PathBuf,
-    /// `.roko/state/run-ledger.jsonl` — typed run ledger (task starts, completions, gate outcomes).
-    pub run_ledger_jsonl: PathBuf,
     /// `.roko/state/status.json` — lightweight runner status for fast polling.
     pub status_json: PathBuf,
 }
@@ -79,7 +77,6 @@ impl PersistPaths {
             agent_pids_json: layout.agent_pids_path(),
             events_json: layout.event_log_snapshot(),
             events_jsonl: layout.events_jsonl_path(),
-            run_ledger_jsonl: layout.run_ledger_path(),
             status_json: state.join("status.json"),
         })
     }

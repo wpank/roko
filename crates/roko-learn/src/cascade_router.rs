@@ -102,6 +102,11 @@ pub struct CascadeRouter {
     pareto_frontier: Mutex<ParetoFrontierState>,
     /// Static role -> model table for stage 1.
     role_table: Mutex<HashMap<AgentRole, String>>,
+    /// Roles whose `role_table` entry is still the default [`Self::new`]
+    /// picked. [`Self::with_model_tiers`] re-picks only these: an entry
+    /// restored from a snapshot or set explicitly, such as an experiment's
+    /// winner, stays (9207).
+    default_roles: Mutex<std::collections::HashSet<AgentRole>>,
     /// Ordered list of model slugs tracked by the router.
     model_slugs: Vec<String>,
     /// Config-sourced tier map: slug → ModelTier from `roko.toml`.
@@ -259,6 +264,8 @@ impl CascadeRouter {
         // Tiers come from the slug heuristics until `with_model_tiers` sets
         // the configured ones and re-picks these defaults.
         let role_table = default_role_model_table(&model_slugs, &HashMap::new());
+        let default_roles: std::collections::HashSet<AgentRole> =
+            role_table.keys().copied().collect();
         // Nothing is learned yet. The default role table is not a change
         // to persist over the entries other writers saved.
         let baseline = CascadeSnapshot {
@@ -270,6 +277,7 @@ impl CascadeRouter {
             confidence_stats: Mutex::new(HashMap::new()),
             pareto_frontier: Mutex::new(ParetoFrontierState::default()),
             role_table: Mutex::new(role_table),
+            default_roles: Mutex::new(default_roles),
             tier_map: HashMap::new(),
             model_slugs,
             stage_tracking: Mutex::new(StageTracking {
@@ -317,15 +325,15 @@ impl CascadeRouter {
 
     /// Re-pick, by the configured tiers, the role-table entries that still
     /// hold the default [`Self::new`] picked by the slug heuristics; restored
-    /// and overridden entries stay. The baseline moves with them, so a save
-    /// does not take the default for a learned change (9207).
+    /// and explicitly set entries stay. The baseline moves with them, so a
+    /// save does not take the default for a learned change (9207).
     fn repick_default_roles(&mut self) {
-        let heuristic = default_role_model_table(&self.model_slugs, &HashMap::new());
         let configured = default_role_model_table(&self.model_slugs, &self.tier_map);
+        let defaults = self.default_roles.get_mut();
         let table = self.role_table.get_mut();
         let baseline = self.baseline.get_mut();
         for (role, slug) in configured {
-            if table.get(&role) != heuristic.get(&role) {
+            if !defaults.contains(&role) {
                 continue;
             }
             if baseline.role_table.get(&role) == table.get(&role) {
@@ -344,17 +352,22 @@ impl CascadeRouter {
     #[must_use]
     pub fn with_role_table(mut self, table: HashMap<AgentRole, String>) -> Self {
         self.role_table = Mutex::new(table);
+        self.default_roles.get_mut().clear();
         self
     }
 
     /// Update the Stage 1 static role-to-model mapping for one role.
     pub fn set_static_role_model(&mut self, role: AgentRole, model_slug: impl Into<String>) {
+        self.default_roles.get_mut().remove(&role);
         self.role_table.lock().insert(role, model_slug.into());
     }
 
     /// Update the static role -> model table used during the cold-start stage.
     pub fn update_static_table(&self, role: AgentRole, model_slug: impl Into<String>) -> bool {
         let model_slug = model_slug.into();
+        // A learned entry is not a default to re-pick, even when it matches
+        // the current one (9207).
+        self.default_roles.lock().remove(&role);
         let mut role_table = self.role_table.lock();
         if role_table
             .get(&role)
@@ -2624,18 +2637,15 @@ impl CascadeRouter {
         }
         if !role_table.is_empty() {
             let mut rt = router.role_table.lock();
+            let mut defaults = router.default_roles.lock();
             for (role, slug) in role_table {
-                let slug = remap_role_table_entry(slug, &version_changes);
-                // An entry naming a model the workspace does not configure,
-                // such as a default an older roko took from a built-in list,
-                // leaves the role its configured default (9207).
-                if router
-                    .model_slugs
-                    .iter()
-                    .any(|configured| slugs_match(configured, &slug))
-                {
-                    rt.insert(role, slug);
-                }
+                // Restored as persisted, so the baseline matches the file
+                // and a save keeps entries other writers need. An entry
+                // naming a model this workspace does not configure, such as
+                // a default an older roko took from a built-in list, is
+                // skipped when routing (9207).
+                defaults.remove(&role);
+                rt.insert(role, remap_role_table_entry(slug, &version_changes));
             }
         }
         {
@@ -2751,6 +2761,21 @@ impl CascadeRouter {
 
     // ── Internal routing per stage ──────────────────────────────────────
 
+    /// The role's table entry when it names a configured model. A restored
+    /// entry can name a model this workspace does not configure: it stays in
+    /// the table, so a save keeps it, but no static route names it (9207).
+    fn configured_role_slug(&self, role: AgentRole) -> Option<String> {
+        self.role_table
+            .lock()
+            .get(&role)
+            .filter(|slug| {
+                self.model_slugs
+                    .iter()
+                    .any(|configured| slugs_match(configured, slug))
+            })
+            .cloned()
+    }
+
     fn route_static(
         &self,
         ctx: &RoutingContext,
@@ -2791,24 +2816,16 @@ impl CascadeRouter {
         let role_tier = ctx.role.model_tier();
         let default_slug =
             static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map).unwrap_or_default();
+        let role_slug = self.configured_role_slug(ctx.role);
         let slug = if ctx.task_category == TaskCategory::Research {
             self.model_slugs
                 .iter()
                 .find(|s| slug_family(s) == Some("sonar"))
                 .cloned()
-                .unwrap_or_else(|| {
-                    self.role_table
-                        .lock()
-                        .get(&ctx.role)
-                        .cloned()
-                        .unwrap_or_else(|| default_slug.clone())
-                })
-        } else {
-            self.role_table
-                .lock()
-                .get(&ctx.role)
-                .cloned()
+                .or(role_slug)
                 .unwrap_or(default_slug)
+        } else {
+            role_slug.unwrap_or(default_slug)
         };
         let tier = slug_to_tier(&slug, &self.tier_map);
 

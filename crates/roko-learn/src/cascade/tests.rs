@@ -786,11 +786,17 @@ fn custom_role_table() {
     let mut table = HashMap::new();
     table.insert(AgentRole::Implementer, "gpt-5".to_string());
 
-    let cascade = CascadeRouter::new(test_slugs()).with_role_table(table);
+    let mut slugs = test_slugs();
+    slugs.push("gpt-5".to_string());
+    let cascade = CascadeRouter::new(slugs).with_role_table(table.clone());
     let ctx = default_ctx();
     let result = cascade.route(&ctx);
 
     assert_eq!(result.primary.slug, "gpt-5");
+
+    // An entry naming a model the router does not configure is skipped.
+    let cascade = CascadeRouter::new(test_slugs()).with_role_table(table);
+    assert_eq!(cascade.route(&ctx).primary.slug, "claude-sonnet-4-5");
 }
 
 #[test]
@@ -967,6 +973,73 @@ fn static_route_never_names_an_unconfigured_model() {
         static_slug_for_tier(&configured, ModelTier::Fast, &tiers).as_deref(),
         Some("gpt-5-4-mini")
     );
+}
+
+#[test]
+fn restored_role_entry_for_an_unconfigured_model_is_kept_but_not_routed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let snapshot = CascadeSnapshot {
+        model_slugs: vec!["gemini-2.5-pro".to_string()],
+        role_table: HashMap::from([(AgentRole::Implementer, "gemini-2.5-pro".to_string())]),
+        ..CascadeSnapshot::default()
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
+
+    let configured = vec!["glm-4-7".to_string(), "gpt-5-4-mini".to_string()];
+    let router = CascadeRouter::load_or_new(&path, configured);
+    assert_eq!(router.route(&default_ctx()).primary.slug, "glm-4-7");
+
+    // A save keeps the entry for the processes that configure the model.
+    router.save(&path).unwrap();
+    let saved: CascadeSnapshot =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        saved
+            .role_table
+            .get(&AgentRole::Implementer)
+            .map(String::as_str),
+        Some("gemini-2.5-pro")
+    );
+}
+
+#[test]
+fn model_tiers_repick_defaults_but_keep_learned_and_restored_entries() {
+    let slugs = vec!["cerebras-gptoss".to_string(), "glm-4-7".to_string()];
+    let mut models = indexmap::IndexMap::new();
+    for (slug, tier) in [
+        ("cerebras-gptoss", ModelTier::Fast),
+        ("glm-4-7", ModelTier::Standard),
+    ] {
+        let profile = roko_core::config::ModelProfile {
+            slug: slug.to_string(),
+            tier: Some(tier),
+            ..roko_core::config::ModelProfile::default()
+        };
+        models.insert(slug.to_string(), profile);
+    }
+    let ctx = default_ctx();
+
+    // By the slug heuristics both are standard models, so the implementer's
+    // default is the first one until the configured tiers re-pick it.
+    let mut fresh = CascadeRouter::new(slugs.clone());
+    assert_eq!(fresh.route(&ctx).primary.slug, "cerebras-gptoss");
+    fresh.set_model_tiers(&models);
+    assert_eq!(fresh.route(&ctx).primary.slug, "glm-4-7");
+
+    // An experiment's winner stays, even when it is the heuristic default.
+    let mut learned = CascadeRouter::new(slugs.clone());
+    learned.set_static_role_model(AgentRole::Implementer, "cerebras-gptoss");
+    learned.set_model_tiers(&models);
+    assert_eq!(learned.route(&ctx).primary.slug, "cerebras-gptoss");
+
+    // So does the winner a later process restores.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    learned.save(&path).unwrap();
+    let mut restored = CascadeRouter::load_or_new(&path, slugs);
+    restored.set_model_tiers(&models);
+    assert_eq!(restored.route(&ctx).primary.slug, "cerebras-gptoss");
 }
 
 #[test]

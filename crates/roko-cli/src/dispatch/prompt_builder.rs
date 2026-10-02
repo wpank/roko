@@ -18,8 +18,9 @@
 //! - `tool_allowlist` — explicit allowlist (intersected with safety
 //!   contract upstream of dispatch)
 //! - `diagnostics` — what got included / dropped, total token estimate,
-//!   playbook ids, knowledge ids — used for prompt experiments and the
-//!   projection layer
+//!   playbook ids, knowledge ids, and each retrieved item with whether it
+//!   reached the prompt — used for prompt experiments, the projection layer
+//!   and the run's exposure log
 //! - `gate_feedback` (carried into context, not the result) — structured
 //!   compile / test / clippy errors injected on retry
 //!
@@ -48,7 +49,10 @@ use roko_compose::{
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone, TaskContextWeight};
+use roko_learn::telemetry::records::b3_digest;
+use roko_learn::telemetry::{ExcludedReason, ExposureItemKind};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use super::outcome::RunnerDispatchError;
 use super::prompt_cache::PromptCache;
@@ -1166,6 +1170,46 @@ pub struct PromptDiagnostics {
     /// canonical scoring and composition.
     #[serde(default)]
     pub experiment_assignments: Vec<PromptExperimentAssignmentDiagnostic>,
+    /// Every item the prompt's sources retrieved (knowledge entries, cited
+    /// episodes, playbooks), its error-pattern block and every candidate
+    /// section, each with whether it reached the prompt (S01 P0-9). The id
+    /// lists above name what was retrieved; these say what was included.
+    #[serde(default)]
+    pub items: Vec<PromptItemDiagnostic>,
+}
+
+/// One item a prompt retrieved, and whether it reached the prompt (S01
+/// §4.5). It holds a digest and a token count, never the item's text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptItemDiagnostic {
+    /// What the item is.
+    pub kind: ExposureItemKind,
+    /// Its id: a knowledge entry, episode or playbook id, a section name, or
+    /// the `b3:` digest of the error-pattern block, whose formatter passes
+    /// no pattern ids.
+    pub id: String,
+    /// The prompt section that carries it: `domain_context` for knowledge,
+    /// episodes and playbooks, `context_layer` for the error patterns, and
+    /// its own name for a section.
+    pub section: String,
+    /// 1-based position in its source's ranking; `None` for a section.
+    pub rank: Option<u32>,
+    /// Its source's score, when the source scores: the task keywords a
+    /// knowledge entry or episode matched, a playbook's relevance, or a
+    /// section's composition score.
+    pub score: Option<f64>,
+    /// Estimated tokens of its rendered text (of a section, after its hard
+    /// cap).
+    pub tokens: u32,
+    /// `sha256` of its rendered text (of a section, of its candidate
+    /// content).
+    pub rendered_sha256: String,
+    /// Its section reached the prompt, and so did its rendered text.
+    pub included: bool,
+    /// Why it did not, when it did not: `token_budget` when its section was
+    /// dropped or its hard cap cut the item off, `role_filter` when the
+    /// role's budget gives its section no room.
+    pub excluded_reason: Option<ExcludedReason>,
 }
 
 /// One content-addressed prompt source and its serialized score result.
@@ -1313,6 +1357,8 @@ struct PromptSection {
     _drop_priority: u32,
     knowledge_ids: Vec<String>,
     playbook_ids: Vec<String>,
+    /// Each entry the source rendered into `body`, in its ranking.
+    items: Vec<PromptItem>,
 }
 
 impl PromptSection {
@@ -1323,6 +1369,7 @@ impl PromptSection {
             _drop_priority: drop_priority,
             knowledge_ids: Vec::new(),
             playbook_ids: Vec::new(),
+            items: Vec::new(),
         }
     }
 
@@ -1335,6 +1382,157 @@ impl PromptSection {
         self.playbook_ids = ids;
         self
     }
+
+    fn with_items(mut self, items: Vec<PromptItem>) -> Self {
+        self.items = items;
+        self
+    }
+}
+
+/// One entry a prompt source rendered into its section (S01 P0-9): a
+/// knowledge entry, a cited episode or a playbook.
+#[derive(Debug, Clone)]
+struct PromptItem {
+    kind: ExposureItemKind,
+    id: String,
+    /// 1-based position in the source's ranking.
+    rank: u32,
+    /// The source's score, when it scores.
+    score: Option<f64>,
+    /// The text the source rendered for the entry.
+    rendered: String,
+}
+
+impl PromptItem {
+    /// The entry at 0-based `index` of its source's ranking. An entry with no
+    /// id is not an item: no exposure could name it.
+    fn ranked(
+        kind: ExposureItemKind,
+        id: &str,
+        index: usize,
+        score: Option<f64>,
+        rendered: &str,
+    ) -> Option<Self> {
+        (!id.is_empty()).then(|| Self {
+            kind,
+            id: id.to_string(),
+            rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            score,
+            rendered: rendered.to_string(),
+        })
+    }
+}
+
+/// The canonical section the knowledge, episode, playbook and
+/// section-effectiveness sources render into: their bodies are its domain
+/// notes.
+const SOURCE_SECTION: &str = "domain_context";
+
+/// The canonical section the error-pattern block renders into: it ends the
+/// runner context.
+const RUNNER_CONTEXT_SECTION: &str = "context_layer";
+
+/// A composed prompt and its composition receipt, which together say
+/// whether a retrieved item reached the prompt.
+struct ComposedPrompt<'a> {
+    manifest: Option<&'a CompositionManifest>,
+    prompt: &'a str,
+}
+
+impl ComposedPrompt<'_> {
+    /// Why text rendered into the section `carrier` is not in the prompt, or
+    /// `None` when it is: the section reached the prompt and its hard cap
+    /// kept the text. Without a composition receipt the text alone decides.
+    fn excluded_reason(&self, carrier: &str, rendered: &str) -> Option<ExcludedReason> {
+        let in_prompt = self.prompt.contains(rendered.trim_end());
+        let Some(manifest) = self.manifest else {
+            return (!in_prompt).then_some(ExcludedReason::TokenBudget);
+        };
+        if manifest.included.iter().any(|section| section.name == carrier) {
+            (!in_prompt).then_some(ExcludedReason::TokenBudget)
+        } else if manifest.excluded.iter().any(|section| section.name == carrier) {
+            Some(ExcludedReason::TokenBudget)
+        } else {
+            // The role's budget profile gives the section no room, so it
+            // was never a candidate.
+            Some(ExcludedReason::RoleFilter)
+        }
+    }
+
+    /// `item`, rendered into the section `carrier`, and whether it reached
+    /// the prompt.
+    fn item(&self, item: &PromptItem, carrier: &str) -> PromptItemDiagnostic {
+        let excluded_reason = self.excluded_reason(carrier, &item.rendered);
+        PromptItemDiagnostic {
+            kind: item.kind,
+            id: item.id.clone(),
+            section: carrier.to_string(),
+            rank: Some(item.rank),
+            score: item.score,
+            tokens: token_count(roko_compose::estimate_tokens(&item.rendered)),
+            rendered_sha256: sha256_hex(&item.rendered),
+            included: excluded_reason.is_none(),
+            excluded_reason,
+        }
+    }
+
+    /// Every entry `sources` rendered, the `error_patterns` block, and one
+    /// item per candidate section, whose candidate content `section_digests`
+    /// holds.
+    fn items(
+        &self,
+        sources: &[PromptSection],
+        error_patterns: &str,
+        section_digests: &HashMap<String, String>,
+    ) -> Vec<PromptItemDiagnostic> {
+        let mut items: Vec<PromptItemDiagnostic> = sources
+            .iter()
+            .flat_map(|section| &section.items)
+            .map(|item| self.item(item, SOURCE_SECTION))
+            .collect();
+        if !error_patterns.trim().is_empty() {
+            // One item for the block until its formatter passes pattern ids.
+            let block = PromptItem {
+                kind: ExposureItemKind::ErrorPattern,
+                id: b3_digest(error_patterns.as_bytes()),
+                rank: 1,
+                score: None,
+                rendered: error_patterns.to_string(),
+            };
+            items.push(self.item(&block, RUNNER_CONTEXT_SECTION));
+        }
+        let Some(manifest) = self.manifest else {
+            return items;
+        };
+        let section = |name: &str, tokens: usize, score: f32, kept: bool| PromptItemDiagnostic {
+            kind: ExposureItemKind::Section,
+            id: name.to_string(),
+            section: name.to_string(),
+            rank: None,
+            score: Some(f64::from(score)),
+            tokens: token_count(tokens),
+            rendered_sha256: section_digests.get(name).cloned().unwrap_or_default(),
+            included: kept,
+            excluded_reason: (!kept).then_some(ExcludedReason::TokenBudget),
+        };
+        for kept in &manifest.included {
+            items.push(section(kept.name.as_str(), kept.estimated_tokens, kept.score, true));
+        }
+        for cut in &manifest.excluded {
+            items.push(section(cut.name.as_str(), cut.estimated_tokens, cut.score, false));
+        }
+        items
+    }
+}
+
+/// `tokens` as a diagnostic count.
+fn token_count(tokens: usize) -> u32 {
+    u32::try_from(tokens).unwrap_or(u32::MAX)
+}
+
+/// Hex `sha256` of `text`.
+fn sha256_hex(text: &str) -> String {
+    format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
 }
 
 /// Pluggable prompt context provider.
@@ -1997,6 +2195,11 @@ impl PromptAssembler {
         } else {
             Vec::new()
         };
+        // Each candidate section's content digest, for its exposure item.
+        let section_digests: HashMap<String, String> = canonical_sections
+            .iter()
+            .map(|section| (section.name.clone(), sha256_hex(&section.content)))
+            .collect();
         let prompt_build = match spec.compose_build_from_sections_with_budget_and_composer(
             canonical_sections,
             self.token_budget as usize,
@@ -2076,6 +2279,17 @@ impl PromptAssembler {
 
         // ── Diagnostics ───────────────────────────────────────────────────
         let estimated_tokens = (system_prompt.len() / 4).max(1) as u32;
+        // What each retrieved item became: an item reached the prompt only
+        // when its section did and its text survived the section's cap.
+        let composed = ComposedPrompt {
+            manifest: composition_manifest.as_ref(),
+            prompt: &system_prompt,
+        };
+        let items = composed.items(
+            &source_sections,
+            &ctx.error_patterns_context,
+            &section_digests,
+        );
         let diagnostics = PromptDiagnostics {
             included_sections,
             dropped_sections,
@@ -2086,6 +2300,7 @@ impl PromptAssembler {
             scored_signals,
             composition_manifest,
             experiment_assignments: experiment_assignment_diagnostics,
+            items,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -2272,17 +2487,23 @@ fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prompt
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     let mut body = String::from("# Neuro knowledge\nRelevant durable knowledge from prior runs:\n");
-    for entry in entries {
+    let mut items = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
         let source = entry.source.as_deref().unwrap_or("neuro");
-        body.push_str(&format!(
+        let line = format!(
             "- [{}] {} (confidence {:.2}, source: {})\n",
             entry.id,
             truncate_chars(&entry.content, 420),
             entry.confidence,
             source
-        ));
+        );
+        // The store's query ranks the entries without a score.
+        let kind = ExposureItemKind::Knowledge;
+        items.extend(PromptItem::ranked(kind, &entry.id, index, None, &line));
+        body.push_str(&line);
     }
-    Some(PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids))
+    let section = PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids);
+    Some(section.with_items(items))
 }
 
 fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
@@ -2338,20 +2559,13 @@ fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prom
 
     let ids = scored
         .iter()
-        .map(|(_, episode)| {
-            if !episode.id.is_empty() {
-                episode.id.clone()
-            } else if !episode.episode_id.is_empty() {
-                episode.episode_id.clone()
-            } else {
-                episode.task_id.clone()
-            }
-        })
+        .map(|(_, episode)| cited_episode_id(episode).to_string())
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     let mut body =
         String::from("# Learned patterns from prior episodes\nSimilar prior work suggests:\n");
-    for (_, episode) in scored {
+    let mut items = Vec::new();
+    for (index, (score, episode)) in scored.iter().enumerate() {
         let outcome = if episode.success { "passed" } else { "failed" };
         let summary = episode
             .reasoning_summary
@@ -2359,7 +2573,7 @@ fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prom
             .or(episode.reflection.as_deref())
             .or(episode.failure_reason.as_deref())
             .unwrap_or("no summary recorded");
-        body.push_str(&format!(
+        let line = format!(
             "- {} ({}, model: {}): {}\n",
             episode.task_id,
             outcome,
@@ -2369,9 +2583,27 @@ fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prom
                 &episode.model
             },
             truncate_chars(summary, 420)
-        ));
+        );
+        // The score is the task keywords the episode matched.
+        let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
+        let id = cited_episode_id(episode);
+        items.extend(PromptItem::ranked(kind, id, index, score, &line));
+        body.push_str(&line);
     }
-    Some(PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids))
+    let section = PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids);
+    Some(section.with_items(items))
+}
+
+/// The id a prompt cites an episode by: its id, else its episode id, else
+/// its task's id.
+fn cited_episode_id(episode: &roko_learn::episode_logger::Episode) -> &str {
+    if !episode.id.is_empty() {
+        &episode.id
+    } else if !episode.episode_id.is_empty() {
+        &episode.episode_id
+    } else {
+        &episode.task_id
+    }
 }
 
 fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
@@ -2424,13 +2656,14 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
         .map(|(_, playbook)| playbook.id.clone())
         .collect::<Vec<_>>();
     let mut body = String::from("# Relevant playbooks\nReusable proven procedures:\n");
-    for (_, playbook) in scored {
-        body.push_str(&format!(
+    let mut items = Vec::new();
+    for (index, (score, playbook)) in scored.iter().enumerate() {
+        let mut text = format!(
             "- {}: {} (successes {}, failures {})\n",
             playbook.id, playbook.goal, playbook.success_count, playbook.failure_count
-        ));
+        );
         for step in playbook.steps.iter().take(5) {
-            body.push_str(&format!(
+            text.push_str(&format!(
                 "  - {} via {}; expect {}\n",
                 step.description,
                 step.action_kind,
@@ -2441,8 +2674,15 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
                 }
             ));
         }
+        // The score is the task keywords the playbook holds, ten each, plus
+        // its successes over its failures.
+        let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
+        let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
+        items.extend(item);
+        body.push_str(&text);
     }
-    Some(PromptSection::new("playbooks", body, 7).with_playbook_ids(ids))
+    let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
+    Some(section.with_items(items))
 }
 
 // ─── Cached variants ──────────────────────────────────────────────────
@@ -2503,17 +2743,23 @@ fn collect_neuro_knowledge_cached(
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     let mut body = String::from("# Neuro knowledge\nRelevant durable knowledge from prior runs:\n");
-    for (_, entry) in &scored {
+    let mut items = Vec::new();
+    for (index, (score, entry)) in scored.iter().enumerate() {
         let source = entry.source.as_deref().unwrap_or("neuro");
-        body.push_str(&format!(
+        let line = format!(
             "- [{}] {} (confidence {:.2}, source: {})\n",
             entry.id,
             truncate_chars(&entry.content, 420),
             entry.confidence,
             source
-        ));
+        );
+        // The score is the task keywords the entry holds.
+        let (kind, score) = (ExposureItemKind::Knowledge, Some(*score as f64));
+        items.extend(PromptItem::ranked(kind, &entry.id, index, score, &line));
+        body.push_str(&line);
     }
-    Some(PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids))
+    let section = PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids);
+    Some(section.with_items(items))
 }
 
 fn collect_episode_knowledge_cached(
@@ -2558,20 +2804,13 @@ fn collect_episode_knowledge_cached(
 
     let ids = scored
         .iter()
-        .map(|(_, episode)| {
-            if !episode.id.is_empty() {
-                episode.id.clone()
-            } else if !episode.episode_id.is_empty() {
-                episode.episode_id.clone()
-            } else {
-                episode.task_id.clone()
-            }
-        })
+        .map(|(_, episode)| cited_episode_id(episode).to_string())
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     let mut body =
         String::from("# Learned patterns from prior episodes\nSimilar prior work suggests:\n");
-    for (_, episode) in scored {
+    let mut items = Vec::new();
+    for (index, (score, episode)) in scored.iter().enumerate() {
         let outcome = if episode.success { "passed" } else { "failed" };
         let summary = episode
             .reasoning_summary
@@ -2579,7 +2818,7 @@ fn collect_episode_knowledge_cached(
             .or(episode.reflection.as_deref())
             .or(episode.failure_reason.as_deref())
             .unwrap_or("no summary recorded");
-        body.push_str(&format!(
+        let line = format!(
             "- {} ({}, model: {}): {}\n",
             episode.task_id,
             outcome,
@@ -2589,9 +2828,15 @@ fn collect_episode_knowledge_cached(
                 &episode.model
             },
             truncate_chars(summary, 420)
-        ));
+        );
+        // The score is the task keywords the episode matched.
+        let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
+        let id = cited_episode_id(episode);
+        items.extend(PromptItem::ranked(kind, id, index, score, &line));
+        body.push_str(&line);
     }
-    Some(PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids))
+    let section = PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids);
+    Some(section.with_items(items))
 }
 
 fn collect_playbooks_cached(
@@ -2635,13 +2880,14 @@ fn collect_playbooks_cached(
         .map(|(_, playbook)| playbook.id.clone())
         .collect::<Vec<_>>();
     let mut body = String::from("# Relevant playbooks\nReusable proven procedures:\n");
-    for (_, playbook) in scored {
-        body.push_str(&format!(
+    let mut items = Vec::new();
+    for (index, (score, playbook)) in scored.iter().enumerate() {
+        let mut text = format!(
             "- {}: {} (successes {}, failures {})\n",
             playbook.id, playbook.goal, playbook.success_count, playbook.failure_count
-        ));
+        );
         for step in playbook.steps.iter().take(5) {
-            body.push_str(&format!(
+            text.push_str(&format!(
                 "  - {} via {}; expect {}\n",
                 step.description,
                 step.action_kind,
@@ -2652,8 +2898,15 @@ fn collect_playbooks_cached(
                 }
             ));
         }
+        // The score is the task keywords the playbook holds, ten each, plus
+        // its successes over its failures.
+        let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
+        let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
+        items.extend(item);
+        body.push_str(&text);
     }
-    Some(PromptSection::new("playbooks", body, 7).with_playbook_ids(ids))
+    let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
+    Some(section.with_items(items))
 }
 
 fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
@@ -3717,6 +3970,118 @@ mod tests {
             prompt.system_prompt
         );
         assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// The item of `kind` and `id` in `prompt`'s diagnostics.
+    fn prompt_item(
+        prompt: &AssembledPrompt,
+        kind: ExposureItemKind,
+        id: &str,
+    ) -> PromptItemDiagnostic {
+        let items = &prompt.diagnostics.items;
+        items
+            .iter()
+            .find(|item| item.kind == kind && item.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {kind:?} item {id}: {items:#?}"))
+    }
+
+    /// An item reaches the prompt only when its section does (S01 §4.5).
+    /// Knowledge entries and playbooks render into the domain context, so a
+    /// token budget that drops it leaves each of them retrieved, as the id
+    /// lists say, but not included, for the token budget. With room for the
+    /// section, each is included with the digest of the text it rendered.
+    #[test]
+    fn diagnostics_mark_items_of_dropped_sections_not_included() {
+        use roko_learn::telemetry::ExposureItemKind::{Knowledge, Playbook, Section};
+        const CRITICAL: [&str; 3] = ["role_identity", "context_layer", "task_context"];
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        // "explain" and "wiring" are task keywords; "wiring" alone ranks lower.
+        write_knowledge(
+            temp.path(),
+            &[
+                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-explain", "Explain the dispatcher wiring before you edit it"),
+            ],
+        );
+        let playbooks = temp.path().join(".roko/learn/playbooks");
+        std::fs::create_dir_all(&playbooks).expect("playbook dir");
+        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher");
+        let json = serde_json::to_string(&playbook).expect("playbook json");
+        std::fs::write(playbooks.join("pb-wiring.json"), json).expect("write playbook");
+        let cache = Arc::new(PromptCache::load(temp.path()));
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+
+        let roomy = PromptAssembler::with_cache(Arc::clone(&cache))
+            .assemble(&task(), &prompt_ctx)
+            .expect("assemble");
+        let line = "- pb-wiring: Wire the dispatcher (successes 0, failures 0)\n";
+        assert!(
+            roomy.system_prompt.contains(line),
+            "{}",
+            roomy.system_prompt
+        );
+        let kept = prompt_item(&roomy, Playbook, "pb-wiring");
+        assert!(kept.included, "{kept:?}");
+        assert_eq!(kept.excluded_reason, None);
+        assert_eq!(kept.section, "domain_context");
+        assert_eq!(kept.rendered_sha256, sha256_hex(line));
+        assert!(kept.tokens > 0);
+        let explain = prompt_item(&roomy, Knowledge, "k-explain");
+        let wiring = prompt_item(&roomy, Knowledge, "k-wiring");
+        assert!(explain.included && wiring.included);
+        assert_eq!((explain.rank, explain.score), (Some(1), Some(2.0)));
+        assert_eq!((wiring.rank, wiring.score), (Some(2), Some(1.0)));
+        assert_ne!(explain.rendered_sha256, wiring.rendered_sha256);
+        assert!(prompt_item(&roomy, Section, "domain_context").included);
+
+        // Room for the critical sections alone: the domain context drops.
+        let manifest = roomy
+            .diagnostics
+            .composition_manifest
+            .as_ref()
+            .expect("composition manifest");
+        let critical: usize = manifest
+            .included
+            .iter()
+            .filter(|section| CRITICAL.contains(&section.name.as_str()))
+            .map(|section| section.estimated_tokens)
+            .sum();
+        let budget = u32::try_from(critical).expect("a token count");
+        let tight = PromptAssembler::with_cache(cache)
+            .with_token_budget(budget)
+            .assemble(&task(), &prompt_ctx)
+            .expect("the critical sections fit");
+        let dropped = &tight.diagnostics.dropped_sections;
+        assert!(
+            dropped.iter().any(|name| name == "domain_context"),
+            "{dropped:?}"
+        );
+        assert!(!tight.system_prompt.contains("pb-wiring"));
+        for (kind, id) in [
+            (Knowledge, "k-explain"),
+            (Knowledge, "k-wiring"),
+            (Playbook, "pb-wiring"),
+        ] {
+            let item = prompt_item(&tight, kind, id);
+            assert!(!item.included, "{item:?}");
+            assert_eq!(item.excluded_reason, Some(ExcludedReason::TokenBudget));
+            assert_eq!(item.section, "domain_context");
+        }
+        assert_eq!(
+            tight.diagnostics.knowledge_ids, roomy.diagnostics.knowledge_ids,
+            "the id lists name what was retrieved"
+        );
+        assert_eq!(tight.diagnostics.playbook_ids, ["pb-wiring"]);
+        let section = prompt_item(&tight, Section, "domain_context");
+        assert_eq!(
+            (section.included, section.excluded_reason),
+            (false, Some(ExcludedReason::TokenBudget))
+        );
+        assert!(prompt_item(&tight, Section, "task_context").included);
     }
 
     #[test]

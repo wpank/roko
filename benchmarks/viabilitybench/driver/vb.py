@@ -32,9 +32,9 @@ admission, so `--provider-url` never names a proxy started by hand: `vb run` sta
 
 **The metering proxy** (`faultproxy.py`, S08 T13). A billed run on a network provider always goes through it, and
 `--proxy` sends any other run through it too, such as an offline one on a stub. Once the run is admitted, `vb run`
-starts the proxy inside the driver's process with one upstream: the arm's provider, or the `--provider-url` that
-overrides it. The runners reach the model only through it: they get its loopback URL and no key, and it sends the
-provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
+starts the proxy inside the driver's process with one upstream per provider its models_allow rows use (3311: a
+ladder's rungs may span several), each the arm's own provider or the `--provider-url` that overrides all of them.
+The runners reach a model only through it: they get its loopback URL and no key, and it sends the provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
 task key, `<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the
 provider's own URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. Before
 each task the driver also sets the task's caps in the proxy: the arm's input cap, the per-attempt cap for a runner
@@ -87,7 +87,7 @@ import stat
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import ModuleType
@@ -145,6 +145,7 @@ class Run:
     args: argparse.Namespace
     plan: Plan
     runner: ModuleType
+    arm: dict  # plan.arm, with every [providers.*] base_url proxied when this run is proxied (3311)
     endpoint: provider.Endpoint  # what the runners call: the plan's endpoint, or the proxy's in front of it
     chat: provider.ChatProvider
     book: ledger.Ledger
@@ -170,6 +171,9 @@ class Plan:
     endpoint: provider.Endpoint
     caps: caps.Caps
     worst_task_usd: float | None
+    # 3311: one endpoint per provider the arm's models_allow uses (keyed by provider name), for a ladder's several
+    # rungs; holds exactly `{endpoint.provider: endpoint}` for a one-model arm.
+    endpoints: dict[str, provider.Endpoint]
 
     @property
     def runs(self) -> int:
@@ -232,12 +236,21 @@ def make_plan(args: argparse.Namespace) -> Plan:
     if args.model not in allowed:
         raise DriverError(f"arm {arm['arm']['id']} allows {', '.join(allowed)}, not {args.model}")
     snapshot = ledger.load_snapshot(args.price_snapshot)
+    provider_url = getattr(args, "provider_url", None)
     row = snapshot.row(args.model)
-    endpoint = _endpoint(arm, row, getattr(args, "provider_url", None))
+    endpoint = _endpoint(arm, row, provider_url)
     arm_caps = caps.Caps.from_table(arm.get("caps", {}))
     instances = stream.instances[:args.limit] if args.limit else stream.instances
+    # 3311: a multi-model arm routes several models through the proxy, one endpoint per provider its models_allow
+    # rows name, and prices admission and reservations at the most expensive rung, so they stay conservative. A
+    # one-model arm has one row, so `rows`, `endpoints` and `worst_task_usd` below are exactly the single-model values.
+    rows = [snapshot.row(name) for name in allowed]
+    endpoints = {one.provider: one for one in (_endpoint(arm, row_, provider_url) for row_ in rows)}
+    worst_per_rung = [caps.worst_task_usd(arm_caps, row_) for row_ in rows]
+    worst_task_usd = None if any(one is None for one in worst_per_rung) else max(worst_per_rung)
     return Plan(arm=arm, stream=stream, model=args.model, seeds=parse_seeds(args.seeds), instances=instances,
-                snapshot=snapshot, endpoint=endpoint, caps=arm_caps, worst_task_usd=caps.worst_task_usd(arm_caps, row))
+                snapshot=snapshot, endpoint=endpoint, caps=arm_caps, worst_task_usd=worst_task_usd,
+                endpoints=endpoints)
 
 
 def load_arm(name: str) -> dict:
@@ -327,7 +340,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # A billed network run always meters through the proxy, which alone sends the provider's key (module docstring),
     # read from the driver-only key file (bug-979a06).
     proxied = args.proxy or (plan.arm["arm"]["billed"] and not plan.endpoint.offline)
-    keys = _provider_keys(args.key_file, plan.endpoint) if proxied else None
+    keys = _provider_keys(args.key_file, plan.endpoints.values()) if proxied else None
     if proxied and not plan.endpoint.offline and keys is None:
         raise DriverError(f"the metering proxy sends {plan.endpoint.provider}'s key, but the arm names no api_key_env, "
                           "since its client signs in by itself")
@@ -382,7 +395,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                          price_snapshot_id=plan.snapshot.id)
     proxy = _start_proxy(plan, run_dir, keys=keys) if proxied else None
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
-    run = Run(args=args, plan=plan, runner=runner, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
+    # 3311: hand the runner every provider's proxied URL through the arm dict's own [providers.*] tables, the only
+    # channel a runner has for more than the one endpoint on `ctx.endpoint`; `api_key_env` names a key, not its
+    # value, so it is unchanged (bug-979a06: the real key never reaches this dict either way).
+    arm = plan.arm
+    if proxy:
+        tables = {name: ({**table, "base_url": proxy.base_url(name)} if name in proxy.upstreams else table)
+                  for name, table in plan.arm.get("providers", {}).items()}
+        arm = {**plan.arm, "providers": tables}
+    run = Run(args=args, plan=plan, runner=runner, arm=arm, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
               config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances)
     written = 0
@@ -435,7 +456,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     wrapper = _verify_wrapper(run, key, task.manifest, env, position)
     swap = disturb.swap(run.disturbances, position)  # the model the proxy serves in place of the pin, if any
     ctx = harness.TaskContext(
-        experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=run.endpoint,
+        experiment_id=args.experiment, run_id=run.run_id, arm=run.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
         visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
@@ -558,25 +579,28 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
 
 
 def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None) -> faultproxy.FaultProxy:
-    """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring).
-    `keys` (`_provider_keys`) maps the upstream's `api_key_env` to its key: the proxy sends it, and the runners'
-    endpoint names none."""
+    """The metering proxy in front of the plan's endpoint(s), logging to `<run_dir>/proxy.jsonl` (module docstring).
+    One upstream per provider `plan.endpoints` names (3311: a ladder's several rungs may span providers). `keys`
+    (`_provider_keys`) maps each upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoints
+    name none."""
     try:
-        return faultproxy.FaultProxy([faultproxy.Upstream.from_endpoint(plan.endpoint)], log_path=run_dir / PROXY_LOG,
-                                     snapshot=plan.snapshot, keys=keys,
+        upstreams = [faultproxy.Upstream.from_endpoint(endpoint) for endpoint in plan.endpoints.values()]
+        return faultproxy.FaultProxy(upstreams, log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot, keys=keys,
                                      input_token_cap=plan.caps.input_tokens_per_task).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
 
 
-def _provider_keys(value: Path | None, endpoint: provider.Endpoint) -> secret.ProviderKeys | None:
-    """The key file's keys when `endpoint` names one (bug-979a06), read into the driver's memory for the proxy; None
-    when it names none: an override URL never gets a key, and a CLI signs in by itself."""
-    if not endpoint.api_key_env:
+def _provider_keys(value: Path | None, endpoints: Iterable[provider.Endpoint]) -> secret.ProviderKeys | None:
+    """The key file's keys for every endpoint that names one (bug-979a06; 3311: a ladder needs one per provider its
+    rungs use), read into the driver's memory for the proxy; None when none names one: an override URL never gets a
+    key, and a CLI signs in by itself."""
+    needed = sorted({endpoint.api_key_env for endpoint in endpoints if endpoint.api_key_env})
+    if not needed:
         return None
     try:
-        return secret.load_keys(secret.resolve_keys(value), need=[endpoint.api_key_env])
+        return secret.load_keys(secret.resolve_keys(value), need=needed)
     except secret.SecretError as err:  # also say where a key sits that belongs in the file
         raise DriverError("; ".join([str(err), *secret.key_exposures()])) from None
 

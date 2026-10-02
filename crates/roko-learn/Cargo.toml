@@ -15,8 +15,6 @@ roko-core = { path = "../roko-core" }
 roko-agent = { path = "../roko-agent" }
 roko-daimon = { path = "../roko-daimon" }
 roko-fs = { path = "../roko-fs" }
-# M1's change detectors reuse roko-gate's SPC charts (S06 §9.13, decision 8102).
-roko-gate = { path = "../roko-gate" }
 roko-primitives = { path = "../roko-primitives" }
 async-trait = { workspace = true }
 blake3 = { workspace = true }

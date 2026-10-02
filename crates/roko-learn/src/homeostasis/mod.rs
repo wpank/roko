@@ -9,7 +9,9 @@
 //! - [`resolution`]: the fold of settled verdicts (or pre-S01 logs) into task
 //!   resolutions, M1's unit (A-RES).
 //! - [`ev`]: the essential-variable estimators, Schmitt bands and the drive.
-//! - [`detect`]: change detectors over roko-gate's SPC charts.
+//! - [`spc`]: the CUSUM and EWMA charts (moved from roko-gate, which
+//!   re-exports them).
+//! - [`detect`]: change detectors over those charts.
 //! - [`policy`]: the `SafetyBox` validator and the read-only S5 policy.
 //! - [`catalog`]: the move catalog and the requisite-variety matrix.
 //! - [`controller`]: IDLE, SEARCH and HOLD.
@@ -35,4 +37,5 @@ pub mod priors;
 pub mod replay;
 pub mod resolution;
 pub mod saso;
+pub mod spc;
 pub mod streams;

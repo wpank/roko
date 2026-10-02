@@ -18,6 +18,8 @@ chaos = []
 [dependencies]
 roko-core = { path = "../roko-core" }
 roko-agent = { path = "../roko-agent" }
+# CUSUM and the EWMA chart live in roko-learn (M1 uses them); spc re-exports them.
+roko-learn = { path = "../roko-learn" }
 async-trait = "0.1"
 tokio = { workspace = true, features = ["process", "time", "rt", "rt-multi-thread", "macros", "sync"] }
 futures = { workspace = true }

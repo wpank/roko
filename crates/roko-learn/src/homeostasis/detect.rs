@@ -1,5 +1,5 @@
-//! Change detectors (S06 §4.4) over roko-gate's SPC charts, which this
-//! module reuses as they are.
+//! Change detectors (S06 §4.4) over the SPC charts in [`super::spc`] (moved
+//! from roko-gate, which re-exports them), used as they are.
 //!
 //! - E1: a lower CUSUM on the pass indicator (1 for a verified success),
 //!   with target p* and drift k = (p* − L₁)/2.
@@ -10,7 +10,7 @@
 //! - E3: the posterior rule of [`super::ev`], P(fg > U₃) > 0.9.
 //!
 //! A detector alarms when its CUSUM crosses H in the breach direction, and
-//! roko-gate's `CusumDetector` then restarts that sum. A breach is confirmed
+//! the `CusumDetector` then restarts that sum. A breach is confirmed
 //! by `confirm_k` (2) consecutive alarms, each within `confirm_gap`
 //! observations of the previous one, so one unlucky run does not open an
 //! episode. Every detector restarts after an applied change
@@ -26,11 +26,11 @@
 //! with noisier costs or latencies must raise H and rerun
 //! `cusum_arl0_at_least_100_in_bounds`.
 
-use roko_gate::spc::{ControlStatus, CusumDetector, CusumShift, EwmaControlChart};
 use serde::{Deserialize, Serialize};
 
 use super::ev::{Estimate, Ev, EvBounds, FALSE_GREEN_BREACH_PROBABILITY};
 use super::resolution::TaskResolution;
+use super::spc::{ControlStatus, CusumDetector, CusumShift, EwmaControlChart};
 
 /// The smallest drift allowance E1's CUSUM takes, for a baseline at or
 /// below its bound.

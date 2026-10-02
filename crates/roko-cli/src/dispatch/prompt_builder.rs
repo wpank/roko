@@ -2157,7 +2157,7 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
     fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
         let mut sections = Vec::new();
         if let Some(cache) = &self.cache {
-            if let Some(section) = collect_neuro_knowledge_cached(task, ctx, &cache.neuro_entries) {
+            if let Some(section) = collect_neuro_knowledge_cached(task, &cache.neuro_entries) {
                 sections.push(section);
             }
             if let Some(section) = collect_episode_knowledge_cached(task, ctx, &cache.episodes) {
@@ -2227,42 +2227,12 @@ fn render_effectiveness_section(
 }
 
 fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let store = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir);
-    // store.query -> read_all handles NotFound internally (returns empty Vec).
-    let query = task_query_text(task, ctx);
-    // Group-tagged entries have a separate membership-gated auction path.
-    // Query extra candidates first so private group entries cannot crowd public
-    // workspace knowledge out of this section before filtering.
-    let mut entries = store.query(&query, 64).ok()?;
-    entries.retain(|entry| !is_group_scoped_knowledge(entry));
-    entries.truncate(3);
-    if entries.is_empty() {
-        return None;
-    }
-
-    let ids = entries
-        .iter()
-        .map(|entry| entry.id.clone())
-        .filter(|id| !id.is_empty())
-        .collect::<Vec<_>>();
-    let mut body = String::from("# Neuro knowledge\nRelevant durable knowledge from prior runs:\n");
-    let mut items = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let source = entry.source.as_deref().unwrap_or("neuro");
-        let line = format!(
-            "- [{}] {} (confidence {:.2}, source: {})\n",
-            entry.id,
-            truncate_chars(&entry.content, 420),
-            entry.confidence,
-            source
-        );
-        // The store's query ranks the entries without a score.
-        let kind = ExposureItemKind::Knowledge;
-        items.extend(PromptItem::ranked(kind, &entry.id, index, None, &line));
-        body.push_str(&line);
-    }
-    let section = PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids);
-    Some(section.with_items(items))
+    // The uncached path ranks the hot entries as a plan run's cache does
+    // (backlog 4211).
+    let entries = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir)
+        .hot_entries()
+        .ok()?;
+    collect_neuro_knowledge_cached(task, &entries)
 }
 
 fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
@@ -2451,24 +2421,27 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
 
 fn collect_neuro_knowledge_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     entries: &[roko_neuro::KnowledgeEntry],
 ) -> Option<PromptSection> {
     if entries.is_empty() {
         return None;
     }
-    let query = task_query_text(task, ctx);
-    let keywords = query_keywords(&query);
-    if keywords.is_empty() {
+    let terms = task_topic_terms(task);
+    if terms.is_empty() {
         return None;
     }
 
-    // Count the task keywords an entry holds as whole words: a substring test
-    // also finds them inside longer words ("log" in "catalog").
+    // Count the topic terms an entry holds as whole words: a substring test
+    // also finds them inside longer words ("log" in "catalog"). An entry
+    // needs `MIN_TOPIC_OVERLAP` of them and `MIN_KNOWLEDGE_CONFIDENCE`, and
+    // a runtime success note holds no lesson (backlog 4211).
     let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
         .iter()
         .filter_map(|entry| {
-            if is_group_scoped_knowledge(entry) {
+            if is_group_scoped_knowledge(entry)
+                || is_runtime_success_note(entry)
+                || entry.confidence < MIN_KNOWLEDGE_CONFIDENCE
+            {
                 return None;
             }
             let words = query_words(&format!(
@@ -2477,12 +2450,8 @@ fn collect_neuro_knowledge_cached(
                 entry.tags.join(" "),
                 entry.source.as_deref().unwrap_or("")
             ));
-            let score = keywords.intersection(&words).count();
-            if score > 0 {
-                Some((score, entry))
-            } else {
-                None
-            }
+            let score = terms.intersection(&words).count();
+            (score >= MIN_TOPIC_OVERLAP).then_some((score, entry))
         })
         .collect();
     scored.sort_by(|a, b| {
@@ -2512,7 +2481,7 @@ fn collect_neuro_knowledge_cached(
             entry.confidence,
             source
         );
-        // The score is the task keywords the entry holds.
+        // The score is the task's topic terms the entry holds.
         let (kind, score) = (ExposureItemKind::Knowledge, Some(*score as f64));
         items.extend(PromptItem::ranked(kind, &entry.id, index, score, &line));
         body.push_str(&line);
@@ -2666,6 +2635,66 @@ fn collect_playbooks_cached(
     }
     let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
     Some(section.with_items(items))
+}
+
+/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry must share
+/// with a task to reach its prompt (backlog 4211).
+const MIN_TOPIC_OVERLAP: usize = 2;
+
+/// The least confidence of a knowledge entry a prompt shows (backlog 4211).
+const MIN_KNOWLEDGE_CONFIDENCE: f64 = 0.3;
+
+/// Path pieces, file extensions and verbs that say nothing about a task's
+/// topic (backlog 4211).
+const GENERIC_TOPIC_TERMS: &[&str] = &[
+    "crates", "src", "tests", "test", "lib", "mod", "main", "bin", "docs", "rs", "py", "ts", "js",
+    "md", "toml", "json", "yaml", "yml", "txt", "add", "fix", "update", "implement", "create",
+    "make", "write", "use", "new",
+];
+
+/// The words that say what `task` is about, for matching knowledge against
+/// it (backlog 4211): the words of its title, description and acceptance,
+/// and its declared files' crate or package names and file stems. Never its
+/// id, its plan's id or its role, nor a stopword, a generic path piece or a
+/// generic verb.
+fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
+    let mut text = vec![task.title.clone()];
+    text.extend(task.description.clone());
+    text.extend(task.acceptance.iter().cloned());
+    text.extend(task.files.iter().flat_map(|file| file_topic_words(file)));
+    let mut terms = query_words(&text.join(" "));
+    terms.retain(|word| {
+        word.len() > 2
+            && !QUERY_STOPWORDS.contains(&word.as_str())
+            && !GENERIC_TOPIC_TERMS.contains(&word.as_str())
+    });
+    terms
+}
+
+/// The topic words of a declared file: its crate or package name (the
+/// directory after `crates/` or `packages/`, else its first directory) and
+/// its file stem.
+fn file_topic_words(file: &str) -> Vec<String> {
+    let path = Path::new(file);
+    let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
+    let package = match parts
+        .iter()
+        .position(|part| matches!(*part, "crates" | "packages"))
+    {
+        Some(index) => parts.get(index + 1).copied(),
+        None if parts.len() > 1 => parts.first().copied(),
+        None => None,
+    };
+    let stem = path.file_stem().and_then(|stem| stem.to_str());
+    package.into_iter().chain(stem).map(str::to_string).collect()
+}
+
+/// A runtime success note: the "Successful runtime episode for …" entry a
+/// verified pass wrote, which holds no lesson (backlog 4211; 4216 stops
+/// writing them).
+fn is_runtime_success_note(entry: &roko_neuro::KnowledgeEntry) -> bool {
+    entry.source.as_deref() == Some("runtime:gate_verdict")
+        && entry.content.starts_with("Successful runtime episode for")
 }
 
 fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
@@ -3499,7 +3528,7 @@ mod tests {
         .expect("group entry");
         let public_entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
             "id": "public-entry",
-            "content": "public wiring knowledge",
+            "content": "public wiring knowledge to explain",
             "confidence": 0.8,
             "tags": ["wiring"],
             "created_at": now,
@@ -3567,17 +3596,18 @@ mod tests {
 
     /// A plan run's assembler reads knowledge from a cache loaded once
     /// (bug-86117a). The cache holds every hot entry, and each prompt carries
-    /// those that share a content word with its task, not those that share
+    /// those that share two topic words with its task, not those that share
     /// only stopwords.
     #[test]
     fn cached_prompt_surfaces_matching_durable_knowledge() {
         let temp = tempfile::tempdir().expect("tempdir");
-        // The task explains "the wiring": the first entry shares "wiring",
-        // the second only "the", which a substring test also finds in "other".
+        // The task explains "the wiring": the first entry shares "wiring" and
+        // "wire", the second only "the", which a substring test also finds in
+        // "other".
         write_knowledge(
             temp.path(),
             &[
-                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-wiring", "Register new wiring for the wire table"),
                 ("k-stopwords", "Keep the other notes short"),
             ],
         );
@@ -3591,7 +3621,7 @@ mod tests {
         let system = &prompt.system_prompt;
         assert!(system.contains("# Neuro knowledge"), "{system}");
         assert!(
-            system.contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            system.contains("- [k-wiring] Register new wiring for the wire table"),
             "{system}"
         );
         assert!(!system.contains("Keep the other notes short"), "{system}");
@@ -3606,7 +3636,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         write_knowledge(
             temp.path(),
-            &[("k-wiring", "Register new wiring in the dispatcher table")],
+            &[("k-wiring", "Register new wiring for the wire table")],
         );
         let mut long_task = task();
         long_task.description = Some(format!(
@@ -3633,11 +3663,98 @@ mod tests {
         assert!(
             prompt
                 .system_prompt
-                .contains("- [k-wiring] Register new wiring in the dispatcher table"),
+                .contains("- [k-wiring] Register new wiring for the wire table"),
             "{}",
             prompt.system_prompt
         );
         assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// Writes `entries`, knowledge entries as JSON, to `workdir`'s store.
+    fn write_knowledge_json(workdir: &Path, entries: &[serde_json::Value]) {
+        let neuro_dir = workdir.join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entries
+            .iter()
+            .map(|entry| {
+                let entry: roko_neuro::KnowledgeEntry =
+                    serde_json::from_value(entry.clone()).expect("knowledge entry");
+                serde_json::to_string(&entry).expect("knowledge json") + "\n"
+            })
+            .collect::<String>();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+    }
+
+    /// backlog 4211 (G36): a task's id, role and path words never match
+    /// knowledge. A hot entry about another plan's `T01`, tagged with another
+    /// crate's file, shares only those with task `T01`, so the task's prompt
+    /// has no knowledge section.
+    #[test]
+    fn knowledge_section_ignores_id_and_path_word_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge_json(
+            temp.path(),
+            &[serde_json::json!({
+                "id": "k-other-t01",
+                "content": "Implementer notes for T01: keep the crates and src tidy",
+                "confidence": 0.9,
+                "tags": ["crates/b/src/x.rs"],
+                "created_at": Utc::now(),
+            })],
+        );
+        let mut market = task();
+        market.id = "T01".into();
+        market.title = "Summarise the market close".into();
+        market.description = None;
+        market.acceptance = vec!["prints the closing prices".into()];
+        market.files = vec!["crates/a/src/lib.rs".into()];
+
+        let prompt = assemble_cached(&market, temp.path());
+        assert!(
+            !prompt.system_prompt.contains("# Neuro knowledge"),
+            "{}",
+            prompt.system_prompt
+        );
+        assert!(prompt.diagnostics.knowledge_ids.is_empty());
+    }
+
+    /// backlog 4211: a runtime success note holds no lesson, so it stays out
+    /// of the prompt, while an entry with the same topic words gets in.
+    #[test]
+    fn knowledge_section_skips_success_notes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let entry = |id: &str, content: &str, source: &str| {
+            serde_json::json!({
+                "id": id,
+                "content": content,
+                "confidence": 0.9,
+                "source": source,
+                "created_at": Utc::now(),
+            })
+        };
+        write_knowledge_json(
+            temp.path(),
+            &[
+                entry(
+                    "k-success",
+                    "Successful runtime episode for explain wiring passed verify[0:test]",
+                    "runtime:gate_verdict",
+                ),
+                entry(
+                    "k-lesson",
+                    "Explain the wiring before editing the dispatcher",
+                    "runtime:lesson",
+                ),
+            ],
+        );
+
+        let prompt = assemble_cached(&task(), temp.path());
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-lesson"]);
+        assert!(
+            !prompt.system_prompt.contains("Successful runtime episode"),
+            "{}",
+            prompt.system_prompt
+        );
     }
 
     /// The item of `kind` and `id` in `prompt`'s diagnostics.
@@ -3665,14 +3782,15 @@ mod tests {
         const CRITICAL: [&str; 3] = ["role_identity", "context_layer", "task_context"];
 
         let temp = tempfile::tempdir().expect("tempdir");
-        // "explain" and "wiring" are task keywords; "wiring" alone ranks lower.
+        // "explain", "wiring" and "wire" are topic words of the task; the
+        // entry with two of them ranks below the one with three.
         write_knowledge(
             temp.path(),
             &[
-                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-wiring", "Register new wiring for the wire table"),
                 (
                     "k-explain",
-                    "Explain the dispatcher wiring before you edit it",
+                    "Explain the dispatcher wiring before you wire it",
                 ),
             ],
         );
@@ -3704,8 +3822,8 @@ mod tests {
         let explain = prompt_item(&roomy, Knowledge, "k-explain");
         let wiring = prompt_item(&roomy, Knowledge, "k-wiring");
         assert!(explain.included && wiring.included);
-        assert_eq!((explain.rank, explain.score), (Some(1), Some(2.0)));
-        assert_eq!((wiring.rank, wiring.score), (Some(2), Some(1.0)));
+        assert_eq!((explain.rank, explain.score), (Some(1), Some(3.0)));
+        assert_eq!((wiring.rank, wiring.score), (Some(2), Some(2.0)));
         assert_ne!(explain.rendered_sha256, wiring.rendered_sha256);
         assert!(prompt_item(&roomy, Section, "domain_context").included);
 

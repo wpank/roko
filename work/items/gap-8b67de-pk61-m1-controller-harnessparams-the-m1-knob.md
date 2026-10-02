@@ -85,3 +85,32 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-8b67de` without cargo; cargo verification is deferred to the batch gate.
+
+- 8104: implemented at 3190db0a5
+- 8105: implemented at db0cf684b
+- 8106: implemented at 7520b006e
+- 8107: implemented at fb441f530
+- 8108: implemented at 61d4e9d69 (see the first note)
+- 8109: implemented at 044a5efab
+- 8110: implemented at a0208283d
+- 8111: implemented at e5f6d76e8
+
+Notes for the gate and for Will:
+
+- 8108 adds `roko-gate` to roko-learn's dependencies, as decision 8102 (point 8, S06 §9.13) chose. The edge is acyclic, but
+  roko-learn is layer 2 and roko-gate layer 3, so CI's Layer Check (`roko layer-check`) reports
+  `L2 roko-learn -> L3 roko-gate`. It needs Will: relabel roko-gate as layer 2 (its own dependencies are layers 1 and 2,
+  and nothing at layer 2 depends on it), or move `spc.rs` into roko-core and re-export it from roko-gate. `Cargo.lock`
+  already lists the new edge.
+- 8108's detector thresholds come from simulation, as S06 §4.4 asks: E1 H = 1.1 and E2/E4 H = 1.2 (with two alarms within
+  four observations to confirm) give a joint ARL₀ near 135 and a median confirmed delay of 8 resolutions on each C1 step.
+  S06's starting values (H = 2 and 4) are single-alarm thresholds that confirm in more than 20 resolutions.
+- 8105 wires `[homeostasis]` validation into `validate_invariants` as invariant 9 (a small block in `validation.rs`), so the
+  loader rejects `mode = "on"` with `holdout = 0`. A zero holdout is allowed in shadow and off modes (S06 §4.8).
+- 8111: model swap and convention flip show the same breach signature (E1 low) but have different requisite-variety rows,
+  so their first directed move cannot lie in both rows; the test checks that the directed moves meet every regulable row,
+  and that the first lies in the row wherever the signature is unique.

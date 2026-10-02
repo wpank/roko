@@ -131,6 +131,9 @@ pub struct RokoConfig {
     pub pricing: crate::pricing_snapshot::PricingConfig,
     #[serde(default)]
     pub conductor: ConductorConfig,
+    /// M1, the ultrastable controller: its mode and constants (S06 §5).
+    #[serde(default)]
+    pub homeostasis: super::homeostasis::HomeostasisConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -450,6 +453,7 @@ impl Default for RokoConfig {
             budget: BudgetConfig::default(),
             pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
+            homeostasis: super::homeostasis::HomeostasisConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),

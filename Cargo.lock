@@ -6657,6 +6657,7 @@ dependencies = [
  "roko-core",
  "roko-daimon",
  "roko-fs",
+ "roko-gate",
  "roko-primitives",
  "serde",
  "serde_json",

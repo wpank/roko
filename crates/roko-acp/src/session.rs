@@ -1826,7 +1826,6 @@ const BARE_MODE_COMMANDS: &[&str] = &[
     "help",
     "research",
     "search",
-    "enhance-prd",
     "analyze",
 ];
 
@@ -1861,8 +1860,8 @@ fn bare_mode_allows_command(name: &str) -> bool {
 
 /// Build the list of available slash commands.
 ///
-/// In bare mode, commands that depend on Roko workspace state such as PRDs,
-/// plans, knowledge, dreams, and learning stores are hidden from IDE clients.
+/// In bare mode, commands that depend on Roko workspace state such as plans,
+/// knowledge, dreams, and learning stores are hidden from IDE clients.
 pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
     let commands = vec![
         slash_command(
@@ -1902,49 +1901,7 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "research",
             Some("search query"),
         ),
-        slash_command(
-            "enhance-prd",
-            "Enrich a PRD with web research",
-            "specification",
-            Some("PRD slug"),
-        ),
         slash_command("analyze", "Analyze execution data", "research", None),
-        slash_command(
-            "prd-idea",
-            "Capture a new work item idea",
-            "specification",
-            Some("idea description"),
-        ),
-        slash_command(
-            "prd-draft",
-            "Draft a new PRD from an idea",
-            "specification",
-            Some("slug for the new PRD"),
-        ),
-        slash_command(
-            "prd-list",
-            "List all PRDs and their status",
-            "specification",
-            None,
-        ),
-        slash_command(
-            "prd-status",
-            "PRD pipeline coverage report",
-            "specification",
-            None,
-        ),
-        slash_command(
-            "prd-plan",
-            "Generate implementation plan from a published PRD",
-            "specification",
-            Some("PRD slug"),
-        ),
-        slash_command(
-            "prd-consolidate",
-            "Scan PRDs for gaps and duplicates",
-            "specification",
-            None,
-        ),
         slash_command(
             "plan-list",
             "List all plans in the workspace",
@@ -1962,6 +1919,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "Generate a plan from a prompt",
             "planning",
             Some("describe what to build..."),
+        ),
+        slash_command(
+            "enhance-plan",
+            "Improve a plan with research-backed task decomposition",
+            "planning",
+            Some("plan name under plans/"),
         ),
         slash_command(
             "plan-validate",
@@ -1983,21 +1946,9 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
         ),
         slash_command(
             "run",
-            "Single prompt -> universal loop (compose->agent->gate->persist)",
-            "implementation",
-            Some("prompt text"),
-        ),
-        slash_command(
-            "do",
-            "Execute a task with roko do (agentic coding)",
+            "Run a prompt: one checked task, or a plan written first and then run",
             "implementation",
             Some("describe the task..."),
-        ),
-        slash_command(
-            "develop",
-            "Full development pipeline: scope -> plan -> execute -> gate",
-            "implementation",
-            Some("describe what to build..."),
         ),
         slash_command(
             "agents",
@@ -3009,11 +2960,32 @@ context_window = 8192
             "knowledge-gc",
             "knowledge-backup",
             "audit",
-            "develop",
+            "enhance-plan",
         ] {
             assert!(
                 names.contains(&expected),
                 "missing slash command: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn slash_commands_leave_out_the_removed_prd_and_do_commands() {
+        let commands = build_slash_commands(false);
+        for removed in [
+            "do",
+            "develop",
+            "enhance-prd",
+            "prd-idea",
+            "prd-draft",
+            "prd-list",
+            "prd-status",
+            "prd-plan",
+            "prd-consolidate",
+        ] {
+            assert!(
+                commands.iter().all(|c| c.name != removed),
+                "removed slash command still offered: {removed}"
             );
         }
     }

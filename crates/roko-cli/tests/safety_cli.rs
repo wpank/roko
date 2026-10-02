@@ -51,8 +51,7 @@ fn safety_release_clears_isolation_control() {
     let audit = std::fs::read_to_string(&audit_path).expect("audit file");
     let lines = audit.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 1, "{audit}");
-    let record: roko_agent::ReleasedControl =
-        serde_json::from_str(lines[0]).expect("audit line");
+    let record: roko_agent::ReleasedControl = serde_json::from_str(lines[0]).expect("audit line");
     assert_eq!(record.agent_id, "live-a/cli");
     assert_eq!(record.by, "release-test");
     assert_eq!(record.reason, "blank answer, not tamper");

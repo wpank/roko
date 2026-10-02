@@ -416,10 +416,7 @@ fn tool_call_event(tc: &Value) -> StreamEvent {
             keyed_id.push('\x01');
             keyed_id.push_str(&arguments);
         }
-        return StreamEvent::now(StreamEventKind::ToolCallStart {
-            id: keyed_id,
-            name,
-        });
+        return StreamEvent::now(StreamEventKind::ToolCallStart { id: keyed_id, name });
     }
     // Otherwise it's a delta with partial arguments: use the same index key
     // so the accumulator can find the matching start.
@@ -453,8 +450,7 @@ mod tests {
 
     #[test]
     fn sse_parser_reads_content_delta() {
-        let event =
-            first_event(r#"data: {"choices":[{"delta":{"content":"I can answer now."}}]}"#);
+        let event = first_event(r#"data: {"choices":[{"delta":{"content":"I can answer now."}}]}"#);
 
         assert!(matches!(
             event.map(|e| e.kind),
@@ -539,8 +535,7 @@ mod tests {
 
     #[test]
     fn sse_parser_reads_finish_reason() {
-        let event =
-            first_event(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+        let event = first_event(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
 
         assert!(matches!(
             event.map(|e| e.kind),

@@ -2510,7 +2510,12 @@ mod tests {
         use crate::agent::Agent;
 
         let out = make_tool_loop(Arc::new(ReasoningOnlyBackend), 25)
-            .run("system", "user", &test_tools(), &ToolContext::testing("/tmp"))
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
             .await;
         match &out.stop_reason {
             StopReason::BackendError(message) => {
@@ -2569,7 +2574,12 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let out = make_tool_loop(backend, 25)
-            .run("system", "user", &test_tools(), &ToolContext::testing("/tmp"))
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
             .await;
 
         assert_eq!(out.stop_reason, StopReason::Stop);

@@ -936,7 +936,10 @@ mod tests {
             StallThresholds::from_config(&dispatcher.config.conductor).is_enabled(),
             "the stall thresholds stay on"
         );
-        assert!(dispatcher.stall_watch().is_some(), "the stall watchdog runs");
+        assert!(
+            dispatcher.stall_watch().is_some(),
+            "the stall watchdog runs"
+        );
         assert!(dispatcher.supervise_attempt(&watched()).is_none());
         assert!(
             dispatcher

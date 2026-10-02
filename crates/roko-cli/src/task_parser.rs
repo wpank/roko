@@ -4028,12 +4028,19 @@ files = ["README.md"]
             let value = value.expect("serialize");
             let keys = value.as_table().expect("a table").keys();
             for key in keys {
-                assert!(set.contains(&key.as_str()), "{table}: `{key}` is not in its key set");
+                assert!(
+                    set.contains(&key.as_str()),
+                    "{table}: `{key}` is not in its key set"
+                );
             }
         }
         for set in [TASK_KEYS, CONTEXT_KEYS, VERIFY_KEYS, META_KEYS] {
             let unique: HashSet<&str> = set.iter().copied().collect();
-            assert_eq!(unique.len(), set.len(), "a key set lists a key twice: {set:?}");
+            assert_eq!(
+                unique.len(),
+                set.len(),
+                "a key set lists a key twice: {set:?}"
+            );
         }
     }
 

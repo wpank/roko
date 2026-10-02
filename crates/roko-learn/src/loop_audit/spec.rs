@@ -887,8 +887,7 @@ receipt = "executed_model"
     #[test]
     fn reason_code_precedence_picks_cheapest_first() {
         use ReasonCode::{
-            Cut, Degenerate, Harm, Inert, LabelOnly, Mask, NoOpportunity, Null, Unlogged,
-            WriteOnly,
+            Cut, Degenerate, Harm, Inert, LabelOnly, Mask, NoOpportunity, Null, Unlogged, WriteOnly,
         };
 
         // S03 §4.6's closed enum, cheapest check first.
@@ -985,7 +984,10 @@ receipt = "artifact_hash_in_request"
         let route = merged.get("L-route").expect("L-route");
         let before = embedded.get("L-route").expect("embedded L-route");
         assert!(route.enforce && !before.enforce);
-        assert_eq!(route.opportunity, "no pin and at least three eligible models");
+        assert_eq!(
+            route.opportunity,
+            "no pin and at least three eligible models"
+        );
         assert_eq!(route.default_policy, before.default_policy);
         assert_eq!(route.layer, before.layer);
         assert_eq!(route.static_findings, before.static_findings);
@@ -1047,10 +1049,16 @@ receipt = "artifact_hash_in_request"
             .into_iter()
             .filter(|id| spec(id).lifecycle == Lifecycle::ObserveOnly)
             .collect();
-        assert_eq!(observe_only, ["L-routing-log", "L-err", "L-gate-thr", "L-retry-budget"]);
+        assert_eq!(
+            observe_only,
+            ["L-routing-log", "L-err", "L-gate-thr", "L-retry-budget"]
+        );
         for loop_spec in registry.loops() {
             let id = loop_spec.id.as_str();
-            assert!(!matches!(loop_spec.lifecycle, Lifecycle::Retired { .. }), "{id}");
+            assert!(
+                !matches!(loop_spec.lifecycle, Lifecycle::Retired { .. }),
+                "{id}"
+            );
             assert!(!loop_spec.enforce && !loop_spec.exempt, "{id}");
         }
 
@@ -1079,7 +1087,10 @@ receipt = "artifact_hash_in_request"
         ];
         assert_eq!(nested, expected);
         assert_eq!(spec("L-M3").layer, spec("L-route").layer);
-        assert_eq!(spec("L-dream-bias").assignment_layer().as_str(), "route.dream_bias");
+        assert_eq!(
+            spec("L-dream-bias").assignment_layer().as_str(),
+            "route.dream_bias"
+        );
 
         // Every receipt kind proves at least one loop's exposure.
         let receipts = [
@@ -1093,7 +1104,10 @@ receipt = "artifact_hash_in_request"
             ReceiptKind::Sham,
         ];
         for receipt in receipts {
-            let used = registry.loops().iter().any(|loop_spec| loop_spec.receipt == receipt);
+            let used = registry
+                .loops()
+                .iter()
+                .any(|loop_spec| loop_spec.receipt == receipt);
             assert!(used, "no loop proves exposure with {receipt:?}");
         }
 
@@ -1107,7 +1121,10 @@ receipt = "artifact_hash_in_request"
                 let text = std::fs::read_to_string(root.join(file))
                     .unwrap_or_else(|error| panic!("{id}: {file}: {error}"));
                 for segment in symbol.split("::") {
-                    assert!(contains_word(&text, segment), "{id}: `{segment}` is not in {file}");
+                    assert!(
+                        contains_word(&text, segment),
+                        "{id}: `{segment}` is not in {file}"
+                    );
                 }
                 assert_eq!(finding.verified_at.len(), 40, "{id}: {}", finding.pointer);
             }
@@ -1131,7 +1148,9 @@ receipt = "artifact_hash_in_request"
         ];
         for (id, pointer) in facts {
             let findings = &spec(id).static_findings;
-            let found = findings.iter().any(|finding| finding.pointer.ends_with(pointer));
+            let found = findings
+                .iter()
+                .any(|finding| finding.pointer.ends_with(pointer));
             assert!(found, "{id} has no finding at {pointer}");
         }
     }

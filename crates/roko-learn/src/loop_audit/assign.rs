@@ -587,7 +587,10 @@ mod tests {
             assert!((nested.propensity - parent.propensity * conditional).abs() < 1e-12);
         }
         let share = f64::from(held_out) / f64::from(learned_parents);
-        assert!((share - bias.h).abs() < 0.02, "nested default share {share}");
+        assert!(
+            (share - bias.h).abs() < 0.02,
+            "nested default share {share}"
+        );
     }
 
     #[test]

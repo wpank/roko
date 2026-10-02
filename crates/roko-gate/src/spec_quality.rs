@@ -932,11 +932,7 @@ pub fn score_task(
 /// A pinned `[task.accept]` test is one. So is a scoped test-run step whose command names a test
 /// file that exists on the base (the workspace, in static mode) and is not one of the task's
 /// `files`: the Goodhart guard is that the test is named in the step and read-only to the task.
-fn planner_written_test(
-    task: &SpecTask,
-    analyses: &[StepAnalysis],
-    workspace: &Workspace,
-) -> bool {
+fn planner_written_test(task: &SpecTask, analyses: &[StepAnalysis], workspace: &Workspace) -> bool {
     if task.accept_tests > 0 {
         return true;
     }
@@ -945,9 +941,7 @@ fn planner_written_test(
             && !analysis.scopes.is_empty()
             && analysis.scopes.iter().all(|scope| *scope == Scope::Scoped)
             && named_paths(&step.command).iter().any(|path| {
-                !task.outputs.contains(path)
-                    && is_test_path(path)
-                    && workspace.text(path).is_some()
+                !task.outputs.contains(path) && is_test_path(path) && workspace.text(path).is_some()
             })
     })
 }

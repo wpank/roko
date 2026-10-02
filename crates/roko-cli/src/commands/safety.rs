@@ -42,9 +42,8 @@ pub(crate) async fn cmd_safety(cli: &Cli, cmd: SafetyCmd) -> Result<i32> {
     match cmd {
         SafetyCmd::Controls { workdir } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let controls = roko_agent::list_agent_controls(&workdir).with_context(|| {
-                format!("read isolation controls under {}", workdir.display())
-            })?;
+            let controls = roko_agent::list_agent_controls(&workdir)
+                .with_context(|| format!("read isolation controls under {}", workdir.display()))?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&controls)?);
             } else if controls.is_empty() {

@@ -644,10 +644,7 @@ pub(crate) fn persist_evidence_signals(
 /// agent that is already isolated keeps its live control, so isolation is
 /// monotonic. Expired controls are pruned first and do not count towards
 /// the ledger's capacity.
-pub(crate) fn persist_agent_control(
-    workspace_root: &Path,
-    control: &Signal,
-) -> io::Result<Signal> {
+pub(crate) fn persist_agent_control(workspace_root: &Path, control: &Signal) -> io::Result<Signal> {
     let agent_id = validate_agent_control_signal(control)?;
     let key = agent_control_key(&agent_id);
     let now_ms = unix_now_ms();
@@ -1121,7 +1118,11 @@ mod tests {
     impl Agent for CountingTextAgent {
         async fn run(&self, input: &Signal, _ctx: &roko_core::Context) -> AgentResult {
             self.0.fetch_add(1, Ordering::SeqCst);
-            AgentResult::ok(input.derive(Kind::AgentOutput, Body::text("answer")).build())
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("answer"))
+                    .build(),
+            )
         }
 
         fn name(&self) -> &str {

@@ -185,7 +185,9 @@ impl PriceRow {
             .rates()
             .into_iter()
             .find(|(_, rate)| !(rate.is_finite() && *rate > 0.0))?;
-        Some(format!("{column} = {rate}: a rate must be a finite number above 0"))
+        Some(format!(
+            "{column} = {rate}: a rate must be a finite number above 0"
+        ))
     }
 }
 
@@ -209,10 +211,11 @@ impl PriceSnapshot {
 
     /// Parse and validate snapshot text; `origin` names it in errors.
     pub fn from_toml(text: &str, origin: &str) -> Result<Self, PriceSnapshotError> {
-        let file: SnapshotFile = toml::from_str(text).map_err(|source| PriceSnapshotError::Parse {
-            origin: origin.to_string(),
-            source,
-        })?;
+        let file: SnapshotFile =
+            toml::from_str(text).map_err(|source| PriceSnapshotError::Parse {
+                origin: origin.to_string(),
+                source,
+            })?;
         file.validate(origin)
     }
 
@@ -392,7 +395,10 @@ impl SnapshotFile {
             )));
         }
         if snapshot_date(&self.id).is_none() {
-            return Err(invalid(format!("id {:?} is not prices-YYYY-MM-DD", self.id)));
+            return Err(invalid(format!(
+                "id {:?} is not prices-YYYY-MM-DD",
+                self.id
+            )));
         }
         if self.currency != "USD" || self.unit != "per_1M_tokens" {
             return Err(invalid(format!(

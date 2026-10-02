@@ -763,12 +763,18 @@ mod tests {
     #[test]
     fn failure_text_classes_in_order() {
         let cases = [
-            ("you've hit your session limit · resets 4pm", "provider_exhausted"),
+            (
+                "you've hit your session limit · resets 4pm",
+                "provider_exhausted",
+            ),
             ("insufficient credits", "insufficient_credits"),
             ("exit 1: not logged in · please run /login", "auth_failure"),
             ("http 401: unauthorized", "auth_failure"),
             ("error: invalid api key provided", "auth_failure"),
-            ("403 forbidden: the key cannot use this model", "auth_failure"),
+            (
+                "403 forbidden: the key cannot use this model",
+                "auth_failure",
+            ),
             ("429 too many requests", "rate_limit"),
             ("request timed out after 30s", "timeout"),
             ("upstream returned 503 service unavailable", "server_error"),
@@ -776,7 +782,10 @@ mod tests {
                 "empty_response: the model returned no text and no tool call",
                 "empty_response",
             ),
-            ("provider returned an empty response (empty_response)", "empty_response"),
+            (
+                "provider returned an empty response (empty_response)",
+                "empty_response",
+            ),
             ("something else went wrong", "unknown"),
         ];
         for (text, class) in cases {

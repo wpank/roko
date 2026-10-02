@@ -2027,7 +2027,9 @@ mod tests {
                 let batch = per_call.min(self.deltas - sent);
                 for _ in 0..batch {
                     let _ = event_tx
-                        .send(StreamEvent::now(StreamEventKind::TextDelta("x".to_string())))
+                        .send(StreamEvent::now(StreamEventKind::TextDelta(
+                            "x".to_string(),
+                        )))
                         .await;
                 }
                 sent += batch;
@@ -2141,8 +2143,10 @@ mod tests {
         );
         let lines = captured.lines();
         assert!(
-            lines.iter().any(|line| line.contains("provider_stream_limit_exceeded")
-                && line.contains("oversized-call-agent")),
+            lines
+                .iter()
+                .any(|line| line.contains("provider_stream_limit_exceeded")
+                    && line.contains("oversized-call-agent")),
             "{lines:?}"
         );
     }

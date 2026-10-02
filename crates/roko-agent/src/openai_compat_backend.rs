@@ -2020,7 +2020,10 @@ mod tests {
             message: "Rate limit reached".to_string(),
         });
         assert!(
-            matches!(rate_limited, LlmError::Provider(ProviderError::RateLimit { .. })),
+            matches!(
+                rate_limited,
+                LlmError::Provider(ProviderError::RateLimit { .. })
+            ),
             "{rate_limited:?}"
         );
     }

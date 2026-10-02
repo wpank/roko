@@ -24,7 +24,11 @@ pub(super) async fn hold_while_paused(ctx: &CellContext, plan_id: &str, task: &s
     if !ctx.is_paused() {
         return Ok(());
     }
-    tracing::info!(plan_id, task, "the run is paused: the task waits for resume");
+    tracing::info!(
+        plan_id,
+        task,
+        "the run is paused: the task waits for resume"
+    );
     while ctx.is_paused() {
         if ctx.is_cancelled() {
             return Err(RokoError::cancelled(format!(
@@ -66,9 +70,7 @@ mod tests {
     #[tokio::test]
     async fn a_paused_run_holds_the_attempt_until_resume() {
         let (ctx, pause, _stop) = context(true);
-        let held = tokio::spawn(async move {
-            hold_while_paused(&ctx, "plan-a", "T1").await
-        });
+        let held = tokio::spawn(async move { hold_while_paused(&ctx, "plan-a", "T1").await });
 
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert!(

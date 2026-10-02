@@ -555,7 +555,9 @@ async fn send_run_control(workdir: &std::path::Path, action: &str) -> Result<(),
     let failed = |error: std::io::Error| {
         ApiError::internal(format!("cannot send the {action} to the run: {error}"))
     };
-    tokio::fs::create_dir_all(&state_dir).await.map_err(failed)?;
+    tokio::fs::create_dir_all(&state_dir)
+        .await
+        .map_err(failed)?;
     // Written whole, so the run never reads half a command.
     let staged_name = format!("control.json.{}.tmp", uuid::Uuid::new_v4().simple());
     let staged = state_dir.join(staged_name);

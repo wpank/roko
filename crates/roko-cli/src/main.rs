@@ -55,6 +55,7 @@ use commands::plan::PlanCmd;
 use commands::prd::{PrdCmd, PrdDraftCmd};
 use commands::research::{ResearchBackend, ResearchCmd, SearchRecency};
 use commands::run_index::RunIndexCmd;
+use commands::safety::SafetyCmd;
 use commands::server::{DaemonCmd, DeployCmd};
 use commands::tune::{ConfigPresetCmd, TuneCmd};
 use commands::util::{CompletionShell, IndexCmd};
@@ -749,6 +750,16 @@ Examples:
     RunIndex {
         #[command(subcommand)]
         cmd: RunIndexCmd,
+    },
+    /// List immune isolation controls and release one, with an audit record.
+    #[command(after_help = "\
+Examples:
+  roko safety controls
+  roko safety controls --json
+  roko safety release live-a/cli --reason \"blank answer, not tamper\"")]
+    Safety {
+        #[command(subcommand)]
+        cmd: SafetyCmd,
     },
     /// Interactive setup wizard: detect providers, init workspace, verify.
     #[command(after_help = "\
@@ -1988,6 +1999,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url, fix).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
+        Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
         Command::Setup {
             workdir,
             yes,

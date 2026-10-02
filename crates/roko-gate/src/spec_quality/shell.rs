@@ -867,10 +867,11 @@ pub fn analyze_step(command: &str, task_files: &BTreeSet<String>) -> StepAnalysi
     analysis
 }
 
-/// Whether a verify step runs `program` as the program of one of its simple commands: behind
-/// wrappers such as `env`, `timeout` and `time`, and inside `sh -c` and its kin. A word that only
-/// names it, as in `grep -q cargo notes.md`, does not count (3214, gap-0ee70b: the red-on-base
-/// check leaves the steps that run cargo to the batch gate).
+/// Whether a verify step runs `program` as the program of one of its simple commands.
+///
+/// It looks behind wrappers such as `env`, `timeout` and `time`, and inside `sh -c` and its kin. A
+/// word that only names it, as in `grep -q cargo notes.md`, does not count (3214, gap-0ee70b: the
+/// red-on-base check leaves the steps that run cargo to the batch gate).
 pub fn runs_program(command: &str, program: &str) -> bool {
     parse_shell(command).iter().any(|simple| {
         let argv = strip_wrappers(&simple.words);

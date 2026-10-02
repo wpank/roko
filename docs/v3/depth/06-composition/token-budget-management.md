@@ -22,7 +22,7 @@ before they consume budget that higher-value sections need.
 
 ### Tier 1: Static Per-Role Budgets
 
-The foundation. Each role receives a fixed allocation across 9 section
+The foundation. Each role receives a fixed allocation across 8 section
 categories via `budget_for(role)`. These represent the baseline assumption
 about what each role needs.
 
@@ -33,7 +33,7 @@ allocations up or down based on task complexity:
 
 | Complexity | Effect on Budget |
 |-----------|-----------------|
-| **Trivial** | Drop PRD, context, skills. Halve workspace_map and brief. ~70% reduction. |
+| **Trivial** | Drop context and skills. Halve workspace_map and brief. |
 | **Standard** | No change. Base budget applies. |
 | **Complex** | +50% workspace_map, +100% context, +50% file_context. ~40% increase. |
 
@@ -85,7 +85,6 @@ tolerance (inspired by LLMLingua's Budget Controller):
 | Gate errors | 5% | High | Recent failures guide corrections |
 | File context | 10-20% | High | Source code needs fidelity |
 | Task brief | 10% | High | What/Why/How summary |
-| PRD extract | 20-30% | Medium | Specification context |
 | Workspace map | 30-50% | Medium | Project structure overview |
 | Cross-plan context | 50%+ | Low | Often irrelevant |
 | Learning pack | 50%+ | Low | High noise ratio (49% tokens, 61% pass rate) |
@@ -133,9 +132,6 @@ tokens is worse than none -- it provides structure without substance.
 | Learning Pack (changes only on playbook refresh)     | <- Cached within batch
 | Token cost: ~2,000 (after cap)                       |
 +-----------------------------------------------------+
-| PRD Extract (changes per plan)                       | <- Cached within plan
-| Token cost: ~712                                     |
-+-----------------------------------------------------+
 | Task Description (unique per task)                   | <- CACHE MISS boundary
 +-----------------------------------------------------+
 | Iteration Context (unique per attempt)               | <- Always miss
@@ -170,8 +166,6 @@ Rules for budget-aware prefix stability:
 Gate errors:    Keep N most recent (LIFO). Latest is most relevant.
 File context:   Keep imports, struct/enum defs, function signatures.
                 Drop function bodies (largest consumer).
-PRD extract:    Keep requirements, success criteria.
-                Drop background, rationale.
 Workspace map:  Keep top 2 levels. Drop deeper levels.
 Task brief:     Keep What/How. Drop Why/Context.
 Learning pack:  Drop entire section if budget < min_tokens (2,000).

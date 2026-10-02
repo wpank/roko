@@ -73,7 +73,7 @@ KV-cache reuse:
 - **System (0):** Role identity, conventions, tool definitions. Anthropic's
   prompt caching gives 90% input token cost discount on cache hits.
 - **Session (1):** Workspace map, cross-plan context.
-- **Task (2):** Plan content, PRD extract, task brief.
+- **Task (2):** Plan content, task brief.
 - **Dynamic (3):** Gate errors, iteration memory, affect guidance.
 
 The BTreeMap requirement: cache hits require byte-identical content. All
@@ -298,7 +298,6 @@ entries about the same topic consume the entire budget.
 | `task_brief` | High | Start | Detailed context for current task |
 | `workspace_map` | Normal | Middle | Helpful but not always needed |
 | `cross_plan_context` | Normal | Middle | Useful for integration tasks |
-| `prd_extract` | Normal | Middle | Relevant for spec compliance |
 | `anti_patterns` | High | End | Prohibitions need recency attention |
 | `affect_guidance` | Normal | End | Behavioral modulation |
 

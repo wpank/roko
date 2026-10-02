@@ -174,7 +174,7 @@ pub struct AgentEfficiencyEvent {
 
 ```rust
 pub struct PromptSectionMeta {
-    pub name: String,          // e.g. "prd2", "workspace_map", "playbook_hits"
+    pub name: String,          // e.g. "plan_brief", "workspace_map", "playbook_hits"
     pub tokens: u64,
     pub priority: u8,          // 0 = highest
     pub was_truncated: bool,

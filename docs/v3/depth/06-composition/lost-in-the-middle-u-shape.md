@@ -118,7 +118,6 @@ pub enum Placement {
 | Conventions | **Start** | Safety rules need primacy |
 | Task description | **Start** | Core task at the beginning |
 | Workspace map | **Middle** | Supporting, not critical path |
-| PRD extract | **Middle** | Reference material |
 | Cross-plan context | **Middle** | Background information |
 | Research memo | **Middle** | Supporting evidence |
 | Gate errors | **End** | Recent failure needs recency |
@@ -159,8 +158,8 @@ Cache Layer 0 (System) -- all Start placement
 Cache Layer 1 (Session) -- Middle placement
     Workspace map, Cross-plan context
 
-Cache Layer 2 (Task) -- Start + Middle placement
-    Task description (Start), PRD extract (Middle)
+Cache Layer 2 (Task) -- Start placement
+    Task description, task brief
 
 Cache Layer 3 (Dynamic) -- End placement
     Gate errors, Anti-patterns, Affect guidance

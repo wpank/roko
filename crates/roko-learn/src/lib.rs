@@ -85,6 +85,9 @@ pub mod events;
 pub mod experiment_receipt;
 /// Concrete feedback sink for workflow learning telemetry.
 pub mod feedback_service;
+/// Guarded commit (P21): last-known-good snapshots of learned stores,
+/// held-out and anchor checks, and rollback.
+pub mod guarded_commit;
 pub mod hdc_clustering;
 /// HDC fingerprint helpers for episode memory.
 pub mod hdc_fingerprint;

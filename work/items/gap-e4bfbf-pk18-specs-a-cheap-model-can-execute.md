@@ -44,9 +44,6 @@ command = "grep -rqw 'fn generation_writes_planner_accept_tests_into_the_plan' c
 
 [[verify]]
 command = "grep -q 'task.accept' crates/roko-cli/src/plan_generate.rs && grep -rqw 'fn generator_prompt_teaches_task_accept' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_teaches_task_accept"
-
-[[verify]]
-command = "test -d crates/roko-cli/tests/fixtures/spec-gen-sample && python3 benchmarks/viabilitybench/speclint/speclint.py crates/roko-cli/tests/fixtures/spec-gen-sample --out - 2>/dev/null | python3 -c 'import json,sys,collections; s=collections.defaultdict(list); [s[r[\"plan_id\"]].append(r[\"score\"]) for r in (json.loads(l) for l in sys.stdin if l.startswith(\"{\"))]; sys.exit(0 if len(s) >= 5 and all(sum(v)/len(v) >= 70 for v in s.values()) else 1)'"
 +++
 
 ## Problem
@@ -109,3 +106,5 @@ verification is deferred to the batch gate. Python checks run: speclint's tests 
 - 3221: implemented at e765a734c (`prd/accept_blocks.rs`)
 - 3222: implemented at 1785ec795
 - 3223: blocked: needs a roko built with 3217–3222 (the batch gate) and live planner runs on the Claude CLI subscription; a static worker runs no cargo, and the fixtures must not be hand-written
+
+- 2026-10-02 (coordinator, gate 3): task 3223's live check moved to its own item (its verify left this one): it needs a roko built with 3217–3222 plus live planner calls, and session roko-7d is replacing PRD-first generation with plan-first generation at Will's request, so its five sample inputs change too.

@@ -1127,7 +1127,9 @@ mod tests {
         for (id, (name, arguments)) in (1..).zip(calls) {
             let (_, body) = post_mcp(&open, &call(id, name, arguments), &[]).await;
             assert_eq!(body["result"]["isError"], true, "{body}");
-            let reason = body["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            let reason = body["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
             assert!(reason.contains("[agent.data_llm]"), "{body}");
         }
         assert!(state.active_runs.read().await.is_empty());

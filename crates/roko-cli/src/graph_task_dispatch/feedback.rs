@@ -909,8 +909,7 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
-        verify_step,
+        jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at

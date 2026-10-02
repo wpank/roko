@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, TimeDelta, Utc};
 use roko_learn::episode_logger::{
     Episode, EpisodeGateVerdict, EpisodeLogger, LEARNING_LABEL_KEY, Usage,
 };
@@ -133,6 +134,7 @@ impl FeedbackSink for EpisodeSink {
         };
         episode.tokens_used = outcome.total_tokens();
         episode.duration_secs = outcome.duration_ms as f64 / 1000.0;
+        attach_attempt_times(&mut episode, settled.as_deref(), outcome.duration_ms);
         episode.backend = outcome.provider.clone();
         episode.model = outcome.model.clone();
         // Plan id is carried in the forward-compat `extra` bag — feedback
@@ -226,6 +228,31 @@ impl FeedbackSink for EpisodeSink {
             .await
             .map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
         Ok(())
+    }
+}
+
+/// Place the episode at its attempt's start and settlement, from the
+/// settled verdict's timing, not at the moment the row is written (backlog
+/// 2105). Without that timing it started `duration_ms` before it completed.
+/// The episode's id, derived at construction, stays.
+fn attach_attempt_times(
+    episode: &mut Episode,
+    settled: Option<&AttemptVerdictRecord>,
+    duration_ms: u64,
+) {
+    let at = |ms: Option<i64>| ms.and_then(DateTime::<Utc>::from_timestamp_millis);
+    let timing = settled.map(|settled| &settled.timing);
+    if let Some(completed_at) = timing.and_then(|timing| at(timing.settled_at)) {
+        episode.completed_at = completed_at;
+    }
+    let started_at = timing
+        .and_then(|timing| at(timing.attempt_started_at))
+        .or_else(|| {
+            let duration = TimeDelta::try_milliseconds(i64::try_from(duration_ms).ok()?)?;
+            episode.completed_at.checked_sub_signed(duration)
+        });
+    if let Some(started_at) = started_at {
+        episode.started_at = started_at;
     }
 }
 
@@ -652,5 +679,61 @@ mod tests {
         sink.on_event(&event).await.unwrap();
         // No file should have been created.
         assert!(!path.exists() || std::fs::read(&path).unwrap().is_empty());
+    }
+
+    /// A completed task's event for `outcome()`, settled by `settled`.
+    fn completed(settled: Option<AttemptVerdictRecord>) -> FeedbackEvent {
+        FeedbackEvent::TaskCompleted {
+            turns: 1,
+            failure_reason: None,
+            settled: settled.map(Arc::new),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            outcome: outcome(),
+            model_source: ModelChoiceSource::Router,
+            succeeded: true,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        }
+    }
+
+    /// backlog 2105: a Graph episode starts when its attempt started and
+    /// completes when the attempt settled, not when its row was written.
+    /// Without a settled verdict it started its duration before it ended.
+    #[tokio::test]
+    async fn graph_episode_started_before_completed() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            AttemptOutcome::Passed,
+            true,
+        );
+        let started_ms = 1_790_000_000_000;
+        verdict.timing.attempt_started_at = Some(started_ms);
+        verdict.timing.settled_at = Some(started_ms + 1_500);
+        sink.on_event(&completed(Some(verdict)))
+            .await
+            .expect("settled episode");
+        sink.on_event(&completed(None))
+            .await
+            .expect("unsettled episode");
+
+        let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+        assert_eq!(episodes[0].started_at.timestamp_millis(), started_ms);
+        let lasted = |episode: &Episode| {
+            (episode.completed_at - episode.started_at).num_milliseconds()
+        };
+        assert_eq!(lasted(&episodes[0]), 1_500);
+        // `outcome()` took 1234 ms.
+        assert_eq!(lasted(&episodes[1]), 1_234);
     }
 }

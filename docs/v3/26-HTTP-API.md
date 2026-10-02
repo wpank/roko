@@ -1059,15 +1059,26 @@ checks each tool's own scope. A request whose `Origin` is not this machine is
 refused with 403, so a web page cannot reach it through DNS rebinding; hosts
 call it from outside a browser and send no `Origin`.
 
-The tools and their arguments are the contract with hosts. Both only read
-(`annotations.readOnlyHint: true`), and each returns its JSON as text and as
-`structuredContent`; a tool's own failure, such as an unknown run, is a result
-with `isError: true`.
+The tools and their arguments are the contract with hosts. Each returns its
+JSON as text and as `structuredContent`; a tool's own failure, such as an
+unknown run, is a result with `isError: true`. `run_status` and `recall` only
+read (`annotations.readOnlyHint: true`, `read` scope). The run tools need the
+`write` scope and answer at once with `{ run_id, state, links }` for
+`run_status` to follow. `run_prompt` and `plan_run` are annotated
+`destructiveHint: true`, `idempotentHint: false` and `openWorldHint: true`,
+`plan_generate` `destructiveHint: false`, and `run_cancel` `idempotentHint:
+true`, so a host asks its user before calling them; the paid ones say so in
+their description and in `_meta` (`"roko/paid": true`). No tool picks a model:
+routing stays with the ladder.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass |
+| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass; for a `plan_generate` run, the operation's state and result |
 | `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
+| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it (409 while a plan run is live) |
+| `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
+| `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
 
 There is no `remember`: personal memory stays with the host.
 

@@ -54,19 +54,13 @@ async fn start_run(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<RunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if state.live_plan_runs().await > 0 {
-        return Err(ApiError::conflict(
-            "a plan run is active in this workspace; start the prompt run once it ends",
-        ));
-    }
-    let run_id = spawn_run(
+    let run_id = start_gated_run(
         &state,
         body.prompt.clone(),
         body.workdir.map(PathBuf::from),
-        None,
-        RunMode::GatedPlan,
+        PromptPlanOptions::default(),
     )
-    .await;
+    .await?;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -124,7 +118,55 @@ pub(crate) async fn spawn_background_run(
     workdir: Option<PathBuf>,
     agent_target: Option<String>,
 ) -> String {
-    spawn_run(state, prompt, workdir, agent_target, RunMode::Answer).await
+    spawn_run(
+        state,
+        prompt,
+        workdir,
+        agent_target,
+        RunMode::Answer,
+        PromptPlanOptions::default(),
+    )
+    .await
+}
+
+/// Start a gated prompt run (9113) with `options` and return the id it runs
+/// under: the route of `POST /api/run` and of the MCP `run_prompt` tool.
+///
+/// One plan executor runs at a time, and prompt runs are not queued behind
+/// plan runs yet: while a plan run is live this refuses with 409 instead of
+/// waiting for the workspace.
+pub(crate) async fn start_gated_run(
+    state: &Arc<AppState>,
+    prompt: String,
+    workdir: Option<PathBuf>,
+    options: PromptPlanOptions,
+) -> Result<String, ApiError> {
+    if state.live_plan_runs().await > 0 {
+        return Err(ApiError::conflict(
+            "a plan run is active in this workspace; start the prompt run once it ends",
+        ));
+    }
+    let run_id = spawn_run(state, prompt, workdir, None, RunMode::GatedPlan, options).await;
+    Ok(run_id)
+}
+
+/// Stop background run `run_id` when it is a gated prompt run still going
+/// (`run_cancel`, 9115). `None` when no background run has that id;
+/// otherwise whether it was stopped, or why not.
+pub(crate) async fn cancel_background_run(
+    state: &AppState,
+    run_id: &str,
+) -> Option<Result<(), &'static str>> {
+    let runs = state.active_runs.read().await;
+    let run = runs.get(run_id)?;
+    if !matches!(run.status, OperationStatus::Running) {
+        return Some(Err("the run has already ended"));
+    }
+    let Some(cancel) = &run.cancel else {
+        return Some(Err("an agent's reply cannot be cancelled"));
+    };
+    cancel.cancel();
+    Some(Ok(()))
 }
 
 /// Run `prompt` as `mode` says: the run's verdict and result. A gated run
@@ -155,13 +197,15 @@ async fn execute_run(
 }
 
 /// Spawn a background run of `prompt` in `mode` and return its id: the id it
-/// runs under.
+/// runs under. A gated run takes `options` and stops when the server shuts
+/// down or `run_cancel` stops it.
 async fn spawn_run(
     state: &Arc<AppState>,
     prompt: String,
     workdir: Option<PathBuf>,
     agent_target: Option<String>,
     mode: RunMode,
+    options: PromptPlanOptions,
 ) -> String {
     let run_id = uuid::Uuid::new_v4().to_string();
     let workdir = workdir.unwrap_or_else(|| state.workdir.clone());
@@ -169,6 +213,8 @@ async fn spawn_run(
     let runtime = state.runtime.clone();
     let state_for_task = Arc::clone(state);
     let (start_tx, start_rx) = oneshot::channel::<()>();
+    let cancel = (mode == RunMode::GatedPlan).then(|| state.cancel.child());
+    let cancel_for_task = cancel.clone();
 
     let handle = tokio::spawn({
         let run_id = run_id.clone();
@@ -217,12 +263,11 @@ async fn spawn_run(
                 ]);
             }
 
-            // A gated run takes the id this route returns, and stops when
-            // the server shuts down.
+            // A gated run takes the id this route returns.
             let options = PromptPlanOptions {
                 run_id: Some(run_id.clone()),
-                cancel: Some(state_for_task.cancel.child()),
-                ..PromptPlanOptions::default()
+                cancel: cancel_for_task,
+                ..options
             };
             let run = execute_run(
                 runtime.as_ref(),
@@ -339,6 +384,7 @@ async fn spawn_run(
         status: OperationStatus::Running,
         result: None,
         verdict: None,
+        cancel,
         handle,
     };
 

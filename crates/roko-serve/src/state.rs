@@ -229,6 +229,8 @@ pub struct RunHandle {
     /// The run's verdict once it has completed: a gated run's own, or the
     /// one its result gives (G42).
     pub verdict: Option<RunState>,
+    /// Stops a gated run (`run_cancel`, 9115); an answer has none.
+    pub cancel: Option<CancelToken>,
     /// Background task driving the run.
     pub handle: JoinHandle<()>,
 }

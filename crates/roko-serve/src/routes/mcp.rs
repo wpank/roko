@@ -11,10 +11,18 @@
 //!   /api/runs/{run_id}/summary` does, after waiting up to `wait_secs` (at
 //!   most 30) for its state to change;
 //! - `recall { query, limit }` returns what the knowledge store holds on
-//!   `query`.
+//!   `query`;
+//! - `run_prompt { prompt, domain, max_usd }`, `plan_run { plan_id, resume,
+//!   max_usd }`, `plan_generate { prompt }` and `run_cancel { run_id }` start,
+//!   plan and stop work (9115). They answer at once with `{ run_id, state,
+//!   links }` for `run_status` to follow, need the `write` scope, and are
+//!   annotated so the host asks its user first; the paid ones say so in their
+//!   description and in `_meta` (`roko/paid`). No tool picks a model: routing
+//!   stays with the ladder.
 //!
-//! Both only read. There is no `remember`: personal memory stays with the host
-//! (B9), and serve has no knowledge write route (AD-10).
+//! `run_status` and `recall` only read. There is no `remember`: personal
+//! memory stays with the host (B9), and serve has no knowledge write route
+//! (AD-10).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +38,9 @@ use serde_json::{Value, json};
 
 use super::middleware::{AuthContext, is_scope_sufficient};
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::runtime::PromptPlanOptions;
+use crate::state::{AppState, OperationStatus, RunState};
+use roko_core::TaskDomain;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/mcp", post(mcp))
@@ -148,16 +158,18 @@ async fn handle(
 }
 
 /// The tools `/mcp` offers, as `tools/list` lists them, each with the least
-/// scope a caller needs to call it.
-fn tools() -> [(Value, &'static str); 2] {
-    [
+/// scope a caller needs to call it. `run_status` and `recall` only read. The
+/// run tools (9115) start, plan or stop paid work in the workspace, and their
+/// annotations ask the host to check with its user before calling them.
+fn tools() -> Vec<(Value, &'static str)> {
+    vec![
         (
             read_only_tool(
                 "run_status",
                 "The state of a Roko run (queued, running, succeeded, failed, unverified or \
                  cancelled), with its verdict once it has ended, its cost, how its tasks \
                  ended and at most five milestones. Waits up to wait_secs, at most 30, for \
-                 the state to change.",
+                 the state to change. Also follows a plan_generate run.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -199,20 +211,152 @@ fn tools() -> [(Value, &'static str); 2] {
             ),
             "read",
         ),
+        (
+            tool(
+                "run_prompt",
+                "Have Roko do a piece of work as one gated task, as `roko run` does: an \
+                 agent works in Roko's workspace and the workspace's checks verify the \
+                 result. Paid: it spends model budget, at most max_usd. Answers at once \
+                 with the run's id; follow it with run_status.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string", "description": "The work to do" },
+                        "domain": {
+                            "type": "string",
+                            "description": "The kind of work, such as code, research or docs"
+                        },
+                        "max_usd": max_usd_schema()
+                    },
+                    "required": ["prompt", "max_usd"],
+                    "additionalProperties": false
+                }),
+                starts_paid_work(),
+                true,
+            ),
+            "write",
+        ),
+        (
+            tool(
+                "plan_run",
+                "Run one of Roko's plans, or queue it behind the run in progress. Paid: it \
+                 spends model budget, at most max_usd. Answers at once with the run's id \
+                 and whether it is running or queued; follow it with run_status.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "plan_id": { "type": "string", "description": "The plan's id" },
+                        "resume": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Resume from the plan's checkpoint, not start over"
+                        },
+                        "max_usd": max_usd_schema()
+                    },
+                    "required": ["plan_id", "max_usd"],
+                    "additionalProperties": false
+                }),
+                starts_paid_work(),
+                true,
+            ),
+            "write",
+        ),
+        (
+            tool(
+                "plan_generate",
+                "Have Roko's planner write a plan for a request, without running it. Paid: \
+                 the planner model spends budget. Answers at once with a run id, which \
+                 run_status follows, and the plan's id, which plan_run takes once the plan \
+                 is written.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string", "description": "What the plan is for" }
+                    },
+                    "required": ["prompt"],
+                    "additionalProperties": false
+                }),
+                json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": false,
+                    "idempotentHint": false,
+                    "openWorldHint": true,
+                }),
+                true,
+            ),
+            "write",
+        ),
+        (
+            tool(
+                "run_cancel",
+                "Stop a Roko run that is running or queued: a run_prompt or plan_run run.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "The run's id" }
+                    },
+                    "required": ["run_id"],
+                    "additionalProperties": false
+                }),
+                json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": true,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                }),
+                false,
+            ),
+            "write",
+        ),
     ]
 }
 
 /// The spec of a tool that only reads and touches nothing outside Roko.
 fn read_only_tool(name: &str, description: &str, input_schema: Value) -> Value {
+    let annotations = json!({ "readOnlyHint": true, "openWorldHint": false });
+    tool(name, description, input_schema, annotations, false)
+}
+
+/// The annotations of a tool that starts paid work in the workspace: it
+/// changes things, reaches model providers, and a second call starts a second
+/// run, so a host asks its user before calling it.
+fn starts_paid_work() -> Value {
     json!({
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+    })
+}
+
+/// The schema of a run's `max_usd`, its spending cap.
+fn max_usd_schema() -> Value {
+    json!({
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "The most the run may spend, in USD"
+    })
+}
+
+/// A tool's spec: its name, description, argument schema and MCP
+/// annotations, with `_meta` marking a tool that spends model budget.
+fn tool(
+    name: &str,
+    description: &str,
+    input_schema: Value,
+    annotations: Value,
+    paid: bool,
+) -> Value {
+    let mut spec = json!({
         "name": name,
         "description": description,
         "inputSchema": input_schema,
-        "annotations": {
-            "readOnlyHint": true,
-            "openWorldHint": false,
-        },
-    })
+        "annotations": annotations,
+    });
+    if paid {
+        spec["_meta"] = json!({ "roko/paid": true });
+    }
+    spec
 }
 
 /// Call the tool `params` names with its arguments, once the caller's scope
@@ -253,6 +397,30 @@ async fn call_tool(
         "recall" => {
             let (query, limit) = recall_args(&arguments)?;
             super::neuro::query_knowledge(state, &query, limit)
+        }
+        "run_prompt" => {
+            let prompt = required_str(&arguments, name, "prompt")?.to_string();
+            let options = PromptPlanOptions {
+                domain: optional_domain(&arguments)?,
+                max_usd: optional_usd(&arguments)?,
+                ..PromptPlanOptions::default()
+            };
+            start_prompt_run(state, prompt, options).await
+        }
+        "plan_run" => {
+            let plan_id = required_str(&arguments, name, "plan_id")?.to_string();
+            let resume = optional_bool(&arguments, "resume")?;
+            // Checked here; the run takes the cap from 9116 on.
+            optional_usd(&arguments)?;
+            start_plan(state, plan_id, resume).await
+        }
+        "plan_generate" => {
+            let prompt = required_str(&arguments, name, "prompt")?.to_string();
+            Ok(generate_plan(state, prompt).await)
+        }
+        "run_cancel" => {
+            let run_id = required_str(&arguments, name, "run_id")?;
+            cancel_run(state, run_id).await
         }
         _ => return Err(unknown()),
     };
@@ -296,15 +464,61 @@ fn recall_args(arguments: &Value) -> Result<(String, usize), JsonRpcError> {
     Ok((query.to_string(), limit.clamp(1, MAX_RECALL_LIMIT)))
 }
 
-/// The `run_status` tool: the run's summary
-/// ([`super::runs::summarize_run`]) once its state differs from its state
-/// when the call came, once it has ended, or once `wait_secs` pass.
+/// The non-blank string argument `name` of a call to the tool `tool`.
+fn required_str<'a>(
+    arguments: &'a Value,
+    tool: &str,
+    name: &str,
+) -> Result<&'a str, JsonRpcError> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| JsonRpcError::invalid_params(format!("{tool} needs a {name}")))
+}
+
+/// The optional boolean argument `name`: false when it is absent.
+fn optional_bool(arguments: &Value, name: &str) -> Result<bool, JsonRpcError> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| JsonRpcError::invalid_params(format!("{name} must be true or false"))),
+    }
+}
+
+/// The optional `max_usd` argument: a spending cap in USD, above zero.
+fn optional_usd(arguments: &Value) -> Result<Option<f64>, JsonRpcError> {
+    match arguments.get("max_usd") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .filter(|usd| usd.is_finite() && *usd > 0.0)
+            .map(Some)
+            .ok_or_else(|| JsonRpcError::invalid_params("max_usd must be a number above 0")),
+    }
+}
+
+/// The optional `domain` argument, as the task domain its label names.
+fn optional_domain(arguments: &Value) -> Result<Option<TaskDomain>, JsonRpcError> {
+    match arguments.get("domain") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(TaskDomain::from_label)
+            .ok_or_else(|| JsonRpcError::invalid_params("domain must be a string")),
+    }
+}
+
+/// The `run_status` tool: the run's summary ([`run_or_operation`]) once its
+/// state differs from its state when the call came, once it has ended, or
+/// once `wait_secs` pass.
 async fn run_status(
     state: &Arc<AppState>,
     run_id: &str,
     wait_secs: u64,
 ) -> Result<Value, ApiError> {
-    let mut summary = super::runs::summarize_run(state, run_id).await?;
+    let mut summary = run_or_operation(state, run_id).await?;
     let first_state = summary["state"].clone();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs);
     while summary["active"] == true
@@ -312,9 +526,113 @@ async fn run_status(
         && tokio::time::Instant::now() < deadline
     {
         tokio::time::sleep(WAIT_POLL).await;
-        summary = super::runs::summarize_run(state, run_id).await?;
+        summary = run_or_operation(state, run_id).await?;
     }
     Ok(summary)
+}
+
+/// The summary of run `id` ([`super::runs::summarize_run`]) or, for the run
+/// id `plan_generate` answers with, its operation's state in the same words.
+async fn run_or_operation(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
+    match super::runs::summarize_run(state, id).await {
+        Err(error) if error.status == StatusCode::NOT_FOUND => {
+            operation_state(state, id).await.ok_or(error)
+        }
+        summary => summary,
+    }
+}
+
+/// The state of operation `id` as `run_status` reports a run's: `running`,
+/// then `succeeded` with its result or `failed` with its error.
+async fn operation_state(state: &AppState, id: &str) -> Option<Value> {
+    let operations = state.operations.read().await;
+    let operation = operations.get(id)?;
+    let (run_state, result, error) = match &operation.status {
+        OperationStatus::Running => (RunState::Running, None, None),
+        OperationStatus::Completed { result } => (RunState::Succeeded, result.as_deref(), None),
+        OperationStatus::Failed { error } => (RunState::Failed, None, Some(error.as_str())),
+    };
+    let result = result.and_then(|result| serde_json::from_str::<Value>(result).ok());
+    Some(json!({
+        "run_id": id,
+        "kind": operation.kind,
+        "state": run_state.as_str(),
+        "active": !run_state.is_terminal(),
+        "result": result,
+        "error": error,
+    }))
+}
+
+/// The `run_prompt` tool: run `prompt` as a gated one-task plan, as `POST
+/// /api/run` does (9113), and answer at once.
+async fn start_prompt_run(
+    state: &Arc<AppState>,
+    prompt: String,
+    options: PromptPlanOptions,
+) -> Result<Value, ApiError> {
+    let run_id = super::run::start_gated_run(state, prompt, None, options).await?;
+    Ok(json!({
+        "run_id": run_id,
+        "state": RunState::Running.as_str(),
+        "links": {
+            "summary": format!("/api/runs/{run_id}/summary"),
+            "status": format!("/api/run/{run_id}/status"),
+        },
+    }))
+}
+
+/// The `plan_run` tool: run plan `plan_id`, or queue it behind the live run,
+/// as `POST /api/plans/{id}/execute` does, and answer at once.
+async fn start_plan(
+    state: &Arc<AppState>,
+    plan_id: String,
+    resume: bool,
+) -> Result<Value, ApiError> {
+    let started = super::plans::start_plan_run(state, plan_id, resume).await?;
+    let run_id = started.run_id;
+    let run_state = if started.queued.is_some() {
+        RunState::Queued
+    } else {
+        RunState::Running
+    };
+    Ok(json!({
+        "run_id": run_id,
+        "state": run_state.as_str(),
+        "position": started.queued,
+        "links": {
+            "summary": format!("/api/runs/{run_id}/summary"),
+            "status": format!("/api/plans/{run_id}/status"),
+        },
+    }))
+}
+
+/// The `plan_generate` tool: have the planner write a plan for `prompt`, as
+/// `POST /api/plans/generate` does, and answer at once with the operation's
+/// id, which `run_status` follows, and the plan's id, which `plan_run` takes
+/// once the plan is written.
+async fn generate_plan(state: &Arc<AppState>, prompt: String) -> Value {
+    let (operation_id, plan_id) = super::plans::start_plan_generation(state, prompt).await;
+    json!({
+        "run_id": operation_id,
+        "plan_id": plan_id,
+        "state": RunState::Running.as_str(),
+        "links": {
+            "operation": format!("/api/operations/{operation_id}"),
+            "plan": format!("/api/plans/{plan_id}"),
+        },
+    })
+}
+
+/// The `run_cancel` tool: stop run `run_id`, a gated prompt run or a live or
+/// queued plan run, as `POST /api/plans/{id}/cancel` stops a plan run.
+async fn cancel_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    match super::run::cancel_background_run(state, run_id).await {
+        Some(stopped) => stopped.map_err(ApiError::conflict)?,
+        None => {
+            super::plans::cancel_plan_run(state, run_id).await?;
+        }
+    }
+    Ok(json!({ "run_id": run_id, "state": RunState::Cancelled.as_str() }))
 }
 
 /// A tool's result: its JSON as text, as every MCP client reads it, and as
@@ -352,24 +670,49 @@ mod tests {
         }
     }
 
-    /// The full router over a fresh workspace, with `auth`.
-    fn router(auth: ServeAuthConfig) -> (tempfile::TempDir, Router) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    /// A workspace config with auth off.
+    fn open_config() -> RokoConfig {
         let mut config = RokoConfig::default();
-        config.serve.auth = auth.clone();
+        config.serve.auth = no_auth();
+        config
+    }
+
+    /// The server state and full router over `runtime` in a fresh workspace
+    /// with `config`.
+    fn state_and_router(
+        runtime: Arc<dyn crate::runtime::CliRuntime>,
+        config: RokoConfig,
+    ) -> (tempfile::TempDir, Arc<AppState>, Router) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth = config.serve.auth.clone();
         let deploy_backend = Arc::from(
             crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
         );
         let state = Arc::new(
-            AppState::new(
-                dir.path().to_path_buf(),
-                Arc::new(crate::runtime::NoOpRuntime),
-                config,
-                deploy_backend,
-            )
-            .expect("AppState::new"),
+            AppState::new(dir.path().to_path_buf(), runtime, config, deploy_backend)
+                .expect("AppState::new"),
         );
-        (dir, crate::routes::build_router(state, &[], auth))
+        let router = crate::routes::build_router(Arc::clone(&state), &[], auth);
+        (dir, state, router)
+    }
+
+    /// The full router over a fresh workspace, with `auth`.
+    fn router(auth: ServeAuthConfig) -> (tempfile::TempDir, Router) {
+        let mut config = RokoConfig::default();
+        config.serve.auth = auth;
+        let runtime = Arc::new(crate::runtime::NoOpRuntime);
+        let (dir, _state, router) = state_and_router(runtime, config);
+        (dir, router)
+    }
+
+    /// A `tools/call` request for tool `name` with `arguments`.
+    fn call(id: u64, name: &str, arguments: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        })
     }
 
     /// `POST /mcp` with `message` and `headers`: the status and JSON body.
@@ -398,9 +741,10 @@ mod tests {
     }
 
     /// 9114: `tools/list` returns `run_status` and `recall`, each with its
-    /// argument schema and `readOnlyHint`. With auth on, a call without a key
-    /// is refused and a read-only key may call; a web page on another origin
-    /// is refused, and a notification gets 202.
+    /// argument schema and `readOnlyHint`, and the run tools after them. With
+    /// auth on, a call without a key is refused and a read-only key may call,
+    /// but not a run tool; a web page on another origin is refused, and a
+    /// notification gets 202.
     #[tokio::test]
     async fn mcp_tools_list_returns_annotated_tools() {
         let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
@@ -414,9 +758,21 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().expect("a tool name"))
             .collect();
-        assert_eq!(names, ["run_status", "recall"]);
-        for tool in tools {
+        assert_eq!(
+            names,
+            [
+                "run_status",
+                "recall",
+                "run_prompt",
+                "plan_run",
+                "plan_generate",
+                "run_cancel"
+            ]
+        );
+        for tool in &tools[..2] {
             assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
+        }
+        for tool in tools {
             assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
         }
         assert_eq!(tools[0]["inputSchema"]["required"], json!(["run_id"]));
@@ -449,7 +805,11 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
         let (status, body) = post_mcp(&guarded, &list, &[("x-api-key", reader)]).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(2));
+        assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(6));
+        let cancel = call(2, "run_cancel", json!({ "run_id": "run-1" }));
+        let (status, body) = post_mcp(&guarded, &cancel, &[("x-api-key", reader)]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"]["isError"], true, "{body}");
     }
 
     /// 9114: `tools/call` runs the tools. `recall` answers from the knowledge
@@ -459,14 +819,6 @@ mod tests {
     #[tokio::test]
     async fn mcp_tools_call_runs_recall_and_run_status() {
         let (_dir, open) = router(no_auth());
-        let call = |id: u64, name: &str, arguments: Value| {
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "tools/call",
-                "params": { "name": name, "arguments": arguments },
-            })
-        };
 
         let recall = call(1, "recall", json!({ "query": "flaky tests" }));
         let (status, body) = post_mcp(&open, &recall, &[]).await;
@@ -486,5 +838,151 @@ mod tests {
         let unknown = call(4, "remember", json!({ "text": "x" }));
         let (_, body) = post_mcp(&open, &unknown, &[]).await;
         assert!(body["error"]["message"].is_string(), "{body}");
+    }
+
+    /// A plan runtime whose runs record the run id they run under, then wait
+    /// for a permit from `gate` before they end.
+    struct HeldPlans {
+        run_ids: std::sync::Mutex<Vec<Option<String>>>,
+        gate: tokio::sync::Semaphore,
+    }
+
+    impl HeldPlans {
+        fn new() -> Self {
+            Self {
+                run_ids: std::sync::Mutex::default(),
+                gate: tokio::sync::Semaphore::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for HeldPlans {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("HeldPlans only runs plans")
+        }
+
+        async fn load_plan_summary(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            Ok(Some(crate::plan_types::PlanSummaryDto {
+                id: plan_id.to_string(),
+                title: "Held plan".to_string(),
+                task_count: 1,
+                tasks_done: 0,
+                tasks_failed: 0,
+                completed: false,
+                status: "ready".to_string(),
+                superseded_by: None,
+                old_format: false,
+                last_error: None,
+                group: None,
+                estimated_minutes: None,
+            }))
+        }
+
+        async fn run_plan_with_options(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_target: &std::path::Path,
+            options: crate::runtime::PlanRunOptions,
+        ) -> anyhow::Result<crate::runtime::PlanExecutionResult> {
+            self.run_ids
+                .lock()
+                .expect("lock run ids")
+                .push(options.run_id);
+            self.gate
+                .acquire()
+                .await
+                .expect("the gate stays open")
+                .forget();
+            Ok(crate::runtime::PlanExecutionResult {
+                success: true,
+                output_text: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// 9115: `plan_run` answers at once with the id the engine runs the plan
+    /// under. A second plan on the busy workspace is queued, and `run_cancel`
+    /// takes the queued run out of the queue. The run tools are annotated so
+    /// the host asks its user first, and the paid ones say so.
+    #[tokio::test]
+    async fn mcp_plan_run_returns_engine_run_id() {
+        let runtime = Arc::new(HeldPlans::new());
+        let (_dir, state, open) = state_and_router(runtime.clone(), open_config());
+
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, body) = post_mcp(&open, &list, &[]).await;
+        let tools = body["result"]["tools"].as_array().expect("a tool list");
+        let spec = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .expect("the tool is listed")
+                .clone()
+        };
+        for name in ["run_prompt", "plan_run"] {
+            let tool = spec(name);
+            assert_eq!(tool["annotations"]["destructiveHint"], true, "{tool}");
+            assert_eq!(tool["annotations"]["idempotentHint"], false, "{tool}");
+            assert_eq!(tool["annotations"]["openWorldHint"], true, "{tool}");
+            assert_eq!(tool["_meta"]["roko/paid"], true, "{tool}");
+        }
+        assert_eq!(spec("plan_generate")["annotations"]["destructiveHint"], false);
+        assert_eq!(spec("run_cancel")["annotations"]["idempotentHint"], true);
+
+        let alpha = call(2, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &alpha, &[]).await;
+        let first = &body["result"]["structuredContent"];
+        assert_eq!(first["state"], "running", "{body}");
+        let first_id = first["run_id"].as_str().expect("a run id").to_string();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.run_ids.lock().expect("lock run ids").is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run starts");
+        let ran = runtime.run_ids.lock().expect("lock run ids").clone();
+        assert_eq!(ran, [Some(first_id)]);
+
+        let beta = call(3, "plan_run", json!({ "plan_id": "beta", "max_usd": 1.0 }));
+        let (_, body) = post_mcp(&open, &beta, &[]).await;
+        let second = &body["result"]["structuredContent"];
+        assert_eq!(second["state"], "queued", "{body}");
+        assert_eq!(second["position"], 1, "{body}");
+        let second_id = second["run_id"].as_str().expect("a run id").to_string();
+
+        let cancel = call(4, "run_cancel", json!({ "run_id": second_id }));
+        let (_, body) = post_mcp(&open, &cancel, &[]).await;
+        let cancelled = &body["result"]["structuredContent"];
+        assert_eq!(cancelled["state"], "cancelled", "{body}");
+        assert!(state.plan_queue.lock().expect("lock the queue").is_empty());
+        runtime.gate.add_permits(1);
     }
 }

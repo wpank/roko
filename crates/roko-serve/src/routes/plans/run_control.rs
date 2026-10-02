@@ -324,7 +324,7 @@ pub(super) async fn execute_plans(
 ///   with the cancel token; `force_resume` and `fresh` are set from `resume`.
 ///
 /// Returns the run it started or queued.
-pub(super) async fn start_plan_run(
+pub(crate) async fn start_plan_run(
     state: &Arc<AppState>,
     id: String,
     resume: bool,
@@ -403,15 +403,15 @@ pub(super) async fn start_plan_run(
 }
 
 /// A run [`start_plan_run`] started or queued.
-pub(super) struct StartedPlanRun {
-    pub(super) run_id: String,
+pub(crate) struct StartedPlanRun {
+    pub(crate) run_id: String,
     /// Tasks the run replays from its checkpoint instead of running: none for
     /// a fresh run, `None` when the runtime cannot tell (gap-b07969) or the
     /// run is queued.
-    pub(super) skippable_task_ids: Option<Vec<String>>,
+    pub(crate) skippable_task_ids: Option<Vec<String>>,
     /// The run's place in the queue, 1 being next, while it waits for the
     /// live run to end (decision 9105).
-    pub(super) queued: Option<usize>,
+    pub(crate) queued: Option<usize>,
 }
 
 // ── Starting and queueing runs ───────────────────────────────────────
@@ -952,10 +952,17 @@ pub(super) async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    cancel_plan_run(&state, &id).await.map(Json)
+}
+
+/// Cancel the live or queued plan run `id` names, as `POST
+/// /api/plans/{id}/cancel` does: the route and the MCP `run_cancel` tool
+/// (9115) share it.
+pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
     let mut active = state.active_plans.write().await;
     // Resolve by key, run id or member plan id; else look in the queue.
-    let Some(key) = active_run_for(&active, &id) else {
-        return cancel_queued_run(&state, &mut active, &id);
+    let Some(key) = active_run_for(&active, id) else {
+        return cancel_queued_run(state, &mut active, id);
     };
     let handle = active
         .get(&key)
@@ -997,10 +1004,10 @@ pub(super) async fn cancel_plan(
     // it ended first. No snapshot is written — a cancelled plan is not
     // resumable.
     let cancelled = PlanRunStatus::ended(RunState::Cancelled, None);
-    record_plan_run_end(&state, &key, &run_id, cancelled).await;
+    record_plan_run_end(state, &key, &run_id, cancelled).await;
     // An aborted run's task never started the next queued run; this does,
     // unless the task did first (decision 9105).
-    start_next_queued_run(&state).await;
+    start_next_queued_run(state).await;
 
     // Publish PlanCompleted only when the task did not finish cleanly on its
     // own.  If the run observed the cancel token and returned, it already
@@ -1008,12 +1015,12 @@ pub(super) async fn cancel_plan(
     // to every connected WebSocket client.
     if had_to_abort {
         state.event_bus.publish(ServerEvent::PlanCompleted {
-            plan_id: id.clone(),
+            plan_id: id.to_string(),
             success: false,
         });
     }
 
-    Ok(Json(json!({ "cancelled": true })))
+    Ok(json!({ "cancelled": true }))
 }
 
 /// Take the queued run `id` names out of the queue (decision 9105). Its
@@ -1024,7 +1031,7 @@ fn cancel_queued_run(
     state: &AppState,
     active: &mut std::collections::HashMap<String, PlanHandle>,
     id: &str,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Value, ApiError> {
     let removed = {
         let mut queue = state
             .plan_queue
@@ -1045,5 +1052,5 @@ fn cancel_queued_run(
         cancel: CancelToken::new(),
     };
     active.insert(spec.run_id.clone(), plan_handle);
-    Ok(Json(json!({ "cancelled": true, "run_id": spec.run_id })))
+    Ok(json!({ "cancelled": true, "run_id": spec.run_id }))
 }

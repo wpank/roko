@@ -509,6 +509,8 @@ mod tests {
             attempt.settle(passed, "stream-model", None);
         }
         dispatcher.close_run_attempts(RUN);
+        // The included entry's access counts land in the background.
+        crate::background_writes::settled(&temp.path().join(".roko")).await;
 
         let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
         assert!(run.invalid.is_empty(), "{:?}", run.invalid);
@@ -537,7 +539,8 @@ mod tests {
         assert_eq!((store.n_obs, store.version.as_str()), (2, "kn:n=2"));
         assert!(store.read && store.digest.starts_with("b3:"), "{store:?}");
         assert_eq!(row.thresholds_digest, Some(b3_digest(b"{}")));
-        assert_eq!(knowledge[1].state, row.state, "the store did not change");
+        let entries = knowledge[1].state.as_ref().map(|state| state.n_obs);
+        assert_eq!(entries, Some(2), "the second attempt read the same store");
 
         let playbooks = rows(ContentDecisionPoint::Playbooks);
         let digests: Vec<&str> = playbooks

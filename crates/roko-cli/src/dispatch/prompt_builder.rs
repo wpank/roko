@@ -2058,11 +2058,7 @@ impl PromptAssembler {
         // every entry carries the source Signal's content hash and the exact
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
-        let mut group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
-        // P1-14: Load pheromone records from pheromones.jsonl and merge into
-        // the pheromone context so dispatch sees gate-deposited signals.
-        let jsonl_pheromones = load_pheromone_jsonl_context(&ctx.workdir, &ctx.plan_id);
-        group_context.extend(jsonl_pheromones);
+        let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
         let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
@@ -3093,96 +3089,6 @@ fn knowledge_group_ids(entry: &roko_neuro::KnowledgeEntry) -> Vec<GroupId> {
         .filter_map(|tag| tag.strip_prefix("group:"))
         .filter(|id| !id.is_empty())
         .map(GroupId::new)
-        .collect()
-}
-
-// ─── P1-14: Pheromone JSONL loading ─────────────────────────────────────
-
-/// Maximum number of pheromone JSONL records to load.
-const MAX_PHEROMONE_JSONL_RECORDS: usize = 50;
-/// Maximum number of pheromone context chunks to inject.
-const MAX_PHEROMONE_JSONL_CHUNKS: usize = 8;
-
-/// Load recent pheromone records from `.roko/learn/pheromones.jsonl` and
-/// convert them to `ContextChunk` values for prompt injection.
-///
-/// Records are filtered by plan scope (matching `plan_id` or global) and
-/// sorted by recency. Only the most recent records are returned so the
-/// context window is not exhausted.
-fn load_pheromone_jsonl_context(workdir: &Path, plan_id: &str) -> Vec<ContextChunk> {
-    let path = workdir.join(".roko").join("learn").join("pheromones.jsonl");
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let scope_needle = format!("plan:{plan_id}");
-    let mut records: Vec<serde_json::Value> = contents
-        .lines()
-        .rev()
-        .take(MAX_PHEROMONE_JSONL_RECORDS)
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|record: &serde_json::Value| {
-            let scope = record
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("global");
-            scope == scope_needle || scope == "global"
-        })
-        .collect();
-    records.truncate(MAX_PHEROMONE_JSONL_CHUNKS);
-
-    records
-        .into_iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let signal_type = record
-                .get("signal_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let task_id = record
-                .get("task_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let model = record
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let passed = record
-                .get("passed")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let intensity = record
-                .get("intensity")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5);
-            let files = record
-                .get("files")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .take(5)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            let outcome = if passed { "PASS" } else { "FAIL" };
-            ContextChunk {
-                content: format!(
-                    "[Pheromone {signal_type}] task={task_id} model={model} outcome={outcome} files=[{files}]"
-                ),
-                source: ContextSource::Pheromone {
-                    kind: signal_type.to_owned(),
-                    source: format!("pheromone-jsonl-{index}"),
-                },
-                relevance: intensity,
-                track_record: Some(intensity),
-                confidence: Some(intensity),
-                recency: None,
-                emotional_tag: None,
-            }
-        })
         .collect()
 }
 

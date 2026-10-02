@@ -5,7 +5,7 @@ Status: reviewed · budget 550 words · owner gap-2aad7d
 ## 8.1 The claim
 
 Roko is designed to match Claude Code on Opus 5.5 in quality at a lower cost per verified task, on
-decomposable, checkable work (spec-567e52). The claim is UNPROVEN@41228d7b2 (appendix row V7). A task is verified
+decomposable, checkable work (spec-567e52). The claim is UNPROVEN@a43288b5f (appendix row V7). A task is verified
 only when its final output passes hidden tests the agent never sees. Its cost counts every attempt,
 retry, escalation, planner call and model-based check at API list price from one dated snapshot (gap-0580f7),
 with subscription cash reported separately.
@@ -38,8 +38,9 @@ makespan.
 
 Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude
 Code runs with an isolated config, free of the user's memory, hooks and plugins (gap-c4f364); and each run starts
-fresh, with every attempt's model checked, because failover can switch it; Roko records a switch since `6f8286d48` (WIRED@41228d7b2,
-row RC4; gap-b7ab99).
+fresh, with every attempt's model checked, because failover can switch it; Roko has recorded a switch since
+`6f8286d48` (gap-b7ab99), though failover itself, which moves a task sideways or down the ladder, is PARTIAL@a43288b5f
+(row RC4).
 
 ## 8.4 Falsifiers
 
@@ -61,10 +62,11 @@ The pilot and the full comparison measure single tasks, where every arm gets the
 planner's cost enters only in the plan slice, charged to Roko. The families are mostly Python, and the baseline
 is Claude Code as shipped, not a tuned frontier harness.
 
-Later Roko arms need honest verdicts end to end (spec-e9d7ec; typed verdicts are
-PARTIAL@41228d7b2, row QA2) and a ladder that escalates, WIRED@41228d7b2 but not yet tested end to end (row EX7,
-gap-e21595). The plan slice's whole-plan gate is WIRED@41228d7b2 (row IS3). The benchmark's driver
-replaces `roko bench`, which leaks the SWE-bench gold patch (bug-28becc).
+Later Roko arms need honest verdicts end to end, WIRED@a43288b5f since spec-e9d7ec (row QA2); a ladder that escalates,
+WIRED@a43288b5f and driven end to end by canary C8 (row EX7, gap-e21595); and failure paths that are designed to climb
+the ladder rather than fall down it and to read every provider's stream, both PARTIAL@a43288b5f after the first live
+run (rows RC1, RC4; gap-625195, gap-e00238).[^8-live] The plan slice's whole-plan gate is WIRED@a43288b5f (row IS3).
+The benchmark's driver replaces `roko bench`, which leaks the SWE-bench gold patch (bug-28becc).
 
 No arm has run: the pilot's results are pending gap-d9e9fe (`vb report --pilot`), and the plan slice's
 gap-1cd676.
@@ -78,3 +80,7 @@ gap-1cd676.
 [^8-bar]: The author's bar (D3), decided on 2026-09-28: S09 v1.1, frozen as `evidence/2026-09-28-s09-h1-bar.md`
     (sha256 `029756b064eb`), "Envelope procedure" and H1's "Primary", which also give the expectation. gap-c4f364
     and gap-d9e9fe refer to the bar, and spec-567e52 defers `roko_full` until its mechanisms are live.
+
+[^8-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
+    `813172c96b88`), "What broke" 2 and 3: GLM-4.7 returned blank answers, and failover moved a task down to the cheap
+    rung four times.

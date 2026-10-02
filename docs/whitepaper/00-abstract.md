@@ -5,13 +5,14 @@ Status: reviewed · budget 150 words · owner gap-353d57
 Frontier models finish more agent work but cost more; cheap models fail more often, and sooner as tasks get
 longer. Roko is a harness for spec'd agent work: a frontier model writes a plan of small tasks, each with an
 executable check, and Roko runs it as a checkpointed, resumable graph, each task judged by its own checks
-(WIRED@41228d7b2). Roko is designed to run independent tasks in parallel on the cheapest model that
+(WIRED@a43288b5f). Roko is designed to run independent tasks in parallel on the cheapest model that
 passes, escalate on failure, check the whole plan, audit its own passes and learn from verified outcomes; the
-tier ladder with escalation, parallel scheduling and the whole-plan check are WIRED@41228d7b2, the audits
-MISSING@41228d7b2. Roko
+tier ladder with escalation, parallel scheduling and the whole-plan check are WIRED@a43288b5f, the audits
+MISSING@a43288b5f. Roko
 ran most of its own web portal's build: 16 plans and 173 tasks (168 gate-verified) for $174.87 of recorded agent
 spend; the frontier sessions that supervised it cost an estimated 16–20× Roko's spend.[^0-portal] All 210 attempts
-pinned one mid-tier model, so the cheap-model half of the thesis is UNPROVEN@41228d7b2. The evaluation plan compares
+pinned one mid-tier model, and a first live run on cheap models needed six operator interventions to verify ten
+small tasks,[^0-live] so the cheap-model half of the thesis is UNPROVEN@a43288b5f. The evaluation plan compares
 cost per verified task with Claude Code on Opus 5.5 on hidden-test tasks (§8).
 
 [^0-portal]: Research note B7, frozen by gap-29a64e as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256
@@ -19,3 +20,6 @@ cost per verified task with Claude Code on Opus 5.5 on hidden-test tasks (§8).
     records for the portal plans, attempts to 2026-09-29 07:41Z, costs as recorded. The supervising sessions: assessment note W12, frozen as
     `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256 `82676de5eee4`), an API-equivalent estimate for
     2026-09-25 to 09-29 against the $172.80 Roko recorded over those days (§7).
+[^0-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
+    `813172c96b88`), "TL;DR" and "Operator interventions": two five-task Python plans in a test repository, with a
+    binary built at `a43288b5f`; not a benchmark.

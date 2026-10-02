@@ -230,6 +230,10 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
+/// A line break in a diagnostic's message, indented to where `render_text`
+/// starts the message.
+const MESSAGE_INDENT: &str = "\n                 ";
+
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -246,12 +250,13 @@ pub fn render_text(report: &ValidationReport) -> String {
 
         let _ = writeln!(out, "{}", plan.path);
         for diagnostic in &plan.diagnostics {
+            // A message's later lines (PLAN_045's questions) sit under its first.
+            let message = diagnostic.message.replace('\n', MESSAGE_INDENT);
             let _ = writeln!(
                 out,
-                "  {:<5} {:<8} {}",
+                "  {:<5} {:<8} {message}",
                 diagnostic.severity.label(),
-                diagnostic.rule_id,
-                diagnostic.message
+                diagnostic.rule_id
             );
         }
     }
@@ -545,6 +550,31 @@ fn covers_diagnostics(task: &TaskDef, plan_id: &str) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// 3209: what PLAN_045 says about a task with open questions, one question
+/// per line, or `None` when it has none.
+fn open_questions_message(task: &TaskDef) -> Option<String> {
+    let questions: Vec<&str> = task
+        .spec
+        .open_questions
+        .iter()
+        .map(|question| question.trim())
+        .filter(|question| !question.is_empty())
+        .collect();
+    if questions.is_empty() {
+        return None;
+    }
+    let mut message = format!(
+        "task '{}' has open questions, so its plan cannot run; answer each in the spec, then \
+         delete it from open_questions:",
+        task.id
+    );
+    for question in questions {
+        message.push_str("\n- ");
+        message.push_str(question);
+    }
+    Some(message)
+}
+
 /// The keys of `table` that `known` does not list.
 fn unknown_keys<'a>(
     table: &'a toml::map::Map<String, Value>,
@@ -715,6 +745,20 @@ fn validate_tasks_file(
             // 3208: a verify step names the acceptance criteria it checks.
             for task in &tasks_file.tasks {
                 diagnostics.extend(covers_diagnostics(task, &plan_id));
+            }
+            // 3209: a task whose planner left open questions keeps its plan
+            // from running until the author answers them in the spec and
+            // deletes them.
+            for task in &tasks_file.tasks {
+                if let Some(message) = open_questions_message(task) {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule_id: "PLAN_045".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message,
+                    });
+                }
             }
             // A role whose safety contract denies write tools cannot produce
             // the task's declared `files`; the task would fail at runtime.

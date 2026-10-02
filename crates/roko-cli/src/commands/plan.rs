@@ -3113,6 +3113,61 @@ depends_on_plan = ["missing-foundation"]
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
     }
 
+    /// 3209: a task with an open question keeps its plan from running: plan
+    /// validation fails with PLAN_045, which lists the question, and `plan
+    /// run` stops before any agent starts. Answered and deleted, it runs.
+    #[test]
+    fn open_questions_block_dispatch() {
+        let workspace = tempdir().expect("tempdir");
+        let plans = workspace.path().join("plans");
+        std::fs::create_dir_all(plans.join("questions")).expect("plan dir");
+        let write_plan = |questions: &str| {
+            let tasks = format!(
+                r#"
+[meta]
+plan = "questions"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+open_questions = [{questions}]
+verify = [{{ phase = "test", command = "cargo test -p demo --lib retry" }}]
+"#
+            );
+            std::fs::write(plans.join("questions/tasks.toml"), tasks).expect("write the plan");
+        };
+
+        write_plan(r#""Is the limit per call or per task?""#);
+        let report = plan_validate::validate_plans_dir(&plans, None).expect("validate");
+        let questions: Vec<_> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diagnostic| diagnostic.rule_id == "PLAN_045")
+            .collect();
+        assert_eq!(questions.len(), 1, "{report:?}");
+        assert_eq!(questions[0].severity, plan_validate::Severity::Error);
+        assert!(
+            questions[0]
+                .message
+                .ends_with(":\n- Is the limit per call or per task?"),
+            "{}",
+            questions[0].message
+        );
+        let text = plan_validate::render_text(&report);
+        assert!(
+            text.contains("\n                 - Is the limit per call or per task?\n"),
+            "the question is printed under the task: {text}"
+        );
+        assert_eq!(validate_before_run(&plans, workspace.path()), Some(1));
+
+        write_plan("");
+        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+    }
+
     /// gap-d60281: `plan run` stops on a flag the Graph engine does not
     /// implement and says what to use instead. `--force` and `--log-file`,
     /// which it implements, take no part in the check.

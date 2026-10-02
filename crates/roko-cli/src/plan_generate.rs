@@ -183,6 +183,8 @@ You are a task decomposition engine for software projects. Your job is to take a
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
+6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile, or the test's pass count (`cargo test -p x new_test 2>&1 | grep -q 'ok. 1 passed'`).
+7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
 
 ## Task tiers
 
@@ -211,7 +213,13 @@ status = "ready"
 [[task]]
 id = "T1"
 title = "Add FundingRate struct to core types"
+goal = "roko-core exports a FundingRate type that other crates can construct and read."
 description = "Define the FundingRate data structure in roko-core for storing funding rate observations."
+acceptance = [
+    "AC1: types.rs defines `pub struct FundingRate`, and `cargo check -p roko-core` passes.",
+]
+non_goals = ["Do not change any existing type in types.rs."]
+open_questions = []
 status = "ready"
 tier = "mechanical"       # mechanical | focused | integrative | architectural
 # model_hint omitted — runtime picks the best model automatically
@@ -237,12 +245,20 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-core"
+command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs && cargo check -p roko-core"
+covers = ["AC1"]
+expect = "fail_on_base"
 
 [[task]]
 id = "T2"
 title = "Wire FundingRate display into CLI status output"
+goal = "`roko status` prints the latest funding rate."
 description = "Import FundingRate from roko-core and add it to the status command output."
+acceptance = [
+    "AC1: `cargo test -p roko-cli status_shows_funding_rate` passes: the status output has a `funding rate:` line.",
+]
+non_goals = ["Do not modify roko-core."]
+open_questions = []
 status = "ready"
 tier = "focused"
 # model_hint omitted — runtime selects automatically
@@ -267,8 +283,10 @@ anti_patterns = [
 ]
 
 [[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli"
+phase = "test"
+command = "cargo test -p roko-cli status_shows_funding_rate 2>&1 | grep -q 'ok. 1 passed'"
+covers = ["AC1"]
+expect = "fail_on_base"
 ```
 
 ## Role selection
@@ -343,6 +361,11 @@ Before finalizing, verify your tasks against:
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
 - [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
+- [ ] Every task has a `goal` naming one observable outcome
+- [ ] `acceptance` items are `AC1: …`, `AC2: …`, each an input and output, a state, an exit code or a message
+- [ ] Every test-class verify step has `covers` naming its criteria and `expect = "fail_on_base"` (`"pass_on_base"` only for a regression check)
+- [ ] Every `read_files` entry has a `why`, and `non_goals` says what the task must leave alone
+- [ ] Every choice the source leaves open is an `open_questions` entry, not a guess
 
 ## File Path Rules
 
@@ -372,7 +395,16 @@ status = "ready"
 [[task]]
 id = "T1"
 title = "Implement and prove GET /health"
+goal = "GET /health answers 200 with a JSON body that says the server is up."
 description = "Add the response type and handler, register GET /health, and add one exact API integration test as one observable endpoint outcome."
+acceptance = [
+    "AC1: GET /health returns HTTP 200 with the JSON body {\"status\": \"ok\"}.",
+    "AC2: GET /health needs no token: a request without one also gets 200.",
+]
+non_goals = [
+    "Do not add readiness or dependency checks; /health reports only that the server answers.",
+]
+open_questions = []
 status = "ready"
 tier = "integrative"
 max_loc = 150
@@ -400,7 +432,9 @@ anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate t
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve --test api_integration health_endpoint"
+command = "cargo test -p roko-serve --test api_integration health_endpoint 2>&1 | grep -q 'ok. 1 passed'"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"
 fail_msg = "The exact health endpoint integration test failed or was not found"
 ```
 "#;
@@ -527,6 +561,51 @@ mod template_tests {
 
         assert!(prompt.contains("## Workspace rules"));
         assert!(prompt.contains("NEVER reimplement what already exists."));
+    }
+
+    /// 3219: the generator prompt asks for every TSS v1 field and for open
+    /// questions, with a checklist line for them, and its end-to-end example
+    /// parses with all of them and has no spec hard fail in this repository.
+    #[test]
+    fn generator_prompt_carries_the_tss_checklist() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for field in [
+            "`goal`",
+            "`acceptance`",
+            "`AC1: …`",
+            "`covers = [\"AC1\"]`",
+            "`expect = \"fail_on_base\"`",
+            "`expect = \"pass_on_base\"`",
+            "has a `why`",
+            "`non_goals`",
+            "`open_questions`",
+            "such a plan will not run until it is answered",
+            "- [ ] Every choice the source leaves open is an `open_questions` entry",
+        ] {
+            assert!(prompt.contains(field), "the prompt names {field}");
+        }
+
+        let example = prompt
+            .rsplit("```toml\n")
+            .next()
+            .and_then(|tail| tail.split("```").next())
+            .expect("the end-to-end example");
+        let parsed = crate::task_parser::TasksFile::parse_str(example).expect("parse the example");
+        let task = &parsed.tasks[0];
+        assert!(task.goal.as_deref().is_some_and(|goal| !goal.is_empty()));
+        assert!(task.acceptance.iter().all(|item| item.starts_with("AC")));
+        assert!(!task.non_goals.is_empty());
+        assert!(task.open_questions.is_empty());
+        assert_eq!(task.verify[0].covers, ["AC1", "AC2"]);
+        assert!(task.verify[0].expect.is_some());
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tasks.toml");
+        std::fs::write(&path, example).expect("write the example");
+        let report = roko_gate::spec_quality::lint_files(&[path], &root);
+        assert_eq!(report.tasks.len(), 1, "{report:?}");
+        assert!(report.tasks[0].hard_fail.is_empty(), "{:?}", report.tasks[0]);
     }
 
     #[test]

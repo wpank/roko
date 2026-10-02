@@ -32,6 +32,8 @@ use super::resolution::TaskResolution;
 
 /// z of a two-sided 90% interval.
 pub const Z90: f64 = 1.644_854;
+/// z of a two-sided 95% interval.
+pub const Z95: f64 = 1.959_964;
 /// Resamples behind each bootstrap interval.
 pub const BOOTSTRAP_RESAMPLES: usize = 400;
 /// The bootstrap's seed, so one window always gives one interval.
@@ -489,12 +491,19 @@ pub fn estimate_pass_rate(window: &[TaskResolution]) -> Estimate {
 /// one).
 #[must_use]
 pub fn wilson_interval(successes: usize, trials: usize) -> (f64, f64) {
+    wilson_interval_at(successes, trials, Z90)
+}
+
+/// The Wilson score interval of `successes` in `trials` (at least one) at
+/// the normal quantile `z`: [`Z90`] for 90%, [`Z95`] for 95%.
+#[must_use]
+pub fn wilson_interval_at(successes: usize, trials: usize, z: f64) -> (f64, f64) {
     let n = trials.max(1) as f64;
     let p = successes as f64 / n;
-    let z2 = Z90 * Z90;
+    let z2 = z * z;
     let denominator = 1.0 + z2 / n;
     let center = (p + z2 / (2.0 * n)) / denominator;
-    let half = Z90 * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
+    let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
     ((center - half).max(0.0), (center + half).min(1.0))
 }
 

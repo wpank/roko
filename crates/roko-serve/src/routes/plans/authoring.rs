@@ -381,7 +381,8 @@ pub(super) struct ReviseRequest {
 ///
 /// The background task calls `runtime.revise_plan`, then finalises the
 /// operation exactly as `generate_plan` does:
-/// - `Completed { result: {"slug", "task_count"} }` when the source was written.
+/// - `Completed { result: {"slug", "task_count", "diff"} }` when the source was
+///   written; `diff` is the task-level plan diff (3216), which the portal shows.
 /// - `Failed { error }` when the plan was rejected (validation errors) or the
 ///   agent failed.
 ///
@@ -480,7 +481,11 @@ pub(super) async fn revise_plan(
                     let (event_type, success) = if dto.revised {
                         // Written successfully.
                         let result_json = serde_json::to_string(
-                            &json!({ "slug": plan_id_for_task, "task_count": dto.task_count }),
+                            &json!({
+                                "slug": plan_id_for_task,
+                                "task_count": dto.task_count,
+                                "diff": dto.diff,
+                            }),
                         )
                         .unwrap_or_default();
                         if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {

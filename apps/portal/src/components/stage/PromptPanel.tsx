@@ -21,6 +21,7 @@ import React, {
 } from 'react';
 import { useGeneratePlan, useRevisePlan, planExists, fetchOperation } from '@/api/queries';
 import { ApiError } from '@/api/client';
+import type { WirePlanDiff } from '@/api/contracts';
 import { waitForOperation } from '@/lib/operation';
 import { compactDuration } from '@/lib/formatters';
 import { Button } from '@/components/atoms/Button';
@@ -38,7 +39,8 @@ export interface PromptPanelProps {
   planId?: string;
   workspace: string;
   firstRun: boolean;
-  onDone(slug: string): void;
+  /** `diff` is a revision's plan diff, when the server sent one (3229). */
+  onDone(slug: string, diff?: WirePlanDiff): void;
   onCancel?(): void;
 }
 
@@ -138,7 +140,7 @@ export function PromptPanel({
         accepted = await reviseMutation.mutateAsync({ id: planId, feedback: text });
       }
 
-      const { slug } = await waitForOperation(
+      const { slug, diff } = await waitForOperation(
         accepted,
         {
           planExists,
@@ -155,7 +157,12 @@ export function PromptPanel({
       );
 
       setWaiting(false);
-      onDone(slug);
+      // A revision's plan diff goes to the view that shows it (3229).
+      if (diff) {
+        onDone(slug, diff);
+      } else {
+        onDone(slug);
+      }
     } catch (err) {
       setWaiting(false);
       setElapsedMs(null);

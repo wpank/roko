@@ -1428,11 +1428,6 @@ impl RokoConfig {
         );
         let _ = writeln!(
             out,
-            "replan_on_gate_failure = {}",
-            c.learning.replan_on_gate_failure
-        );
-        let _ = writeln!(
-            out,
             "dream_on_completion = {}",
             c.learning.dream_on_completion
         );

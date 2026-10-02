@@ -125,7 +125,7 @@ logged and included in diagnostics without blocking startup.
 | 4 | Agent capacity vs budget | `conductor.max_agents`, `budget.max_turn_usd`, `budget.max_plan_usd` | Warning | Heuristic estimated parallel cost (`max_agents * max_turn_usd * 10`) should not exceed a finite plan ceiling. |
 | 5 | Context bounds | `agent.context_limit_k` | Warning | Must be within `4..=1000`. |
 | 6 | Conductor parallelism | `conductor.max_agents` | Error | Must be at least 1. |
-| 7 | Learning consistency | `learning.replan_on_gate_failure`, `gates.skip_tests`, `gates.clippy_enabled` | Warning | Warn when replanning is enabled while both test and clippy gates are disabled (replanning cannot improve what is not tested). |
+| 7 | Learning consistency (removed) | — | — | Removed with `learning.replan_on_gate_failure` (backlog 4110): no plan run replans, so the warning guarded nothing. |
 
 Invariants are evaluated by `validate_invariants()` and return `InvariantResult`
 structs with `invariant_id`, `severity`, `message`, and `config_path`. Only

@@ -1697,8 +1697,6 @@ pipeline_gate_retry() {
   echo "${DIM}Workspace: $PIPELINE_WORKSPACE${RESET}"
   echo ""
 
-  # replan_on_gate_failure is already true in the project roko.toml (copied at workspace creation)
-
   run_step 1 $total "Run with retries" \
     'run "Build a small Rust async HTTP client with exponential backoff, JSON config loading, and focused tests. Keep compile, test, and clippy green." --max-retries 2' \
     360 || failed=1

@@ -1525,6 +1525,12 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
          revises a plan on gate failure, so it limited nothing",
     ),
     (
+        "learning.replan_on_gate_failure",
+        "learning.replan_on_gate_failure was removed because no plan run \
+         revises a plan on gate failure: a failed task is retried up to its \
+         max_retries, and no post-gate reflection is generated",
+    ),
+    (
         "executor",
         "the [executor] section was removed because no plan run read it; \
          conductor.max_parallel_plans sets how many plans run at once, and \
@@ -4641,6 +4647,7 @@ override_learning_dampening = 0.5
 
     /// gap-7a3527: config keys that nothing read were removed. An old file
     /// that sets them is told why each went, and still loads and parses.
+    /// Backlog 4110 removed `learning.replan_on_gate_failure` the same way.
     #[test]
     fn dead_config_keys_are_removed_and_old_files_still_load() {
         let text = r#"
@@ -4653,6 +4660,7 @@ docs = ["shell:markdownlint ."]
 [learning]
 replan_max_per_plan = 2
 replan_gate_attempts = 3
+replan_on_gate_failure = true
 dream_on_completion = true
 "#;
         let value: toml::Value = text.parse().expect("parse the old file");
@@ -4669,6 +4677,7 @@ dream_on_completion = true
                 "gates.domain_gates",
                 "learning.replan_gate_attempts",
                 "learning.replan_max_per_plan",
+                "learning.replan_on_gate_failure",
             ]
         );
 

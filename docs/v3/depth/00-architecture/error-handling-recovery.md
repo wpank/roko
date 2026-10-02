@@ -126,8 +126,8 @@ fn handle_rate_limit(response: &Response, policy: &RetryPolicy, attempt: u32) ->
 | Adaptive threshold breach | Deterministic | Use EMA-adjusted threshold instead of static |
 
 Gate retries are bounded by `gates.max_iterations` (default 5). After max iterations,
-the task is marked as failed and, if `learning.replan_on_gate_failure` is true, the
-gate-failure cascade (E44) fires the synchronous cross-cut updates.
+the task is marked as failed. No plan run replans after a gate failure
+(`learning.replan_on_gate_failure` was removed in backlog 4110).
 
 ### 3.3 Graph Execution (roko-graph)
 

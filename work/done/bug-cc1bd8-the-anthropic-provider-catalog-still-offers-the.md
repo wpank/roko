@@ -2,7 +2,7 @@
 id = "bug-cc1bd8"
 kind = "bug"
 title = "The anthropic provider catalog still offers the retired claude-haiku-3-5"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/provider_catalog"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c7560e213"
+last_verified_rev = "4dc345a29"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-0c0747"
 anchors = ["crates/roko-core/src/provider_catalog.rs", "crates/roko-core/src/config/model_registry.rs::cheapest_builtin_model", "crates/roko-cli/src/commands/config_cmd.rs::test_provider_credit", "crates/roko-cli/src/doctor.rs::probe_provider_credit"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-0c0747"], supersedes = [
 
 [[verify]]
 command = "! grep -n 'claude-haiku-3-5' crates/roko-core/src/provider_catalog.rs && ! git grep -nE 'claude-haiku-3-5|claude-3-5-haiku-20241022' -- crates/roko-cli/src docs && grep -qw 'fn the_cheapest_builtin_anthropic_model_is_haiku' crates/roko-core/src/config/model_registry.rs && cargo test -p roko-core --lib the_cheapest_builtin_anthropic_model_is_haiku"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T00:39:02Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T19:02:31Z"
+forced = false
+evidence = "Gate 6e on ddf47dbd6 plus its fixes, re-run at 3ac297a00 and merged as 4dc345a29 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 10 crates; lib tests pass (roko-cli 3420, roko-agent 2289, roko-core 1984, roko-learn 1230, roko-serve 1013, roko-graph 488, roko-conductor 316, roko-acp 220, roko-execution 193, roko-dreams 101); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp integration, smoke, graph_plan_callers, graph_timeout_matrix and plan_conversion pass; bin 445; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

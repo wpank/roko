@@ -2,7 +2,7 @@
 id = "bug-3ba5d8"
 kind = "bug"
 title = "roko-agent's custody hash uses DefaultHasher, unstable across Rust releases and unlike roko-cli's SHA-256 chain"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/safety"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c7560e213"
+last_verified_rev = "4dc345a29"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-ff95f5"
 anchors = ["crates/roko-agent/src/safety/"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["gap-ff95f5"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-agent --lib custody_hash_is_sha256"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T00:38:59Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:34:21Z"
+forced = false
+evidence = "Gate 6e on ddf47dbd6 plus its fixes, re-run at 3ac297a00 and merged as 4dc345a29 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 10 crates; lib tests pass (roko-cli 3420, roko-agent 2289, roko-core 1984, roko-learn 1230, roko-serve 1013, roko-graph 488, roko-conductor 316, roko-acp 220, roko-execution 193, roko-dreams 101); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp integration, smoke, graph_plan_callers, graph_timeout_matrix and plan_conversion pass; bin 445; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

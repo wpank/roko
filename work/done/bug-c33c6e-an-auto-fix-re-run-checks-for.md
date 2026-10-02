@@ -2,7 +2,7 @@
 id = "bug-c33c6e"
 kind = "bug"
 title = "An auto-fix re-run checks for a stop before waiting for the compile lock, so a step can start after the stop"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "4dc345a29"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-82cbef"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-82cbef"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-cli --lib auto_fix_rerun_stops_after_the_lock_wait"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T00:39:01Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:34:21Z"
+forced = false
+evidence = "Gate 6e on ddf47dbd6 plus its fixes, re-run at 3ac297a00 and merged as 4dc345a29 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 10 crates; lib tests pass (roko-cli 3420, roko-agent 2289, roko-core 1984, roko-learn 1230, roko-serve 1013, roko-graph 488, roko-conductor 316, roko-acp 220, roko-execution 193, roko-dreams 101); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp integration, smoke, graph_plan_callers, graph_timeout_matrix and plan_conversion pass; bin 445; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

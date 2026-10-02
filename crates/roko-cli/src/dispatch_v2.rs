@@ -379,7 +379,9 @@ impl CliProviderConfig {
         }
     }
 
-    /// Build a Codex CLI provider.
+    /// Build a Codex CLI provider. It resolves like the others, but
+    /// [`CliDispatchProvider::build_invocation`] refuses it: Codex runs only
+    /// through roko-agent's `CodexCliAdapter`.
     pub fn codex(provider_id: impl Into<String>, command: impl Into<PathBuf>) -> Self {
         Self {
             descriptor: CliProviderDescriptor::new(provider_id, CliProtocol::CodexExecJson),
@@ -517,7 +519,13 @@ impl CliDispatchProvider for CliProviderConfig {
         };
         match self.descriptor.protocol {
             CliProtocol::ClaudeStreamJson => self.build_claude_invocation(request),
-            CliProtocol::CodexExecJson => self.build_codex_invocation(request),
+            // Codex runs only through roko-agent's `CodexCliAdapter`, whose
+            // operation broker stops a denied operation; a bare subprocess
+            // here would run Codex's built-in tools unchecked (gap-baab0a).
+            CliProtocol::CodexExecJson => Err(DispatchV2Error::UnsupportedCliProvider {
+                provider_id: self.descriptor.provider_id.clone(),
+                kind: self.descriptor.protocol.provider_kind(),
+            }),
             CliProtocol::GeminiStreamJson => self.build_gemini_invocation(request),
         }
     }
@@ -616,99 +624,6 @@ impl CliProviderConfig {
         Ok(invocation)
     }
 
-    fn build_codex_invocation(
-        &self,
-        request: &CliDispatchRequest,
-    ) -> Result<CliInvocation, DispatchV2Error> {
-        // Codex CLI has no binding native-tool allow/deny flag. The MCP
-        // bridge enforces its own contract-scoped catalog, but accepting a
-        // request-level policy here would still leave Codex built-ins outside
-        // that policy. Log a warning and proceed relying on codex's own sandbox
-        // rather than hard-failing, since many safety contracts include tool
-        // denials that are irrelevant to codex's tool surface.
-        if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
-            if env_flag_enabled("ROKO_REQUIRE_BINDING_TOOL_POLICY") {
-                return Err(DispatchV2Error::ToolPolicyUnsupported {
-                    provider_id: self.descriptor.provider_id.clone(),
-                    protocol: self.descriptor.protocol,
-                });
-            }
-            tracing::warn!(
-                provider_id = %self.descriptor.provider_id,
-                allowed_tools = ?request.allowed_tools,
-                disallowed_tools = ?request.disallowed_tools,
-                "codex CLI cannot enforce tool policy; proceeding without enforcement"
-            );
-        }
-        if env_flag_enabled("ROKO_REQUIRE_NATIVE_TURN_LIMIT") {
-            return Err(DispatchV2Error::TurnLimitUnsupported {
-                provider_id: self.descriptor.provider_id.clone(),
-                protocol: self.descriptor.protocol,
-                requested_max_turns: request.max_turns,
-            });
-        }
-        let mut args = vec!["exec".to_string()];
-        args.extend(self.provider_args.clone());
-        if let Some(plugin_mcp) = &request.plugin_mcp {
-            args.extend(codex_plugin_mcp_args(plugin_mcp));
-        }
-        args.push("--json".to_string());
-        args.push("--cd".to_string());
-        args.push(request.workdir.to_string_lossy().to_string());
-        args.push("--skip-git-repo-check".to_string());
-        args.push("--color".to_string());
-        args.push("never".to_string());
-
-        if env_flag_enabled("ROKO_FAST_MODE") {
-            // Codex has no native general tool allowlist or turn-count flag.
-            // Disable avoidable expansion surfaces that do have binding config
-            // switches; the runner's hard wall-clock deadline remains the
-            // authoritative bound for the opaque process.
-            for setting in [
-                "tools.web_search=false",
-                "history.persistence=\"none\"",
-                "features.multi_agent=false",
-                "sandbox_workspace_write.network_access=false",
-            ] {
-                args.push("--config".to_string());
-                args.push(setting.to_string());
-            }
-        }
-
-        if request.dangerously_skip_permissions {
-            args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-        } else {
-            args.push("--sandbox".to_string());
-            args.push("workspace-write".to_string());
-            // Shared Cargo output is a separate, explicit trust decision. The
-            // normal runner never grants it: runner-owned gates compile outside
-            // the agent sandbox. When a trusted caller opts in, fail-closed
-            // validation below limits Codex to the canonical target subtree.
-            if let Some(target_dir) = codex_shared_target_dir(request) {
-                args.push("--add-dir".to_string());
-                args.push(target_dir.to_string_lossy().to_string());
-            }
-        }
-
-        if !request.model.trim().is_empty() && !request.model.starts_with("claude") {
-            args.push("--model".to_string());
-            args.push(request.model.clone());
-        }
-        args.push("-".to_string());
-
-        let stdin = if request.system_prompt.trim().is_empty() {
-            request.prompt.clone()
-        } else {
-            format!(
-                "{}\n\n---\n\n{}",
-                request.system_prompt.trim(),
-                request.prompt
-            )
-        };
-
-        Ok(CliInvocation::new(self, request, args, stdin))
-    }
-
     fn build_gemini_invocation(
         &self,
         request: &CliDispatchRequest,
@@ -776,14 +691,15 @@ impl CliProviderConfig {
     }
 }
 
-/// Resolve an explicitly supplied Cargo target directory for Codex's
-/// additional writable-root flag.
+/// Resolve an explicitly supplied shared Cargo target directory: the
+/// canonical repository's own `target` subtree, outside the task worktree.
+/// `CliInvocation::new` turns incremental builds on only for such a target.
 ///
-/// A target already contained by the task worktree needs no extra authority.
-/// Existing paths are canonicalized so a symlink cannot accidentally grant a
-/// wider lexical path than the directory Cargo actually writes to. Missing
-/// directories and requests without `ROKO_AGENT_SHARED_TARGET=1` fail closed.
-fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
+/// A target already contained by the task worktree is not shared. Existing
+/// paths are canonicalized so a symlink cannot pass for a wider lexical path
+/// than the directory Cargo actually writes to. Missing directories and
+/// requests without `ROKO_AGENT_SHARED_TARGET=1` fail closed.
+fn shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     let explicitly_enabled = request.env.iter().rev().find_map(|(key, value)| {
         (key == "ROKO_AGENT_SHARED_TARGET").then(|| {
             matches!(
@@ -822,9 +738,9 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     }
 
     // A generic dispatch request can carry arbitrary environment values. Do
-    // not turn CARGO_TARGET_DIR into an arbitrary Codex writable-root grant:
-    // linked worktrees may only share the canonical repository's own `target`
-    // subtree, derived from Git's common directory.
+    // not treat an arbitrary CARGO_TARGET_DIR as shared: linked worktrees may
+    // only share the canonical repository's own `target` subtree, derived from
+    // Git's common directory.
     let git = std::process::Command::new("git")
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(&request.workdir)
@@ -851,7 +767,7 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
         return None;
     }
 
-    // Resolve every path component before granting it. Requiring an existing
+    // Resolve every path component before accepting it. Requiring an existing
     // directory prevents a missing leaf below a symlink from escaping the
     // lexical `<repo>/target` prefix.
     if !target_dir.is_dir()
@@ -927,9 +843,8 @@ pub struct CliDispatchRequest {
     /// Tool names the agent must not invoke, translated into native policy.
     ///
     /// Claude and Gemini support this binding restriction. Codex has no
-    /// equivalent built-in-tool flag: ordinary runs record a degradation and
-    /// rely on its sandbox, while `ROKO_REQUIRE_BINDING_TOOL_POLICY=1` rejects
-    /// the dispatch fail-closed.
+    /// equivalent built-in-tool flag, so this path refuses it; Codex runs
+    /// through roko-agent's `CodexCliAdapter` and its operation broker.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Contract-scoped bridge for local plugin handlers, when the runner has
@@ -966,32 +881,6 @@ fn claude_plugin_mcp_json(config: &CliPluginMcpConfig) -> String {
         }),
     );
     json!({ "mcpServers": servers }).to_string()
-}
-
-fn codex_plugin_mcp_args(config: &CliPluginMcpConfig) -> Vec<String> {
-    let prefix = format!("mcp_servers.{}", config.server_name);
-    let tools = toml::Value::Array(
-        config
-            .tool_names
-            .iter()
-            .cloned()
-            .map(toml::Value::String)
-            .collect(),
-    )
-    .to_string();
-    [
-        format!("{prefix}.url={}", toml::Value::String(config.url.clone())),
-        format!(
-            "{prefix}.bearer_token_env_var={}",
-            toml::Value::String("ROKO_PLUGIN_MCP_TOKEN".to_string())
-        ),
-        format!("{prefix}.required=true"),
-        format!("{prefix}.enabled_tools={tools}"),
-        format!("{prefix}.default_tools_approval_mode=\"auto\""),
-    ]
-    .into_iter()
-    .flat_map(|value| ["--config".to_string(), value])
-    .collect()
 }
 
 fn gemini_policy_tool_name(name: &str, plugin_mcp: Option<&CliPluginMcpConfig>) -> Option<String> {
@@ -1218,7 +1107,7 @@ impl CliInvocation {
         stdin: String,
     ) -> Self {
         let mut env = request.env.clone();
-        let fast_shared_target = codex_shared_target_dir(request).is_some();
+        let fast_shared_target = shared_target_dir(request).is_some();
         upsert_env(
             &mut env,
             "CARGO_INCREMENTAL",
@@ -2728,15 +2617,6 @@ pub enum DispatchV2Error {
         model_key: String,
         message: String,
     },
-    ToolPolicyUnsupported {
-        provider_id: String,
-        protocol: CliProtocol,
-    },
-    TurnLimitUnsupported {
-        provider_id: String,
-        protocol: CliProtocol,
-        requested_max_turns: u32,
-    },
     McpConfigUnsupported {
         provider_id: String,
         protocol: CliProtocol,
@@ -2786,21 +2666,6 @@ impl fmt::Display for DispatchV2Error {
             Self::AgentCreation { model_key, message } => {
                 write!(f, "failed to create agent for `{model_key}`: {message}")
             }
-            Self::ToolPolicyUnsupported {
-                provider_id,
-                protocol,
-            } => write!(
-                f,
-                "provider `{provider_id}` ({protocol:?}) cannot enforce the requested tool policy"
-            ),
-            Self::TurnLimitUnsupported {
-                provider_id,
-                protocol,
-                requested_max_turns,
-            } => write!(
-                f,
-                "provider `{provider_id}` ({protocol:?}) cannot natively enforce the requested {requested_max_turns}-turn limit"
-            ),
             Self::McpConfigUnsupported {
                 provider_id,
                 protocol,
@@ -2831,15 +2696,6 @@ impl fmt::Display for DispatchV2Error {
 }
 
 impl Error for DispatchV2Error {}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -2877,11 +2733,11 @@ mod tests {
         );
     }
 
-    fn codex_request(workdir: PathBuf, target_dir: PathBuf) -> CliDispatchRequest {
+    fn shared_target_request(workdir: PathBuf, target_dir: PathBuf) -> CliDispatchRequest {
         CliDispatchRequest {
             prompt: "implement it".to_string(),
             system_prompt: String::new(),
-            model: "gpt-5".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             workdir,
             max_turns: 10,
             effort: None,
@@ -2895,7 +2751,7 @@ mod tests {
                 ),
                 ("ROKO_AGENT_SHARED_TARGET".to_string(), "1".to_string()),
             ],
-            agent_id: "p/codex-target".to_string(),
+            agent_id: "p/shared-target".to_string(),
             allowed_tools: None,
             disallowed_tools: Vec::new(),
             plugin_mcp: None,
@@ -2903,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_add_dir_is_limited_to_canonical_repo_target() {
+    fn shared_target_is_limited_to_canonical_repo_target() {
         let fixture = tempdir().expect("fixture tempdir");
         let repo = fixture.path().join("repo");
         let attempt = fixture.path().join("attempt");
@@ -2921,44 +2777,41 @@ mod tests {
                 "worktree",
                 "add",
                 "-b",
-                "codex-target-test",
+                "shared-target-test",
                 attempt.to_str().expect("attempt path"),
             ],
         );
         let shared_target = repo.join("target");
         std::fs::create_dir(&shared_target).expect("shared target");
 
-        let request = codex_request(attempt.clone(), shared_target.clone());
+        let request = shared_target_request(attempt.clone(), shared_target.clone());
         let canonical_shared_target =
             std::fs::canonicalize(&shared_target).expect("canonical target");
-        assert_eq!(
-            codex_shared_target_dir(&request),
-            Some(canonical_shared_target.clone())
-        );
-        let invocation = CliProviderConfig::codex("codex_cli", "codex")
-            .build_invocation(&request)
-            .expect("Codex invocation");
-        assert!(invocation.args.windows(2).any(|pair| {
-            pair[0] == "--add-dir" && pair[1] == canonical_shared_target.to_string_lossy().as_ref()
-        }));
+        assert_eq!(shared_target_dir(&request), Some(canonical_shared_target));
+        let incremental = |request: &CliDispatchRequest| {
+            CliProviderConfig::claude("claude_cli", "claude")
+                .build_invocation(request)
+                .expect("Claude invocation")
+                .env
+                .into_iter()
+                .find(|(key, _)| key == "CARGO_INCREMENTAL")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(incremental(&request).as_deref(), Some("1"));
         let mut default_request = request.clone();
         default_request
             .env
             .retain(|(key, _)| key != "ROKO_AGENT_SHARED_TARGET");
-        let default_invocation = CliProviderConfig::codex("codex_cli", "codex")
-            .build_invocation(&default_request)
-            .expect("default Codex invocation");
-        assert!(
-            !default_invocation
-                .args
-                .iter()
-                .any(|argument| argument == "--add-dir"),
-            "default mode must not widen the agent sandbox"
+        assert_eq!(shared_target_dir(&default_request), None);
+        assert_eq!(
+            incremental(&default_request).as_deref(),
+            Some("0"),
+            "default mode must not share the target"
         );
 
         for forbidden in [PathBuf::from("/"), outside.clone()] {
             assert_eq!(
-                codex_shared_target_dir(&codex_request(attempt.clone(), forbidden)),
+                shared_target_dir(&shared_target_request(attempt.clone(), forbidden)),
                 None
             );
         }
@@ -2968,19 +2821,19 @@ mod tests {
             std::os::unix::fs::symlink(&outside, shared_target.join("escape"))
                 .expect("escape symlink");
             assert_eq!(
-                codex_shared_target_dir(&codex_request(
+                shared_target_dir(&shared_target_request(
                     attempt.clone(),
                     shared_target.join("escape"),
                 )),
                 None,
-                "a symlink below target must not widen the writable root"
+                "a symlink below target must not widen the shared root"
             );
 
             std::fs::remove_file(shared_target.join("escape")).expect("remove nested symlink");
             std::fs::remove_dir(&shared_target).expect("remove target directory");
             std::os::unix::fs::symlink(&repo, &shared_target).expect("target-root symlink");
             assert_eq!(
-                codex_shared_target_dir(&codex_request(attempt, shared_target)),
+                shared_target_dir(&shared_target_request(attempt, shared_target)),
                 None,
                 "the target root itself must never widen authority through a symlink"
             );
@@ -3037,9 +2890,11 @@ mod tests {
         }
     }
 
+    /// gap-baab0a: Codex runs only through `CodexCliAdapter` and its
+    /// operation broker, so no bare Codex subprocess is built here, with or
+    /// without a tool policy, from a configured or a legacy runner program.
     #[test]
-    fn codex_invocation_folds_system_prompt_into_stdin() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
+    fn codex_has_no_cli_invocation() {
         let request = CliDispatchRequest {
             prompt: "implement it".to_string(),
             system_prompt: "system".to_string(),
@@ -3056,16 +2911,27 @@ mod tests {
             disallowed_tools: Vec::new(),
             plugin_mcp: None,
         };
+        let restricted = CliDispatchRequest {
+            allowed_tools: Some(vec!["read_file".into()]),
+            disallowed_tools: vec!["web_search".into()],
+            plugin_mcp: Some(plugin_mcp_config()),
+            ..request.clone()
+        };
 
-        let invocation = provider.build_invocation(&request).unwrap();
-        assert_eq!(invocation.protocol, CliProtocol::CodexExecJson);
-        assert_eq!(
-            invocation.turn_limit.enforcement,
-            CliTurnLimitEnforcement::Unsupported
-        );
-        assert_eq!(invocation.turn_limit.effective_max_turns, None);
-        assert!(invocation.args.iter().any(|arg| arg == "--model"));
-        assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
+        for provider in [
+            CliProviderConfig::codex("codex_cli", "codex"),
+            CliProviderConfig::from_legacy_runner_program("/opt/bin/codex"),
+        ] {
+            for request in [&request, &restricted] {
+                assert_eq!(
+                    provider.build_invocation(request),
+                    Err(DispatchV2Error::UnsupportedCliProvider {
+                        provider_id: "codex_cli".to_string(),
+                        kind: ProviderKind::CodexCli,
+                    })
+                );
+            }
+        }
     }
 
     /// bug-6052d8: `roko chat`'s own CLI invocation drops the system prompt's
@@ -3224,36 +3090,6 @@ mod tests {
         assert_eq!(invocation.args[tools_index + 1], "");
     }
 
-    #[test]
-    fn codex_invocation_warns_but_proceeds_with_unenforceable_tool_policy() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
-        let request = CliDispatchRequest {
-            prompt: "restricted work".to_string(),
-            system_prompt: String::new(),
-            model: "gpt-5".to_string(),
-            workdir: std::env::current_dir().unwrap(),
-            max_turns: 1,
-            effort: None,
-            dangerously_skip_permissions: false,
-            mcp_config: None,
-            resume_session: None,
-            env: Vec::new(),
-            agent_id: "p/restricted".to_string(),
-            allowed_tools: Some(vec!["read_file".into()]),
-            disallowed_tools: Vec::new(),
-            plugin_mcp: None,
-        };
-
-        // Codex CLI cannot enforce tool policy natively, but the dispatch now
-        // warns and proceeds (relying on codex's own sandbox) rather than
-        // hard-failing, since many safety contracts include tool denials that
-        // are irrelevant to codex's tool surface.
-        assert!(
-            provider.build_invocation(&request).is_ok(),
-            "codex should warn but proceed when tool policy is present"
-        );
-    }
-
     fn plugin_mcp_config() -> CliPluginMcpConfig {
         CliPluginMcpConfig {
             server_name: "roko_plugins".to_string(),
@@ -3311,50 +3147,6 @@ mod tests {
                 .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
         );
         assert!(!format!("{:?}", request.plugin_mcp).contains("signed-secret"));
-    }
-
-    #[test]
-    fn codex_invocation_configures_required_mcp_and_keeps_native_policy_fail_closed() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
-        let mut request = CliDispatchRequest {
-            prompt: "use the plugin".to_string(),
-            system_prompt: String::new(),
-            model: "gpt-5".to_string(),
-            workdir: std::env::current_dir().unwrap(),
-            max_turns: 2,
-            effort: None,
-            dangerously_skip_permissions: false,
-            mcp_config: None,
-            resume_session: None,
-            env: Vec::new(),
-            agent_id: "p/plugin".to_string(),
-            allowed_tools: None,
-            disallowed_tools: Vec::new(),
-            plugin_mcp: Some(plugin_mcp_config()),
-        };
-
-        let invocation = provider
-            .build_invocation(&request)
-            .expect("Codex MCP invocation");
-        let rendered = invocation.args.join(" ");
-        assert!(rendered.contains("mcp_servers.roko_plugins.url="));
-        assert!(rendered.contains("mcp_servers.roko_plugins.bearer_token_env_var="));
-        assert!(rendered.contains("mcp_servers.roko_plugins.required=true"));
-        assert!(rendered.contains("mcp_servers.roko_plugins.enabled_tools="));
-        assert!(
-            invocation
-                .secret_env
-                .iter()
-                .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
-        );
-
-        // Setting allowed_tools now warns but still succeeds (codex relies on
-        // its own sandbox rather than hard-failing on unenforceable policy).
-        request.allowed_tools = Some(vec!["demo.echo".to_string()]);
-        assert!(
-            provider.build_invocation(&request).is_ok(),
-            "codex should warn but proceed when native tool policy is present alongside MCP"
-        );
     }
 
     #[test]

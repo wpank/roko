@@ -24,7 +24,6 @@ The router assembles approximately 85 routes from modules:
 |---|---|---|---|
 | `run` | `/api/run` | Execute prompts | ask, do |
 | `plans` | `/api/plans` | Plan CRUD and execution | plan, do |
-| `prds` | `/api/prds` | PRD lifecycle | plan |
 | `agents` | `/api/agents` | Agent CRUD and messaging | inspect |
 | `learning` | `/api/learning` | Episodes, routing, experiments | learn |
 | `research` | `/api/research` | Research operations | ask (research mode) |

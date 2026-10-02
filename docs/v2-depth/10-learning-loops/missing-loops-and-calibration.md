@@ -401,7 +401,7 @@ Per `tmp/mori-diffs/04-LEARNING.md`:
 
 - **Loops 1, 2, 6, 7**: All wired. Health, conductor pressure, cost guardrails, and latency all feed into routing decisions.
 - **Loop 3 (Section->Scaffold)**: Wired for live orchestration path. Section metadata flows into efficiency events; learned lift signals reweight priorities. Broader coverage outside the orchestrator path is a remaining gap.
-- **Loop 4 (Failure->Replan)**: Wired for orchestrator path. Gate failures trigger replan flows. Tighter coupling with `roko prd plan` and richer failure analysis are remaining gaps.
+- **Loop 4 (Failure->Replan)**: Wired for orchestrator path. Gate failures trigger replan flows. Tighter coupling with plan generation (`roko plan generate`) and richer failure analysis are remaining gaps.
 - **Loop 5 (Skills->Prompts)**: Wired for orchestration-layer injection. Deeper integration inside `SystemPromptBuilder` itself is a remaining gap.
 - **Loop 8 (Experiments->Static)**: Wired (persisted winner + router sync). Optional materialization back into human-edited config files is a remaining gap.
 - **Collective calibration**: C-Factor computation exists in `roko-learn/src/cfactor.rs` and is wired. Leave-one-out contributions inform dispatch bias.

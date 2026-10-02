@@ -377,7 +377,8 @@ impl GraphTaskDispatcher {
                 tool_calls: eff_tool_calls,
                 wall_time_ms: duration_ms,
                 duration_ms,
-                time_to_first_token_ms: 0,
+                // 0 when no stream showed model output (gap-7a8474).
+                time_to_first_token_ms: dispatch.result.ttft_ms.unwrap_or(0),
                 // No provider process is pre-spawned or reused, so every
                 // dispatch is a cold start.
                 was_warm_start: false,
@@ -1061,6 +1062,44 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             rows[0]
         );
         assert_eq!(rows[0]["tools_used"], 2, "{:#}", rows[0]);
+    }
+
+    /// A fake Claude CLI that answers after 100 ms.
+    const SLOW_FIRST_TOKEN_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+sleep 0.1
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":5}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-ttft","model":"claude-sonnet-4-6","total_cost_usd":0.01,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
+"#;
+
+    /// gap-7a8474: a Graph attempt's efficiency row records its time to
+    /// first token, from the provider call's start to its first streamed
+    /// output.
+    #[tokio::test]
+    async fn cli_attempt_records_its_time_to_first_token() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the attempt completes");
+
+        let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && !row["attempt_id"].as_str().unwrap_or("/").contains('/')
+        })
+        .await;
+        let ttft_ms = rows[0]["time_to_first_token_ms"]
+            .as_u64()
+            .expect("time to first token");
+        assert!(ttft_ms >= 100, "{ttft_ms} ms: {:#}", rows[0]);
     }
 
     /// gap-7a8474: the Graph efficiency row's usage fields come from what the

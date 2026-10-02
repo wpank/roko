@@ -78,3 +78,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK20 (gap-5ebb4f).
 - Existing work items this package covers or touches: gap-1cd676, gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: sonnet.
+
+## Progress
+
+- 3311: implemented at d80b3b3f7
+- 3312: implemented at 61cc1153f
+- 3313: implemented at 70f2daeee
+- 3317: implemented at 712806f91
+- 3318: implemented at 54849b08f
+- 3319: implemented at bbbdc3ede

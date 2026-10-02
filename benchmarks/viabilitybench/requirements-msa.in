@@ -1,0 +1,5 @@
+# The pinned candidate direct loop (3317, S08 decision 3): MIT, github.com/SWE-agent/mini-swe-agent. Installed into
+# its own venv, .venv-msa/, never into the driver's own .venv/: driver/run_msa.py runs its `mini` CLI as a
+# subprocess and never imports it. Regenerate the lock after changing this file:
+#     uv pip compile requirements-msa.in --generate-hashes --universal --python-version 3.11 -o requirements-msa.lock
+mini-swe-agent==2.4.6

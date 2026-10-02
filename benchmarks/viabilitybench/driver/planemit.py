@@ -48,8 +48,9 @@ API:
     emit(spec: PlanSpec, workspace: Path) -> Emitted              # raises PlanEmitError
     Emitted(slug, plan_dir, tasks_path, config_path, tasks_text, config_text, visible_command)
     plan_slug(key: str) -> str; SCAFFOLDING; TASK_ID; TIERS; FRONTIER_MODELS
-    TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's
+    TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's, provider_kind openai_compat
     LADDER_VERSION, LADDER_TEMPLATE_SHA256            # ladder mode's
+    CLAUDE_CLI_TEMPLATE_SHA256                        # the pinned mode's, provider_kind claude_cli (3318)
 """
 
 from __future__ import annotations
@@ -177,6 +178,38 @@ trigger_on_plan_complete = false
 
 CONFIG_TEMPLATE = CONFIG_HEAD + CONFIG_TAIL
 
+# A claude_cli provider (3318, fr_claude): no base_url or api_key_env, since the CLI signs in by itself on the
+# subscription; `command` and the Anthropic tool format in place of openai_compat's.
+CLAUDE_CLI_CONFIG_HEAD = """\
+# Emitted by the ViabilityBench driver ({version}) for one benchmark run on the Claude CLI's subscription: one
+# pinned model, no fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in
+# the shared working tree, and Roko's learning loops held off.
+config_version = 2
+schema_version = 2
+
+[agent]
+default_model = {model}
+
+[providers.{provider_key}]
+kind = "claude_cli"
+command = "claude"
+
+[models.{model_key}]
+provider = {provider}
+slug = {model}
+context_window = {context_window}
+max_output = {max_output}
+tool_format = "anthropic_blocks"
+
+[routing]
+fallback_models = []
+
+[routing.ladder]
+enabled = false
+
+"""
+CLAUDE_CLI_CONFIG_TEMPLATE = CLAUDE_CLI_CONFIG_HEAD + CONFIG_TAIL
+
 LADDER_TASKS_TEMPLATE = TASKS_TEMPLATE.replace("model_hint = {model}\n", "")  # the ladder picks the model
 
 LADDER_HEAD = """\
@@ -222,6 +255,7 @@ tool_format = "openai_json"
 TEMPLATE_SHA256 = hashlib.sha256((TASKS_TEMPLATE + "\0" + CONFIG_TEMPLATE).encode()).hexdigest()
 LADDER_TEMPLATE_SHA256 = hashlib.sha256("\0".join(
     [LADDER_TASKS_TEMPLATE, LADDER_CONFIG_TEMPLATE, PROVIDER_TABLE, MODEL_TABLE]).encode()).hexdigest()
+CLAUDE_CLI_TEMPLATE_SHA256 = hashlib.sha256((TASKS_TEMPLATE + "\0" + CLAUDE_CLI_CONFIG_TEMPLATE).encode()).hexdigest()
 
 
 class PlanEmitError(ValueError):
@@ -312,14 +346,17 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         title=_s(_title(spec.spec_text)), description=_s(spec.spec_text.strip() + "\n"), role=_s(ROLE),
         tier=_s(spec.tier), files="[" + ", ".join(_s(path) for path in files) + "]", max_retries=spec.max_retries,
         model=_s(spec.model), visible=_s(visible))
-    rates = _rates(spec.price_row)
-    config_text = CONFIG_TEMPLATE.format(
-        version=TEMPLATE_VERSION, model=_s(spec.model), model_key=spec.model, provider_key=spec.provider,
-        provider=_s(spec.provider), provider_kind=_s(spec.provider_kind), base_url=_s(spec.base_url),
-        api_key_env=_s(spec.api_key_env), context_window=spec.context_window, max_output=spec.max_output, rates=rates,
-        max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
-        tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
-        turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06))
+    common = dict(max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
+                 tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
+                 turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=spec.model,
+                 provider_key=spec.provider, provider=_s(spec.provider), context_window=spec.context_window,
+                 max_output=spec.max_output)
+    if spec.provider_kind == "claude_cli":  # 3318: the CLI signs in by itself, no base_url or api_key_env
+        config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, **common)
+    else:
+        config_text = CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, provider_kind=_s(spec.provider_kind),
+                                             base_url=_s(spec.base_url), api_key_env=_s(spec.api_key_env),
+                                             rates=_rates(spec.price_row), **common)
     _check(tasks_text, config_text, spec, slug, files, visible)
     return _write(workspace, slug, tasks_text, config_text, visible)
 

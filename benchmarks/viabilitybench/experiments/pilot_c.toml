@@ -1,0 +1,30 @@
+# Pilot C (decision 3302; 3313): the roko_ladder arm, Roko on the cheap-model ladder (gpt-oss-120b escalating to
+# glm-4.7 then gpt-5.4-mini) instead of one pinned model, on S08's first slice, seeds 1-3. Exploratory, like the
+# plan-level slice (BL13): it runs after G0 but is not part of the pilot's own gate. Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/pilot_c.toml --dry-run
+# and rehearse offline with `experiments/test_pilot_c.py`. The paid run waits for the author's go-ahead on BL14.
+#
+# Budget. Planned spend is BL14's: $5.40 for 60 runs (20 pilot tasks x 3 seeds), a little above roko_fixed's $0.075
+# per task (BL0) since an escalation costs more than the cheap rung alone. Unlike Pilot A and B's lines, BL14 has
+# almost no headroom above its plan ($6 cap on $5.40 planned, decision 3302), so max_cost_usd is the line's own cap,
+# not twice the plan: the campaign refuses the block before any call if spend would pass it.
+#
+# No block names a secret fingerprint: the campaign log pins each instance to the secret file of its first run, and
+# refuses another secret on it later, in this experiment or any other in the results root (S09 §4.1).
+schema_version = "vb.experiment/1"
+id = "PILOT-C"
+title = "Pilot C: roko_ladder's cheap-model ladder x 3 seeds on the pilot slice"
+requires_lock = false          # exploratory, like BL13's plan-level slice: it comes before the pre-registration lock
+requires_live = []
+order = { kind = "daily_interleave", seed = 3 }   # S09 §4.1: arms interleaved in randomized daily blocks
+
+[[block]]
+id = "roko-ladder"
+stream = "pilot"               # F1 and F4 at levels 1-5, two instances each: 20 tasks
+arm = "roko_ladder"
+model = "gpt-oss-120b"          # the ladder's start rung; it may escalate to glm-4.7 or gpt-5.4-mini
+seeds = "1-3"
+line = "BL14"
+planned_usd = 5.40             # 60 runs x $0.09
+max_cost_usd = 6.00            # BL14's own cap: no headroom above it to spare

@@ -8,8 +8,10 @@ The honesty rules, all enforced here or by `schema/validate.py` before a row rea
 
 The status is the runner's, overridden in this order: `leak_suspected` when the census found a canary, then
 `infra_error` when a verifier failed or an attempt was served by a model other than the one requested (compared
-without a date suffix). A task that a `model_swap` disturbance covers (gap-8bdf5e) declares the model the proxy served
-in place of the pin: that one model passes the check too, and each attempt it served is marked `model_swapped`.
+without a date suffix) — a routed Roko attempt (3312) is checked against the rung it dispatched, which
+`run_roko.settle` has already held to the arm's rungs, in order, with no step down. A task that a `model_swap`
+disturbance covers (gap-8bdf5e) declares the model the proxy served in place of the pin: that one model passes the
+check too, and each attempt it served is marked `model_swapped`.
 
 S09 §4.9's process measures come from what a runner's attempts carry, beside their usage: `queue_wait_s` (the
 seconds the attempt's work waited for a dispatch slot or a provider rate limit) and `cost_class` (plan, execute,
@@ -94,7 +96,11 @@ def same_model(requested: str, reported: str | None) -> bool:
 def final_status(outcome: harness.TaskOutcome, result: census.CensusResult, model_swap: str | None = None) -> str:
     if result.canary_hits:
         return "leak_suspected"
-    if result.infra_error or any(not (same_model(a.model_requested, a.model_reported) or swapped(a, model_swap))
+    # A routed Roko attempt's `model_dispatched` (3312) is the rung it actually ran, already held by
+    # run_roko.settle to the arm's rungs in order; any other attempt (and an unverified one) falls back to the
+    # task's requested model, exactly as before.
+    if result.infra_error or any(not (same_model(getattr(a, "model_dispatched", None) or a.model_requested,
+                                                  a.model_reported) or swapped(a, model_swap))
                                  for a in outcome.attempts):
         return "infra_error"
     return outcome.status

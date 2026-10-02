@@ -153,6 +153,21 @@ impl std::fmt::Debug for CascadeRouter {
     }
 }
 
+/// Which learned state a [`CascadeRouter`] holds (S01 P0-10): its digest
+/// changes when, and only when, the router learns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterStateDigest {
+    /// `b3:` BLAKE3 hex of the RFC 8785 canonical JSON of the learned state.
+    pub digest: String,
+    /// Observations the router has learned from.
+    pub n_obs: u64,
+    /// Version label, `cr:obs=<n_obs>`.
+    pub version: String,
+    /// Seconds since the router last learned. `None` while its snapshot
+    /// records no time of observation or save.
+    pub age_s: Option<u64>,
+}
+
 impl roko_core::Cell for CascadeRouter {
     fn cell_id(&self) -> &str {
         "cascade-router"
@@ -2396,6 +2411,38 @@ impl CascadeRouter {
         serde_json::to_string_pretty(&snapshot).unwrap_or_default()
     }
 
+    /// Digest this router's learned state (S01 P0-10): the `b3:` BLAKE3 hex of
+    /// the RFC 8785 canonical JSON of its persisted snapshot, less what
+    /// changes without learning or does not survive a save and a load.
+    /// Canonical JSON sorts object keys, so the order in which the router's
+    /// maps were filled does not change the digest.
+    ///
+    /// Left out:
+    /// - `stage_transitions`, a log of stage changes with their wall-clock
+    ///   times (the stage follows from `total_observations`);
+    /// - `pareto_frontier`, a cache recomputed from the stats;
+    /// - `linucb_state.observations`, the arms' own counts, which a load does
+    ///   not restore (`total_observations` keeps the count).
+    #[must_use]
+    pub fn snapshot_digest(&self) -> RouterStateDigest {
+        let mut snapshot = self.persisted_snapshot();
+        snapshot.stage_transitions.clear();
+        snapshot.pareto_frontier.clear();
+        if let Some(linucb) = snapshot.linucb_state.as_mut() {
+            linucb.observations = 0;
+        }
+        let n_obs = snapshot.total_observations;
+        // The snapshot always serializes: `save` writes it.
+        let state = serde_json::to_value(&snapshot).unwrap_or_default();
+        let canonical = roko_core::config::fingerprint::canonical_json(&state);
+        RouterStateDigest {
+            digest: crate::telemetry::records::b3_digest(canonical.as_bytes()),
+            n_obs,
+            version: format!("cr:obs={n_obs}"),
+            age_s: None,
+        }
+    }
+
     /// The router's state in its persisted form.
     fn persisted_snapshot(&self) -> CascadeSnapshot {
         let stage_transitions = self.stage_tracking.lock().transitions.clone();
@@ -4099,6 +4146,52 @@ mod cascade_router_tests {
             "higher-pass-rate google provider must be preferred over anthropic; got {}",
             route.primary.slug
         );
+    }
+
+    /// P0-10: equal learned state has one digest, however the router's maps
+    /// were filled and across a save and a load; one more observation
+    /// changes it.
+    #[test]
+    fn snapshot_digest_changes_iff_state_changes() {
+        let slugs = vec!["model-alpha".to_string(), "model-beta".to_string()];
+        let implementation = RoutingContext {
+            task_category: TaskCategory::Implementation,
+            ..RoutingContext::default()
+        };
+        let research = RoutingContext {
+            task_category: TaskCategory::Research,
+            ..RoutingContext::default()
+        };
+        // Two routers learn the same observations, each model's in the same
+        // order, and fill their maps in opposite orders.
+        let first = CascadeRouter::new(slugs.clone());
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        first.record_observation(&research, "model-beta", 0.3, false);
+        let second = CascadeRouter::new(slugs.clone());
+        second.record_observation(&research, "model-beta", 0.3, false);
+        second.record_observation(&implementation, "model-alpha", 0.8, true);
+        let digest = first.snapshot_digest();
+        assert_eq!(second.snapshot_digest(), digest);
+        assert!(digest.digest.starts_with("b3:"), "{digest:?}");
+        assert_eq!((digest.n_obs, digest.version.as_str()), (2, "cr:obs=2"));
+        assert_eq!(digest.age_s, None);
+
+        // Reading the state, which refreshes its caches, leaves it alone.
+        let _ = first.explain_route(&implementation, None);
+        assert_eq!(first.snapshot_digest(), digest);
+
+        // A save and a load keep it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cascade-router.json");
+        first.save(&path).expect("save the router");
+        let loaded = CascadeRouter::load_or_new(&path, slugs);
+        assert_eq!(loaded.snapshot_digest(), digest);
+
+        // One more observation changes it.
+        first.record_observation(&implementation, "model-alpha", 0.8, true);
+        let learned = first.snapshot_digest();
+        assert_ne!(learned.digest, digest.digest);
+        assert_eq!(learned.n_obs, 3);
     }
 }
 

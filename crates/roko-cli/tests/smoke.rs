@@ -293,6 +293,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
     };
     let options = AgentOptions {
         safety_layer: None,

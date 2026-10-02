@@ -1906,6 +1906,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2167,6 +2168,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2354,6 +2356,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2489,6 +2492,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 
@@ -3110,6 +3114,7 @@ sleep 30
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(

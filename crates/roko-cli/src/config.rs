@@ -1166,6 +1166,7 @@ impl ProviderLayer {
             max_concurrent: self.max_concurrent,
             limits: self.limits,
             require_confirmation: false,
+            stream_usage: None,
         })
     }
 }

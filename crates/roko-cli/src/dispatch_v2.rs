@@ -3258,6 +3258,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(matches!(
             classify_runtime("gemini", ProviderKind::GeminiCli, Some(&gemini)),
@@ -3283,6 +3284,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(matches!(
             classify_runtime("openclaw", ProviderKind::OpenClaw, Some(&openclaw)),
@@ -3400,6 +3402,7 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             }),
             model_profile: None,
             runtime: ProviderRuntime::AgentResultBridge {
@@ -3467,6 +3470,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -3563,6 +3567,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(

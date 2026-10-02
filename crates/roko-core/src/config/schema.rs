@@ -551,6 +551,7 @@ fn synthesize_standard_providers_with_env(
                     max_concurrent: None,
                     limits: None,
                     require_confirmation: false,
+                    stream_usage: None,
                 },
             );
         }
@@ -3348,6 +3349,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -3371,6 +3373,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -3403,6 +3406,7 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         cfg.models.insert(
@@ -3557,6 +3561,7 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.resolve_file_secrets();
@@ -3605,6 +3610,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -3633,6 +3639,7 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         cfg.models.insert(
@@ -3674,6 +3681,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3698,6 +3706,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3721,6 +3730,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3744,6 +3754,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3768,6 +3779,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3791,6 +3803,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -3814,6 +3827,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -3838,6 +3852,7 @@ max_output = 16384
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
@@ -3868,6 +3883,7 @@ max_output = 16384
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
 

@@ -888,6 +888,7 @@ fn anthropic_model_call_config_routes_legacy_claude_to_anthropic_provider() {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         },
     );
 

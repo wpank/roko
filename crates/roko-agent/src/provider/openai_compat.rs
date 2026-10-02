@@ -938,6 +938,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1044,6 +1045,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "moonshot".to_string(),
@@ -1144,6 +1146,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "openai".to_string(),
@@ -1267,6 +1270,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1368,6 +1372,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "nous".to_string(),
@@ -1471,6 +1476,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1603,6 +1609,7 @@ done
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -2168,6 +2175,7 @@ done
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "openrouter".to_string(),

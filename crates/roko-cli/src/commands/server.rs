@@ -81,7 +81,8 @@ pub(crate) enum DeployCmd {
         /// Volume source name (default: roko_data).
         #[arg(long, default_value = "roko_data")]
         volume_source: String,
-        /// Volume mount destination path (default: /data/.roko).
+        /// Volume mount destination path, also set as `ROKO_STATE_ROOT` so state
+        /// lives on the volume (default: /data/.roko).
         #[arg(long, default_value = "/data/.roko")]
         volume_destination: String,
         /// Overwrite an existing fly.toml even if it differs from the generated one.
@@ -938,6 +939,11 @@ method = "GET"
 [mounts]
 source = "{volume_source}"
 destination = "{volume_destination}"
+
+# The entrypoint links /workspace/.roko to this path, so state lands on the
+# mounted volume instead of the Machine's ephemeral disk.
+[env]
+ROKO_STATE_ROOT = "{volume_destination}"
 "#,
         app = config.app,
         region = config.region,
@@ -1213,8 +1219,57 @@ fn is_loopback_bind(bind: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::railway_worker_env;
+    use super::{FlyTomlConfig, railway_worker_env, write_fly_toml};
     use std::collections::HashMap;
+
+    /// 9307: the entrypoint keeps state in `ROKO_STATE_ROOT`, whose default
+    /// `/workspace/.roko` is on the Machine's ephemeral disk, so a Fly config
+    /// must point it at the mounted volume.
+    #[test]
+    fn fly_toml_points_state_root_at_the_volume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = FlyTomlConfig {
+            app: "roko-test",
+            region: "iad",
+            dockerfile: "Dockerfile",
+            health_path: "/health",
+            volume_source: "roko_data",
+            volume_destination: "/mnt/roko-state",
+        };
+        let path = write_fly_toml(dir.path(), &config, false).expect("write fly.toml");
+        let text = std::fs::read_to_string(&path).expect("read fly.toml");
+        let generated: toml::Value = toml::from_str(&text).expect("parse fly.toml");
+        assert_eq!(
+            state_root_and_mount(&generated),
+            ("/mnt/roko-state", "/mnt/roko-state")
+        );
+
+        // The checked-in config must agree as well.
+        let root = include_str!("../../../../fly.toml");
+        let root: toml::Value = toml::from_str(root).expect("parse the root fly.toml");
+        let (state_root, destination) = state_root_and_mount(&root);
+        assert_eq!(state_root, destination, "root fly.toml");
+    }
+
+    /// `env.ROKO_STATE_ROOT` and the mount destination of a parsed `fly.toml`,
+    /// whose mount may be a `[mounts]` table or a `[[mounts]]` array.
+    fn state_root_and_mount(fly: &toml::Value) -> (&str, &str) {
+        let state_root = fly
+            .get("env")
+            .and_then(|env| env.get("ROKO_STATE_ROOT"))
+            .and_then(toml::Value::as_str)
+            .expect("[env] sets ROKO_STATE_ROOT");
+        let mounts = fly.get("mounts").expect("a [mounts] table");
+        let mount = mounts
+            .as_array()
+            .and_then(|array| array.first())
+            .unwrap_or(mounts);
+        let destination = mount
+            .get("destination")
+            .and_then(toml::Value::as_str)
+            .expect("the mount has a destination");
+        (state_root, destination)
+    }
 
     #[test]
     fn railway_worker_env_reuses_control_plane_callback_token_and_sets_callback_id() {

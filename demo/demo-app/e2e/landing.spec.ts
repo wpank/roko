@@ -4,7 +4,7 @@ import { collectConsoleErrors, expectNoJsErrors } from './helpers';
 test.describe('Landing page', () => {
   test('hero renders with title and subtitle', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     const title = page.locator('h1.landing-title-gradient');
     await expect(title).toBeVisible({ timeout: 5000 });
@@ -22,7 +22,7 @@ test.describe('Landing page', () => {
   });
 
   test('CTA "start" link navigates to /demo', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     const cta = page.locator('a.landing-cta');
     await expect(cta).toBeVisible();
@@ -34,7 +34,7 @@ test.describe('Landing page', () => {
   });
 
   test('loop ticker cycles through 8 phases', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     const ticker = page.locator('div.landing-loop-ticker');
     await expect(ticker).toBeVisible();
@@ -54,7 +54,7 @@ test.describe('Landing page', () => {
   });
 
   test('corner decorations are visible', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     for (const corner of ['tl', 'tr', 'bl', 'br']) {
       await expect(page.locator(`.landing-corner--${corner}`)).toBeVisible();
@@ -62,7 +62,7 @@ test.describe('Landing page', () => {
   });
 
   test('footer mark text is visible', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     const footer = page.locator('div.landing-footer-mark');
     await expect(footer).toBeVisible();
@@ -70,7 +70,7 @@ test.describe('Landing page', () => {
   });
 
   test('hero rules (dividers) are visible', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/lab', { waitUntil: 'domcontentloaded' });
 
     const rules = page.locator('div.landing-rule');
     await expect(rules).toHaveCount(2);

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "showcase-manifest/1",
+  "description": "bundles/index.json, the static twin of GET /api/showcase/manifest (S10 §4.8, §5.2).",
+  "type": "object",
+  "required": [
+    "schema",
+    "showcase_mode",
+    "live_enabled",
+    "featured_bundle",
+    "bundles",
+    "harness_commit"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "showcase-manifest/1"},
+    "showcase_mode": {"type": "boolean"},
+    "live_enabled": {"type": "boolean"},
+    "featured_bundle": {"type": ["string", "null"]},
+    "bundles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "created_at", "featured"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "status": {"enum": ["verified", "rejected", "unverified"]},
+          "created_at": {"type": "string"},
+          "featured": {"type": "boolean"}
+        }
+      }
+    },
+    "harness_commit": {"type": ["string", "null"]}
+  }
+}

@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:fixtures": "VITE_ALLOW_FIXTURES=1 vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "e2e": "npx playwright test",
-    "e2e:headed": "npx playwright test --headed"
+    "e2e:headed": "npx playwright test --headed",
+    "e2e:showcase": "npx playwright test --project=showcase-fixture"
   },
   "dependencies": {
     "@types/three": "^0.184.0",

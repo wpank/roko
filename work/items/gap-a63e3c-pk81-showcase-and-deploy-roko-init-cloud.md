@@ -85,3 +85,27 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+Worker run of 2026-10-02 on `work/gap-a63e3c` (base `976220c3e`). Workers run no cargo, tsc or Playwright: every task is
+implemented, not done, and its cargo, `npx tsc` and Playwright verification is deferred to the batch gate. Static verify
+parts pass for all eight. Python checks and Node type-stripping smoke runs (scratch only, nothing added to the repo) are
+noted per task.
+
+- 9306: implemented at 38d8e51c0. Both writers emit the webhook table commented out, with placeholder owner and repo. The
+  test also lets through the default `worker_image` (`ghcr.io/nunchi-trade/...`), which is 9341's to change.
+- 9307: implemented at 41df07bed. `ROKO_STATE_ROOT` = the mount in the root `fly.toml`, `write_fly_toml` and the workflow
+  (both TOMLs parse, checked with tomllib). The test also checks the checked-in `fly.toml`.
+- 9308: implemented at 235ca532d. The schemas use only `validate.py`'s keyword subset, so 9314 can check bundles with it.
+  The specs use a TypeScript port of that validator instead of ajv, which needs a registry install. Seven fixture bundles:
+  golden, negatives, P1-only (no audits), and four poisoned. Checked with `validate.py`; contracts.spec logic 15/15.
+- 9309: implemented at 9e4ef50ec. guard.spec logic 12/12 under Node, including the Vite config refusing a production
+  build with fixtures.
+- 9310: implemented at 7cee701e8. Chart palette from the dataviz validator (the rosedust tokens fail it). The charts were
+  rendered with react-dom/server; whisker, band and axis checks hold.
+- 9311: implemented at e415bd665. static-source.spec Node tests 7/7; the in-browser test needs Playwright.
+- 9312: implemented at bf205ad4a. Also touched beyond the task's files: `AppShell.tsx` (scenario player at /lab/demo,
+  shortcuts), `pages/dashboard/Layout.tsx` (tab links) and `e2e/landing.spec.ts` (opens /lab).
+- 9313: implemented at 7bfb4c58e. Pages rendered server-side against the static source: golden values, counts,
+  negatives, not-yet-measured and every poisoned refusal hold.

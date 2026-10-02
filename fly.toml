@@ -24,3 +24,6 @@ primary_region = "iad"
 
 [env]
   RUST_LOG = "info"
+  # The entrypoint links /workspace/.roko to this path, so state lands on the
+  # mounted volume instead of the Machine's ephemeral disk.
+  ROKO_STATE_ROOT = "/data/.roko"

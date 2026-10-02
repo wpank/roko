@@ -1478,7 +1478,6 @@ pub fn format_dashboard_event(
         | DashboardEvent::CascadeRouterUpdated { .. }
         | DashboardEvent::GateThresholdsUpdated { .. }
         | DashboardEvent::MarketplaceJobsUpdated { .. }
-        | DashboardEvent::AtelierPrdsUpdated { .. }
         | DashboardEvent::KnowledgeEntriesUpdated { .. }
         | DashboardEvent::EfficiencyTrendUpdated { .. }
         | DashboardEvent::FeedTick { .. }

@@ -130,7 +130,8 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
     let _ = writeln!(out, "- max task count: {max_tasks}");
     let _ = writeln!(
         out,
-        "- This is a ceiling, not a target. Prefer the fewest cohesive tasks that preserve safe ownership."
+        "- This is a ceiling, not a target: size each task within its tier's limits and use as \
+         many tasks as that takes."
     );
     out
 }
@@ -198,7 +199,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 
 ## Core principles
 
-1. **Cohesive scope**: One observable outcome that shares context, files, and verification belongs in one task. Select the correct tier (up to its LOC budget); do not split types, wiring, tests, and docs into separate serial microtasks merely to stay under 50 lines. Split only at a genuine ownership, dependency, security, or independently-verifiable boundary.
+1. **Sized for its executor**: A task's tier picks the model that runs it, so every task stays within its tier's size limits below. Split work with independent outputs into tasks with disjoint `files`; keep sequential or integrative work that must land together (a type, its wiring and its test) as one task on a higher tier, never as a chain of serial microtasks.
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
@@ -408,7 +409,7 @@ files = [
 Before finalizing, verify your tasks against:
 - [ ] `meta.plan` matches the plan slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
 - [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
-- [ ] Every task has ≤ max_loc lines of change for its tier
+- [ ] Every task is within its tier's limits (files, max_loc, description words); a larger one is split or given a higher tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
 - [ ] No verify step negates a grep, cannot fail, or checks only the edited file where the crate's gate would catch a regression
 - [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
@@ -438,9 +439,10 @@ Before finalizing, verify your tasks against:
 
 The example below uses multiple tasks only to illustrate dependency syntax. For a normal endpoint
 change where one implementer can safely own the response type, route, and exact test, emit one
-integrative task instead. Cohesion and one verification owner override mechanical file-count splits.
+integrative task instead: work that must land together is one task on the integrative tier, within
+that tier's limits, while independent outputs with disjoint files are separate tasks.
 
-A realistic cohesive plan for "Add health check endpoint to roko-serve":
+A realistic plan for "Add health check endpoint to roko-serve":
 
 ```toml
 [meta]
@@ -564,8 +566,9 @@ pub fn render_tier_size_limits() -> String {
         })
         .join("; ");
     format!(
-        "Size each task for its tier ({limits}). `roko plan validate` warns about a larger \
-         task (PLAN_TIER_SIZE): split it, or give it a higher tier."
+        "Size each task for its tier ({limits}). These limits bind: generation rejects a larger \
+         task (PLAN_TIER_SIZE) and asks again, so split it on independent outputs or give it a \
+         higher tier."
     )
 }
 
@@ -1172,6 +1175,27 @@ mod tests {
         let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
         assert!(prompt.contains(&line));
         assert!(!prompt.contains("{TIER_SIZE_LIMITS}"));
+    }
+
+    /// 3224: the generator prompt sizes tasks for their executor tier: none
+    /// of the old cohesion phrases is left, the tier limits bind, and the
+    /// template's task count stays a ceiling.
+    #[test]
+    fn generator_prompt_sizes_tasks_by_tier() {
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        let guidance = render_plan_template_guidance(PlanTemplateKind::resolve(None));
+        for phrase in [
+            concat!("Prefer the fewest ", "cohesive tasks"),
+            concat!("merely to stay ", "under 50 lines"),
+            concat!("Cohesion and one verification ", "owner override"),
+        ] {
+            assert!(!prompt.contains(phrase), "the prompt still says {phrase}");
+            assert!(!guidance.contains(phrase), "the guidance still says {phrase}");
+        }
+        assert!(prompt.contains("These limits bind: generation rejects a larger task"));
+        assert!(prompt.contains("independent outputs into tasks with disjoint `files`"));
+        assert!(prompt.contains("one task on a higher tier"));
+        assert!(guidance.contains("This is a ceiling, not a target"));
     }
 
     // ── Backlog resolution tests (#227) ───────────────────────────────────

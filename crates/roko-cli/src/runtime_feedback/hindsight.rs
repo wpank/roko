@@ -353,15 +353,25 @@ mod tests {
             initial_model: String::new(),
             turns: 1,
             failure_reason: failure_reason.map(str::to_string),
-            settled: settled_as(
-                if succeeded {
-                    AttemptOutcome::Passed
-                } else {
-                    AttemptOutcome::GateFailed
-                },
-                true,
-            ),
+            settled: if succeeded {
+                settled_as(AttemptOutcome::Passed, true)
+            } else {
+                failed_verify()
+            },
         }
+    }
+
+    /// A settled gate failure whose one verify step failed: since backlog
+    /// 2106 an episode's gate verdicts come from the verdict's steps.
+    fn failed_verify() -> Option<Arc<roko_learn::telemetry::AttemptVerdictRecord>> {
+        let mut verdict = settled_as(AttemptOutcome::GateFailed, true)?;
+        Arc::make_mut(&mut verdict).steps = vec![roko_learn::telemetry::VerifyStepVerdict {
+            rung: "verify:0/check".into(),
+            passed: Some(false),
+            exit_code: Some(2),
+            ..Default::default()
+        }];
+        Some(verdict)
     }
 
     #[tokio::test]

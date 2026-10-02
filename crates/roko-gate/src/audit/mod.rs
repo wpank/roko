@@ -7,13 +7,16 @@
 //! - [`estimate`]: Horvitz–Thompson, Hájek, v̂, Kish's n_eff, the Wilson
 //!   interval at n_eff and the betting confidence sequence (S05 §4.5);
 //! - [`ledger`]: the SHA-256 hash chain of audit events in the vault, and its
-//!   redacted mirror in the workspace (S05 §5).
+//!   redacted mirror in the workspace (S05 §5);
+//! - [`hidden`]: hidden test suites in the vault and their lifecycle
+//!   (S05 §4.4).
 //!
 //! Plain types other crates read (verify depth, labels, strata, the
 //! `vs.label` row) live in `roko_core::audit_types`, and the vault in
 //! `roko_core::audit_home`.
 
 pub mod estimate;
+pub mod hidden;
 pub mod ledger;
 pub mod policy;
 
@@ -71,6 +74,14 @@ pub(crate) fn strictly_within(
             "{name} ({value}) must lie strictly between {low} and {high}"
         )))
     }
+}
+
+/// `bytes` random bytes from the operating system, as lowercase hex.
+pub(crate) fn random_hex(bytes: usize) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut buffer = vec![0_u8; bytes];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut buffer)?;
+    Ok(policy::hex(&buffer))
 }
 
 /// 7107's reference inputs and outputs, the one source of truth for the

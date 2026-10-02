@@ -495,12 +495,16 @@ records the loaded names (never values). Those files usually hold provider keys,
 processes do not inherit roko's environment wholesale (`roko_core::child_env`):
 
 - **Provider CLIs** (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw, including `roko chat`)
-  keep their inherited environment minus known LLM provider keys other than their own, every
-  variable roko loaded from a `.env` file, and roko's own `ROKO_*` credentials. A CLI's own
-  credential (`ANTHROPIC_API_KEY` for `claude`, `OPENAI_API_KEY` for `codex`, ...) still
-  reaches it when it came from the shell roko started in, so subscription logins and exported
-  keys work as before. The provider's `api_key_env`, `[agent] env_passthrough`, and variables
-  an MCP config refers to as `${NAME}` are always kept.
+  and MCP servers keep their inherited environment minus known LLM provider keys other than
+  their own, every other variable whose name looks like a credential (a `KEY`, `TOKEN`,
+  `SECRET`, `PASSWORD` or `CREDENTIAL` segment: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+  roko's own `ROKO_*` credentials), and every variable roko loaded from a `.env` file. A
+  CLI's own credential (`ANTHROPIC_API_KEY` for `claude`, `OPENAI_API_KEY` for `codex`, ...)
+  still reaches it when it came from the shell roko started in, so subscription logins and
+  exported keys work as before. The provider's `api_key_env`, `[agent] env_passthrough`, and
+  variables an MCP config refers to as `${NAME}` are always kept. A CLI that reads cloud
+  credentials itself needs them listed: Claude Code on Bedrock, for example, needs
+  `env_passthrough = ["AWS_*"]`. The stripped names, never their values, are logged at debug.
 - **Gate commands** (task `verify` steps, build/test/lint gates, auto-fix commands) start from
   an empty environment plus an allowlist: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
   `TMPDIR`, `TZ`, `CI`, locale (`LANG`, `LC_*`), `XDG_*`, toolchain and native-build settings

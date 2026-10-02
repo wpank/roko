@@ -24,7 +24,9 @@
 //! (`reflex_credit`).
 
 use roko_learn::telemetry::records::b3_digest;
-use roko_learn::telemetry::records::{AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict};
+use roko_learn::telemetry::records::{
+    AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict,
+};
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
     AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,

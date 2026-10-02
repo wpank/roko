@@ -1069,7 +1069,9 @@ pub(crate) async fn cmd_status(
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
         }
         if unpriced_calls > 0 {
-            println!("  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total");
+            println!(
+                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
+            );
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");

@@ -341,7 +341,11 @@ impl PlanDiff {
             self.added.len(),
             self.removed.len(),
             self.changed.len(),
-            if self.meta.is_empty() { "" } else { "; [meta] changed" }
+            if self.meta.is_empty() {
+                ""
+            } else {
+                "; [meta] changed"
+            }
         )];
         lines.extend(self.added.iter().map(|id| format!("  + {id}")));
         lines.extend(self.removed.iter().map(|id| format!("  - {id}")));
@@ -1300,7 +1304,10 @@ command = "cargo test -p x parse"
         assert_eq!(context.matches("rejects_an_empty_limit stdout").count(), 1);
 
         let prompt = build_revision_prompt("my-plan", &tasks, "split T2", Some(context.as_str()));
-        assert!(prompt.contains("test result: FAILED. 3 passed; 1 failed"), "{prompt}");
+        assert!(
+            prompt.contains("test result: FAILED. 3 passed; 1 failed"),
+            "{prompt}"
+        );
 
         // The budget is a quarter of the planner's window, never under the
         // floor; a section over it is cut with a marker.
@@ -1320,7 +1327,11 @@ command = "cargo test -p x parse"
         .expect("failures");
         let cut = last_run_failure_context(workdir, "my-plan", 0).expect("still failed");
         assert_eq!(cut.chars().count(), MIN_REVISION_FAILURE_CHARS);
-        assert!(cut.ends_with("characters ...]"), "{}", &cut[cut.len() - 80..]);
+        assert!(
+            cut.ends_with("characters ...]"),
+            "{}",
+            &cut[cut.len() - 80..]
+        );
     }
 
     /// A plan with no run on record has no failure to put in a revision
@@ -1411,9 +1422,15 @@ fail_msg = "must pass"
         let before_text = change.before.as_deref().unwrap_or_default();
         let after_text = change.after.as_deref().unwrap_or_default();
         assert!(before_text.contains("test -f src/T1.rs"), "{change:?}");
-        assert!(after_text.contains("grep -q retries src/T1.rs"), "{change:?}");
+        assert!(
+            after_text.contains("grep -q retries src/T1.rs"),
+            "{change:?}"
+        );
 
-        let text = outcome.diff.expect("the outcome has the diff").render_text();
+        let text = outcome
+            .diff
+            .expect("the outcome has the diff")
+            .render_text();
         assert!(
             text.starts_with("plan diff: 1 added, 1 removed, 1 changed\n"),
             "{text}"
@@ -1422,7 +1439,10 @@ fail_msg = "must pass"
             assert!(text.contains(line), "{line:?} in {text}");
         }
         assert_eq!(plan_diff(&after, &after), PlanDiff::default());
-        assert_eq!(plan_diff(&after, &after).render_text(), "plan diff: no changes");
+        assert_eq!(
+            plan_diff(&after, &after).render_text(),
+            "plan diff: no changes"
+        );
     }
 
     /// A valid revision is written byte-for-byte as extracted.

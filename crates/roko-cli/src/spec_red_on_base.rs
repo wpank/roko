@@ -775,7 +775,10 @@ fn classify(steps: &[Step], runs: &[Vec<StepResult>]) -> (RedOnBase, Outcome, St
             );
         }
         if last.timed_out {
-            let reason = format!("step {step} timed out after {} s in run {number}", last.secs);
+            let reason = format!(
+                "step {step} timed out after {} s in run {number}",
+                last.secs
+            );
             return unknown(Outcome::Timeout, reason);
         }
         if last.exit == Some(0) {
@@ -860,9 +863,7 @@ impl BaseTrees {
         let parent = std::fs::canonicalize(&parent)
             .ok()
             .filter(|parent| parent.is_dir())
-            .ok_or_else(|| {
-                anyhow!("the scratch directory {} does not exist", parent.display())
-            })?;
+            .ok_or_else(|| anyhow!("the scratch directory {} does not exist", parent.display()))?;
         let mut trees = Self {
             root: root.to_path_buf(),
             fixture,
@@ -873,7 +874,10 @@ impl BaseTrees {
             trees: BTreeMap::new(),
         };
         let checkouts = trees.checkouts()?;
-        if let Some(checkout) = checkouts.iter().find(|checkout| parent.starts_with(checkout)) {
+        if let Some(checkout) = checkouts
+            .iter()
+            .find(|checkout| parent.starts_with(checkout))
+        {
             bail!(
                 "the scratch directory {} is inside the checkout {}",
                 parent.display(),
@@ -971,7 +975,10 @@ impl BaseTrees {
     /// The commit `rev` names.
     fn resolve(&self, rev: &str) -> Result<String> {
         let spec = format!("{rev}^{{commit}}");
-        let output = git(&["rev-parse", "--verify", "--quiet", spec.as_str()], &self.repo)?;
+        let output = git(
+            &["rev-parse", "--verify", "--quiet", spec.as_str()],
+            &self.repo,
+        )?;
         if !output.status.success() {
             bail!("unknown base {rev:?} in {}", self.repo.display());
         }
@@ -1001,7 +1008,10 @@ impl BaseTrees {
                     short(&sha)
                 ),
             ),
-            None => (Some(head.to_string()), "HEAD: the plan has not run".to_string()),
+            None => (
+                Some(head.to_string()),
+                "HEAD: the plan has not run".to_string(),
+            ),
         })
     }
 
@@ -1135,7 +1145,13 @@ impl BaseTrees {
         for (tree, admin) in std::mem::take(&mut self.trees).into_values() {
             let tree_arg = tree.to_string_lossy().into_owned();
             let removed = git(
-                &["worktree", "remove", "--force", "--force", tree_arg.as_str()],
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    "--force",
+                    tree_arg.as_str(),
+                ],
                 &self.repo,
             )
             .is_ok_and(|output| output.status.success());
@@ -1166,10 +1182,7 @@ fn make_scratch(parent: &Path) -> Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
     for attempt in 0..100_u32 {
-        let name = format!(
-            "roko-red-on-base-{}-{stamp}-{attempt}",
-            std::process::id()
-        );
+        let name = format!("roko-red-on-base-{}-{stamp}-{attempt}", std::process::id());
         let dir = parent.join(name);
         match std::fs::create_dir(&dir) {
             Ok(()) => return Ok(canonical(&dir)),
@@ -1261,7 +1274,10 @@ fn short(sha: &str) -> &str {
 
 /// A string field, or `""` when it is absent or not a string.
 fn text(value: Option<&Value>) -> String {
-    value.and_then(Value::as_str).unwrap_or_default().to_string()
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The tables of an array field; nothing when it is absent or not an array.
@@ -1499,9 +1515,21 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
             check.expect("checked").clone()
         };
         let (t1, t2, t3) = (check("T1"), check("T2"), check("T3"));
-        assert_eq!((t1.red_on_base, t1.outcome), (RedOnBase::Fail, Outcome::Fail), "{t1:?}");
-        assert_eq!((t2.red_on_base, t2.outcome), (RedOnBase::Pass, Outcome::Pass), "{t2:?}");
-        assert_eq!((t3.red_on_base, t3.outcome), (RedOnBase::Unknown, Outcome::Flaky), "{t3:?}");
+        assert_eq!(
+            (t1.red_on_base, t1.outcome),
+            (RedOnBase::Fail, Outcome::Fail),
+            "{t1:?}"
+        );
+        assert_eq!(
+            (t2.red_on_base, t2.outcome),
+            (RedOnBase::Pass, Outcome::Pass),
+            "{t2:?}"
+        );
+        assert_eq!(
+            (t3.red_on_base, t3.outcome),
+            (RedOnBase::Unknown, Outcome::Flaky),
+            "{t3:?}"
+        );
         assert_eq!(t1.plan_path, "plans/p/tasks.toml");
         assert_eq!(t2.base_reason, "HEAD: the plan has not run");
         assert_eq!(t1.runs.len(), RUNS, "{t1:?}");
@@ -1514,7 +1542,11 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         };
         assert!((record("T1").rules["SQ06"] - 1.0).abs() < f64::EPSILON);
         assert!(!record("T1").hard_fail.contains(&"HF3"));
-        assert!(record("T2").hard_fail.contains(&"HF3"), "{:?}", record("T2"));
+        assert!(
+            record("T2").hard_fail.contains(&"HF3"),
+            "{:?}",
+            record("T2")
+        );
         assert!(!record("T3").hard_fail.contains(&"HF3"));
         assert!(record("T3").unknown.contains(&"HF3"));
 
@@ -1524,7 +1556,10 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
             &SpecQualityConfig::default(),
             &report.results(),
         );
-        let blocked: Vec<&str> = gate.blocked().map(|decision| decision.task_id.as_str()).collect();
+        let blocked: Vec<&str> = gate
+            .blocked()
+            .map(|decision| decision.task_id.as_str())
+            .collect();
         assert_eq!(blocked, ["T2"], "{gate:?}");
 
         assert_eq!(repo_state(&repo), before, "the check left something behind");
@@ -1575,7 +1610,10 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
         assert_eq!(outcome("T1").0, RedOnBase::Pass, "{:?}", outcome("T1"));
         assert_eq!(outcome("T2").0, RedOnBase::Fail, "{:?}", outcome("T2"));
         let (cargo, cargo_outcome, reason) = outcome("T3");
-        assert_eq!((cargo, cargo_outcome), (RedOnBase::Unknown, Outcome::SkippedCargo));
+        assert_eq!(
+            (cargo, cargo_outcome),
+            (RedOnBase::Unknown, Outcome::SkippedCargo)
+        );
         assert!(reason.starts_with("skipped: cargo"), "{reason}");
         assert!(!marker.exists(), "the cargo step ran");
 
@@ -1585,7 +1623,10 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
             &config,
             &gate_results(&[plan.clone()], &repo, &config).expect("not interrupted"),
         );
-        let blocked: Vec<&str> = gate.blocked().map(|decision| decision.task_id.as_str()).collect();
+        let blocked: Vec<&str> = gate
+            .blocked()
+            .map(|decision| decision.task_id.as_str())
+            .collect();
         assert_eq!(blocked, ["T1"], "{gate:?}");
 
         let off = SpecQualityConfig {

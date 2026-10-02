@@ -254,7 +254,10 @@ const PROVIDER_UNHEALTHY: &str = "provider_unhealthy";
 type LearnedStateCounts = (u64, u64, u64);
 
 /// The last learned-state digest, with the counts it was computed at.
-type StateDigestMemo = Option<(LearnedStateCounts, roko_learn::cascade_router::RouterStateDigest)>;
+type StateDigestMemo = Option<(
+    LearnedStateCounts,
+    roko_learn::cascade_router::RouterStateDigest,
+)>;
 
 /// A picked model and the reason it was picked.
 #[derive(Debug, Clone)]
@@ -563,7 +566,10 @@ impl ModelRouter {
             budget_pressure = inputs.budget_pressure,
             "model routed"
         );
-        if matches!(choice.source, ModelChoiceSource::Router | ModelChoiceSource::Fallback { .. }) {
+        if matches!(
+            choice.source,
+            ModelChoiceSource::Router | ModelChoiceSource::Fallback { .. }
+        ) {
             tracing::debug!(
                 task_id,
                 stage = %decision.routing_stage,
@@ -669,7 +675,12 @@ impl ModelRouter {
         // A pin, a rung or the default the router never scored is still a
         // candidate, so the probabilities sum to 1; its score is 0.
         if !candidates.iter().any(|candidate| candidate.model == chosen) {
-            candidates.push(CandidateEntry::new(chosen, self.provider_of(chosen), 0.0, None));
+            candidates.push(CandidateEntry::new(
+                chosen,
+                self.provider_of(chosen),
+                0.0,
+                None,
+            ));
         }
         // The policy is argmax until S02.P1-3: the chosen model has p = 1.
         for candidate in &mut candidates {

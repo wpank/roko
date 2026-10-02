@@ -1429,7 +1429,10 @@ fn spec_scores(
                 .hard_fail_detail
                 .get(rule)
                 .filter(|details| !details.is_empty())
-                .map_or_else(|| hard_fail_name(rule).to_string(), |details| details.join("; "));
+                .map_or_else(
+                    || hard_fail_name(rule).to_string(),
+                    |details| details.join("; "),
+                );
             hard_fails.push(format!("task {} {rule}: {detail}", record.task_id));
         }
         if record.score < config.allow_threshold {
@@ -4235,7 +4238,10 @@ mod tests {
         );
         for (script, body) in [
             (&planner, planner_body),
-            (&background, format!("cat >/dev/null\nsed -n 2p '{}'", last.display())),
+            (
+                &background,
+                format!("cat >/dev/null\nsed -n 2p '{}'", last.display()),
+            ),
         ] {
             std::fs::write(script, format!("#!/bin/sh\nset -eu\n{body}\n"))
                 .expect("fake provider script");
@@ -4269,8 +4275,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn generation_regenerates_once_on_a_spec_hard_fail() {
-        let vacuous =
-            WIDGET_PLAN.replace("\"test -f src/widget.rs\"", "\"test -f src/widget.rs || true\"");
+        let vacuous = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"test -f src/widget.rs || true\"",
+        );
         assert_ne!(vacuous, WIDGET_PLAN);
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -4294,9 +4302,16 @@ mod tests {
             .expect("the widget plan");
         assert!(!written.contains("|| true"), "{written}");
         let log = std::fs::read_to_string(&calls).expect("planner call log");
-        assert_eq!(log.lines().count(), 2, "the vacuous plan, then the clean one");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the vacuous plan, then the clean one"
+        );
         let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
-        assert!(retry.contains("task T1 HF2: step 1: ends in `|| true`"), "{retry}");
+        assert!(
+            retry.contains("task T1 HF2: step 1: ends in `|| true`"),
+            "{retry}"
+        );
         let scored = outcome.spec_quality.expect("the plan was scored");
         assert!(!scored.regenerated, "{scored:?}");
         assert_eq!(scored.bands.values().sum::<usize>(), 1, "{scored:?}");
@@ -4321,10 +4336,16 @@ mod tests {
         let log = std::fs::read_to_string(&calls).expect("planner call log");
         assert_eq!(log.lines().count(), 2, "one plan, then one regeneration");
         let regenerate = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("ask");
-        assert!(regenerate.contains("scored low on spec quality"), "{regenerate}");
+        assert!(
+            regenerate.contains("scored low on spec quality"),
+            "{regenerate}"
+        );
         let scored = outcome.spec_quality.expect("the plan was scored");
         assert!(scored.regenerated, "{scored:?}");
-        assert!(scored.min <= scored.mean && scored.mean < 100.0, "{scored:?}");
+        assert!(
+            scored.min <= scored.mean && scored.mean < 100.0,
+            "{scored:?}"
+        );
     }
 
     /// 3221: the planner can write its acceptance tests into the plan. A
@@ -4351,7 +4372,10 @@ mod tests {
         let with_test =
             format!("```toml\n{ACCEPT_PLAN}```\n\n```accept:accept/test_slug.py\n{TEST}```\n");
 
-        for replies in [vec![with_test.as_str()], vec![ACCEPT_PLAN, with_test.as_str()]] {
+        for replies in [
+            vec![with_test.as_str()],
+            vec![ACCEPT_PLAN, with_test.as_str()],
+        ] {
             let temp = tempfile::tempdir().expect("tempdir");
             let workdir = temp.path();
             let prd_path = write_widget_prd(workdir);

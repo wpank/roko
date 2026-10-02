@@ -533,7 +533,11 @@ fn loop_census_routed_task_logs_fallback_decision() {
     };
     let fallback = row("fallback");
     assert_eq!(fallback.attempts.len(), 1);
-    assert_eq!(fallback.masked, Some(Vec::new()), "a fallback is not masked");
+    assert_eq!(
+        fallback.masked,
+        Some(Vec::new()),
+        "a fallback is not masked"
+    );
     let pinned = row("task_hint");
     assert_eq!(pinned.attempts.len(), 4);
     assert_eq!(pinned.unlabeled.len(), 1, "T3 has no label");

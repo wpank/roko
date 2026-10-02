@@ -728,11 +728,8 @@ mod tests {
         let path = dir.path().join("episodes.jsonl");
         let sink = EpisodeSink::at(&path);
         let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
-        let mut verdict = AttemptVerdictRecord::settle(
-            AttemptIdentity::new(&key),
-            AttemptOutcome::Passed,
-            true,
-        );
+        let mut verdict =
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, true);
         let started_ms = 1_790_000_000_000;
         verdict.timing.attempt_started_at = Some(started_ms);
         verdict.timing.settled_at = Some(started_ms + 1_500);
@@ -745,9 +742,8 @@ mod tests {
 
         let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
         assert_eq!(episodes[0].started_at.timestamp_millis(), started_ms);
-        let lasted = |episode: &Episode| {
-            (episode.completed_at - episode.started_at).num_milliseconds()
-        };
+        let lasted =
+            |episode: &Episode| (episode.completed_at - episode.started_at).num_milliseconds();
         assert_eq!(lasted(&episodes[0]), 1_500);
         // `outcome()` took 1234 ms.
         assert_eq!(lasted(&episodes[1]), 1_234);

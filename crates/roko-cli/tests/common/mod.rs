@@ -228,7 +228,10 @@ pub fn setup_sample_plan_workspace(workdir: &Path) {
     let updated = if updated.contains("\nred_on_base = ") {
         updated.replace("\nred_on_base = true", "\nred_on_base = false")
     } else if updated.contains("\n[spec_quality]\n") {
-        updated.replace("\n[spec_quality]\n", "\n[spec_quality]\nred_on_base = false\n")
+        updated.replace(
+            "\n[spec_quality]\n",
+            "\n[spec_quality]\nred_on_base = false\n",
+        )
     } else {
         format!("{updated}\n[spec_quality]\nred_on_base = false\n")
     };

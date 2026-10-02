@@ -631,7 +631,12 @@ mod template_tests {
             .expect("the end-to-end example");
         let parsed = crate::task_parser::TasksFile::parse_str(example).expect("parse the example");
         let task = &parsed.tasks[0];
-        assert!(task.spec.goal.as_deref().is_some_and(|goal| !goal.is_empty()));
+        assert!(
+            task.spec
+                .goal
+                .as_deref()
+                .is_some_and(|goal| !goal.is_empty())
+        );
         assert!(task.acceptance.iter().all(|item| item.starts_with("AC")));
         assert!(!task.spec.non_goals.is_empty());
         assert!(task.spec.open_questions.is_empty());
@@ -644,7 +649,11 @@ mod template_tests {
         std::fs::write(&path, example).expect("write the example");
         let report = roko_gate::spec_quality::lint_files(&[path], &root);
         assert_eq!(report.tasks.len(), 1, "{report:?}");
-        assert!(report.tasks[0].hard_fail.is_empty(), "{:?}", report.tasks[0]);
+        assert!(
+            report.tasks[0].hard_fail.is_empty(),
+            "{:?}",
+            report.tasks[0]
+        );
     }
 
     /// 3222: the generator prompt teaches `[task.accept]`: the section, the
@@ -683,7 +692,11 @@ mod template_tests {
              verify = [{{ phase = \"test\", command = \"test -f src/slug.py\" }}]\n\n{block}"
         );
         let parsed = crate::task_parser::TasksFile::parse_str(&plan).expect("parse the example");
-        let entry = &parsed.tasks[0].accept.as_ref().expect("[task.accept]").files[0];
+        let entry = &parsed.tasks[0]
+            .accept
+            .as_ref()
+            .expect("[task.accept]")
+            .files[0];
         assert!(!parsed.tasks[0].files.contains(&entry.dest));
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("accept")).expect("accept dir");

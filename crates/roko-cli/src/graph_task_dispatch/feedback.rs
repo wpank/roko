@@ -1449,7 +1449,14 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         });
         let sections: Vec<(String, u64, u8, bool)> = efficiency_prompt_sections(&diagnostics)
             .into_iter()
-            .map(|section| (section.name, section.tokens, section.priority, section.was_dropped))
+            .map(|section| {
+                (
+                    section.name,
+                    section.tokens,
+                    section.priority,
+                    section.was_dropped,
+                )
+            })
             .collect();
         assert_eq!(
             sections,

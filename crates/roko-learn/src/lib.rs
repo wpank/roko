@@ -96,6 +96,7 @@ pub mod hindsight;
 /// Rolling latency EMAs and percentiles for routing feedback.
 pub mod latency;
 pub mod local_reward;
+pub mod loop_audit;
 /// Durable direct model-call feedback recorder.
 pub mod model_call_feedback;
 pub mod model_experiment;

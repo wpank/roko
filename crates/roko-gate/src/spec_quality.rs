@@ -31,7 +31,8 @@ use serde::Serialize;
 use toml::{Table, Value};
 
 pub use shell::{
-    Scope, StepAnalysis, VerifyClass, analyze_step, is_test_path, named_paths, vacuous_reason,
+    Scope, StepAnalysis, VerifyClass, analyze_step, is_test_path, named_paths, normpath,
+    runs_program, vacuous_reason,
 };
 
 /// The linter id. The rule definitions in this module are frozen under it.

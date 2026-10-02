@@ -82,6 +82,33 @@ pub(crate) enum PlanCmd {
         /// exits 1.
         #[arg(long)]
         spec_quality: bool,
+        /// With `--spec-quality`: first run each implementer task's verify
+        /// steps twice on a clean checkout of its base commit, so the scores
+        /// count SQ06 (red on base) and find HF3 (a check that already
+        /// passes). No step runs in this checkout.
+        #[arg(long, requires = "spec_quality")]
+        dynamic: bool,
+        /// With `--dynamic`: the commit to check every plan against (default:
+        /// HEAD for a plan that has not run; none for the rest).
+        #[arg(long, requires = "dynamic", value_name = "REV")]
+        base: Option<String>,
+        /// With `--dynamic`: the most seconds one verify step may run
+        /// (default: `[spec_quality] red_on_base_timeout_secs`).
+        #[arg(
+            long,
+            requires = "dynamic",
+            value_name = "SECONDS",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        timeout: Option<u64>,
+        /// With `--dynamic`: an existing directory outside every checkout for
+        /// the base checkouts (default: the system temp directory).
+        #[arg(long, requires = "dynamic", value_name = "DIR")]
+        scratch: Option<PathBuf>,
+        /// With `--dynamic`: the workspace is a plain directory; check it
+        /// against a one-commit snapshot of itself.
+        #[arg(long, requires = "dynamic")]
+        fixture: bool,
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
@@ -853,6 +880,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             json,
             dag,
             spec_quality,
+            dynamic,
+            base,
+            timeout,
+            scratch,
+            fixture,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -863,8 +895,22 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            let exit =
-                cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json, spec_quality)?;
+            // 3214: `--dynamic` proves each task's checks red on the base.
+            let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
+                base,
+                timeout: timeout.map(std::time::Duration::from_secs),
+                scratch,
+                fixture,
+                ..Default::default()
+            });
+            let exit = cmd_plan_validate(
+                &plans_dir,
+                &workdir,
+                strict,
+                json || cli.json,
+                spec_quality,
+                dynamic,
+            )?;
 
             if dag {
                 // Run DAG analysis on top of the lint output.
@@ -2455,6 +2501,8 @@ struct ValidateJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     spec_quality: Option<&'a roko_gate::spec_quality::SpecQualityReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    red_on_base: Option<&'a roko_cli::spec_red_on_base::RedOnBaseReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
@@ -2464,6 +2512,7 @@ pub(crate) fn cmd_plan_validate(
     strict: bool,
     json_output: bool,
     spec_quality: bool,
+    dynamic: Option<roko_cli::spec_red_on_base::RedOnBaseOptions>,
 ) -> Result<i32> {
     let config_path = workdir.join("roko.toml");
     let config = if config_path.is_file() {
@@ -2494,10 +2543,41 @@ pub(crate) fn cmd_plan_validate(
     };
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
-    let spec_report = spec_quality
+    let spec_files = spec_quality
         .then(|| plan_validate::collect_tasks_files(dir))
-        .transpose()?
-        .map(|files| roko_gate::spec_quality::lint_files(&files, workdir));
+        .transpose()?;
+    // 3214: with --dynamic, each implementer task's checks first run on its
+    // base, so the scores count SQ06 and find HF3.
+    let red_on_base = match (&spec_files, dynamic) {
+        (Some(files), Some(mut options)) => {
+            let spec_config = config
+                .as_ref()
+                .map(|config| config.spec_quality.clone())
+                .unwrap_or_default();
+            options.timeout = options.timeout.or(Some(std::time::Duration::from_secs(
+                spec_config.red_on_base_timeout_secs,
+            )));
+            match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
+                Ok(report) => Some(report),
+                Err(error) => {
+                    use roko_cli::spec_red_on_base::Interrupted;
+                    if let Some(interrupted) = error.downcast_ref::<Interrupted>() {
+                        eprintln!("{interrupted}");
+                        return Ok(128 + interrupted.signal);
+                    }
+                    return Err(error.context("plan validate --dynamic"));
+                }
+            }
+        }
+        _ => None,
+    };
+    let spec_report = spec_files.map(|files| {
+        let results = red_on_base
+            .as_ref()
+            .map(|report| report.results())
+            .unwrap_or_default();
+        roko_gate::spec_quality::lint_files_with(&files, workdir, &results)
+    });
 
     // The workspace rungs every plan task runs after its own verify steps.
     let rungs = config
@@ -2510,6 +2590,7 @@ pub(crate) fn cmd_plan_validate(
         let output = ValidateJson {
             report: &report,
             spec_quality: spec_report.as_ref(),
+            red_on_base: red_on_base.as_ref(),
             workspace_rungs: rungs.as_ref(),
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -2533,6 +2614,9 @@ pub(crate) fn cmd_plan_validate(
         println!("{text}");
         if let Some(spec_quality) = &spec_report {
             println!("\n{}", roko_gate::spec_quality::render_text(spec_quality));
+        }
+        if let Some(red_on_base) = &red_on_base {
+            println!("\n{}", red_on_base.render_text());
         }
     }
     // A hard fail fails the run only under --strict; a low score never does.

@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
 use roko_core::child_env::CredentialScrub;
+use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
 use roko_execution::diagnostics::{
     DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
@@ -1224,6 +1225,18 @@ async fn probe_provider_credit(
 
     let result = match provider.kind {
         ProviderKind::AnthropicApi => {
+            // The registry's cheapest Anthropic model: the probe only needs an answer.
+            let Some(model) = cheapest_builtin_model(ProviderKind::AnthropicApi) else {
+                return DoctorCheck {
+                    id: format!("provider_credit_{provider_id}"),
+                    status: DoctorStatus::Skipped,
+                    message: format!("provider `{provider_id}`: no built-in model to probe with"),
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: None,
+                };
+            };
             let base = provider
                 .base_url
                 .as_deref()
@@ -1231,7 +1244,7 @@ async fn probe_provider_credit(
                 .trim_end_matches('/');
             let endpoint = format!("{base}/v1/messages");
             let body = json!({
-                "model": "claude-3-5-haiku-20241022",
+                "model": model.slug,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}]
             });

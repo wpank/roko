@@ -288,4 +288,53 @@ mod tests {
             "roko_llm_ttft_seconds should be registered"
         );
     }
+
+    /// gap-a95898: `/metrics` lists the conductor evaluations and provider
+    /// failures counters from startup, and a failure that the server's
+    /// provider health registry records counts there, by provider and error
+    /// type.
+    #[tokio::test]
+    async fn metrics_include_conductor_and_provider_failures() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let config = RokoConfig {
+            serve: roko_core::config::ServeConfig {
+                auth: ServeAuthConfig {
+                    enabled: false,
+                    ..ServeAuthConfig::default()
+                },
+                ..Default::default()
+            },
+            ..RokoConfig::default()
+        };
+        let (_dir, state, app) = build_test_state_and_router(config);
+        let health = &state.provider_health_registry;
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let text = String::from_utf8_lossy(&body);
+
+        assert!(
+            text.contains("# TYPE roko_conductor_evaluations_total counter"),
+            "{text}"
+        );
+        let failures = text
+            .lines()
+            .find(|line| line.starts_with("roko_provider_failures_total{"))
+            .expect("a labelled provider failure series");
+        assert_eq!(
+            failures,
+            r#"roko_provider_failures_total{error_type="RateLimit",provider="anthropic"} 1"#
+        );
+    }
 }

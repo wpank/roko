@@ -1082,6 +1082,7 @@ mod tests {
                 error_class: None,
                 model_reported: None,
                 attempt_key: None,
+                cache_hit: false,
             })
             .await
             .unwrap();

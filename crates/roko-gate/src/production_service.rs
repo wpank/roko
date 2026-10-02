@@ -135,8 +135,14 @@ pub struct ProductionGateService {
 impl std::fmt::Debug for ProductionGateService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProductionGateService")
-            .field("llm_judge_oracle", &self.rung_config.llm_judge_oracle.is_some())
-            .field("fact_check_oracle", &self.rung_config.fact_check_oracle.is_some())
+            .field(
+                "llm_judge_oracle",
+                &self.rung_config.llm_judge_oracle.is_some(),
+            )
+            .field(
+                "fact_check_oracle",
+                &self.rung_config.fact_check_oracle.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -496,8 +502,14 @@ pub struct DefaultGateService {
 impl std::fmt::Debug for DefaultGateService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DefaultGateService")
-            .field("llm_judge_oracle", &self.rung_config.llm_judge_oracle.is_some())
-            .field("fact_check_oracle", &self.rung_config.fact_check_oracle.is_some())
+            .field(
+                "llm_judge_oracle",
+                &self.rung_config.llm_judge_oracle.is_some(),
+            )
+            .field(
+                "fact_check_oracle",
+                &self.rung_config.fact_check_oracle.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -848,7 +860,10 @@ mod tests {
         };
         let service = ProductionGateService::new().with_rung_config(config);
         let configured = format!("{service:?}");
-        assert!(configured.contains("fact_check_oracle: true"), "{configured}");
+        assert!(
+            configured.contains("fact_check_oracle: true"),
+            "{configured}"
+        );
     }
 
     #[test]

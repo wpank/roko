@@ -427,6 +427,20 @@ impl CategoryModelStats {
             self.successes as f64 / self.trials as f64
         }
     }
+
+    /// What these counts gained since `base`, an earlier reading of them.
+    pub(crate) fn learned_since(&self, base: &Self) -> Self {
+        Self {
+            trials: self.trials.saturating_sub(base.trials),
+            successes: self.successes.saturating_sub(base.successes),
+        }
+    }
+
+    /// Add counts learned elsewhere.
+    pub(crate) fn absorb(&mut self, learned: &Self) {
+        self.trials += learned.trials;
+        self.successes += learned.successes;
+    }
 }
 
 /// Per-model observation record for the confidence stage.

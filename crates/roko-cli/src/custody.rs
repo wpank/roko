@@ -45,11 +45,12 @@ fn compute_hash(prev_hash: &str, record: &Custody) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Append a custody record to the log with hash-chain fields populated.
+/// Append a custody record to the log with hash-chain fields populated, and
+/// return the record's hash: the chain's new head.
 ///
 /// Reads the last record's `hash` (if any) to derive `prev_hash`, computes
 /// the new record's `hash`, then delegates to [`CustodyLogger::log`].
-pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<()> {
+pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<String> {
     let existing = logger.read_all()?;
     let prev = existing
         .last()
@@ -60,11 +61,74 @@ pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Resu
     } else {
         Some(prev.to_string())
     };
-    record.hash = Some(compute_hash(
-        record.prev_hash.as_deref().unwrap_or(""),
-        &record,
-    ));
-    logger.log(&record)
+    let hash = compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
+    record.hash = Some(hash.clone());
+    logger.log(&record)?;
+    Ok(hash)
+}
+
+/// Check `record`, line `idx` of a custody log, against the chain before it.
+///
+/// A sealed record's `prev_hash` must name `expected`, the hash of the sealed
+/// record before it, and its hash must match its payload. A legacy record
+/// without a hash restarts the chain. Pushes what is wrong onto `violations`,
+/// moves `expected` on, and returns whether `record` is sealed.
+fn check_chain_link(
+    idx: usize,
+    record: &Custody,
+    expected: &mut Option<String>,
+    violations: &mut Vec<String>,
+) -> bool {
+    let Some(stored_hash) = &record.hash else {
+        *expected = None;
+        return false;
+    };
+    // Verify prev_hash links to the previous record's hash.
+    match (&record.prev_hash, &*expected) {
+        (None, None) => { /* first chained record, OK */ }
+        (Some(prev), Some(expected)) if prev == expected => { /* link OK */ }
+        (None, Some(expected)) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash is missing, expected {:.16}...",
+                expected
+            ));
+        }
+        (Some(prev), None) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash is {:.16}... but no prior hash exists",
+                prev
+            ));
+        }
+        (Some(prev), Some(expected)) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash {:.16}... != expected {:.16}...",
+                prev, expected
+            ));
+        }
+    }
+    // Recompute the hash and compare.
+    let recomputed = compute_hash(record.prev_hash.as_deref().unwrap_or(""), record);
+    if *stored_hash != recomputed {
+        violations.push(format!(
+            "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
+            stored_hash, recomputed
+        ));
+    }
+    *expected = Some(stored_hash.clone());
+    true
+}
+
+/// What is wrong with the hash chain of the custody records `records`, in
+/// order: empty when it verifies. `start` is the hash the first sealed record
+/// must link to, `None` for the start of a log. `cmd_custody_verify` checks
+/// the same links.
+pub(crate) fn chain_violations(records: &[Custody], start: Option<String>) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut expected = start;
+    for (idx, record) in records.iter().enumerate() {
+        check_chain_link(idx, record, &mut expected, &mut violations);
+    }
+    violations
 }
 
 // ─── CLI commands ──────────────────────────────────────────────────
@@ -293,49 +357,10 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
                 }
 
                 // ── Hash chain verification ──────────────────────────
-                // Legacy records without hash fields are allowed but we
-                // skip chain verification for those.
-                if let Some(ref stored_hash) = record.hash {
+                // Legacy records without hash fields are allowed; they
+                // restart the chain.
+                if check_chain_link(idx, &record, &mut prev_hash_expected, &mut violations) {
                     chain_checked = true;
-
-                    // Verify prev_hash links to the previous record's hash.
-                    match (&record.prev_hash, &prev_hash_expected) {
-                        (None, None) => { /* first chained record, OK */ }
-                        (Some(prev), Some(expected)) if prev == expected => { /* link OK */ }
-                        (None, Some(expected)) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash is missing, expected {:.16}...",
-                                expected
-                            ));
-                        }
-                        (Some(prev), None) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash is {:.16}... but no prior hash exists",
-                                prev
-                            ));
-                        }
-                        (Some(prev), Some(expected)) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash {:.16}... != expected {:.16}...",
-                                prev, expected
-                            ));
-                        }
-                    }
-
-                    // Recompute the hash and compare.
-                    let recomputed =
-                        compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
-                    if *stored_hash != recomputed {
-                        violations.push(format!(
-                            "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
-                            stored_hash, recomputed
-                        ));
-                    }
-
-                    prev_hash_expected = Some(stored_hash.clone());
-                } else {
-                    // Legacy record without hash — reset chain expectation.
-                    prev_hash_expected = None;
                 }
             }
             Err(e) => {

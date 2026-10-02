@@ -262,6 +262,7 @@ async fn anthropic_session_mcp_tools() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -468,6 +469,7 @@ async fn acp_conformance() {
         &mcp_session.session_id,
         &mcp_session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         mcp_tx,
     )
     .await;
@@ -1066,9 +1068,14 @@ async fn send_session_update_emits_wrapped_payload() {
     );
 }
 
-/// The ACP v1 schema's definitions reachable from `SessionNotification`.
-const ACP_SESSION_NOTIFICATION_SCHEMA: &str =
-    include_str!("../../tests/fixtures/acp-v1-session-notification.schema.json");
+/// A subset of the ACP v1 schema: the definitions behind session updates, the
+/// `session/new` and `session/load` results, config options, permission replies
+/// and prompt content.
+const ACP_V1_SCHEMA_SUBSET: &str = include_str!("../../tests/fixtures/acp-v1-subset.schema.json");
+
+fn acp_schema() -> serde_json::Value {
+    serde_json::from_str(ACP_V1_SCHEMA_SUBSET).expect("parse ACP schema subset")
+}
 
 /// Lists the ways `value` breaks `schema`, resolving `$ref`s against `defs`. Covers the
 /// JSON Schema keywords that the ACP session-update definitions use, except `format`
@@ -1161,8 +1168,7 @@ fn session_update_spec_conformance() {
         CostInfo, PlanEntry, PlanEntryStatus, Priority, SessionBudgetStatus, ToolCallLocation,
     };
 
-    let schema: serde_json::Value =
-        serde_json::from_str(ACP_SESSION_NOTIFICATION_SCHEMA).expect("parse ACP schema subset");
+    let schema = acp_schema();
     let defs = &schema["$defs"];
     // Checks one update as `session/update` params and returns the update's JSON.
     let conforming = |update: SessionUpdate| {
@@ -1294,6 +1300,82 @@ fn session_update_spec_conformance() {
         "update": { "sessionUpdate": "mcp_status_update", "statuses": [] }
     });
     assert!(!acp_schema_errors(&old, &defs["SessionNotification"], defs, "params").is_empty());
+}
+
+#[test]
+fn config_option_spec_conformance() {
+    use crate::types::{ConfigOption, ConfigOptionType};
+
+    let schema = acp_schema();
+    let defs = &schema["$defs"];
+    let config = RokoConfig::from_toml(
+        r#"
+config_version = 2
+schema_version = 2
+
+[agent]
+default_model = "model-a"
+
+[providers.provider-a]
+kind = "openai_compat"
+base_url = "https://a.example.test/v1"
+api_key_env = ""
+
+[models.model-a]
+provider = "provider-a"
+slug = "model-a-slug"
+context_window = 8192
+"#,
+    )
+    .expect("test config should parse");
+    let session = AcpSession::new_with_config(
+        SessionNewParams {
+            session_name: Some("config-options".to_string()),
+            client_capabilities: None,
+            model: None,
+            provider: None,
+            effort: None,
+            mcp_servers: Vec::new(),
+        },
+        &config,
+    );
+
+    // The session/new result carries the options; config_option_update and
+    // session/set_config_option send the same list.
+    let created = serde_json::to_value(session.new_result()).expect("serialize session/new");
+    let errors = acp_schema_errors(&created, &defs["NewSessionResponse"], defs, "result");
+    assert!(errors.is_empty(), "{created}: {errors:?}");
+    let options = created["configOptions"].clone();
+    assert!(options.as_array().is_some_and(|list| !list.is_empty()));
+    let update = json!({
+        "sessionId": "sess-1",
+        "update": { "sessionUpdate": "config_option_update", "configOptions": options }
+    });
+    let errors = acp_schema_errors(&update, &defs["SessionNotification"], defs, "params");
+    assert!(errors.is_empty(), "{update}: {errors:?}");
+    let set_result = json!({ "configOptions": options });
+    let errors = acp_schema_errors(
+        &set_result,
+        &defs["SetSessionConfigOptionResponse"],
+        defs,
+        "result",
+    );
+    assert!(errors.is_empty(), "{set_result}: {errors:?}");
+
+    // An on/off option uses the spec's `boolean` type with a bool value.
+    let boolean = ConfigOption {
+        id: "clippy".to_owned(),
+        name: "Clippy".to_owned(),
+        option_type: ConfigOptionType::Boolean,
+        category: "gates".to_owned(),
+        current_value: json!(true),
+        description: None,
+        options: None,
+    };
+    let boolean = serde_json::to_value(&boolean).expect("serialize boolean option");
+    assert_eq!(boolean["type"], json!("boolean"));
+    let errors = acp_schema_errors(&boolean, &defs["SessionConfigOption"], defs, "option");
+    assert!(errors.is_empty(), "{boolean}: {errors:?}");
 }
 
 #[tokio::test]
@@ -2161,6 +2243,116 @@ async fn resolve_context_items_resolves_resource_and_path_mentions() {
 }
 
 #[test]
+fn prompt_resource_blocks_parse_spec_shapes() {
+    use crate::types::ResourceRef;
+
+    // A spec prompt with a resource link and embedded text and binary resources.
+    let prompt = json!({
+        "sessionId": "sess-1",
+        "prompt": [
+            { "type": "text", "text": "Explain these" },
+            {
+                "type": "resource_link",
+                "uri": "file:///repo/src/lib.rs",
+                "name": "lib.rs",
+                "mimeType": "text/x-rust"
+            },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///repo/notes.md",
+                    "text": "# Notes",
+                    "mimeType": "text/markdown"
+                }
+            },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///repo/logo.png",
+                    "blob": "aGVsbG8=",
+                    "mimeType": "image/png"
+                }
+            }
+        ]
+    });
+    let schema = acp_schema();
+    let defs = &schema["$defs"];
+    let errors = acp_schema_errors(&prompt, &defs["PromptRequest"], defs, "params");
+    assert!(errors.is_empty(), "spec-shaped samples: {errors:?}");
+
+    let params: SessionPromptParams = serde_json::from_value(prompt).expect("parse prompt");
+    let ContentBlock::ResourceLink { uri, name, .. } = &params.prompt[1] else {
+        panic!("expected a resource link, got {:?}", params.prompt[1]);
+    };
+    assert_eq!(
+        (uri.as_str(), name.as_str()),
+        ("file:///repo/src/lib.rs", "lib.rs")
+    );
+    assert!(matches!(
+        &params.prompt[2],
+        ContentBlock::Resource {
+            resource: ResourceRef::Text { text, .. }
+        } if text == "# Notes"
+    ));
+    assert!(matches!(
+        &params.prompt[3],
+        ContentBlock::Resource {
+            resource: ResourceRef::Blob { .. }
+        }
+    ));
+    // None of these blocks gets the prompt refused as unknown content.
+    let capabilities = crate::types::advertised_prompt_capabilities(false);
+    assert!(unsupported_prompt_content(&params.prompt, &capabilities).is_none());
+}
+
+#[test]
+fn prompt_resource_blocks_parse_legacy_file_ref_and_feed_context() {
+    use crate::types::ResourceRef;
+
+    // roko's own file reference still parses.
+    let legacy: ContentBlock = serde_json::from_value(json!({
+        "type": "resource",
+        "resource": { "type": "file", "uri": "file:///repo/a.rs" }
+    }))
+    .expect("parse roko file resource");
+    assert!(matches!(
+        legacy,
+        ContentBlock::Resource {
+            resource: ResourceRef::File { ref uri }
+        } if uri == "file:///repo/a.rs"
+    ));
+
+    // A linked workspace file is read from disk, embedded text is used as sent,
+    // and the link stays visible in the prompt text.
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    std::fs::write(tmp.path().join("lib.rs"), "fn linked() {}").expect("write linked file");
+    let link_uri = format!("file://{}", tmp.path().join("lib.rs").display());
+    let prompt = vec![
+        ContentBlock::Text {
+            text: "Explain".to_owned(),
+        },
+        ContentBlock::ResourceLink {
+            uri: link_uri.clone(),
+            name: "lib.rs".to_owned(),
+            mime_type: None,
+        },
+        ContentBlock::Resource {
+            resource: ResourceRef::Text {
+                uri: "file:///repo/notes.md".to_owned(),
+                text: "# Notes".to_owned(),
+                mime_type: None,
+            },
+        },
+    ];
+    let uris = extract_resource_uris(&prompt);
+    assert_eq!(uris, vec![link_uri.clone()]);
+    assert!(read_file_context(&uris, tmp.path()).contains("fn linked() {}"));
+    let embedded = embedded_resource_context(&prompt);
+    assert!(embedded.contains("<file path=\"/repo/notes.md\">\n# Notes\n</file>"));
+    assert!(extract_prompt_text(&prompt).contains(&format!("[lib.rs]({link_uri})")));
+}
+
+#[test]
 fn truncate_with_limit_is_char_safe() {
     let text = "é".repeat(20_000);
     let truncated = truncate_with_limit(&text, 32_768, "... [truncated]");
@@ -2517,21 +2709,23 @@ async fn builtin_tool_permitted_in_default_code_mode() {
     assert_eq!(acp_contract_role_for_mode("unknown-mode"), "unknown-mode");
 }
 
-/// A stdio MCP server that lists one read-only `echo` tool and answers one call
-/// to it. It creates the file named by its first argument when the call arrives.
+/// A stdio MCP server that lists two read-only tools, `echo` and `web_search`,
+/// and answers one call. It creates the file named by its first argument when
+/// the call arrives.
 const MCP_ECHO_FIXTURE: &str = r#"
     IFS= read -r initialize
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
     IFS= read -r list_tools
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},{"name":"web_search","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
     IFS= read -r call || exit 0
     : > "$1"
     printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}'
 "#;
 
-/// Dispatches the fixture's `echo` tool through the dispatcher an ACP tool loop
-/// builds for `mode`. Returns the result and whether the server got the call.
-async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
+/// Dispatches one of the fixture's tools, by its exposed name, through the
+/// dispatcher an ACP tool loop builds for `mode`. Returns the result and whether
+/// the server got the call.
+async fn dispatch_fixture_mcp_tool(mode: &str, tool: &str) -> (ToolResult, bool) {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let marker = tmp.path().join("tools-call-received");
     let servers = vec![crate::types::McpServerConfig {
@@ -2547,24 +2741,25 @@ async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
         },
         discovery_timeout_ms: Some(1_000),
     }];
+    let role = acp_contract_role_for_mode(mode);
     let (event_sender, _event_receiver) = mpsc::channel(16);
     let (runtime, statuses) = setup_session_mcp_tools(
         "mcp-contract-session",
         &servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        &role,
         event_sender,
     )
     .await;
-    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+    assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 2)]);
 
     let registry = Arc::new(VecToolRegistry::from_tools(runtime.tools));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
         handlers: runtime.handlers,
     });
-    let role = acp_contract_role_for_mode(mode);
     let safety = acp_tool_safety(&RokoConfig::default(), &role);
     let dispatcher = acp_tool_dispatcher(registry, resolver, safety);
-    let call = ToolCall::new("mcp-contract-call", "fixture_echo", json!({}));
+    let call = ToolCall::new("mcp-contract-call", tool, json!({}));
     let result = dispatcher
         .dispatch(call, &ToolContext::testing(tmp.path()))
         .await;
@@ -2574,7 +2769,7 @@ async fn dispatch_fixture_mcp_tool(mode: &str) -> (ToolResult, bool) {
 #[tokio::test]
 async fn mcp_tool_loop_allows_tool_permitted_by_role_contract() {
     // The default `code` mode loads the implementer contract, which permits the tool.
-    let (result, received) = dispatch_fixture_mcp_tool("code").await;
+    let (result, received) = dispatch_fixture_mcp_tool("code", "fixture_echo").await;
     assert!(
         result.is_ok(),
         "code mode must run the MCP tool, got {result:?}"
@@ -2618,14 +2813,103 @@ async fn acp_tool_dispatcher_runs_builtin_tool_in_code_mode() {
 }
 
 #[tokio::test]
+async fn remote_mcp_tools_respect_forbidden_tools() {
+    // The implementer contract forbids `web_search`. The server's tool is exposed
+    // as `fixture_web_search`, which the contract does not name, so only its
+    // remote name gives it away.
+    let (result, received) = dispatch_fixture_mcp_tool("code", "fixture_web_search").await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "a forbidden remote tool name must be denied, got {result:?}"
+    );
+    assert!(!received, "a denied call must never reach the MCP server");
+
+    // The session's pre- and post-dispatch checks hold the mode's contract too:
+    // plan mode's strategist may not write, so a plan turn that changed a file
+    // is blocked. Under the raw mode name it got the restricted contract, which
+    // has no such rule.
+    let layer = session_safety_layer(&RokoConfig::default(), "plan");
+    let changed = vec!["src/lib.rs".to_owned()];
+    let violations = layer.post_dispatch_check(
+        "sess-1",
+        "session-prompt",
+        "strategist",
+        "planned",
+        &changed,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.severity == ViolationSeverity::Block),
+        "plan mode must block a turn that changed files, got {violations:?}"
+    );
+}
+
+#[tokio::test]
 async fn mcp_tool_loop_denies_tool_outside_role_contract() {
     // A mode with no bundled contract gets the deny-all restricted fallback.
-    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode").await;
+    let (result, received) = dispatch_fixture_mcp_tool("unknown-mode", "fixture_echo").await;
     assert!(
         matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
         "a tool outside the role contract must be denied, got {result:?}"
     );
     assert!(!received, "a denied call must never reach the MCP server");
+}
+
+/// A config whose `[agent.data_llm]` names `data_model`: `api-reader` is a
+/// model roko calls over an API, `cli-reader` one that a CLI runs.
+fn data_llm_test_config(data_model: &str) -> RokoConfig {
+    RokoConfig::from_toml(&format!(
+        r#"
+[agent.data_llm]
+model = "{data_model}"
+
+[providers.local]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.cli]
+kind = "claude_cli"
+command = "claude"
+
+[models.api-reader]
+provider = "local"
+slug = "reader"
+context_window = 8192
+
+[models.cli-reader]
+provider = "cli"
+slug = "claude-haiku-4-5"
+context_window = 8192
+"#
+    ))
+    .expect("parse data LLM config")
+}
+
+/// gap-b0d514: ACP's tool loops get the `[agent.data_llm]` boundary, none
+/// without the section, and a configured one that cannot be built fails the
+/// turn with the reason instead of letting tool output through unscreened.
+#[tokio::test]
+async fn acp_data_llm_is_built_from_config_or_fails_the_turn() {
+    let (event_sender, mut events) = mpsc::channel(4);
+
+    let off = acp_data_llm(&RokoConfig::default(), &event_sender).await;
+    assert!(matches!(off, Ok(None)), "no section means no boundary");
+
+    let on = acp_data_llm(&data_llm_test_config("api-reader"), &event_sender).await;
+    assert!(matches!(on, Ok(Some(_))), "an API model builds one");
+    assert!(events.try_recv().is_err(), "building it reports nothing");
+
+    let cli = data_llm_test_config("cli-reader");
+    let refused = acp_data_llm(&cli, &event_sender).await;
+    assert!(refused.is_err(), "an unbuildable one fails the turn");
+    let Ok(CognitiveEvent::Failure { message }) = events.try_recv() else {
+        panic!("the turn must say why its data LLM is unavailable");
+    };
+    assert!(
+        message.contains("cannot serve as the data LLM"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -3821,6 +4105,7 @@ async fn mcp_server_crash_during_tools_list_produces_failed_status() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -3874,6 +4159,7 @@ async fn mcp_server_hang_during_initialize_times_out_gracefully() {
         &session.session_id,
         &session.mcp_servers,
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -3991,6 +4277,7 @@ async fn mcp_setup_with_no_servers_returns_empty_runtime() {
         "empty-session",
         &[],
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -4019,6 +4306,7 @@ async fn mcp_server_immediate_exit_without_response_reports_failed_status() {
             discovery_timeout_ms: Some(1_000),
         }],
         roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        "implementer",
         event_sender,
     )
     .await;
@@ -4051,4 +4339,128 @@ fn compute_session_capabilities_empty_tool_list_is_fail_closed() {
         },
         "empty tool list must produce all-false capabilities"
     );
+}
+
+// ── Bridge under load ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn bridge_under_load_drops_progress_but_keeps_turn_end() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender
+        .send(CognitiveEvent::TokenChunk("first".to_owned()))
+        .await
+        .expect("fill the channel");
+
+    // A progress event gives up on a channel that stays full.
+    let started = Instant::now();
+    send_cognitive_event_within(
+        &sender,
+        CognitiveEvent::TokenChunk("dropped".to_owned()),
+        Duration::from_millis(20),
+    )
+    .await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    // The turn's end waits for room, past that timeout.
+    let completion = send_cognitive_event_within(
+        &sender,
+        CognitiveEvent::Complete {
+            stop_reason: StopReason::EndTurn,
+            usage: None,
+        },
+        Duration::from_millis(20),
+    );
+    let reader = async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let first = receiver.recv().await;
+        let second = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        (first, second)
+    };
+    let ((), (first, second)) = tokio::join!(completion, reader);
+    assert!(matches!(first, Some(CognitiveEvent::TokenChunk(text)) if text == "first"));
+    assert!(matches!(second, Ok(Some(CognitiveEvent::Complete { .. }))));
+}
+
+#[test]
+fn bridge_under_load_caps_assistant_text() {
+    let chunk = "é".repeat(1_000);
+    let mut text = String::new();
+    let mut reached = 0;
+    for _ in 0..600 {
+        if append_assistant_text(&mut text, &chunk) {
+            reached += 1;
+        }
+    }
+    assert_eq!(text.len(), MAX_ASSISTANT_TEXT_BYTES);
+    assert!(
+        text.chars().all(|c| c == 'é'),
+        "the cap must cut on a char boundary"
+    );
+    assert_eq!(reached, 1, "the cap is reported once");
+}
+
+#[tokio::test]
+async fn bridge_under_load_keeps_requests_sent_during_a_prompt() {
+    let (mut client, server) = duplex(4096);
+    let (server_reader, server_writer) = tokio::io::split(server);
+    let mut transport = StdioTransport::from_io(server_reader, server_writer);
+    let mut session = test_session("test-model", "none");
+    let session_id = session.session_id.clone();
+    let cancel_token = CancelToken::new();
+    let (_event_sender, event_receiver) = mpsc::channel(4);
+
+    // While the prompt runs, the client asks for something else, then leaves.
+    let request = json!({ "jsonrpc": "2.0", "id": 7, "method": "session/list", "params": {} });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .expect("write mid-prompt request");
+    drop(client);
+
+    let result = stream_events_to_editor(
+        &mut transport,
+        &session_id,
+        &mut session,
+        Path::new("."),
+        event_receiver,
+        &cancel_token,
+    )
+    .await
+    .expect("the stream ends at the disconnect");
+    assert_eq!(result.prompt_result.stop_reason, StopReason::Cancelled);
+    // The request is kept for the server to answer, not dropped.
+    assert_eq!(session.deferred_requests.len(), 1);
+    assert_eq!(session.deferred_requests[0].method, "session/list");
+}
+
+#[test]
+fn bridge_under_load_drains_deferred_requests_in_order() {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let mut sessions =
+        crate::session::SessionManager::new(tmp.path().to_path_buf(), RokoConfig::default());
+    let created = sessions.create_session(SessionNewParams {
+        session_name: Some("deferred".to_owned()),
+        client_capabilities: None,
+        model: None,
+        provider: None,
+        effort: None,
+        mcp_servers: Vec::new(),
+    });
+    let request = |id: u64, method: &str| -> crate::types::JsonRpcRequest {
+        serde_json::from_value(json!({ "jsonrpc": "2.0", "id": id, "method": method }))
+            .expect("parse request")
+    };
+    let session = sessions
+        .get_session_mut(&created.session_id)
+        .expect("session exists");
+    session.deferred_requests.push(request(1, "session/new"));
+    session.deferred_requests.push(request(2, "session/list"));
+
+    let drained: Vec<String> = sessions
+        .drain_deferred_requests()
+        .into_iter()
+        .map(|request| request.method)
+        .collect();
+    assert_eq!(drained, ["session/new", "session/list"]);
+    assert!(sessions.drain_deferred_requests().is_empty());
 }

@@ -48,6 +48,7 @@ use crate::mcp::McpRuntime;
 use crate::mock::MockAgent;
 use crate::process::ResourceLimits;
 use crate::rate_limit::ProviderRateLimiter;
+use crate::safety::DataLlmBoundary;
 use crate::safety::contract::AgentContract;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
@@ -56,7 +57,7 @@ use roko_core::child_env::CredentialScrub;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
-use roko_core::config::schema::{ModelProfile, ProviderConfig};
+use roko_core::config::schema::{DataLlmConfig, ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::tool::{
     CorrelationEnvelope, MetricsSink, ToolDef, ToolFormat, ToolRegistry, TraceSink,
@@ -412,6 +413,14 @@ pub fn create_agent_for_model(
     if options.env_passthrough.is_empty() {
         options.env_passthrough = config.agent.env_passthrough.clone();
     }
+    // The CaMeL data-LLM boundary covers the tool loops roko runs itself:
+    // the adapters that execute tools in process (gap-b0d514).
+    if options.data_llm.is_none()
+        && adapter.supports_local_tool_runtime()
+        && let Some(data_llm) = &config.agent.data_llm
+    {
+        options.data_llm = Some(data_llm_boundary(config, data_llm)?);
+    }
     // The system prompt's cache markers mean something only to the Anthropic
     // API translators, which turn them into `cache_control` blocks; any other
     // provider would get them as inert text (find-6ee709).
@@ -452,6 +461,50 @@ fn safety_layer_for_options(config: &RokoConfig, options: &AgentOptions) -> Safe
         safety_layer = safety_layer.with_contract(contract);
     }
     safety_layer
+}
+
+/// The CaMeL data-LLM boundary `[agent.data_llm]` asks for (gap-b0d514):
+/// a backend for its model with no tools, which must be a model roko calls
+/// over an API. A boundary it cannot build fails the agent's construction,
+/// so a configured boundary is never skipped.
+pub fn data_llm_boundary(
+    config: &RokoConfig,
+    data_llm: &DataLlmConfig,
+) -> Result<Arc<DataLlmBoundary>, AgentCreationError> {
+    let model_key = data_llm.model.as_str();
+    let resolved = resolve_model(config, model_key);
+    let profile = resolved
+        .profile
+        .or_else(|| config.effective_models().get(model_key).cloned())
+        .ok_or_else(|| {
+            AgentCreationError::MissingConfig(format!(
+                "agent.data_llm.model `{model_key}` is not a configured model"
+            ))
+        })?;
+    let provider = resolved
+        .provider_config
+        .or_else(|| config.effective_providers().get(&profile.provider).cloned())
+        .ok_or_else(|| {
+            AgentCreationError::MissingConfig(format!(
+                "agent.data_llm.model `{model_key}` uses provider `{}`, which is not configured",
+                profile.provider
+            ))
+        })?;
+    let poster = Arc::new(crate::http::ReqwestPoster::new());
+    let backend = crate::tool_loop::backends::create_tool_loop_backend(
+        &provider,
+        &profile,
+        &AgentOptions::default(),
+        poster,
+    )
+    .map_err(|error| {
+        AgentCreationError::MissingConfig(format!(
+            "agent.data_llm.model `{model_key}` cannot serve as the data LLM: {error}"
+        ))
+    })?;
+    DataLlmBoundary::new(data_llm.clone(), backend)
+        .map(Arc::new)
+        .map_err(AgentCreationError::MissingConfig)
 }
 
 fn mock_agent_from_env(
@@ -546,10 +599,12 @@ pub fn build_provider_tool_dispatcher(
     }) {
         identity.role = role;
     }
-    Arc::new(
-        scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
-            .with_call_identity(identity),
-    )
+    let mut dispatcher = scoped_tool_dispatcher(registry, resolver, options.tool_audit.clone())
+        .with_call_identity(identity);
+    if let Some(sink) = &options.provenance_sink {
+        dispatcher = dispatcher.with_provenance_sink(Arc::clone(sink));
+    }
+    Arc::new(dispatcher)
 }
 
 /// Attach `options`' per-call trace and metrics sinks and its tool
@@ -1095,6 +1150,12 @@ pub struct AgentOptions {
     /// to, carried into their audit, trace and metrics records
     /// (find-f489db).
     pub tool_correlation: Option<CorrelationEnvelope>,
+    /// Durable safety provenance for the tool loop's tool calls (gap-ff95f5).
+    ///
+    /// When set, the tool dispatcher records each call's intent with the sink
+    /// before its handler runs, and does not run a call whose intent the sink
+    /// refuses.
+    pub provenance_sink: Option<Arc<dyn crate::safety::SafetyProvenanceSink>>,
     /// Live output channel for forwarding provider events before screening.
     ///
     /// When set and the provider supports streaming, the immune boundary taps
@@ -1103,6 +1164,11 @@ pub struct AgentOptions {
     /// and result events are additionally forwarded as
     /// [`LiveAgentEvent::Unscreened`] when `trusted` is set.
     pub live_output: Option<LiveOutput>,
+    /// The CaMeL data-LLM boundary for this agent's tool loop. When it is
+    /// unset, [`create_agent_for_model`] builds one from `[agent.data_llm]`
+    /// for a provider whose tool loop roko runs, and that loop sends untrusted
+    /// tool output through it (gap-b0d514).
+    pub data_llm: Option<Arc<DataLlmBoundary>>,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1132,6 +1198,8 @@ impl std::fmt::Debug for AgentOptions {
             .field("trace_sink", &self.trace_sink.is_some())
             .field("metrics_sink", &self.metrics_sink.is_some())
             .field("tool_correlation", &self.tool_correlation)
+            .field("provenance_sink", &self.provenance_sink.is_some())
+            .field("data_llm", &self.data_llm.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -1673,6 +1741,42 @@ mod tests {
             },
         );
         config
+    }
+
+    /// gap-b0d514: `[agent.data_llm]` builds its boundary from a model roko
+    /// calls over an API, and refuses a model it does not know or cannot call.
+    #[test]
+    fn data_llm_boundary_needs_a_model_roko_calls_over_an_api() {
+        let mut config = test_config("http://127.0.0.1:9/v1".to_string());
+        let data_llm = |model: &str| DataLlmConfig {
+            model: model.to_string(),
+            ..DataLlmConfig::default()
+        };
+        assert!(data_llm_boundary(&config, &data_llm("glm-5-1")).is_ok());
+        assert!(data_llm_boundary(&config, &data_llm("no-such-model")).is_err());
+
+        config.providers.insert(
+            "claude".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "cli-model".to_string(),
+            ModelProfile {
+                provider: "claude".to_string(),
+                slug: "claude-haiku-4-5".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        let error = data_llm_boundary(&config, &data_llm("cli-model"))
+            .expect_err("a CLI model cannot be the data LLM");
+        assert!(
+            error.to_string().contains("cannot serve as the data LLM"),
+            "{error}"
+        );
     }
 
     fn perplexity_config(

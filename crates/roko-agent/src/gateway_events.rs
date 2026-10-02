@@ -42,6 +42,15 @@ pub struct GatewayEvent {
     pub timestamp: String,
 }
 
+impl GatewayEvent {
+    /// What the call cost: nothing for a cache hit, whose usage fields
+    /// repeat the cached call's (bug-982600).
+    #[must_use]
+    pub fn billed_cost_usd(&self) -> f64 {
+        if self.cache_hit { 0.0 } else { self.cost_usd }
+    }
+}
+
 /// Append-only writer for gateway events.
 pub struct GatewayEventWriter {
     path: PathBuf,
@@ -178,10 +187,11 @@ impl GatewayProjection {
         self.events.len()
     }
 
-    /// Total cost across all events.
+    /// Total cost across all events; a cache hit cost nothing
+    /// ([`GatewayEvent::billed_cost_usd`]).
     #[must_use]
     pub fn total_cost_usd(&self) -> f64 {
-        self.events.iter().map(|event| event.cost_usd).sum()
+        self.events.iter().map(GatewayEvent::billed_cost_usd).sum()
     }
 
     fn aggregate_by<'a>(
@@ -218,7 +228,7 @@ impl AggregateStats {
         self.count += 1;
         self.total_input_tokens += event.input_tokens;
         self.total_output_tokens += event.output_tokens;
-        self.total_cost_usd += event.cost_usd;
+        self.total_cost_usd += event.billed_cost_usd();
         self.total_latency_ms += event.latency_ms;
         if event.cache_hit {
             self.cache_hits += 1;
@@ -344,7 +354,8 @@ mod tests {
         assert_eq!(model_a.count, 2);
         assert_eq!(model_a.total_input_tokens, 20);
         assert_eq!(model_a.total_output_tokens, 35);
-        assert!((model_a.total_cost_usd - 0.06).abs() < f64::EPSILON);
+        // The cache hit repeats its cached call's cost but cost nothing.
+        assert!((model_a.total_cost_usd - 0.02).abs() < f64::EPSILON);
         assert_eq!(model_a.cache_hits, 1);
         assert_eq!(model_a.errors, 1);
 
@@ -364,5 +375,26 @@ mod tests {
         let projection = GatewayProjection::load(&path).expect("load");
         assert_eq!(projection.total_events(), 0);
         assert_eq!(projection.total_cost_usd(), 0.0);
+    }
+
+    /// bug-982600: a cache hit's event repeats the cached call's usage, but
+    /// no provider was called, so the totals add no cost for it.
+    #[test]
+    fn cache_hits_add_no_gateway_cost() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("gateway.jsonl");
+        let writer = GatewayEventWriter::new(&path);
+        let paid = event("req-1", "serve", "model-a");
+        let mut cached = event("req-2", "serve", "model-a");
+        cached.cache_hit = true;
+        writer.write(&paid).expect("write the paid call");
+        writer.write(&cached).expect("write the cache hit");
+
+        let projection = GatewayProjection::load(&path).expect("load");
+        assert!((projection.total_cost_usd() - 0.03).abs() < f64::EPSILON);
+        let by_model = projection.stats_by_model();
+        let model_a = &by_model["model-a"];
+        assert_eq!((model_a.count, model_a.cache_hits), (2, 1));
+        assert!((model_a.total_cost_usd - 0.03).abs() < f64::EPSILON);
     }
 }

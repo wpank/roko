@@ -126,7 +126,10 @@ mod tests {
         let first = ran(&[("verify[0:compile]", true), ("verify[1:test]", false)]);
         assert!(step_regressions(&first, &BTreeSet::new()).is_empty());
         let second = ran(&[("verify[0:compile]", false)]);
-        assert_eq!(step_regressions(&second, &passes(&first)), ["verify[0:compile]"]);
+        assert_eq!(
+            step_regressions(&second, &passes(&first)),
+            ["verify[0:compile]"]
+        );
 
         // The same label with another command is another step.
         let edited = vec![(

@@ -925,20 +925,16 @@ mod tests {
         assert_eq!(verdict["executed"]["provider"], "stream-cli");
         assert!(verdict["cost"]["source"].is_string(), "{verdict}");
 
-        // The dispatch row's id is the key; the gate-pass row extends it. The
+        // The attempt's one settled row's id is the key (backlog 2107). The
         // provider bridge logs its own `model_call` rows to the same file,
         // under the feedback schema.
-        let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
+        let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
             row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
         })
         .await;
-        let mut ids = field(&efficiency, "attempt_id");
-        ids.sort_unstable();
-        assert_eq!(ids, [key.clone(), format!("{key}/gate-pass")]);
-        assert_eq!(
-            field(&efficiency, "attempt_key"),
-            [key.as_str(), key.as_str()]
-        );
+        assert_eq!(field(&efficiency, "attempt_id"), [key.as_str()]);
+        assert_eq!(field(&efficiency, "attempt_key"), [key.as_str()]);
+        assert_eq!(efficiency[0]["gate_passed"], true);
         // The bridge's own `model_call` row names the attempt and the model
         // the provider reported (bug-92f655).
         let model_calls = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
@@ -994,11 +990,11 @@ mod tests {
         assert_eq!(verdict["isolation"]["config_dir"], "user");
     }
 
-    /// The gate row agrees with the attempt's dispatch row on the turns
-    /// (bug-ad5487): the reported count when the agent gave one, and 0
-    /// marked `turns_unknown` when it gave none.
+    /// The attempt's settled efficiency row carries its turns (bug-ad5487):
+    /// the reported count when the agent gave one, and 0 marked
+    /// `turns_unknown` when it gave none.
     #[tokio::test]
-    async fn gate_rows_carry_the_attempts_turns_or_unknown() {
+    async fn efficiency_row_carries_the_attempts_turns_or_unknown() {
         const FOUR_TURNS_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null
@@ -1020,11 +1016,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
                 .await
                 .expect("the verify step passes");
 
-            let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
                 row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
             })
             .await;
-            assert_eq!(rows.len(), 2, "the dispatch row and the gate-pass row");
+            assert_eq!(rows.len(), 1, "one settled row per attempt");
             for row in &rows {
                 let id = row["attempt_id"].as_str().unwrap_or_default();
                 assert_eq!(row["turn_number"], turns.unwrap_or(0), "{id}");

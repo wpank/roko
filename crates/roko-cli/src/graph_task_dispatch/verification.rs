@@ -965,68 +965,6 @@ impl GraphTaskDispatcher {
                         failed_count = failures.len(),
                         "gate failure replan enabled; Graph engine will retry via max_retries"
                     );
-                    // Update efficiency gate_passed if we wrote one.
-                    if let Some(eff_path) = &self.feedback.efficiency_path {
-                        // P3-02: Propagate actual turn count from the
-                        // dispatch that preceded this gate failure; 0 marked
-                        // unknown when it reported none (bug-ad5487).
-                        let gate_turns = super::attempt::reported_turns(dispatch);
-                        let gate_turn_number = gate_turns.unwrap_or(0);
-                        let gate_event = roko_learn::efficiency::AgentEfficiencyEvent {
-                            agent_id: format!("{}/{}", spec.plan_id, task.id),
-                            role: task.role.as_deref().unwrap_or("implementer").to_string(),
-                            backend: dispatch.target.provider_id.clone(),
-                            model: dispatch.target.model_slug.clone(),
-                            plan_id: spec.plan_id.clone(),
-                            task_id: task.id.clone(),
-                            attempt_id: format!("{attempt_key}/gate-fail"),
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            reasoning_tokens: 0,
-                            cache_read_tokens: 0,
-                            cache_write_tokens: 0,
-                            cost_usd: 0.0,
-                            cost_usd_without_cache: 0.0,
-                            prompt_sections: vec![],
-                            total_prompt_tokens: 0,
-                            system_prompt_tokens: 0,
-                            tools_available: 0,
-                            tools_used: 0,
-                            tool_calls: vec![],
-                            wall_time_ms: 0,
-                            duration_ms: 0,
-                            time_to_first_token_ms: 0,
-                            was_warm_start: false,
-                            iteration: gate_turn_number,
-                            turn_number: gate_turn_number,
-                            is_final_turn: false,
-                            gate_passed: Some(false),
-                            outcome: "gate_failure".to_string(),
-                            gate_errors: failures.clone(),
-                            model_used: dispatch.target.model_slug.clone(),
-                            frequency: roko_core::OperatingFrequency::Gamma,
-                            strategy_attempted: "replan".to_string(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                        };
-                        let row = AttemptKeyed {
-                            attempt_key: attempt_key.to_string(),
-                            row: roko_learn::efficiency::TurnsRow {
-                                row: &gate_event,
-                                turns_unknown: gate_turns.is_none(),
-                            },
-                        };
-                        if let Ok(line) = serde_json::to_string(&row) {
-                            let path = eff_path.clone();
-                            crate::background_writes::spawn(&eff_path, async move {
-                                if let Err(error) = append_jsonl_line_async(path, line).await {
-                                    tracing::warn!(
-                                        %error,
-                                        "graph gate-failure efficiency event write failed"
-                                    );
-                                }
-                            });
-                        }
-                    }
                 }
                 // ── error_enrichment: enrich gate failure before retry ───
                 //
@@ -1290,84 +1228,11 @@ impl GraphTaskDispatcher {
                 step_count = steps.len(),
                 "all graph verify steps passed"
             );
-            // ── P0-GA-1: Emit gate-pass efficiency event ──────────────────
-            //
-            // The initial efficiency event (W05 in emit_feedback) is written
-            // before gate execution with gate_passed: None, so the metric was
-            // always 0%. Write a follow-up record now that we know all verify
-            // steps passed so readers that filter by gate_passed == Some(true)
-            // see the correct pass count.
-            if let Some(eff_path) = &self.feedback.efficiency_path {
-                // The attempt's reported turns; 0 marked unknown when it
-                // reported none (bug-ad5487).
-                let gate_turns = super::attempt::reported_turns(dispatch);
-                let gate_turn_number = gate_turns.unwrap_or(0);
-                let gate_pass_event = roko_learn::efficiency::AgentEfficiencyEvent {
-                    agent_id: format!("{}/{}", spec.plan_id, task.id),
-                    role: task.role.as_deref().unwrap_or("implementer").to_string(),
-                    backend: dispatch.target.provider_id.clone(),
-                    model: dispatch.target.model_slug.clone(),
-                    plan_id: spec.plan_id.clone(),
-                    task_id: task.id.clone(),
-                    // Suffixed so it stays distinct from, yet joins, the
-                    // attempt's dispatch event.
-                    attempt_id: format!("{attempt_key}/gate-pass"),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    reasoning_tokens: 0,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    cost_usd: 0.0,
-                    cost_usd_without_cache: 0.0,
-                    prompt_sections: vec![],
-                    total_prompt_tokens: 0,
-                    system_prompt_tokens: 0,
-                    tools_available: 0,
-                    tools_used: 0,
-                    tool_calls: vec![],
-                    wall_time_ms: 0,
-                    duration_ms: 0,
-                    time_to_first_token_ms: 0,
-                    was_warm_start: false,
-                    iteration: gate_turn_number,
-                    turn_number: gate_turn_number,
-                    is_final_turn: true,
-                    gate_passed: Some(true),
-                    outcome: "gate_pass".to_string(),
-                    gate_errors: vec![],
-                    model_used: dispatch.target.model_slug.clone(),
-                    frequency: roko_core::OperatingFrequency::Gamma,
-                    strategy_attempted: String::new(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                };
-                let row = AttemptKeyed {
-                    attempt_key: attempt_key.to_string(),
-                    row: roko_learn::efficiency::TurnsRow {
-                        row: &gate_pass_event,
-                        turns_unknown: gate_turns.is_none(),
-                    },
-                };
-                if let Ok(line) = serde_json::to_string(&row) {
-                    let path = eff_path.clone();
-                    let plan_id = spec.plan_id.clone();
-                    let task_id = task.id.clone();
-                    crate::background_writes::spawn(&eff_path, async move {
-                        if let Err(error) = append_jsonl_line_async(path, line).await {
-                            tracing::warn!(
-                                plan_id = %plan_id,
-                                task_id = %task_id,
-                                %error,
-                                "graph gate-pass efficiency event write failed (best-effort)"
-                            );
-                        }
-                    });
-                }
-            }
             // ── RAG-10/11: Retrieval outcome settlement (gate pass) ───────
             {
                 let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                    // RAG-11: update experiment store with gate-pass outcome.
+                    // RAG-11: update experiment store with the passed gate's outcome.
                     if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
                         // Locked: prompt treatments share the file. The store
                         // is read and written back whole, so off the reactor
@@ -1405,7 +1270,7 @@ impl GraphTaskDispatcher {
                             {
                                 tracing::warn!(
                                     %error,
-                                    "RAG-10: gate-pass retrieval outcome write failed (best-effort)"
+                                    "RAG-10: pass retrieval outcome write failed (best-effort)"
                                 );
                             }
                         });
@@ -2617,9 +2482,9 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
         // The provider succeeded all three times; learning must record the
         // verified outcome, so the failed-verify attempt is a failure. Each
-        // attempt gets its own key, which its gate-pass record extends; with
-        // no Graph run in the cell context, the key names the dispatcher's
-        // own run.
+        // attempt gets its own key and one settled row, with no gate row
+        // beside it (backlog 2107); with no Graph run in the cell context,
+        // the key names the dispatcher's own run.
         let chain = format!(
             "{}:{}:{}",
             dispatcher.attempts.fallback_run_id(),
@@ -2629,11 +2494,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let attempt =
             |suffix: &str, outcome: &str| (format!("{chain}:{suffix}"), outcome.to_string());
         assert_eq!(
-            efficiency_records(&efficiency, 4).await,
+            efficiency_records(&efficiency, 3).await,
             vec![
                 attempt("1", "success"),
                 attempt("2", "success"),
-                attempt("2/gate-pass", "gate_pass"),
                 attempt("3", "failure"),
             ]
         );

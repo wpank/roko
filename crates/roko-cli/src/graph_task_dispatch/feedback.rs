@@ -392,7 +392,8 @@ impl GraphTaskDispatcher {
                 tool_calls: eff_tool_calls,
                 wall_time_ms: duration_ms,
                 duration_ms,
-                // 0 when no stream showed model output (gap-7a8474).
+                // 0 when no stream showed model output (gap-7a8474), which
+                // the row marks `ttft_unknown`.
                 time_to_first_token_ms: dispatch.result.ttft_ms.unwrap_or(0),
                 // No provider process is pre-spawned or reused, so every
                 // dispatch is a cold start.
@@ -400,13 +401,15 @@ impl GraphTaskDispatcher {
                 iteration: agent_num_turns,
                 turn_number: agent_num_turns,
                 is_final_turn: true,
-                gate_passed: None,
+                // The attempt's one settled row carries its verify verdict;
+                // no gate row follows it (backlog 2107).
+                gate_passed: efficiency_gate_passed(settled.verdict.outcome),
                 outcome: if succeeded {
                     "success".to_string()
                 } else {
                     "failure".to_string()
                 },
-                gate_errors: vec![],
+                gate_errors: failed_step_summaries(&settled.verdict.steps),
                 model_used: model_slug.clone(),
                 frequency: roko_core::OperatingFrequency::Gamma,
                 strategy_attempted: eff_strategy.to_string(),
@@ -414,7 +417,13 @@ impl GraphTaskDispatcher {
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
-                row: roko_learn::efficiency::ExecutedRow::new(&event, &settled.verdict.executed),
+                row: roko_learn::efficiency::TtftRow {
+                    row: roko_learn::efficiency::ExecutedRow::new(
+                        &event,
+                        &settled.verdict.executed,
+                    ),
+                    ttft_unknown: dispatch.result.ttft_ms.is_none(),
+                },
             };
             match serde_json::to_string(&row) {
                 Ok(line) => {
@@ -639,6 +648,30 @@ impl GraphTaskDispatcher {
             );
         }
     }
+}
+
+/// What an attempt's verify steps said, for its efficiency row (backlog
+/// 2107): a pass, a failed gate, or nothing when no verify step judged it.
+const fn efficiency_gate_passed(outcome: AttemptOutcome) -> Option<bool> {
+    match outcome {
+        AttemptOutcome::Passed => Some(true),
+        AttemptOutcome::GateFailed => Some(false),
+        _ => None,
+    }
+}
+
+/// One line per failed verify step, for the efficiency row's `gate_errors`:
+/// the step's rung and how it failed. No command or output.
+fn failed_step_summaries(steps: &[roko_learn::telemetry::VerifyStepVerdict]) -> Vec<String> {
+    steps
+        .iter()
+        .filter(|step| step.passed == Some(false))
+        .map(|step| match (step.timed_out, step.exit_code) {
+            (true, _) => format!("{}: timed out", step.rung),
+            (false, Some(code)) => format!("{}: exit code {code}", step.rung),
+            (false, None) => format!("{}: failed", step.rung),
+        })
+        .collect()
 }
 
 /// Reasoning (thinking) tokens a dispatch reported (gap-7a8474): its usage,
@@ -1262,6 +1295,71 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .as_u64()
             .expect("time to first token");
         assert!(ttft_ms >= 100, "{ttft_ms} ms: {:#}", rows[0]);
+    }
+
+    /// backlog 2107: an attempt writes one efficiency row, its settled one,
+    /// whatever ended it: a pass, a verify failure with replanning on, or a
+    /// provider failure. The pass row carries the verdict and the call's
+    /// tokens, the failed gate's row names the failed step, and a call that
+    /// streamed nothing marks its time to first token unknown.
+    #[tokio::test]
+    async fn efficiency_writes_one_keyed_row_per_attempt() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            replan_on_gate_failure: true,
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new();
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+        task.verify = vec![verify_step("check", "false")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the verify step fails");
+        std::fs::write(temp.path().join("fail-next"), "").expect("fail the next call");
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider call fails");
+
+        let rows = jsonl_rows_where(&efficiency_path, 3, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && row["role"] != "helper"
+        })
+        .await;
+        assert_eq!(rows.len(), 3, "one row per attempt: {rows:#?}");
+        let mut keys: Vec<&str> = rows
+            .iter()
+            .map(|row| row["attempt_key"].as_str().unwrap_or_default())
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 3, "{rows:#?}");
+        let row = |gate_passed: serde_json::Value| {
+            rows.iter()
+                .find(|row| row["gate_passed"] == gate_passed)
+                .unwrap_or_else(|| panic!("no row with gate_passed {gate_passed}: {rows:#?}"))
+        };
+        let passed = row(serde_json::Value::Bool(true));
+        assert_eq!(passed["attempt_id"], passed["attempt_key"], "{passed}");
+        assert!(passed["input_tokens"].as_u64() > Some(0), "{passed}");
+        assert!(passed.get("ttft_unknown").is_none(), "{passed}");
+        let failed = row(serde_json::Value::Bool(false));
+        assert_eq!(
+            failed["gate_errors"],
+            serde_json::json!(["custom:check: exit code 1"]),
+            "{failed}"
+        );
+        let provider_failed = row(serde_json::Value::Null);
+        assert_eq!(provider_failed["ttft_unknown"], true, "{provider_failed}");
     }
 
     /// gap-7a8474: the Graph efficiency row's usage fields come from what the

@@ -242,7 +242,6 @@ pub(crate) fn handle_slash_command(
                 styled::continuation(theme, "/agent [name]", "show/switch agent", None),
                 styled::continuation(theme, "/run <prompt>", "universal loop", None),
                 styled::continuation(theme, "/plan list|run|generate", "plan management", None),
-                styled::continuation(theme, "/prd idea|list", "PRD management", None),
                 styled::continuation(theme, "/research <query>", "research a topic", None),
                 styled::continuation(theme, "/knowledge <query>", "query knowledge", None),
                 styled::continuation(theme, "/learn", "learning state", None),
@@ -1219,39 +1218,8 @@ pub(crate) fn handle_slash_command(
         }
 
         // =================================================================
-        // PRD & research
+        // Research
         // =================================================================
-        _ if cmd.starts_with("/prd idea ") => {
-            let idea = cmd.strip_prefix("/prd idea ").unwrap().trim();
-            term.push_lines(&[styled::continuation(
-                theme,
-                "prd",
-                &format!("roko prd idea \"{idea}\""),
-                Some("run in terminal"),
-            )])?;
-        }
-        "/prd list" => {
-            let prd_dir = std::path::Path::new(".roko/prd");
-            if prd_dir.exists() {
-                let output = shell_output("ls", &["-la", ".roko/prd/"]);
-                push_shell_output(term, theme, "PRDs", &output, 20)?;
-            } else {
-                term.push_lines(&[styled::continuation(
-                    theme,
-                    "prd",
-                    "no PRDs found",
-                    Some(".roko/prd/ not found"),
-                )])?;
-            }
-        }
-        "/prd" => {
-            term.push_lines(&[
-                styled::section_start(theme, "prd", "subcommands", None),
-                styled::continuation(theme, "/prd idea <text>", "capture idea", None),
-                styled::continuation(theme, "/prd list", "list PRDs", None),
-                styled::section_end(theme, "cli", "roko prd draft|plan|status"),
-            ])?;
-        }
         _ if cmd.starts_with("/research ") => {
             let query = cmd.strip_prefix("/research ").unwrap().trim();
             term.push_lines(&[styled::continuation(

@@ -1,8 +1,8 @@
-//! `roko research` — auto-research to enhance PRDs, plans, and tasks.
+//! `roko research` — auto-research to enhance plans and tasks.
 //!
 //! Provides agent-driven research capabilities:
 //! - Deep-dive into a topic with academic citations
-//! - Enhance existing PRDs with research findings
+//! - Enhance an existing plan with research findings
 //! - Optimize task decomposition based on latest techniques
 //! - Analyze execution data for self-learning insights
 //!
@@ -106,27 +106,6 @@ pub fn build_research_prompt(
                 slug(topic)
             );
         }
-        ResearchMode::EnhancePrd => {
-            let _ = writeln!(prompt, "## Enhancement task\n");
-            let _ = writeln!(prompt, "Read this PRD and enhance it with research:\n");
-            let _ = writeln!(prompt, "{context}\n");
-            let _ = writeln!(prompt, "For each section:");
-            let _ = writeln!(
-                prompt,
-                "1. Add missing citations (find real papers that support design decisions)"
-            );
-            let _ = writeln!(
-                prompt,
-                "2. Add mermaid diagrams where architecture would be clearer"
-            );
-            let _ = writeln!(prompt, "3. Identify improvements from recent research");
-            let _ = writeln!(prompt, "4. Flag any claims that contradict recent findings");
-            let _ = writeln!(
-                prompt,
-                "\nUpdate the PRD file in place. Also save a research summary to .roko/research/{}.md",
-                slug(topic)
-            );
-        }
         ResearchMode::EnhancePlan => {
             let _ = writeln!(prompt, "## Plan enhancement task\n");
             let _ = writeln!(prompt, "Read this implementation plan and optimize it:\n");
@@ -207,8 +186,7 @@ pub fn build_research_prompt(
     if !context.is_empty()
         && !matches!(
             mode,
-            ResearchMode::EnhancePrd
-                | ResearchMode::EnhancePlan
+            ResearchMode::EnhancePlan
                 | ResearchMode::EnhanceTasks
                 | ResearchMode::AnalyzeExecution
         )
@@ -450,8 +428,6 @@ pub fn save_research_with_grounding(
 pub enum ResearchMode {
     /// Pure research on a topic → .roko/research/<slug>.md
     Topic,
-    /// Enhance a PRD with research findings and citations
-    EnhancePrd,
     /// Optimize an implementation plan with research-backed techniques
     EnhancePlan,
     /// Optimize tasks for efficiency, parallelism, and model selection

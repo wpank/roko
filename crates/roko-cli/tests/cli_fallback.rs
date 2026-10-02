@@ -27,7 +27,6 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "status",
     "doctor",
     "plan",
-    "prd",
     "agent",
     "research",
     "knowledge",
@@ -56,18 +55,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plan", "run"],
     &["plan", "generate"],
     &["plan", "regenerate"],
-    &["prd", "idea"],
-    &["prd", "list"],
-    &["prd", "status"],
-    &["prd", "draft"],
-    &["prd", "plan"],
-    &["prd", "consolidate"],
-    &["prd", "draft", "new"],
-    &["prd", "draft", "edit"],
-    &["prd", "draft", "promote"],
-    &["prd", "draft", "list"],
     &["research", "topic"],
-    &["research", "enhance-prd"],
     &["research", "enhance-plan"],
     &["research", "enhance-tasks"],
     &["research", "analyze"],
@@ -396,33 +384,33 @@ max_retries = 0
     );
 }
 
+/// `roko prd`, `roko do` and `roko develop` were folded into `roko run`
+/// (tmp/workflow-audit). They still parse, and each exits 1 with its
+/// replacement instead of a usage error, offline.
 #[test]
-fn prd_list_works_offline() {
+fn removed_commands_print_their_replacement() {
     let tmp = TempDir::new().expect("tempdir");
     init_workspace(tmp.path());
 
-    // Create a sample PRD in the published subdirectory
-    // (prd list reads from .roko/prd/published/ and .roko/prd/drafts/)
-    let published_dir = tmp.path().join(".roko").join("prd").join("published");
-    fs::create_dir_all(&published_dir).expect("create published prd dir");
-    fs::write(
-        published_dir.join("test-feature.md"),
-        "# Test Feature\n\nA test PRD.\n",
-    )
-    .expect("write prd");
-
-    let assert = Command::cargo_bin("roko")
-        .unwrap()
-        .current_dir(tmp.path())
-        .args(["prd", "list"])
-        .assert()
-        .success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-
-    assert!(
-        stdout.contains("test-feature"),
-        "prd list did not show the test PRD\n{stdout}"
-    );
+    for (args, replacement) in [
+        (&["prd", "list"][..], "roko plan generate"),
+        (&["prd", "idea", "add", "login"][..], "roko run --plan"),
+        (&["do", "fix the bug"][..], "roko run"),
+        (&["develop", "add login"][..], "roko run --plan"),
+    ] {
+        let assert = Command::cargo_bin("roko")
+            .unwrap()
+            .current_dir(tmp.path())
+            .args(args)
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+        assert!(
+            stderr.contains("was removed") && stderr.contains(replacement),
+            "`roko {}` should name {replacement}:\n{stderr}",
+            args.join(" ")
+        );
+    }
 }
 
 #[test]

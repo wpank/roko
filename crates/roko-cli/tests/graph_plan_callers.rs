@@ -1,11 +1,12 @@
-//! `roko do --plan` and `plan run --log-file` drive the Graph engine end to
+//! `roko run --plan` and `plan run --log-file` drive the Graph engine end to
 //! end.
 //!
-//! `roko do --plan` generates a plan with the strategist, then executes that
-//! plan through `commands::do_cmd::run_plan_execution` (the path the removed
-//! `roko develop` used). Until the Runner-v2 stub was removed, that execution
-//! failed on every run. Every agent here is a mock script, also shadowing
-//! `claude`/`codex`/`gemini` on `PATH`, so no model is called.
+//! `roko run --plan` generates a plan with the strategist, then executes that
+//! plan through `commands::run_cmd::run_plan_execution` (the path `roko do
+//! --plan` and the removed `roko develop` used). Until the Runner-v2 stub was
+//! removed, that execution failed on every run. Every agent here is a mock
+//! script, also shadowing `claude`/`codex`/`gemini` on `PATH`, so no model is
+//! called.
 #![cfg(unix)]
 
 mod common;
@@ -191,7 +192,7 @@ fn assert_not_runner_v2_stub(output: &Output) {
 }
 
 #[test]
-fn do_plan_executes_through_graph_engine() {
+fn run_plan_executes_through_graph_engine() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workdir = tmp.path();
     common::setup_sample_plan_workspace(workdir);
@@ -203,10 +204,8 @@ fn do_plan_executes_through_graph_engine() {
         workdir,
         &[
             "--json",
-            "do",
+            "run",
             "--plan",
-            "--complexity",
-            "standard",
             "--yes",
             "run the prepared plan",
         ],
@@ -227,11 +226,11 @@ fn do_plan_executes_through_graph_engine() {
     let agent_calls = report["total_agent_calls"].as_u64().unwrap_or(0);
     assert!(
         agent_calls > 0,
-        "do --plan should have dispatched the mock agent; report = {report:#}"
+        "run --plan should have dispatched the mock agent; report = {report:#}"
     );
     // A finished task (verified or not) records an episode.
     let episodes = std::fs::read_to_string(workdir.join(".roko").join("episodes.jsonl"))
-        .expect("episodes.jsonl after do --plan");
+        .expect("episodes.jsonl after run --plan");
     assert!(!episodes.trim().is_empty(), "no episode recorded");
     let succeeded = report["succeeded"].as_bool().expect("succeeded flag");
     assert_eq!(output.status.success(), succeeded, "report = {report:#}");

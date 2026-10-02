@@ -129,8 +129,8 @@ API:
     preflight(arm, model, endpoint, limits, snapshot) -> None       # raises RunnerError
     network_rule(endpoint: provider.Endpoint) -> str                # the roko processes' network rule
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
-    settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None)
-        -> (list[RokoAttempt], list[str])
+    settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None,
+           swap=None, rungs=()) -> (list[RokoAttempt], list[str])
     RokoAttempt(harness.Attempt); Evidence; binary_path(arm) -> Path; PROMPT_VERSION, PROMPT_SHA256
 """
 
@@ -259,7 +259,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         binary = binary_path(ctx.arm)
         spec = _plan_spec(ctx.arm, ctx.model, ctx.endpoint, ctx.caps, ctx.price_row, task_bound, key=ctx.key,
                           spec_text=ctx.spec_text, files=ctx.files_in_scope, visible=ctx.visible_verify,
-                          verify_wrapper=_wrapper_command(ctx))
+                          verify_wrapper=_wrapper_command(ctx), snapshot=ctx.snapshot)
         emitted = planemit.emit(spec, ctx.workdir)
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
@@ -283,7 +283,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         attempts, problems = settle(evidence, chain_key=ctx.chain_key, model=ctx.model,
                                     provider=ctx.endpoint.provider, snapshot=ctx.snapshot,
                                     reserved_usd=task_bound / (max_retries + 1), max_attempts=max_retries + 1,
-                                    roko_build=build, swap=ctx.model_swap)
+                                    roko_build=build, swap=ctx.model_swap, rungs=spec.rungs)
         transcript += [_attempt_event(attempt, episode) for attempt, episode in zip(attempts, evidence.episodes)]
         transcript.append({"event": "check", "problems": problems})
         status, reason = _status(ran, evidence, problems)
@@ -346,7 +346,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
             (workspace / relpath).write_text(text, encoding="utf-8")
         spec = _plan_spec(arm, model, endpoint, limits, price_row, limits.usd_per_task if bound is None else bound,
                           key="preflight", spec_text=PREFLIGHT_SPEC, files=(next(iter(PREFLIGHT_TREE)),),
-                          visible=(PREFLIGHT_VISIBLE,))
+                          visible=(PREFLIGHT_VISIBLE,), snapshot=snapshot)
         try:
             emitted = planemit.emit(spec, workspace)
         except planemit.PlanEmitError as err:
@@ -364,12 +364,21 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
 
 def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, price_row: dict | None,
                usd_cap: float, *, key: str, spec_text: str, files: tuple[str, ...], visible: tuple[str, ...],
-               verify_wrapper: str | None = None) -> planemit.PlanSpec:
-    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task."""
+               verify_wrapper: str | None = None, snapshot: ledger.Snapshot | None = None) -> planemit.PlanSpec:
+    """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. A routed arm
+    (3312: more than one `models_allow` entry) emits planemit's ladder mode instead of one pinned model, with one
+    rung per allowed model, cheapest first, and `model` as the start rung."""
     settings = arm.get("roko", {})
     api_key_env = endpoint.api_key_env or arm.get("providers", {}).get(endpoint.provider, {}).get("api_key_env")
     if not api_key_env:
         raise RunnerError(f"the arm names no api_key_env for {endpoint.provider}")
+    allowed = arm["arm"]["models_allow"]
+    rungs, start = (), None
+    if len(allowed) > 1:
+        if snapshot is None:
+            raise RunnerError("a routed arm needs the price snapshot to build its ladder")
+        rungs = tuple(_rung(arm, rung_model, snapshot, limits) for rung_model in allowed)
+        start = model
     return planemit.PlanSpec(
         key=key, spec_text=spec_text, files=files, visible=visible, model=model, provider=endpoint.provider,
         base_url=endpoint.base_url, api_key_env=api_key_env, price_row=price_row, usd_cap=usd_cap,
@@ -377,7 +386,30 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
         context_window=int(settings.get("context_window", 128_000)), max_output=limits.max_output_tokens,
         max_retries=int(settings.get("max_retries", 2)), max_turns=limits.turns_per_attempt,
         tier=settings.get("tier", "focused"), skip_enrichment=bool(settings.get("skip_enrichment", True)),
-        verify_timeout_s=int(limits.command_timeout_s), verify_wrapper=verify_wrapper)
+        verify_timeout_s=int(limits.command_timeout_s), verify_wrapper=verify_wrapper,
+        rungs=rungs, start=start, allow=tuple(allowed))
+
+
+def _rung(arm: dict, model: str, snapshot: ledger.Snapshot, limits: caps.Caps) -> planemit.Rung:
+    """One rung of a routed arm's ladder: `model`'s provider endpoint, from the price snapshot and the arm's
+    `[providers.*]` tables. `base_url` is whatever the arm dict carries for that provider, the metering proxy's own
+    URL in a proxied run (3311: `vb.py` rewrites it there before the runner ever sees the arm)."""
+    row = snapshot.row(model)
+    rung_provider = row["provider"] if row else None
+    if rung_provider is None:
+        raise RunnerError(f"{model} has no row in {snapshot.id}, so the ladder cannot price it")
+    table = arm.get("providers", {}).get(rung_provider)
+    if not table:
+        raise RunnerError(f"the arm has no [providers.{rung_provider}] endpoint for {model}")
+    api_key_env = table.get("api_key_env")
+    if not api_key_env:
+        raise RunnerError(f"the arm names no api_key_env for {rung_provider}")
+    settings = arm.get("roko", {})
+    return planemit.Rung(name=model, model=model, provider=rung_provider, base_url=table["base_url"],
+                         api_key_env=api_key_env, price_row=row,
+                         provider_kind=settings.get("provider_kind", "openai_compat"),
+                         context_window=int(settings.get("context_window", 128_000)),
+                         max_output=limits.max_output_tokens)
 
 
 def _head(binary: Path, workspace: Path, model: str) -> list[str]:
@@ -428,11 +460,17 @@ def read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None =
 
 
 def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, snapshot: ledger.Snapshot,
-           reserved_usd: float, max_attempts: int, roko_build: str | None = None, swap: str | None = None
-           ) -> tuple[list[RokoAttempt], list[str]]:
+           reserved_usd: float, max_attempts: int, roko_build: str | None = None, swap: str | None = None,
+           rungs: tuple[planemit.Rung, ...] = ()) -> tuple[list[RokoAttempt], list[str]]:
     """One attempt per episode, numbered by its attempt key, each checked against the pin and priced from a meter; the
     problems found. `swap` is the model a declared `model_swap` has the proxy serve in place of the pin: a record
-    that says it served is marked `model_swapped`, not a mismatch."""
+    that says it served is marked `model_swapped`, not a mismatch. `rungs` (3312) is the arm's ladder, cheapest
+    first, when it is a routed arm: an attempt may then dispatch any rung at or above the highest rung dispatched
+    before it (an escalation, never a step down), each checked and priced against its own rung's model and
+    provider; everything else (a failover, a foreign model or a lower rung) is still a mismatch, exactly as a
+    foreign model is for a pinned arm."""
+    rung_provider = {rung.model: rung.provider for rung in rungs}
+    rung_index = {rung.model: position for position, rung in enumerate(rungs)}
     ordinals = [_ordinal((episode.get("extra") or {}).get("attempt_key")) for episode in evidence.episodes]
     keyed = bool(ordinals) and all(ordinals) and len(set(ordinals)) == len(ordinals)
     attempts = []
@@ -471,35 +509,62 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
         if found not in (None, "") and found != wanted:
             flag("model_mismatch", f"{where(number)}: {what} is {found!r}, not {wanted!r}", number)
 
-    def is_swap(reported: object) -> bool:
-        """Whether `reported` is the declared swap's model, and not the pin; marks the attempt it served."""
+    def expected_model(number: int | None) -> str:
+        """What a record other than the episode itself is checked against: a routed attempt's own rung (3312),
+        once its episode has named one of the arm's rungs, else the task's requested model. Degenerates to `model`
+        for a pinned arm (no rungs), so this is a no-op there."""
+        if not rungs:
+            return model
+        attempt = by_number.get(number)
+        dispatched = attempt.model_dispatched if attempt else None
+        return dispatched if dispatched in rung_index else model
+
+    def expected_provider(number: int | None) -> str:
+        return rung_provider.get(expected_model(number), provider) if rungs else provider
+
+    def is_swap(reported: object, number: int | None) -> bool:
+        """Whether `reported` is the declared swap's model, and not the one expected; marks the attempt it served."""
         return bool(swap and isinstance(reported, str) and records.same_model(swap, reported)
-                    and not records.same_model(model, reported))
+                    and not records.same_model(expected_model(number), reported))
 
     def served(row: dict, what: str, number: int | None) -> None:
         """The served-model fields a record carries (bug-31438d, bug-35379d): the model the provider reported, every
         model it named, Roko's own mismatch mark, and the planned model a failover replaced. A null report is no
         evidence either way, and the declared swap's model is a swap, not a mismatch."""
+        wanted = expected_model(number)
         named = row.get("models_reported") if isinstance(row.get("models_reported"), list) else []
         for reported in dict.fromkeys([row.get("model_reported"), *named]):
-            if is_swap(reported):
+            if is_swap(reported, number):
                 if number in by_number:
                     by_number[number].model_swapped = True
-            elif isinstance(reported, str) and reported and not records.same_model(model, reported):
+            elif isinstance(reported, str) and reported and not records.same_model(wanted, reported):
                 flag("model_mismatch", f"{where(number)}: {what} says the provider served {reported!r}, not "
-                                       f"{model!r}", number)
-        if row.get("model_mismatch") is True and not is_swap(row.get("model_reported")):
+                                       f"{wanted!r}", number)
+        if row.get("model_mismatch") is True and not is_swap(row.get("model_reported"), number):
             flag("model_mismatch", f"{where(number)}: {what} marks the served model as another than the one "
                                    "launched", number)
         replaced = row.get("substituted_from") or row.get("failover_chain")
-        if replaced:
+        if replaced:  # a failover is still a mismatch, even to another of the arm's own rungs (3312)
             flag("model_mismatch", f"{where(number)}: {what} records a failover from {replaced!r}", number)
 
     if evidence.episodes and not keyed and any(ordinals):
         flag("model_unverified", "Roko's episodes name attempt keys for only some attempts, or name one twice")
+    climbed = -1  # the highest rung index dispatched so far (3312); -1 until the first valid one
     for attempt, episode in zip(attempts, evidence.episodes):
-        expect(attempt.model_dispatched, model, "the dispatched model", attempt.number)
-        expect(attempt.provider, provider, "the provider", attempt.number)
+        if rungs:
+            index = rung_index.get(attempt.model_dispatched)
+            if attempt.model_dispatched not in (None, "") and index is None:
+                flag("model_mismatch", f"{where(attempt.number)}: the dispatched model "
+                     f"{attempt.model_dispatched!r} is not a rung of this arm", attempt.number)
+            elif index is not None:
+                if index < climbed:
+                    flag("model_mismatch", f"{where(attempt.number)}: the dispatched model stepped down the "
+                         "ladder, which only a failover does", attempt.number)
+                else:
+                    climbed = index
+        else:
+            expect(attempt.model_dispatched, model, "the dispatched model", attempt.number)
+        expect(attempt.provider, expected_provider(attempt.number), "the provider", attempt.number)
         served(episode.get("extra") or {}, "its episode", attempt.number)
         if attempt.model_dispatched is None:
             flag("model_unverified", f"attempt {attempt.number}: its episode names no model", attempt.number)
@@ -509,8 +574,8 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
         dispatch_rows += not helper
         number = _ordinal(row.get("attempt_key")) or (None if helper else dispatch_rows)  # unkeyed: one per attempt
         what = "a helper call's cost row" if helper else "the cost row"
-        expect(row.get("model"), model, f"{what}'s model", number)
-        expect(row.get("provider"), provider, f"{what}'s provider", number)
+        expect(row.get("model"), expected_model(number), f"{what}'s model", number)
+        expect(row.get("provider"), expected_provider(number), f"{what}'s provider", number)
         served(row, what, number)
     for row in evidence.efficiency:
         match = ATTEMPT_ID.search(str(row.get("attempt_id") or ""))  # an older Roko's `.../a<n-1>/...`
@@ -518,16 +583,16 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
             int(match[1]) + 1 if match else None)
         what = "a helper call's efficiency row" if row.get("role") == HELPER_ROLE else "an efficiency row"
         for key in ("model", "resolved_model"):
-            expect(row.get(key), model, f"{what}'s {key}", number)
-        expect(row.get("provider") or row.get("backend"), provider, f"{what}'s provider", number)
+            expect(row.get(key), expected_model(number), f"{what}'s {key}", number)
+        expect(row.get("provider") or row.get("backend"), expected_provider(number), f"{what}'s provider", number)
         served(row, what, number)
     for verdict in evidence.verdicts:
         number = _ordinal(verdict.get("attempt_key")) or (
             verdict.get("attempt") if isinstance(verdict.get("attempt"), int) else None)
         executed = verdict.get("executed") or {}
         for key in ("model_requested", "model_dispatched"):
-            expect(executed.get(key), model, f"S01's executed {key}", number)
-        expect(executed.get("provider"), provider, "S01's executed provider", number)
+            expect(executed.get(key), expected_model(number), f"S01's executed {key}", number)
+        expect(executed.get("provider"), expected_provider(number), "S01's executed provider", number)
         served(executed, "S01's verdict", number)
         if number in by_number:
             _meter_from_verdict(by_number[number], verdict)
@@ -574,6 +639,9 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
     Times compare to the microsecond when every stamp has one. With a whole-second stamp anywhere, they compare in
     whole seconds, so an attempt that ended in the same second as the one before it cannot be told apart from it: its
     requests count toward the earlier attempt, and its empty window is not flagged.
+
+    Each attempt's requests are checked against its own `model_dispatched` (3312: a routed attempt's rung, by then
+    already held to the arm's rungs), falling back to `model` when it is unknown.
     """
     rows = sorted(evidence.proxy_rows or [], key=lambda row: row.get("ordinal") if isinstance(row.get("ordinal"), int)
                   else 0)
@@ -588,21 +656,24 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
         if 0 <= index < len(windows):
             windows[index].append(row)
     for position, (attempt, window) in enumerate(zip(attempts, windows)):
+        # A routed attempt's own dispatched rung (3312), already held to the arm's rungs above; `model` otherwise,
+        # exactly as before.
+        wanted = attempt.model_dispatched or model
         for row in window:
             reported, sent = row.get("model_reported"), row.get("model_swap")
-            if row.get("model_requested") and row["model_requested"] != model:
+            if row.get("model_requested") and row["model_requested"] != wanted:
                 flag("model_mismatch", f"attempt {attempt.number}: the proxy saw model_requested "
-                                       f"{row['model_requested']!r}, not {model!r}", attempt.number)
+                                       f"{row['model_requested']!r}, not {wanted!r}", attempt.number)
             if sent and sent != swap:
-                flag("model_mismatch", f"attempt {attempt.number}: the proxy sent {sent!r} in place of {model!r}, "
+                flag("model_mismatch", f"attempt {attempt.number}: the proxy sent {sent!r} in place of {wanted!r}, "
                                        "which no model_swap declared for this task", attempt.number)
-            if not reported or records.same_model(model, reported):
+            if not reported or records.same_model(wanted, reported):
                 continue
             if swap and records.same_model(swap, reported):
                 attempt.model_swapped = True
             else:
                 flag("model_mismatch", f"attempt {attempt.number}: the proxy saw model_reported {reported!r}, not "
-                                       f"{model!r}", attempt.number)
+                                       f"{wanted!r}", attempt.number)
         if not window:
             if not rows or position == 0 or ends[position] is None or ends[position] != ends[position - 1]:
                 flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",

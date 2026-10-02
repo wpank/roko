@@ -80,11 +80,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         theme.muted(),
     )));
     lines.push(Line::from(Span::styled(
-        "                F9 Atelier    F10 Learning  -  Providers",
+        "                F9 Learning   F10 Providers",
         theme.muted(),
     )));
     lines.push(kb(
-        "1-9 / 0 / -",
+        "1-9 / 0",
         "switch tabs (except Agents/Logs/Plans)",
         theme,
     ));
@@ -254,25 +254,16 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Ctrl-s", "submit job form", theme));
     lines.push(Line::from(""));
 
-    // ── Atelier (F9) ─────────────────────────────────────────────────
-    lines.extend(section("Atelier (F9)", theme));
-    lines.push(kb("Tab", "cycle focus: PRDs ↔ Detail", theme));
-    lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
-    lines.push(kb("Home/End", "jump to top/bottom", theme));
-    lines.push(kb("Enter", "expand artifact detail", theme));
-    lines.push(kb("r", "refresh", theme));
-    lines.push(Line::from(""));
-
-    // ── Learning (F10) ───────────────────────────────────────────────
-    lines.extend(section("Learning (F10)", theme));
+    // ── Learning (F9) ────────────────────────────────────────────────
+    lines.extend(section("Learning (F9)", theme));
     lines.push(kb("Tab", "cycle focus: Metrics ↔ Detail", theme));
     lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));
     lines.push(kb("r", "refresh", theme));
     lines.push(Line::from(""));
 
-    // ── Providers (-) ─────────────────────────────────────────────────
-    lines.extend(section("Providers (- key)", theme));
+    // ── Providers (F10) ──────────────────────────────────────────────
+    lines.extend(section("Providers (F10)", theme));
     lines.push(kb("Tab", "cycle focus: List ↔ Detail", theme));
     lines.push(kb("j/k Up/Dn", "scroll focused panel", theme));
     lines.push(kb("Home/End", "jump to top/bottom", theme));

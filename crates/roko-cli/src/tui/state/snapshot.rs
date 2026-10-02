@@ -446,24 +446,17 @@ impl TuiState {
         };
         self.gate_pass_rate = gate_pass_rate(&data.gate_results);
 
-        // -- marketplace / atelier --
+        // -- marketplace --
         self.marketplace_jobs = data.marketplace_jobs.clone();
-        self.atelier_prds = data.atelier_prds.clone();
-        self.atelier_tasks_by_slug = data.atelier_tasks_by_slug.clone();
 
-        // Clamp marketplace/atelier selections to valid range after data refresh.
+        // Clamp the marketplace selection to the valid range after data refresh.
         if self.marketplace_jobs.is_empty() {
             self.marketplace_selected_job = 0;
         } else if self.marketplace_selected_job >= self.marketplace_jobs.len() {
             self.marketplace_selected_job = self.marketplace_jobs.len() - 1;
         }
-        if self.atelier_prds.is_empty() {
-            self.atelier_selected_prd = 0;
-        } else if self.atelier_selected_prd >= self.atelier_prds.len() {
-            self.atelier_selected_prd = self.atelier_prds.len() - 1;
-        }
 
-        // -- provider statuses (F11) --
+        // -- provider statuses (F10) --
         self.provider_statuses = populate_provider_statuses(&self.workdir, &self.efficiency_events);
         if !self.provider_statuses.is_empty()
             && self.providers_selected >= self.provider_statuses.len()
@@ -1157,23 +1150,14 @@ impl TuiState {
             .map(|(task_id, lines)| (task_id.clone(), bounded_output_lines(lines)))
             .collect();
 
-        // --- Marketplace / Atelier from snapshot ---
+        // --- Marketplace from snapshot ---
         if !snap.marketplace_jobs.is_empty() {
             self.marketplace_jobs = snap.marketplace_jobs.clone();
-        }
-        if !snap.atelier_prds.is_empty() {
-            self.atelier_prds = snap.atelier_prds.clone();
-            self.atelier_tasks_by_slug = snap.atelier_tasks.clone();
         }
         if self.marketplace_jobs.is_empty() {
             self.marketplace_selected_job = 0;
         } else if self.marketplace_selected_job >= self.marketplace_jobs.len() {
             self.marketplace_selected_job = self.marketplace_jobs.len() - 1;
-        }
-        if self.atelier_prds.is_empty() {
-            self.atelier_selected_prd = 0;
-        } else if self.atelier_selected_prd >= self.atelier_prds.len() {
-            self.atelier_selected_prd = self.atelier_prds.len() - 1;
         }
 
         // --- Knowledge entries from snapshot ---
@@ -1272,7 +1256,7 @@ impl TuiState {
         // --- Learning files the snapshot cannot carry (per-event payloads) ---
         self.sync_connected_learning_files();
 
-        // --- Provider statuses (F11) ---
+        // --- Provider statuses (F10) ---
         if !self.workdir.as_os_str().is_empty() {
             self.provider_statuses =
                 populate_provider_statuses(&self.workdir, &self.efficiency_events);

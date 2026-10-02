@@ -226,13 +226,14 @@ mod tests {
     fn tab_filename_format() {
         assert_eq!(tab_filename(Tab::Dashboard), "f01-dashboard.txt");
         assert_eq!(tab_filename(Tab::Plans), "f02-plans.txt");
-        assert_eq!(tab_filename(Tab::Learning), "f10-learning.txt");
+        assert_eq!(tab_filename(Tab::Learning), "f09-learning.txt");
+        assert_eq!(tab_filename(Tab::Providers), "f10-providers.txt");
     }
 
     #[test]
     fn resolve_tabs_none_returns_all() {
         let tabs = resolve_tabs(&None).unwrap();
-        assert_eq!(tabs.len(), 11);
+        assert_eq!(tabs.len(), 10);
     }
 
     #[test]
@@ -245,10 +246,9 @@ mod tests {
 
     #[test]
     fn resolve_tabs_filters_by_fkey() {
-        let tabs = resolve_tabs(&Some(vec!["f1".to_string(), "f10".to_string()])).unwrap();
-        assert_eq!(tabs.len(), 2);
-        assert_eq!(tabs[0], Tab::Dashboard);
-        assert_eq!(tabs[1], Tab::Learning);
+        let filter = vec!["f1".to_string(), "f9".to_string(), "f10".to_string()];
+        let tabs = resolve_tabs(&Some(filter)).unwrap();
+        assert_eq!(tabs, [Tab::Dashboard, Tab::Learning, Tab::Providers]);
     }
 
     #[test]

@@ -174,11 +174,6 @@ fn matrix() -> Vec<MatrixRow> {
             method: Method::GET,
             path: "/api/plans",
         },
-        // -- PRDs --
-        MatrixRow {
-            method: Method::GET,
-            path: "/api/prds",
-        },
         // -- Research --
         MatrixRow {
             method: Method::GET,

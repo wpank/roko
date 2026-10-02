@@ -369,7 +369,6 @@ fn tab_badge_returns_zero_for_tabs_without_badges() {
     assert_eq!(state.tab_badge(Tab::Config), 0);
     assert_eq!(state.tab_badge(Tab::Inspect), 0);
     assert_eq!(state.tab_badge(Tab::Marketplace), 0);
-    assert_eq!(state.tab_badge(Tab::Atelier), 0);
 }
 
 #[test]
@@ -979,8 +978,6 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
         cascade_router_json: String::new(),
         gate_thresholds_json: String::new(),
         marketplace_jobs: Vec::new(),
-        atelier_prds: Vec::new(),
-        atelier_tasks: HashMap::new(),
         knowledge_entries: Vec::new(),
         payment_count: 0,
         total_payment_korai: 0.0,
@@ -2454,14 +2451,6 @@ fn clamp_marketplace_detail_scroll_clamps_to_max() {
 }
 
 #[test]
-fn clamp_atelier_detail_scroll_clamps_to_max() {
-    let mut state = TuiState::default();
-    state.atelier_detail_scroll = 45;
-    state.clamp_atelier_detail_scroll(18);
-    assert_eq!(state.atelier_detail_scroll, 18);
-}
-
-#[test]
 fn reset_scrolls_includes_all_detail_fields() {
     let mut state = TuiState::default();
     state.git_detail_scroll = 10;
@@ -2471,7 +2460,6 @@ fn reset_scrolls_includes_all_detail_fields() {
     state.procs_scroll = 50;
     state.log_detail_scroll = 60;
     state.marketplace_detail_scroll = 70;
-    state.atelier_detail_scroll = 80;
 
     state.reset_scrolls();
 
@@ -2482,7 +2470,6 @@ fn reset_scrolls_includes_all_detail_fields() {
     assert_eq!(state.procs_scroll, 0);
     assert_eq!(state.log_detail_scroll, 0);
     assert_eq!(state.marketplace_detail_scroll, 0);
-    assert_eq!(state.atelier_detail_scroll, 0);
 }
 
 #[test]

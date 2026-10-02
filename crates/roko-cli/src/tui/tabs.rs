@@ -17,7 +17,7 @@ pub enum V2Surface {
     Agents,
 }
 
-/// Top-level TUI tabs, mapped to F1-F11.
+/// Top-level TUI tabs, mapped to F1-F10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     /// F1 - Overview dashboard with health gauges, plan progress, cost.
@@ -36,17 +36,15 @@ pub enum Tab {
     Inspect,
     /// F8 - Marketplace: job browser, creation, assignment.
     Marketplace,
-    /// F9 - Atelier: PRD workshop, plan progress.
-    Atelier,
-    /// F10 - Learning: cascade router, model routing, efficiency.
+    /// F9 - Learning: cascade router, model routing, efficiency.
     Learning,
-    /// F11 - Providers: NERV provider health, cost, latency, circuit state.
+    /// F10 - Providers: NERV provider health, cost, latency, circuit state.
     Providers,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::Plans,
         Tab::Agents,
@@ -55,7 +53,6 @@ impl Tab {
         Tab::Config,
         Tab::Inspect,
         Tab::Marketplace,
-        Tab::Atelier,
         Tab::Learning,
         Tab::Providers,
     ];
@@ -69,12 +66,7 @@ impl Tab {
             Self::Agents => vec![V2Surface::Agents],
             Self::Config => vec![V2Surface::System],
             Self::Inspect => vec![V2Surface::Knowledge],
-            Self::Git
-            | Self::Logs
-            | Self::Marketplace
-            | Self::Atelier
-            | Self::Learning
-            | Self::Providers => vec![],
+            Self::Git | Self::Logs | Self::Marketplace | Self::Learning | Self::Providers => vec![],
         }
     }
 
@@ -90,9 +82,8 @@ impl Tab {
             Self::Config => KeyCode::F(6),
             Self::Inspect => KeyCode::F(7),
             Self::Marketplace => KeyCode::F(8),
-            Self::Atelier => KeyCode::F(9),
-            Self::Learning => KeyCode::F(10),
-            Self::Providers => KeyCode::Char('-'),
+            Self::Learning => KeyCode::F(9),
+            Self::Providers => KeyCode::F(10),
         }
     }
 
@@ -108,9 +99,8 @@ impl Tab {
             KeyCode::F(6) => Some(Self::Config),
             KeyCode::F(7) => Some(Self::Inspect),
             KeyCode::F(8) => Some(Self::Marketplace),
-            KeyCode::F(9) => Some(Self::Atelier),
-            KeyCode::F(10) => Some(Self::Learning),
-            KeyCode::Char('-') => Some(Self::Providers),
+            KeyCode::F(9) => Some(Self::Learning),
+            KeyCode::F(10) => Some(Self::Providers),
             _ => None,
         }
     }
@@ -127,7 +117,6 @@ impl Tab {
             Self::Config => "Config",
             Self::Inspect => "Inspect",
             Self::Marketplace => "Marketplace",
-            Self::Atelier => "Atelier",
             Self::Learning => "Learning",
             Self::Providers => "Providers",
         }
@@ -145,9 +134,8 @@ impl Tab {
             Self::Config => "F6 Config",
             Self::Inspect => "F7 Inspect",
             Self::Marketplace => "F8 Marketplace",
-            Self::Atelier => "F9 Atelier",
-            Self::Learning => "F10 Learning",
-            Self::Providers => "- Providers",
+            Self::Learning => "F9 Learning",
+            Self::Providers => "F10 Providers",
         }
     }
 
@@ -163,9 +151,8 @@ impl Tab {
             Self::Config => "f06",
             Self::Inspect => "f07",
             Self::Marketplace => "f08",
-            Self::Atelier => "f09",
-            Self::Learning => "f10",
-            Self::Providers => "providers",
+            Self::Learning => "f09",
+            Self::Providers => "f10",
         }
     }
 
@@ -181,9 +168,8 @@ impl Tab {
             Self::Config => 5,
             Self::Inspect => 6,
             Self::Marketplace => 7,
-            Self::Atelier => 8,
-            Self::Learning => 9,
-            Self::Providers => 10,
+            Self::Learning => 8,
+            Self::Providers => 9,
         }
     }
 
@@ -198,8 +184,7 @@ impl Tab {
             Self::Logs => Self::Config,
             Self::Config => Self::Inspect,
             Self::Inspect => Self::Marketplace,
-            Self::Marketplace => Self::Atelier,
-            Self::Atelier => Self::Learning,
+            Self::Marketplace => Self::Learning,
             Self::Learning => Self::Providers,
             Self::Providers => Self::Dashboard,
         }
@@ -217,8 +202,7 @@ impl Tab {
             Self::Config => Self::Logs,
             Self::Inspect => Self::Config,
             Self::Marketplace => Self::Inspect,
-            Self::Atelier => Self::Marketplace,
-            Self::Learning => Self::Atelier,
+            Self::Learning => Self::Marketplace,
             Self::Providers => Self::Learning,
         }
     }
@@ -250,12 +234,12 @@ mod tests {
     #[test]
     fn next_prev_cycle() {
         let mut t = Tab::Dashboard;
-        for _ in 0..11 {
+        for _ in 0..10 {
             t = t.next();
         }
         assert_eq!(t, Tab::Dashboard);
 
-        for _ in 0..11 {
+        for _ in 0..10 {
             t = t.prev();
         }
         assert_eq!(t, Tab::Dashboard);
@@ -279,6 +263,6 @@ mod tests {
             Tab::Dashboard.v2_surfaces(),
             vec![V2Surface::Workbench, V2Surface::Inbox]
         );
-        assert_eq!(Tab::ALL.len(), 11);
+        assert_eq!(Tab::ALL.len(), 10);
     }
 }

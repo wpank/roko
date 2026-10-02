@@ -443,7 +443,6 @@ impl ServerBuilder {
         }
         let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
-        let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
         let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
@@ -717,12 +716,6 @@ pub async fn start_server_background(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let config = ServerBuildConfig::new(workdir, runtime, roko_config, bind, port);
     ServerBuilder::new(config).start_background().await
-}
-
-/// Start the PRD-publish auto-orchestration background tasks for an existing state.
-#[doc(hidden)]
-pub fn start_prd_publish_orchestrator(state: Arc<AppState>) -> JoinHandle<()> {
-    routes::start_prd_publish_subscriber(state)
 }
 
 /// Bridges WorkflowEngine RuntimeEvents to SharedStateHub as DashboardEvents.
@@ -1005,7 +998,6 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
     let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
-    let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
     // Both bridges share a BridgeDedup so they can run simultaneously without
     // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
     let bridge_dedup = BridgeDedup::new();
@@ -1209,10 +1201,6 @@ fn build_app_state(
             "loaded existing marketplace jobs from disk"
         );
     }
-    let prds = scan_prd_summaries(&state.workdir);
-    if !prds.is_empty() {
-        info!(count = prds.len(), "loaded existing PRDs from disk");
-    }
     let knowledge = scan_knowledge_entries(&state.workdir);
     if !knowledge.is_empty() {
         info!(
@@ -1222,7 +1210,6 @@ fn build_app_state(
     }
     state.state_hub.hydrate_recovered_snapshot(|snapshot| {
         snapshot.marketplace_jobs = jobs;
-        snapshot.atelier_prds = prds;
         snapshot.knowledge_entries = knowledge;
     });
 
@@ -1399,37 +1386,6 @@ fn scan_marketplace_jobs(workdir: &Path) -> Vec<roko_core::MarketplaceJob> {
     }
     jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
     jobs
-}
-
-/// Scan `.roko/prd/{drafts,published}/*.md` and return a vec of `PrdSummary`.
-fn scan_prd_summaries(workdir: &Path) -> Vec<roko_core::PrdSummary> {
-    let prd_dir = workdir.join(".roko").join("prd");
-    let mut prds = Vec::new();
-    for (status, subdir) in [("draft", "drafts"), ("published", "published")] {
-        let dir = prd_dir.join(subdir);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let slug = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            prds.push(roko_core::PrdSummary {
-                slug: slug.clone(),
-                title: slug,
-                status: status.to_string(),
-                ..Default::default()
-            });
-        }
-    }
-    prds
 }
 
 /// Load knowledge entries from the neuro JSONL store and project them into
@@ -2325,7 +2281,6 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::GateThresholdsUpdated { .. }
         | DashboardEvent::AgentCompleted { .. }
         | DashboardEvent::MarketplaceJobsUpdated { .. }
-        | DashboardEvent::AtelierPrdsUpdated { .. }
         | DashboardEvent::KnowledgeEntriesUpdated { .. }
         | DashboardEvent::EfficiencyTrendUpdated { .. }
         | DashboardEvent::PaymentReceived { .. }

@@ -71,8 +71,6 @@ pub enum ScrollTarget {
     AgentRoster,
     /// Marketplace job selection.
     MarketplaceJobs,
-    /// Atelier PRD selection.
-    AtelierPrds,
     /// Modal scroll (generic).
     Modal,
     /// Not scrollable.
@@ -323,7 +321,7 @@ impl HitZones {
                 zones.plan_tree = h[0]; // reuse as agent list
                 zones.agent_output = h[2];
             }
-            3 | 4 | 5 | 6 | 7 | 8 | 9 => {
+            3 | 4 | 5 | 6 | 7 | 8 => {
                 // Two-column split: left list/tree | gutter | right detail.
                 let h = Layout::default()
                     .direction(Direction::Horizontal)
@@ -476,7 +474,6 @@ fn scroll_for_left(tab: Tab) -> ScrollTarget {
         Tab::Config => ScrollTarget::ConfigKeys,
         Tab::Inspect => ScrollTarget::PlanTree,
         Tab::Marketplace => ScrollTarget::MarketplaceJobs,
-        Tab::Atelier => ScrollTarget::AtelierPrds,
         Tab::Learning => ScrollTarget::PlanTree,
         _ => ScrollTarget::PlanTree,
     }
@@ -805,15 +802,14 @@ mod tui_mouse_hit_test {
 
     #[test]
     fn two_column_tabs_have_left_and_right_panes() {
-        // Tabs 3..=9 use the two-column split.
+        // Tabs 3..=8 use the two-column split.
         let tabs_and_enums = [
             (3, Tab::Git),
             (4, Tab::Logs),
             (5, Tab::Config),
             (6, Tab::Inspect),
             (7, Tab::Marketplace),
-            (8, Tab::Atelier),
-            (9, Tab::Learning),
+            (8, Tab::Learning),
         ];
         for (tab_idx, tab) in tabs_and_enums {
             let area = Rect::new(0, 0, 120, 50);
@@ -960,7 +956,7 @@ mod tui_mouse_hit_test {
             (3, Tab::Git, ScrollTarget::GitDetail),
             (5, Tab::Config, ScrollTarget::ConfigValues),
             (6, Tab::Inspect, ScrollTarget::InspectDetail),
-            (9, Tab::Learning, ScrollTarget::LearningDetail),
+            (8, Tab::Learning, ScrollTarget::LearningDetail),
         ];
 
         for &(tab_idx, tab, expected) in tabs_and_expected_right {
@@ -990,8 +986,7 @@ mod tui_mouse_hit_test {
             (5, Tab::Config, ScrollTarget::ConfigKeys),
             (6, Tab::Inspect, ScrollTarget::PlanTree),
             (7, Tab::Marketplace, ScrollTarget::MarketplaceJobs),
-            (8, Tab::Atelier, ScrollTarget::AtelierPrds),
-            (9, Tab::Learning, ScrollTarget::PlanTree),
+            (8, Tab::Learning, ScrollTarget::PlanTree),
         ];
 
         for &(tab_idx, tab, expected) in tabs_and_expected_left {

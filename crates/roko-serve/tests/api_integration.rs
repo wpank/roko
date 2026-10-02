@@ -1234,16 +1234,16 @@ async fn vision_loop_rejects_empty_body() {
 }
 
 // ---------------------------------------------------------------------------
-// PRDs
+// PRDs (removed: plans come from `POST /api/plans/generate`)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn list_prds_returns_ok() {
+async fn prd_routes_are_removed() {
     let (_dir, app) = test_app();
-    let (status, body) = get_json(&app, "/api/prds").await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array(), "prds should return an array");
+    for uri in ["/api/prds", "/api/prds/status"] {
+        let (status, _body) = get_json(&app, uri).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} should not be served");
+    }
 }
 
 // ---------------------------------------------------------------------------

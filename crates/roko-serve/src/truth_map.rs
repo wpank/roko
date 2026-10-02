@@ -73,8 +73,6 @@ pub enum EntityKind {
     CFactorHistory,
     /// Adaptive gate threshold state.
     GateThresholds,
-    /// PRD document (idea / draft / published).
-    Prd,
     /// Cloud deployment record.
     Deployment,
     /// Provider health / liveness tracker.
@@ -98,7 +96,6 @@ impl fmt::Display for EntityKind {
             Self::Efficiency => "Efficiency",
             Self::CFactorHistory => "CFactorHistory",
             Self::GateThresholds => "GateThresholds",
-            Self::Prd => "Prd",
             Self::Deployment => "Deployment",
             Self::ProviderHealth => "ProviderHealth",
             Self::Metric => "Metric",
@@ -229,13 +226,6 @@ pub fn truth_map() -> Vec<EntityOwnership> {
             projection: Some("gate_thresholds_json"),
         },
         EntityOwnership {
-            kind: EntityKind::Prd,
-            source: TruthSource::StateHub,
-            read_path: ".roko/prd/",
-            ws_event: None,
-            projection: Some("prds / prd_tasks"),
-        },
-        EntityOwnership {
             kind: EntityKind::Deployment,
             source: TruthSource::InMemory,
             read_path: "AppState::deployments",
@@ -297,7 +287,6 @@ mod tests {
             EntityKind::Efficiency,
             EntityKind::CFactorHistory,
             EntityKind::GateThresholds,
-            EntityKind::Prd,
             EntityKind::Deployment,
             EntityKind::ProviderHealth,
             EntityKind::Metric,

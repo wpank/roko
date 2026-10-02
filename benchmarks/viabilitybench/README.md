@@ -70,7 +70,8 @@ families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, a
 - the direct loop (`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash
   tool, no Roko prompt;
 - the Roko arm (`run_roko.py`, harness `roko`) serves `roko_fixed`: a one-task plan (`planemit.py`) through
-  `roko plan run` on one pinned model, checked on every attempt;
+  `roko plan run` on one pinned model, checked on every attempt. `planemit.py`'s ladder mode emits the cheap-model
+  ladder instead (decision 3302), for the routed Roko arms;
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
   on the subscription.
 

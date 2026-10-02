@@ -1183,7 +1183,10 @@ async fn run_graph_plan_body(
     // `--frozen-learning` freezes this run alone (`with_frozen_learning`),
     // before the manifest, the feedback facade and the dispatcher are built,
     // so every reader sees one value.
-    if FROZEN_LEARNING_RUN.try_with(|frozen| *frozen).unwrap_or(false) {
+    if FROZEN_LEARNING_RUN
+        .try_with(|frozen| *frozen)
+        .unwrap_or(false)
+    {
         roko_config.learning.frozen = true;
     }
     if roko_config.learning.frozen {

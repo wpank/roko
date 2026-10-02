@@ -1675,10 +1675,12 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         config.routing.fallback_models = vec!["cheap-model".to_string()];
         config.routing.ladder.rungs = rungs
             .iter()
-            .map(|&(name, model_key)| roko_core::config::routing::LadderRung {
-                name: name.to_string(),
-                model: model_key.to_string(),
-            })
+            .map(
+                |&(name, model_key)| roko_core::config::routing::LadderRung {
+                    name: name.to_string(),
+                    model: model_key.to_string(),
+                },
+            )
             .collect();
         config.conductor.silence_timeout_secs = 0;
         config.conductor.task_stall_secs = 0;

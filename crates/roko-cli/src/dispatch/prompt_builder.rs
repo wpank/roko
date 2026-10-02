@@ -1356,9 +1356,17 @@ impl ComposedPrompt<'_> {
         let Some(manifest) = self.manifest else {
             return (!in_prompt).then_some(ExcludedReason::TokenBudget);
         };
-        if manifest.included.iter().any(|section| section.name == carrier) {
+        if manifest
+            .included
+            .iter()
+            .any(|section| section.name == carrier)
+        {
             (!in_prompt).then_some(ExcludedReason::TokenBudget)
-        } else if manifest.excluded.iter().any(|section| section.name == carrier) {
+        } else if manifest
+            .excluded
+            .iter()
+            .any(|section| section.name == carrier)
+        {
             Some(ExcludedReason::TokenBudget)
         } else {
             // The role's budget profile gives the section no room, so it
@@ -1424,10 +1432,20 @@ impl ComposedPrompt<'_> {
             excluded_reason: (!kept).then_some(ExcludedReason::TokenBudget),
         };
         for kept in &manifest.included {
-            items.push(section(kept.name.as_str(), kept.estimated_tokens, kept.score, true));
+            items.push(section(
+                kept.name.as_str(),
+                kept.estimated_tokens,
+                kept.score,
+                true,
+            ));
         }
         for cut in &manifest.excluded {
-            items.push(section(cut.name.as_str(), cut.estimated_tokens, cut.score, false));
+            items.push(section(
+                cut.name.as_str(),
+                cut.estimated_tokens,
+                cut.score,
+                false,
+            ));
         }
         items
     }
@@ -3906,7 +3924,10 @@ mod tests {
             temp.path(),
             &[
                 ("k-wiring", "Register new wiring in the dispatcher table"),
-                ("k-explain", "Explain the dispatcher wiring before you edit it"),
+                (
+                    "k-explain",
+                    "Explain the dispatcher wiring before you edit it",
+                ),
             ],
         );
         let playbooks = temp.path().join(".roko/learn/playbooks");

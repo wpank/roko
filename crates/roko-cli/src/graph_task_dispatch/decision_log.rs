@@ -242,7 +242,9 @@ fn digest_file(path: &Path) -> Option<DigestedFile> {
         digest: b3_digest(&bytes),
         lines: u64::try_from(lines).unwrap_or(u64::MAX),
     };
-    DIGESTED_FILES.lock().insert(path.to_path_buf(), file.clone());
+    DIGESTED_FILES
+        .lock()
+        .insert(path.to_path_buf(), file.clone());
     Some(file)
 }
 
@@ -610,7 +612,10 @@ mod tests {
         // The task is "Streaming graph task": the entry shares its words.
         seed_knowledge(
             temp.path(),
-            &[("kn-stream", "Streaming graph task output flushes each chunk")],
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
         );
         let feedback = GraphFeedbackContext {
             runs_dir: Some(roko.join("runs")),

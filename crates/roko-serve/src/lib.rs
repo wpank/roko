@@ -4548,7 +4548,9 @@ mod tests {
         server_result.expect("server returned an error");
 
         listening.expect("the server never listened");
-        let samples = dir.path().join(".roko/metrics/telemetry-observations.jsonl");
+        let samples = dir
+            .path()
+            .join(".roko/metrics/telemetry-observations.jsonl");
         assert!(!samples.exists(), "Lens samples are not persisted");
         assert!(state.cancel.is_cancelled());
     }

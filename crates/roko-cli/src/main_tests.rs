@@ -2598,8 +2598,22 @@ async fn seed_dashboard_snapshot(workdir: &Path) {
         let run_dir = workdir.join(".roko").join("runs").join("run-1");
         let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default()).unwrap();
         for (plan, task, model, outcome, cost_usd, tokens_in) in [
-            ("plan-a", "task-a", "claude-haiku", AttemptOutcome::Passed, 1.0, 100),
-            ("plan-b", "task-b", "claude-sonnet", AttemptOutcome::GateFailed, 3.0, 200),
+            (
+                "plan-a",
+                "task-a",
+                "claude-haiku",
+                AttemptOutcome::Passed,
+                1.0,
+                100,
+            ),
+            (
+                "plan-b",
+                "task-b",
+                "claude-sonnet",
+                AttemptOutcome::GateFailed,
+                3.0,
+                200,
+            ),
         ] {
             let key = AttemptKey::new("run-1", plan, task, 1);
             let identity = AttemptIdentity::new(&key);

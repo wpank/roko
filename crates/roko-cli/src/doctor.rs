@@ -1959,8 +1959,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             path: Some(layout.root().display().to_string()),
             url: None,
             fix: Some(
-                "delete them by hand if you do not need them; roko never deletes them"
-                    .to_string(),
+                "delete them by hand if you do not need them; roko never deletes them".to_string(),
             ),
         }
     };
@@ -1989,7 +1988,9 @@ fn orphan_state_files(layout: &RokoLayout) -> Vec<(String, u64)> {
         .iter()
         .filter_map(|name| {
             let metadata = std::fs::metadata(root.join(name)).ok()?;
-            metadata.is_file().then(|| ((*name).to_string(), metadata.len()))
+            metadata
+                .is_file()
+                .then(|| ((*name).to_string(), metadata.len()))
         })
         .collect();
     let taint_graphs: Vec<u64> = std::fs::read_dir(root.join("custody"))
@@ -4276,7 +4277,10 @@ mod tests {
             assert!(detail.contains(listed), "{listed}: {detail}");
         }
         assert!(!detail.contains("other.json"), "{detail}");
-        assert!(ledger.exists() && verdicts.exists(), "roko deletes no orphan");
+        assert!(
+            ledger.exists() && verdicts.exists(),
+            "roko deletes no orphan"
+        );
     }
 
     #[tokio::test]

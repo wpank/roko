@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionRecord,
-    ExposureRecord, RunFile, Stamped, TelemetryRecord, chain_key,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
+    ContentDecisionRecord, ExposureRecord, RunFile, Stamped, TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;

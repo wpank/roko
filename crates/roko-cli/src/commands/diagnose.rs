@@ -25,8 +25,8 @@ use regex::Regex;
 use roko_fs::RokoLayout;
 use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
 use roko_graph::cells::task_executor::TaskGateVerdict;
-use roko_learn::costs_db::CostRecord;
 use roko_learn::GamingAlert;
+use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
 use roko_learn::telemetry::{CostSource, ToolPolicyRecord};
 use roko_runtime::{
@@ -2666,17 +2666,17 @@ title = "Tidy the changelog"
             .iter()
             .map(|alert| (alert.model_slug.as_str(), alert.timestamp))
             .collect();
-        assert_eq!(
-            listed,
-            [("claude-sonnet-4-6", at("2026-09-29T07:25:00Z"))]
-        );
+        assert_eq!(listed, [("claude-sonnet-4-6", at("2026-09-29T07:25:00Z"))]);
         let text = render_text(&report, false);
         assert!(text.contains("\nGate-gaming alerts:\n"), "{text}");
         let line = "  - 2026-09-29T07:25:00Z gate gaming detected for model `claude-sonnet-4-6`";
         assert!(text.contains(line), "{text}");
         assert!(!text.contains("other-model"), "{text}");
         let json = serde_json::to_value(&report).expect("serialize the report");
-        assert_eq!(json["gate_gaming_alerts"][0]["model_slug"], "claude-sonnet-4-6");
+        assert_eq!(
+            json["gate_gaming_alerts"][0]["model_slug"],
+            "claude-sonnet-4-6"
+        );
     }
 
     #[test]

@@ -319,10 +319,7 @@ mod tests {
         let history = build_recent_gate_history(&entries, None);
 
         assert_eq!(history.len(), 2, "{history:?}");
-        let passed = history
-            .iter()
-            .filter(|item| item["passed"] == true)
-            .count();
+        let passed = history.iter().filter(|item| item["passed"] == true).count();
         assert_eq!((passed, history.len() - passed), (1, 1));
         assert_eq!(history[0]["gate"], "test", "the latest line comes first");
         assert_eq!(history[0]["task_id"], "T2");

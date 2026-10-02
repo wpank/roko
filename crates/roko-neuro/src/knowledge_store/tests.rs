@@ -341,7 +341,10 @@ mod tests {
             (entry.access_count, entry.half_life_days, accessed)
         };
 
-        assert_eq!(store.count_access(&["counted", "missing"]).expect("count"), 1);
+        assert_eq!(
+            store.count_access(&["counted", "missing"]).expect("count"),
+            1
+        );
         assert_eq!(store.count_access(&["counted"]).expect("count again"), 1);
         assert_eq!(state("counted"), (2, half_life, true));
         assert_eq!(store.count_access(&[]).expect("count nothing"), 0);

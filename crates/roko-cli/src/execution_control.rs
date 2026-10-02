@@ -180,8 +180,7 @@ impl fmt::Display for ExecutionCommandKind {
             Self::Reset => write!(f, "reset"),
             Self::Inject { kind, .. } => write!(f, "inject({})", kind.as_str()),
             Self::RaiseBudget {
-                ceiling_micro_usd,
-                ..
+                ceiling_micro_usd, ..
             } => write!(f, "raise-budget(${:.4})", *ceiling_micro_usd as f64 / 1e6),
         }
     }

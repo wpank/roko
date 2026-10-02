@@ -58,9 +58,9 @@ pub(crate) use super::dashboard_types::{
 };
 
 // Re-export TuiDashboardModel and import shared functions from dashboard_model.
-pub use super::dashboard_model::{TuiDashboardModel, attempt_ledger_metrics};
 #[cfg(test)]
 use super::dashboard_model::load_snapshot_blocking;
+pub use super::dashboard_model::{TuiDashboardModel, attempt_ledger_metrics};
 use super::dashboard_model::{
     count_to_f64, load_json_opt, load_knowledge_browse_entries, load_snapshot_best_effort,
     resolve_snapshot_root,

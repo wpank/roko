@@ -563,10 +563,14 @@ async fn raise_plan_budget(
         .and_then(|checkpoint| checkpoint.spent_micro_usd)
         .unwrap_or(0);
     let refusal = match roko_cli::graph_task_dispatch::plan_ceiling_micro_usd(ceiling_usd) {
-        None => Some(format!("--to {ceiling_usd} is not a ceiling: give a positive amount in USD")),
+        None => Some(format!(
+            "--to {ceiling_usd} is not a ceiling: give a positive amount in USD"
+        )),
         Some(ceiling) if ceiling <= spent_micro_usd => {
             let spent_usd = spent_micro_usd as f64 / 1_000_000.0;
-            Some(format!("plan {plan_id} has spent ${spent_usd:.4}: raise its ceiling above that"))
+            Some(format!(
+                "plan {plan_id} has spent ${spent_usd:.4}: raise its ceiling above that"
+            ))
         }
         Some(_) => None,
     };

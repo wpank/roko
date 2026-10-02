@@ -30,10 +30,10 @@ use roko_runtime::load_durable_runner_projection;
 use super::dashboard::{
     CASCADE_ROUTER_FILE, EFFICIENCY_FILE, EXPERIMENTS_FILE, FileStamp, GATE_THRESHOLDS_FILE,
     KNOWLEDGE_CONFIRMATIONS_FILE, KNOWLEDGE_FILE, LATENCY_STATS_FILE, LEARN_DIR, NEURO_DIR,
-    PROVIDER_HEALTH_FILE, SKILLS_FILE, bounded_by_gates,
-    build_agent_activity_snapshot, build_gate_results_page_data, file_stamp, format_duration_ms,
-    format_elapsed_ms, load_efficiency_trend, load_gate_signal_summaries, load_recent_signals,
-    now_ms, resolve_episodes_path, runner_task_outcomes_for_plan, runner_terminal_task_outcome,
+    PROVIDER_HEALTH_FILE, SKILLS_FILE, bounded_by_gates, build_agent_activity_snapshot,
+    build_gate_results_page_data, file_stamp, format_duration_ms, format_elapsed_ms,
+    load_efficiency_trend, load_gate_signal_summaries, load_recent_signals, now_ms,
+    resolve_episodes_path, runner_task_outcomes_for_plan, runner_terminal_task_outcome,
     workspace_gates_config,
 };
 use super::dashboard_types::{
@@ -2044,7 +2044,9 @@ fn verdict_metric(verdict: &AttemptVerdictRecord, role: Option<&str>) -> TaskMet
     metric.wall_time_ms = timing
         .attempt_started_at
         .zip(timing.settled_at)
-        .map_or(0, |(started, settled)| u64::try_from(settled - started).unwrap_or(0));
+        .map_or(0, |(started, settled)| {
+            u64::try_from(settled - started).unwrap_or(0)
+        });
     let usage = &verdict.usage;
     metric.cached_tokens = usage.tokens_cache_read.unwrap_or(0);
     metric.input_tokens = usage.tokens_in.unwrap_or(0) + metric.cached_tokens;

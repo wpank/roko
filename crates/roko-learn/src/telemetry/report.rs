@@ -22,9 +22,9 @@ use serde_json::Value;
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionRecord,
-    DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, RunFile,
-    Stamped, VERDICT_SCHEMA,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
+    ContentDecisionRecord, DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel,
+    ExposureRecord, RunFile, Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};

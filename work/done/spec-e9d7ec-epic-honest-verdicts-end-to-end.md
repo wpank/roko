@@ -2,14 +2,16 @@
 id = "spec-e9d7ec"
 kind = "spec"
 title = "Epic: honest verdicts end to end"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p0"
 goal = "truth"
 size = "L"
 subsystem = ["roko-cli/graph_execution", "roko-core/dashboard", "apps/portal"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #1-2)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome"]
@@ -19,6 +21,13 @@ links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", 
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:05Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C1 honest_verdicts_canary) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

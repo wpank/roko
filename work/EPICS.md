@@ -28,19 +28,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: paper 2
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
-## [spec-e9d7ec](items/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end
-
-- **17/17 closed** · goal `truth` · severity p0
-
 ## [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt
 
-- **38/39 closed** · goal `truth` · severity p0
-- open by lane: none 1
-- next: [gap-ad0d39](items/gap-ad0d39-cost-records-miss-claude-per-model-usage.md) Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet
-
-## [spec-9230a9](items/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope
-
-- **9/9 closed** · goal `golden-path` · severity p1
+- **39/39 closed** · goal `truth` · severity p0
 
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
 
@@ -48,27 +38,11 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: rust-cold 1
 - next: none ready (1 unverified)
 
-## [spec-a0e40a](items/spec-a0e40a-epic-integration-and-a-whole-plan-check.md) integration and a whole-plan check
-
-- **17/17 closed** · goal `golden-path` · severity p1
-
-## [spec-a78d57](items/spec-a78d57-epic-scheduler.md) scheduler
-
-- **10/10 closed** · goal `golden-path` · severity p1
-
 ## [spec-e57870](items/spec-e57870-epic-specs-a-cheap-model-can-execute.md) specs a cheap model can execute
 
 - **19/21 closed** · goal `golden-path` · severity p1
 - open by lane: docs 1, none 1
 - next: [find-70edcb](items/find-70edcb-df-0926-r-1-r-5-plan.md) Plan generation/validation does not flag weak verify gates
-
-## [spec-98f76d](items/spec-98f76d-epic-tier-ladder-and-escalation.md) tier ladder and escalation
-
-- **9/9 closed** · goal `golden-path` · severity p1
-
-## [spec-edda86](items/spec-edda86-epic-watchdog-and-supervision.md) watchdog and supervision
-
-- **8/8 closed** · goal `golden-path` · severity p1
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
@@ -94,6 +68,30 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: none 1, rust-cold 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
+## [spec-e9d7ec](done/spec-e9d7ec-epic-honest-verdicts-end-to-end.md) honest verdicts end to end (done)
+
+- **17/17 closed** · goal `truth` · severity p0
+
+## [spec-9230a9](done/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope (done)
+
+- **9/9 closed** · goal `golden-path` · severity p1
+
+## [spec-a0e40a](done/spec-a0e40a-epic-integration-and-a-whole-plan-check.md) integration and a whole-plan check (done)
+
+- **17/17 closed** · goal `golden-path` · severity p1
+
+## [spec-a78d57](done/spec-a78d57-epic-scheduler.md) scheduler (done)
+
+- **10/10 closed** · goal `golden-path` · severity p1
+
+## [spec-98f76d](done/spec-98f76d-epic-tier-ladder-and-escalation.md) tier ladder and escalation (done)
+
+- **9/9 closed** · goal `golden-path` · severity p1
+
+## [spec-edda86](done/spec-edda86-epic-watchdog-and-supervision.md) watchdog and supervision (done)
+
+- **8/8 closed** · goal `golden-path` · severity p1
+
 ## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
 
 - **14/14 closed** · goal `proof` · severity p1
@@ -105,9 +103,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 47 | 59 | 12 (0) |
 | docs | 17 | 19 | 2 (0) |
 | frontend | 3 | 3 | 0 (0) |
-| none | 309 | 391 | 82 (82) |
+| none | 316 | 391 | 75 (75) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 176 | 188 | 12 (1) |
-| rust-hot | 118 | 129 | 11 (0) |
+| rust-cold | 177 | 189 | 12 (1) |
+| rust-hot | 124 | 129 | 5 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 10 anchor gone · 83 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 72 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_3 more open · on hold: gap-8f8544 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_3 more open · on hold: gap-8f8544 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -26,13 +26,13 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - nothing checked and open
 
-_0 more open · 9 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -50,33 +50,32 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 - **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-10-01
 - **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
-- **P1** [gap-dc1d16](items/gap-dc1d16-p1-ge-1-implement-single-immutable-resume.md) Implement single immutable resume generation · size L · verified 2026-10-01
+- **P1** [gap-dc1d16](items/gap-dc1d16-p1-ge-1-implement-single-immutable-resume.md) Implement single immutable resume generation · size L · verified 2026-10-02
 
-_15 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_14 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-10-01
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P3** [gap-0d6ae5](items/gap-0d6ae5-closing-the-tui-mid-run-stops-the.md) Closing the TUI mid-run stops the plan run; there is no detach mode · verified 2026-10-01
 
-_4 more open · `goal = "visibility"`_
+_1 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
-- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-10-01
-- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-10-01
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
+- **P2** [gap-644040](items/gap-644040-no-way-to-run-with-learning-frozen.md) No way to run with learning frozen: prompts and routing change from run to run · verified 2026-10-01
 
-_1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_0 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P2** [gap-7a3527](items/gap-7a3527-df-0925-p4-dead-config-keys-that.md) Dead config keys that give false confidence · size M · verified 2026-10-01
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
+- **P2** [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items · size M · verified 2026-10-01
 
-_8 more open · 5 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_7 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

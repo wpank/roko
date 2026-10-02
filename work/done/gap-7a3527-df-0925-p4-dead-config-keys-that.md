@@ -2,7 +2,7 @@
 id = "gap-7a3527"
 kind = "gap"
 title = "Dead config keys that give false confidence"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/config"]
 created = 2026-09-25
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "6a08f9e2c"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -rqE '\"(gates\\.domain_gates|learning\\.replan_max_per_plan|learning\\.replan_gate_attempts)\"' crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch/ && ! grep -qE 'pub (domain_gates|replan_max_per_plan|replan_gate_attempts):' crates/roko-core/src/config/gates.rs crates/roko-core/src/config/learning.rs && { ! grep -q 'fn from_gates_config' crates/roko-gate/src/adaptive_threshold.rs || grep -rn --include='*.rs' 'from_gates_config' crates/ | grep -v 'crates/roko-gate/src/adaptive_threshold.rs' | grep -q .; } && grep -rqw 'fn dead_config_keys_are_removed_and_old_files_still_load' crates/roko-core/src/ && cargo test -p roko-core --lib dead_config_keys_are_removed_and_old_files_still_load"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:02Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T16:13:54Z"
+forced = false
+evidence = "dead keys removed with a loader test that old files still load, gates.ema_alpha drives the Graph EMA (wk-cfg 48acf7975); gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 
 ## Problem

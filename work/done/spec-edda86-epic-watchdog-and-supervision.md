@@ -2,14 +2,16 @@
 id = "spec-edda86"
 kind = "spec"
 title = "Epic: watchdog and supervision"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/graph_execution", "roko-agent/providers"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #14); evidence/field/CASES.md (CASE-004)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
@@ -19,6 +21,13 @@ links = { depends_on = ["spec-a0403b", "reg-7cf6f9", "gap-a791b4", "gap-5a6e01",
 
 [[verify]]
 command = "grep -rqw 'fn supervision_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test supervision_canary"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:06Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C7 supervision_canary) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

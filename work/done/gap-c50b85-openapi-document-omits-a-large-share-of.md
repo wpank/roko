@@ -2,7 +2,7 @@
 id = "gap-c50b85"
 kind = "gap"
 title = "OpenAPI document omits a large share of live routes"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -10,7 +10,7 @@ subsystem = ["roko-serve/openapi"]
 created = 2026-09-28
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "6a08f9e2c"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/openapi.rs"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn openapi_documents_every_registered_route' crates/roko-serve/ && test \"$(grep -cvE '^(#|$)' crates/roko-serve/src/openapi_undocumented.txt)\" -eq 0 && cargo test -p roko-serve openapi_documents_every_registered_route"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:00Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:13:27Z"
+forced = false
+evidence = "all 426 /api method+path routes are documented, openapi_undocumented.txt is empty, openapi_documents_every_registered_route passes (wk-serve2 0983d8771); publishing the spec with releases is a follow-up; gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 
 A local measurement (2026-09-26) found `GET /api/openapi.json` with 192 paths / 221 operations while 24 of 45 sampled method+path routes were missing, so generated clients and API docs cannot reach them.

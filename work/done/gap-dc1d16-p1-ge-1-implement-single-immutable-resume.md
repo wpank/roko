@@ -2,7 +2,7 @@
 id = "gap-dc1d16"
 kind = "gap"
 title = "Implement single immutable resume generation"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
@@ -11,7 +11,7 @@ subsystem = ["roko-graph"]
 created = 2026-09-21
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "c9272dde2"
 source = "tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 discovered_from = "audit:tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointManifest", "crates/roko-cli/src/graph_checkpoint.rs::invalidate_unverified_activities", "crates/roko-cli/src/graph_checkpoint.rs::write_manifest_atomic", "crates/roko-cli/src/graph_checkpoint.rs::write_cost_ledger_atomic", "crates/roko-graph/src/replay.rs::ActivityReplayer::load_scoped", "crates/roko-graph/src/replay.rs::activity_records", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["gap-9c82d3"], supersedes = [
 
 [[verify]]
 command = "grep -rq 'fn resume_selects_single_immutable_generation' crates/roko-cli/src && cargo test -p roko-cli --lib resume_selects_single_immutable_generation"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:47:36Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-01T16:12:54Z"
+forced = false
+evidence = "the checkpoint manifest (schema v4) commits one generation: committed log length and BLAKE3, spent and reserved cost, refused record lines. Resume selects exactly that generation, sets later bytes aside, never rewrites committed bytes, and v2/v3 resume as generation 0. resume_selects_single_immutable_generation and resuming_twice_derives_the_same_state pass (wk-tamper 13bf27da6 step 1, 00c36ba95 step 2); gate 6j passed at b35631307 (cargo check, clippy -D warnings, lib tests of roko-cli 3,460, roko-graph 491, roko-serve 1,018, canaries C1-C8 and integration tests, graph_budget_resume, resume_cycle_e2e, graph_plan_callers, 448 bin tests, run_evidence py); merged in c9272dde2"
 +++
 
 ## Problem

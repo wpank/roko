@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 9 anchor gone · 70 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 67 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -48,11 +48,11 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
-- **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-10-01
 - **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
-- **P1** [gap-dc1d16](items/gap-dc1d16-p1-ge-1-implement-single-immutable-resume.md) Implement single immutable resume generation · size L · verified 2026-10-02
+- **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
+- **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_12 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -79,11 +79,11 @@ _6 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-10-01
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
 - **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
+- **P2** [gap-666a64](items/gap-666a64-deprecate-all-jsonl-file-i-o-statehub.md) Deprecate All JSONL File I/O — StateHub as Single Source of Truth · verified 2026-10-01
 
-_7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_6 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 

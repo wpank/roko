@@ -2,7 +2,7 @@
 id = "gap-baab0a"
 kind = "gap"
 title = "Codex tool policy is advisory; Roko-owned operation-level broker missing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/codex-cli"]
 created = 2026-09-14
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "905fa313d"
+last_verified_rev = "c9272dde2"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
 anchors = ["crates/roko-agent/src/provider/claude_cli.rs::CodexCliAdapter", "crates/roko-agent/src/exec.rs::CodexOperationPolicy", "crates/roko-agent/src/exec.rs::check_codex_output_against_policy", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::effective_agent_contract", "crates/roko-cli/src/dispatch_v2.rs::validate_contract_support", "crates/roko-cli/src/commands/diagnose.rs::recorded_tool_policies"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn codex_restrictive_contract_is_enforced' crates/roko-agent/src/ && cargo test -p roko-agent --lib codex_restrictive_contract_is_enforced"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:47:37Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-02T01:19:44Z"
+forced = false
+evidence = "every Done-when bullet is met by steps 1-5: a streaming broker kills Codex on the first denied operation, task allowlists fail closed with failover, web search and sandbox network are pinned off, the tool policy and denials are recorded per attempt and shown by roko diagnose, and the dead dispatch_v2 Codex builder is gone. codex_restrictive_contract_is_enforced passed in gate 6h2 (roko-agent unchanged since). Plan step 6, the live Codex check, needs a live Codex and spend and stays with Will (see Notes) (wk-guard2 steps 1-5, last e795d1846); gate 6j passed at b35631307 (cargo check, clippy -D warnings, lib tests of roko-cli 3,460, roko-graph 491, roko-serve 1,018, canaries C1-C8 and integration tests, graph_budget_resume, resume_cycle_e2e, graph_plan_callers, 448 bin tests, run_evidence py); merged in c9272dde2"
 +++
 
 ## Problem

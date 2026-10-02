@@ -2,16 +2,16 @@
 id = "gap-f118b3"
 kind = "gap"
 title = "Deliver `roko inject` Through the Canonical Acknowledged Control Transport"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "features"
 subsystem = ["roko-cli/inject"]
 created = 2026-09-01
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "c9272dde2"
 source = "tmp/backlog/archive/361-inject-acknowledged-control-transport.md#361 — Deliver `roko inject` Through the Canonical Acknowledged Control Transport"
 discovered_from = "audit:tmp/backlog/archive/361-inject-acknowledged-control-transport.md#361 — Deliver `roko inject` Through the Canonical Acknowledged Control Transport"
 anchors = ["crates/roko-cli/src/commands/util.rs::cmd_inject", "crates/roko-cli/src/inject.rs::InjectRequest", "crates/roko-cli/src/execution_control.rs::ExecutionCommandKind", "crates/roko-cli/src/graph_execution/control_adapter.rs", "crates/roko-cli/src/runner/types.rs::ControlCommand", "crates/roko-cli/src/main.rs:5105"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn inject_fails_without_executor_ack' crates/roko-cli/src/ && cargo test -p roko-cli --lib --bin roko inject_fails_without_executor_ack"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:47:37Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-01T16:12:55Z"
+forced = false
+evidence = "roko inject delivers through a per-run owner-only socket with a token handshake (transport b). The run acks Accepted once it queues the directive, the next dispatched prompt carries it once under Operator directive, duplicates are not redelivered, abort cancels only the addressed run, and every failure exits non-zero, writing nothing. inject_fails_without_executor_ack and the new transport, directive and log tests pass (wk-childenv 26c60b5a3); serve's REST route (c) is noted as a follow-up; gate 6j passed at b35631307 (cargo check, clippy -D warnings, lib tests of roko-cli 3,460, roko-graph 491, roko-serve 1,018, canaries C1-C8 and integration tests, graph_budget_resume, resume_cycle_e2e, graph_plan_callers, 448 bin tests, run_evidence py); merged in c9272dde2"
 +++
 
 ## Problem

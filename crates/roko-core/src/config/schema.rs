@@ -32,6 +32,7 @@ pub use super::provider::*;
 pub use super::retrieval::*;
 pub use super::routing::*;
 pub use super::serve::*;
+pub use super::spec_quality::*;
 pub use super::subscriptions::*;
 pub use super::tools::*;
 pub use super::tui_cfg::*;
@@ -104,6 +105,9 @@ pub struct RokoConfig {
     /// Plan authoring: the model that generates and revises plans.
     #[serde(default)]
     pub authoring: AuthoringConfig,
+    /// The spec-quality gate `plan run` applies before it dispatches a plan.
+    #[serde(default)]
+    pub spec_quality: SpecQualityConfig,
     #[serde(default)]
     pub providers: IndexMap<String, ProviderConfig>,
     #[serde(default)]
@@ -432,6 +436,7 @@ impl Default for RokoConfig {
             prd: PrdConfig::default(),
             agent: AgentConfig::default(),
             authoring: AuthoringConfig::default(),
+            spec_quality: SpecQualityConfig::default(),
             providers: IndexMap::new(),
             models: IndexMap::new(),
             profiles: HashMap::new(),

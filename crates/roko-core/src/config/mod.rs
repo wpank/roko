@@ -31,6 +31,7 @@ pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod serve;
+pub mod spec_quality;
 pub mod subscriptions;
 pub mod timeouts;
 pub mod tools;

@@ -1538,6 +1538,10 @@ pub enum AgentCreationError {
         "Provider {0:?} cannot execute in-process local tools; use an authenticated MCP bridge or a provider-native tool loop"
     )]
     LocalToolsUnsupported(ProviderKind),
+    #[error(
+        "Provider {0:?} cannot enforce a tool allowlist: its built-in tools have no binding allowlist"
+    )]
+    ToolAllowlistUnsupported(ProviderKind),
 }
 
 #[cfg(test)]

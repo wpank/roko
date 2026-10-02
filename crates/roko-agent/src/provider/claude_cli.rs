@@ -151,6 +151,17 @@ impl ProviderAdapter for CodexCliAdapter {
         if provider.kind != self.kind() {
             return Err(AgentCreationError::InvalidKind(provider.kind));
         }
+        // Codex's built-in tools have no binding allowlist: it reads, searches
+        // and edits through its shell, so a contract naming the only tools a
+        // role may use cannot be honoured. Refuse it, so that failover picks a
+        // provider that can (gap-baab0a).
+        if options
+            .agent_contract
+            .as_ref()
+            .is_some_and(|contract| contract.allowed_tools.is_some())
+        {
+            return Err(AgentCreationError::ToolAllowlistUnsupported(self.kind()));
+        }
 
         let command = provider
             .command
@@ -335,6 +346,66 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    fn codex_provider(command: &str) -> ProviderConfig {
+        ProviderConfig {
+            kind: ProviderKind::CodexCli,
+            base_url: None,
+            api_key_env: None,
+            command: Some(command.to_string()),
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        }
+    }
+
+    /// gap-baab0a: Codex cannot honour a tool allowlist, so the adapter
+    /// refuses a contract with one, before it looks for the binary. A role's
+    /// forbidden tools alone are fine: the operation broker enforces them.
+    #[test]
+    fn codex_adapter_refuses_a_tool_allowlist() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let model = ModelProfile {
+            provider: "codex_cli".to_string(),
+            slug: "gpt-5-codex".to_string(),
+            ..ModelProfile::default()
+        };
+        let allowlist = AgentContract {
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(allowlist),
+            ..Default::default()
+        };
+        let missing_binary = codex_provider("not-on-path");
+        let refused = CodexCliAdapter.create_agent(&missing_binary, &model, &options);
+        assert!(
+            matches!(
+                refused,
+                Err(AgentCreationError::ToolAllowlistUnsupported(ProviderKind::CodexCli))
+            ),
+            "{:?}",
+            refused.err()
+        );
+
+        let forbids_bash = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(forbids_bash),
+            ..Default::default()
+        };
+        let created = CodexCliAdapter.create_agent(&codex_provider("sh"), &model, &options);
+        assert!(created.is_ok(), "{:?}", created.err());
     }
 
     /// gap-baab0a: a Codex run whose contract keeps the role off the network

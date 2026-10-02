@@ -340,9 +340,10 @@ pub enum OperationStatus {
     },
 }
 
-/// The state of a run, in the words every run route reports: `GET
-/// /api/run/{id}/status`, `GET /api/plans/{id}/status` and `GET
-/// /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
+/// The state of a run, in the words every run route reports.
+///
+/// Those routes are `GET /api/run/{id}/status`, `GET /api/plans/{id}/status`
+/// and `GET /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
 /// `failed`, `unverified` or `cancelled`, and only `succeeded` is a success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,9 +1,14 @@
 //! Typed done-gate contract for self-hosting Roko tasks.
 //!
-//! The contract is intentionally narrow: it describes the evidence a task must
-//! produce before it can be marked done. Missing or malformed evidence is a
-//! blocking validation issue, so callers fail closed instead of treating absent
-//! data as success.
+//! The contract describes the evidence a task was meant to produce before it
+//! could be marked done. Its evaluator is retired (decision 3205): a task's
+//! `acceptance_contract` is still parsed, so archived plans load, and
+//! [`AcceptanceContract::validate_contract`] still checks its shape, but
+//! nothing evaluates evidence against it at run time, and `roko plan validate`
+//! says so for every contract (PLAN_046). A task states its acceptance
+//! criteria in `acceptance`, with verify steps that name them in `covers`, or
+//! pins a planner-written test with `[task.accept]`. [`ReviewVerdictEvidence`]
+//! and [`RequiredNextAction`] remain for structured review verdicts.
 
 use serde::{Deserialize, Serialize};
 
@@ -180,160 +185,6 @@ impl AcceptanceContract {
 
         decision_from_issues(issues)
     }
-
-    /// Validate a completed evidence packet against this contract.
-    #[must_use]
-    pub fn validate_evidence(&self, evidence: &AcceptanceEvidence) -> AcceptanceDecision {
-        let contract_decision = self.validate_contract();
-        if !contract_decision.passed() {
-            return contract_decision;
-        }
-
-        let mut issues = Vec::new();
-
-        for gate in self.gates.iter().filter(|gate| gate.required) {
-            match evidence
-                .gates
-                .iter()
-                .find(|result| result.gate_id == gate.id)
-            {
-                Some(result) if result.outcome == AcceptanceOutcome::Passed => {}
-                Some(result) => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_020",
-                    format!(
-                        "required gate '{}' did not pass: {:?}",
-                        gate.id, result.outcome
-                    ),
-                )),
-                None => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_021",
-                    format!("required gate '{}' has no evidence", gate.id),
-                )),
-            }
-        }
-
-        if self.no_stub.as_ref().is_some_and(|req| req.required) {
-            match &evidence.no_stub {
-                Some(scan)
-                    if scan.outcome == AcceptanceOutcome::Passed && scan.findings.is_empty() => {}
-                Some(scan) => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_022",
-                    format!("no-stub evidence did not pass: {:?}", scan.outcome),
-                )),
-                None => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_023",
-                    "required no-stub evidence is missing",
-                )),
-            }
-        }
-
-        if self.agent_output.as_ref().is_some_and(|req| req.required) {
-            match &evidence.agent_output {
-                Some(output) if output.parsed && output.schema_valid => {}
-                Some(_) => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_024",
-                    "structured agent output did not parse against its schema",
-                )),
-                None => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_025",
-                    "required structured agent output evidence is missing",
-                )),
-            }
-        }
-
-        if let Some(review_req) = self.review_verdict.as_ref().filter(|req| req.required) {
-            match &evidence.review_verdict {
-                Some(review)
-                    if review.reviewer_role_id == review_req.reviewer_role_id
-                        && review.status == AcceptanceOutcome::Passed
-                        && review.confidence >= review_req.min_confidence
-                        && review.blocking_findings.is_empty()
-                        && !review.raw_output_ref.trim().is_empty()
-                        && review.confidence.is_finite()
-                        && review.required_next_action == RequiredNextAction::None => {}
-                Some(review) => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_026",
-                    format!(
-                        "review verdict did not satisfy contract: status={:?}, confidence={}, reviewer_role_id={}, required_next_action={:?}",
-                        review.status,
-                        review.confidence,
-                        review.reviewer_role_id,
-                        review.required_next_action
-                    ),
-                )),
-                None => issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_027",
-                    "required review verdict evidence is missing",
-                )),
-            }
-        }
-
-        if let Some(recovery_req) = self.recovery.as_ref().filter(|req| req.required) {
-            let recovery = evidence.recovery.as_ref();
-            if recovery_req.retry && !recovery.is_some_and(|item| item.retry_recorded) {
-                issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_028",
-                    "required retry evidence is missing",
-                ));
-            }
-            if recovery_req.reflection && !recovery.is_some_and(|item| item.reflection_recorded) {
-                issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_029",
-                    "required reflection evidence is missing",
-                ));
-            }
-            if recovery_req.replan && !recovery.is_some_and(|item| item.replan_recorded) {
-                issues.push(AcceptanceIssue::blocking(
-                    "ACCEPT_030",
-                    "required replan evidence is missing",
-                ));
-            }
-        }
-
-        if let Some(parity_req) = self.parity_ledger.as_ref().filter(|req| req.required) {
-            for row in &parity_req.rows {
-                match evidence
-                    .parity_ledger_rows
-                    .iter()
-                    .find(|candidate| candidate.requirement_id == row.requirement_id)
-                {
-                    Some(evidence_row)
-                        if evidence_row.outcome == AcceptanceOutcome::Passed
-                            && evidence_row.status == ParityLedgerStatus::Verified
-                            && !evidence_row.effective_source_ref(row).trim().is_empty()
-                            && !evidence_row.implementation_evidence_refs().is_empty()
-                            && !evidence_row.test_evidence_refs.is_empty() => {}
-                    Some(evidence_row) => issues.push(AcceptanceIssue::blocking(
-                        "ACCEPT_031",
-                        format!(
-                            "parity ledger row '{}' did not close: outcome={:?}, status={:?}, implementation_refs={}, test_evidence_refs={}",
-                            row.requirement_id,
-                            evidence_row.outcome,
-                            evidence_row.status,
-                            evidence_row.implementation_evidence_refs().len(),
-                            evidence_row.test_evidence_refs.len()
-                        ),
-                    )),
-                    None => issues.push(AcceptanceIssue::blocking(
-                        "ACCEPT_032",
-                        format!(
-                            "required parity ledger row '{}' is missing",
-                            row.requirement_id
-                        ),
-                    )),
-                }
-            }
-        }
-
-        if issues.iter().any(|issue| issue.blocking) {
-            return decision_from_evidence_issues(issues);
-        }
-
-        AcceptanceDecision {
-            outcome: evidence.outcome,
-            issues,
-        }
-    }
 }
 
 /// A single required verification command.
@@ -448,66 +299,6 @@ pub struct ParityLedgerRequirementRow {
     pub test_evidence_refs: Vec<String>,
 }
 
-/// Completed evidence packet for one task/run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AcceptanceEvidence {
-    /// Overall task outcome reported by the executor.
-    pub outcome: AcceptanceOutcome,
-    /// Verify results keyed by [`GateRequirement::id`].
-    #[serde(default)]
-    pub gates: Vec<GateEvidence>,
-    /// No-stub scan evidence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub no_stub: Option<NoStubEvidence>,
-    /// Structured output parse evidence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_output: Option<StructuredOutputEvidence>,
-    /// Structured review verdict evidence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_verdict: Option<ReviewVerdictEvidence>,
-    /// Retry/reflection/replan evidence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<RecoveryEvidence>,
-    /// Parity rows actually recorded for the task.
-    #[serde(default)]
-    pub parity_ledger_rows: Vec<ParityLedgerEvidenceRow>,
-}
-
-/// Evidence for one gate requirement.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GateEvidence {
-    /// Requirement id this result satisfies.
-    pub gate_id: String,
-    /// Verify outcome.
-    pub outcome: AcceptanceOutcome,
-    /// Evidence path, command log, or content-addressed artifact id.
-    pub evidence_ref: String,
-}
-
-/// Evidence that no production path was satisfied by a stub/noop.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NoStubEvidence {
-    /// Scan outcome.
-    pub outcome: AcceptanceOutcome,
-    /// Paths scanned.
-    #[serde(default)]
-    pub scanned_paths: Vec<String>,
-    /// Stub/noop findings. Must be empty for a passing required scan.
-    #[serde(default)]
-    pub findings: Vec<String>,
-}
-
-/// Evidence that agent output was parsed structurally.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StructuredOutputEvidence {
-    /// Whether output was parseable.
-    pub parsed: bool,
-    /// Whether parsed output matched the required schema.
-    pub schema_valid: bool,
-    /// Raw output path or artifact id.
-    pub raw_output_ref: String,
-}
-
 /// Review verdict evidence with enough structure for orchestration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReviewVerdictEvidence {
@@ -556,81 +347,6 @@ pub enum RequiredNextAction {
     Human,
 }
 
-/// Evidence that the executor recorded recovery signals.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoveryEvidence {
-    /// Retry signal/action id was recorded.
-    #[serde(default)]
-    pub retry_recorded: bool,
-    /// Reflection signal/action id was recorded.
-    #[serde(default)]
-    pub reflection_recorded: bool,
-    /// Replan signal/action id was recorded.
-    #[serde(default)]
-    pub replan_recorded: bool,
-}
-
-/// Evidence row recorded in a parity ledger.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParityLedgerEvidenceRow {
-    /// Stable doc requirement id.
-    pub requirement_id: String,
-    /// Row outcome.
-    pub outcome: AcceptanceOutcome,
-    /// Row closure status.
-    #[serde(default)]
-    pub status: ParityLedgerStatus,
-    /// Source document path or requirement reference.
-    #[serde(default)]
-    pub source_ref: String,
-    /// Legacy implementation evidence path or artifact id.
-    #[serde(default)]
-    pub evidence_ref: String,
-    /// Implementation evidence paths or artifact ids.
-    #[serde(default)]
-    pub implementation_refs: Vec<String>,
-    /// Test or gate evidence paths or artifact ids.
-    #[serde(default)]
-    pub test_evidence_refs: Vec<String>,
-}
-
-impl ParityLedgerEvidenceRow {
-    /// Implementation evidence refs, including the legacy `evidence_ref` field.
-    #[must_use]
-    pub fn implementation_evidence_refs(&self) -> Vec<&str> {
-        self.implementation_refs
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once(self.evidence_ref.as_str()))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .collect()
-    }
-
-    fn effective_source_ref<'a>(&'a self, requirement: &'a ParityLedgerRequirementRow) -> &'a str {
-        if self.source_ref.trim().is_empty() {
-            &requirement.source_ref
-        } else {
-            &self.source_ref
-        }
-    }
-}
-
-/// Closure state for a doc parity ledger row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParityLedgerStatus {
-    /// Implementation evidence exists but runtime evidence has not closed it.
-    Implemented,
-    /// Implementation and test/gate evidence both exist.
-    #[default]
-    Verified,
-    /// Completion is blocked by missing external state.
-    Blocked,
-    /// More work is required before this doc requirement can close.
-    NeedsWork,
-}
-
 /// Done-gate validation decision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceDecision {
@@ -673,23 +389,6 @@ impl AcceptanceIssue {
 fn decision_from_issues(issues: Vec<AcceptanceIssue>) -> AcceptanceDecision {
     let outcome = if issues.iter().any(|issue| issue.blocking) {
         AcceptanceOutcome::Failed
-    } else {
-        AcceptanceOutcome::Passed
-    };
-    AcceptanceDecision { outcome, issues }
-}
-
-fn decision_from_evidence_issues(issues: Vec<AcceptanceIssue>) -> AcceptanceDecision {
-    let outcome = if issues.iter().any(|issue| issue.blocking) {
-        if issues
-            .iter()
-            .filter(|issue| issue.blocking)
-            .all(|issue| matches!(issue.code.as_str(), "ACCEPT_031" | "ACCEPT_032"))
-        {
-            AcceptanceOutcome::NeedsWork
-        } else {
-            AcceptanceOutcome::Failed
-        }
     } else {
         AcceptanceOutcome::Passed
     };
@@ -753,89 +452,6 @@ mod tests {
         }
     }
 
-    fn full_evidence() -> AcceptanceEvidence {
-        AcceptanceEvidence {
-            outcome: AcceptanceOutcome::Passed,
-            gates: vec![
-                GateEvidence {
-                    gate_id: "compile".to_string(),
-                    outcome: AcceptanceOutcome::Passed,
-                    evidence_ref: ".roko/runs/compile.log".to_string(),
-                },
-                GateEvidence {
-                    gate_id: "test".to_string(),
-                    outcome: AcceptanceOutcome::Passed,
-                    evidence_ref: ".roko/runs/test.log".to_string(),
-                },
-            ],
-            no_stub: Some(NoStubEvidence {
-                outcome: AcceptanceOutcome::Passed,
-                scanned_paths: vec!["crates/roko-gate/src".to_string()],
-                findings: Vec::new(),
-            }),
-            agent_output: Some(StructuredOutputEvidence {
-                parsed: true,
-                schema_valid: true,
-                raw_output_ref: ".roko/runs/agent-output.json".to_string(),
-            }),
-            review_verdict: Some(ReviewVerdictEvidence {
-                verdict_id: "verdict-1".to_string(),
-                batch_id: "RT00".to_string(),
-                task_id: "RT00".to_string(),
-                reviewer_role_id: "quick-reviewer".to_string(),
-                status: AcceptanceOutcome::Passed,
-                confidence: 0.9,
-                blocking_findings: Vec::new(),
-                non_blocking_findings: Vec::new(),
-                required_next_action: RequiredNextAction::None,
-                evidence_refs: vec!["crates/roko-gate/src/acceptance_contract.rs".to_string()],
-                raw_output_ref: ".roko/runs/review.json".to_string(),
-                created_at: "2026-04-25T12:43:56Z".to_string(),
-            }),
-            recovery: Some(RecoveryEvidence {
-                retry_recorded: true,
-                reflection_recorded: true,
-                replan_recorded: true,
-            }),
-            parity_ledger_rows: vec![ParityLedgerEvidenceRow {
-                requirement_id: "RT00.done-gate".to_string(),
-                outcome: AcceptanceOutcome::Passed,
-                status: ParityLedgerStatus::Verified,
-                source_ref: "tmp/architecture-plans/08-end-to-end-acceptance.md".to_string(),
-                evidence_ref: "crates/roko-gate/src/acceptance_contract.rs".to_string(),
-                implementation_refs: Vec::new(),
-                test_evidence_refs: vec![".roko/runs/test.log".to_string()],
-            }],
-        }
-    }
-
-    #[test]
-    fn valid_contract_and_evidence_pass() {
-        let contract = full_contract();
-        let evidence = full_evidence();
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert!(decision.passed(), "{decision:?}");
-    }
-
-    #[test]
-    fn missing_required_gate_fails_closed() {
-        let contract = full_contract();
-        let mut evidence = full_evidence();
-        evidence.gates.retain(|gate| gate.gate_id != "compile");
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert_eq!(decision.outcome, AcceptanceOutcome::Failed);
-        assert!(
-            decision
-                .issues
-                .iter()
-                .any(|issue| issue.code == "ACCEPT_021")
-        );
-    }
-
     #[test]
     fn malformed_contract_fails_closed() {
         let mut contract = full_contract();
@@ -849,85 +465,6 @@ mod tests {
                 .issues
                 .iter()
                 .any(|issue| issue.code == "ACCEPT_001")
-        );
-    }
-
-    #[test]
-    fn unparsable_outcome_is_rejected_by_serde() {
-        let raw = r#"{"outcome":"done","gates":[],"parity_ledger_rows":[]}"#;
-
-        let parsed = serde_json::from_str::<AcceptanceEvidence>(raw);
-
-        assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn review_verdict_with_next_action_fails_closed() {
-        let contract = full_contract();
-        let mut evidence = full_evidence();
-        let review = evidence.review_verdict.as_mut().expect("review evidence");
-        review.required_next_action = RequiredNextAction::Retry;
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert_eq!(decision.outcome, AcceptanceOutcome::Failed);
-        assert!(
-            decision
-                .issues
-                .iter()
-                .any(|issue| issue.code == "ACCEPT_026")
-        );
-    }
-
-    #[test]
-    fn review_verdict_wrong_reviewer_fails_closed() {
-        let contract = full_contract();
-        let mut evidence = full_evidence();
-        let review = evidence.review_verdict.as_mut().expect("review evidence");
-        review.reviewer_role_id = "unexpected-reviewer".to_string();
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert_eq!(decision.outcome, AcceptanceOutcome::Failed);
-        assert!(
-            decision
-                .issues
-                .iter()
-                .any(|issue| issue.code == "ACCEPT_026")
-        );
-    }
-
-    #[test]
-    fn missing_parity_test_evidence_needs_work() {
-        let contract = full_contract();
-        let mut evidence = full_evidence();
-        evidence.parity_ledger_rows[0].test_evidence_refs.clear();
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert_eq!(decision.outcome, AcceptanceOutcome::NeedsWork);
-        assert!(
-            decision
-                .issues
-                .iter()
-                .any(|issue| issue.code == "ACCEPT_031")
-        );
-    }
-
-    #[test]
-    fn parity_row_status_must_be_verified() {
-        let contract = full_contract();
-        let mut evidence = full_evidence();
-        evidence.parity_ledger_rows[0].status = ParityLedgerStatus::NeedsWork;
-
-        let decision = contract.validate_evidence(&evidence);
-
-        assert_eq!(decision.outcome, AcceptanceOutcome::NeedsWork);
-        assert!(
-            decision
-                .issues
-                .iter()
-                .any(|issue| issue.message.contains("status=NeedsWork"))
         );
     }
 

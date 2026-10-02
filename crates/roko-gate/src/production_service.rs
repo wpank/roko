@@ -124,15 +124,42 @@ pub trait ProductionGateRunner: Send + Sync + 'static {
 ///
 /// Copies the sequencing from `runner/gate_dispatch.rs::run_gate_once` and
 /// `spawn_gate` into neutral helpers. Delegates rung construction to the
-/// existing `GatePipelineBuilder`.
-#[derive(Debug)]
-pub struct ProductionGateService;
+/// existing `GatePipelineBuilder`. The canonical rungs run with its
+/// [`RungExecutionConfig`] ([`Self::with_rung_config`]): without a judge or
+/// search oracle there, the LLM-judge and fact-check rungs skip.
+#[derive(Default)]
+pub struct ProductionGateService {
+    rung_config: RungExecutionConfig,
+}
+
+impl std::fmt::Debug for ProductionGateService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProductionGateService")
+            .field(
+                "llm_judge_oracle",
+                &self.rung_config.llm_judge_oracle.is_some(),
+            )
+            .field(
+                "fact_check_oracle",
+                &self.rung_config.fact_check_oracle.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 impl ProductionGateService {
     /// Create a new production gate service.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Run the canonical rungs with `rung_config`: its oracles, source roots,
+    /// thresholds and the rest (gap-85f102).
+    #[must_use]
+    pub fn with_rung_config(mut self, rung_config: RungExecutionConfig) -> Self {
+        self.rung_config = rung_config;
+        self
     }
 
     /// Build a gate signal from the request, with its `[gates]
@@ -330,7 +357,7 @@ impl ProductionGateService {
                 ctx,
                 *rung,
                 &RungExecutionInputs::default(),
-                &RungExecutionConfig::default(),
+                &self.rung_config,
             )
             .await;
 
@@ -455,12 +482,6 @@ impl ProductionGateService {
     }
 }
 
-impl Default for ProductionGateService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // DefaultGateService — SharedGateEvaluator implementation (#250)
 // ────────────────────────────────────────────────────────────────────────────
@@ -471,21 +492,41 @@ impl Default for ProductionGateService {
 /// This adapter bridges the shared per-rung evaluation contract defined in
 /// `roko-core` to the existing rung dispatch infrastructure. It is the
 /// implementation that `GatePipelineCell` accesses via
-/// `CellContext.resources.gates`.
-#[derive(Debug)]
-pub struct DefaultGateService;
+/// `CellContext.resources.gates`. Rungs run with its
+/// [`RungExecutionConfig`] ([`Self::with_rung_config`]).
+#[derive(Default)]
+pub struct DefaultGateService {
+    rung_config: RungExecutionConfig,
+}
+
+impl std::fmt::Debug for DefaultGateService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultGateService")
+            .field(
+                "llm_judge_oracle",
+                &self.rung_config.llm_judge_oracle.is_some(),
+            )
+            .field(
+                "fact_check_oracle",
+                &self.rung_config.fact_check_oracle.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 impl DefaultGateService {
     /// Create a new default gate service.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
     }
-}
 
-impl Default for DefaultGateService {
-    fn default() -> Self {
-        Self::new()
+    /// Run rungs with `rung_config`: its oracles, source roots, thresholds
+    /// and the rest (gap-85f102).
+    #[must_use]
+    pub fn with_rung_config(mut self, rung_config: RungExecutionConfig) -> Self {
+        self.rung_config = rung_config;
+        self
     }
 }
 
@@ -518,7 +559,7 @@ impl roko_core::SharedGateEvaluator for DefaultGateService {
             &ctx,
             rung,
             &crate::rung_dispatch::RungExecutionInputs::default(),
-            &crate::rung_dispatch::RungExecutionConfig::default(),
+            &self.rung_config,
         )
         .await;
 
@@ -794,6 +835,35 @@ mod tests {
         let service = ProductionGateService::new();
         let debug = format!("{service:?}");
         assert!(debug.contains("ProductionGateService"));
+    }
+
+    /// gap-85f102: the canonical rungs run with the rung config the service
+    /// was given, so its oracles reach the semantic rungs.
+    #[test]
+    fn service_runs_rungs_with_the_rung_config_it_was_given() {
+        use crate::fact_check::{SearchHit, SearchOracle};
+
+        struct NoHits;
+
+        #[async_trait]
+        impl SearchOracle for NoHits {
+            async fn search(&self, _query: &str) -> Result<Vec<SearchHit>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        let plain = format!("{:?}", ProductionGateService::new());
+        assert!(plain.contains("fact_check_oracle: false"), "{plain}");
+        let config = RungExecutionConfig {
+            fact_check_oracle: Some(Arc::new(NoHits)),
+            ..Default::default()
+        };
+        let service = ProductionGateService::new().with_rung_config(config);
+        let configured = format!("{service:?}");
+        assert!(
+            configured.contains("fact_check_oracle: true"),
+            "{configured}"
+        );
     }
 
     #[test]

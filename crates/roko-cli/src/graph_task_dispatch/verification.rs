@@ -107,6 +107,10 @@ impl GraphTaskDispatcher {
         let effective_workdir = effective_workdir.to_path_buf();
         let retry_key = retry_key.to_string();
         let steps = self.verify_steps(spec, task);
+        // `[gates] mode = "focused"` scopes authored Cargo tests (gap-1426e4).
+        let steps = self
+            .focus_verify_steps(&effective_workdir, task, steps)
+            .await;
         // A step passed only because what failed in it failed on the plan
         // run's start commit too (gap-161be1).
         let mut preexisting_filtered = false;
@@ -702,10 +706,12 @@ impl GraphTaskDispatcher {
             //
             // Feed each completed verify step's pass/fail outcome into the
             // persisted gate learning: the per-rung EMAs and the oracle
-            // residual in `GateThresholds`, the task's profile priors, the
-            // regression ratchet and the skip advisory (find-4b4344). Errors
-            // are logged and non-fatal; the next task makes its own update.
+            // residual in `GateThresholds`, the task's profile priors and the
+            // skip advisory (find-4b4344). Errors are logged and non-fatal;
+            // the next task makes its own update.
             self.settle_gate_learning(spec, task, &step_outcomes, test_pass_forecast);
+            // Steps an earlier attempt passed that fail now (gap-6dba88).
+            let regressed = self.settle_step_regressions(spec, task, &steps, &step_outcomes);
 
             // ── Post-verify: GateGamingDetector + HoldoutExperiment ─────
             //
@@ -958,7 +964,8 @@ impl GraphTaskDispatcher {
                 // checkpoint keep it on disk, so the attempt a resumed run
                 // starts gets it even after this run's retries ran out.
                 if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
-                    let feedback = feedback.with_diagnosis(&enriched_diagnosis);
+                    let diagnosis = step_ratchet::regression_note(&regressed, &enriched_diagnosis);
+                    let feedback = feedback.with_diagnosis(&diagnosis);
                     let next_attempt = attempt_number.saturating_add(1);
                     let retries_left = spec
                         .max_retries

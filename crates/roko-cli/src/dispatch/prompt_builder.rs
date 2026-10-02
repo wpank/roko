@@ -65,6 +65,11 @@ const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itse
      pinned test over its destination, so edits to that copy are lost, and requires exactly the \
      stated number of passing tests.";
 
+/// Appended to the user prompt of a task with authored verify steps: a verified pass stores the
+/// line as durable knowledge (decision 4201, backlog 4215).
+const LESSON_NOTE: &str = "When you finish, end your final message with one line, `Lesson: <one \
+     sentence about this repository that a later task should know>`, or `Lesson: none`.";
+
 /// Appended to the user prompt of a task that sets `research_before_edit` (gap-404fdb).
 const RESEARCH_BEFORE_EDIT_NOTE: &str = "\n## Before You Edit\nResearch first: find the code that \
      already does something like this task (search for the types, functions and files it names), \
@@ -2142,6 +2147,11 @@ impl PromptAssembler {
                 user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
+            // Only a verified pass writes knowledge: ask for its lesson
+            // (backlog 4215).
+            user_prompt.push('\n');
+            user_prompt.push_str(LESSON_NOTE);
+            user_prompt.push('\n');
         }
 
         Ok(AssembledPrompt {
@@ -3733,6 +3743,26 @@ mod tests {
         let next_run = PromptCache::load(temp.path()).digest();
         assert_eq!((next_run.knowledge.count, next_run.episodes.count), (1, 1));
         assert_ne!(next_run, digest);
+    }
+
+    /// backlog 4215: a task with verify steps asks its agent to end with a
+    /// `Lesson:` line, which a verified pass stores; a task without verify
+    /// steps writes no knowledge, so its prompt asks for none.
+    #[test]
+    fn verified_task_prompt_asks_for_a_lesson_line() {
+        let assembler = PromptAssembler::minimal();
+        let prompt_for = |task: &TaskDef| {
+            let pctx = PromptContext::from_task(task, &ctx());
+            assembler.assemble(task, &pctx).expect("assemble").user_prompt
+        };
+        let verified = prompt_for(&task());
+        assert!(verified.contains(LESSON_NOTE), "{verified}");
+        assert!(verified.contains("`Lesson: none`"), "{verified}");
+
+        let mut unverified = task();
+        unverified.verify.clear();
+        let prompt = prompt_for(&unverified);
+        assert!(!prompt.contains("Lesson:"), "{prompt}");
     }
 
     /// The item of `kind` and `id` in `prompt`'s diagnostics.

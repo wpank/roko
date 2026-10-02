@@ -108,6 +108,11 @@ impl EventLogWriter {
     fn append<T: Serialize>(&mut self, record: &T) {
         // Best-effort: log but don't propagate serialization or I/O errors.
         if let Ok(json) = serde_json::to_string(record) {
+            // The process's secrets are redacted as the runner's own event
+            // log writer redacts them (`roko_fs::log_rotation`): an agent's
+            // output can quote a key, and under `roko serve` this writer is
+            // the one that keeps `.roko/events.jsonl` (bug-a9788a).
+            let line = roko_core::obs::scrub_secrets_in_jsonl(&json);
             let log_lock = match lock_event_log(&self.path) {
                 Ok(lock) => lock,
                 Err(error) => {
@@ -125,7 +130,7 @@ impl EventLogWriter {
                 .open(&self.path)
                 .and_then(|file| {
                     let mut writer = std::io::BufWriter::new(file);
-                    writeln!(writer, "{json}")?;
+                    writeln!(writer, "{line}")?;
                     writer.flush()
                 });
             if let Err(error) = append_result {

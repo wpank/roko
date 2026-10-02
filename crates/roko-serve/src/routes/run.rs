@@ -480,6 +480,154 @@ mod tests {
     use super::*;
     use roko_core::DashboardEvent;
 
+    /// A key planted among the process's secrets, as a `.env` file plants one.
+    const PLANTED_KEY: &str = "canary-serve-6f2c9a41d8";
+
+    /// Puts a process secret scrubber that knows the planted key in place,
+    /// and the previous one back when dropped.
+    struct PlantedKeyScrubber(Option<Arc<roko_core::obs::LogScrubber>>);
+
+    impl PlantedKeyScrubber {
+        fn install() -> Self {
+            let scrubber = roko_core::obs::LogScrubber::empty();
+            scrubber
+                .add_literal_value(PLANTED_KEY, "PLANTED_KEY")
+                .expect("register the planted key");
+            let previous = roko_core::obs::install_secret_scrubber(Some(Arc::new(scrubber)));
+            Self(previous)
+        }
+    }
+
+    impl Drop for PlantedKeyScrubber {
+        fn drop(&mut self) {
+            roko_core::obs::install_secret_scrubber(self.0.take());
+        }
+    }
+
+    /// A runtime whose agent prints the planted key.
+    struct PrintsPlantedKey;
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for PrintsPlantedKey {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            Ok(RunResult {
+                success: true,
+                output_text: Some(format!("Deployed.\nThe deploy key is {PLANTED_KEY}.\n")),
+                usage: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// Every regular file under `root`, at any depth.
+    fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read a directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    /// bug-a9788a: what serve keeps under `.roko/` is scrubbed of the
+    /// process's secrets, as the CLI's event log is (the C2 canary). A
+    /// serve-hosted run whose agent prints a planted key, the stream record a
+    /// hosted plan run's agent publishes and an agent's output ingested as a
+    /// runtime event leave the key nowhere under `.roko/`: serve's event logs
+    /// hold it redacted.
+    #[tokio::test]
+    async fn serve_event_log_is_scrubbed() {
+        let _scrubber = PlantedKeyScrubber::install();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(PrintsPlantedKey),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+
+        let run_id = spawn_background_run(&state, "deploy the site".into(), None, None).await;
+        let run = state
+            .active_runs
+            .write()
+            .await
+            .remove(&run_id)
+            .expect("the run is tracked");
+        tokio::time::timeout(std::time::Duration::from_secs(10), run.handle)
+            .await
+            .expect("the run ends in time")
+            .expect("the run's task");
+        state.state_hub.publish(DashboardEvent::AgentOutput {
+            agent_id: "plan-a/T1".into(),
+            plan_id: "plan-a".into(),
+            task_id: "T1".into(),
+            attempt: 1,
+            content: format!(
+                "\u{1e}roko.stream.v1 {}",
+                json!({ "kind": "tool_result", "payload": { "output": PLANTED_KEY } })
+            ),
+        });
+        state
+            .runtime_event_logger
+            .consume_with_run_cursor(&roko_core::RuntimeEvent::AgentOutput {
+                run_id: "run-1".into(),
+                agent_id: "worker".into(),
+                chunk: format!("the key is {PLANTED_KEY}"),
+            });
+
+        let roko_dir = dir.path().join(".roko");
+        let events = std::fs::read_to_string(roko_dir.join("events.jsonl")).expect("the event log");
+        assert!(events.contains("[REDACTED:PLANTED_KEY]"), "{events}");
+        let runtime_events = std::fs::read_to_string(state.runtime_event_logger.path())
+            .expect("the runtime event log");
+        assert!(
+            runtime_events.contains("[REDACTED:PLANTED_KEY]"),
+            "{runtime_events}"
+        );
+        for path in files_under(&roko_dir) {
+            let bytes = std::fs::read(&path).expect("read a file");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(PLANTED_KEY),
+                "{} holds the planted key",
+                path.display()
+            );
+        }
+    }
+
     /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while
     /// the run goes on, as a plan run's agents do, and completes with it.
     #[tokio::test(start_paused = true)]

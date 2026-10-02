@@ -183,15 +183,18 @@ semantics and built-in profiles.
 | `clippy_enabled` | bool | true | Enable clippy gate |
 | `skip_tests` | bool | false | Skip test gate |
 | `max_iterations` | u32 | 3 | Global gate retry ceiling |
-| `rungs` | array of tables (`name`, `kind`, `command`, `timeout_secs`, `required`, `parallel_with`, `artefacts`, `schema`, `rubric`, `advisory`) | none | Declared gate rungs. The `required` `command` ones are `roko run`'s verify steps, and every `roko plan run` task runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `rungs` | array of tables (`name`, `kind`, `command`, `timeout_secs`, `required`, `parallel_with`, `artefacts`, `schema`, `rubric`, `advisory`) | none | Declared gate rungs, the `code` verifier pack. The `required` `command` ones are `roko run`'s verify steps, and every `roko plan run` task with no domain, or of the `code` domain when `packs` declares no `code` pack, runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `packs` | table of tables (`[gates.packs.<domain>] rungs = [...]`) | none | Verifier packs by task domain label (`code`, `chain`, `research`, `docs` or a custom label). A plan task faces its domain's pack in place of `rungs`; a task of a domain other than `code` with no pack runs only its own verify steps, so it ends unverified rather than run the code ladder |
 
-A rung's `kind` says what it checks. `command`, the default, runs `command` under `sh -c`. `citations`,
-`judge`, `schema`, `receipt` and `confirm` parse and are validated, and run only through the verifier
-packs. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a `schema` rung
-`schema` (a file relative to the task's workspace), and a `citations`, `judge` or `schema` rung
-`artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's rubric, as text or a
-file path. A rung with `advisory = true` only advises: its verdict is recorded and never fails the task.
-A `judge` rung advises unless it sets `advisory = false`.
+A rung's `kind` says what it checks. `command`, the default, runs `command` under `sh -c`.
+`citations`, `judge`, `schema`, `receipt` and `confirm` parse and are validated but are not built
+yet: a plan task that must pass one fails before its agent runs, and an advisory or optional one is
+skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
+`schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
+`schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
+rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
+and never fails the task, so no verify step runs it. A `judge` rung advises unless it sets
+`advisory = false`.
 
 ---
 

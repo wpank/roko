@@ -1,11 +1,11 @@
 //! Verify (verification) and pipeline configuration sections.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::agent::default_true;
-use crate::task::TaskTier;
+use crate::task::{TaskDomain, TaskTier};
 
 // ---- [gates] -------------------------------------------------------------
 
@@ -259,6 +259,16 @@ impl GateRungConfig {
     }
 }
 
+/// A verifier pack (`[gates.packs.<domain>]`, 9120): the rungs that verify
+/// the tasks of one work domain.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatePackConfig {
+    /// The pack's rungs, declared as `[[gates.rungs]]` entries are.
+    #[serde(default)]
+    pub rungs: Vec<GateRungConfig>,
+}
+
 /// Verify (verification) settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -372,6 +382,11 @@ pub struct GatesConfig {
     /// verify steps ([`Self::required_rungs`]).
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
+    /// Verifier packs by work-domain label (`[gates.packs.<domain>]`, 9120):
+    /// the rungs a task of that domain faces in place of `rungs`
+    /// ([`Self::pack_for`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packs: BTreeMap<String, GatePackConfig>,
     /// Optional ceiling rung index. Rungs above this index are skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rung: Option<u8>,
@@ -451,6 +466,7 @@ impl Default for GatesConfig {
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
             custom_rungs: Vec::new(),
+            packs: BTreeMap::new(),
             max_rung: None,
             ema_alpha: default_ema_alpha(),
             adaptive_min_retries: default_min_retries(),
@@ -505,16 +521,40 @@ impl GatesConfig {
     }
 
     /// What is wrong with the declared rungs ([`GateRungConfig::problems`]),
-    /// each with the rung's key, such as `gates.rungs.lint`.
+    /// each with the rung's key, such as `gates.rungs.lint` or
+    /// `gates.packs.research.rungs.sources`.
     #[must_use]
     pub fn rung_problems(&self) -> Vec<(String, String)> {
+        let packs = self
+            .packs
+            .iter()
+            .map(|(label, pack)| (format!("gates.packs.{label}.rungs"), &pack.rungs));
+        let declared = std::iter::once(("gates.rungs".to_string(), &self.custom_rungs));
         let mut problems = Vec::new();
-        for rung in &self.custom_rungs {
-            for problem in rung.problems() {
-                problems.push((format!("gates.rungs.{}", rung.name), problem));
+        for (key, rungs) in declared.chain(packs) {
+            for rung in rungs {
+                for problem in rung.problems() {
+                    problems.push((format!("{key}.{}", rung.name), problem));
+                }
             }
         }
         problems
+    }
+
+    /// The rungs a task of work domain `domain` faces (9120): the pack
+    /// `[gates.packs.<label>]` declares for it; else `[[gates.rungs]]`, the
+    /// code pack, for a `code` task or one with no domain; else none, so a
+    /// task of another domain runs only its own verify steps rather than
+    /// the code ladder.
+    #[must_use]
+    pub fn pack_for(&self, domain: Option<&TaskDomain>) -> &[GateRungConfig] {
+        if let Some(pack) = domain.and_then(|domain| self.packs.get(domain.label())) {
+            return &pack.rungs;
+        }
+        match domain {
+            None | Some(TaskDomain::Code) => &self.custom_rungs,
+            Some(_) => &[],
+        }
     }
 
     /// The declared `command` rungs if the workspace declares rungs,
@@ -982,6 +1022,45 @@ artefacts = ["data/*.json"]
 
         let unknown = RokoConfig::from_toml("[[gates.rungs]]\nname = \"x\"\nkind = \"vibes\"\n");
         assert!(unknown.is_err(), "an unknown kind does not parse");
+    }
+
+    /// 9120: a task's work domain picks its pack. A task with no domain
+    /// faces `[[gates.rungs]]`, and so does a `code` task unless a `code`
+    /// pack is declared; a task of another domain without a pack faces no
+    /// rungs. Pack rungs are validated as declared rungs are.
+    #[test]
+    fn pack_for_picks_the_domains_pack() {
+        use super::GatePackConfig;
+        use crate::task::TaskDomain;
+
+        let mut cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.packs.research.rungs]]
+name = "sources"
+kind = "citations"
+"#,
+        )
+        .expect("config parses");
+        let names = |cfg: &RokoConfig, domain: Option<TaskDomain>| -> Vec<String> {
+            let rungs = cfg.gates.pack_for(domain.as_ref());
+            rungs.iter().map(|rung| rung.name.clone()).collect()
+        };
+        assert_eq!(names(&cfg, Some(TaskDomain::Research)), ["sources"]);
+        assert_eq!(names(&cfg, Some(TaskDomain::Code)), ["compile"]);
+        assert_eq!(names(&cfg, None), ["compile"]);
+        assert!(names(&cfg, Some(TaskDomain::Docs)).is_empty());
+        let problems = cfg.gates.rung_problems();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].0, "gates.packs.research.rungs.sources");
+
+        let code = GatePackConfig::default();
+        cfg.gates.packs.insert("code".to_string(), code);
+        assert!(names(&cfg, Some(TaskDomain::Code)).is_empty());
+        assert_eq!(names(&cfg, None), ["compile"]);
     }
 
     #[test]

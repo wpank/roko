@@ -467,6 +467,12 @@ impl GraphTaskDispatcher {
                 // cancelled or timed out (bug-aa2044), so readers of
                 // `costs.jsonl` show it apart (gap-288e38).
                 cost_source: settled.verdict.cost.source,
+                // An unknown cost reads as unknown, not as $0 (backlog 2109).
+                priced: Some(crate::dispatch_v2::usage_is_priced(
+                    &dispatch.result.usage,
+                    dispatch.target.model_profile.as_ref(),
+                    &dispatch.target.model_slug,
+                )),
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),

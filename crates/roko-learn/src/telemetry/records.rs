@@ -1581,6 +1581,7 @@ mod tests {
             success: false,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
         };
         let keyed = AttemptKeyed {
             attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),

@@ -614,6 +614,9 @@ impl AuthoringSpend {
             session_id: String::new(),
             // An `AgentCapture` does not say where its usage came from.
             cost_source: roko_learn::telemetry::CostSource::Unknown,
+            // The capture names no model profile: a known cost or the
+            // model's built-in rate prices the call (backlog 2109).
+            priced: Some(crate::dispatch_v2::usage_is_priced(&usage, None, &call.model)),
         };
         self.append("costs.jsonl", &cost_record).await;
 

@@ -2278,6 +2278,27 @@ pub(crate) fn fill_usage_cost_from_pricing(
     }
 }
 
+/// Whether roko has a rate for `model_slug`, as
+/// [`fill_usage_cost_from_pricing`] applies one: the profile's per-million
+/// prices, or the model's built-in pricing. A rate of 0 is free, and still a
+/// rate (backlog 2109).
+pub(crate) fn model_has_price(profile: Option<&ModelProfile>, model_slug: &str) -> bool {
+    profile.is_some_and(|profile| {
+        profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
+    }) || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
+}
+
+/// Whether a call's `usage` is priced, for its cost row (backlog 2109): its
+/// cost is known, or roko has a rate for the model, which prices even a
+/// free call. An unpriced call's `cost_usd` of 0 is unknown, not free.
+pub(crate) fn usage_is_priced(
+    usage: &roko_core::Usage,
+    profile: Option<&ModelProfile>,
+    model_slug: &str,
+) -> bool {
+    usage.has_known_cost() || model_has_price(profile, model_slug)
+}
+
 /// What `usage` would have cost with no prompt caching, priced like
 /// [`fill_usage_cost_from_pricing`]: the profile's input and output prices,
 /// else the model's built-in pricing. `None` when neither prices the model

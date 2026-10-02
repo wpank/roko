@@ -48,6 +48,8 @@ pub(super) struct SideCall {
     turns: Option<u32>,
     duration_ms: u64,
     success: bool,
+    /// Whether roko could price the call (backlog 2109).
+    priced: bool,
 }
 
 impl SideCall {
@@ -56,16 +58,19 @@ impl SideCall {
         Self::from_result(
             &dispatch.target.provider_id,
             &dispatch.target.model_slug,
+            dispatch.target.model_profile.as_ref(),
             is_cli_backend(dispatch.target.provider_kind),
             &dispatch.result,
             duration_ms,
         )
     }
 
-    /// The call of `result`, on a CLI agent backend when `cli_backend`.
+    /// The call of `result` to `model_slug` with `profile`, on a CLI agent
+    /// backend when `cli_backend`.
     fn from_result(
         provider_id: &str,
         model_slug: &str,
+        profile: Option<&roko_core::config::schema::ModelProfile>,
         cli_backend: bool,
         result: &roko_agent::AgentResult,
         duration_ms: u64,
@@ -90,6 +95,7 @@ impl SideCall {
                 .and_then(|turns| turns.parse().ok()),
             duration_ms,
             success: result.success,
+            priced: crate::dispatch_v2::usage_is_priced(&result.usage, profile, model_slug),
         }
     }
 
@@ -186,6 +192,8 @@ pub(super) struct HelperAgent {
     agent: CheapFactoryAgent,
     provider_id: String,
     model_slug: String,
+    /// The helper model's profile, which prices its calls.
+    model_profile: Option<roko_core::config::schema::ModelProfile>,
     /// The helper model runs on a CLI agent backend.
     cli_backend: bool,
     /// The attempt's helper calls; the agent is out until it is dropped.
@@ -206,6 +214,7 @@ impl HelperAgent {
             cli_backend: is_cli_backend(target.provider_kind),
             provider_id: target.provider_id,
             model_slug: target.model_slug,
+            model_profile: target.model_profile,
             calls,
         }
     }
@@ -239,6 +248,7 @@ impl roko_agent::Agent for HelperAgent {
             calls.record(SideCall::from_result(
                 &self.provider_id,
                 &self.model_slug,
+                self.model_profile.as_ref(),
                 self.cli_backend,
                 &result,
                 u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -342,6 +352,7 @@ impl GraphTaskDispatcher {
                 success: call.success,
                 session_id: String::new(),
                 cost_source: call.cost_source,
+                priced: Some(call.priced),
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),

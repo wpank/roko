@@ -1500,4 +1500,43 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert!(billed > 0.0, "{verdict}");
         assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
     }
+
+    /// backlog 2109: a cost row says whether roko could price the call. A
+    /// model with no price writes `priced: false`, its $0 an unknown cost;
+    /// one priced at 0/0 is free, and writes `priced: true`.
+    #[tokio::test]
+    async fn cost_rows_mark_unpriced_calls() {
+        for (prices, priced) in [(None, false), (Some(0.0), true)] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            let answers = vec![final_turn("done"), final_turn("done")];
+            let (base_url, _requests) = spawn_openai_mock(answers);
+            let mut config = priced_api_config(base_url);
+            let model = config.models.get_mut("api-model").expect("api model");
+            model.cost_input_per_m = prices;
+            model.cost_output_per_m = prices;
+            let feedback = GraphFeedbackContext {
+                costs_path: Some(roko.join("learn/costs.jsonl")),
+                ..GraphFeedbackContext::default()
+            };
+            let dispatcher = make_bare_dispatcher(config, temp.path())
+                .await
+                .with_feedback(feedback);
+            let task = TaskDef {
+                model_hint: Some("api-model".to_string()),
+                timeout_secs: FIXTURE_HANG_GUARD_SECS,
+                verify: vec![verify_step("structural", "true")],
+                ..make_task_def("focused")
+            };
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+
+            let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+            assert_eq!(costs[0]["priced"], priced, "{prices:?}: {}", costs[0]);
+            assert_eq!(costs[0]["cost_usd"], 0.0, "{prices:?}: {}", costs[0]);
+        }
+    }
 }

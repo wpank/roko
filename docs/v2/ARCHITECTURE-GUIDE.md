@@ -199,12 +199,15 @@ reconsider the design.
 
 ## 3. Runtime Workflows and the Signal-Selection Helper
 
-Production execution has two explicit owners:
+Production execution has two explicit owners, and both end in the Graph engine:
 
-- `roko run` and `roko do` use Graph workflow templates (WorkflowEngine was retired by #276;
-  its serializable types are preserved in `roko-runtime::workflow_contract`).
-- `roko plan run` uses the Graph engine (default). The legacy Runner-v2 is available via
-  `--engine legacy` for one deprecation cycle.
+- `roko run` runs a prompt as a one-task plan, or writes a plan first, and runs it with
+  `run_graph_plan`; `roko run plans/<slug>` runs an existing plan the same way. WorkflowEngine was
+  retired by #276 (its serializable types are preserved in `roko-runtime::workflow_contract`), and
+  `roko do` was folded into `roko run` on 2026-10-02.
+- `roko plan run` uses the Graph engine, the only plan executor. The Runner-v2 event loop was
+  deleted on 2026-09-06; `--engine legacy` and `--engine runner-v2` still parse but exit with an
+  error.
 
 `crates/roko-core/src/loop_tick.rs` contains a smaller reusable helper named
 `select_compose_verify_persist`. It queries candidate Signals, routes one,

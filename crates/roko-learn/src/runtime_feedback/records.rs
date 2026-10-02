@@ -1147,6 +1147,23 @@ pub struct GenerationOutcome {
     /// Validation report (if validation ran).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_report: Option<ArtifactValidationReport>,
+    /// The generated plan's spec-quality scores, when it was scored (3218).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_quality: Option<GenerationSpecQuality>,
+}
+
+/// The spec-quality scores of a generated plan (S07.10, backlog 3218), by
+/// the static rules (`roko_gate::spec_quality`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerationSpecQuality {
+    /// The mean task score, 0–100.
+    pub mean: f64,
+    /// The lowest task score.
+    pub min: f64,
+    /// How many tasks fall in each band, `A` to `D`.
+    pub bands: std::collections::BTreeMap<String, usize>,
+    /// Whether the planner was asked once more because the plan was weak.
+    pub regenerated: bool,
 }
 
 impl GenerationOutcome {

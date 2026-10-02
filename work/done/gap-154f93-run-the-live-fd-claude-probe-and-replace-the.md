@@ -2,14 +2,16 @@
 id = "gap-154f93"
 kind = "gap"
 title = "Run the live fd_claude probe and replace the invented modelUsage fixture with its saved output"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-ccarm's report on gap-c4f364, merged in 157f1d434)"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/test_run_cli.py", "benchmarks/viabilitybench/arms/fd_claude.toml"]
@@ -19,6 +21,17 @@ links = { depends_on = [], blocks = [], related = ["gap-c4f364", "gap-8be530", "
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/driver/testdata/fd_claude_probe.json && grep -qw 'def test_the_recorded_probe_parses' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_the_recorded_probe_parses -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:15Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T16:02:41Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem

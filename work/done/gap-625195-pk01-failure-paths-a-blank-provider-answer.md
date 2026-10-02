@@ -2,7 +2,7 @@
 id = "gap-625195"
 kind = "gap"
 title = "PK01 Failure paths: A blank provider answer fails as `empty_response` at the immune boundary, not as a… (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-agent/immune"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK01"
 anchors = ["crates/roko-agent/src/cursor_agent.rs", "crates/roko-agent/src/immune_boundary.rs", "crates/roko-agent/src/immune_evidence.rs", "crates/roko-agent/src/lib.rs", "crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/provider/error_classify.rs", "crates/roko-agent/src/streaming.rs", "crates/roko-agent/src/testutil.rs", "crates/roko-agent/src/tool_loop/mod.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/route_permissions.rs", "crates/roko-serve/src/routes/safety.rs"]
 lane = "rust-hot"
@@ -62,6 +63,17 @@ command = "test -s crates/roko-agent/tests/fixtures/sse/glm-4.7-agent-turn.sse &
 
 [[verify]]
 command = "grep -rqw 'fn not_logged_in_classifies_as_auth_failure' crates/roko-cli/ && cargo test -p roko-cli not_logged_in_classifies_as_auth_failure"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:13Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:53Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem

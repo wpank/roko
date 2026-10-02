@@ -2,7 +2,7 @@
 id = "gap-e4bfbf"
 kind = "gap"
 title = "PK18 Specs a cheap model can execute: `plan validate --spec-quality --dynamic`: red-on-base proof inside Roko (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/prd"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK18"
 anchors = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/lib.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_authoring.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/prd.rs", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-cli/tests/prd_pipeline_workspace.rs", "crates/roko-serve/src/plan_types.rs", "roko.toml"]
 lane = "rust-cold"
@@ -44,6 +45,17 @@ command = "grep -rqw 'fn generation_writes_planner_accept_tests_into_the_plan' c
 
 [[verify]]
 command = "grep -q 'task.accept' crates/roko-cli/src/plan_generate.rs && grep -rqw 'fn generator_prompt_teaches_task_accept' crates/roko-cli/src/ && cargo test -p roko-cli --lib generator_prompt_teaches_task_accept"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:11Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:39Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem

@@ -42,8 +42,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **49/61 closed** · goal `proof` · severity p1
-- open by lane: bench 12
+- **50/61 closed** · goal `proof` · severity p1
+- open by lane: bench 11
 - next: [gap-b6d6cf](items/gap-b6d6cf-viabilitybench-cost-classes-have-no-audit-spec.md) ViabilityBench cost classes have no audit/spec-refinement/predictor class, so roko_full's G5 $/VS-without-audit can't be computed
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 51 | 87 | 36 (26) |
+| bench | 52 | 87 | 35 (26) |
 | docs | 17 | 21 | 4 (2) |
 | frontend | 3 | 5 | 2 (2) |
 | none | 326 | 403 | 77 (77) |
 | paper | 61 | 73 | 12 (9) |
-| rust-cold | 184 | 234 | 50 (40) |
-| rust-hot | 127 | 161 | 34 (31) |
+| rust-cold | 186 | 235 | 49 (39) |
+| rust-hot | 130 | 161 | 31 (28) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

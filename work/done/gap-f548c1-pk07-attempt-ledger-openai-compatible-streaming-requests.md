@@ -2,7 +2,7 @@
 id = "gap-f548c1"
 kind = "gap"
 title = "PK07 Attempt ledger: OpenAI-compatible streaming requests ask for usage, so OpenAI spend reaches costs and… (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "509e3e807"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK07"
 anchors = ["crates/roko-agent/src/openai_compat_backend.rs", "crates/roko-agent/src/streaming.rs", "crates/roko-agent/src/tool_loop/backends/mod.rs", "crates/roko-cli/src/commands/diagnose.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs", "crates/roko-cli/src/graph_task_dispatch/reflex_credit.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/plan_authoring.rs", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-core/src/config/provider.rs", "crates/roko-learn/src/costs_db.rs", "crates/roko-learn/src/costs_log.rs", "crates/roko-learn/src/efficiency.rs", "crates/roko-learn/src/episode_logger.rs", "crates/roko-learn/src/feedback_service.rs", "crates/roko-learn/src/runtime_feedback/episode_helpers.rs", "crates/roko-learn/src/telemetry/records.rs", "crates/roko-neuro/src/episode_completion.rs"]
 lane = "rust-hot"
@@ -74,6 +75,17 @@ command = "grep -rqw 'fn spend_counts_flagged_unpriced_rows' crates/roko-learn/s
 
 [[verify]]
 command = "grep -rqE 'fn plan_ceiling_(refuses|charges|counts)_an_unpriced_call' crates/roko-cli/src/graph_task_dispatch/ && cargo test -p roko-cli plan_ceiling_"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T18:37:09Z"
+commit = "509e3e807"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:51Z"
+forced = false
+evidence = "Gate 3a on work/backlog-batch-3 (merged into main as 509e3e807; main differs from the gated tree only in work/ files): cargo check --workspace --tests, clippy -D warnings, nextest --lib 11,514 passed over 10 crates, golden-path canaries 13/13 (7 targets), roko-agent sse_replay 1/1; every [[verify]] passes (lib tests named in each verify passed; integration tests run by target; static parts rc=0)."
 +++
 
 ## Problem

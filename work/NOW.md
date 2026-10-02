@@ -24,19 +24,19 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P1** [gap-625195](items/gap-625195-pk01-failure-paths-a-blank-provider-answer.md) PK01 Failure paths: A blank provider answer fails as `empty_response` at the immune boundary, not as a… (+11 more) · size L · verified 2026-10-02
 - **P1** [gap-e00238](items/gap-e00238-pk02-failure-paths-immune-denials-leave-provider.md) PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-843aef](items/gap-843aef-pk05-operator-control-and-guards-provider-clis.md) PK05 Operator control and guards: Provider CLIs and MCP servers keep exported secrets whose names roko does not recognise (+7 more) · size L · verified 2026-10-02
 
-_13 more open · `goal = "truth"`_
+_11 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
-- **P2** [gap-e4bfbf](items/gap-e4bfbf-pk18-specs-a-cheap-model-can-execute.md) PK18 Specs a cheap model can execute: `plan validate --spec-quality --dynamic`: red-on-base proof inside Roko (+9 more) · size L · verified 2026-10-02
 - **P2** [gap-e120a1](items/gap-e120a1-pk24-specs-a-cheap-model-can-execute.md) PK24 Specs a cheap model can execute: Refiner loop against a stub model: additive only, with sources (+3 more) · size M · verified 2026-10-02
+- **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 
-_2 more open · on hold: gap-c013c5, gap-c1f4ac, gap-de0b87 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · on hold: gap-c013c5, gap-c1f4ac, gap-de0b87, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -44,15 +44,15 @@ _2 more open · on hold: gap-c013c5, gap-c1f4ac, gap-de0b87 · 4 unchecked (`TRI
 - **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 
-_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-cc5051](items/gap-cc5051-pk09-decision-records-and-census-s01-becomes.md) PK09 Decision records and census: S01 becomes the one schema: merge the S03/S06 addenda, the ladder source and today's… (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
 - **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
+- **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
 
-_31 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-943046, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_30 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-943046, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

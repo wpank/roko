@@ -1683,6 +1683,7 @@ async fn run_graph_plan_body(
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
+        gate_env_passthrough: &roko_config.gates.env_passthrough,
         worktrees: worktrees.as_ref(),
         delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
@@ -2510,6 +2511,9 @@ struct PlanRunContext<'a> {
     batch: Option<&'a super::batch::BatchIntegration>,
     /// Each plan's whole-plan check (gap-60233f), by plan id.
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
+    /// `[gates] env_passthrough`: what the whole-plan check's steps inherit
+    /// beyond the gate allowlist.
+    gate_env_passthrough: &'a [String],
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     /// `[runner] delete_attempt_branches`: a delivered plan's attempt
@@ -3438,6 +3442,7 @@ async fn run_one_plan(
                 ctx.workdir,
                 plan,
                 plan_checks,
+                ctx.gate_env_passthrough,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -3704,16 +3709,18 @@ async fn deliver_plan_to_batch(
 
 /// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
 /// `workdir`, which its tasks edited, and record it in the plan's
-/// checkpoint. The plan succeeds only when the check passes. `Err` only when
-/// the checkpoint cannot record it.
+/// checkpoint. Its steps inherit what the gate policy and `env_passthrough`
+/// admit. The plan succeeds only when the check passes. `Err` only when the
+/// checkpoint cannot record it.
 async fn check_plan_in_place(
     workdir: &Path,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    env_passthrough: &[String],
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
-    let result = super::plan_verify::run_plan_verify(workdir, checks).await;
+    let result = super::plan_verify::run_plan_verify(workdir, checks, env_passthrough).await;
     let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),

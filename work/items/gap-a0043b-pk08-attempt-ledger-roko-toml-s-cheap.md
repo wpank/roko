@@ -124,3 +124,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c), PK07 (gap-f548c1).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-a0043b`; cargo verification deferred to the batch gate.
+
+- 2112: implemented at 0186381fe
+- 2116: implemented at b4dad76bd
+- 2118: implemented at be3e254f4 (the CLI sends the raise over the plan-control socket, as pause and cancel do since 1209, so it prints the run's answer; control.json's `raise_budget` reaches the run too)
+- 2119: implemented at e24587bd4
+- 2121: implemented at 521e6e9ad
+- 2122: implemented at 47aec45c9
+- 2123: implemented at ec53fe3bb (the doc comment on `dispatch_v2.rs::with_observability_sinks` is left for 2114)
+- 2124: implemented at e4179f28c
+- 2125: implemented at bbb656745
+- 2126: implemented at 1ef44eb93 (`demo_seed.rs` still writes `memory/task-metrics.jsonl`, which nothing reads now)
+- 2127: implemented at 6225096d6
+- 2128: implemented at fa2e992bb (roko-runtime's in-memory `RunLedger` module is kept: gap-5d3b82 anchors on it)

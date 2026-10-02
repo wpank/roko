@@ -1505,6 +1505,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     attempt.key.attempt_key(),
                     request,
                     Some(&progress),
+                    failover::LadderRoute::of(&task, &dispatch_plan),
                 ),
                 &progress,
                 stall_watch,

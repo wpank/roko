@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use roko_core::agent::ProviderKind;
 use roko_learn::provider_failover::{
     FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
-    provider_brings_own_tools,
+    provider_brings_own_tools, same_model_candidates,
 };
 
 use super::helper_calls::SideCall;
@@ -100,6 +100,45 @@ pub(super) struct FailoverChain {
     /// Every refusal, with its class and whether a call was made
     /// (bug-220385).
     pub(super) refusals: Vec<roko_learn::telemetry::FailoverRefusal>,
+    /// The ladder rung of the model that ran, when failover moved an attempt
+    /// the ladder routed (backlog 1120).
+    pub(super) rung: Option<FailoverRung>,
+}
+
+/// The ladder rung failover ran an attempt on in place of the routed one:
+/// the routed rung itself when the same model ran on another provider, else a
+/// rung above it (backlog 1120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FailoverRung {
+    /// Index of the rung among the role's rungs, cheapest first.
+    pub(super) index: u32,
+    /// The rung's name.
+    pub(super) name: String,
+}
+
+/// Where `[routing.ladder]` routed an attempt. Failover moves such an
+/// attempt to the same model on another provider, then up the role's
+/// runnable rungs, never to a cheaper model (decision 1119, backlog 1120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LadderRoute {
+    /// The task's role, whose rungs the ladder routes along.
+    pub(super) role: String,
+    /// Index of the routed rung among the role's rungs, cheapest first.
+    pub(super) rung: usize,
+}
+
+impl LadderRoute {
+    /// Where `plan` put `task` on the ladder; `None` for an attempt the
+    /// ladder did not route (a pin, a task hint, the router or a default).
+    pub(super) fn of(task: &TaskDef, plan: &crate::dispatch::RunnerDispatchPlan) -> Option<Self> {
+        match plan.source {
+            ModelChoiceSource::Ladder { rung } => Some(Self {
+                role: task.role.as_deref().unwrap_or("implementer").to_string(),
+                rung,
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl FailoverChain {
@@ -127,6 +166,7 @@ impl FailoverChain {
                     until: refusal.until_ms,
                 })
                 .collect(),
+            rung: None,
         }
     }
 }
@@ -141,8 +181,10 @@ impl GraphTaskDispatcher {
     /// registry until its reported reset (else
     /// `routing.exhaustion_cooldown_secs`). Either way the next candidate from
     /// [`Self::failover_candidates`] runs in the same attempt, so no task
-    /// retry is burned. An explicit `--model` override is a pin and never
-    /// fails over. When nothing usable remains the attempt fails with a
+    /// retry is burned. An attempt the model ladder routed (`ladder`) moves
+    /// only to the same model elsewhere or up its rungs, and records the rung
+    /// that ran (backlog 1120). An explicit `--model` override is a pin and
+    /// never fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
     ///
     /// In the operator's shared checkout, a Codex, Cursor or Gemini CLI agent
@@ -162,7 +204,9 @@ impl GraphTaskDispatcher {
         attempt_key: String,
         mut request: AgentDispatchRequest,
         progress: Option<&super::watchdog::AttemptProgress>,
+        ladder: Option<LadderRoute>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
+        let ladder = ladder.as_ref();
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
             model_key: request.model_key.clone(),
@@ -191,7 +235,7 @@ impl GraphTaskDispatcher {
                 }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
-                match self.failover_model(spec, task_id, &refusals) {
+                match self.failover_model(spec, task_id, &refusals, ladder) {
                     Ok(next) => {
                         candidate = next;
                         continue;
@@ -209,7 +253,7 @@ impl GraphTaskDispatcher {
             if let Some(progress) = progress {
                 progress.call_started(
                     self.resolve_candidate(&candidate),
-                    FailoverChain::of(&refusals),
+                    self.failover_chain(&refusals, &candidate, ladder),
                 );
             }
             let call_started = Instant::now();
@@ -226,7 +270,8 @@ impl GraphTaskDispatcher {
                 message: error.to_string(),
             })?;
             if dispatch.result.success {
-                return Ok((dispatch, FailoverChain::of(&refusals)));
+                let chain = self.failover_chain(&refusals, &candidate, ladder);
+                return Ok((dispatch, chain));
             }
             let Some(exhaustion) = dispatch
                 .result
@@ -236,7 +281,8 @@ impl GraphTaskDispatcher {
                 .ok()
                 .and_then(roko_agent::provider::error_classify::detect_provider_exhaustion)
             else {
-                return Ok((dispatch, FailoverChain::of(&refusals)));
+                let chain = self.failover_chain(&refusals, &candidate, ladder);
+                return Ok((dispatch, chain));
             };
 
             let cooldown_ms = i64::try_from(
@@ -296,10 +342,45 @@ impl GraphTaskDispatcher {
                 at_ms: chrono::Utc::now().timestamp_millis(),
             });
             if pinned {
-                return Err(self.no_usable_provider(&refusals, &[], true));
+                return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
-            candidate = self.failover_model(spec, task_id, &refusals)?;
+            candidate = self.failover_model(spec, task_id, &refusals, ladder)?;
         }
+    }
+
+    /// The chain of `refusals` before `candidate` ran, with the ladder rung
+    /// it ran on when failover moved an attempt the ladder routed: the routed
+    /// rung when it is the same model elsewhere, else the rung above whose
+    /// model it is (backlog 1120).
+    fn failover_chain(
+        &self,
+        refusals: &[ProviderRefusal],
+        candidate: &DispatchCandidate,
+        ladder: Option<&LadderRoute>,
+    ) -> FailoverChain {
+        let mut chain = FailoverChain::of(refusals);
+        let (Some(route), Some(routed)) = (ladder, refusals.first()) else {
+            return chain;
+        };
+        let Some(routing) = self.factory.dispatcher().routing_ladder() else {
+            return chain;
+        };
+        let index = if self.resolve_candidate(candidate).model_slug == routed.model_slug {
+            Some(route.rung)
+        } else {
+            routing
+                .rung_models_above(&route.role, route.rung)
+                .into_iter()
+                .find(|rung| rung.model == candidate.model_key)
+                .map(|rung| rung.index)
+        };
+        chain.rung = index.and_then(|index| {
+            Some(FailoverRung {
+                index: u32::try_from(index).ok()?,
+                name: routing.rung_name(&route.role, index)?.to_string(),
+            })
+        });
+        chain
     }
 
     fn resolve_candidate(
@@ -428,7 +509,15 @@ impl GraphTaskDispatcher {
     /// Claude slug), `[routing] fallback_models`, `agent.fallback_model`, and
     /// `agent.default_model`. The order is the shared failover policy's
     /// (`roko_learn::provider_failover`), which serve and ACP apply too.
-    fn failover_candidates(&self, refusals: &[ProviderRefusal]) -> Vec<DispatchCandidate> {
+    ///
+    /// An attempt the model ladder routed (`ladder`) takes the first group,
+    /// then the runnable rungs above its own, and nothing cheaper (decision
+    /// 1119, backlog 1120).
+    fn failover_candidates(
+        &self,
+        refusals: &[ProviderRefusal],
+        ladder: Option<&LadderRoute>,
+    ) -> Vec<DispatchCandidate> {
         let first = refusals
             .first()
             .map(|first| roko_learn::provider_failover::RefusedModel {
@@ -443,7 +532,21 @@ impl GraphTaskDispatcher {
                     })
                     .model_profile,
             });
-        roko_learn::provider_failover::failover_candidates(&self.config, first.as_ref())
+        let routing = self.factory.dispatcher().routing_ladder();
+        let Some((route, routing)) = ladder.zip(routing) else {
+            let first = first.as_ref();
+            return roko_learn::provider_failover::failover_candidates(&self.config, first);
+        };
+        let mut candidates = first
+            .map(|first| same_model_candidates(&self.config, &first))
+            .unwrap_or_default();
+        for rung in routing.rung_models_above(&route.role, route.rung) {
+            candidates.push(DispatchCandidate {
+                model_key: rung.model,
+                config: None,
+            });
+        }
+        candidates
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the
@@ -455,12 +558,13 @@ impl GraphTaskDispatcher {
         spec: &TaskExecutionSpec,
         task_id: &str,
         refusals: &[ProviderRefusal],
+        ladder: Option<&LadderRoute>,
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
         let mut only_unguarded = refusals
             .iter()
             .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
-        for candidate in self.failover_candidates(refusals) {
+        for candidate in self.failover_candidates(refusals, ladder) {
             if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
                 log_unguarded_skip(&spec.plan_id, kind);
                 let why = unguarded_reason(kind);
@@ -504,7 +608,7 @@ impl GraphTaskDispatcher {
                 .collect();
             return Err(no_guarded_provider(&passed_over));
         }
-        Err(self.no_usable_provider(refusals, &skipped, false))
+        Err(self.no_usable_provider(refusals, &skipped, false, ladder))
     }
 
     /// The kind of agent `target` runs, when it is one roko cannot guard
@@ -578,12 +682,15 @@ impl GraphTaskDispatcher {
     }
 
     /// Non-retryable error for a task left without a usable provider, naming
-    /// each refusal, each skipped fallback, and how to recover.
+    /// each refusal, each skipped fallback, and how to recover. A task the
+    /// model ladder routed (`ladder`) had only the same model elsewhere and
+    /// the rungs above its own to fall back on (backlog 1120).
     fn no_usable_provider(
         &self,
         refusals: &[ProviderRefusal],
         skipped: &[String],
         pinned: bool,
+        ladder: Option<&LadderRoute>,
     ) -> RokoError {
         let refused = refusals
             .iter()
@@ -599,10 +706,25 @@ impl GraphTaskDispatcher {
             })
             .collect::<Vec<_>>()
             .join("; ");
+        let routed_rung = ladder.and_then(|route| {
+            let routing = self.factory.dispatcher().routing_ladder()?;
+            Some(routing.rung_name(&route.role, route.rung)?.to_string())
+        });
         let fallback = if pinned {
             "The --model override pins this model, so no failover was attempted; drop --model to \
              allow it."
                 .to_string()
+        } else if let Some(rung) = routed_rung {
+            let skipped = if skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", skipped.join("; "))
+            };
+            format!(
+                "The model ladder routed this task to rung `{rung}`, and failover never moves it \
+                 to a cheaper model: neither the same model elsewhere nor a rung above is \
+                 usable{skipped}."
+            )
         } else if skipped.is_empty() {
             format!(
                 "No fallback model is configured: set [routing] fallback_models in roko.toml{} \
@@ -811,8 +933,9 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, final_turn, jsonl_rows_where,
-        make_spec, make_task_def, recording_feedback, spawn_openai_mock, tool_call_turn,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, cli_provider, final_turn,
+        jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
+        recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
@@ -1470,6 +1593,175 @@ exit 1
             dispatcher.task_attempts.lock().get("p-failover/T08"),
             Some(&1)
         );
+    }
+
+    // ─── Failover along the model ladder (backlog 1120) ─────────────────────
+
+    /// A fake `claude` that appends the model of each call to `models`, then
+    /// answers.
+    fn model_logging_claude(path: &Path, models: &Path) {
+        write_executable(
+            path,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "--model" ]; then
+    printf '%s\n' "$arg" >> '{}'
+  fi
+  previous=$arg
+done
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ran"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                models.display()
+            ),
+        );
+    }
+
+    /// The models [`model_logging_claude`] was called with, in order.
+    fn logged_models(models: &Path) -> Vec<String> {
+        std::fs::read_to_string(models)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A model ladder of `rungs` (name, model key) over three models:
+    /// `cheap-model` and `strong-model` on Claude CLIs that run `claude`, and
+    /// `mid-model` on an OpenAI-compatible API that is never reached. The cheap
+    /// model is also the default and the fallback, where the failover of a
+    /// task the ladder did not route goes.
+    fn ladder_failover_config(claude: &Path, rungs: &[(&str, &str)]) -> RokoConfig {
+        let claude = claude.display().to_string();
+        let mut mid_api = cli_provider(&claude);
+        mid_api.kind = ProviderKind::OpenAiCompat;
+        mid_api.command = None;
+        mid_api.base_url = Some("http://127.0.0.1:9/v1".to_string());
+        // `PATH` is always set, standing in for a key.
+        mid_api.api_key_env = Some("PATH".to_string());
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        config
+            .providers
+            .insert("cheap_cli".to_string(), cli_provider(&claude));
+        config
+            .providers
+            .insert("strong_cli".to_string(), cli_provider(&claude));
+        config.providers.insert("mid_api".to_string(), mid_api);
+        config.models.insert(
+            "cheap-model".to_string(),
+            model("cheap_cli", "claude-haiku-4-5", None),
+        );
+        config
+            .models
+            .insert("mid-model".to_string(), model("mid_api", "mid-1", None));
+        config.models.insert(
+            "strong-model".to_string(),
+            model("strong_cli", "claude-sonnet-4-6", None),
+        );
+        config.agent.default_model = "cheap-model".to_string();
+        config.routing.fallback_models = vec!["cheap-model".to_string()];
+        config.routing.ladder.rungs = rungs
+            .iter()
+            .map(|&(name, model_key)| roko_core::config::routing::LadderRung {
+                name: name.to_string(),
+                model: model_key.to_string(),
+            })
+            .collect();
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// backlog 1120 (decision 1119): the ladder routes a task to its `mid`
+    /// rung, whose provider's circuit is open. Failover runs the task on the
+    /// `strong` rung's model, not on the cheap default and fallback model,
+    /// and the verdict records the rung that ran. With no usable rung above
+    /// `mid`, the attempt fails with the no-usable-provider error, and the
+    /// cheap model still never runs.
+    #[tokio::test]
+    async fn open_circuit_on_rung_fails_over_to_next_rung() {
+        use roko_learn::provider_health::ErrorClass;
+
+        const RUN: &str = "ladder-failover";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let mut task = make_task_def("mechanical");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("mid".to_string());
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let runs_dir = temp.path().join(".roko/runs");
+        let config = ladder_failover_config(&claude, &rungs);
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        for _ in 0..3 {
+            dispatcher
+                .factory
+                .health_registry
+                .record_failure("mid_api", ErrorClass::ServerError);
+        }
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's model runs the task");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["ladder"]["rung"], "strong", "{verdict}");
+        assert_eq!(verdict["ladder"]["reason"], "failover", "{verdict}");
+        assert_eq!(verdict["executed"]["provider"], "strong_cli", "{verdict}");
+        assert_eq!(
+            verdict["executed"]["failover_chain"],
+            serde_json::json!(["mid-1"]),
+            "{verdict}"
+        );
+
+        // `mid` tops this ladder, and its provider rejected roko's
+        // credentials, so no model is left that the ladder allows.
+        let rungs = [("cheap", "cheap-model"), ("mid", "mid-model")];
+        let config = ladder_failover_config(&claude, &rungs);
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
+        dispatcher
+            .factory
+            .health_registry
+            .record_failure("mid_api", ErrorClass::AuthFailure);
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("no rung above `mid` can take the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_EXHAUSTED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("rung `mid`"), "{message}");
+        assert!(message.contains("cheaper model"), "{message}");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

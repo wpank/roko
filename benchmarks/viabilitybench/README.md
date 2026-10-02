@@ -31,7 +31,8 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 ```
 benchmarks/viabilitybench/
-  schema/{task, feature, run-record, metric-record, ledger, price-snapshot}.schema.json  validate.py  examples/
+  schema/{task, feature, run-record, metric-record, ledger, price-snapshot, experiment}.schema.json  validate.py
+  schema/examples/
   families/common/{repo, knobs, hmac_seed, astcheck, mutate, canary}.py
   families/f1_pyconv/{gen, hidden, gaming}.py  ladder.toml  template/  spec/  reference/{solution, stub, gaming}/
   families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
@@ -40,7 +41,9 @@ benchmarks/viabilitybench/
   streams/pilot.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  driver/vb.py                                              # vb run | estimate | materialize | ledger | report
+  experiments/<experiment>.toml                             # experiment manifests (vb.experiment/1), for vb campaign
+  driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
+  driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
   driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
@@ -146,6 +149,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
   some of them at random; the census's own rerun never meets a flake. `model_swap` has the metering proxy serve
   another model than the pin, and the model checks accept that one model as a declared swap (`model_swapped`).
+- **Campaigns** (`vb campaign`, `driver/campaign.py`). An experiment manifest in `experiments/` lists an
+  experiment's blocks: stream, arm, model, seeds, budget line and the rest of a `vb run`. `vb campaign --manifest PATH
+  --dry-run` validates every block and estimates it against the budget and what the ledger already holds, and
+  without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
+  `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
+  unit. Its module docstring has the rules.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
@@ -160,6 +169,7 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |
 | `schema/ledger.schema.json` | a row of `ledger.jsonl` (§4.10, §5.6) | `examples/ledger.json` |
+| `schema/experiment.schema.json` | `vb.experiment/1`, an experiment manifest that `vb campaign` runs (S09 E5) | the manifests in `experiments/` |
 | `schema/price-snapshot.schema.json` | `roko.price_snapshot/1`, a parsed `config/prices/<date>.toml` (§5.6) | `config/prices/2026-09-28.toml` |
 
 The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists. The

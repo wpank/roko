@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""`vb`, the ViabilityBench driver (S08 §5.7). This item builds `run`, `estimate` and `materialize`.
+"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger` and `report`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
            [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
+    vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
 `~/vb-work/<run_id>/`), outside the repository. For each one it: materializes the task (`materialize`); runs the
@@ -93,6 +94,7 @@ from types import ModuleType
 
 import agent_env
 import archive
+import campaign
 import caps
 import census
 import disturb
@@ -194,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     args.own_process = argv is None  # a script, not a call: `vb run` may start itself again (`agent_env.exec_scrubbed`)
     try:
         return args.handler(args)
-    except (DriverError, caps.CapError, ledger.PriceError) as err:
+    except (DriverError, caps.CapError, ledger.PriceError, campaign.CampaignError) as err:
         print(f"vb: {err}", file=sys.stderr)
         return 2
 
@@ -292,6 +294,11 @@ def parse_seeds(text: str) -> list[int]:
 def cmd_estimate(args: argparse.Namespace) -> int:
     print(json.dumps(make_plan(args).summary(), indent=2))
     return 0
+
+
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """`vb campaign` (campaign.py), which gets this module rather than importing a second copy of it."""
+    return campaign.cmd_campaign(sys.modules[__name__], args)
 
 
 def cmd_materialize(args: argparse.Namespace) -> int:
@@ -761,6 +768,10 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
     commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
+    run_campaign = commands.add_parser("campaign", help="validate, estimate and run an experiment manifest",
+                                       allow_abbrev=False)
+    campaign.add_arguments(run_campaign)
+    run_campaign.set_defaults(handler=cmd_campaign)
     return parser
 
 

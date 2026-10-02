@@ -880,97 +880,6 @@ pub fn resolve_backlog_spec(backlog_dir: &Path, id: u32) -> anyhow::Result<Backl
     })
 }
 
-/// Build an enhanced generation prompt for a backlog spec.
-///
-/// Adds structured metadata (priority, size, crates, files to modify) and
-/// instructs the generator to write to `plans/<slug>/tasks.toml` with
-/// backlog metadata preserved in `[meta]`.
-pub fn build_backlog_generation_prompt(workdir: &Path, spec: &BacklogSpec, slug: &str) -> String {
-    let mut prompt = build_generator_system_prompt(workdir);
-    let _ = writeln!(prompt, "\n---\n");
-    let _ = writeln!(prompt, "## Workspace: {}\n", workdir.display());
-    let _ = writeln!(prompt, "## Source type: backlog-spec\n");
-
-    // Inject structured metadata.
-    let _ = writeln!(prompt, "## Backlog metadata");
-    let _ = writeln!(prompt, "- backlog_id: {}", spec.id);
-    if let Some(ref p) = spec.priority {
-        let _ = writeln!(prompt, "- priority: {p}");
-    }
-    if let Some(ref s) = spec.size {
-        let _ = writeln!(prompt, "- size: {s}");
-    }
-    if !spec.crates.is_empty() {
-        let _ = writeln!(prompt, "- crates: {}", spec.crates.join(", "));
-    }
-    let _ = writeln!(prompt);
-
-    // Instruct the generator to use the deterministic slug.
-    let _ = writeln!(prompt, "## IMPORTANT generation instructions");
-    let _ = writeln!(prompt, "- Set `meta.plan` to exactly: `\"{slug}\"`");
-    let _ = writeln!(
-        prompt,
-        "- Write the plan to `plans/{slug}/tasks.toml` (NOT `.roko/plans/`)"
-    );
-    let _ = writeln!(
-        prompt,
-        "- Include these backlog metadata fields in `[meta]`:"
-    );
-    let _ = writeln!(prompt, "  ```toml");
-    let _ = writeln!(prompt, "  backlog_id = {}", spec.id);
-    if let Some(ref p) = spec.priority {
-        let _ = writeln!(prompt, "  backlog_priority = \"{p}\"");
-    }
-    if let Some(ref s) = spec.size {
-        let _ = writeln!(prompt, "  backlog_size = \"{s}\"");
-    }
-    let _ = writeln!(prompt, "  source_file = \"{}\"", spec.path.display());
-    let _ = writeln!(prompt, "  ```");
-
-    // Auto-generate context.read_files guidance from files to modify.
-    if !spec.files_to_modify.is_empty() {
-        let _ = writeln!(prompt, "\n## Files to modify (from backlog spec)");
-        let _ = writeln!(
-            prompt,
-            "Generate `context.read_files` entries for each of these files. \
-             Each task that modifies one of these files MUST include it in \
-             `context.read_files` and `files`:"
-        );
-        for f in &spec.files_to_modify {
-            let _ = writeln!(prompt, "- `{f}`");
-        }
-    }
-
-    let _ = writeln!(prompt, "\n## Source content:\n\n{}", spec.source_text);
-    prompt
-}
-
-/// Build the task prompt for `--from-backlog` generation.
-#[must_use]
-pub fn build_backlog_task_prompt(spec: &BacklogSpec, slug: &str) -> String {
-    let mut prompt = format!(
-        "Read the backlog spec below and generate an implementation plan. \
-         Use the supplied bounded backlog/file context first; if one fact is absent, run at most \
-         one repository-rooted exact-symbol query capped at 20 matches. \
-         Write the plan to plans/{slug}/tasks.toml (create the directory). \
-         Create plan.md and tasks.toml files with tier, context (read_files with line ranges), \
-         mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n"
-    );
-
-    // Add context files inline if small enough.
-    if !spec.files_to_modify.is_empty() {
-        prompt.push_str("Files referenced by the spec that tasks should operate on:\n");
-        for f in &spec.files_to_modify {
-            let _ = writeln!(prompt, "- {f}");
-        }
-        prompt.push('\n');
-    }
-
-    prompt.push_str(&spec.source_text);
-    prompt
-}
-
 // ── Internal helpers ──────────────────────────────────────────────────────
 
 /// Extract the title from the first heading: `# <id> — <title>`.
@@ -1291,31 +1200,5 @@ mod tests {
                 "crates/roko-core/src/config/mod.rs",
             ]
         );
-    }
-
-    #[test]
-    fn backlog_generation_prompt_includes_metadata() {
-        let spec = BacklogSpec {
-            id: 206,
-            file_stem: "206-cargo-build-jobs-limit".to_string(),
-            path: std::path::PathBuf::from("tmp/backlog/206-cargo-build-jobs-limit.md"),
-            title: "Limit CARGO_BUILD_JOBS".to_string(),
-            priority: Some("P1".to_string()),
-            size: Some("XS".to_string()),
-            crates: vec!["roko-agent".to_string()],
-            files_to_modify: vec!["crates/roko-agent/src/provider/claude_cli.rs".to_string()],
-            source_text: "# Spec content here".to_string(),
-        };
-        let prompt = build_backlog_generation_prompt(
-            std::path::Path::new("/test"),
-            &spec,
-            "cargo-build-jobs-limit",
-        );
-        assert!(prompt.contains("backlog_id = 206"));
-        assert!(prompt.contains("backlog_priority = \"P1\""));
-        assert!(prompt.contains("backlog_size = \"XS\""));
-        assert!(prompt.contains("meta.plan"));
-        assert!(prompt.contains("cargo-build-jobs-limit"));
-        assert!(prompt.contains("crates/roko-agent/src/provider/claude_cli.rs"));
     }
 }

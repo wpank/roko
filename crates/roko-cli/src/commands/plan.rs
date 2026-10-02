@@ -1260,26 +1260,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             tag,
             from_backlog,
         } => {
-            use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{
-                AgentExecEpisode, AgentExecOpts, run_agent_logged_with_spend,
-            };
-            use roko_cli::plan_authoring::AuthoringSpend;
-
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
             // code and writes one plan to the workspace plans directory
             // (per-slug, non-overlapping).
             // No workspace lock needed (#226) — allows generating plans while
             // other plans are running.
-            let gw = load_gateway_env(&workdir);
 
             // --from-backlog: resolve backlog specs by numeric ID and generate
             // plans with deterministic slugs written to plans/ (#227).
             if let Some(ref backlog_ids_str) = from_backlog {
                 use roko_cli::plan_generate::{
-                    DEFAULT_BACKLOG_DIR, build_backlog_generation_prompt,
-                    build_backlog_task_prompt, parse_backlog_ids, resolve_backlog_spec,
+                    DEFAULT_BACKLOG_DIR, parse_backlog_ids, resolve_backlog_spec,
                     slug_from_backlog_stem,
                 };
 
@@ -1314,73 +1306,33 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     tracing::info!(id, %slug, "generating plan from backlog spec");
 
-                    let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
-                    let task_prompt = build_backlog_task_prompt(&spec, &slug);
-                    let task_id = format!("plan:generate:backlog:{id}");
-                    // The call's spend is recorded against the plan, as every
-                    // other generate path records it (bug-ac5432).
-                    let spend = AuthoringSpend::generation(&workdir, &slug, None);
-
-                    let exit_code = run_agent_logged_with_spend(
-                        AgentExecOpts {
-                            prompt: &task_prompt,
-                            workdir: &workdir,
-                            model: Some(model_key.as_str()),
-                            effort: Some("high"),
-                            system_prompt: Some(&system),
-                            resume_session: None,
-                            env_vars: &gw.vars,
-                            role: Some("strategist"),
-                            allowed_tools: None,
-                        },
-                        AgentExecEpisode {
-                            task_kind: "plan-generate",
-                            task_id: &task_id,
-                        },
-                        &spend,
-                    )
-                    .await;
-
-                    match exit_code {
-                        Ok(code) if code == EXIT_SUCCESS => {
-                            // Validate the generated tasks.toml.
-                            let tasks_path = plan_dir.join("tasks.toml");
-                            if tasks_path.is_file() {
-                                match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                                    Ok(tf) => {
-                                        tracing::info!(
-                                            id,
-                                            %slug,
-                                            task_count = tf.tasks.len(),
-                                            "plan generated"
-                                        );
-                                        results.push((*id, slug, "generated"));
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            id,
-                                            %slug,
-                                            error = %err,
-                                            "plan generated but validation failed"
-                                        );
-                                        results.push((*id, slug, "validation-failed"));
-                                    }
-                                }
-                            } else {
-                                tracing::warn!(
-                                    id,
-                                    %slug,
-                                    "agent succeeded but no tasks.toml written"
-                                );
-                                results.push((*id, slug, "no-output"));
-                            }
+                    // 3220: the one plan generator (gap-2623b2) repairs,
+                    // validates, scores and writes the plan to plans/<slug>/,
+                    // as every other plan-writing path does.
+                    let request = roko_cli::prd::PlanRequest {
+                        model: Some(model_key.as_str()),
+                        effort: Some("high"),
+                        ..roko_cli::prd::PlanRequest::new(
+                            roko_cli::prd::PlanSource::Text {
+                                text: &spec.source_text,
+                                kind: "backlog spec",
+                            },
+                            &slug,
+                            &workdir,
+                        )
+                    };
+                    match roko_cli::prd::generate_plan(request).await {
+                        Ok((_, outcome)) if outcome.artifact_valid => {
+                            tracing::info!(id, %slug, "plan generated");
+                            results.push((*id, slug, "generated"));
                         }
-                        Ok(code) => {
-                            tracing::error!(id, %slug, exit_code = code, "agent exited with non-zero code");
-                            results.push((*id, slug, "failed"));
+                        Ok(_) => {
+                            tracing::warn!(id, %slug, "plan generated but validation failed");
+                            results.push((*id, slug, "validation-failed"));
                         }
                         Err(err) => {
-                            tracing::error!(id, %slug, error = %err, "agent failed");
+                            let error = format!("{err:#}");
+                            tracing::error!(id, %slug, %error, "plan generation failed");
                             results.push((*id, slug, "error"));
                         }
                     }

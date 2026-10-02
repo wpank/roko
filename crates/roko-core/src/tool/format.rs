@@ -14,9 +14,8 @@
 //!   GPT-5.x, Gemma 4, Qwen 3 / 3.5 / coder, Llama 4, Llama 3.2, Mistral
 //!   7B / Small+, Phi, and an unknown-default fallback.
 //!
-//! Profiles are **priors** for the [`crate::tool::FormatBandit`] — they
-//! seed initial arm rewards. The bandit then refines selection online
-//! based on real success/latency/cost from execution traces.
+//! Profiles are static priors: nothing refines format selection online
+//! from execution traces yet.
 
 #![allow(clippy::doc_lazy_continuation)] // wrapped-line continuations read as list items
 
@@ -122,13 +121,11 @@ impl std::fmt::Display for ToolFormat {
 /// Profiles are consumed by:
 /// - Per-backend translators (§36.c) to choose a wire format
 /// - The dispatcher to decide on streaming / tool-count caps
-/// - The [`crate::tool::FormatBandit`] as initial arm priors
 ///
-/// All fields are **priors** — at runtime the bandit and telemetry refine
-/// the picture based on empirical outcomes.
+/// All fields are **priors**, static per model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolFormatProfile {
-    /// Format the model was trained/fine-tuned on; the bandit's initial favorite.
+    /// Format the model was trained/fine-tuned on.
     pub preferred: ToolFormat,
     /// Ordered fallback chain — each next entry is tried after
     /// `demotion_after_failures` consecutive failures of the previous.

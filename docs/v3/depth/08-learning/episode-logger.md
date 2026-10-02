@@ -307,7 +307,7 @@ CompletedRunInput
     +-- 5. SkillLibrary::record_use()
     +-- 6. TaskMetric -> regression history
     +-- 7. ExperimentStore::record_outcome()
-    +-- 8. PatternMiner::ingest_episode()
+    +-- 8. (removed: PatternMiner::ingest_episode(), gap-4adfa7)
     +-- 9. CascadeRouter::update()
     +-- 10. CFactor::compute()
 ```

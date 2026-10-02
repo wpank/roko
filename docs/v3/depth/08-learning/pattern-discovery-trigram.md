@@ -192,8 +192,14 @@ distance(a, b) = hamming_distance(a, b) / 10240
 
 ## 7. Operating Frequency
 
-Pattern discovery runs at **every 20 episodes** -- the slowest learning loop
-in the system. This frequency separation prevents oscillation: rapid pattern
+> **Removed (2026-10-02, gap-4adfa7).** The learning runtime no longer feeds a
+> `PatternMiner` every 20 episodes: it kept the patterns in memory, never saved
+> them, and nothing read them. Dream consolidation still mines episodes for
+> candidate patterns, through `roko-neuro`'s tier progression and a
+> `PatternMiner` of its own. The cadence below is the original design.
+
+Pattern discovery was designed to run at **every 20 episodes** -- the slowest
+learning loop in the system. This frequency separation prevents oscillation: rapid pattern
 updates could cause playbook rules to be promoted and demoted on noisy
 short-term data.
 

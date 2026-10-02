@@ -531,7 +531,9 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
 /// Price of one Perplexity Search API request (`POST /search`), which runs
-/// no model and reports no usage: a flat $5 per 1,000 requests.
+/// no model and reports no usage: a flat $5 per 1,000 requests, the rate
+/// `roko_agent::perplexity::search` documents. Not yet checked against
+/// <https://docs.perplexity.ai/getting-started/pricing>.
 pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
 
 /// Look up pricing for a model slug.

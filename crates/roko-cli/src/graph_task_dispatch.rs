@@ -57,6 +57,7 @@ mod attempt_workspace;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
+mod decision_log;
 mod diff_snapshot;
 mod failover;
 mod fast;
@@ -1286,6 +1287,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        self.record_planned_attempt(&attempt, &task, &dispatch_plan);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //

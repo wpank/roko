@@ -944,6 +944,9 @@ pub enum DecisionSource {
     TaskHint,
     /// An operator or config override.
     Override,
+    /// The task's `[routing.ladder]` rung. The router's own pick, if any, is
+    /// then a shadow proposal (`proposals.learned`).
+    Ladder,
     /// A guard replaced the router's pick (unconfigured model, disabled
     /// provider, no tool support).
     Fallback,

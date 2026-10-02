@@ -296,6 +296,12 @@ impl AttemptContext {
         self.ladder = Some((ladder, last_chance));
     }
 
+    /// Queue the attempt's route decision for the run's `decisions.jsonl`
+    /// (S01 P0-8); the writer stamps its sequence number.
+    pub(super) fn record_decision(&self, decision: roko_learn::routing_log::RoutingDecisionLog) {
+        self.run.submit(decision);
+    }
+
     /// The T0 reflex rule `rule_id` served the attempt in place of the
     /// provider. The attempt's learning label alone credits or demotes the
     /// rule once it settles (gap-4468bd).

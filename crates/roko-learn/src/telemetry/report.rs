@@ -22,14 +22,15 @@ use serde_json::Value;
 use super::manifest::AttemptTally;
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, DECISION_SCHEMA,
-    RunFile, Stamped, VERDICT_SCHEMA,
+    DecisionSource, ExecutedModel, RunFile, Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
 
 /// The source [`route_report`] files an attempt under when no route
-/// decision names one. Graph dispatch writes no route decisions yet (S01
-/// P0-8), so today every attempt is `unknown`.
+/// decision names one: an attempt that never routed (a T0 reflex, a harness
+/// failure before planning), or one from a run written before Graph
+/// dispatch recorded route decisions (S01 P0-8).
 pub const UNKNOWN_SOURCE: &str = "unknown";
 
 // ── Reading a run ─────────────────────────────────────────────────────
@@ -466,10 +467,17 @@ pub struct RouteRow {
     pub with_default: Vec<String>,
     /// Those of them whose pick differs from the default (ι).
     pub pick_not_default: Vec<String>,
+    /// Attempts whose route decision records the router's own proposal
+    /// (`proposals.learned`).
+    pub with_learned: Vec<String>,
     /// Masked routes (`source = router` while the pick differs from the
-    /// router's own proposal): `None` until route decisions record that
-    /// proposal (S01 P0-8).
+    /// router's own proposal): `None` until a decision of this source
+    /// records that proposal.
     pub masked: Option<Vec<String>>,
+    /// Router-sourced attempts whose executed model is the router's own
+    /// proposal (ε_honest's numerator): `None` for other sources and until a
+    /// decision records that proposal.
+    pub executed_learned: Option<Vec<String>>,
 }
 
 impl RouteRow {
@@ -484,6 +492,15 @@ impl RouteRow {
     #[must_use]
     pub fn iota(&self) -> Option<f64> {
         ratio(self.pick_not_default.len(), self.with_default.len())
+    }
+
+    /// ε_honest: share of the router-sourced attempts recording the router's
+    /// own proposal whose executed model is that proposal; `None` for other
+    /// sources and when no decision records one.
+    #[must_use]
+    pub fn eps_honest(&self) -> Option<f64> {
+        let honest = self.executed_learned.as_ref()?;
+        ratio(honest.len(), self.with_learned.len())
     }
 }
 
@@ -513,7 +530,8 @@ impl RouteReport {
 
 /// Count the settled attempts of `runs` per route decision source: how many
 /// passed, failed or carry no label, how often the served model differed
-/// from the requested one, and ι where decisions name a default. With
+/// from the requested one, ι where decisions name a default, and the masked
+/// routes and ε_honest where they record the router's own proposal. With
 /// `since`, only verdicts written at or after it count.
 #[must_use]
 pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteReport {
@@ -563,6 +581,21 @@ pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteR
                 row.pick_not_default.push(key.clone());
             }
         }
+        if let Some(decision) = decision
+            && let Some(learned) = &decision.proposals.learned
+        {
+            row.with_learned.push(key.clone());
+            let masked = row.masked.get_or_insert_with(Vec::new);
+            if decision.source == Some(DecisionSource::Router) {
+                if decision.selected_model != *learned {
+                    masked.push(key.clone());
+                }
+                let honest = row.executed_learned.get_or_insert_with(Vec::new);
+                if executed_model(executed).is_some_and(|ran| undated(ran) == undated(learned)) {
+                    honest.push(key.clone());
+                }
+            }
+        }
         row.attempts.push(key);
     }
     RouteReport {
@@ -570,6 +603,16 @@ pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteR
         decisions: joined_decisions,
         rows: rows.into_values().collect(),
     }
+}
+
+/// The model an attempt ran on: the one the provider reported, else the one
+/// the provider bridge launched, else the one dispatch requested.
+fn executed_model(executed: &ExecutedModel) -> Option<&str> {
+    executed
+        .model_reported
+        .as_deref()
+        .or(executed.model_dispatched.as_deref())
+        .or(executed.model_requested.as_deref())
 }
 
 /// `model` without a trailing `-YYYYMMDD` release date.
@@ -716,6 +759,67 @@ mod tests {
         // Verdicts written before `since` do not count.
         let later = Utc::now() + chrono::Duration::hours(1);
         assert_eq!(route_report(&[run], Some(later)).attempts(), 0);
+    }
+
+    #[test]
+    fn route_report_counts_masked_and_honest_routes() {
+        use DecisionSource as S;
+        const GLM: &str = "glm-4.6";
+        const KIMI: &str = "kimi-k2";
+        const OSS: &str = "gpt-oss-120b";
+
+        let dir = TempDir::new().expect("tempdir");
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        // (task, attempt, source, router's proposal, pick, model the provider served)
+        let attempts = [
+            ("T1", 1, S::Router, Some(GLM), GLM, "glm-4.6-20250101"),
+            ("T2", 1, S::Router, Some(KIMI), OSS, OSS),
+            ("T2", 2, S::Router, Some(GLM), GLM, OSS),
+            ("T3", 1, S::Fallback, Some(KIMI), OSS, OSS),
+            ("T4", 1, S::TaskHint, None, GLM, GLM),
+        ];
+        for (task, attempt, source, learned, pick, served) in attempts {
+            assert!(writer.submit(open(task, attempt)));
+            let mut decision = decision(task, attempt, source, pick);
+            decision.proposals.learned = learned.map(str::to_string);
+            assert!(writer.submit(decision));
+            let mut verdict = verdict(task, attempt, AttemptOutcome::Passed);
+            verdict.executed.model_requested = Some(pick.to_string());
+            verdict.executed.model_reported = Some(served.to_string());
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 15);
+        let run = RunRecords::load(dir.path()).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+
+        let report = route_report(std::slice::from_ref(&run), None);
+        let key = |task: &str, attempt: u32| identity(task, attempt).attempt_key;
+        let sources: Vec<&str> = report.rows.iter().map(|row| row.source.as_str()).collect();
+        assert_eq!(sources, ["fallback", "router", "task_hint"]);
+
+        // T2's first pick was rewritten while labelled `router`: masked. Its
+        // second failed over to another model: honestly labelled, but not
+        // what the router proposed. T1 ran a dated snapshot of its pick.
+        let router = &report.rows[1];
+        assert_eq!(
+            router.with_learned,
+            [key("T1", 1), key("T2", 1), key("T2", 2)]
+        );
+        assert_eq!(router.masked, Some(vec![key("T2", 1)]));
+        assert_eq!(router.executed_learned, Some(vec![key("T1", 1)]));
+        assert_eq!(router.eps_honest(), Some(1.0 / 3.0));
+
+        // A fallback labelled as one is not masked, and ε_honest is the
+        // router's alone.
+        let fallback = &report.rows[0];
+        assert_eq!(fallback.with_learned, [key("T3", 1)]);
+        assert_eq!(fallback.masked, Some(Vec::new()));
+        assert_eq!(fallback.eps_honest(), None);
+
+        let hint = &report.rows[2];
+        assert_eq!(hint.masked, None, "no decision records a proposal");
+        assert_eq!(hint.eps_honest(), None);
     }
 
     #[test]

@@ -191,6 +191,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
+        self.record_planned_attempt(&attempt, &task, &dispatch_plan);
         let contract = effective_agent_contract(role, &task, &self.config);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);

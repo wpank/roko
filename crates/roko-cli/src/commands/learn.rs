@@ -699,7 +699,7 @@ fn render_route_report(
     );
     let _ = writeln!(
         out,
-        "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} masked",
+        "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {:<14} masked",
         "source",
         "n",
         "pass rate",
@@ -707,15 +707,21 @@ fn render_route_report(
         "label null",
         "served!=requested",
         "iota(pick!=dflt)",
+        "eps_honest",
     );
+    let none: Vec<String> = Vec::new();
     for row in &report.rows {
         let masked = row
             .masked
             .as_ref()
             .map_or_else(|| "n/a".to_string(), |keys| keys.len().to_string());
+        let eps_honest = row.executed_learned.as_ref().map_or_else(
+            || "n/a".to_string(),
+            |keys| fraction(keys.len(), row.with_learned.len()),
+        );
         let _ = writeln!(
             out,
-            "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {masked}",
+            "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {eps_honest:<14} {masked}",
             row.source,
             row.attempts.len(),
             fraction(row.passed.len(), row.attempts.len()),
@@ -725,12 +731,16 @@ fn render_route_report(
             fraction(row.pick_not_default.len(), row.with_default.len()),
         );
         if explain {
+            let ran_learned = row.executed_learned.as_ref().unwrap_or(&none);
+            let masked_keys = row.masked.as_ref().unwrap_or(&none);
             for (what, keys) in [
                 ("label 1", &row.passed),
                 ("label 0", &row.failed),
                 ("label null", &row.unlabeled),
                 ("served!=requested", &row.model_mismatch),
                 ("pick!=default", &row.pick_not_default),
+                ("ran router's pick", ran_learned),
+                ("masked", masked_keys),
             ] {
                 if !keys.is_empty() {
                     let _ = writeln!(out, "    {what}: {}", keys.join(", "));
@@ -745,10 +755,12 @@ fn render_route_report(
             roko_learn::telemetry::report::UNKNOWN_SOURCE
         );
     }
-    let _ = writeln!(
-        out,
-        "note: masked is n/a until route decisions record the router's own proposal"
-    );
+    if report.rows.iter().all(|row| row.masked.is_none()) {
+        let _ = writeln!(
+            out,
+            "note: masked and eps_honest need the router's own pick in the route decisions"
+        );
+    }
     out
 }
 

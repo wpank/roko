@@ -93,3 +93,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+- 2202: implemented in the main checkout's untracked `tmp/cybernetic-harness/specs/` (S01 v1.3, S03 v1.2, S06 v1.2), so no commit carries it; its verify passes.
+- 2204: implemented at d74b6b16e; cargo verification deferred to the batch gate.
+- 2205: implemented at 8c479de36; cargo verification deferred to the batch gate.
+- 2206: implemented at 1eb9ec8fa; cargo verification deferred to the batch gate.
+- 2207: implemented at 7843ee713; cargo verification deferred to the batch gate.
+- 2208: implemented at 514016ca6; cargo verification deferred to the batch gate.
+- 2209: implemented at f73c70db7; cargo verification deferred to the batch gate.
+- 2210: implemented at 28eb58e54; cargo verification deferred to the batch gate.

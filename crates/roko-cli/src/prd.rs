@@ -13,6 +13,7 @@
 //!     └── <slug>.md
 //! ```
 
+mod accept_blocks;
 mod dry_run_fs;
 
 use std::collections::{HashMap, HashSet};
@@ -2132,9 +2133,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // 3218: a spec hard fail (a verify step that can never fail, a missing
         // context file, ...) is a validation failure, so the retries below
         // name the task, the rule and the detail.
+        //
+        // 3221: the planner may write acceptance tests as `accept:<path>`
+        // blocks; every `[task.accept]` src must be one of them (or a test
+        // the plan already has), and the tests of the plan that is written
+        // go beside its tasks.toml.
         let spec_config = resolved.config.spec_quality.clone();
+        let accept_for: std::cell::RefCell<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
+            std::cell::RefCell::default();
         let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
             let validated = extract_and_validate(raw)?;
+            let accept = accept_blocks::extract(raw)?;
+            accept_blocks::check_sources(&validated, &accept, &plan_dir)?;
             match spec_scores(&validated, workdir_ref, &spec_config) {
                 Some(scores) if !scores.hard_fails.is_empty() => Err(format!(
                     "generated plan has spec hard fails; every check must be able to fail \
@@ -2146,7 +2156,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .collect::<Vec<_>>()
                         .join("\n")
                 )),
-                _ => Ok(validated),
+                _ => {
+                    accept_for.borrow_mut().insert(validated.clone(), accept);
+                    Ok(validated)
+                }
             }
         };
 
@@ -2342,6 +2355,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         }
 
         if let Ok(validated_toml) = validated_toml {
+            let accept = accept_for
+                .borrow_mut()
+                .remove(&validated_toml)
+                .unwrap_or_default();
             if let Some(regeneration) = &source.regeneration {
                 write_regenerated_plan(regeneration, &plan_dir, &validated_toml)?;
             } else {
@@ -2388,6 +2405,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
                 }
             }
+
+            // 3221: the planner-written tests beside tasks.toml; a test the
+            // plan already had stays unless the planner wrote it again.
+            accept_blocks::write(&plan_dir, &accept)
+                .with_context(|| format!("write the accept tests to {}", plan_dir.display()))?;
 
             // Update PRD frontmatter: record the generated plan slug.
             if let PlanSource::Prd(prd_path) = source.origin {
@@ -4145,7 +4167,8 @@ mod tests {
     }
 
     /// Make `workdir`'s `planner` model a fake `claude_cli` script in `bin`
-    /// that answers its n-th call with `plans[n]` (the last plan after that),
+    /// that answers its n-th call with `plans[n]` (the last plan after that;
+    /// a plan that starts with a fence is the whole reply),
     /// keeps each call's arguments and input as `prompt-<n>.txt`, and logs
     /// it; return the call log. `spec_quality` is the body of the
     /// workspace's `[spec_quality]` section.
@@ -4159,13 +4182,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         for (index, plan_toml) in plans.iter().enumerate() {
+            let text = if plan_toml.starts_with("```") {
+                (*plan_toml).to_string()
+            } else {
+                format!("```toml\n{plan_toml}```\n")
+            };
             std::fs::write(
                 bin.join(format!("reply-{index}.jsonl")),
                 format!(
                     "{}\n{}\n",
                     serde_json::json!({
                         "type": "content_block_delta",
-                        "delta": {"text": format!("```toml\n{plan_toml}```\n")},
+                        "delta": {"text": text},
                     }),
                     serde_json::json!({
                         "type": "result",
@@ -4289,6 +4317,67 @@ mod tests {
         let scored = outcome.spec_quality.expect("the plan was scored");
         assert!(scored.regenerated, "{scored:?}");
         assert!(scored.min <= scored.mean && scored.mean < 100.0, "{scored:?}");
+    }
+
+    /// 3221: the planner can write its acceptance tests into the plan. A
+    /// reply with a tasks.toml block and an `accept:accept/test_slug.py`
+    /// block writes both; a `[task.accept]` src that the reply does not
+    /// emit sends the plan back to the planner, which emits it next time.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_writes_planner_accept_tests_into_the_plan() {
+        const ACCEPT_PLAN: &str = "\
+            [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the slug helper\"\n\
+            description = \"Create src/slug.py with slugify().\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/slug.py\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [task.accept]\nfiles = [{ src = \"accept/test_slug.py\", \
+            dest = \"tests/test_slug.py\", runner = \"python3 -m unittest tests.test_slug\", \
+            count = 1 }]\n\n\
+            [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/slug.py\"\n";
+        const TEST: &str = "import unittest\n\n\
+            class Slug(unittest.TestCase):\n    def test_slug(self):\n        \
+            from src.slug import slugify\n        \
+            self.assertEqual(slugify(\"A b\"), \"a-b\")\n";
+        let with_test =
+            format!("```toml\n{ACCEPT_PLAN}```\n\n```accept:accept/test_slug.py\n{TEST}```\n");
+
+        for replies in [vec![with_test.as_str()], vec![ACCEPT_PLAN, with_test.as_str()]] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let prd_path = write_widget_prd(workdir);
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &replies,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+            };
+            generate_plan(request)
+                .await
+                .expect("generate the widget plan");
+            let plan_dir = workdir.join("plans/widget");
+            let tasks = std::fs::read_to_string(plan_dir.join("tasks.toml")).expect("tasks.toml");
+            assert!(tasks.contains("accept/test_slug.py"), "{tasks}");
+            let test = std::fs::read_to_string(plan_dir.join("accept/test_slug.py"))
+                .expect("the accept test beside tasks.toml");
+            assert_eq!(test, TEST);
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), replies.len(), "{replies:?}");
+            if replies.len() == 2 {
+                let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt"))
+                    .expect("the retry prompt");
+                assert!(
+                    retry.contains("src `accept/test_slug.py` is missing"),
+                    "{retry}"
+                );
+            }
+        }
     }
 
     /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no

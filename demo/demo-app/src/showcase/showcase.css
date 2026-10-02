@@ -202,3 +202,15 @@
     gap: 0;
   }
 }
+
+/* ── Fixture harness (test builds only) ───────────────────── */
+
+.sc-harness {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--sp-4);
+  display: grid;
+  gap: var(--sp-4);
+}

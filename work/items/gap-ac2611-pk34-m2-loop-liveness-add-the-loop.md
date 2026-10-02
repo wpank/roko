@@ -71,5 +71,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 Implemented on `work/gap-ac2611`; cargo verification deferred to the batch gate (workers run no cargo).
 
 - 5102: implemented at 144a0d43a. `loop_audit` module (one line in `lib.rs`), `spec.rs` (LoopSpec, closed ReasonCode with precedence, Lifecycle, AuditState, Qualifier, ReceiptKind, StaticFinding, Registry with by-id override merge and validation), one-line stubs for the later modules.
-- 5103: implemented at d4bd7c59b. `loops.toml` registers 21 loops (S03 §6 T1's 20 plus L-retry-budget, option a), 33 static findings re-checked at 976220c3e, each carrying the reason or qualifier it evidences; pointers checked statically with a Python replica of the test.
+- 5103: implemented at d4bd7c59b. `loops.toml` registers 21 loops (S03 §6 T1's 20 plus L-retry-budget, option a), 33 static findings re-checked at 976220c3e; a finding that is evidence for a reason code or qualifier names it; pointers checked statically with a Python replica of the test.
 - 5108: implemented at e0688914e. `assign.rs`: LoopLayer/HoldoutSchedule, assign_nested, nested_arm_combinations, route_propensity (ε 0.05, D12). Statistical test thresholds checked against a Python replica of the keyed-BLAKE3 draw (worst pairwise χ² 4.1 against 10.83).

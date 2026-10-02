@@ -48,8 +48,6 @@ pub struct GraphFeedbackContext {
     pub holdout_experiment: Option<Arc<tokio::sync::Mutex<roko_learn::HoldoutExperiment>>>,
     /// P2-01: ShadowRunner for recording shadow dispatch decisions.
     pub shadow_runner: Option<Arc<ShadowRunner>>,
-    /// P0-02: Whether eval generation is enabled for standard+ tier tasks.
-    pub eval_generation_enabled: bool,
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
     /// adaptive EMA threshold updates after each verify run.
     ///
@@ -111,7 +109,6 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("coding_oracle", &self.coding_oracle.is_some())
             .field("holdout_experiment", &self.holdout_experiment.is_some())
             .field("shadow_runner", &self.shadow_runner.is_some())
-            .field("eval_generation_enabled", &self.eval_generation_enabled)
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
@@ -135,7 +132,6 @@ impl Default for GraphFeedbackContext {
             coding_oracle: None,
             holdout_experiment: None,
             shadow_runner: None,
-            eval_generation_enabled: false,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
             runs_dir: None,

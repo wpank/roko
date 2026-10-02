@@ -2325,7 +2325,6 @@ pub fn build_graph_feedback_context(
         coding_oracle: Some(coding_oracle),
         holdout_experiment: Some(holdout_experiment),
         shadow_runner: Some(shadow_runner),
-        eval_generation_enabled: true,
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.

@@ -2,7 +2,7 @@
 id = "bug-3a3968"
 kind = "bug"
 title = "A verify step's waits for siblings and for the compile lock don't watch for a stop"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "efb9acf44"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-c33c6e"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-c33c6e"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-cli --lib verify_waits_end_on_a_stop"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:38:29Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-02T00:41:48Z"
+forced = false
+evidence = "Gate 6g on 698ca793d, merged as efb9acf44 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on roko-cli, roko-core, roko-learn and roko-neuro; lib tests pass (roko-cli 3431, roko-core 1986, roko-learn 1234, roko-neuro 239); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_timeout_matrix 7/7 including the worktree-mode case; bin 445; portal tsc clean and vitest 807/807; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

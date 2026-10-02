@@ -2,10 +2,10 @@
 
 > Roko develops itself. It turns a request (a prompt or a written spec) into an
 > implementation plan, executes the plan's tasks via LLM agents, validates results
-> with each task's verify commands, learns from outcomes, and iterates. This chapter
-> covers both the practical CLI
-> workflow that makes self-hosting operational today and the theoretical
-> foundations that bound what recursive self-improvement can and cannot achieve.
+> with each task's verify commands, learns from outcomes, and iterates. This
+> chapter covers both the practical CLI workflow that makes self-hosting
+> operational today and the theoretical foundations that bound what recursive
+> self-improvement can and cannot achieve.
 
 **Depends on**: [04-EXECUTION](04-EXECUTION.md) (Graph engine, plan pipeline, worktrees),
 [05-AGENT](05-AGENT.md) (provider dispatch, tool loop), [07-GATES](07-GATES.md) (19-gate
@@ -15,22 +15,24 @@ playbook rules, cascade router), [09-MEMORY](09-MEMORY.md) (durable knowledge st
 intersection, corrigibility, immune system)
 
 **Implementation status (2026-09-15; corrected 2026-09-29 at `7c556bc0a`; workflow
-updated 2026-10-02):** The self-hosting workflow is **operational**. Since 2026-10-02
-it starts from a plan: the PRD stages (idea, draft, publish) were removed, and a plan
-is written straight from a prompt. The CLI loop (plan -> research -> review ->
-execute -> resume -> monitor -> verify) runs on the same Graph plan runner as before. The
-earlier claim that the 48 epics were accepted using this workflow is withdrawn:
-they were accepted as programme manifests, and most of the code was written outside
-Roko's own runner (section 1). The largest recorded run is the portal build: 16 plans
-and 173 tasks, 168 of them gate-verified, under a supervising operator session
+updated 2026-10-02):** The self-hosting workflow is **operational**. Since
+2026-10-02 it starts from a plan: the PRD stages (idea, draft, publish) were
+removed, and a plan is written straight from a prompt. The CLI loop (plan ->
+research -> review -> execute -> resume -> monitor -> verify) runs on the same Graph
+plan runner as before. The earlier claim that the 48 epics were accepted using this
+workflow is withdrawn: they were accepted as programme manifests, and most of the
+code was written outside Roko's own runner (section 1). The largest recorded run is
+the portal build: 16 plans and 173 tasks, 168 of them gate-verified, under a
+supervising operator session
 (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`). The first live
 dogfood run (2026-08-13) exposed 4 blockers, all of which have regression fixes. A
 clean full-cycle rerun is pending as separate sign-off. FAST self-development via
-`dev.sh fast` is live. `roko run` is the one entry point: `roko do` and `roko develop`
-were folded into it, and `roko run --plan` writes a plan first. Adaptive thresholds (they set retry budgets) and durable prompt
-experiments are wired; gate-failure replan is not (section 3). The theoretical
-ceiling -- autonomous structural self-modification (Loop 4, ADAS) -- requires
-human approval by design and is not implemented as a closed loop.
+`dev.sh fast` is live. `roko run` is the one entry point: `roko do` and
+`roko develop` were folded into it, and `roko run --plan` writes a plan
+first. Adaptive thresholds (they set retry budgets) and durable prompt experiments
+are wired; gate-failure replan is not (section 3). The theoretical ceiling --
+autonomous structural self-modification (Loop 4, ADAS) -- requires human approval by
+design and is not implemented as a closed loop.
 
 ### Authoritative sources
 

@@ -884,7 +884,7 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 |---|---|---|---|
 | **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA-inspired decision cycle. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
 | **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | BUILT-UNWIRED |
-| **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
+| **[31](31-SELF-HOSTING.md)** | Self-Hosting | Plan-first CLI loop (prompt -> plan -> review -> run). FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
 
 ### Deployment and meta
 

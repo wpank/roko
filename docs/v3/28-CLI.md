@@ -253,9 +253,7 @@ roko setup [--workdir <path>] [--yes]
 
 ### `roko run`
 
-The one entry point for work. `roko run` takes a prompt or an existing plan directory. For a
-prompt it sizes the work first: a small change runs as one checked task, and a larger one
-gets a plan written first (`plans/<slug>/tasks.toml`), which then runs.
+The one entry point for work. `roko run` takes a prompt or an existing plan directory:
 
 | Form | What it does |
 |---|---|
@@ -618,7 +616,8 @@ roko plan validate [<dir>] [--strict] [--json] [--dag]
 #### `roko plan run`
 
 The primary execution command. The Graph engine executes tasks through the complete
-agent/gate/replan/worktree/merge/persistence lifecycle.
+agent/gate/replan/worktree/merge/persistence lifecycle. `roko run <plans-dir>` is the same
+run with the common options; `roko plan run` takes the full set below.
 
 ```
 roko plan run <plans-dir> [--engine graph] [--workdir <path>]
@@ -2169,7 +2168,7 @@ These commands are hidden from `--help` but still accepted for backward compatib
 |---|---|---|
 | `.roko/` or `roko.toml` not found | Workspace not initialized | `roko init` |
 | `agent not found` / `unknown agent` | No agents registered | `roko agent list` to see what exists |
-| `plan not found` / `no plans found` | No plan files in the directory | `roko plan list` or `roko plan create` |
+| `plan not found` / `no plans found` | No plan files in the directory | `roko plan list`, or write one with `roko plan generate` or `roko plan create` |
 | `connection refused` / `connect error` | roko-serve is not running | `roko serve` in another terminal |
 | Gate failures on every task | Config or code problem | `roko doctor` then check `.roko/learn/gate-thresholds.json` |
 | Run interrupted, want to continue | Normal for long plans | `roko plan run plans/ --resume-plan` |

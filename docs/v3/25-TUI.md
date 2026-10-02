@@ -54,7 +54,7 @@ block-beta
     F7["F7 Inspect\nSignal DAG\nEpisode replay\nKnowledge"]:1
     F8["F8 Marketplace\nJob browser\nCreation\nMatching"]:1
     F9["F9 Learning\nCascade router\nModel routing\nExperiments"]:1
-    F10["F10 Providers\nHealth\nCost, latency\nCircuit state"]:1
+    F10["F10 Providers\nHealth\nCost and latency\nCircuit state"]:1
 
     style F1 fill:#b97894,color:#fff
     style F2 fill:#6b8fbd,color:#fff

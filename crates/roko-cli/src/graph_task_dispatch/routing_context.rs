@@ -402,36 +402,6 @@ pub(super) fn dream_routing_bias(
     Some(bias)
 }
 
-/// RAG-11: assign the retrieval-strategy arm from the experiment store.
-///
-/// Blocking file I/O: call it from `spawn_blocking`. Assignment is a pure
-/// read of the persisted arm statistics. The store is written only to
-/// register the experiment, and then under its lock, so the prompt
-/// treatments parallel attempts record in the same file are never lost.
-pub(super) fn assign_retrieval_strategy_arm(exp_path: &Path) -> String {
-    use roko_learn::prompt_experiment::ExperimentStore;
-
-    let mut store = ExperimentStore::load_or_new(exp_path);
-    if store
-        .get(ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
-        .is_none()
-    {
-        store.ensure_retrieval_strategy_experiment();
-        if let Err(error) = ExperimentStore::transaction(exp_path, |locked| {
-            locked.ensure_retrieval_strategy_experiment();
-            Ok(())
-        }) {
-            tracing::debug!(
-                %error,
-                "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
-            );
-        }
-    }
-    store
-        .assign_retrieval_strategy()
-        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
-}
-
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
 ///
 /// This provides the cascade router with actionable task signals without
@@ -952,30 +922,5 @@ mod tests {
         let agent = dispatcher.cheap_agent().expect("a dispatchable model");
         assert_eq!(agent.model_key, "cli-sonnet");
         assert_eq!(agent.timeout_ms, 7_000);
-    }
-
-    #[test]
-    fn retrieval_strategy_assignment_rewrites_the_store_only_on_registration() {
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("experiments.json");
-        let arm = assign_retrieval_strategy_arm(&path);
-        assert!(path.is_file(), "registration persists the experiment");
-
-        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .expect("open store")
-            .set_modified(old)
-            .expect("backdate store");
-        assert_eq!(assign_retrieval_strategy_arm(&path), arm);
-        assert_eq!(
-            std::fs::metadata(&path)
-                .expect("store metadata")
-                .modified()
-                .expect("mtime"),
-            old,
-            "a steady-state dispatch must not rewrite the store"
-        );
     }
 }

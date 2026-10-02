@@ -1054,27 +1054,10 @@ impl GraphTaskDispatcher {
                         });
                     }
                 }
-                // ── RAG-10/11: Retrieval outcome settlement (gate fail) ──
+                // ── RAG-10: Retrieval outcome settlement (gate fail) ─────
                 {
                     let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                     if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                        // RAG-11: update experiment store with gate-fail outcome.
-                        if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                            // Locked: prompt treatments share the file. The
-                            // store is read and written back whole, so off the
-                            // reactor (gap-5e818f).
-                            let outcome_strategy = strategy.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                roko_learn::prompt_experiment::ExperimentStore::transaction(
-                                    &exp_path,
-                                    |store| {
-                                        store.record_retrieval_outcome(&outcome_strategy, false);
-                                        Ok(())
-                                    },
-                                )
-                            })
-                            .await;
-                        }
                         // RAG-10: write settled record.
                         if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
                             let record =
@@ -1115,27 +1098,10 @@ impl GraphTaskDispatcher {
                 step_count = steps.len(),
                 "all graph verify steps passed"
             );
-            // ── RAG-10/11: Retrieval outcome settlement (gate pass) ───────
+            // ── RAG-10: Retrieval outcome settlement (gate pass) ──────────
             {
                 let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                    // RAG-11: update experiment store with the passed gate's outcome.
-                    if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                        // Locked: prompt treatments share the file. The store
-                        // is read and written back whole, so off the reactor
-                        // (gap-5e818f).
-                        let outcome_strategy = strategy.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            roko_learn::prompt_experiment::ExperimentStore::transaction(
-                                &exp_path,
-                                |store| {
-                                    store.record_retrieval_outcome(&outcome_strategy, true);
-                                    Ok(())
-                                },
-                            )
-                        })
-                        .await;
-                    }
                     // RAG-10: write settled record.
                     if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
                         let record =

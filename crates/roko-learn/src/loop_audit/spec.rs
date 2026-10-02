@@ -1043,9 +1043,9 @@ receipt = "artifact_hash_in_request"
         assert_eq!(ids(&registry), EXPECTED);
         let spec = |id: &str| registry.get(id).expect("registered loop");
 
-        // Observe-only loops are measured but never randomized; only the
-        // legacy holdout is retired (4101), and nothing enforces before C2,
-        // C4 and 14 days (D10).
+        // Observe-only loops are measured but never randomized; the legacy
+        // holdout and the retrieval A/A test are retired (4101, 4105), and
+        // nothing enforces before C2, C4 and 14 days (D10).
         let observe_only: Vec<&str> = ids(&registry)
             .into_iter()
             .filter(|id| spec(id).lifecycle == Lifecycle::ObserveOnly)
@@ -1057,7 +1057,7 @@ receipt = "artifact_hash_in_request"
         for loop_spec in registry.loops() {
             let id = loop_spec.id.as_str();
             let retired = matches!(loop_spec.lifecycle, Lifecycle::Retired { .. });
-            assert_eq!(retired, id == "L-holdout", "{id}");
+            assert_eq!(retired, matches!(id, "L-holdout" | "L-rag11"), "{id}");
             assert!(!loop_spec.enforce && !loop_spec.exempt, "{id}");
         }
 
@@ -1138,7 +1138,7 @@ receipt = "artifact_hash_in_request"
             ("L-prompt-exp", "::check_conclusion"),
             ("L-prompt-exp", "::RETRIEVAL_STRATEGY_EXPERIMENT_ID"),
             ("L-gate-thr", "retry_budget.rs::AdaptiveThresholds"),
-            ("L-rag11", "::assign_retrieval_strategy_arm"),
+            ("L-rag11", "retrieval_outcome.rs::STRATEGY_KEYWORD"),
             ("L-holdout", "holdout.rs::HoldoutExperiment::should_update_learning"),
             ("L-bid", "::load_attention_bidders"),
             ("L-bid", "::ATTENTION_BIDDERS_FILENAME"),

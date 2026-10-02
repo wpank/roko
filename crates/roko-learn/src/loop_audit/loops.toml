@@ -149,20 +149,21 @@ nested_in = "L-know"
 opportunity = "a knowledge retrieval runs for the attempt"
 default_policy = "the keyword strategy"
 receipt = "artifact_hash_in_request"
+lifecycle = { retired = { by = "4105" } }
 notes = [
-    "Pending retirement: S02.P1-8 deletes the label-only arm.",
+    "Retired by 4105 (S02.P1-8): the label-only arm is deleted, and S02's placebo loop replaces the A/A test.",
 ]
 
 [[loop.static_findings]]
-claim = "assign_retrieval_strategy_arm draws the strategy arm after the prompt is assembled, so the arm only labels the attempt."
-pointer = "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::assign_retrieval_strategy_arm"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "GraphTaskDispatcher::dispatch drew the strategy arm only after plan_dispatch had assembled the prompt, so the arm labelled the attempt and never changed retrieval."
+pointer = "crates/roko-cli/src/graph_task_dispatch.rs::plan_dispatch"
+verified_at = "e9f81ad1ec8ba8f4ed8a719033e18d3a1c8cdd7c"
 reason = "dormant:label_only"
 
 [[loop.static_findings]]
-claim = "GraphTaskDispatcher::dispatch calls plan_dispatch, which assembles the prompt, before its RAG-11 block draws the strategy."
-pointer = "crates/roko-cli/src/graph_task_dispatch.rs::plan_dispatch"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "Knowledge retrieval runs the keyword strategy whatever arm the experiment drew."
+pointer = "crates/roko-learn/src/retrieval_outcome.rs::STRATEGY_KEYWORD"
+verified_at = "e9f81ad1ec8ba8f4ed8a719033e18d3a1c8cdd7c"
 reason = "dormant:label_only"
 
 [[loop]]

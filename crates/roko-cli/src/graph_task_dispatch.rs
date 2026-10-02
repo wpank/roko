@@ -110,9 +110,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
-    build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
-    upstream_outputs,
+    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, build_routing_context, dream_routing_bias,
+    effective_agent_contract, select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -1213,10 +1212,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
-        // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
+        // ── RAG-10: Retrieval outcome telemetry (pre-gate) ───────────────
         //
         // Immediately after prompt assembly we know:
-        //   - which strategy was used (RAG-11 experiment assignment or default)
+        //   - which strategy was used (keyword, the only one retrieval runs)
         //   - how many knowledge entries were retrieved (diagnostics.knowledge_ids)
         //   - the query text (task title + description)
         //   - prompt assembly latency (covers neuro knowledge retrieval)
@@ -1232,17 +1231,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .trim()
             .to_string();
 
-            // RAG-11: assign retrieval strategy via experiment store, or fall
-            // back to the default "keyword" arm (which is what the current
-            // `collect_neuro_knowledge_cached` always runs). The store read is
-            // blocking file I/O, so it runs off the reactor.
-            let strategy = if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                tokio::task::spawn_blocking(move || assign_retrieval_strategy_arm(&exp_path))
-                    .await
-                    .unwrap_or_else(|_| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
-            } else {
-                roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string()
-            };
+            // `collect_neuro_knowledge_cached` always retrieves by keyword. The
+            // RAG-11 A/A experiment, which drew a strategy label after the
+            // prompt was built and never applied it, is gone (G72).
+            let strategy = roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string();
 
             // Stash for gate-settlement below.
             self.retrieval_ctx.lock().insert(

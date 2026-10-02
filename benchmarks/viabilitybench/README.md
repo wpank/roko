@@ -102,6 +102,12 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
+- **Rust toolchain** (F7, gap-46fd19; Will's decision of 2026-10-02). A per-task HOME hides `~/.rustup`, so
+  `families/common/toolchain.py` resolves the host's toolchain in the operator's environment (`rustup show home`,
+  `rustup which cargo`). Agent processes, the census and `ci/verify_verifiers.py` get the toolchain's own bin
+  directory on PATH (never `~/.cargo/bin`, which holds whatever `cargo install` put there), the real `RUSTUP_HOME`,
+  and a `CARGO_HOME` under their own HOME, so cargo's registry cache is per run. Every sandbox keeps `RUSTUP_HOME`
+  and the operator's `CARGO_HOME` read-only.
 - **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
   secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
   since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches

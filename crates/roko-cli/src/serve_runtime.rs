@@ -122,6 +122,26 @@ impl CliRuntime for RokoCliRuntime {
         })
     }
 
+    /// Run `prompt` as a gated one-task plan, as `roko run` does, under the
+    /// id serve returned for it (9113). The run publishes into the server's
+    /// hub and takes the workspace runner lock, so it fails at once while a
+    /// plan run holds the lock.
+    async fn run_prompt_plan(
+        &self,
+        workdir: &Path,
+        prompt: &str,
+        options: roko_serve::runtime::PromptPlanOptions,
+    ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+        let workdir = workdir.to_path_buf();
+        let prompt = prompt.to_string();
+        let state_hub = self.state_hub.clone();
+        tokio::task::spawn_blocking(move || {
+            run_prompt_plan_on_local_runtime(workdir, prompt, state_hub, options)
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("prompt run worker failed: {err}"))?
+    }
+
     async fn run_once_with_config(
         &self,
         workdir: &Path,
@@ -986,6 +1006,81 @@ fn run_plan_on_local_runtime(
             gate_results,
         })
     })
+}
+
+/// Run `prompt` as a gated one-task plan on this thread's own runtime, as
+/// [`run_plan_on_local_runtime`] runs a plan: under the workspace runner lock,
+/// with the run's agents scoped to it (9113).
+fn run_prompt_plan_on_local_runtime(
+    workdir: PathBuf,
+    prompt: String,
+    state_hub: SharedStateHub,
+    options: roko_serve::runtime::PromptPlanOptions,
+) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+    // One plan executor at a time: a prompt run fails at once while a plan
+    // run, or another prompt run, holds the lock.
+    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))
+        .context("a run is active in this workspace")?;
+    let _spawn_scope =
+        roko_agent::process::enter_spawn_scope(roko_agent::process::new_spawn_scope());
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async move {
+        // Always a token, so the run never takes over the server's signals.
+        let cancel = options.cancel.unwrap_or_default();
+        let overrides = crate::run::CliOverrides::default();
+        let report = crate::run::run_prompt(crate::run::PromptRun {
+            prompt: &prompt,
+            workdir: &workdir,
+            // A host's prompt runs at the tier `roko run` gives a simple one.
+            tier: "focused",
+            overrides: &overrides,
+            max_retries: None,
+            quiet: true,
+            state_hub: Some(state_hub.clone()),
+            run_id: options.run_id,
+            cancel: Some(cancel.clone()),
+            domain: options.domain,
+            max_usd: options.max_usd,
+        })
+        .await?;
+        let snapshot = state_hub.current_snapshot();
+        Ok(prompt_plan_result(
+            &report,
+            &snapshot,
+            cancel.is_cancelled(),
+        ))
+    })
+}
+
+/// What a prompt run reports to serve: its id; its verdict, which
+/// [`roko_serve::state::RunState::of_ended_run`] gives from its task's outcome
+/// as for plan runs; its output and its cost.
+fn prompt_plan_result(
+    report: &roko_runtime::workflow_contract::WorkflowRunReport,
+    snapshot: &roko_core::DashboardSnapshot,
+    cancelled: bool,
+) -> roko_serve::runtime::PromptPlanResult {
+    use roko_core::dashboard_snapshot::classify_task_outcome;
+    use roko_serve::state::RunState;
+
+    let tasks = snapshot
+        .tasks
+        .values()
+        .filter(|task| task.plan_id == report.run_id)
+        .filter_map(|task| task.outcome.as_deref())
+        .map(classify_task_outcome);
+    let verdict = RunState::of_ended_run(cancelled, report.success, tasks);
+    roko_serve::runtime::PromptPlanResult {
+        run_id: report.run_id.clone(),
+        verdict,
+        success: verdict == RunState::Succeeded,
+        output_text: Some(report.output.clone()).filter(|output| !output.is_empty()),
+        cost_usd: report.cost,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

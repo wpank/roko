@@ -1993,3 +1993,59 @@ fn screened_tool_steps_replace_unscreened() {
     app.drain_state_events();
     assert_eq!(texts(&app), ["Bash ls", "Bash", "screened"]);
 }
+
+/// 1219: a task a Graph run holds for review is offered for approval, named
+/// `<plan>/<task>`. Approving it sends the run an Approve for that task, and
+/// the offer goes once the task no longer waits.
+#[test]
+fn tui_offers_a_held_task_for_approval() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    use crate::execution_control::{
+        CommandAckReceiver, ExecutionCommandKind, ExecutionCommandSender,
+    };
+    use crate::runner::tui_bridge::TuiBridge;
+
+    // An initialized workspace, so no welcome prompt opens.
+    let dir = tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join(".roko")).expect("workspace");
+    let hub = crate::state_hub::shared_state_hub();
+    let (sender, mut cmd_rx, _ack_tx, ack_rx) = ExecutionCommandSender::channel("test-run");
+    let mut app = App::new_connected(dir.path(), &hub)
+        .with_execution_command_sender(sender, CommandAckReceiver::new(ack_rx));
+    let bridge = TuiBridge::new(hub.sender());
+
+    bridge.plan_started("p1", 1);
+    bridge.task_started("p1", "T1", "Add the feature", "graph-executing");
+    bridge.task_phase_changed("p1", "T1", "graph-executing", "awaiting_approval");
+    app.drain_snapshot_channel();
+
+    let offered = app
+        .tui_state
+        .pending_approval
+        .as_ref()
+        .expect("the held task is offered");
+    assert!(offered.held_task);
+    assert_eq!(offered.approval_id.as_deref(), Some("p1/T1"));
+    assert!(matches!(
+        app.tui_state.active_modal,
+        Some(ModalState::Approval { .. })
+    ));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    let sent = cmd_rx.try_recv().expect("an approve command");
+    assert_eq!(
+        sent.kind,
+        ExecutionCommandKind::Approve {
+            approval_id: "p1/T1".to_string()
+        }
+    );
+    assert_eq!(sent.plan_id.as_deref(), Some("p1"));
+    assert_eq!(sent.task_id.as_deref(), Some("T1"));
+    assert!(app.tui_state.active_modal.is_none());
+
+    // The run takes the decision, the task runs on, and the offer goes.
+    bridge.task_phase_changed("p1", "T1", "awaiting_approval", "graph-executing");
+    app.drain_snapshot_channel();
+    assert!(app.tui_state.pending_approval.is_none());
+}

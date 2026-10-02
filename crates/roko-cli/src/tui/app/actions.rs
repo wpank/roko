@@ -617,6 +617,9 @@ impl App {
                 }
             }
             TuiAction::ApproveCommand => {
+                if self.decide_held_task(true) {
+                    return;
+                }
                 // P1-40: Emit SurfaceEvent for the approval action.
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
@@ -630,6 +633,9 @@ impl App {
                 }
             }
             TuiAction::ApproveAll => {
+                if self.decide_held_task(true) {
+                    return;
+                }
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
                         run_id: approval.run_id.clone().unwrap_or_default(),
@@ -642,6 +648,9 @@ impl App {
                 }
             }
             TuiAction::RejectCommand => {
+                if self.decide_held_task(false) {
+                    return;
+                }
                 if let Some(approval) = &self.tui_state.pending_approval {
                     self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
                         run_id: approval.run_id.clone().unwrap_or_default(),
@@ -1842,11 +1851,77 @@ impl App {
             })
     }
 
-    pub(super) fn dismiss_all_modals(&mut self) {
+    /// Send the run an Approve, or a Reject, for the task a Graph run holds
+    /// for review that the pending approval offers (1218), and close its
+    /// prompt. The offer stays until the task no longer waits, and the run's
+    /// acknowledgement shows. `false` when no held task is offered.
+    pub(super) fn decide_held_task(&mut self, approved: bool) -> bool {
+        use super::super::modals::Notification;
+        use crate::execution_control::{CommandSendError, ExecutionCommandKind};
+
+        let Some(approval_id) = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .filter(|pending| pending.held_task)
+            .and_then(|pending| pending.approval_id.clone())
+        else {
+            return false;
+        };
         if matches!(
             self.tui_state.active_modal,
             Some(ModalState::Approval { .. })
         ) {
+            self.tui_state.active_modal = None;
+        }
+        let Some(sender) = &self.exec_cmd_sender else {
+            let message = format!("no connected run: decide {approval_id} with roko plan review");
+            self.notifications.push_back(Notification::warn(message));
+            return true;
+        };
+        let (plan_id, task_id) = approval_id
+            .rsplit_once('/')
+            .map(|(plan_id, task_id)| (plan_id.to_string(), task_id.to_string()))
+            .unzip();
+        let kind = if approved {
+            ExecutionCommandKind::Approve { approval_id }
+        } else {
+            ExecutionCommandKind::RejectApproval {
+                approval_id,
+                reason: "rejected in the TUI".to_string(),
+            }
+        };
+        let cmd = sender.build_command(kind.clone(), plan_id, task_id, None);
+        let cmd_id = cmd.command_id.clone();
+        match sender.try_send(cmd) {
+            Ok(()) => {
+                self.pending_exec_commands.insert(cmd_id, kind);
+            }
+            Err(CommandSendError::Full(_)) => {
+                self.notifications
+                    .push_back(Notification::warn("command queue full"));
+            }
+            Err(CommandSendError::Disconnected(_)) => {
+                self.notifications
+                    .push_back(Notification::warn("executor disconnected"));
+            }
+        }
+        true
+    }
+
+    pub(super) fn dismiss_all_modals(&mut self) {
+        // A held task's offer outlives its prompt: closing the prompt decides
+        // nothing.
+        let held_task = self
+            .tui_state
+            .pending_approval
+            .as_ref()
+            .is_some_and(|pending| pending.held_task);
+        let approval_open = matches!(
+            self.tui_state.active_modal,
+            Some(ModalState::Approval { .. })
+        );
+        if approval_open && !held_task {
             let _ = self.resolve_active_approval(false);
         }
         self.tui_state.active_modal = None;

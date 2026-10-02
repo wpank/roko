@@ -149,7 +149,7 @@ pub async fn prometheus_metrics(
     let s = &snapshot.stats;
     let uptime = state.started_at.elapsed().as_secs();
     let active_agents = state.supervisor.count().await;
-    let active_plans = state.active_plans.read().await.len();
+    let active_plans = state.live_plan_runs().await;
 
     // Episode count from JSONL file (best-effort).
     let episodes_path = state.layout.episodes_path();
@@ -384,7 +384,7 @@ async fn build_metrics_summary(
         .last()
         .map(|snapshot| snapshot.overall)
         .unwrap_or(0.0);
-    let active_plans = state.active_plans.read().await.len();
+    let active_plans = state.live_plan_runs().await;
 
     let agents_run = efficiency_events.len() as u64;
     let success_count = efficiency_events

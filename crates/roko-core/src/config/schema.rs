@@ -2617,6 +2617,14 @@ pub struct CoreRunnerConfig {
     /// the server's value (gap-4ec59f).
     #[serde(default = "CoreRunnerConfig::default_worktree_per_task")]
     pub worktree_per_task: bool,
+    /// Whether a task attempt in the operator's shared checkout, with no
+    /// worktree of its own, may run on a Codex, Cursor or Gemini CLI agent.
+    /// Defaults to `false`: roko cannot check those CLIs' commands before
+    /// they run, so a `git stash` or `git clean -fdx` of theirs would destroy
+    /// the operator's uncommitted work. Failover passes them over there, and
+    /// an attempt no other provider can take fails (decision 1214).
+    #[serde(default)]
+    pub allow_unguarded_agents_in_checkout: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2672,6 +2680,7 @@ impl Default for CoreRunnerConfig {
             prompt_log_retention: Self::default_prompt_log_retention(),
             delete_attempt_branches: false,
             worktree_per_task: Self::default_worktree_per_task(),
+            allow_unguarded_agents_in_checkout: false,
         }
     }
 }

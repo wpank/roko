@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 15 anchor gone · 66 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 16 anchor gone · 66 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -26,9 +26,9 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 - **P1** [gap-e00238](items/gap-e00238-pk02-failure-paths-immune-denials-leave-provider.md) PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
-- **P2** [gap-843aef](items/gap-843aef-pk05-operator-control-and-guards-provider-clis.md) PK05 Operator control and guards: Provider CLIs and MCP servers keep exported secrets whose names roko does not recognise (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-4b890c](items/gap-4b890c-pk06-operator-control-and-guards-approval-help.md) PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more) · size L · verified 2026-10-02
 
-_11 more open · `goal = "truth"`_
+_10 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -41,10 +41,10 @@ _0 more open · on hold: gap-c013c5, gap-c1f4ac, gap-de0b87, gap-e1fdb3 · 4 unc
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - **P1** [gap-1149aa](items/gap-1149aa-pk21-viabilitybench-proof-vb-run-gives-a.md) PK21 ViabilityBench proof: vb run gives a multi-model arm one endpoint and one proxy upstream per provider (+5 more) · size L · verified 2026-10-02
-- **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
+- **P2** [gap-daeaa9](items/gap-daeaa9-pk25-viabilitybench-proof-spec-variants-for-the.md) PK25 ViabilityBench proof: Spec variants for the 48 H3 instances: precise, vague by D-v1, and the recoverability… (+3 more) · size L · verified 2026-10-02
 
-_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -96,10 +96,10 @@ _7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 
 ## 12. Hermes and ACP integration
 
-- **P2** [gap-5e9292](items/gap-5e9292-pk73-domains-and-assistant-the-runner-s.md) PK73 Domains and assistant: The runner's FeedRegistry is built empty and never read (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-ce1d11](items/gap-ce1d11-pk74-domains-and-assistant-mcp-run-tools.md) PK74 Domains and assistant: /mcp run tools: run_prompt, plan_generate, plan_run and run_cancel, annotated so the… (+6 more) · size L · verified 2026-10-02
 - **P3** [gap-a9c156](items/gap-a9c156-pk77-domains-and-assistant-accept-a-scratch.md) PK77 Domains and assistant: Accept a scratch_dir attempt: copy changed files back, and refuse when the base moved (+2 more) · size L · verified 2026-10-02
+- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
 
-_5 more open · `goal = "hermes"`_
+_4 more open · `goal = "hermes"`_
 
 5 open items have no goal (later); they are listed in `STATUS.md`.

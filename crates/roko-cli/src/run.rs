@@ -473,6 +473,17 @@ pub struct PromptRun<'a> {
     /// Hub that receives the run's dashboard events (`roko run --serve`
     /// passes the server's); `None` uses a private hub.
     pub state_hub: Option<SharedStateHub>,
+    /// The id to run under: the one-task plan's and the Graph run's. Serve
+    /// passes the id its 202 returned (9113); `None` mints one.
+    pub run_id: Option<String>,
+    /// Stops the run when it fires, and then the run leaves the process's
+    /// signals to its host. `None` stops it on SIGINT, SIGTERM or SIGHUP.
+    pub cancel: Option<roko_runtime::cancel::CancelToken>,
+    /// The task's work domain; `None` leaves it unset.
+    pub domain: Option<roko_core::TaskDomain>,
+    /// A hard cap on what the run may spend, in USD, as `roko plan run
+    /// --budget-override` sets one; `None` keeps the configured ceiling.
+    pub max_usd: Option<f64>,
 }
 
 /// Execute one prompt through the Graph engine.
@@ -499,7 +510,8 @@ pub struct PromptRun<'a> {
 pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     use crate::graph_execution::GraphPlanRunParams;
     use crate::graph_execution::plan_runner::{
-        PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan_in_run,
+        PlanRunInterrupt, PlanRunInterruptHandle, install_plan_run_signal_handlers,
+        run_graph_plan_in_run,
     };
 
     let (_config, model_config, selection) =
@@ -526,12 +538,27 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     }
 
     let layout = roko_fs::RokoLayout::for_project(run.workdir);
-    let run_id = format!("run-{}", Utc::now().format("%Y%m%d-%H%M%S-%3f"));
+    let run_id = match run.run_id {
+        Some(run_id) => {
+            roko_fs::run_index::validate_scoped_id(&run_id)
+                .map_err(|reason| anyhow!("run id `{run_id}` {reason}"))?;
+            run_id
+        }
+        None => format!("run-{}", Utc::now().format("%Y%m%d-%H%M%S-%3f")),
+    };
     let run_dir = layout.run_dir(&run_id);
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("create run directory {}", run_dir.display()))?;
-    prompt_tasks_file(&run_id, run.prompt, run.tier, role, verify, run.workdir)
-        .write(&run_dir.join("tasks.toml"))?;
+    prompt_tasks_file(
+        &run_id,
+        run.prompt,
+        run.tier,
+        role,
+        verify,
+        run.domain,
+        run.workdir,
+    )
+    .write(&run_dir.join("tasks.toml"))?;
 
     // A model or provider override pins the task's model; otherwise the
     // Graph engine routes by tier, as for authored plans.
@@ -548,9 +575,20 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         .unwrap_or_else(crate::state_hub::shared_state_hub);
 
     // SIGINT, SIGTERM and SIGHUP stop the run gracefully for as long as the
-    // guard lives.
+    // guard lives. A run with a cancel token, as serve's are, stops when the
+    // token fires instead and leaves the process's signals to its host.
     let interrupt = PlanRunInterruptHandle::default();
-    let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
+    let _signals = match run.cancel {
+        Some(cancel) => {
+            let interrupt = interrupt.clone();
+            tokio::spawn(async move {
+                cancel.cancelled().await;
+                interrupt.request(PlanRunInterrupt::Interrupt);
+            });
+            None
+        }
+        None => Some(install_plan_run_signal_handlers(interrupt.clone())?),
+    };
     let started = std::time::Instant::now();
     // The Graph run takes this run's id, so its attempt records and manifest
     // land in `run_dir` beside the plan (bug-ccc7c4).
@@ -565,7 +603,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             force_resume: false,
             max_retries: run.max_retries,
             max_tasks: 0,
-            budget_override: None,
+            budget_override: run.max_usd,
             no_budget: false,
             cli_model_override,
             dangerously_skip_permissions: false,
@@ -672,13 +710,14 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
     }]
 }
 
-/// The one-task plan that runs `prompt`.
+/// The one-task plan that runs `prompt`, in work domain `domain`.
 fn prompt_tasks_file(
     run_id: &str,
     prompt: &str,
     tier: &str,
     role: &str,
     verify: Vec<VerifyStep>,
+    domain: Option<roko_core::TaskDomain>,
     workdir: &Path,
 ) -> TasksFile {
     let title = prompt.lines().next().unwrap_or(prompt).trim();
@@ -728,7 +767,7 @@ fn prompt_tasks_file(
             acceptance: Vec::new(),
             acceptance_contract: None,
             accept: None,
-            domain: None,
+            domain,
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
@@ -1110,6 +1149,10 @@ command = "true"
             max_retries: Some(0),
             quiet: true,
             state_hub: None,
+            run_id: None,
+            cancel: None,
+            domain: None,
+            max_usd: None,
         })
         .await
         .expect("roko run completes");
@@ -1202,6 +1245,10 @@ sibling_settle_secs = 0
             max_retries: Some(0),
             quiet: true,
             state_hub: None,
+            run_id: None,
+            cancel: None,
+            domain: None,
+            max_usd: None,
         })
         .await
         .expect("roko run dispatches without a build manifest");
@@ -1272,6 +1319,7 @@ sibling_settle_secs = 0
             "focused",
             "implementer",
             verify,
+            None,
             tmp.path(),
         )
         .write(&run_dir.join("tasks.toml"))

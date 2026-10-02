@@ -10,6 +10,7 @@
  *  - Mutations that change a plan (save, generate, revise) invalidate the
  *    plan list, plan tasks, plan source and validation caches.
  *  - Run / cancel invalidate the plan list only.
+ *  - A review decision invalidates the plan's tasks and reviews.
  *  - No polling intervals; no optimistic updates.
  *  - Errors propagate as `ApiError`; callers read `.body` for detail.
  */
@@ -25,6 +26,9 @@ import type {
   WireSourceSaved,
   WireAccepted,
   WireOperation,
+  WireReviews,
+  WireTaskDiff,
+  WireReviewDecision,
 } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +40,8 @@ export const queryKeys = {
   planTasks: (id: string) => ['plans', id, 'tasks'] as const,
   planSource: (id: string) => ['plans', id, 'source'] as const,
   validation: (id: string) => ['plans', id, 'validation'] as const,
+  reviews: (id: string) => ['plans', id, 'reviews'] as const,
+  taskDiff: (id: string, taskId: string) => ['plans', id, 'diff', taskId] as const,
   workspace: ['workspace'] as const,
 };
 
@@ -196,6 +202,47 @@ export function useCancelPlan() {
       api.post<unknown>(`/api/plans/${encodeURIComponent(id)}/cancel`),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.plans });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Task reviews — a Graph run holds a verified attempt until someone decides
+// ---------------------------------------------------------------------------
+
+/** The plan's tasks pending review; `enabled` keeps the server's git scan to running plans. */
+export function useReviews(id: string | undefined, enabled = true) {
+  return useQuery<WireReviews>({
+    queryKey: queryKeys.reviews(id ?? ''),
+    queryFn: () =>
+      api.get<WireReviews>(`/api/plans/${encodeURIComponent(id!)}/reviews`),
+    enabled: Boolean(id) && enabled,
+  });
+}
+
+function taskPath(id: string, taskId: string): string {
+  return `/api/plans/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`;
+}
+
+export function useTaskDiff(id: string, taskId: string) {
+  return useQuery<WireTaskDiff>({
+    queryKey: queryKeys.taskDiff(id, taskId),
+    queryFn: () => api.get<WireTaskDiff>(`${taskPath(id, taskId)}/diff`),
+  });
+}
+
+/** Approve or reject a held task; the run waiting on it reads the decision. */
+export function useSubmitReview() {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, ApiError, { id: string; taskId: string } & WireReviewDecision>({
+    mutationFn: ({ id, taskId, decision, comment }) =>
+      api.post<unknown>(
+        `${taskPath(id, taskId)}/review`,
+        comment === undefined ? { decision } : { decision, comment },
+      ),
+    onSuccess: (_data, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.planTasks(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.reviews(id) });
     },
   });
 }

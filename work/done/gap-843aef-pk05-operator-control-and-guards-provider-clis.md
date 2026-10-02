@@ -2,7 +2,7 @@
 id = "gap-843aef"
 kind = "gap"
 title = "PK05 Operator control and guards: Provider CLIs and MCP servers keep exported secrets whose names roko does not recognise (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK05"
 anchors = ["apps/portal/src/api/contracts.ts", "apps/portal/src/api/queries.ts", "apps/portal/src/components/stage/TaskList.tsx", "crates/roko-agent/src/exec.rs", "crates/roko-agent/src/provider/claude_cli.rs", "crates/roko-agent/src/safety/sandbox.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/tui/app/actions.rs", "crates/roko-cli/src/tui/app/channels.rs", "crates/roko-cli/src/tui/app/tests.rs", "crates/roko-cli/src/tui/state/mod.rs", "crates/roko-core/src/child_env.rs", "crates/roko-core/src/config/schema.rs"]
 lane = "rust-hot"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn tui_offers_a_held_task_for_approval' crates/roko-cli/ &
 
 [[verify]]
 command = "test -f apps/portal/src/components/stage/ReviewPane.accept.test.tsx && grep -rqE 'tasks/.*/review|/diff' apps/portal/src --include='*.ts*' && cd apps/portal && npx vitest run src/components/stage/ReviewPane.accept.test.tsx"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:08:26Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:51Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem
@@ -87,3 +99,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-843aef`; cargo verification deferred to the batch gate. The portal change (1220) was written
+by hand: npm, vitest and `tsc` were not run.
+
+- 1212: implemented at d75891cb3
+- 1213: implemented at e847cea8b
+- 1215: implemented at c29d33858
+- 1216: implemented at a97022723
+- 1217: implemented at de9465618
+- 1218: implemented at d9e1acadc
+- 1219: implemented at 073ca943c
+- 1220: implemented at c77015269

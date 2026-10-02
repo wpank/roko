@@ -58,33 +58,37 @@ def census_row(index: int = 0, *, false_green: bool = False, **changes) -> dict:
 # --- the replay: SC1 --------------------------------------------------------------------------------------------
 
 
-def test_hajek_ci_covers_theta_in_1000_replays():
-    """1,000 keyed lotteries over the window at each ρ: coverage ≥ 0.93, |bias| ≤ 0.01, HT unbiased, π ≥ the floor.
+def test_wilson_interval_meets_coverage_in_every_cell():
+    """1,000 keyed lotteries over the window at each ρ, uniform and tilted: coverage ≥ 0.93, |bias| ≤ 0.01, HT
+    unbiased, π ≥ the floor, in every cell (gap-a499aa).
 
-    Uniform selection at every ρ (S05's first slice has no M3), and SC1's primary cell: ρ = 0.15 tilted by M3's
-    risk at λ_max, Hájek with Wilson at Kish n_eff. The exact coverage of the uniform cells is 0.968 to 0.976 for this
-    window, so the 0.93 target is no coin flip; HT's bias is checked against its own Monte Carlo error.
+    Uniform selection is S05's first slice (no M3); tilted selection uses M3's risk at λ_max, and ρ = 0.15 tilted is
+    SC1's primary cell. The interval is Wilson's at Kish n_eff in every cell. Under S05 §4.5's first rule, Wald on v̂
+    once n_eff ≥ 30 with 5 events, the tilted ρ = 0.30 cell (n_eff about 45) covered 0.911 on this window and missed
+    SC1's 0.93; Wilson covers it at 0.994. The uniform cells cover 0.972 to 0.988, so the target is no coin flip;
+    HT's bias is checked against its own Monte Carlo error.
     """
     units = window_units()
     uniform = replay.replay(units, rhos=replay.RHOS, runs=RUNS, seed="test-uniform")
-    tilted = replay.replay(units, rhos=(0.15,), runs=RUNS, seed="test-tilted", lam=lottery.LAMBDA_MAX)
+    tilted = replay.replay(units, rhos=replay.RHOS, runs=RUNS, seed="test-tilted", lam=lottery.LAMBDA_MAX)
     assert uniform["theta_census"] == tilted["theta_census"] == THETA
-    assert [cell["rho"] for cell in uniform["cells"]] == [0.10, 0.15, 0.30]
     for report in (uniform, tilted):
+        assert [cell["rho"] for cell in report["cells"]] == [0.10, 0.15, 0.30]
         for cell in report["cells"]:
             where = f"{report['selection']} rho={cell['rho']}: {cell}"
-            assert cell["coverage"] >= 0.93, where
-            assert abs(cell["bias_hajek"]) <= 0.01, where
+            assert cell["coverage"] >= replay.TARGET_COVERAGE, where
+            assert abs(cell["bias_hajek"]) <= replay.TARGET_BIAS, where
             assert abs(cell["bias_ht"]) <= 4 * cell["ht_mc_se"], where  # unbiased within Monte Carlo error
             assert cell["pi_min"] >= lottery.EPS_FLOOR, where
             assert cell["targets_met"], where
             assert cell["empty"] == 0 and cell["mean_n_eff"] > 0, where
+        text = replay.format_report(report)
+        assert "theta_census = 0.1300" in text and "n_eff" in text and text.count(" met") == 3
+        assert "NOT MET" not in text
     assert uniform["cells"][0]["mean_audited"] == pytest.approx(0.10 * 200, rel=0.05)
-    primary = tilted["cells"][0]
+    primary = tilted["cells"][1]
     assert primary["mean_n_eff"] < uniform["cells"][1]["mean_n_eff"]  # the tilt costs effective sample size
-    assert primary["wald_share"] < 0.5  # SC1's primary cell is a Wilson-at-n_eff cell
-    text = replay.format_report(uniform)
-    assert "theta_census = 0.1300" in text and "n_eff" in text and text.count(" met") == 3
+    assert tilted["cells"][2]["mean_n_eff"] > 30  # past the first rule's n_eff ≥ 30: the cell Wald used to decide
 
 
 def test_betting_sequence_holds_at_every_stopping_time():
@@ -253,17 +257,21 @@ def test_estimators_match_a_hand_computation():
     assert record["ci"] == list(est.ci) and json.loads(json.dumps(record)) == record
 
 
-def test_wald_needs_thirty_effective_units_and_five_events_each_way():
-    wald = estimate.estimate([(0.3, 1)] * 12 + [(0.3, 0)] * 48, 200)  # N̂ = 200, n_eff = 60, 12 events
-    assert wald.ci_method == "wald" and wald.theta_hajek == pytest.approx(0.2) and wald.n_eff == pytest.approx(60)
-    # v̂ = 0.7 · (1/0.09) · (12·0.64 + 48·0.04) / 200² ; the interval is θ̂ ± z·√v̂
-    half = estimate.Z95 * math.sqrt(0.7 / 0.09 * 9.6 / 200 ** 2)
-    assert wald.ci == pytest.approx((0.2 - half, 0.2 + half), abs=1e-12)
-    assert estimate.estimate([(0.3, 1)] * 4 + [(0.3, 0)] * 56, 200).ci_method == "wilson_eff"  # 4 events
-    assert estimate.estimate([(0.3, 1)] * 56 + [(0.3, 0)] * 4, 200).ci_method == "wilson_eff"  # 4 non-events
-    assert estimate.estimate([(0.3, 1)] * 6 + [(0.3, 0)] * 23, 200).ci_method == "wilson_eff"  # n_eff 29
-    census = estimate.estimate([(1.0, 1)] * 6 + [(1.0, 0)] * 34, 40)  # π = 1: no sampling error at all
-    assert census.ci_method == "wald" and census.ci == (0.15, 0.15) and census.theta_ht == census.theta_hajek
+def test_the_interval_is_wilson_at_n_eff_however_large_the_sample():
+    """gap-a499aa: no Wald branch. The samples S05 §4.5's first rule gave to Wald (n_eff ≥ 30, 5 events each way)
+    get Wilson at n_eff like every other; v̂ is still reported."""
+    large = estimate.estimate([(0.3, 1)] * 12 + [(0.3, 0)] * 48, 200)  # N̂ = 200, n_eff = 60, 12 events
+    assert large.theta_hajek == pytest.approx(0.2) and large.n_eff == pytest.approx(60)
+    assert large.ci_method == estimate.CI_METHOD == "wilson_eff" and large.ci == estimate.wilson(0.2, large.n_eff)
+    # v̂ = 0.7 · (1/0.09) · (12·0.64 + 48·0.04) / 200²
+    assert large.variance == pytest.approx(0.7 / 0.09 * 9.6 / 200 ** 2, abs=1e-15)
+    for units, n_green in (([(0.3, 1)] * 4 + [(0.3, 0)] * 56, 200), ([(0.3, 1)] * 56 + [(0.3, 0)] * 4, 200),
+                           ([(0.3, 1)] * 6 + [(0.3, 0)] * 23, 200), ([(1.0, 1)] * 6 + [(1.0, 0)] * 34, 40)):
+        est = estimate.estimate(units, n_green)
+        assert est.ci_method == "wilson_eff" and est.ci == estimate.wilson(est.theta_hajek, est.n_eff), units
+    census = estimate.estimate([(1.0, 1)] * 6 + [(1.0, 0)] * 34, 40)  # π = 1: n_eff is the window's 40 units
+    assert census.n_eff == 40 and census.theta_ht == census.theta_hajek == 0.15
+    assert census.ci[0] < 0.15 < census.ci[1]
 
 
 def test_wilson_matches_published_values_and_handles_the_ends():
@@ -300,7 +308,7 @@ def test_the_rust_fixture_matches_the_reference():
     _assert_close(stored, replay.build_fixture(), "$")
     assert stored["version"] == replay.FIXTURE_VERSION
     methods = {case["expected"]["ci_method"] for case in stored["estimates"]}
-    assert methods == {"wald", "wilson_eff"}
+    assert methods == {"wilson_eff"} and stored["constants"]["ci_method"] == "wilson_eff"  # gap-a499aa: no Wald
     assert any(case["cs"][-1] != [0.0, 1.0] for case in stored["betting"])  # some sequence narrows
 
 

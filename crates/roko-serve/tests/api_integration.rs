@@ -53,6 +53,23 @@ impl CliRuntime for TestRuntime {
         })
     }
 
+    /// A prompt plan whose task no gate verified, as in a workspace with no
+    /// declared rung.
+    async fn run_prompt_plan(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+        options: roko_serve::runtime::PromptPlanOptions,
+    ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+        Ok(roko_serve::runtime::PromptPlanResult {
+            run_id: options.run_id.unwrap_or_default(),
+            verdict: roko_serve::state::RunState::Unverified,
+            success: false,
+            output_text: Some("test runtime output".to_string()),
+            cost_usd: None,
+        })
+    }
+
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
         SessionStatusInfo {
             session_id: None,
@@ -284,7 +301,9 @@ async fn run_status_returns_terminal_output_text() {
         let (status, body) = get_json(&app, &format!("/api/run/{run_id}/status")).await;
         assert_eq!(status, StatusCode::OK);
         if body["finished"] == true {
-            assert_eq!(body["status"], "completed");
+            // No gate verified the run's task, so it is not a success (G42).
+            assert_eq!(body["status"], "unverified");
+            assert_eq!(body["success"], false);
             assert_eq!(body["output_text"], "test runtime output");
             return;
         }

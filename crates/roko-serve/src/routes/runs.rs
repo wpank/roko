@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::state::{AppState, RunState};
 
 const DEFAULT_PAGE_LIMIT: usize = 100;
 const MAX_PAGE_LIMIT: usize = 200;
@@ -53,6 +53,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/dashboard/runs", get(get_dashboard_runs))
         .route("/runs/{run_id}", get(get_run_detail))
+        .route("/runs/{run_id}/summary", get(get_run_summary))
         .route("/runs/{run_id}/events", get(get_run_events))
         .route("/runs/{run_id}/events/stream", get(get_run_events_stream))
         .route("/runs/{run_id}/tasks", get(get_run_tasks))
@@ -189,6 +190,67 @@ async fn get_run_detail(
         "bundle_available": bundle.is_some(),
         "links": run_links(&run_id),
     })))
+}
+
+/// `GET /api/runs/{run_id}/summary` — what a host can post about a run (B9
+/// B4): its state in the words every run route uses, its verdict once it has
+/// ended, its cost, how its tasks ended and at most five milestones. Read
+/// from the run's own index, with the detail route's scan limits, and from
+/// this server's run handles while the run is queued or running. Milestones
+/// name event kinds and ids only, never prompts or output.
+async fn get_run_summary(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    summarize_run(&state, &run_id).await.map(Json)
+}
+
+/// The summary `GET /api/runs/{run_id}/summary` returns for run `run_id`,
+/// which the MCP `run_status` tool returns too.
+pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    ensure_observability_allowed(state)?;
+    validate_id(run_id, "run id")?;
+    let in_memory = run_state_in_memory(state, run_id).await;
+    let io_state = Arc::clone(state);
+    let io_run_id = run_id.to_string();
+    let page = blocking_io(move || {
+        read_for_run(
+            &io_state,
+            &io_run_id,
+            None,
+            0,
+            MAX_DETAIL_EVENTS,
+            MAX_DETAIL_SCAN_BYTES,
+            &BTreeSet::new(),
+        )
+    })
+    .await?;
+    if page.is_none() && in_memory.is_none() {
+        return Err(ApiError::not_found(format!("run '{run_id}' not found")));
+    }
+    let events = page.map(|page| page.events).unwrap_or_default();
+    Ok(run_summary(run_id, &events, in_memory))
+}
+
+/// What this server holds of run `run_id` in memory: the state of its
+/// one-shot or plan-run handle, or `queued` with its place in the plan-run
+/// queue.
+async fn run_state_in_memory(state: &AppState, run_id: &str) -> Option<(RunState, Option<usize>)> {
+    if let Some(run) = state.active_runs.read().await.get(run_id) {
+        return Some((super::run::run_handle_state(run).0, None));
+    }
+    let plans = state.active_plans.read().await;
+    if let Some(plan) = plans.values().find(|plan| plan.id == run_id) {
+        return Some((plan.state(), None));
+    }
+    let queue = state
+        .plan_queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    queue
+        .iter()
+        .position(|queued| queued.spec.run_id == run_id)
+        .map(|index| (RunState::Queued, Some(index + 1)))
 }
 
 /// `GET /api/runs/{run_id}/events` — cursor-paginated JSON, or SSE when the
@@ -1545,6 +1607,177 @@ fn completion_status(value: &Value) -> &'static str {
     }
 }
 
+/// The summary of run `run_id` from its indexed `events` and what this
+/// server holds of it in memory ([`run_state_in_memory`]).
+///
+/// A queued or running run's handle is ahead of its index. Once the index
+/// records the run's end, its state is [`RunState::of_ended_run`] over the
+/// end and the last outcome of each task, the words `GET
+/// /api/plans/{id}/status` uses too. A run with neither is still running, as
+/// a run another process writes the index of is.
+fn run_summary(
+    run_id: &str,
+    events: &[IndexedEvent],
+    in_memory: Option<(RunState, Option<usize>)>,
+) -> Value {
+    let mut completion = None;
+    let mut tasks = BTreeMap::<(String, String), TaskOutcomeClass>::new();
+    // The first milestone of each kind, with its event's place in the run.
+    let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
+    for (place, item) in events.iter().enumerate() {
+        let value = &item.value;
+        let kind = event_type(value).unwrap_or_default();
+        if matches!(
+            kind,
+            "run.started" | "run_started" | "workflow_started" | "plan_started" | "plan.started"
+        ) {
+            let text = event_plan_id(value).map_or_else(
+                || "run started".to_string(),
+                |plan_id| format!("plan {plan_id} started"),
+            );
+            milestones
+                .entry("started")
+                .or_insert_with(|| (place, milestone("started", text, value)));
+        }
+        if is_task_terminal(kind)
+            && let Some(task_id) = event_task_id(value)
+        {
+            let status = terminal_status(value);
+            let class = classify_task_outcome(status.as_str().unwrap_or_default());
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            tasks.insert((plan_id, task_id.to_string()), class);
+            if class == TaskOutcomeClass::Passed {
+                let text = format!("task {task_id} passed");
+                milestones
+                    .entry("first_task_accepted")
+                    .or_insert_with(|| (place, milestone("first_task_accepted", text, value)));
+            }
+        }
+        if is_gate_event(kind)
+            && bool_field(value, "passed").map_or(kind.contains("failed"), |passed| !passed)
+        {
+            let gate = string_field(value, "gate")
+                .map_or_else(|| "a gate".to_string(), |gate| format!("gate {gate}"));
+            let text = event_task_id(value).map_or_else(
+                || format!("{gate} failed"),
+                |task_id| format!("{gate} failed on task {task_id}"),
+            );
+            milestones
+                .entry("first_gate_failure")
+                .or_insert_with(|| (place, milestone("first_gate_failure", text, value)));
+        }
+        if matches!(
+            kind,
+            "run.completed" | "workflow_completed" | "run_completed"
+        ) {
+            completion = Some((place, value));
+        }
+        if let Some(delivery) = delivery_end(value) {
+            let text = format!("delivery {delivery}");
+            milestones
+                .entry("delivery")
+                .or_insert_with(|| (place, milestone("delivery", text, value)));
+        }
+    }
+
+    let ended = completion.map(|(_, value)| {
+        let end = completion_status(value);
+        RunState::of_ended_run(
+            end == "cancelled",
+            end == "completed",
+            tasks.values().copied(),
+        )
+    });
+    let (state, position) = match in_memory {
+        Some((live, position)) if !live.is_terminal() => (live, position),
+        remembered => (
+            ended
+                .or(remembered.map(|(state, _)| state))
+                .unwrap_or(RunState::Running),
+            None,
+        ),
+    };
+    if let Some((place, value)) = completion {
+        let text = format!("run {}", state.as_str());
+        milestones.insert("completed", (place, milestone("completed", text, value)));
+    }
+    let mut milestones = milestones.into_values().collect::<Vec<_>>();
+    milestones.sort_by_key(|(place, _)| *place);
+    let milestones = milestones
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect::<Vec<_>>();
+
+    let count = |class: TaskOutcomeClass| tasks.values().filter(|&&each| each == class).count();
+    let (passed, failed, unverified) = (
+        count(TaskOutcomeClass::Passed),
+        count(TaskOutcomeClass::Failed),
+        count(TaskOutcomeClass::Unverified),
+    );
+    let summary = summarize_events(events);
+    json!({
+        "run_id": run_id,
+        "state": state.as_str(),
+        "verdict": state.is_terminal().then_some(state),
+        "position": position,
+        "active": !state.is_terminal(),
+        "cost_usd": summary["metrics"]["cost_usd"],
+        "tasks": {
+            "total": tasks.len(),
+            "passed": passed,
+            "failed": failed,
+            "unverified": unverified,
+            "other": tasks.len() - passed - failed - unverified,
+        },
+        "milestones": milestones,
+        "started_at": summary["started_at"],
+        "finished_at": summary["finished_at"],
+        "links": run_links(run_id),
+    })
+}
+
+/// A summary milestone: its kind, a line built from event kinds and ids, and
+/// when its event happened.
+fn milestone(kind: &str, text: String, value: &Value) -> Value {
+    json!({
+        "kind": kind,
+        "text": text,
+        "at": event_time(value),
+    })
+}
+
+/// When an indexed event happened: its timestamp, else its time in
+/// milliseconds.
+fn event_time(value: &Value) -> Value {
+    value
+        .get("timestamp")
+        .or_else(|| value.get("ts"))
+        .filter(|time| time.is_string())
+        .cloned()
+        .or_else(|| event_timestamp_ms(value).map(Value::from))
+        .unwrap_or(Value::Null)
+}
+
+/// How a run's delivery ended, `completed` or `failed`, when `value` is the
+/// Graph run's delivery event that says so.
+fn delivery_end(value: &Value) -> Option<&str> {
+    let data = event_data(value);
+    if data.get("namespace").and_then(Value::as_str) != Some("graph.delivery") {
+        return None;
+    }
+    data.get("value")?
+        .get("kind")?
+        .as_str()
+        .filter(|kind| matches!(*kind, "completed" | "failed"))
+}
+
+fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .or_else(|| event_data(value).get(field).and_then(Value::as_str))
+}
+
 fn numeric(value: &Value, field: &str) -> Option<u64> {
     value
         .get(field)
@@ -1579,6 +1812,8 @@ fn checkpoint_name(value: &Value) -> Option<String> {
 
 fn run_links(run_id: &str) -> Value {
     json!({
+        "detail": format!("/api/runs/{run_id}"),
+        "summary": format!("/api/runs/{run_id}/summary"),
         "events": format!("/api/runs/{run_id}/events"),
         "stream": format!("/api/runs/{run_id}/events/stream"),
         "tasks": format!("/api/runs/{run_id}/tasks"),
@@ -2003,6 +2238,84 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
         std::fs::write(path, body).unwrap();
+    }
+
+    /// B9 B4: a run's summary gives one state with its verdict and cost, how
+    /// its tasks ended and at most five milestones, in the order they
+    /// happened. A completed run whose tasks passed is `succeeded`; one with
+    /// an unverified task and no failed one is `unverified`, though the run
+    /// itself reported failure.
+    #[tokio::test]
+    async fn run_summary_reports_verdict_cost_and_milestones() {
+        let dir = tempfile::tempdir().unwrap();
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let index = |run_id: &str| {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).unwrap()
+        };
+
+        write_rows(
+            &index("r1"),
+            &[
+                json!({"type":"run.started","run_id":"r1","timestamp_ms":1,"plan_id":"p1"}),
+                json!({"type":"gate.completed","run_id":"r1","timestamp_ms":2,"plan_id":"p1","task_id":"t1","attempt":1,"gate":"test","passed":false}),
+                json!({"type":"task_completed","run_id":"r1","timestamp_ms":3,"plan_id":"p1","task_id":"t1","outcome":"passed"}),
+                json!({"type":"task_completed","run_id":"r1","timestamp_ms":4,"plan_id":"p1","task_id":"t2","outcome":"passed"}),
+                json!({"type":"run.completed","run_id":"r1","timestamp_ms":5,"outcome":"succeeded","total_cost_usd":0.25,"duration_ms":10}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r1".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "succeeded", "{summary}");
+        assert_eq!(summary["verdict"], "succeeded", "{summary}");
+        assert_eq!(summary["cost_usd"], 0.25, "{summary}");
+        assert_eq!(summary["tasks"]["total"], 2, "{summary}");
+        assert_eq!(summary["tasks"]["passed"], 2, "{summary}");
+        let milestones = summary["milestones"].as_array().unwrap();
+        assert!(milestones.len() <= 5, "{summary}");
+        let kinds: Vec<&str> = milestones
+            .iter()
+            .map(|milestone| milestone["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "started",
+                "first_gate_failure",
+                "first_task_accepted",
+                "completed"
+            ]
+        );
+        assert_eq!(milestones[1]["text"], "gate test failed on task t1");
+        assert_eq!(milestones[3]["text"], "run succeeded");
+
+        write_rows(
+            &index("r2"),
+            &[
+                json!({"type":"run.started","run_id":"r2","timestamp_ms":1}),
+                json!({"type":"task_completed","run_id":"r2","timestamp_ms":2,"plan_id":"p1","task_id":"t1","outcome":"passed"}),
+                json!({"type":"task_completed","run_id":"r2","timestamp_ms":3,"plan_id":"p1","task_id":"t2","outcome":"unverified"}),
+                json!({"type":"run.completed","run_id":"r2","timestamp_ms":4,"outcome":"failed","total_cost_usd":0.05}),
+            ],
+        );
+        let Json(summary) = get_run_summary(State(Arc::clone(&state)), Path("r2".into()))
+            .await
+            .unwrap();
+        assert_eq!(summary["state"], "unverified", "{summary}");
+        assert_eq!(summary["verdict"], "unverified", "{summary}");
+        assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
+        assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
     }
 
     /// bug-54c729: a task that settled as unverified, skipped or already

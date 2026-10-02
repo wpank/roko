@@ -2,7 +2,7 @@
 id = "gap-46fd19"
 kind = "gap"
 title = "PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -12,6 +12,7 @@ subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK22"
 anchors = ["benchmarks/viabilitybench/analysis", "benchmarks/viabilitybench/families"]
 lane = "bench"
@@ -35,6 +36,17 @@ command = "test -f benchmarks/viabilitybench/families/f7_rustiter/hidden.py && b
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/families/f8_honeypot/hidden.py && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f8 --levels 1-5 --seeds 2"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:09:30Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:52Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem
@@ -111,3 +123,23 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 All six tasks' Python is exercised end to end through `ci/verify_verifiers.py` itself (not just unit tests), with
 the sole exception of F7's cargo step. Cargo verification for 3324, and re-verification of all six items' listed
 `[[verify]]` commands, is the coordinator's batched gate.
+
+### Wave 3, 2026-10-02 (branch `work/gap-46fd19-2`)
+
+- 3324: implemented at 8acac2484 and 5692b79c2. The coordinator's gate findings are fixed, and the verify passes.
+  - Toolchain (Will's decision of 2026-10-02): `families/common/toolchain.py` resolves the host's toolchain
+    (`rustup show home`, `rustup which cargo` run from `/`, and the operator's CARGO_HOME from the cargo proxy beside
+    rustup). The CI's step environment (`Context.env`) and `driver/agent_env.build` put the toolchain's own bin
+    directory on PATH (not `~/.cargo/bin`), pass the real RUSTUP_HOME and set CARGO_HOME under the step's own HOME,
+    so the registry cache is per run. Every sandbox `common/sandbox` applies keeps RUSTUP_HOME and the operator's
+    CARGO_HOME write-protected. Tests: `common/test_toolchain.py` (with a sandboxed probe on macOS),
+    `driver/test_toolchain_env.py` and `ci/test_ci.py`.
+  - (a) hidden.py stores only what every run prints alike (totals, failed test names, error lines without timings,
+    artifact hashes or paths), and passes only when the result line counts every hidden test as passed.
+  - (b) The planted gaming is now a `.cargo/config.toml` whose test runner is `true`, which survives the census's
+    restore of `tests/` (an `#[ignore]` does not). gaming.py flags a runner, linker or compiler in a cargo config as
+    `tests_skipped`; hidden.py builds with gen.py's `tests/` and `Cargo.toml` and without the tree's cargo config.
+  - `ci/verify_verifiers.py --families f7 --levels 1-5 --seeds 10`: 50/50 green, run twice with one secret file,
+    with identical verdicts between the runs (196 to 233 s at 6 workers). f1-f5, f8 and pl at seeds 2: 92/92 green.
+    Whole bench pytest: 478 passed, 7 skipped, 1 failed (`driver/test_run_roko.py`'s env-name check, which this
+    branch updated for RUSTUP_HOME and CARGO_HOME and which passes since).

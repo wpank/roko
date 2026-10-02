@@ -2,7 +2,7 @@
 id = "gap-a499aa"
 kind = "gap"
 title = "Audit estimators use the Wilson interval in every cell (Wald misses S05's coverage target)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["bench/audit"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "backlog wave 1, task 7107 report; Will's decision 2026-10-02"
 anchors = ["benchmarks/viabilitybench/audit"]
 lane = "bench"
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'def test_wilson_interval_meets_coverage_in_every_cell' benchmarks/viabilitybench/audit/ && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit -k test_wilson_interval_meets_coverage_in_every_cell"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:09:32Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T16:02:40Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem
@@ -49,3 +61,12 @@ The verify passes and `replay.py` reports every cell MET.
 ## Notes
 
 Decided by Will, 2026-10-02 (coordinator question round). Backlog context: tmp/backlog/2026-10-02-complete-and-wire.
+
+## Progress
+
+- 2026-10-02: implemented at 9f469522c (branch `work/gap-46fd19-2`). The estimators use Wilson at Kish n_eff in every
+  cell (no Wald branch); the 7114 fixture is regenerated. `test_wilson_interval_meets_coverage_in_every_cell` replays
+  the 200-unit window 1,000 times at every ρ, uniform and tilted, and requires coverage ≥ 0.93 and |bias| ≤ 0.01 in
+  all six cells. The verify passes, and `replay.py` on that window reports every cell met (tilted ρ = 0.30: 0.909 NOT
+  MET at the base, 0.989 met now). S05 §4.5 is amended in place (untracked). Two backlog specs still describe the
+  Wald/Wilson switch and should follow the fixture: 7114 (`estimate.rs`) and 7131.

@@ -499,6 +499,10 @@ pub(crate) async fn cmd_run(
         max_retries,
         quiet: cli.quiet || cli.json,
         state_hub: serve_hub,
+        run_id: None,
+        cancel: None,
+        domain: None,
+        max_usd: None,
     })
     .await;
 

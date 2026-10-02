@@ -1522,9 +1522,13 @@ fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Signal> {
                 "assigned_to": assigned_to,
             }),
         ),
-        ServerEvent::RunCompleted { run_id, success } => (
+        ServerEvent::RunCompleted {
+            run_id,
+            success,
+            verdict,
+        } => (
             "run_completed",
-            serde_json::json!({ "run_id": run_id, "success": success }),
+            serde_json::json!({ "run_id": run_id, "success": success, "verdict": verdict }),
         ),
         ServerEvent::DeploymentReady { id, url } => (
             "deployment_ready",

@@ -1487,6 +1487,288 @@ async fn run_failing_before_the_plan_starts_completes_it_once() {
     assert_eq!(plan_completions_of_single_plan_run(true).await, vec![false]);
 }
 
+/// A plan runtime whose runs end as a test scripts them: a run records the
+/// id it runs under, waits for a permit from `gate` when there is one,
+/// publishes `task_outcome`, when set, as the outcome of task `T1` of its
+/// plan into the server's hub, then returns `success`.
+struct ScriptedPlanRuntime {
+    hub: roko_runtime::SharedStateHub,
+    success: bool,
+    task_outcome: Option<&'static str>,
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+    run_ids: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for ScriptedPlanRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("ScriptedPlanRuntime only runs plans")
+    }
+
+    async fn load_plan_summary(
+        &self,
+        _workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        Ok(Some(crate::plan_types::PlanSummaryDto {
+            id: plan_id.to_string(),
+            title: "Scripted plan".to_string(),
+            task_count: 1,
+            tasks_done: 0,
+            tasks_failed: 0,
+            completed: false,
+            status: "ready".to_string(),
+            superseded_by: None,
+            old_format: false,
+            last_error: None,
+            group: None,
+            estimated_minutes: None,
+        }))
+    }
+
+    async fn run_plan_with_options(
+        &self,
+        _workdir: &std::path::Path,
+        plan_target: &std::path::Path,
+        options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_ids
+            .lock()
+            .expect("lock run ids")
+            .push(options.run_id.unwrap_or_default());
+        if let Some(gate) = &self.gate {
+            gate.acquire().await.expect("the gate stays open").forget();
+        }
+        if let Some(outcome) = self.task_outcome {
+            let plan_id = plan_target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let hub = self.hub.sender();
+            hub.publish(roko_core::DashboardEvent::TaskCompleted {
+                plan_id,
+                task_id: "T1".to_string(),
+                outcome: outcome.to_string(),
+            });
+        }
+        Ok(PlanExecutionResult {
+            success: self.success,
+            output_text: None,
+            gate_results: Vec::new(),
+        })
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// A [`ScriptedPlanRuntime`] whose runs return `success`, after publishing
+/// `task_outcome`, and wait for a permit from `gate` when there is one.
+fn scripted_runtime(
+    success: bool,
+    task_outcome: Option<&'static str>,
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+) -> Arc<ScriptedPlanRuntime> {
+    Arc::new(ScriptedPlanRuntime {
+        hub: roko_runtime::SharedStateHub::new_in_process(),
+        success,
+        task_outcome,
+        gate,
+        run_ids: Arc::default(),
+    })
+}
+
+/// Server state over `runtime`, sharing its hub.
+fn scripted_state(runtime: &Arc<ScriptedPlanRuntime>) -> (tempfile::TempDir, Arc<AppState>) {
+    let dir = tempdir().expect("tempdir");
+    let deploy_backend =
+        Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+    let state = Arc::new(
+        AppState::new_with_state_hub(
+            dir.path().to_path_buf(),
+            runtime.clone(),
+            roko_core::config::schema::RokoConfig::default(),
+            deploy_backend,
+            runtime.hub.clone(),
+        )
+        .expect("AppState::new_with_state_hub"),
+    );
+    (dir, state)
+}
+
+/// What `GET /api/plans/{id}/status` reports once the run `id` names has
+/// ended, waiting at most five seconds for it to end.
+async fn ended_plan_status(state: &Arc<AppState>, id: &str) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let Json(status) = plan_status(State(Arc::clone(state)), Path(id.to_string()))
+                .await
+                .expect("the run's status");
+            if status["finished"] == true {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the run ends")
+}
+
+/// Wait, at most five seconds, until `done` holds.
+async fn wait_until(mut done: impl FnMut() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !done() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the condition holds in time");
+}
+
+/// Run plan `hello` on a [`ScriptedPlanRuntime`], wait for the run to end,
+/// and return what `GET /api/plans/hello/status` then reports, after checking
+/// that it names the run the start returned.
+async fn status_after_plan_run(success: bool, task_outcome: Option<&'static str>) -> Value {
+    let runtime = scripted_runtime(success, task_outcome, None);
+    let (_dir, state) = scripted_state(&runtime);
+
+    let started = start_plan_run(&state, "hello".into(), false)
+        .await
+        .expect("start the run");
+    let status = ended_plan_status(&state, "hello").await;
+    assert_eq!(status["run_id"], started.run_id.as_str(), "{status}");
+    status
+}
+
+/// G43: a plan run's handle keeps how the run ended. After a run that fails,
+/// one that succeeds and one whose task ended unverified, `GET
+/// /api/plans/{id}/status` still answers instead of 404ing, with `finished:
+/// true`, when the run ended, and `failed` (with its error), `succeeded` or
+/// `unverified`.
+#[tokio::test]
+async fn plan_status_reports_terminal_state() {
+    use roko_core::dashboard_snapshot::TASK_OUTCOME_UNVERIFIED;
+
+    for (success, task_outcome, expected) in [
+        (false, None, "failed"),
+        (true, None, "succeeded"),
+        (false, Some(TASK_OUTCOME_UNVERIFIED), "unverified"),
+    ] {
+        let status = status_after_plan_run(success, task_outcome).await;
+        assert_eq!(status["status"], expected, "{status}");
+        assert_eq!(status["finished"], true, "{status}");
+        assert!(status["finished_at"].is_string(), "{status}");
+        assert_eq!(
+            status["error"].is_string(),
+            expected == "failed",
+            "{status}"
+        );
+    }
+}
+
+/// Decision 9105: while a plan run is live, another is queued instead of
+/// refused with 409. It answers with `queued` and its place, its status says
+/// `queued`, and it starts under the id it was given once the live run ends.
+/// Cancelling a queued run takes it out of the queue: it never runs and ends
+/// `cancelled`.
+#[tokio::test]
+async fn second_plan_run_is_queued_not_refused() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let runtime = scripted_runtime(true, None, Some(Arc::clone(&gate)));
+    let run_ids = Arc::clone(&runtime.run_ids);
+    let (_dir, state) = scripted_state(&runtime);
+    let ran = || run_ids.lock().expect("lock run ids").clone();
+
+    let first = start_plan_run(&state, "first".into(), false)
+        .await
+        .expect("start the first run");
+    assert_eq!(first.queued, None);
+    wait_until(|| ran().len() == 1).await;
+
+    let second = start_plan_run(&state, "second".into(), false)
+        .await
+        .expect("queue the second run");
+    assert_eq!(second.queued, Some(1));
+    let third = start_plan_run(&state, "third".into(), false)
+        .await
+        .expect("queue the third run");
+    assert_eq!(third.queued, Some(2));
+    let Json(status) = plan_status(State(Arc::clone(&state)), Path(second.run_id.clone()))
+        .await
+        .expect("the queued run's status");
+    assert_eq!(status["status"], "queued", "{status}");
+    assert_eq!(status["position"], 1, "{status}");
+    assert_eq!(status["finished"], false, "{status}");
+
+    let Json(cancelled) = cancel_plan(State(Arc::clone(&state)), Path(third.run_id.clone()))
+        .await
+        .expect("cancel the queued run");
+    assert_eq!(cancelled["cancelled"], true, "{cancelled}");
+    let status = ended_plan_status(&state, &third.run_id).await;
+    assert_eq!(status["status"], "cancelled", "{status}");
+
+    // The first run ends, and the second starts under the id it was given.
+    gate.add_permits(1);
+    wait_until(|| ran().len() == 2).await;
+    assert_eq!(ran(), [first.run_id.clone(), second.run_id.clone()]);
+    let Json(status) = plan_status(State(Arc::clone(&state)), Path(second.run_id.clone()))
+        .await
+        .expect("the second run's status");
+    assert_eq!(status["status"], "running", "{status}");
+
+    // The second ends too, and the cancelled third never runs.
+    gate.add_permits(1);
+    let status = ended_plan_status(&state, &second.run_id).await;
+    assert_eq!(status["status"], "succeeded", "{status}");
+    assert_eq!(ran(), [first.run_id, second.run_id]);
+}
+
+/// Decision 9105: the queue holds [`PLAN_RUN_QUEUE_CAPACITY`] runs behind
+/// the live one, and refuses one more with 409.
+#[tokio::test]
+async fn plan_run_queue_refuses_runs_past_its_capacity() {
+    use crate::state::PLAN_RUN_QUEUE_CAPACITY;
+
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let runtime = scripted_runtime(true, None, Some(gate));
+    let (_dir, state) = scripted_state(&runtime);
+
+    let live = start_plan_run(&state, "live".into(), false)
+        .await
+        .expect("start the live run");
+    assert_eq!(live.queued, None);
+    for place in 1..=PLAN_RUN_QUEUE_CAPACITY {
+        let queued = start_plan_run(&state, format!("queued-{place}"), false)
+            .await
+            .expect("queue a run");
+        assert_eq!(queued.queued, Some(place));
+    }
+    let err = match start_plan_run(&state, "one-too-many".into(), false).await {
+        Ok(_) => panic!("a full queue must refuse the run"),
+        Err(err) => err,
+    };
+    assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 async fn list_plans_returns_internal_error_for_corrupt_plan_file() {
     let (dir, state) = test_state();
@@ -1600,7 +1882,7 @@ async fn rest_pause_holds_the_run_without_cancelling() {
         id: "run-1".to_string(),
         plan_dir: state.workdir.join("plans").join("held-plan"),
         members: vec!["held-plan".to_string()],
-        status: crate::state::OperationStatus::Running,
+        status: crate::state::PlanRunStatus::running(),
         handle,
         cancel: cancel.clone(),
     };
@@ -1896,7 +2178,7 @@ async fn execute_plans_empty_body_runs_all() {
 
 /// A second call while a run is active must return 409.
 #[tokio::test]
-async fn execute_plans_conflicts_with_active_run() {
+async fn execute_plans_queues_behind_active_run() {
     let runtime = Arc::new(RecordingRuntime {
         calls: Arc::new(Mutex::new(Vec::new())),
         notify: Arc::new(Notify::new()),
@@ -1915,17 +2197,19 @@ async fn execute_plans_conflicts_with_active_run() {
         .await
         .expect("first execute_plans should succeed");
 
-    // Second call while the first run is registered — should 409.
-    let err = match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await {
-        Ok(_) => panic!("second execute_plans must error"),
-        Err(e) => e,
-    };
-
-    assert_eq!(
-        err.status,
-        axum::http::StatusCode::CONFLICT,
-        "concurrent execute_plans must return 409"
-    );
+    // Second call while the first run is registered — queued behind it
+    // (decision 9105), not refused with 409.
+    let response = execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new())
+        .await
+        .expect("second execute_plans should be queued")
+        .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let payload: Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(payload["queued"], true, "{payload}");
+    assert_eq!(payload["position"], 1, "{payload}");
 }
 
 #[tokio::test]
@@ -2214,7 +2498,7 @@ async fn put_plan_source_returns_409_when_run_is_active() {
         id: "run-1".to_string(),
         plan_dir: state.workdir.join("plans").join("active-plan"),
         members: vec!["active-plan".to_string()],
-        status: crate::state::OperationStatus::Running,
+        status: crate::state::PlanRunStatus::running(),
         handle,
         cancel,
     };

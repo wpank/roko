@@ -1773,7 +1773,9 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             plan_id: run_plan_id(run_id),
             tasks_total: 0,
         }),
-        ServerEvent::RunCompleted { run_id, success } => Some(DashboardEvent::PlanCompleted {
+        ServerEvent::RunCompleted {
+            run_id, success, ..
+        } => Some(DashboardEvent::PlanCompleted {
             plan_id: run_plan_id(run_id),
             success: *success,
         }),
@@ -3510,6 +3512,7 @@ mod plan_set_event_mapping_tests {
         let completed = ServerEvent::RunCompleted {
             run_id: run_id.into(),
             success: true,
+            verdict: Some(crate::state::RunState::Succeeded),
         };
         assert_eq!(run_plan_id(run_id), "run-0123abcd");
         assert_eq!(

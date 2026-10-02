@@ -489,6 +489,10 @@ async fn run_one_task(
         max_retries: args.max_retries,
         quiet: cli.quiet || cli.json,
         state_hub: None,
+        run_id: None,
+        cancel: None,
+        domain: None,
+        max_usd: None,
     })
     .await;
 

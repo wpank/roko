@@ -372,7 +372,7 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     env = calls[2]["env"]
     extra = set(env) - set(agent_env.FIXED) - set(agent_env.PASSTHROUGH) - {"HOME", "TMPDIR", "PATH", "USER",
                                                                            "LOGNAME"}
-    assert extra <= {"ROKO_CONFIG", "CEREBRAS_API_KEY", "__CF_USER_TEXT_ENCODING"}
+    assert extra <= {"ROKO_CONFIG", "CEREBRAS_API_KEY", "__CF_USER_TEXT_ENCODING", *agent_env.TOOLCHAIN_NAMES}
     assert env["CEREBRAS_API_KEY"] == run_roko.OFFLINE_KEY and env["ROKO_CONFIG"].endswith("/roko.toml")
     assert env["ROKO_CONFIG"] != "/elsewhere/roko.toml" and env["HOME"].startswith(str(places["work"]))
 

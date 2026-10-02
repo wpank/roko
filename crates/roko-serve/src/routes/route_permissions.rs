@@ -188,6 +188,12 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/relay",
         permission: Permission::AgentSpawn,
     },
+    // Every MCP call is a POST; its tools only read so far (9114), and
+    // `tools/call` checks each tool's own scope.
+    RoutePermission {
+        prefix: "/mcp",
+        permission: Permission::ViewDashboard,
+    },
     RoutePermission {
         prefix: "/ws/terminal",
         permission: Permission::AgentSpawn,

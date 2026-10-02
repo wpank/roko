@@ -2,7 +2,7 @@
 id = "gap-5e9292"
 kind = "gap"
 title = "PK73 Domains and assistant: The runner's FeedRegistry is built empty and never read (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -12,6 +12,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK73"
 anchors = ["crates/roko-cli/src/run.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-core/src/domain_profile.rs", "crates/roko-core/src/lib.rs", "crates/roko-serve/Cargo.toml", "crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/plans/run_control.rs", "crates/roko-serve/src/routes/plans/tests.rs", "crates/roko-serve/src/routes/route_permissions.rs", "crates/roko-serve/src/routes/run.rs", "crates/roko-serve/src/routes/runs.rs", "crates/roko-serve/src/runtime.rs", "crates/roko-serve/src/state.rs", "docs/v3/26-HTTP-API.md", "docs/v3/depth/05-agent/16-domain-profiles.md", "docs/v3/depth/05-agent/domain-profiles.md"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn api_run_reports_the_gated_runs_id_and_verdict' crates/r
 
 [[verify]]
 command = "grep -rqw 'fn mcp_tools_list_returns_annotated_tools' crates/roko-serve/ && cargo test -p roko-serve mcp_tools_list_returns_annotated_tools"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:08:28Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:52Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem
@@ -86,3 +98,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Existing work items this package covers or touches: find-8872ad. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-5e9292`; cargo verification deferred to the batch gate (static greps of every verify pass).
+
+- 9101: implemented at c6a6e7134
+- 9102: implemented at d59f3c8f4 (option a: the enum, `TypedContext` and both `lib.rs` lines deleted; both docs pages corrected)
+- 9103: implemented at 01755a555 (adds `RunState`, the run-state words every run route shares)
+- 9104: implemented at 3d7441310 (ended plan handles are kept an hour; active-plan counters count live runs only)
+- 9111: implemented at 54c31ff46 (decision 9105 option a; queue of 8)
+- 9112: implemented at f4ade3ffc
+- 9113: implemented at f0c15452d
+- 9114: implemented at 64bf22a36, test fix at 3c2a7e67f

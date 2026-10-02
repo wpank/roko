@@ -393,7 +393,7 @@ impl ImmuneScreenedAgent {
     ///
     /// Returns `(AgentResult, stream_limit_exceeded)`.
     async fn drive_streaming_inner(&self, input: &Signal, ctx: &Context) -> (AgentResult, bool) {
-        let (buffer_tx, mut buffer_rx) = mpsc::channel(1);
+        let (buffer_tx, mut buffer_rx) = mpsc::channel::<StreamEvent>(1);
         let live_sink = self
             .live_output
             .as_ref()

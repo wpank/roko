@@ -869,7 +869,6 @@ let engine = GraphEngine::new(graph, registry)
     .with_root_inputs(inputs)
     .with_recorder(recorder)        // Activity recording
     .with_replayer(replayer)        // Activity replay on resume
-    .with_merge_queue(queue)        // Merge enqueue on success
     .with_telemetry(telemetry)      // Passive lifecycle sink
     .with_event_sink(sink)          // Rich graph execution events
     .with_allow_test_stubs(false);  // Reject stub descriptors in production

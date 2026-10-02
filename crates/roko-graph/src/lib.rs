@@ -70,9 +70,8 @@ pub mod workspace;
 pub use cell::{Cell, CellContext, CellResources, CellVersion};
 pub use engine::{
     DispatchStop, FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput,
-    GraphSnapshot, GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus,
-    NodeTiming, SerializableNodeStatus, SerializableSignal, ValidatedGraph, default_registry,
-    reconcile_running_status,
+    GraphSnapshot, GraphSnapshotV2, NodeResult, NodeStatus, NodeTiming, SerializableNodeStatus,
+    SerializableSignal, ValidatedGraph, default_registry, reconcile_running_status,
 };
 pub use registry::{CellDescriptor, CellFactory, CellRegistry};
 pub use types::{

@@ -1,7 +1,8 @@
 //! SSE endpoint for real-time dashboard event streaming.
 //!
 //! Clients connect at `/api/events` and receive `DashboardEvent` payloads as
-//! SSE `data:` frames. Each event carries a monotonic `id:` for reconnection.
+//! SSE `data:` frames, each with the time the hub published it as
+//! `ts_millis`. Each event carries a monotonic `id:` for reconnection.
 //! An idle stream sends an `event: keepalive` frame every 8 s.
 
 use std::convert::Infallible;
@@ -175,8 +176,15 @@ fn keepalive_event() -> Event {
     Event::default().event("keepalive").data("{}")
 }
 
+/// One event's data frame: the event, plus the time the hub published it as
+/// `ts_millis` (gap-8a1fb3), so a client places replayed events at their own
+/// time rather than when they arrive.
 fn dashboard_event(envelope: Envelope<roko_core::DashboardEvent>, scrubber: &LogScrubber) -> Event {
-    let data = scrubber.scrub(&serde_json::to_string(&envelope.payload).unwrap_or_default());
+    let mut frame = serde_json::to_value(&envelope.payload).unwrap_or_default();
+    if let Some(fields) = frame.as_object_mut() {
+        fields.insert("ts_millis".into(), envelope.ts_millis.into());
+    }
+    let data = scrubber.scrub(&frame.to_string());
     Event::default().data(data).id(envelope.seq.to_string())
 }
 
@@ -304,6 +312,50 @@ mod tests {
             .await
             .expect("the stream ends promptly");
         assert!(end.is_none(), "no frame after shutdown: {end:?}");
+    }
+
+    /// gap-8a1fb3: a data frame carries the time the hub published its event,
+    /// so a client folds a replayed event at its own time. A reader that does
+    /// not know the field still reads the event.
+    #[tokio::test]
+    async fn data_frames_carry_the_time_the_hub_published_their_event() {
+        let (_dir, state) = test_state();
+        let seq = state
+            .state_hub
+            .publish(roko_core::DashboardEvent::PlanStarted {
+                plan_id: "plan-a".into(),
+                tasks_total: 1,
+            });
+        let replay = state.state_hub.subscribe_events_from(seq).replay;
+        let published = replay.first().expect("the published event").ts_millis;
+        assert!(published > 0);
+
+        let mut body = open_event_stream(state).await;
+        let text = loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("a frame in time")
+                .expect("the stream stays open")
+                .expect("a frame")
+                .into_data()
+                .expect("a data frame");
+            let text = String::from_utf8(frame.to_vec()).expect("a UTF-8 frame");
+            if text.contains("plan_started") {
+                break text;
+            }
+        };
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("a data line");
+        let frame: serde_json::Value = serde_json::from_str(data).expect("JSON data");
+        assert_eq!(frame["type"], "plan_started");
+        assert_eq!(frame["ts_millis"], published);
+        let event: roko_core::DashboardEvent = serde_json::from_str(data).expect("an event");
+        assert!(matches!(
+            event,
+            roko_core::DashboardEvent::PlanStarted { .. }
+        ));
     }
 
     #[test]

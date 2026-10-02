@@ -138,6 +138,12 @@ export type WireDashboardEvent =
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };
 
+/**
+ * A dashboard event as `/api/events` sends it: the server stamps each data frame with the time its
+ * hub published the event (gap-8a1fb3). Older servers send no stamp.
+ */
+export type WireDashboardFrame = WireDashboardEvent & { ts_millis?: number };
+
 // ---------------------------------------------------------------------------
 // Dashboard snapshot — fields the portal reads
 // ---------------------------------------------------------------------------

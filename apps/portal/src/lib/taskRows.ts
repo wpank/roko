@@ -56,7 +56,8 @@ export interface TaskRowModel {
  * passed, passed_with_preexisting_failures, already_satisfied, accepted_with_failures,
  * unverified, skipped, marked_done.
  *
- * Note: 'cancelled' is NOT included — a cancelled dep still blocks.
+ * Note: 'cancelled' and 'interrupted' are NOT included — a dep that did not
+ * finish still blocks.
  */
 const FINISHED_STATUSES: ReadonlySet<TaskRowModel['status']> = new Set([
   'passed',
@@ -227,8 +228,8 @@ export function blockedLabel(by: string | null | undefined, reason: string | nul
  *
  * Priority:
  *   1. `selected` when it names an existing row
- *   2. First failed row — a failure takes the stream even while other tasks
- *      run (design §11); only a selection keeps it elsewhere
+ *   2. First failed or interrupted row — a failure takes the stream even
+ *      while other tasks run (design §11); only a selection keeps it elsewhere
  *   3. First active row
  *   4. Last finished row (passed / accepted_with_failures / skipped)
  *   5. null
@@ -244,8 +245,8 @@ export function focusTaskId(
     return selected;
   }
 
-  // 2. First failed row.
-  const failed = rows.find((r) => r.status === 'failed');
+  // 2. First failed or interrupted row.
+  const failed = rows.find((r) => r.status === 'failed' || r.status === 'interrupted');
   if (failed) return failed.id;
 
   // 3. First active row.

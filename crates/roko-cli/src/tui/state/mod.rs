@@ -596,8 +596,7 @@ impl AgentOutputHistory {
             let new_oldest = evicted_record.seq + 1;
             self.oldest_seq.insert(agent_id.to_string(), new_oldest);
             self.evicted += 1;
-            // Only text and reasoning records are tracked as unscreened, and
-            // they are never evicted as part of a tool pair below.
+            // An evicted record no longer waits to be settled.
             if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
                 unscreened.remove(&evicted_record.seq);
             }
@@ -614,6 +613,9 @@ impl AgentOutputHistory {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), paired_result.seq + 1);
                             self.evicted += 1;
+                            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                                unscreened.remove(&paired_result.seq);
+                            }
                         }
                     }
                 }
@@ -635,6 +637,9 @@ impl AgentOutputHistory {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), orphaned_call.seq + 1);
                             self.evicted += 1;
+                            if let Some(unscreened) = self.live_unscreened_seqs.get_mut(agent_id) {
+                                unscreened.remove(&orphaned_call.seq);
+                            }
                         }
                     }
                 }
@@ -882,7 +887,7 @@ fn ring_overlap(previous: &[String], ring: &[String]) -> usize {
 
 /// Whether `line` is a record of an attempt's screened transcript, which is
 /// published once the attempt's turn ends: a stream record that is not live
-/// (bug-cc61a3). A tool result is never the first one, and carries no flag.
+/// (bug-cc61a3). A tool result is never the first one.
 fn is_screened_transcript_line(line: &str) -> bool {
     use super::widgets::stream_output::{StreamRecord, parse_stream_line};
 
@@ -898,10 +903,12 @@ fn is_screened_transcript_line(line: &str) -> bool {
 /// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
 ///
 /// Returns `(kind, tool_id, tool_name, is_live_unscreened)`.  The fourth
-/// element is `true` only when the record is a live-preview, non-tool record
-/// that has not yet been validated by the safety screener (`screened: false`).
-/// Callers use this to track which records should be replaced when the
-/// settled, screened transcript arrives.
+/// element is `true` only when the record is a live preview that the safety
+/// screener has not validated (`screened: false`): text, reasoning, or a tool
+/// call or result with its raw arguments or output (bug-9affca). Callers use
+/// this to track which records should be replaced when the settled, screened
+/// transcript arrives. A live tool step (`tool_step`: its name and scrubbed
+/// target) is screened, and stays.
 fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>, bool) {
     use super::widgets::stream_output::{StreamRecord, parse_stream_line};
 
@@ -915,20 +922,28 @@ fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option
             (OutputRecordKind::Reasoning, None, None, unscreened)
         }
         StreamRecord::ToolStart {
-            tool_id, tool_name, ..
-        } => {
-            // Tool steps are never treated as unscreened for drop purposes —
-            // they are kept even when the screened transcript replaces text.
-            (
-                OutputRecordKind::ToolCall,
-                Some(tool_id),
-                Some(tool_name),
-                false,
-            )
-        }
-        StreamRecord::ToolResult { tool_id, .. } => {
-            (OutputRecordKind::ToolResult, Some(tool_id), None, false)
-        }
+            tool_id,
+            tool_name,
+            live,
+            screened,
+            ..
+        } => (
+            OutputRecordKind::ToolCall,
+            Some(tool_id),
+            Some(tool_name),
+            live && !screened,
+        ),
+        StreamRecord::ToolResult {
+            tool_id,
+            live,
+            screened,
+            ..
+        } => (
+            OutputRecordKind::ToolResult,
+            Some(tool_id),
+            None,
+            live && !screened,
+        ),
         StreamRecord::Plain { ref content } => {
             // Legacy heuristic classification for untyped records.
             let trimmed = content.trim();

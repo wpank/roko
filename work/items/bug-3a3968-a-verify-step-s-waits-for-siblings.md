@@ -3,13 +3,14 @@ id = "bug-3a3968"
 kind = "bug"
 title = "A verify step's waits for siblings and for the compile lock don't watch for a stop"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
+last_verified = 2026-10-02
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-c33c6e"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -35,3 +36,11 @@ Race both waits against the stop signal, and settle a stopped wait as cancelled.
 ## Notes
 
 - Reported on 2026-10-02 by wk-scheduler, working on bug-c33c6e, during the overnight close-out round.
+- 2026-10-02 (wk-scheduler): implemented on work/bug-28b604; cargo verification deferred to the batch check.
+  The dispatcher's stop flag is now a `CancellationToken`, which `begin_stop` cancels. `unless_stopped` races a wait
+  against it, and the verify loop runs both of a step's waits through it: the sibling wait in `begin_step` and the
+  compile-lock wait, in the first run and in the auto-fix re-run (whose `verify_step_locked` now takes the token).
+  The re-run of a step after its siblings settle does the same for its compile-lock wait. A stopped wait ends the
+  verify with `RokoError::Cancelled`, which settles the attempt as cancelled (bug-82cbef). Both waits drop cleanly:
+  the reading guard is made before the sibling wait, and the semaphore and slot waits hold nothing until they win.
+  Test: `verify_waits_end_on_a_stop`, a sibling case and a compile-lock case.

@@ -435,16 +435,18 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 1.0,
         },
     ),
-    // Perplexity: https://docs.perplexity.ai/getting-started/pricing, checked
-    // 2026-10-01. The Sonar models also bill per request; that fee lives on
-    // `ModelProfile::cost_per_request`. None has a cache-write price, and
-    // only Sonar has a cache price.
+    // Perplexity: https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02. The Sonar models also bill per request; that fee
+    // lives on `ModelProfile::cost_per_request`. None publishes a cache
+    // price, so a cache read or write costs the input price. The $0.0625/M
+    // cached rate on Perplexity's site belongs to the Agent API's
+    // `perplexity/sonar`, another model ($0.25/$2.50) (bug-9d77f1).
     (
         "sonar",
         ModelPricing {
             input_per_m: 1.00,
             output_per_m: 1.00,
-            cache_read_per_m: 0.0625,
+            cache_read_per_m: 1.00,
             cache_write_per_m: 1.00,
             tokenizer_ratio: 1.0,
         },
@@ -852,6 +854,18 @@ mod tests {
         assert_eq!(builtin_pricing("sonar-deep-research"), None);
         assert_eq!(model_meta("sonar-deep-research").pricing, None);
         assert!(builtin_pricing("sonar").is_some());
+    }
+
+    /// bug-9d77f1: Perplexity publishes no cache price for the Sonar API
+    /// models, so a cached token costs the input price. ($0.0625/M belongs to
+    /// the Agent API's `perplexity/sonar`, another model.)
+    #[test]
+    fn sonar_has_no_cache_price() {
+        for slug in ["sonar", "sonar-pro", "sonar-reasoning-pro"] {
+            let pricing = builtin_pricing(slug).expect("a Sonar row");
+            assert_eq!(pricing.cache_read_per_m, pricing.input_per_m, "{slug}");
+            assert_eq!(pricing.cache_write_per_m, pricing.input_per_m, "{slug}");
+        }
     }
 
     #[test]

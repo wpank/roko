@@ -97,7 +97,8 @@ def test_pilot_b_dry_run_lists_every_block_with_its_line_and_estimate(tmp_path, 
         60, 0.0, False)
     assert blocks["fd-claude"]["off_hours"] and blocks["provider-fault"]["runs"] == 5
     assert blocks["provider-fault"]["disturbances"] == ["provider_fault"]
-    assert "cheap_direct_msa" in blocks["mini-swe"]["unavailable"]  # 3317's arm, not there yet: a note, no refusal
+    assert "unavailable" not in blocks["mini-swe"]  # 3317 landed its arm: no more "not there yet" note
+    assert blocks["mini-swe"]["arm"] == "cheap_direct_msa" and blocks["mini-swe"]["runs"] == 20
     assert shown["ok"] and shown["runs"] == 125
     assert [unit["unit"] for unit in shown["units"]] == [unit.key for unit in campaign.units(
         campaign.load(PILOT_B), include=["provider-fault"])]

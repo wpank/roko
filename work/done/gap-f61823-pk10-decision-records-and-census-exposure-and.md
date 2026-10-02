@@ -2,7 +2,7 @@
 id = "gap-f61823"
 kind = "gap"
 title = "PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 10
 size = "L"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2724386ea"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK10"
 anchors = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/graph_execution/run_manifest.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs", "crates/roko-cli/src/graph_task_dispatch/reflex_credit.rs", "crates/roko-cli/src/graph_task_dispatch/wiring.rs", "crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-core/src/config/learning.rs", "crates/roko-learn/src/telemetry/mod.rs", "crates/roko-learn/src/telemetry/records.rs", "crates/roko-learn/src/telemetry/report.rs", "crates/roko-learn/src/telemetry/writer.rs", "crates/roko-neuro/src/knowledge_store/crud.rs"]
 lane = "rust-hot"
@@ -62,6 +63,17 @@ command = "grep -rqw 'fn frozen_run_registers_no_learning_sinks' crates/roko-cli
 
 [[verify]]
 command = "grep -rqw 'fn frozen_attempt_writes_no_affect_reflex_or_access_state' crates/roko-cli/src/ && cargo test -p roko-cli --lib frozen_attempt_writes_no_affect_reflex_or_access_state"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-02T22:17:18Z"
+commit = "2724386ea"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T19:13:05Z"
+forced = false
+evidence = "Gate 4c (merged into main as 2724386ea, tree identical to work/backlog-batch-4c apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 8,717 passed over 7 crates, roko bin tests + golden-path canaries 436/436, ViabilityBench suite 528 passed; every [[verify]] passes (lib/bin/integration tests named in each verify passed; static parts rc=0)."
 +++
 
 ## Problem

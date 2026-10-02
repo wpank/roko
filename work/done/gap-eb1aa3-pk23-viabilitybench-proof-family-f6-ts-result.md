@@ -2,7 +2,7 @@
 id = "gap-eb1aa3"
 kind = "gap"
 title = "PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 23
 size = "L"
 subsystem = ["benchmarks/viabilitybench/families/f6_tsresult"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2724386ea"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK23"
 anchors = [".github/workflows/viabilitybench-ci.yml"]
 lane = "bench"
@@ -26,6 +27,17 @@ command = "python3 -c \"import re,sys; t=open('.github/workflows/viabilitybench-
 
 [[verify]]
 command = "grep -qw 'def test_p1_streams_are_reproducible_from_their_seeds' benchmarks/viabilitybench/streams/test_streams.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/streams/test_streams.py -k test_p1_streams_are_reproducible_from_their_seeds -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-02T22:17:44Z"
+commit = "2724386ea"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T19:13:07Z"
+forced = false
+evidence = "Gate 4c (merged into main as 2724386ea, tree identical to work/backlog-batch-4c apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 8,717 passed over 7 crates, roko bin tests + golden-path canaries 436/436, ViabilityBench suite 528 passed; every [[verify]] passes (lib/bin/integration tests named in each verify passed; static parts rc=0)."
 +++
 
 ## Problem

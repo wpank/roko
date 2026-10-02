@@ -141,3 +141,4 @@ Implemented on `work/gap-a0043b`; cargo verification deferred to the batch gate.
 - 2126: implemented at 1ef44eb93 (`demo_seed.rs` still writes `memory/task-metrics.jsonl`, which nothing reads now)
 - 2127: implemented at 6225096d6
 - 2128: implemented at fa2e992bb (roko-runtime's in-memory `RunLedger` module is kept: gap-5d3b82 anchors on it)
+- 2026-10-03 (coordinator, gate 4c): all twelve tasks are merged in 2724386ea except task 2121's two CLAUDE.md rows. They were left out because the main checkout has an uncommitted CLAUDE.md edit (the Goal line) that isn't the batch's. The rows are saved as a patch in the coordinator's scratchpad (`pk08-claude-md.patch`) and land once that edit is committed; this item closes then.

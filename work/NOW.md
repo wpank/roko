@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 15 anchor gone · 67 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 16 anchor gone · 80 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P1** [gap-e00238](items/gap-e00238-pk02-failure-paths-immune-denials-leave-provider.md) PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-4b890c](items/gap-4b890c-pk06-operator-control-and-guards-approval-help.md) PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more) · size L · verified 2026-10-02
+- **P2** [gap-a0043b](items/gap-a0043b-pk08-attempt-ledger-roko-toml-s-cheap.md) PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more) · size L · verified 2026-10-02
 
-_10 more open · `goal = "truth"`_
+_9 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -40,19 +40,19 @@ _2 more open · on hold: gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · 
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 - **P2** [gap-daeaa9](items/gap-daeaa9-pk25-viabilitybench-proof-spec-variants-for-the.md) PK25 ViabilityBench proof: Spec variants for the 48 H3 instances: precise, vague by D-v1, and the recoverability… (+3 more) · size L · verified 2026-10-02
 - **P1** [gap-5ddf9b](items/gap-5ddf9b-pk27-viabilitybench-proof-confidence-sequences-mcnemar-s.md) PK27 ViabilityBench proof: Confidence sequences, McNemar's test and CUPED in analysis/ (+5 more) · size L · verified 2026-10-02
+- **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
 
-_12 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_11 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
 - **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
 - **P2** [gap-943046](items/gap-943046-pk35-loops-re-closed-section-bandit-per.md) PK35 Loops re-closed: Section bandit: per-section posteriors and exclusion probabilities (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
 
-_30 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_29 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

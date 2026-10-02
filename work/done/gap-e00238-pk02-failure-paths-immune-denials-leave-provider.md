@@ -2,7 +2,7 @@
 id = "gap-e00238"
 kind = "gap"
 title = "PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -10,8 +10,9 @@ rank = 2
 size = "L"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2724386ea"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK02"
 anchors = ["crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-core/src/error/mod.rs", "crates/roko-graph/src/cells/task_executor.rs", "crates/roko-learn/src/model_call_feedback.rs", "crates/roko-learn/src/provider_health.rs"]
 lane = "rust-hot"
@@ -44,6 +45,17 @@ command = "grep -rqw 'fn preflight_skips_rung_that_returns_blank_answer' crates/
 
 [[verify]]
 command = "grep -rqw 'fn retry_after_tamper_rejection_starts_from_plan_tip' crates/roko-cli/ && cargo test -p roko-cli retry_after_tamper_rejection_starts_from_plan_tip"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-02T22:17:20Z"
+commit = "2724386ea"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T19:13:13Z"
+forced = false
+evidence = "Gate 4c (merged into main as 2724386ea, tree identical to work/backlog-batch-4c apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 8,717 passed over 7 crates, roko bin tests + golden-path canaries 436/436, ViabilityBench suite 528 passed; every [[verify]] passes (lib/bin/integration tests named in each verify passed; static parts rc=0)."
 +++
 
 ## Problem

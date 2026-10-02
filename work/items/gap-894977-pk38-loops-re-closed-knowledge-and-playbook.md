@@ -1,0 +1,81 @@
++++
+id = "gap-894977"
+kind = "gap"
+title = "PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more)"
+status = "open"
+triage = "verified"
+severity = "p2"
+goal = "cybernetic"
+rank = 38
+size = "L"
+subsystem = ["roko-cli/learning"]
+created = 2026-10-02
+updated = 2026-10-02
+last_verified = 2026-10-02
+source = "tmp/backlog/2026-10-02-complete-and-wire PK38"
+anchors = ["crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/graph_task_dispatch/wiring.rs", "crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-compose/src/role_prompts.rs"]
+lane = "rust-hot"
+parent = "spec-446a41"
+links = { depends_on = ["gap-cc5051", "gap-f61823", "gap-b5caf3", "gap-aea13a", "gap-943046"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn withhold_arm_omits_sections_and_logs_propensity' crates/roko-cli/src/ && cargo test -p roko-cli withhold_arm_omits_sections_and_logs_propensity"
+
+[[verify]]
+command = "grep -rqw 'fn withheld_error_patterns_leave_the_prompt' crates/roko-cli/src/ && cargo test -p roko-cli withheld_error_patterns_leave_the_prompt"
+
+[[verify]]
+command = "grep -rqw 'fn pinned_sections_never_excluded' crates/roko-cli/src/ && cargo test -p roko-cli pinned_sections_never_excluded"
+
+[[verify]]
+command = "grep -rqw 'fn labelled_attempt_updates_section_posteriors' crates/roko-cli/src/ && cargo test -p roko-cli labelled_attempt_updates_section_posteriors"
+
+[[verify]]
+command = "! grep -rq 'retrieval_outcomes_path\\|retrieval_ctx' crates/roko-cli/src/"
+
+[[verify]]
+command = "grep -q 'const EXPECTED_MISSING: &\\[&str\\] = &\\[\\];' crates/roko-cli/tests/learning_wiring_census.rs && cargo test -p roko-cli --test learning_wiring_census"
++++
+
+## Problem
+
+This package delivers 6 tasks of the backlog `tmp/backlog/2026-10-02-complete-and-wire/` (package PK38, slice 41xx, phase 4), in this order. Each task's full specification (Problem, Why it matters, Where, Current state, Plan, Done when, Notes and its verify) is in its file: read each one completely before starting it.
+
+| # | Task | Size | Sev | Title | File |
+|---|---|---|---|---|---|
+| 1 | 4120 | M | p2 | Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is logged | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4120-knowledge-and-playbook-withhold-arms.md` |
+| 2 | 4121 | S | p3 | Error-pattern withhold arm (L-err), if decision 4115 approves a third factor | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4121-error-pattern-withhold-arm.md` |
+| 3 | 4123 | M | p2 | Prompt assembly drops droppable sections by the bandit's draw, never pinned ones | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4123-prompt-assembly-drops-sections-by-bandit-draw.md` |
+| 4 | 4124 | S | p2 | Settle section posteriors from labelled attempts and save them when the run ends | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4124-settle-section-posteriors-and-save-at-run-end.md` |
+| 5 | 4129 | S | p3 | Stop writing `retrieval-outcomes.jsonl` once exposures record what reached the prompt | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4129-stop-writing-retrieval-outcomes-jsonl.md` |
+| 6 | 4131 | S | p2 | Census green: every Graph learning loop is live, observe-only or retired | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4131-census-green-every-loop-live-or-retired.md` |
+
+## Why it matters
+
+Phase 4: loops re-closed (S02). The slice's epic, with its goal and scope, is `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/4100-loops-reclosed-on-verified-outcomes.md`. The whole order is in `00-INDEX.md` and `PACKAGES.md` in the backlog folder; Will's decisions are in its `DECISIONS.md`.
+
+## Where
+
+Files the tasks change: `crates/roko-cli/src/dispatch/mod.rs`, `crates/roko-cli/src/dispatch/prompt_builder.rs`, `crates/roko-cli/src/graph_execution/plan_runner.rs`, `crates/roko-cli/src/graph_task_dispatch.rs`, `crates/roko-cli/src/graph_task_dispatch/feedback.rs`, `crates/roko-cli/src/graph_task_dispatch/streaming.rs`, `crates/roko-cli/src/graph_task_dispatch/verification.rs`, `crates/roko-cli/src/graph_task_dispatch/wiring.rs`, `crates/roko-cli/tests/learning_wiring_census.rs`, `crates/roko-compose/src/role_prompts.rs`.
+
+It also edits the hot file(s) `crates/roko-cli/src/graph_execution/plan_runner.rs`, `crates/roko-cli/src/graph_task_dispatch.rs`, which are left out of this item's anchors so that two hot packages can run at once; the coordinator resolves any merge conflict.
+
+## Current state
+
+The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's anchors and premise at your base commit before implementing it, and report a task that is already done instead of redoing it.
+
+## Plan
+
+1. Work through the tasks in the order above. For each: read its file, implement its Plan, write the test it names, and make one commit per task whose message ends with `Backlog-Task: <task id>`, `Work-Item: <this item's id>` and `Executor: claude-agent`.
+2. Follow `BUILD-RULES.md` in the backlog folder. Workers run no cargo: Rust is checked by the coordinator's batched gate. Python and doc checks you may run.
+3. If a task cannot be done (a premise is false, a decision is missing, or its verify cannot pass), stop at that task, keep the earlier commits, and report it; do not skip ahead to tasks that depend on it.
+
+## Done when
+
+- Every task's verify command passes (this item's `[[verify]]` list, one entry per task), after the coordinator's batched gate.
+- Each task's own "Done when" holds (see its file).
+
+## Notes
+
+- Waits on: PK09 (gap-cc5051), PK10 (gap-f61823), PK32 (gap-b5caf3), PK33 (gap-aea13a), PK35 (gap-943046).
+- Suggested model: opus.

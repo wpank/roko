@@ -1,0 +1,87 @@
++++
+id = "gap-a63e3c"
+kind = "gap"
+title = "PK81 Showcase and deploy: `roko init --cloud` and the example config register deploy webhooks on another… (+7 more)"
+status = "open"
+triage = "verified"
+severity = "p2"
+goal = "proof"
+rank = 81
+size = "L"
+subsystem = ["demo-app/showcase"]
+created = 2026-10-02
+updated = 2026-10-02
+last_verified = 2026-10-02
+source = "tmp/backlog/2026-10-02-complete-and-wire PK81"
+anchors = [".github/workflows/deploy-fly.yml", "crates/roko-cli/src/commands/init.rs", "crates/roko-cli/src/commands/server.rs", "crates/roko-core/src/config/schema.rs", "demo/demo-app/e2e/navigation.spec.ts", "demo/demo-app/package.json", "demo/demo-app/playwright.config.ts", "demo/demo-app/src/components/TopNav.tsx", "demo/demo-app/src/main.tsx", "demo/demo-app/vite.config.ts", "fly.toml"]
+lane = "rust-cold"
+parent = "spec-0b3a32"
+links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "! grep -qF 'owner = \\\"nunchi\\\"' crates/roko-cli/src/commands/init.rs && ! grep -qF 'owner = \\\"nunchi\\\"' crates/roko-core/src/config/schema.rs && grep -rqw 'fn cloud_init_template_names_no_third_party_repos' crates/roko-cli/src/ && cargo test -p roko-cli cloud_init_template_names_no_third_party_repos"
+
+[[verify]]
+command = "grep -q 'ROKO_STATE_ROOT' fly.toml && grep -q 'ROKO_STATE_ROOT' .github/workflows/deploy-fly.yml && grep -rqw 'fn fly_toml_points_state_root_at_the_volume' crates/roko-cli/src/ && cargo test -p roko-cli fly_toml_points_state_root_at_the_volume"
+
+[[verify]]
+command = "test -f demo/demo-app/src/showcase/contracts.ts && test -f demo/demo-app/e2e/showcase/contracts.spec.ts && cd demo/demo-app && npx tsc -p tsconfig.json && npx playwright test --project=showcase-fixture e2e/showcase/contracts.spec.ts"
+
+[[verify]]
+command = "test -f demo/demo-app/src/showcase/guard.ts && test -f demo/demo-app/e2e/showcase/guard.spec.ts && grep -q 'VITE_ALLOW_FIXTURES' demo/demo-app/vite.config.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/guard.spec.ts"
+
+[[verify]]
+command = "test -f demo/demo-app/src/components/Charts/ChartTable.tsx && test -f demo/demo-app/e2e/showcase/charts.spec.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/charts.spec.ts"
+
+[[verify]]
+command = "test -f demo/demo-app/src/showcase/api.ts && test -f demo/demo-app/e2e/showcase/static-source.spec.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/static-source.spec.ts"
+
+[[verify]]
+command = "! grep -q 'path=\"demo\" element={null}' demo/demo-app/src/main.tsx && grep -q '\"lab' demo/demo-app/src/main.tsx && cd demo/demo-app && npx playwright test --project=chromium e2e/navigation.spec.ts"
+
+[[verify]]
+command = "test -f demo/demo-app/src/pages/showcase/Overview.tsx && test -f demo/demo-app/e2e/showcase/golden-views.spec.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/golden-views.spec.ts e2e/showcase/refuse-simulated.spec.ts"
++++
+
+## Problem
+
+This package delivers 8 tasks of the backlog `tmp/backlog/2026-10-02-complete-and-wire/` (package PK81, slice 93xx, phase 9), in this order. Each task's full specification (Problem, Why it matters, Where, Current state, Plan, Done when, Notes and its verify) is in its file: read each one completely before starting it.
+
+| # | Task | Size | Sev | Title | File |
+|---|---|---|---|---|---|
+| 1 | 9306 | S | p2 | `roko init --cloud` and the example config register deploy webhooks on another account's repositories | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9306-cloud-init-registers-webhooks-on-another-account.md` |
+| 2 | 9307 | S | p2 | Fly deploys keep `.roko` on the ephemeral disk: the volume is mounted where nothing reads it (S11 G3) | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9307-fly-deploys-keep-state-on-the-ephemeral-disk.md` |
+| 3 | 9308 | M | p3 | Showcase contracts: TypeScript types, JSON Schemas, fixture bundles and the `showcase-fixture` Playwright project | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9308-showcase-contracts-schemas-and-fixture-project.md` |
+| 4 | 9309 | S | p3 | Render guard, `RefusedPanel` and `ProvenanceDrawer`: refuse simulated, fixture, unattributed or tampered data | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9309-render-guard-refused-panel-and-provenance-drawer.md` |
+| 5 | 9310 | M | p3 | CI-aware charts with table fallbacks: `ParetoFrontierChart`, `PassKChart`, `EnvelopeTable`, `BandLineChart`, `ChartTable` | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9310-ci-aware-charts-with-table-fallbacks.md` |
+| 6 | 9311 | M | p3 | Showcase data client: static and api sources with SHA-256 checks, and a store | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9311-showcase-data-client-static-and-api-sources.md` |
+| 7 | 9312 | S | p3 | Make the showcase the `/demo/` home: drop the `path="demo"` stub and move the legacy pages under `/lab/*` | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9312-make-the-showcase-the-demo-home-and-legacy-lab.md` |
+| 8 | 9313 | M | p3 | R1 pages: Overview (P1 and M4 tiles), HeadToHead, AuditLottery and the Replays list | `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9313-r1-pages-overview-head-to-head-audits-replays.md` |
+
+## Why it matters
+
+Phase 9: domains, assistant, held and parked work, cleanup, showcase and deploy. The slice's epic, with its goal and scope, is `/Users/will/dev/nunchi/roko/roko/tmp/backlog/2026-10-02-complete-and-wire/9300-showcase-deploy-and-release.md`. The whole order is in `00-INDEX.md` and `PACKAGES.md` in the backlog folder; Will's decisions are in its `DECISIONS.md`.
+
+## Where
+
+Files the tasks change: `.github/workflows/deploy-fly.yml`, `crates/roko-cli/src/commands/init.rs`, `crates/roko-cli/src/commands/server.rs`, `crates/roko-core/src/config/schema.rs`, `demo/demo-app/e2e/navigation.spec.ts`, `demo/demo-app/e2e/showcase/bundles/`, `demo/demo-app/e2e/showcase/charts.spec.ts`, `demo/demo-app/e2e/showcase/contracts.spec.ts`, `demo/demo-app/e2e/showcase/golden-views.spec.ts`, `demo/demo-app/e2e/showcase/guard.spec.ts`, `demo/demo-app/e2e/showcase/refuse-simulated.spec.ts`, `demo/demo-app/e2e/showcase/static-source.spec.ts`, `demo/demo-app/package.json`, `demo/demo-app/playwright.config.ts`, `demo/demo-app/src/components/Charts/BandLineChart.tsx`, `demo/demo-app/src/components/Charts/ChartTable.tsx`, `demo/demo-app/src/components/Charts/EnvelopeTable.tsx`, `demo/demo-app/src/components/Charts/ParetoFrontierChart.tsx`, `demo/demo-app/src/components/Charts/PassKChart.tsx`, `demo/demo-app/src/components/NotMeasured.tsx`, `demo/demo-app/src/components/ProvenanceDrawer.tsx`, `demo/demo-app/src/components/RefusedPanel.tsx`, `demo/demo-app/src/components/TopNav.tsx`, `demo/demo-app/src/main.tsx`, `demo/demo-app/src/pages/showcase/AuditLottery.tsx`, `demo/demo-app/src/pages/showcase/HeadToHead.tsx`, `demo/demo-app/src/pages/showcase/Overview.tsx`, `demo/demo-app/src/pages/showcase/Replays.tsx`, `demo/demo-app/src/showcase/api.ts`, `demo/demo-app/src/showcase/contracts.ts`, `demo/demo-app/src/showcase/fixtureRoutes.tsx`, `demo/demo-app/src/showcase/guard.ts`, `demo/demo-app/src/showcase/schemas/`, `demo/demo-app/src/showcase/store.ts`, `demo/demo-app/vite.config.ts`, `fly.toml`.
+
+## Current state
+
+The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's anchors and premise at your base commit before implementing it, and report a task that is already done instead of redoing it.
+
+## Plan
+
+1. Work through the tasks in the order above. For each: read its file, implement its Plan, write the test it names, and make one commit per task whose message ends with `Backlog-Task: <task id>`, `Work-Item: <this item's id>` and `Executor: claude-agent`.
+2. Follow `BUILD-RULES.md` in the backlog folder. Workers run no cargo: Rust is checked by the coordinator's batched gate. Python and doc checks you may run.
+3. If a task cannot be done (a premise is false, a decision is missing, or its verify cannot pass), stop at that task, keep the earlier commits, and report it; do not skip ahead to tasks that depend on it.
+
+## Done when
+
+- Every task's verify command passes (this item's `[[verify]]` list, one entry per task), after the coordinator's batched gate.
+- Each task's own "Done when" holds (see its file).
+
+## Notes
+
+- Waits on: nothing.
+- Suggested model: opus.

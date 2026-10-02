@@ -14,7 +14,8 @@
 //!   once and that every learning row joins an attempt.
 //! - `loop_census_routed_task_logs_fallback_decision` runs the same plan and
 //!   checks its route decisions: one per attempt, and routed T4's labelled a
-//!   fallback, since a guard replaced the cascade router's pick.
+//!   fallback, since a guard replaced the cascade router's pick. Every
+//!   attempt's prompt items are in the run's exposure log too.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -52,11 +53,7 @@ const S01_COMPONENTS: &[&str] = &[
 /// The components nothing on the Graph path provides yet: the S02 backlog.
 /// It only shrinks. The census fails when one of them is wired, so take it
 /// off the list then.
-const EXPECTED_MISSING: &[&str] = &[
-    "sink.section_effect",
-    "store.exposure_writer",
-    "store.record_access",
-];
+const EXPECTED_MISSING: &[&str] = &["sink.section_effect", "store.record_access"];
 
 /// The stand-in `claude_cli` provider: it ignores its prompt and reports a
 /// finished free turn, so each task's verify step alone decides its outcome.
@@ -489,6 +486,14 @@ fn loop_census_routed_task_logs_fallback_decision() {
         5,
         "one route decision per attempt\n{log}"
     );
+    // Every attempt logs what its prompt retrieved (S01 P0-9). The fixture's
+    // workspace has no knowledge store, so its rows are prompt sections.
+    let exposed: BTreeSet<&str> = run
+        .exposures
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .collect();
+    assert_eq!(exposed.len(), 5, "{log}");
     let decisions_of = |task: &str| -> Vec<&RoutingDecisionLog> {
         run.decisions
             .iter()

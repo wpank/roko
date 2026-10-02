@@ -771,7 +771,10 @@ pub struct AttemptCost {
     pub price_snapshot_id: Option<String>,
 }
 
-/// How many content items were retrieved and included for the attempt.
+/// How many content items were retrieved and included for the attempt
+/// (S01 P0-9): the knowledge entries, cited episodes, playbooks and error
+/// patterns of its exposure rows, those past the per-attempt row cap too.
+/// The prompt's own sections have exposure rows but are not counted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExposureCounts {
     /// Items retrieved for the prompt.

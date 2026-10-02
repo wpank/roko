@@ -158,8 +158,9 @@ impl GraphTaskDispatcher {
             component(
                 "store.exposure_writer",
                 WiringKind::Store,
-                false,
-                "no exposure log of the knowledge and playbooks a prompt included (S01 P0-9)",
+                feedback.runs_dir.is_some(),
+                "each run's `exposures.jsonl`: one row per item an attempt's prompt retrieved, \
+                 and whether it was included",
             ),
             component(
                 "store.record_access",

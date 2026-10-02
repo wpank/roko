@@ -1288,7 +1288,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
-        self.record_planned_attempt(&attempt, &task, &dispatch_plan);
+        self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //

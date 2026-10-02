@@ -2,12 +2,12 @@
 //! §5.9, §7): what `roko learn telemetry check` and `route-report` print.
 //!
 //! Everything here reads files alone and writes nothing.
-//! [`RunRecords::load`] parses one run directory's `attempts.jsonl` and
-//! `decisions.jsonl`, and [`LegacyRows::load`] finds the run's attempt keys
-//! in the logs that predate S01 (`learn/efficiency.jsonl`,
-//! `learn/costs.jsonl`, `episodes.jsonl`). [`check`] validates one run;
-//! [`route_report`] counts routing outcomes per decision source over any
-//! number of runs.
+//! [`RunRecords::load`] parses one run directory's `attempts.jsonl`,
+//! `decisions.jsonl` (route and content decisions) and `exposures.jsonl`,
+//! and [`LegacyRows::load`] finds the run's attempt keys in the logs that
+//! predate S01 (`learn/efficiency.jsonl`, `learn/costs.jsonl`,
+//! `episodes.jsonl`). [`check`] validates one run; [`route_report`] counts
+//! routing outcomes per decision source over any number of runs.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
@@ -21,11 +21,12 @@ use serde_json::Value;
 
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, DECISION_SCHEMA,
-    DecisionSource, ExecutedModel, RunFile, Stamped, VERDICT_SCHEMA,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionRecord,
+    DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, RunFile,
+    Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
-use crate::routing_log::RoutingDecisionLog;
+use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};
 
 /// The source [`route_report`] files an attempt under when no route
 /// decision names one: an attempt that never routed (a T0 reflex, a harness
@@ -46,6 +47,11 @@ pub struct RunRecords {
     pub verdicts: Vec<Stamped<AttemptVerdictRecord>>,
     /// Route decision rows, in file order.
     pub decisions: Vec<Stamped<RoutingDecisionLog>>,
+    /// Content decision rows (knowledge, playbooks, sections, error
+    /// patterns), in file order.
+    pub content_decisions: Vec<Stamped<ContentDecisionRecord>>,
+    /// Exposure rows, in file order.
+    pub exposures: Vec<Stamped<ExposureRecord>>,
     /// Lines that are not a valid record of their file, as
     /// `file:line: reason`.
     pub invalid: Vec<String>,
@@ -105,8 +111,16 @@ impl RunRecords {
             (RunFile::Attempts, VERDICT_SCHEMA) => {
                 serde_json::from_value(value).map(|record| self.verdicts.push(record))
             }
-            (RunFile::Decisions, DECISION_SCHEMA) => {
+            // A route row's `decision_point` is `route`; rows written before
+            // the field existed have none, and are route rows too.
+            (RunFile::Decisions, DECISION_SCHEMA) if is_route_decision(&value) => {
                 serde_json::from_value(value).map(|record| self.decisions.push(record))
+            }
+            (RunFile::Decisions, DECISION_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.content_decisions.push(record))
+            }
+            (RunFile::Exposures, EXPOSURE_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.exposures.push(record))
             }
             _ => {
                 self.invalid
@@ -133,6 +147,15 @@ impl RunRecords {
         });
         AttemptTally::from_lines(opens.chain(verdicts))
     }
+}
+
+/// Whether a decision row is a route row: its `decision_point` is `route`,
+/// or it has none.
+fn is_route_decision(value: &Value) -> bool {
+    value
+        .get("decision_point")
+        .and_then(Value::as_str)
+        .is_none_or(|point| point == ROUTE_DECISION_POINT)
 }
 
 /// One run's attempt keys in the logs that predate S01, which gained an
@@ -246,14 +269,20 @@ pub struct CheckReport {
     pub attempts_abandoned: u64,
     /// Route decision rows.
     pub decisions: usize,
+    /// Content decision rows.
+    pub content_decisions: usize,
+    /// Exposure rows.
+    pub exposures: usize,
     /// Lines that are not valid records of their file.
     pub invalid_lines: Vec<String>,
     /// `settlement_id`s that settle more than once.
     pub duplicate_settlements: Vec<String>,
     /// Attempts with a verdict but no attempt-open line.
     pub unopened_verdicts: Vec<String>,
+    /// Attempt keys of exposure rows whose attempt the run never opened.
+    pub unopened_exposures: Vec<String>,
     /// `seq` ordering violations: repeated or decreasing `seq`, and a verdict
-    /// that precedes its own attempt's open line or route decision.
+    /// that precedes its own attempt's open line, decisions or exposures.
     pub seq_violations: Vec<String>,
     /// Join coverage of the efficiency, cost and episode logs.
     pub coverage: Vec<JoinCoverage>,
@@ -279,6 +308,11 @@ impl CheckReport {
             self.unopened_verdicts
                 .iter()
                 .map(|key| format!("verdict without an attempt-open line: {key}")),
+        );
+        failures.extend(
+            self.unopened_exposures
+                .iter()
+                .map(|key| format!("exposure without an attempt-open line: {key}")),
         );
         failures.extend(self.seq_violations.iter().cloned());
         for coverage in &self.coverage {
@@ -309,8 +343,8 @@ impl CheckReport {
 }
 
 /// Check one run's records: schema validity, one settlement per attempt,
-/// `seq` ordering, join coverage of the legacy logs and the cost-source mix
-/// (S01 §7 criterion 2).
+/// exposures that join an opened attempt, `seq` ordering, join coverage of
+/// the legacy logs and the cost-source mix (S01 §7 criterion 2).
 #[must_use]
 pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
     let tally = records.tally();
@@ -340,6 +374,15 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
         .difference(&opened)
         .map(|key| (*key).to_string())
         .collect();
+    let unopened_exposures = records
+        .exposures
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .filter(|key| !opened.contains(key))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
 
     let mut cost_sources = BTreeMap::new();
     for line in &records.verdicts {
@@ -365,9 +408,12 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
         attempts_settled: tally.settled,
         attempts_abandoned: tally.abandoned,
         decisions: records.decisions.len(),
+        content_decisions: records.content_decisions.len(),
+        exposures: records.exposures.len(),
         invalid_lines: records.invalid.clone(),
         duplicate_settlements,
         unopened_verdicts,
+        unopened_exposures,
         seq_violations: seq_violations(records),
         coverage,
         cost_sources,
@@ -393,7 +439,7 @@ fn join_coverage(file: &'static str, settled: &BTreeSet<&str>, keys: &[String]) 
 
 /// Repeated `seq`s across the run's files, a `seq` that does not grow along
 /// its file, and a verdict whose `seq` does not follow its attempt's open
-/// line and route decision.
+/// line, decisions and exposures.
 fn seq_violations(records: &RunRecords) -> Vec<String> {
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
@@ -426,6 +472,20 @@ fn seq_violations(records: &RunRecords) -> Vec<String> {
                 .or_default()
                 .push(("route decision", line.seq));
         }
+    }
+    for line in &records.content_decisions {
+        let key = line.record.identity.attempt_key.as_str();
+        preceding
+            .entry(key)
+            .or_default()
+            .push(("content decision", line.seq));
+    }
+    for line in &records.exposures {
+        let key = line.record.identity.attempt_key.as_str();
+        preceding
+            .entry(key)
+            .or_default()
+            .push(("exposure", line.seq));
     }
     for line in &records.verdicts {
         let key = line.record.identity.attempt_key.as_str();
@@ -629,7 +689,8 @@ mod tests {
 
     use super::*;
     use crate::telemetry::records::{
-        AttemptIdentity, AttemptOutcome, CostSource, DecisionSource, TelemetryRecord,
+        AttemptIdentity, AttemptOutcome, ContentCandidate, ContentDecisionPoint, CostSource,
+        DecisionSource, ExcludedReason, ExposureItemKind, TelemetryRecord,
     };
     use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
@@ -949,5 +1010,125 @@ mod tests {
         assert_eq!(rows.costs, [ours.clone()]);
         assert_eq!(rows.episodes, [ours]);
         assert!(rows.efficiency.is_empty());
+    }
+
+    /// The knowledge decision of attempt `task`:`attempt`: two retrieved
+    /// entries, the first included.
+    fn knowledge_decision(task: &str, attempt: u32) -> ContentDecisionRecord {
+        let candidate = |id: &str, rank: u32, p: f64| ContentCandidate {
+            id: id.to_string(),
+            rank: Some(rank),
+            score: None,
+            eligible: true,
+            p: Some(p),
+        };
+        ContentDecisionRecord {
+            identity: identity(task, attempt),
+            decision_point: ContentDecisionPoint::Knowledge,
+            policy: "keyword_overlap_top3".to_string(),
+            candidates: vec![candidate("kn-1", 1, 1.0), candidate("kn-2", 2, 0.0)],
+            chosen: vec!["kn-1".to_string()],
+            chosen_propensity: Some(1.0),
+            source: Some(DecisionSource::Default),
+            state: None,
+            thresholds_digest: None,
+        }
+    }
+
+    /// A run's `decisions.jsonl` holds route and content rows, told apart by
+    /// `decision_point` (a route row written before that field has none),
+    /// and its `exposures.jsonl` holds one row per retrieved item. `check`
+    /// validates both schemas and flags an exposure of an attempt the run
+    /// never opened; `route_report` counts the route rows alone.
+    #[test]
+    fn report_reads_route_and_content_decisions() {
+        let dir = TempDir::new().expect("tempdir");
+        // A route row from before `decision_point`, written first.
+        let route = decision("T1", 1, DecisionSource::Router, "gpt-oss-120b");
+        let line = Stamped {
+            schema_version: DECISION_SCHEMA.to_string(),
+            record_id: route.record_id(),
+            seq: 1,
+            ts: "2026-10-02T14:03:11.402Z".to_string(),
+            record: route,
+        };
+        let mut legacy = serde_json::to_value(&line).expect("serialize the route row");
+        let fields = legacy.as_object_mut().expect("a JSON object");
+        assert!(fields.remove("decision_point").is_some());
+        let decisions_path = RunFile::Decisions.path_in(dir.path());
+        std::fs::write(&decisions_path, format!("{legacy}\n")).expect("write decisions.jsonl");
+
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(open("T1", 1)));
+        assert!(writer.submit(knowledge_decision("T1", 1)));
+        let exposure = |task: &str, id: &str, included: bool| {
+            let mut row = ExposureRecord::new(identity(task, 1), ExposureItemKind::Knowledge, id);
+            row.included = included;
+            row.excluded_reason = (!included).then_some(ExcludedReason::TokenBudget);
+            row.section_id = Some("domain_context".to_string());
+            row
+        };
+        assert!(writer.submit(exposure("T1", "kn-1", true)));
+        assert!(writer.submit(exposure("T1", "kn-2", false)));
+        // T9 never opened an attempt in this run.
+        assert!(writer.submit(exposure("T9", "kn-1", true)));
+        assert!(writer.submit(verdict("T1", 1, AttemptOutcome::Passed)));
+        assert_eq!(writer.close().written, 6);
+
+        let run = RunRecords::load(dir.path()).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.decisions.len(), 1, "the legacy route row");
+        let route = &run.decisions[0].record;
+        assert_eq!(route.decision_point, ROUTE_DECISION_POINT);
+        assert_eq!(run.content_decisions.len(), 1);
+        let content = &run.content_decisions[0].record;
+        assert_eq!(content, &knowledge_decision("T1", 1));
+        let included: Vec<(&str, bool)> = run
+            .exposures
+            .iter()
+            .map(|line| (line.record.item_id.as_str(), line.record.included))
+            .collect();
+        assert_eq!(included, [("kn-1", true), ("kn-2", false), ("kn-1", true)]);
+
+        // Content rows are not route decisions.
+        let report = route_report(std::slice::from_ref(&run), None);
+        assert_eq!((report.attempts(), report.decisions), (1, 1));
+        let sources: Vec<&str> = report.rows.iter().map(|row| row.source.as_str()).collect();
+        assert_eq!(sources, ["router"]);
+
+        let t1 = identity("T1", 1).attempt_key;
+        let legacy_rows = LegacyRows {
+            efficiency: vec![t1.clone()],
+            costs: vec![t1.clone()],
+            episodes: vec![t1],
+        };
+        let checked = check(&run, &legacy_rows);
+        assert_eq!((checked.content_decisions, checked.exposures), (1, 3));
+        let t9 = identity("T9", 1).attempt_key;
+        assert_eq!(checked.unopened_exposures, [t9.clone()]);
+        assert!(
+            checked.seq_violations.is_empty(),
+            "{:?}",
+            checked.seq_violations
+        );
+        let unopened = format!("exposure without an attempt-open line: {t9}");
+        assert_eq!(checked.failures(), [unopened]);
+
+        // A content row that does not match its schema is an invalid line.
+        let malformed = serde_json::json!({
+            "schema_version": DECISION_SCHEMA,
+            "decision_point": "knowledge",
+            "seq": 9,
+        });
+        roko_core::io::append_jsonl(&decisions_path, &malformed).expect("append");
+        let run = RunRecords::load(dir.path()).expect("reload");
+        assert_eq!(run.invalid.len(), 1, "{:?}", run.invalid);
+        let invalid = &run.invalid[0];
+        assert!(
+            invalid.starts_with("decisions.jsonl:3: invalid roko.decision/1"),
+            "{invalid}"
+        );
+        assert_eq!(run.content_decisions.len(), 1);
     }
 }

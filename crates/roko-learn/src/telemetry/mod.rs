@@ -2,7 +2,8 @@
 //! and the append-only records keyed by it.
 //!
 //! - [`records`]: [`AttemptKey`], the attempt-open line, the settled
-//!   [`AttemptVerdictRecord`], the [`RunProvenanceManifest`] and the line
+//!   [`AttemptVerdictRecord`], the [`RunProvenanceManifest`], the
+//!   [`ContentDecisionRecord`] and [`ExposureRecord`] rows, and the line
 //!   envelope. Route decisions reuse
 //!   [`RoutingDecisionLog`](crate::routing_log::RoutingDecisionLog).
 //! - [`assign`](mod@assign): the one keyed-BLAKE3 assignment function.
@@ -14,9 +15,11 @@
 //!   files (`roko learn telemetry`).
 //!
 //! A run's files live in `.roko/runs/<run_id>/`: `attempts.jsonl` holds the
-//! attempt-open lines and verdicts, next to `decisions.jsonl` and
-//! `manifest.json`. Graph task dispatch mints the key, writes both lines and
-//! stamps the legacy efficiency and cost rows with it ([`AttemptKeyed`]).
+//! attempt-open lines and verdicts, next to `decisions.jsonl` (route and
+//! content decisions), `exposures.jsonl` (one row per item a prompt
+//! retrieved) and `manifest.json`. Graph task dispatch mints the key, writes
+//! both lines and stamps the legacy efficiency and cost rows with it
+//! ([`AttemptKeyed`]).
 //!
 //! The schemas and field names are S01's. Some type names are not, because
 //! the workspace already uses S01's names for other types: the verdict is
@@ -36,9 +39,10 @@ pub use manifest::AttemptTally;
 pub use records::{
     AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptLadder,
     AttemptOpenRecord, AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame,
-    CostSource, DecisionSource, ExecutedModel, FailoverRefusal, GateVerdictTag, HelperCallsUsage,
-    LadderReason, RunFile, RunProvenanceManifest, Stamped, TelemetryRecord, ToolPolicyRecord,
-    VerifyStepVerdict,
+    ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, CostSource, DecisionSource,
+    ExcludedReason, ExecutedModel, ExposureCounts, ExposureItemKind, ExposureRecord,
+    FailoverRefusal, GateVerdictTag, HelperCallsUsage, LadderReason, RunFile, RunProvenanceManifest,
+    Stamped, TelemetryRecord, ToolPolicyRecord, VerifyStepVerdict,
 };
 pub use writer::{
     AttemptOrdinals, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,

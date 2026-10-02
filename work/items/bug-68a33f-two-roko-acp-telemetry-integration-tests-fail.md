@@ -65,3 +65,6 @@ the non-streaming body. A recent change to the request is 89b3237e0 (`stream_opt
 ## Notes
 
 - Found by roko-7d's full `cargo nextest run --workspace` for the workflow-audit merge (2026-10-02).
+- 2026-10-02 (roko-90): check `stream_options: {include_usage: true}` first (wave 3a's PK07, task 2101,
+  89b3237e0); `[providers.<name>] stream_usage = false` turns it off per provider, which tells you quickly
+  whether the mock chokes on it.

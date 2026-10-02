@@ -57,3 +57,5 @@ case and keep the counts.
 ## Notes
 
 - Found by roko-7d's full `cargo nextest run --workspace` for the workflow-audit merge (2026-10-02).
+- 2026-10-02 (roko-90): both tests already failed at backlog gate 1 on a43288b5f, where main's prebuilt roko
+  printed the same 6 and 2 diagnostics, so they predate this week's waves.

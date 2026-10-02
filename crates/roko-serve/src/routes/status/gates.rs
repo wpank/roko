@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use roko_core::dashboard_snapshot::DashboardEvent;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -78,69 +79,52 @@ pub async fn gate_history(
 
 // ── private helpers ──────────────────────────────────────────────────
 
-async fn read_gate_entries(state: &AppState) -> Result<Vec<Value>, ApiError> {
-    let mut entries =
-        read_jsonl_entries(&state.workdir.join(".roko").join("signals.jsonl")).await?;
-    // Read gate verdicts from the dedicated typed log (written by the runner).
-    let verdict_entries =
-        read_jsonl_entries(&state.workdir.join(".roko").join("gate-verdicts.jsonl")).await?;
-    entries.extend(verdict_entries);
-    // Also check events.jsonl for gate.completed events from the event bus.
-    let runner_events =
-        read_jsonl_entries(&state.workdir.join(".roko").join("events.jsonl")).await?;
-    entries.extend(runner_events.iter().flat_map(runner_gate_entries));
+/// The gate history's raw entries: gate signals in `.roko/signals.jsonl`,
+/// then the `DashboardEvent::GateResult` lines Graph runs write to
+/// `.roko/events.jsonl` for each verify step, newest first (backlog 2119).
+async fn read_gate_entries(workdir: &std::path::Path) -> Result<Vec<Value>, ApiError> {
+    let roko = workdir.join(".roko");
+    let mut entries = read_jsonl_entries(&roko.join("signals.jsonl")).await?;
+    let events = read_jsonl_entries(&roko.join("events.jsonl")).await?;
+    entries.extend(events.iter().rev().filter_map(graph_gate_entry));
     Ok(entries)
 }
 
-fn runner_gate_entries(event: &Value) -> Vec<Value> {
-    if event.get("type").and_then(Value::as_str) != Some("gate.completed") {
-        return Vec::new();
+/// The gate history entry of a `DashboardEvent::GateResult` line. The line
+/// carries no time, so neither does the entry.
+fn graph_gate_entry(event: &Value) -> Option<Value> {
+    if event.get("type").and_then(Value::as_str) != Some("gate_result") {
+        return None;
     }
-
-    let plan_id = event.get("plan_id").cloned().unwrap_or(Value::Null);
-    let task_id = event.get("task_id").cloned().unwrap_or(Value::Null);
-    let rung = event.get("rung").cloned().unwrap_or(Value::Null);
-    let duration_ms = event.get("duration_ms").cloned().unwrap_or(Value::Null);
-    let timestamp = event.get("timestamp").cloned().unwrap_or(Value::Null);
-
-    event
-        .get("verdicts")
-        .and_then(Value::as_array)
-        .map(|verdicts| {
-            verdicts
-                .iter()
-                .map(|verdict| {
-                    let gate = verdict.get("gate").cloned().unwrap_or(Value::Null);
-                    let passed = verdict.get("passed").cloned().unwrap_or(Value::Null);
-                    json!({
-                        "id": Value::Null,
-                        "created_at_ms": Value::Null,
-                        "timestamp": timestamp,
-                        "kind": "gate_verdict",
-                        "tags": {
-                            "gate": gate,
-                            "passed": passed.as_bool().map(|value| value.to_string()).unwrap_or_default(),
-                            "plan_id": plan_id,
-                            "task_id": task_id,
-                            "rung": rung,
-                            "duration_ms": duration_ms,
-                        },
-                        "body": {
-                            "data": {
-                                "gate": gate,
-                                "passed": passed,
-                                "plan_id": plan_id,
-                                "task_id": task_id,
-                                "rung": rung,
-                                "duration_ms": duration_ms,
-                                "summary": verdict.get("summary").cloned().unwrap_or(Value::Null),
-                            }
-                        }
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let DashboardEvent::GateResult {
+        plan_id,
+        task_id,
+        gate,
+        passed,
+        ..
+    } = serde_json::from_value(event.clone()).ok()?
+    else {
+        return None;
+    };
+    Some(json!({
+        "id": Value::Null,
+        "created_at_ms": Value::Null,
+        "kind": "gate_verdict",
+        "tags": {
+            "gate": gate,
+            "passed": passed.to_string(),
+            "plan_id": plan_id,
+            "task_id": task_id,
+        },
+        "body": {
+            "data": {
+                "gate": gate,
+                "passed": passed,
+                "plan_id": plan_id,
+                "task_id": task_id,
+            }
+        }
+    }))
 }
 
 fn build_recent_gate_history(entries: &[Value], gate_filter: Option<&str>) -> Vec<Value> {
@@ -238,7 +222,7 @@ async fn gates_history_waterfall(
     state: &AppState,
     limit: Option<usize>,
 ) -> Result<Json<Value>, ApiError> {
-    let entries = read_gate_entries(state).await?;
+    let entries = read_gate_entries(&state.workdir).await?;
     let flat = build_recent_gate_history(&entries, None);
 
     // Group by task_id.
@@ -293,4 +277,60 @@ async fn gates_history_waterfall(
         .collect();
 
     Ok(Json(json!(runs)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// backlog 2119: the gate history reads the `GateResult` lines Graph
+    /// runs write to `.roko/events.jsonl`, newest first, and skips the
+    /// run's other events and Runner-v2's `gate.completed` lines.
+    #[tokio::test]
+    async fn gate_history_reads_graph_gate_results() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let roko = dir.path().join(".roko");
+        std::fs::create_dir_all(&roko).expect("create .roko");
+        let gate_result = |task_id: &str, gate: &str, passed: bool| {
+            let event = DashboardEvent::GateResult {
+                plan_id: "plan-a".to_string(),
+                task_id: task_id.to_string(),
+                gate: gate.to_string(),
+                passed,
+                output_text: Some("ok".to_string()),
+            };
+            serde_json::to_string(&event).expect("serialize the event")
+        };
+        let runner_v2 = json!({
+            "type": "gate.completed",
+            "plan_id": "plan-a",
+            "task_id": "T0",
+            "verdicts": [{"gate": "compile", "passed": true}],
+        });
+        let lines = [
+            r#"{"type":"plan_started","plan_id":"plan-a","tasks_total":2}"#.to_string(),
+            runner_v2.to_string(),
+            gate_result("T1", "compile", true),
+            gate_result("T2", "test", false),
+        ];
+        std::fs::write(roko.join("events.jsonl"), lines.join("\n") + "\n").expect("write");
+
+        let entries = read_gate_entries(dir.path()).await.expect("read");
+        let history = build_recent_gate_history(&entries, None);
+
+        assert_eq!(history.len(), 2, "{history:?}");
+        let passed = history
+            .iter()
+            .filter(|item| item["passed"] == true)
+            .count();
+        assert_eq!((passed, history.len() - passed), (1, 1));
+        assert_eq!(history[0]["gate"], "test", "the latest line comes first");
+        assert_eq!(history[0]["task_id"], "T2");
+        assert_eq!(history[0]["plan_id"], "plan-a");
+        assert_eq!(history[0]["passed"], false);
+        assert_eq!(history[1]["gate"], "compile");
+        assert_eq!(history[1]["task_id"], "T1");
+        let test_only = build_recent_gate_history(&entries, Some("test"));
+        assert_eq!(test_only.len(), 1);
+    }
 }

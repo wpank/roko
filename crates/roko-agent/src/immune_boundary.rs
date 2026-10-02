@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use roko_core::{
     AnomalyScore, Body, ContentHash, Context, ImmunePipeline, ImmunePipelineResult,
-    IncidentRelation, Kind, Provenance, QuarantineDecision, Signal, Store, ThreatSeverity,
+    IncidentRelation, Kind, Provenance, QuarantineDecision, Query, Signal, Store, ThreatSeverity,
     error::Result,
 };
 use roko_graph::NodeStatus;
@@ -32,8 +32,9 @@ use tokio::sync::mpsc;
 use crate::agent::{Agent, AgentResult};
 use crate::dispatcher::truncate::{bounded_json_bytes, bounded_serialized_bytes};
 use crate::immune_evidence::{
-    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, PROVIDER_CONTAINMENT_REASON,
-    agent_isolation_control, get_agent_control, persist_agent_control, persist_evidence_signals,
+    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, DEFAULT_ISOLATION_TTL,
+    PROVIDER_CONTAINMENT_REASON, agent_isolation_control, get_agent_control, is_live_agent_control,
+    legacy_agent_isolation_control, persist_agent_control, persist_evidence_signals, unix_now_ms,
     validate_boundary_label,
 };
 use crate::live_output::{LiveAgentEvent, LiveOutput, tool_step_target};
@@ -121,11 +122,14 @@ pub struct ProviderBoundaryRecord {
 }
 
 /// Durable agent-control state checked before a provider process or request is
-/// started. Its identity is deterministic for one `agent_id`.
+/// started. A control covers one agent id, which Graph dispatch makes one
+/// attempt, and expires (decision 1107). Schema 1 controls, written before
+/// controls expired, have no lifetime and stay until an operator releases
+/// them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentIsolationControl {
-    /// Record schema version.
+    /// Record schema version: 1 without a lifetime, 2 with one.
     pub schema_version: u32,
     /// Agent denied at the provider boundary.
     pub agent_id: String,
@@ -133,6 +137,13 @@ pub struct AgentIsolationControl {
     pub state: String,
     /// Stable reason code, intentionally excluding suspect provider text.
     pub reason: String,
+    /// When the control was written, in Unix milliseconds (schema 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated_at_ms: Option<u64>,
+    /// When the control stops denying its agent, in Unix milliseconds
+    /// (schema 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 /// Compute anomaly evidence solely from facts visible in an [`AgentResult`].
@@ -212,23 +223,35 @@ impl BoundaryStore {
         Self::Durable { workspace_root }
     }
 
-    async fn get_isolation(
-        &self,
-        agent_id: &str,
-        marker_id: &ContentHash,
-    ) -> Result<Option<Signal>> {
+    /// The isolation control in force for `agent_id`, if any. A control
+    /// carries its own lifetime, so it is read by agent id and checked for
+    /// expiry rather than recomputed from the id.
+    async fn get_isolation(&self, agent_id: &str) -> Result<Option<Signal>> {
         match self {
             Self::Durable { workspace_root } => get_agent_control(workspace_root, agent_id)
                 .map_err(|error| roko_core::RokoError::Store(error.to_string())),
-            Self::Injected(store) => store.get(marker_id).await,
+            Self::Injected(store) => {
+                let query = Query {
+                    kinds: Some(vec![Kind::Custom(AGENT_ISOLATION_CONTROL_KIND.to_string())]),
+                    tags: vec![("agent_id".to_string(), agent_id.to_string())],
+                    ..Query::default()
+                };
+                let now_ms = unix_now_ms();
+                let controls = store.query(&query, &Context::now()).await?;
+                Ok(controls
+                    .into_iter()
+                    .find(|control| is_live_agent_control(control, agent_id, now_ms)))
+            }
         }
     }
 
-    async fn put_isolation(&self, signal: &Signal) -> Result<()> {
+    /// Record `signal` and return the control in force: an agent that is
+    /// already isolated keeps its control.
+    async fn put_isolation(&self, signal: &Signal) -> Result<Signal> {
         match self {
             Self::Durable { workspace_root } => persist_agent_control(workspace_root, signal)
                 .map_err(|error| roko_core::RokoError::Store(error.to_string())),
-            Self::Injected(store) => store.put(signal.clone()).await.map(|_| ()),
+            Self::Injected(store) => store.put(signal.clone()).await.map(|_| signal.clone()),
         }
     }
 
@@ -345,16 +368,11 @@ impl ImmuneScreenedAgent {
         }
     }
 
-    async fn isolation_marker(&self) -> Result<Signal> {
-        isolation_marker_for(&self.agent_id)
-    }
-
     async fn is_isolated(&self) -> Result<Option<ContentHash>> {
-        let marker = self.isolation_marker().await?;
         self.store
-            .get_isolation(&self.agent_id, &marker.id)
+            .get_isolation(&self.agent_id)
             .await
-            .map(|stored| stored.map(|_| marker.id))
+            .map(|stored| stored.map(|control| control.id))
     }
 
     fn denied_result(
@@ -568,14 +586,12 @@ impl ImmuneScreenedAgent {
         let requires_isolation =
             matches!(severity, ThreatSeverity::High | ThreatSeverity::Critical);
         let isolation = if requires_isolation {
-            Some(self.isolation_marker().await?)
+            // Commit enforcement before any fallible evidence/index work.
+            let control = isolation_control_for(&self.agent_id)?;
+            Some(self.store.put_isolation(&control).await?)
         } else {
             None
         };
-        if let Some(isolation) = &isolation {
-            // Commit enforcement before any fallible evidence/index work.
-            self.store.put_isolation(isolation).await?;
-        }
         let mut effects = vec![
             ProviderBoundaryEffect::DeliveryDenied,
             ProviderBoundaryEffect::QuarantineEvidencePersisted,
@@ -722,8 +738,22 @@ impl ImmuneScreenedAgent {
     }
 }
 
-fn isolation_marker_for(agent_id: &str) -> Result<Signal> {
-    agent_isolation_control(agent_id, PROVIDER_CONTAINMENT_REASON)
+/// A new isolation control for `agent_id`, in force for
+/// [`DEFAULT_ISOLATION_TTL`] from now (decision 1107).
+fn isolation_control_for(agent_id: &str) -> Result<Signal> {
+    agent_isolation_control(
+        agent_id,
+        PROVIDER_CONTAINMENT_REASON,
+        unix_now_ms(),
+        DEFAULT_ISOLATION_TTL,
+    )
+    .map_err(|error| roko_core::RokoError::Store(error.to_string()))
+}
+
+/// The deterministic control a version 1 receipt binds: the one the
+/// boundary wrote before controls expired.
+fn legacy_isolation_marker_for(agent_id: &str) -> Result<Signal> {
+    legacy_agent_isolation_control(agent_id)
         .map_err(|error| roko_core::RokoError::Store(error.to_string()))
 }
 
@@ -795,8 +825,17 @@ pub(crate) fn validate_provider_boundary_receipt(
         return Err("provider boundary receipt decision is not bound to its evidence".to_string());
     }
     if isolation_expected {
-        let marker = isolation_marker_for(&record.agent_id).map_err(|error| error.to_string())?;
-        if record.isolation_control != Some(marker.id) {
+        // A version 1 receipt binds the deterministic control of its day. A
+        // later control carries its own lifetime, so its id cannot be
+        // recomputed here: the receipt must name one.
+        let bound = if record.schema_version == 1 {
+            let marker =
+                legacy_isolation_marker_for(&record.agent_id).map_err(|error| error.to_string())?;
+            record.isolation_control == Some(marker.id)
+        } else {
+            record.isolation_control.is_some()
+        };
+        if !bound {
             return Err("provider isolation binding is invalid".to_string());
         }
     } else if record.isolation_control.is_some() {
@@ -1284,7 +1323,7 @@ mod tests {
             "version 2 does not score a blank body"
         );
         let decision = ImmunePipeline::default().run(evidence.id, anomaly.clone(), Vec::new());
-        let isolation = isolation_marker_for("legacy-agent").unwrap();
+        let isolation = legacy_isolation_marker_for("legacy-agent").unwrap();
         let record = ProviderBoundaryRecord {
             schema_version: 1,
             agent_id: "legacy-agent".to_string(),
@@ -2219,7 +2258,7 @@ mod tests {
         // runs in another worktree.
         persist_agent_control(
             workspace.path(),
-            &isolation_marker_for("factory-immune-agent").unwrap(),
+            &isolation_control_for("factory-immune-agent").unwrap(),
         )
         .unwrap();
         let later_attempt = workspace.path().join("later-attempt");

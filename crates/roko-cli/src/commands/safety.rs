@@ -52,8 +52,12 @@ pub(crate) async fn cmd_safety(cli: &Cli, cmd: SafetyCmd) -> Result<i32> {
             } else {
                 for control in &controls {
                     println!(
-                        "{}  state={}  reason={}  control={}",
-                        control.agent_id, control.state, control.reason, control.control_id
+                        "{}  state={}  reason={}  expires={}  control={}",
+                        control.agent_id,
+                        control.state,
+                        control.reason,
+                        expiry_label(control.expires_at_ms),
+                        control.control_id
                     );
                 }
             }
@@ -93,6 +97,18 @@ pub(crate) async fn cmd_safety(cli: &Cli, cmd: SafetyCmd) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
     }
+}
+
+/// When a control stops denying its agent: an RFC 3339 time, or `never` for
+/// a control written before controls expired, which stays until released.
+fn expiry_label(expires_at_ms: Option<u64>) -> String {
+    let Some(expires_at_ms) = expires_at_ms else {
+        return "never".to_string();
+    };
+    i64::try_from(expires_at_ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map_or_else(|| format!("{expires_at_ms}ms"), |at| at.to_rfc3339())
 }
 
 /// The releasing principal when `--by` is absent: `$USER`, else `operator`.

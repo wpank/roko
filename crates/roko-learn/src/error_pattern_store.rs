@@ -699,10 +699,6 @@ impl ErrorPattern {
 }
 
 /// `text` with each run of whitespace made one space, and none at the ends.
-fn collapse_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 impl FailurePatternQuery<'_> {
     fn is_empty(self) -> bool {
         self.plan_id.is_none()

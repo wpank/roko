@@ -91,10 +91,6 @@ pub enum FocusZone {
     MarketList,
     /// Marketplace tab: job detail.
     MarketDetail,
-    /// Atelier tab: artifact list.
-    AtelierList,
-    /// Atelier tab: artifact detail.
-    AtelierDetail,
     /// Learning tab: metric list.
     LearningMetrics,
     /// Learning tab: chart/detail pane.
@@ -125,8 +121,6 @@ impl FocusZone {
             Self::InspectDetail => "Detail",
             Self::MarketList => "Jobs",
             Self::MarketDetail => "Detail",
-            Self::AtelierList => "PRDs",
-            Self::AtelierDetail => "Detail",
             Self::LearningMetrics => "Metrics",
             Self::LearningDetail => "Detail",
             Self::ProviderList => "Providers",
@@ -174,10 +168,6 @@ impl FocusZone {
             Tab::Marketplace => match self {
                 Self::MarketList => Self::MarketDetail,
                 _ => Self::MarketList,
-            },
-            Tab::Atelier => match self {
-                Self::AtelierList => Self::AtelierDetail,
-                _ => Self::AtelierList,
             },
             Tab::Learning => match self {
                 Self::LearningMetrics => Self::LearningDetail,
@@ -230,10 +220,6 @@ impl FocusZone {
             Tab::Marketplace => match self {
                 Self::MarketDetail => Self::MarketList,
                 _ => Self::MarketDetail,
-            },
-            Tab::Atelier => match self {
-                Self::AtelierDetail => Self::AtelierList,
-                _ => Self::AtelierDetail,
             },
             Tab::Learning => match self {
                 Self::LearningDetail => Self::LearningMetrics,
@@ -675,7 +661,6 @@ pub fn handle_key(
         Tab::Config => handle_config_key(key),
         Tab::Inspect => handle_inspect_key(key, focus),
         Tab::Marketplace => handle_marketplace_key(key, focus),
-        Tab::Atelier => handle_atelier_key(key, focus),
         Tab::Learning | Tab::Providers => handle_learning_key(key),
     }
 }
@@ -887,11 +872,11 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         return Some(TuiAction::SwitchTab(tab));
     }
 
-    // Number keys 1-9 switch top-level tabs (same as F1-F10), but only when
+    // Number keys 1-9 switch top-level tabs (same as F1-F9), but only when
     // the active tab does NOT use number keys for its own purpose (e.g.
     // Agents uses 1-7 for agent sub-tabs, Logs uses 1-4 for filter levels,
     // Plans uses 1-9 for direct plan selection).
-    // 0 switches to F10 (Learning). Plain digit press, no modifiers.
+    // 0 switches to F10 (Providers). Plain digit press, no modifiers.
     let tab_uses_numbers = matches!(active_tab, Tab::Agents | Tab::Logs | Tab::Plans);
     if key.modifiers.is_empty() && !tab_uses_numbers {
         let tab = match key.code {
@@ -903,9 +888,8 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
             KeyCode::Char('6') => Some(Tab::Config),
             KeyCode::Char('7') => Some(Tab::Inspect),
             KeyCode::Char('8') => Some(Tab::Marketplace),
-            KeyCode::Char('9') => Some(Tab::Atelier),
-            KeyCode::Char('0') => Some(Tab::Learning),
-            KeyCode::Char('-') => Some(Tab::Providers),
+            KeyCode::Char('9') => Some(Tab::Learning),
+            KeyCode::Char('0') => Some(Tab::Providers),
             _ => None,
         };
         if let Some(tab) = tab {
@@ -1248,18 +1232,6 @@ fn handle_marketplace_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
     }
 }
 
-fn handle_atelier_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => TuiAction::ScrollFocusedDown,
-        KeyCode::Char('k') | KeyCode::Up => TuiAction::ScrollFocusedUp,
-        KeyCode::Enter => TuiAction::ExpandCollapse,
-        KeyCode::Char('r') => TuiAction::Refresh,
-        KeyCode::Home => TuiAction::ScrollFocusedHome,
-        KeyCode::End => TuiAction::ScrollFocusedEnd,
-        _ => TuiAction::None,
-    }
-}
-
 fn handle_learning_key(key: KeyEvent) -> TuiAction {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => TuiAction::ScrollFocusedDown,
@@ -1463,7 +1435,19 @@ mod tests {
     }
 
     #[test]
-    fn zero_key_switches_to_learning_tab() {
+    fn nine_key_switches_to_learning_tab() {
+        let action = handle_key(
+            key(KeyCode::Char('9')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &modals(None),
+        );
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Learning));
+    }
+
+    #[test]
+    fn zero_key_switches_to_providers_tab() {
         let action = handle_key(
             key(KeyCode::Char('0')),
             InputMode::Normal,
@@ -1471,7 +1455,7 @@ mod tests {
             FocusZone::PlanTree,
             &modals(None),
         );
-        assert_eq!(action, TuiAction::SwitchTab(Tab::Learning));
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Providers));
     }
 
     #[test]

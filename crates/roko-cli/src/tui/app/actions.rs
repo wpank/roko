@@ -49,7 +49,6 @@ impl App {
                     Tab::Config => FocusZone::ConfigKeys,
                     Tab::Inspect => FocusZone::InspectTree,
                     Tab::Marketplace => FocusZone::MarketList,
-                    Tab::Atelier => FocusZone::AtelierList,
                     Tab::Learning => FocusZone::LearningMetrics,
                     Tab::Providers => FocusZone::ProviderList,
                 };
@@ -347,9 +346,6 @@ impl App {
                     "state",
                     "learn",
                     "jobs",
-                    "prd",
-                    "prd/published",
-                    "prd/drafts",
                     "task-outputs",
                     "research",
                     "subscriptions",
@@ -987,8 +983,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         (self.tui_state.git_branch_cursor + 1).min(max);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
-                }
+                Tab::Inspect | Tab::Marketplace | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::DrillOut => match self.tui_state.active_tab {
@@ -1005,8 +1000,7 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         self.tui_state.git_branch_cursor.saturating_sub(1);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
-                }
+                Tab::Inspect | Tab::Marketplace | Tab::Learning | Tab::Providers => {}
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::WaveNext => {
@@ -1813,14 +1807,6 @@ impl App {
                 scroll: 0,
                 selected: self.tui_state.marketplace_selected_job,
                 sub_tab: self.tui_state.sub_tab_for(Tab::Marketplace),
-                secondary_selected: 0,
-                auto_tail: false,
-                search_query: self.tui_state.filter.clone(),
-            },
-            Tab::Atelier => ViewState {
-                scroll: 0,
-                selected: self.tui_state.atelier_selected_prd,
-                sub_tab: self.tui_state.sub_tab_for(Tab::Atelier),
                 secondary_selected: 0,
                 auto_tail: false,
                 search_query: self.tui_state.filter.clone(),

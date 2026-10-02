@@ -32,7 +32,6 @@ impl TuiState {
         self.config_values_scroll = 0;
         self.inspect_detail_scroll = 0;
         self.marketplace_detail_scroll = 0;
-        self.atelier_detail_scroll = 0;
         self.learning_detail_scroll = 0;
         self.task_scroll = 0;
         self.command_output_scroll = 0;
@@ -158,11 +157,6 @@ impl TuiState {
     /// Clamp the marketplace detail scroll offset to the current rendered maximum.
     pub fn clamp_marketplace_detail_scroll(&mut self, max: usize) {
         self.marketplace_detail_scroll = self.marketplace_detail_scroll.min(max);
-    }
-
-    /// Clamp the atelier detail scroll offset to the current rendered maximum.
-    pub fn clamp_atelier_detail_scroll(&mut self, max: usize) {
-        self.atelier_detail_scroll = self.atelier_detail_scroll.min(max);
     }
 
     /// Toggle visibility for a single log level in the Logs tab.

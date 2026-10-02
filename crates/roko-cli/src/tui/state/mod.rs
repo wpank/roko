@@ -1877,7 +1877,7 @@ pub enum JobFormField {
     Description,
 }
 
-/// Result of a TUI-initiated command (e.g. job creation, PRD publish).
+/// Result of a TUI-initiated command (e.g. job creation).
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     /// Whether the command succeeded.
@@ -1998,8 +1998,8 @@ pub struct TuiState {
     pub affect: Option<roko_core::AffectSnapshot>,
 
     // -- agents (Vec-based roster for widgets) --
-    /// Ordered agent roster, read by the Agents, Dashboard and Atelier views
-    /// and the header_bar, status_bar, cost_by_model and token_sparkline widgets.
+    /// Ordered agent roster, read by the Agents and Dashboard views and the
+    /// header_bar, status_bar, cost_by_model and token_sparkline widgets.
     pub agents: Vec<AgentRow>,
     /// Latest fetched agent-topology payload.
     pub agent_topology: roko_core::AgentTopology,
@@ -2042,8 +2042,6 @@ pub struct TuiState {
     pub inspect_sub_tab: usize,
     /// Selected Marketplace tab sub-view index.
     pub marketplace_sub_tab: usize,
-    /// Selected Atelier tab sub-view index.
-    pub atelier_sub_tab: usize,
     /// Which panel has keyboard focus.
     pub focus: FocusZone,
 
@@ -2086,8 +2084,6 @@ pub struct TuiState {
     pub inspect_detail_scroll: usize,
     /// Marketplace detail pane scroll offset.
     pub marketplace_detail_scroll: usize,
-    /// Atelier detail pane scroll offset.
-    pub atelier_detail_scroll: usize,
     /// Learning detail pane scroll offset.
     pub learning_detail_scroll: usize,
     /// Task list scroll offset.
@@ -2253,7 +2249,7 @@ pub struct TuiState {
     pub gate_results_page: GateResultsPageData,
     /// Experiment summaries for the config tab.
     pub experiments: Vec<ExperimentSummary>,
-    /// Playbook summaries for the F10 Learning tab (P2-05).
+    /// Playbook summaries for the F9 Learning tab (P2-05).
     pub playbook_summaries: Vec<PlaybookSummary>,
     /// Incremental tailer over `.roko/learn/efficiency.jsonl`, used in
     /// connected mode where the core snapshot cannot carry per-event
@@ -2318,17 +2314,11 @@ pub struct TuiState {
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
 
-    // -- marketplace / atelier --
+    // -- marketplace --
     /// Jobs loaded from .roko/jobs/ for the Marketplace tab.
     pub marketplace_jobs: Vec<roko_core::MarketplaceJob>,
     /// Selected job index in the Marketplace tab.
     pub marketplace_selected_job: usize,
-    /// PRD summaries for the Atelier tab.
-    pub atelier_prds: Vec<roko_core::PrdSummary>,
-    /// Selected PRD index in the Atelier tab.
-    pub atelier_selected_prd: usize,
-    /// Per-slug task lists for the Atelier tab.
-    pub atelier_tasks_by_slug: HashMap<String, Vec<roko_core::job::TaskSummary>>,
     /// Whether the job creation form is in editing mode.
     pub job_form_editing: bool,
     /// Job form: title field.
@@ -2424,8 +2414,8 @@ pub struct TuiState {
     /// Safety incidents loaded from `.roko/immune/` or extracted from log entries.
     pub safety_incidents: Vec<SafetyIncident>,
 
-    // -- providers (F11) --
-    /// Provider status snapshots for the F11 Providers NERV tab.
+    // -- providers (F10) --
+    /// Provider status snapshots for the F10 Providers NERV tab.
     pub provider_statuses: Vec<ProviderStatus>,
     /// Selected Providers tab sub-view index.
     pub providers_sub_tab: usize,
@@ -2489,7 +2479,6 @@ impl Default for TuiState {
             config_sub_tab: 0,
             inspect_sub_tab: 0,
             marketplace_sub_tab: 0,
-            atelier_sub_tab: 0,
             focus: FocusZone::default(),
 
             atmosphere: Atmosphere::default(),
@@ -2508,7 +2497,6 @@ impl Default for TuiState {
             config_values_scroll: 0,
             inspect_detail_scroll: 0,
             marketplace_detail_scroll: 0,
-            atelier_detail_scroll: 0,
             learning_detail_scroll: 0,
             task_scroll: 0,
             command_output_scroll: 0,
@@ -2640,9 +2628,6 @@ impl Default for TuiState {
 
             marketplace_jobs: Vec::new(),
             marketplace_selected_job: 0,
-            atelier_prds: Vec::new(),
-            atelier_selected_prd: 0,
-            atelier_tasks_by_slug: HashMap::new(),
             job_form_editing: false,
             job_form_title: String::new(),
             job_form_type: String::new(),
@@ -3895,9 +3880,9 @@ impl TuiState {
             Tab::Git => usize::from(self.pending_approval.is_some()),
             // F5 Logs: recent gate failures.
             Tab::Logs => self.gate_results.iter().filter(|g| !g.passed).count(),
-            // F10 Learning: number of concluded experiment winners.
+            // F9 Learning: number of concluded experiment winners.
             Tab::Learning => self.experiment_winners.len(),
-            // F11 Providers: number of unhealthy providers.
+            // F10 Providers: number of unhealthy providers.
             Tab::Providers => self
                 .provider_statuses
                 .iter()
@@ -3934,7 +3919,6 @@ impl TuiState {
             Tab::Config => self.config_sub_tab,
             Tab::Inspect => self.inspect_sub_tab,
             Tab::Marketplace => self.marketplace_sub_tab,
-            Tab::Atelier => self.atelier_sub_tab,
             Tab::Learning => self.learning_sub_tab,
             Tab::Providers => self.providers_sub_tab,
         }
@@ -3951,7 +3935,6 @@ impl TuiState {
             Tab::Config => self.config_sub_tab = idx,
             Tab::Inspect => self.inspect_sub_tab = idx,
             Tab::Marketplace => self.marketplace_sub_tab = idx,
-            Tab::Atelier => self.atelier_sub_tab = idx,
             Tab::Learning => self.learning_sub_tab = idx,
             Tab::Providers => self.providers_sub_tab = idx,
         }

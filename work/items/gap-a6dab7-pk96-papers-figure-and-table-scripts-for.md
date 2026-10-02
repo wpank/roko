@@ -77,3 +77,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+- 9513: implemented at 50fb07a8c (figlib.py and the nine P1 scripts; `test_figures_p1.py`, 7 tests, verify passes)
+- 9514: implemented at 14ab371e9 (the nine P2 scripts, a small figlib extension; `test_figures_p2.py`, 4 tests, verify passes)
+- 9517: implemented at 9d0581ad4 (untracked files in MAIN's `tmp/`, recorded by an empty commit; 8 unittest tests, verify passes)
+- 9518: implemented at d0c46a686 by plan option (b), a static trace (`Result: injected`); option (a), the planted-marker run, needs a cargo build at the tag and is still open; verify passes
+- 9519: implemented at 1f3580661 (three SVGs, every plotted total checked against E1; verify passes)
+- 9520: implemented at e64a6d615 (150-row sheet; join: 1,669 / 2,098 sessions joined at 1 h / 24 h; verify passes)

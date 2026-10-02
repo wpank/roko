@@ -681,6 +681,13 @@ impl GraphTaskDispatcher {
                 }
             }
 
+            // gap-85f102: the opt-in LLM judge, once every step passed. A
+            // blocking judge's failure fails the attempt like a failed step.
+            if failures.is_empty() {
+                let judged = self.judge_attempt(spec, task, attempt_key, &effective_workdir);
+                failures.extend(judged.await);
+            }
+
             self.publish_verify_run(spec, task, &effective_workdir, &ran_steps);
 
             if let Some(progress_tx) = progress_tx {

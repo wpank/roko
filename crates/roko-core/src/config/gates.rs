@@ -60,6 +60,10 @@ const fn default_sibling_settle_secs() -> u64 {
     600
 }
 
+const fn default_llm_judge_min_score() -> f32 {
+    0.8
+}
+
 /// Output-token cap of a Graph attempt whose role `[gates] max_output_tokens`
 /// does not list: about five times the largest attempt recorded so far.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
@@ -196,6 +200,21 @@ pub struct GatesConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub baseline_filter: bool,
+    /// Judge a Graph attempt once its verify steps all pass: the cheap helper
+    /// model scores the attempt's diff against its task through the
+    /// LLM-judge gate (gap-85f102). An attempt with no diff, or a run with no
+    /// helper model, is not judged. Default: `false`.
+    #[serde(default)]
+    pub llm_judge: bool,
+    /// Lowest judge score, in `[0, 1]`, that passes. Default: `0.8`.
+    #[serde(default = "default_llm_judge_min_score")]
+    pub llm_judge_min_score: f32,
+    /// Whether a judge score below `llm_judge_min_score`, or a judge that
+    /// cannot answer, fails the attempt like a failed verify step. Default:
+    /// `false`: the verdict is logged and recorded, and the attempt's verdict
+    /// stands.
+    #[serde(default)]
+    pub llm_judge_blocking: bool,
     /// Runaway-output guard for Graph task attempts: the most output tokens
     /// an attempt may report before it fails as a red flag, without running
     /// its verify steps. Keyed by task role, with `default` for roles not
@@ -300,6 +319,9 @@ impl Default for GatesConfig {
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
             baseline_filter: default_true(),
+            llm_judge: false,
+            llm_judge_min_score: default_llm_judge_min_score(),
+            llm_judge_blocking: false,
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),

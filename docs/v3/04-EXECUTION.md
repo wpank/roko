@@ -718,6 +718,21 @@ turns it off, and FAST mode never runs it.
 
 **Source:** `crates/roko-cli/src/graph_task_dispatch/baseline_verify.rs`
 
+### The LLM judge (opt-in)
+
+`[gates] llm_judge = true` adds one check once an attempt's verify steps all
+pass: the cheap helper model scores the attempt's diff against its task through
+the LLM-judge gate, and `llm_judge_min_score` (default `0.8`) is the lowest
+score that passes. The verdict is advisory by default. It is logged, shown on
+the dashboard, counted in the gate metrics and appended to
+`.roko/learn/judge-calibration.jsonl`, and the attempt's verdict stands. With
+`llm_judge_blocking = true`, a lower score, or a judge that cannot answer,
+fails the attempt like a failed verify step, and the next attempt's feedback
+carries the reason. An attempt with no diff, or a run with no helper model,
+is not judged.
+
+**Source:** `crates/roko-cli/src/graph_task_dispatch/judge_step.rs`
+
 ## 11. Merge Queue
 
 > **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,

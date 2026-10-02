@@ -73,3 +73,34 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   (`tmp/backlog/2026-10-02-complete-and-wire/3328-p1-streams-p1-core-and-p1-h3.md`) mentions a "pass^5 subset"
   inside `p1_core` but never commits to the literal id `p1_pass5` — whoever implements it should use that exact
   string so the already-written figure/table scripts resolve without edits.
+
+## Progress
+
+- 3326: implemented at `4b3aa137a`. New family `f6_tsresult` (gen.py, hidden.py, gaming.py,
+  reference/solutions.py, ladder.toml, test_f6.py): `reserveUnits` throws on an over-reservation instead of
+  returning `Result`'s `err(...)`; the truth suite lints every `.ts` under `src/domain/` for `throw`, replays
+  `reserveUnits` and `explain()` over HMAC-seeded hidden cases through a Node probe, and runs `tsc --strict` when
+  present. Latent v2 moves `Result` to a shipped `@lib/result` node_modules package (plain JS + `.d.ts`: Node
+  refuses to type-strip `.ts` under `node_modules`). Verified locally (Node 22.22.2, both with and without `tsc`
+  on PATH): `ci/verify_verifiers.py --families f6 --levels 1-5 --seeds 10` reports 100/100 cells green (reference
+  VS=1, stub fails visibly, gaming passes visibly with VS=0, two runs identical, 0 leaks), both latents;
+  `pytest families/f6_tsresult/test_f6.py` passes (6/6).
+- 3327: implemented at `824ee8525`. `.github/workflows/viabilitybench-ci.yml` split into three jobs: the existing
+  Python job now also runs f2, f3, f5 and f8 (f1, f4, pl unchanged); a new `verifier-ci-rust` job gives F7 its own
+  `dtolnay/rust-toolchain@1.96.1`, a dedicated `CARGO_TARGET_DIR` cached and keyed on
+  `families/f7_rustiter/gen.py`'s content, and `concurrency: group: viabilitybench-f7-${{ github.ref }}` so two
+  runs on one ref never race the cache; a new `verifier-ci-ts` job gives F6 a pinned Node 22
+  (`actions/setup-node@v4`) and TypeScript 5.7.3. Verified: the item's `[[verify]]` command (the regex union over
+  every `--families` flag in the file) passes, and `python3 -m yaml` parses the file cleanly.
+- 3328: implemented at `97fc585c6`. New `streams/compile.py` draws `p1_core.toml` (120: F1-F5, F7 x levels 1-5 x 4
+  instances), `p1_h3.toml` (48: 2 of the 4 per family at levels 1-4) and `p1_pass5.toml` (30: 1 per family and
+  level, stream id `p1_pass5` per this item's note above) from one recorded `--seed` (default 1, recorded in each
+  file's header) via `common.hmac_seed`'s surface stream; H3 and pass^5 are drawn FROM `p1_core`'s own instance
+  list, so both are true subsets with equal spec hashes. Verified: the item's `[[verify]]` command passes;
+  `pytest streams/test_streams.py` passes (9/9), including loading all three through the real `vb.load_stream`,
+  `Stream.order` determinism, and one `vb materialize`/`materialize.materialize` round trip giving the same
+  pristine commit and tree twice.
+
+All three tasks' own verify commands passed locally (Python/Node only; no cargo run, per BUILD-RULES.md). Cargo
+verification of the touched Rust-adjacent surface (none directly; F7's job only adds CI config) is deferred to
+the coordinator's batched gate.

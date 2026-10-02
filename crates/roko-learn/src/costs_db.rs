@@ -358,9 +358,11 @@ impl CostTable {
         models.entry("sonar-pro".to_string()).and_modify(|p| {
             p.per_request = Some(0.014);
         });
-        models.entry("sonar-reasoning-pro".to_string()).and_modify(|p| {
-            p.per_request = Some(0.008);
-        });
+        models
+            .entry("sonar-reasoning-pro".to_string())
+            .and_modify(|p| {
+                p.per_request = Some(0.008);
+            });
         models.insert(
             "sonar-deep-research".to_string(),
             ModelPricing {

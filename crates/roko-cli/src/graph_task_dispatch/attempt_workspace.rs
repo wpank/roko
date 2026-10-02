@@ -14,15 +14,42 @@ impl GraphTaskDispatcher {
     /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
     /// its worktree is the workspace attempt `(plan, task, generation)`.
     /// Retries of a task share that checkout, so a retry resumes the work its
-    /// predecessor left. When the plan branch refuses the task's work as
-    /// conflicting, the task moves on to a fresh checkout of the plan's
-    /// accepted tip.
+    /// predecessor left, as after a turn cap or a timeout. When the plan
+    /// branch refuses the task's work as conflicting, or the pre-verify
+    /// screen rejects it for tampering or for scope, the task moves on to a
+    /// fresh checkout of the plan's accepted tip
+    /// ([`Self::restart_from_plan_tip`]).
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
             .get(task_key)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Move the task `task_id` of plan `plan_id` on to a fresh checkout of the
+    /// plan's accepted tip, because of `why`: its next attempt starts there
+    /// instead of resuming the work its predecessor left, which stays in the
+    /// old checkout for review (backlog 1122). Without per-task worktrees
+    /// there is no checkout to move on from, and nothing changes.
+    pub(super) fn restart_from_plan_tip(&self, plan_id: &str, task_id: &str, why: &str) {
+        if self.workspace_provider.is_none() {
+            return;
+        }
+        let key = format!("{plan_id}/{task_id}");
+        let generation = {
+            let mut generations = self.worktree_generations.lock();
+            let generation = generations.entry(key).or_default();
+            *generation += 1;
+            *generation
+        };
+        tracing::info!(
+            plan_id,
+            task_id,
+            generation,
+            why,
+            "the task's next attempt starts from the plan branch in a fresh checkout"
+        );
     }
 
     /// Accept the successful attempt `settled` of `task`, which ran in `lease`
@@ -109,11 +136,7 @@ impl GraphTaskDispatcher {
                 Ok(Some(acceptance))
             }
             Some(Err(WorkspaceError::Conflict(reason))) => {
-                *self
-                    .worktree_generations
-                    .lock()
-                    .entry(format!("{}/{}", spec.plan_id, task.id))
-                    .or_default() += 1;
+                self.restart_from_plan_tip(&spec.plan_id, &task.id, "plan-branch conflict");
                 Err(RokoError::Verify {
                     gate: "plan-branch".to_string(),
                     message: format!(
@@ -997,6 +1020,69 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
             .collect();
         assert_eq!(checkouts, [0, 1], "each retry gets a fresh checkout");
         assert!(git(repo.path(), &["branch", "--list", "roko/plan/*"]).is_empty());
+    }
+
+    /// A provider that writes `feature.txt` and, on its first call only, also
+    /// rewrites `check.sh`, the script its task's verify step runs, to pass.
+    const TAMPERS_ONCE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+printf 'feature\n' > feature.txt
+if [ ! -e "$dir/tampered-once" ]; then
+  : > "$dir/tampered-once"
+  printf 'exit 0\n' > check.sh
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote the feature"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-t","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 1122: an attempt the pre-verify screen rejects for tampering
+    /// with what checks it is not resumed. Its checkout stays as it left it,
+    /// and the task's next attempt starts in a fresh checkout of the plan
+    /// branch (generation 1), without the tampering, and passes there.
+    #[tokio::test]
+    async fn retry_after_tamper_rejection_starts_from_plan_tip() {
+        let (repo, worktrees) = repo_with_worktrees();
+        std::fs::write(repo.path().join("check.sh"), "test -f feature.txt\n")
+            .expect("write check.sh");
+        git(repo.path(), &["add", "check.sh"]);
+        git(repo.path(), &["commit", "-m", "check"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &repo,
+            TAMPERS_ONCE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "sh check.sh")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the tampering attempt is rejected");
+        let RokoError::Verify { gate, message } = &error else {
+            panic!("expected a verify failure, got {error:?}");
+        };
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(message.contains("from the plan branch"), "{message}");
+        assert_eq!(dispatcher.worktree_generation(&task_key), 1);
+
+        let outputs = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the retry passes in a fresh checkout");
+        let attempt = TaskAttempt::from_signals(&outputs).expect("the output names its attempt");
+        assert_eq!(attempt.attempt, 2);
+        let accepted = attempt.accepted.expect("the retry was accepted");
+        let check = format!("{}:check.sh", accepted.plan_branch);
+        assert_eq!(git(repo.path(), &["show", &check]), "test -f feature.txt");
+        assert_eq!(dispatcher.worktree_generation(&task_key), 1);
     }
 
     /// reg-7cf6f9: an attempt waits for disk headroom while another attempt

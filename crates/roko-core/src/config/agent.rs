@@ -89,6 +89,12 @@ pub struct AgentConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
 
+    /// The CaMeL data-LLM boundary (`[agent.data_llm]`); `None`, the
+    /// default, turns it off. See [`DataLlmConfig`] for what it covers
+    /// (gap-b0d514).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_llm: Option<DataLlmConfig>,
+
     /// Default agent mode: how long the agent lives.
     #[serde(default)]
     pub mode: AgentMode,
@@ -185,6 +191,7 @@ impl Default for AgentConfig {
             fallback_model: None,
             roles: HashMap::new(),
             defaults: AgentDefaults::default(),
+            data_llm: None,
             mode: AgentMode::default(),
             extensions: Vec::new(),
             mcp_config: None,
@@ -273,7 +280,8 @@ pub struct RoutingOverrides {
 
 // ---- CaMeL dual-LLM configuration (SAFE-07) ────────────────────────────
 
-/// Configuration for the Data LLM in the CaMeL dual-LLM architecture.
+/// Configuration for the Data LLM in the CaMeL dual-LLM architecture
+/// (`[agent.data_llm]`; leaving the section out turns the boundary off).
 ///
 /// The Data LLM processes untrusted external content (web fetches, plugin
 /// output, user-provided files) with tool-call capability stripped. It
@@ -285,10 +293,20 @@ pub struct RoutingOverrides {
 /// 2. Data LLM isolation (no tools, schema-constrained output)
 /// 3. Output validation (schema check + anomaly detection)
 ///
-/// Reserved for future CaMeL work: `DataLlmRouter` takes this type, but no
-/// dispatch path builds one, so no `roko.toml` key sets it. The
-/// `agent.data_llm` key was removed (gap-7a3527) because it suggested an
-/// isolation that nothing applied.
+/// ```toml
+/// [agent.data_llm]
+/// model = "claude-haiku-4-5"
+/// timeout_ms = 30000
+/// max_input_bytes = 32768
+/// ```
+///
+/// It covers the tool loops roko runs itself, which send untrusted tool
+/// output through it: those of an agent the provider factory
+/// (`create_agent_for_model`) builds for an API provider, and ACP's. CLI
+/// providers (Claude CLI, Codex, Gemini CLI, Cursor) run their own tool
+/// loops, so roko never sees their tool results first. The data model must
+/// be one roko calls over an API; otherwise the agent fails to build, or
+/// the ACP turn fails.
 #[allow(clippy::derive_partial_eq_without_eq)] // contains f64
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -325,6 +343,16 @@ pub struct DataLlmConfig {
     /// untrusted content before it reaches the Data LLM.
     #[serde(default = "default_true")]
     pub sanitize_input: bool,
+
+    /// How long one Data LLM call may take, in milliseconds. A call that
+    /// takes longer is abandoned, and the content it was given is withheld.
+    #[serde(default = "default_data_llm_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// The most untrusted text, in bytes, one Data LLM call is given; the
+    /// rest of a longer tool result is cut off first.
+    #[serde(default = "default_data_llm_max_input_bytes")]
+    pub max_input_bytes: usize,
 }
 
 fn default_data_llm_model() -> String {
@@ -333,6 +361,14 @@ fn default_data_llm_model() -> String {
 
 const fn default_data_llm_max_tokens() -> u64 {
     4096
+}
+
+const fn default_data_llm_timeout_ms() -> u64 {
+    30_000
+}
+
+const fn default_data_llm_max_input_bytes() -> usize {
+    32 * 1024
 }
 
 impl Default for DataLlmConfig {
@@ -344,6 +380,8 @@ impl Default for DataLlmConfig {
             strip_tool_calls: true,
             output_schema: None,
             sanitize_input: true,
+            timeout_ms: default_data_llm_timeout_ms(),
+            max_input_bytes: default_data_llm_max_input_bytes(),
         }
     }
 }

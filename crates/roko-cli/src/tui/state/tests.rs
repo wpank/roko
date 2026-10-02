@@ -2724,7 +2724,6 @@ fn live_and_replayed_tool_streams_are_identical() {
         kinds,
         [
             OutputRecordKind::ToolCall,
-            OutputRecordKind::Text,
             OutputRecordKind::ToolResult,
             OutputRecordKind::Text,
             OutputRecordKind::ToolCall,
@@ -2741,7 +2740,6 @@ fn live_and_replayed_tool_streams_are_identical() {
         texts,
         [
             "Bash cat src/main.rs",
-            "Reading the file",
             "fn main() {}",
             "Reading the file",
             "Bash",
@@ -2751,8 +2749,8 @@ fn live_and_replayed_tool_streams_are_identical() {
         ]
     );
 
-    // Rendered, both read alike, the live step's target and the unscreened
-    // marker included.
+    // Rendered, both read alike: the live step keeps its target, and the
+    // unscreened draft is gone, settled by its screened copy (bug-cc61a3).
     let render = |records: &[AgentOutputRecord]| {
         render_output_records_styled(records, &Theme::dark(), &RenderOptions::default())
             .iter()
@@ -2761,12 +2759,14 @@ fn live_and_replayed_tool_streams_are_identical() {
     };
     let lines = render(&live_records);
     assert_eq!(lines, render(&backfilled_records));
-    for expected in [
-        "\u{25b8} Bash cat src/main.rs",
-        "[unscreened] Reading the file",
-    ] {
-        assert!(lines.contains(&expected.to_string()), "{lines:?}");
-    }
+    assert!(
+        lines.contains(&"\u{25b8} Bash cat src/main.rs".to_string()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.starts_with("[unscreened]")),
+        "{lines:?}"
+    );
 }
 
 /// gap-aabeff: a tool call from an agent's sidecar stream becomes a typed

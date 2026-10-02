@@ -1820,7 +1820,8 @@ impl GraphEngine {
     }
 
     /// Validate the graph without executing: check for cycles, unknown cell types,
-    /// and unresolved edge references.
+    /// and unresolved edge references. Stub cells, which a production start
+    /// refuses, are issues too unless the engine allows test stubs.
     ///
     /// # Errors
     /// Returns a list of validation issues.
@@ -1839,6 +1840,25 @@ impl GraphEngine {
                 issues.push(format!(
                     "node '{}' references unknown cell type '{}'",
                     node_id, node.cell_type
+                ));
+            }
+        }
+
+        // A production start refuses stub cells (`validate_for_start`), so
+        // report them too, unless this engine allows them.
+        if !self.allow_test_stubs {
+            let registry = &self.registry;
+            let mut stubs: Vec<(&String, &String)> = Vec::new();
+            for (node_id, idx) in &self.graph.node_map {
+                let cell_type = &self.graph.inner[*idx].cell_type;
+                if registry.descriptor(cell_type).is_some_and(|d| d.is_stub) {
+                    stubs.push((node_id, cell_type));
+                }
+            }
+            stubs.sort();
+            for (node_id, cell_type) in stubs {
+                issues.push(format!(
+                    "node '{node_id}' is a stub cell ('{cell_type}'); production starts refuse it"
                 ));
             }
         }
@@ -5421,6 +5441,25 @@ to = "b"
                     "{cell_type}"
                 );
             }
+        }
+
+        /// bug-147b45: `validate`, which `roko graph validate` runs, reports
+        /// the stub cells a production start refuses.
+        #[test]
+        fn validate_flags_stub_cells() {
+            let mut graph = Graph::new(GraphMetadata {
+                name: "agent".to_string(),
+                ..Default::default()
+            });
+            graph.add_node(make_node("agent", "claude-agent")).unwrap();
+
+            let issues = GraphEngine::new(graph.clone(), default_registry()).validate();
+            assert_eq!(
+                issues,
+                ["node 'agent' is a stub cell ('claude-agent'); production starts refuse it"]
+            );
+            let allowed = GraphEngine::new(graph, default_registry()).with_allow_test_stubs(true);
+            assert!(allowed.validate().is_empty());
         }
 
         #[test]

@@ -4,10 +4,12 @@
 //! existing learning infrastructure as append-only efficiency JSONL events.
 
 use crate::cascade_router::CascadeRouter;
+use crate::costs_db::CostRecord;
 use crate::efficiency::FEEDBACK_EVENT_SCHEMA;
 use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use crate::model_call_feedback::{ModelCallJournal, observe_model_call_on_router};
 use crate::section_effect::SectionEffectivenessRegistry;
+use crate::telemetry::CostSource;
 use async_trait::async_trait;
 use chrono::Utc;
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
@@ -84,6 +86,9 @@ pub struct FeedbackService {
     cascade_router: Option<Arc<CascadeRouter>>,
     /// Optional WAL journal for those observations (find-0dc1d5).
     cascade_journal: Option<Arc<ModelCallJournal>>,
+    /// Cost log each model call that reached a provider is recorded in,
+    /// when the caller records its calls' costs here (bug-c1f6b8).
+    costs_path: Option<PathBuf>,
     /// Model-call provenance waiting for a gate/workflow outcome.
     provenance: Mutex<HashMap<String, ProvenanceRecord>>,
     /// Durable score for each knowledge entry.
@@ -106,6 +111,7 @@ impl FeedbackService {
             episode_logger: None,
             cascade_router: None,
             cascade_journal: None,
+            costs_path: None,
             provenance: Mutex::new(HashMap::new()),
             knowledge_scores: Mutex::new(knowledge_scores),
             section_effectiveness: Mutex::new(section_effectiveness),
@@ -148,6 +154,20 @@ impl FeedbackService {
     #[must_use]
     pub fn with_cascade_journal(mut self, journal: Arc<ModelCallJournal>) -> Self {
         self.cascade_journal = Some(journal);
+        self
+    }
+
+    /// Record each model call that reached a provider as one cost record in
+    /// `costs.jsonl` under the data directory, where `roko status` and the
+    /// daily budget read spend (bug-c1f6b8).
+    ///
+    /// Only for callers whose model calls nothing else costs, so no call is
+    /// recorded twice. A response served from a cache cost nothing and gets
+    /// no record, nor does a call that reported no usage: its cost is
+    /// unknown, not zero.
+    #[must_use]
+    pub fn with_cost_records(mut self) -> Self {
+        self.costs_path = Some(self.data_dir.join("costs.jsonl"));
         self
     }
 
@@ -209,6 +229,7 @@ impl FeedbackService {
                     error_class,
                     model_reported,
                     attempt_key,
+                    cache_hit,
                 } => serde_json::json!({
                     "kind": "model_call",
                     "schema": FEEDBACK_EVENT_SCHEMA,
@@ -231,6 +252,8 @@ impl FeedbackService {
                     // call belongs to no attempt.
                     "model_reported": model_reported,
                     "attempt_key": attempt_key,
+                    // A cached response, which cost nothing.
+                    "cache_hit": cache_hit,
                     "ts": ts,
                 }),
                 FeedbackEvent::GateResult {
@@ -727,6 +750,11 @@ impl FeedbackService {
 #[async_trait]
 impl FeedbackSink for FeedbackService {
     async fn record(&self, event: FeedbackEvent) -> Result<()> {
+        if let Some(costs_path) = &self.costs_path
+            && let Some(cost_record) = model_call_cost_record(&event)
+        {
+            append_cost_record(costs_path, &cost_record).await;
+        }
         match &event {
             FeedbackEvent::ModelCall {
                 run_id,
@@ -737,9 +765,14 @@ impl FeedbackSink for FeedbackService {
                 role,
                 latency_ms,
                 success,
+                cache_hit,
                 ..
             } => {
-                self.observe_model_call(model, *success, role, *latency_ms);
+                // A cache hit called no model, so it is no router trial
+                // (bug-982600).
+                if !*cache_hit {
+                    self.observe_model_call(model, *success, role, *latency_ms);
+                }
                 if *success {
                     if let Some(record) = self.remember_model_call_provenance(
                         run_id.as_ref(),
@@ -813,6 +846,78 @@ fn load_knowledge_scores(path: &Path) -> HashMap<String, i64> {
         .unwrap_or_default()
 }
 
+/// The cost record of a model call that reached a provider: `None` for any
+/// other event, and for a response served from a cache, which cost nothing.
+fn model_call_cost_record(event: &FeedbackEvent) -> Option<CostRecord> {
+    let FeedbackEvent::ModelCall {
+        run_id,
+        request_id,
+        model,
+        provider,
+        role,
+        input_tokens,
+        output_tokens,
+        cost_usd,
+        latency_ms,
+        success,
+        cache_hit: false,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    // A call that reported no usage gets no record: a $0 row would read as
+    // a free call, when its cost is unknown.
+    if *input_tokens == 0 && *output_tokens == 0 && *cost_usd <= 0.0 {
+        return None;
+    }
+    Some(CostRecord {
+        timestamp: Utc::now().to_rfc3339(),
+        model: model.clone().unwrap_or_default(),
+        provider: provider
+            .clone()
+            .unwrap_or_else(|| "unknown-provider".to_string()),
+        role: role.clone(),
+        plan_id: String::new(),
+        // The request id is the one the call's gateway event carries.
+        task_id: request_id.clone().unwrap_or_default(),
+        complexity_band: "standard".to_string(),
+        input_tokens: *input_tokens,
+        output_tokens: *output_tokens,
+        cached_tokens: 0,
+        cost_usd: *cost_usd,
+        duration_ms: *latency_ms,
+        success: *success,
+        session_id: run_id.clone().unwrap_or_default(),
+        // A model-call event does not say where its usage came from.
+        cost_source: CostSource::Unknown,
+    })
+}
+
+/// Append `record` to the cost log at `path`. Best-effort: a failed write is
+/// logged and never fails the feedback.
+async fn append_cost_record(path: &Path, record: &CostRecord) {
+    let line = match serde_json::to_string(record) {
+        Ok(line) => line,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "cost record serialization failed");
+            return;
+        }
+    };
+    let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+    let written = tokio::task::spawn_blocking({
+        let path = path.to_path_buf();
+        move || roko_fs::log_rotation::append_jsonl_line_sync(&path, line.as_bytes(), max_mb)
+    })
+    .await;
+    if let Err(error) = written
+        .map_err(std::io::Error::other)
+        .and_then(|result| result.map(|_| ()))
+    {
+        tracing::warn!(path = %path.display(), %error, "cost record write failed (best-effort)");
+    }
+}
+
 impl Drop for FeedbackService {
     fn drop(&mut self) {
         let _ = self.flush();
@@ -881,6 +986,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();
@@ -890,6 +996,55 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join("efficiency.jsonl")).unwrap();
         assert!(content.contains("model_call"));
         assert!(content.contains("sonnet"));
+    }
+
+    /// bug-c1f6b8: with cost records on, a model call that reached a
+    /// provider gets one cost record. A cached answer cost nothing, and a
+    /// call that reported no usage has an unknown cost: neither gets one.
+    #[tokio::test]
+    async fn cost_records_skip_cached_answers_and_calls_without_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = FeedbackService::new(dir.path().to_path_buf()).with_cost_records();
+        let call = |input_tokens: u64, cost_usd: f64, cache_hit: bool| FeedbackEvent::ModelCall {
+            run_id: Some("serve-run".into()),
+            request_id: Some(format!("serve-run:{input_tokens}:{cache_hit}")),
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: Some("anthropic".into()),
+            token_usage: None,
+            cost: None,
+            role: "model_call".into(),
+            input_tokens,
+            output_tokens: input_tokens / 10,
+            cost_usd,
+            latency_ms: 900,
+            success: true,
+            error_class: None,
+            model_reported: None,
+            attempt_key: None,
+            cache_hit,
+        };
+
+        svc.record(call(1_000, 0.02, false)).await.unwrap();
+        svc.record(call(1_000, 0.02, true)).await.unwrap();
+        svc.record(call(0, 0.0, false)).await.unwrap();
+
+        let costs = std::fs::read_to_string(dir.path().join("costs.jsonl")).unwrap();
+        let rows: Vec<CostRecord> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1, "{costs}");
+        let row = &rows[0];
+        assert_eq!(
+            (row.model.as_str(), row.provider.as_str()),
+            ("sonnet", "anthropic")
+        );
+        assert_eq!((row.input_tokens, row.output_tokens), (1_000, 100));
+        assert!((row.cost_usd - 0.02).abs() < 1e-12);
+        assert_eq!(row.task_id, "serve-run:1000:false");
+        assert_eq!(row.session_id, "serve-run");
     }
 
     #[tokio::test]
@@ -943,6 +1098,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();
@@ -1091,6 +1247,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();
@@ -1128,6 +1285,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();
@@ -1162,12 +1320,50 @@ mod tests {
             error_class: Some("timeout".into()),
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();
 
         assert_eq!(router.total_observations(), 1);
         assert_eq!(router.confidence_snapshot()["sonnet"], (1, 0));
+    }
+
+    /// bug-982600: a cache hit answers from the cache without calling a
+    /// model, so the router counts only the call that reached one.
+    #[tokio::test]
+    async fn cache_hits_are_not_router_trials() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = Arc::new(CascadeRouter::new(vec!["sonnet".into(), "opus".into()]));
+        let svc =
+            FeedbackService::new(dir.path().to_path_buf()).with_cascade_router(Arc::clone(&router));
+        let call = |cache_hit: bool| FeedbackEvent::ModelCall {
+            run_id: Some("r1".into()),
+            request_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "implementer".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.01,
+            latency_ms: 2000,
+            success: true,
+            error_class: None,
+            model_reported: None,
+            attempt_key: None,
+            cache_hit,
+        };
+
+        svc.record(call(false)).await.unwrap();
+        svc.record(call(true)).await.unwrap();
+        svc.record(call(true)).await.unwrap();
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["sonnet"], (1, 1));
     }
 
     #[tokio::test]
@@ -1195,6 +1391,7 @@ mod tests {
             error_class: None,
             model_reported: None,
             attempt_key: None,
+            cache_hit: false,
         })
         .await
         .unwrap();

@@ -1058,6 +1058,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -1152,6 +1153,13 @@ pub async fn generate_plan_from_prd_with_failure_context(
             .await?;
     Ok(plans_root)
 }
+
+/// Characters of the model's output that a failed plan generation prints.
+const FAILURE_OUTPUT_CHARS: usize = 2000;
+/// Characters of the model's output that a non-retriable agent error quotes.
+const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
+/// Characters of the model's last output that a retry prompt quotes.
+const RETRY_OUTPUT_CHARS: usize = 2000;
 
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
@@ -1752,7 +1760,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // Non-retriable errors (model not found, context overflow): fail
             // immediately because a retry will hit the same permanent error.
             if !crash_class.is_retriable() {
-                let preview = &output[..output.len().min(500)];
+                let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
                 return Err(anyhow!(
                     "plan generation agent failed (exit code {exit_code}, {crash_class:?}): \
                      {preview}\nHint: {}",
@@ -2033,8 +2041,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_retries + 1,
                 );
                 let error = validated_toml.as_ref().unwrap_err();
-                let truncated_output = if last_output.len() > 2000 {
-                    format!("{}…(truncated)", &last_output[..2000])
+                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
+                let truncated_output = if head.len() < last_output.len() {
+                    format!("{head}…(truncated)")
                 } else {
                     last_output.clone()
                 };
@@ -2208,8 +2217,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 None,
             )
             .await;
-            eprintln!("--- Raw model output (first 2000 chars) ---");
-            eprintln!("{}", &output[..output.len().min(2000)]);
+            eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
+            eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
@@ -2302,9 +2311,6 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             post_ms,
             total_ms,
             "prd plan generate: phase timing"
-        );
-        eprintln!(
-            "  Timing: init={init_ms}ms context={context_ms}ms prompt={prompt_ms}ms agent={agent_ms}ms post={post_ms}ms total={total_ms}ms"
         );
 
         let outcome = GenerationOutcome {
@@ -2977,14 +2983,14 @@ fn validate_and_fix_generated_plan(
                 if !KNOWN_META_FIELDS.contains(&key.as_str()) {
                     if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
                         if let Some(value) = meta.remove(key.as_str()) {
-                            eprintln!(
-                                "warning: [meta] field '{key}' is unknown; \
+                            tracing::warn!(
+                                "prd plan: [meta] field '{key}' is unknown; \
                                  corrected to '{correction}'"
                             );
                             meta.insert(correction, value);
                         }
                     } else {
-                        eprintln!("warning: [meta] has unknown field '{key}'");
+                        tracing::warn!("prd plan: [meta] has unknown field '{key}'");
                     }
                 }
             }
@@ -3003,13 +3009,13 @@ fn validate_and_fix_generated_plan(
                 if let Some(plan_str) = plan_val.as_str() {
                     if plan_str != slug {
                         if slug.starts_with(plan_str) {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' appears truncated; \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' appears truncated; \
                                  corrected to '{slug}'"
                             );
                         } else {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' does not match \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' does not match \
                                  expected slug '{slug}'; corrected"
                             );
                         }
@@ -3044,14 +3050,14 @@ fn validate_and_fix_generated_plan(
                                 suggest_field_correction(key, KNOWN_TASK_FIELDS)
                             {
                                 if let Some(value) = task.remove(key.as_str()) {
-                                    eprintln!(
-                                        "warning: {task_id_label}: field '{key}' is unknown; \
+                                    tracing::warn!(
+                                        "prd plan: {task_id_label}: field '{key}' is unknown; \
                                          corrected to '{correction}'"
                                     );
                                     task.insert(correction, value);
                                 }
                             } else {
-                                eprintln!("warning: {task_id_label}: unknown field '{key}'");
+                                tracing::warn!("prd plan: {task_id_label}: unknown field '{key}'");
                             }
                         }
                     }
@@ -3082,8 +3088,8 @@ fn validate_and_fix_generated_plan(
                                 "skipped",
                             ];
                             if !VALID_STATUSES.contains(&s) {
-                                eprintln!(
-                                    "warning: {task_id_label}: status '{s}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: status '{s}' is invalid; \
                                      defaulting to 'ready'"
                                 );
                                 task.insert(
@@ -3099,8 +3105,8 @@ fn validate_and_fix_generated_plan(
                         if let Some(r) = role_val.as_str() {
                             const VALID_ROLES: &[&str] = crate::task_parser::PLAN_TASK_ROLES;
                             if !VALID_ROLES.contains(&r) {
-                                eprintln!(
-                                    "warning: {task_id_label}: role '{r}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: role '{r}' is invalid; \
                                      defaulting to 'implementer'"
                                 );
                                 task.insert(
@@ -3116,8 +3122,8 @@ fn validate_and_fix_generated_plan(
                     // role pick a model on this workspace's routing ladder.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
-                        eprintln!(
-                            "info: {task_id_label}: removing model_hint '{hint}' \
+                        tracing::info!(
+                            "prd plan: {task_id_label}: removing model_hint '{hint}' \
                              (tier and role pick the model; a task that needs a \
                              stronger one names a `rung`)"
                         );
@@ -3126,8 +3132,8 @@ fn validate_and_fix_generated_plan(
                     // gap-dbf2a6: keep a `rung` hint that names one of the
                     // task's ladder rungs; drop any other.
                     if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
-                        eprintln!(
-                            "warning: {task_id_label}: removing rung {rung}: no rung of the \
+                        tracing::warn!(
+                            "prd plan: {task_id_label}: removing rung {rung}: no rung of the \
                              routing ladder has that name"
                         );
                     }
@@ -3144,15 +3150,15 @@ fn validate_and_fix_generated_plan(
                                                 suggest_field_correction(key, KNOWN_VERIFY_FIELDS)
                                             {
                                                 if let Some(value) = step.remove(key.as_str()) {
-                                                    eprintln!(
-                                                        "warning: {task_id_label} verify[{si}]: \
+                                                    tracing::warn!(
+                                                        "prd plan: {task_id_label} verify[{si}]: \
                                                          field '{key}' corrected to '{correction}'"
                                                     );
                                                     step.insert(correction, value);
                                                 }
                                             } else {
-                                                eprintln!(
-                                                    "warning: {task_id_label} verify[{si}]: \
+                                                tracing::warn!(
+                                                    "prd plan: {task_id_label} verify[{si}]: \
                                                      unknown field '{key}'"
                                                 );
                                             }
@@ -3212,8 +3218,8 @@ fn validate_and_fix_generated_plan(
                             )];
 
                             task.insert("verify".to_string(), toml::Value::Array(auto_verify));
-                            eprintln!(
-                                "info: {task_id_label}: auto-added one focused compile verify"
+                            tracing::info!(
+                                "prd plan: {task_id_label}: auto-added one focused compile verify"
                             );
                         }
                     }
@@ -3252,9 +3258,10 @@ fn validate_and_fix_generated_plan(
     ];
     for &(placeholder, replacement) in replacements {
         if serialized.contains(placeholder) {
-            eprintln!(
-                "plan validation: replaced placeholder '{}' with '{}'",
-                placeholder, replacement
+            tracing::info!(
+                "prd plan: replaced placeholder '{}' with '{}'",
+                placeholder,
+                replacement
             );
             serialized = serialized.replace(placeholder, replacement);
         }
@@ -3623,6 +3630,24 @@ pub fn validate_prd_grounding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-d3c72e: a failed plan generation prints the head of the model's
+    /// output. Cutting it at byte 2000 panicked when that byte fell inside a
+    /// multi-byte character; the cut now falls on a char boundary.
+    #[test]
+    fn prd_failure_output_cuts_at_a_char_boundary() {
+        let output = format!("{}é and more", "x".repeat(FAILURE_OUTPUT_CHARS - 1));
+        assert!(!output.is_char_boundary(FAILURE_OUTPUT_CHARS));
+
+        let printed = crate::run::truncate(&output, FAILURE_OUTPUT_CHARS);
+
+        assert_eq!(printed.chars().count(), FAILURE_OUTPUT_CHARS);
+        assert!(printed.ends_with('é'));
+        let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
+        assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
+        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
+        assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
+    }
 
     #[test]
     fn slugify_basic() {

@@ -8,6 +8,118 @@ use crate::*;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum TuneCmd {
+    /// Tune model routing preferences.
+    Routing {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Tune validation gate strictness.
+    Gates {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Tune cost and prompt budget limits.
+    Budget {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Tune the default model.
+    Model {
+        /// Model key or alias, for example sonnet or haiku.
+        name: String,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ConfigPresetCmd — preset mutation targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigPresetCmd {
+    /// Apply recommended gate strictness preset.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended model routing preset with resolved model slugs.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Apply recommended budget limits preset.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+    /// Set the default model from configured models.
+    Model {
+        /// Model key or alias (e.g. sonnet, haiku).
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview the preset diff without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip interactive confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Write to global config instead of project.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write to project config (default).
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+    },
+}
+
 // ── Legacy top-level `roko tune` (deprecated) ───────────────────────
 
 /// `roko tune ...` — legacy preset writer, preserved for backward compatibility.

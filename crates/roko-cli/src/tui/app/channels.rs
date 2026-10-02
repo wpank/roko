@@ -347,8 +347,14 @@ impl App {
                     // next animation tick (P3-TUI-1).
                     self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
-                roko_core::DashboardEvent::AgentSpawned { .. }
-                | roko_core::DashboardEvent::AgentCompleted { .. } => {
+                roko_core::DashboardEvent::AgentSpawned { agent_id, .. } => {
+                    // A new attempt streams afresh: what it streams unscreened
+                    // shows until its screened transcript settles it
+                    // (bug-cc61a3). Lifecycle state comes from the snapshot.
+                    self.tui_state.agent_output_history.begin_attempt(agent_id);
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                roko_core::DashboardEvent::AgentCompleted { .. } => {
                     // Agent lifecycle events are reflected in the snapshot;
                     // mark dirty for immediate redraw.
                     self.render_dirty.insert(RenderDirty::SNAPSHOT);

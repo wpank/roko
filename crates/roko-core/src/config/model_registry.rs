@@ -469,6 +469,11 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 1.0,
         },
     ),
+    // Sonar Deep Research has no row. Besides $2/M input and $8/M output it
+    // bills citation tokens ($2/M), reasoning tokens ($3/M) and search queries
+    // ($5 per 1K) (https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02), which `ModelPricing` cannot express. Its cost is
+    // unknown rather than understated (bug-c0602b).
     // Google Gemini: https://ai.google.dev/gemini-api/docs/pricing, paid
     // tier, checked 2026-10-01. A cache read is the context-caching price;
     // cache storage is billed per hour, which a token rate cannot express.
@@ -518,6 +523,10 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 /// names no cache-write price of its own: Anthropic's 5-minute write.
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
+/// Price of one Perplexity Search API request (`POST /search`), which runs
+/// no model and reports no usage: a flat $5 per 1,000 requests.
+pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
+
 /// Look up pricing for a model slug.
 ///
 /// Tries an exact match first, then a table key the slug is a snapshot of
@@ -558,6 +567,19 @@ pub fn is_snapshot_of(slug: &str, key: &str) -> bool {
         matches!(first, "latest" | "preview") || (first.len() >= 3 && digits(first))
     });
     snapshot && parts.all(digits)
+}
+
+/// The cheapest built-in model of `kind` by input price: the model a probe
+/// that only needs the provider to answer, such as a credit check, requests.
+/// `None` when no priced built-in model has that kind.
+#[must_use]
+pub fn cheapest_builtin_model(kind: ProviderKind) -> Option<&'static BuiltinModel> {
+    BUILTIN_MODELS
+        .iter()
+        .filter(|model| model.provider_kind == kind)
+        .filter_map(|model| Some((model, builtin_pricing(model.slug)?.input_per_m)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(model, _)| model)
 }
 
 /// Resolved metadata for a model slug: the single source of truth shared by
@@ -666,6 +688,14 @@ pub fn model_meta(slug: &str) -> ModelMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cheapest_builtin_anthropic_model_is_haiku() {
+        let model = cheapest_builtin_model(ProviderKind::AnthropicApi).expect("anthropic");
+        assert_eq!(model.slug, "claude-haiku-4-5");
+        // No built-in model is served by a CLI provider.
+        assert!(cheapest_builtin_model(ProviderKind::ClaudeCli).is_none());
+    }
 
     #[test]
     fn exact_slug_lookup() {
@@ -813,6 +843,15 @@ mod tests {
         ] {
             assert_eq!(builtin_pricing(other), None, "{other}");
         }
+    }
+
+    /// bug-c0602b: Sonar Deep Research bills charges a price row cannot
+    /// express, so it stays unpriced: its cost is unknown, not Sonar's $1/$1.
+    #[test]
+    fn sonar_deep_research_price() {
+        assert_eq!(builtin_pricing("sonar-deep-research"), None);
+        assert_eq!(model_meta("sonar-deep-research").pricing, None);
+        assert!(builtin_pricing("sonar").is_some());
     }
 
     #[test]

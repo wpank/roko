@@ -837,6 +837,15 @@ pub(crate) fn register_observability_foundation_metrics(registry: &MetricRegistr
     // is already registered by register_standard_metrics)
     // -- no additional gate counter needed; the standard one covers it.
 
+    // Conductor evaluations and provider failures (gap-a95898): a hosted run's
+    // conductor and the provider health registry count into these.
+    for descriptor in [
+        roko_core::obs::schema::ROKO_CONDUCTOR_EVALUATIONS_TOTAL_DESCRIPTOR,
+        roko_core::obs::schema::ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR,
+    ] {
+        registry.register_counter(descriptor.name, descriptor.help, LabelSet::new());
+    }
+
     // LLM provider metrics
     registry.register_counter(
         "roko_llm_calls_total",
@@ -1044,6 +1053,8 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("build shared service bundle: {e}"))?;
         let model_call_service = service_bundle.model_call_service;
         let provider_health_registry = service_bundle.provider_health_registry;
+        // Provider failures count on `/metrics` too (gap-a95898).
+        provider_health_registry.attach_metrics(Arc::clone(&metrics));
         let cascade_journal = service_bundle.cascade_journal;
         let effective_models = roko_config.effective_models();
         // One cascade router for every surface (bug-012303), saved by

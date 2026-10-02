@@ -4256,7 +4256,8 @@ mod tests {
         assert!(rendered.contains("GateThresholds"));
         assert!(rendered.contains("Experiments"));
         assert!(rendered.contains("SkillLibrary"));
-        assert!(rendered.contains("PatternMiner"));
+        assert!(rendered.contains("MetaPatterns"));
+        assert!(!rendered.contains("PatternMiner"));
         assert!(rendered.contains("ProviderHealth"));
         assert!(rendered.contains("KnowledgeStore"));
         assert!(rendered.contains("24h Efficiency Trends"));

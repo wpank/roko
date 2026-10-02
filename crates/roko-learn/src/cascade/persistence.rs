@@ -1,10 +1,11 @@
 //! Snapshot persistence and migration helpers for the cascade router.
 
 use roko_core::agent::AgentRole;
+use roko_core::task::TaskCategory;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use super::types::StageTransition;
+use super::types::{CategoryModelStats, StageTransition};
 
 /// Serializable form of LinUCB arm parameters.
 ///
@@ -79,6 +80,11 @@ pub(crate) struct CascadeSnapshot {
     /// restarts without requiring re-computation from scratch.
     #[serde(default)]
     pub(crate) pareto_frontier: Vec<String>,
+    /// Per-model, per-category trial and success counts behind Stage 2's
+    /// category pass-rate delta (bug-a6a3cd). Empty for snapshots written
+    /// before this field was added.
+    #[serde(default)]
+    pub(crate) category_stats: HashMap<String, HashMap<TaskCategory, CategoryModelStats>>,
 }
 
 impl CascadeSnapshot {
@@ -294,8 +300,10 @@ pub(crate) fn remap_role_table_entry(slug: String, changes: &[VersionChange]) ->
 /// is its own new learning. Confidence counters and LinUCB `A`/`b` sums are
 /// additive, so adding that difference model by model keeps everything other
 /// writers saved meanwhile, and a model only `latest` has keeps its state
-/// (bug-605a8a). Role-table entries and a Pareto frontier the router changed
-/// replace the persisted ones; new models and stage transitions are appended.
+/// (bug-605a8a). Successes can also fall, when a hindsight relabel retracts
+/// one that `base` held; that many leave `latest` (bug-583e50). Role-table
+/// entries and a Pareto frontier the router changed replace the persisted
+/// ones; new models and stage transitions are appended.
 pub(crate) fn merge_learning(
     latest: &mut CascadeSnapshot,
     current: &CascadeSnapshot,
@@ -321,16 +329,43 @@ pub(crate) fn merge_learning(
     }
 
     for (slug, stats) in &current.confidence_stats {
-        let learned = match base.confidence_stats.get(slug) {
-            Some(base_stats) => stats.learned_since(*base_stats),
-            None => *stats,
+        let base_stats = match base.confidence_stats.get(slug) {
+            Some(base_stats) => *base_stats,
+            None => PersistedModelStats::default(),
         };
-        if learned != PersistedModelStats::default() {
-            latest
-                .confidence_stats
-                .entry(slug.clone())
-                .or_default()
-                .absorb(learned);
+        let learned = stats.learned_since(base_stats);
+        // Successes a hindsight relabel retracted from what `base` held
+        // (bug-583e50): the only counter that can fall.
+        let retracted = base_stats.successes.saturating_sub(stats.successes);
+        if learned != PersistedModelStats::default() || retracted > 0 {
+            let persisted = latest.confidence_stats.entry(slug.clone()).or_default();
+            persisted.absorb(learned);
+            persisted.successes = persisted.successes.saturating_sub(retracted);
+        }
+    }
+
+    // Per-category counters are additive too (bug-a6a3cd): what the router
+    // gained since `base` is added, and successes a hindsight relabel
+    // retracted from what `base` held leave `latest`.
+    for (slug, categories) in &current.category_stats {
+        let base_categories = base.category_stats.get(slug);
+        for (category, stats) in categories {
+            let base_stats = base_categories
+                .and_then(|by_category| by_category.get(category))
+                .cloned()
+                .unwrap_or_default();
+            let learned = stats.learned_since(&base_stats);
+            let retracted = base_stats.successes.saturating_sub(stats.successes);
+            if learned.trials > 0 || learned.successes > 0 || retracted > 0 {
+                let persisted = latest
+                    .category_stats
+                    .entry(slug.clone())
+                    .or_default()
+                    .entry(*category)
+                    .or_default();
+                persisted.absorb(&learned);
+                persisted.successes = persisted.successes.saturating_sub(retracted);
+            }
         }
     }
 

@@ -135,7 +135,9 @@ fn write_shared_transcript(
     Ok(token)
 }
 
-fn truncate(text: &str, max_chars: usize) -> &str {
+/// The first `max_chars` characters of `text`. It cuts at a char boundary,
+/// so text with multi-byte characters cannot make it panic.
+pub(crate) fn truncate(text: &str, max_chars: usize) -> &str {
     text.char_indices()
         .nth(max_chars)
         .map_or(text, |(idx, _)| &text[..idx])
@@ -569,6 +571,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,

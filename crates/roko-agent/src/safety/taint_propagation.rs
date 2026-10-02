@@ -260,6 +260,17 @@ impl TaintTracker {
         self.state.lock().audit.clone()
     }
 
+    /// Every tracked hash with its lattice level.
+    #[must_use]
+    pub fn levels(&self) -> Vec<(ContentHash, TaintLevel)> {
+        self.state
+            .lock()
+            .taints
+            .iter()
+            .map(|(hash, entry)| (*hash, entry.level))
+            .collect()
+    }
+
     pub fn clear(&self) {
         *self.state.lock() = TrackerState::default();
     }
@@ -357,6 +368,28 @@ impl TaintTracker {
             state: Mutex::new(TrackerState::from_snapshot(snapshot)),
         })
     }
+
+    /// The tracker's state as JSON, the snapshot [`Self::save`] writes, for a
+    /// store such as a checkpoint extension.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let snapshot = self.state.lock().to_snapshot();
+        serde_json::to_value(snapshot).unwrap_or_default()
+    }
+
+    /// Rebuild a tracker from [`Self::to_json`]'s output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::ErrorKind::InvalidData`] error when `value` is not
+    /// such a snapshot.
+    pub fn from_json(value: serde_json::Value) -> io::Result<Self> {
+        let snapshot: TaintTrackerSnapshot = serde_json::from_value(value)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(Self {
+            state: Mutex::new(TrackerState::from_snapshot(snapshot)),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -446,6 +479,32 @@ mod tests {
         assert_eq!(restored.get_level(&child), Some(TaintLevel::External));
         assert_eq!(restored.derived_from(&child), vec![a, b]);
         assert_eq!(restored.audit_log().len(), 1);
+    }
+
+    #[test]
+    fn tracker_json_roundtrips_state_and_refuses_other_values() {
+        let tracker = TaintTracker::new();
+        let parent = hash(b"parent");
+        let child = hash(b"child");
+        tracker.mark_tainted(parent, TaintReason::external("api"), TaintLevel::Untrusted);
+        assert!(tracker.propagate(&[parent], child));
+
+        let restored = TaintTracker::from_json(tracker.to_json()).expect("restore tracker");
+        assert_eq!(restored.get_level(&child), Some(TaintLevel::Untrusted));
+        assert_eq!(restored.derived_from(&child), vec![parent]);
+        assert_eq!(restored.audit_log(), tracker.audit_log());
+        let mut levels = restored.levels();
+        levels.sort_by_key(|(hash, _)| hash.to_hex());
+        let mut expected = vec![
+            (parent, TaintLevel::Untrusted),
+            (child, TaintLevel::Untrusted),
+        ];
+        expected.sort_by_key(|(hash, _)| hash.to_hex());
+        assert_eq!(levels, expected);
+        let error = TaintTracker::from_json(serde_json::json!({"taints": 3}))
+            .err()
+            .expect("not a snapshot");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

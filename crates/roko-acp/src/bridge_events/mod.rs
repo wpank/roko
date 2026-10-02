@@ -2,9 +2,8 @@
 //!
 //! Bridges Roko's provider system (via `roko-agent`) to ACP
 //! `session/update` notifications.
-//! All cognitive workflow dispatch now goes through
-//! [`crate::runner::run_with_workflow_engine`], which uses `ModelCallService`
-//! for provider-agnostic model calls.
+//! A session with a workflow template runs its prompts through
+//! [`crate::runner::run_workflow_pipeline`]; other prompts dispatch to one agent.
 
 pub mod context;
 pub mod cost;
@@ -24,8 +23,8 @@ mod tests;
 
 pub(crate) use context::resolve_context_items;
 pub(crate) use context::{
-    extract_prompt_text, extract_resource_uris, inject_image_parts, model_input_blocks_from_prompt,
-    model_input_messages_from_wire, read_file_context,
+    embedded_resource_context, extract_prompt_text, extract_resource_uris, inject_image_parts,
+    model_input_blocks_from_prompt, model_input_messages_from_wire, read_file_context,
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
@@ -41,8 +40,8 @@ pub(crate) use experiments::{
     replace_experiment_section, resolve_acp_dispatch_model,
 };
 pub(crate) use helpers::{
-    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, roko_meta_update,
-    send_cognitive_event, send_session_update, workflow_template_name,
+    append_assistant_text, dispatch_failure_update, emit_dispatch_failure, map_event_to_update,
+    roko_meta_update, send_cognitive_event, send_session_update,
 };
 pub use permissions::request_permission;
 pub(crate) use permissions::request_permission_for_event;
@@ -58,11 +57,7 @@ pub(crate) use tools::write_session_mcp_config;
 
 // ── Imports for this module ─────────────────────────────────────────
 
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{path::Path, sync::Arc, time::Instant};
 
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
 use roko_core::agent::{ProviderKind, resolve_model};
@@ -76,7 +71,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
-use crate::runner::run_with_workflow_engine;
 use crate::{
     session::{AcpSession, CancelToken},
     transport::{StdioTransport, TransportResult},
@@ -94,6 +88,13 @@ pub(crate) mod knowledge_helpers {
 }
 
 // ── Core entry points ───────────────────────────────────────────────
+
+/// The safety layer for a prompt's pre- and post-dispatch checks: the configured
+/// policies plus the contract of the session mode's role. Missing contracts fall
+/// closed.
+fn session_safety_layer(roko_config: &RokoConfig, mode: &str) -> SafetyLayer {
+    SafetyLayer::from_config(roko_config).with_role(acp_contract_role_for_mode(mode))
+}
 
 /// Maps cognitive events to ACP `session/update` notifications and streams them to the editor.
 /// Returns both the prompt result and the accumulated assistant response text.
@@ -200,7 +201,12 @@ where
                         .await;
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
-                        assistant_text.push_str(text);
+                        if append_assistant_text(&mut assistant_text, text) {
+                            warn!(
+                                session_id,
+                                "assistant text reached its cap; the rest is only streamed"
+                            );
+                        }
                         if let Some(update) = map_event_to_update(event) {
                             send_session_update(transport, session_id, update).await?;
                         }
@@ -243,11 +249,13 @@ where
                     transport.handle_incoming_response(response);
                 }
                 Some(JsonRpcMessage::Request(request)) => {
-                    warn!(
+                    // The server answers it after the prompt, in arrival order.
+                    debug!(
                         session_id,
                         method = %request.method,
-                        "ignoring inbound request while prompt was active"
+                        "deferring inbound request until the prompt finishes"
                     );
+                    session.deferred_requests.push(request);
                 }
                 None => {
                     warn!(
@@ -401,8 +409,8 @@ where
         );
     }
 
-    let pipeline_accepts_images =
-        pipeline_template.is_none() || std::env::var_os("ROKO_ACP_LEGACY").is_none();
+    // The workflow pipeline takes text only.
+    let pipeline_accepts_images = pipeline_template.is_none();
     let prompt_capabilities = advertised_prompt_capabilities_for_model(
         resolved.provider_kind,
         !is_slash_command
@@ -492,11 +500,11 @@ where
             resolve_context_items(&params.prompt, workdir).await
         } else {
             let uris = extract_resource_uris(&params.prompt);
-            if uris.is_empty() {
-                String::new()
-            } else {
-                read_file_context(&uris, workdir)
+            let mut context = embedded_resource_context(&params.prompt);
+            if !uris.is_empty() {
+                context.push_str(&read_file_context(&uris, workdir));
             }
+            context
         }
     } else {
         String::new()
@@ -541,13 +549,11 @@ where
         inject_image_parts(&mut msgs, &params.prompt, resolved.provider_kind);
         msgs
     };
-    let input_messages = if prompt_has_images {
+    if prompt_has_images {
         model_input_messages_from_wire(&messages).map_err(|error| {
             BridgeEventsError::UnsupportedPromptContent(format!("invalid image input: {error}"))
-        })?
-    } else {
-        Vec::new()
-    };
+        })?;
+    }
 
     let (event_sender, event_receiver) = mpsc::channel(256);
     if !is_slash_command {
@@ -621,12 +627,11 @@ where
     let shared_run = session.shared_run.clone();
     // SP-1: build a restrictive layer per dispatch; missing contracts fall closed.
     let pre_dispatch_violation = {
-        let safety =
-            SafetyLayer::from_config(&roko_config).with_role(&session.config_state.agent_mode);
+        let safety = session_safety_layer(&roko_config, &session.config_state.agent_mode);
         match safety.pre_dispatch_check_with_context(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &session_agent_role,
             &workdir,
             &DispatchSafetyContext::for_local_action(&prompt_text).with_network_requirement(true),
         ) {
@@ -654,13 +659,7 @@ where
         }
     };
 
-    // Shared channel for the workflow engine path: the cognitive task writes the
-    // WorkflowRunReport's actual cost (which was aggregated from AgentCompleted events)
-    // here so that append_acp_episode can use it instead of the pricing-table estimate.
     let prompt_text_for_title = prompt_text.clone();
-
-    let workflow_cost_sink: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
-    let workflow_cost_sink_task = Arc::clone(&workflow_cost_sink);
 
     let cognitive_task = tokio::spawn(async move {
         if let Some(violation) = pre_dispatch_violation {
@@ -693,92 +692,57 @@ where
             .await;
         }
 
+        // A workflow template runs the ACP pipeline (gap-38a529: the graph
+        // controller it once fell back to was never driven).
         if let Some(template) = pipeline_template {
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                let legacy_run = shared_run.clone();
-                let result = crate::runner::run_workflow_pipeline(
-                    &session_id,
-                    &prompt_text_for_dispatch,
-                    knowledge_context.clone(),
-                    provenance_card.clone(),
-                    &workdir,
-                    crate::runner::PipelineConfig {
-                        template,
-                        max_iterations,
-                        clippy_enabled,
-                        tests_enabled,
-                        review_strictness,
-                        model_slug: resolved.slug.clone(),
-                        mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
-                        sandbox_level: roko_config.runner.sandbox_level,
-                    },
-                    cancel_token,
-                    event_sender,
-                    legacy_run.clone(),
-                )
-                .await;
-
-                result?;
-
-                let final_phase = legacy_run
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(|run| run.pipeline.phase.clone());
-
-                return match final_phase {
-                    Some(crate::pipeline::PipelinePhase::Complete) => Ok(()),
-                    Some(crate::pipeline::PipelinePhase::Halted { reason }) => {
-                        Err(anyhow::anyhow!("workflow pipeline halted: {reason}").into())
-                    }
-                    Some(crate::pipeline::PipelinePhase::Cancelled) => {
-                        Err(anyhow::anyhow!("workflow pipeline cancelled").into())
-                    }
-                    Some(phase) => Err(anyhow::anyhow!(
-                        "workflow pipeline ended in unexpected phase: {phase:?}"
-                    )
-                    .into()),
-                    None => Err(anyhow::anyhow!(
-                        "workflow pipeline completed without shared run state"
-                    )
-                    .into()),
-                };
-            }
-
-            let mcp_config_path = write_session_mcp_config(&session_mcp_servers, &workdir);
-            let report = run_with_workflow_engine(
+            let pipeline_run = shared_run.clone();
+            let result = crate::runner::run_workflow_pipeline(
                 &session_id,
                 &prompt_text_for_dispatch,
+                knowledge_context.clone(),
+                provenance_card.clone(),
                 &workdir,
-                workflow_template_name(&template),
-                crate::runner::GraphEngineOptions {
-                    model_key: model_key_for_dispatch,
-                    input_messages: input_messages.clone(),
-                    mcp_config: mcp_config_path,
-                    provenance_card,
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                crate::runner::PipelineConfig {
+                    template,
+                    max_iterations,
+                    clippy_enabled,
+                    tests_enabled,
+                    review_strictness,
+                    model_slug: resolved.slug.clone(),
+                    mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
+                    sandbox_level: roko_config.runner.sandbox_level,
                 },
+                cancel_token,
                 event_sender,
+                pipeline_run.clone(),
             )
-            .await?;
+            .await;
 
-            // Thread the actual cost from the report back to the main task so
-            // append_acp_episode can record it instead of using the pricing-table estimate.
-            if let Some(cost) = report.cost
-                && let Ok(mut sink) = workflow_cost_sink_task.lock()
-            {
-                *sink = Some(cost);
-            }
+            result?;
 
-            if !report.success {
-                return Err(anyhow::anyhow!(
-                    "workflow engine reported unsuccessful run: {}",
-                    report.output
+            let final_phase = pipeline_run
+                .lock()
+                .await
+                .as_ref()
+                .map(|run| run.pipeline.phase.clone());
+
+            return match final_phase {
+                Some(crate::pipeline::PipelinePhase::Complete) => Ok(()),
+                Some(crate::pipeline::PipelinePhase::Halted { reason }) => {
+                    Err(anyhow::anyhow!("workflow pipeline halted: {reason}").into())
+                }
+                Some(crate::pipeline::PipelinePhase::Cancelled) => {
+                    Err(anyhow::anyhow!("workflow pipeline cancelled").into())
+                }
+                Some(phase) => Err(anyhow::anyhow!(
+                    "workflow pipeline ended in unexpected phase: {phase:?}"
                 )
-                .into());
-            }
-
-            return Ok(());
+                .into()),
+                None => Err(anyhow::anyhow!(
+                    "workflow pipeline completed without shared run state"
+                )
+                .into()),
+            };
         }
 
         // Default: single-agent dispatch (workflow = "none").
@@ -910,12 +874,12 @@ where
         && !sr.assistant_text.is_empty()
     {
         let changed_files = worktree_before.changed_files(&workdir_for_logging);
-        let safety = SafetyLayer::from_config(&roko_config_for_logging)
-            .with_role(&session.config_state.agent_mode);
+        let mode = &session.config_state.agent_mode;
+        let safety = session_safety_layer(&roko_config_for_logging, mode);
         let violations = safety.post_dispatch_check(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &acp_contract_role_for_mode(mode),
             &sr.assistant_text,
             &changed_files,
         );
@@ -947,10 +911,9 @@ where
     }
 
     if !is_slash_command {
-        // For the workflow engine path, the cognitive task wrote the actual provider cost
-        // (from WorkflowRunReport) to workflow_cost_sink. Use it to override the
-        // pricing-table estimate in append_acp_episode so the episode has accurate cost data.
-        let cost_override = workflow_cost_sink.lock().ok().and_then(|g| *g);
+        // No dispatch path reports a measured cost here, so the episode uses the
+        // pricing-table estimate.
+        let cost_override: Option<f64> = None;
         append_acp_episode(
             &roko_config_for_logging,
             &workdir_for_logging,

@@ -141,7 +141,9 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
-    let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
+    // Nothing else costs this direct model call (bug-724982).
+    let roko_dir = workdir.join(".roko");
+    let feedback_service = FeedbackService::from_roko_dir(&roko_dir).with_cost_records();
     let feedback_sink: Arc<dyn FeedbackSink> = match &cascade_router {
         Some(router) => Arc::new(
             feedback_service
@@ -1486,6 +1488,9 @@ pub struct AgentDispatcherV2 {
     /// Per-call trace and metrics sinks for the tool calls of every agent
     /// this dispatcher creates (find-f489db).
     observability: Option<roko_fs::FsObservabilitySinks>,
+    /// The safety provenance sinks of the runs in flight; a dispatch's tool
+    /// calls record with its run's sink (gap-ff95f5).
+    provenance: Option<crate::safety_provenance::ProvenanceSinks>,
 }
 
 impl std::fmt::Debug for AgentDispatcherV2 {
@@ -1518,6 +1523,7 @@ impl AgentDispatcherV2 {
             cancel_token: None,
             tool_audit: None,
             observability: None,
+            provenance: None,
         }
     }
 
@@ -1536,6 +1542,7 @@ impl AgentDispatcherV2 {
             cancel_token: None,
             tool_audit: None,
             observability: None,
+            provenance: None,
         }
     }
 
@@ -1587,6 +1594,17 @@ impl AgentDispatcherV2 {
     /// `.roko/metrics/tool_metrics.jsonl` (find-f489db).
     pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
         self.observability = Some(sinks);
+        self
+    }
+
+    /// Record the tool calls of each dispatch with the safety provenance
+    /// sink `sinks` holds for the dispatch's run, when it holds one
+    /// (gap-ff95f5).
+    pub fn with_provenance_sinks(
+        mut self,
+        sinks: crate::safety_provenance::ProvenanceSinks,
+    ) -> Self {
+        self.provenance = Some(sinks);
         self
     }
 
@@ -1904,6 +1922,11 @@ impl AgentDispatcherV2 {
     }
 
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
+        let correlation = tool_correlation(request);
+        let provenance_sink = self
+            .provenance
+            .as_ref()
+            .and_then(|sinks| sinks.for_run(&correlation.run_id));
         AgentOptions {
             command: request.command.clone(),
             timeout_ms: request.timeout_ms,
@@ -1947,7 +1970,9 @@ impl AgentDispatcherV2 {
                 .observability
                 .as_ref()
                 .map(roko_fs::FsObservabilitySinks::metrics_sink_dyn),
-            tool_correlation: Some(tool_correlation(request)),
+            tool_correlation: Some(correlation),
+            // gap-ff95f5: the run's tool calls leave durable safety provenance.
+            provenance_sink,
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
@@ -3664,6 +3689,29 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             live_output: None,
             attempt_key: None,
         }
+    }
+
+    /// gap-ff95f5: a dispatch's agent records its tool calls with the safety
+    /// provenance sink of the run its attempt belongs to, while that run is
+    /// registered, and with none otherwise.
+    #[test]
+    fn agent_options_carry_the_runs_safety_provenance_sink() {
+        use crate::safety_provenance::{GraphProvenanceSink, ProvenanceSinks};
+
+        let workspace = tempdir().expect("tempdir");
+        let sinks = ProvenanceSinks::default();
+        let sink = GraphProvenanceSink::open(workspace.path()).expect("provenance sink");
+        let registration = sinks.register("run-7", Arc::new(sink));
+        let dispatcher = AgentDispatcherV2::new(Arc::new(RokoConfig::default()))
+            .with_provenance_sinks(sinks.clone());
+        let mut request = fake_claude_request(workspace.path(), 1_000);
+        request.attempt_key = Some("run-7:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_some());
+        request.attempt_key = Some("run-8:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_none());
+        drop(registration);
+        request.attempt_key = Some("run-7:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_none());
     }
 
     /// bug-7cdce7: an attempt killed at its wall-clock timeout, or stopped at

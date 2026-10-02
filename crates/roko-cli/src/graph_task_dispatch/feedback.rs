@@ -673,10 +673,12 @@ fn efficiency_prompt_sections(
         .iter()
         .enumerate()
         .map(|(order, meta)| section(&meta.name, meta.estimated_tokens, order, false));
+    // A dropped section ranks below every included one.
+    let last = usize::from(u8::MAX);
     let dropped = manifest
         .excluded
         .iter()
-        .map(|meta| section(&meta.name, meta.estimated_tokens, usize::from(u8::MAX), true));
+        .map(|meta| section(&meta.name, meta.estimated_tokens, last, true));
     included.chain(dropped).collect()
 }
 
@@ -1410,7 +1412,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .into_iter()
             .map(|section| (section.name, section.tokens))
             .collect();
-        assert_eq!(names_only, [("role".to_string(), 0), ("task".to_string(), 0)]);
+        assert_eq!(
+            names_only,
+            [("role".to_string(), 0), ("task".to_string(), 0)]
+        );
 
         let included = |name: &str, tokens: usize| IncludedSectionMeta {
             section_id: name.to_string(),

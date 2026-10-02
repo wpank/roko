@@ -1369,7 +1369,10 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         };
         assert_eq!(timing["ttft_source"], "stream", "{timing}");
         assert!(at("first_token_at") > at("dispatch_started_at"), "{timing}");
-        assert!(at("dispatch_ended_at") <= at("verify_started_at"), "{timing}");
+        assert!(
+            at("dispatch_ended_at") <= at("verify_started_at"),
+            "{timing}"
+        );
         assert!(at("verify_started_at") <= at("verify_ended_at"), "{timing}");
         assert!(at("verify_ended_at") <= at("settled_at"), "{timing}");
 

@@ -247,6 +247,7 @@ limits `replan_max_per_plan` and `replan_gate_attempts` were removed (see [Remov
 | `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
 | `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. Graph runs write the thresholds once this many observations have built up, before a plan's retry budgets are read, and when the run ends (reg-c7ecf6) |
 | `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
+| `frozen` | bool | false | Hold learned state fixed (decision 2218): a frozen run reads learned state and writes none, while telemetry stays on. A frozen Graph run registers no learning sinks, sets no playbook-outcome, prompt-experiment, post-gate-reflection or holdout path and saves no router state at its end, and its attempts write no affect, T0 reflex or knowledge-access state. Gate settlement still updates the adaptive thresholds (backlog 2222). `roko plan run --frozen-learning` freezes one run. The run's manifest records `experiment.ablation_flags = ["learning_frozen"]`, and the config fingerprint differs from a live run's. A roko binary older than this key fails to load a config that sets it, since `[learning]` denies unknown fields |
 
 The `dreams` and `knowledge` fields are the two sub-tables below.
 

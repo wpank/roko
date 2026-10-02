@@ -29,9 +29,9 @@ use roko_learn::telemetry::records::{
 };
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
-    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
-    GateVerdictTag, HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig,
-    TelemetryWriterStats,
+    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, ContentDecisionRecord, CostSource,
+    ExecutedModel, ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, TelemetryEvent,
+    TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
@@ -239,6 +239,7 @@ impl AttemptBook {
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
+            exposures: None,
             run,
         }
     }
@@ -265,6 +266,9 @@ pub(super) struct AttemptContext {
     live_tool_calls: LiveToolCalls,
     /// What each verify step did, once verification settled (backlog 2104).
     verify_steps: Vec<VerifyStepVerdict>,
+    /// How many content items the attempt's prompt retrieved and included,
+    /// once it was planned (S01 P0-9).
+    exposures: Option<ExposureCounts>,
     run: Arc<RunAttempts>,
 }
 
@@ -322,6 +326,29 @@ impl AttemptContext {
     /// (S01 P0-8); the writer stamps its sequence number.
     pub(super) fn record_decision(&self, decision: roko_learn::routing_log::RoutingDecisionLog) {
         self.run.submit(decision);
+    }
+
+    /// The identity every record of the attempt flattens.
+    pub(super) fn identity(&self) -> &AttemptIdentity {
+        &self.identity
+    }
+
+    /// Queue one item the attempt's prompt retrieved for the run's
+    /// `exposures.jsonl` (S01 P0-9).
+    pub(super) fn record_exposure(&self, exposure: ExposureRecord) {
+        self.run.submit(exposure);
+    }
+
+    /// Queue the content decision the attempt's prompt made at one decision
+    /// point for the run's `decisions.jsonl` (S01 P0-9).
+    pub(super) fn record_content_decision(&self, decision: ContentDecisionRecord) {
+        self.run.submit(decision);
+    }
+
+    /// The attempt's prompt retrieved and included `counts` content items,
+    /// which its verdict records.
+    pub(super) fn record_exposure_counts(&mut self, counts: ExposureCounts) {
+        self.exposures = Some(counts);
     }
 
     /// The T0 reflex rule `rule_id` served the attempt in place of the
@@ -387,6 +414,7 @@ impl AttemptContext {
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
+        verdict.exposures = self.exposures;
         self.run.submit(verdict.clone());
         SettledAttempt {
             verdict: Arc::new(verdict),

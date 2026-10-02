@@ -209,6 +209,12 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// recorded.
         #[arg(long, conflicts_with = "budget_override")]
         no_budget: bool,
+        /// Hold learned state fixed for this run (decision 2218): it reads
+        /// learned state as usual and writes none, while telemetry stays on.
+        /// `[learning] frozen = true` in roko.toml does the same for every
+        /// run. The run manifest records `ablation_flags = ["learning_frozen"]`.
+        #[arg(long)]
+        frozen_learning: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
         /// is below `resources.min_free_disk_mb`. Use with caution: the plan
         /// may fail mid-run if disk space is exhausted.
@@ -1042,6 +1048,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             force_resume,
             budget_override,
             no_budget,
+            frozen_learning,
             force,
             dangerously_skip_permissions,
             log_file,
@@ -1179,6 +1186,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         config.display()
                     );
                 }
+                // A frozen run must not share its workspace with a server,
+                // whose own runs and timers write learned state (decision 2218).
+                if frozen_learning {
+                    anyhow::bail!(
+                        "--frozen-learning cannot be used when a server owns this workspace: \
+                         the server's runs and timers write learned state; stop the server first"
+                    );
+                }
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,
@@ -1221,6 +1236,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     max_tasks,
                     budget_override,
                     no_budget,
+                    frozen_learning,
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
@@ -2130,6 +2146,7 @@ pub(crate) async fn cmd_resume(
         force_resume: false,
         budget_override: None,
         no_budget: false,
+        frozen_learning: false,
         force: false,
         dangerously_skip_permissions: false,
         log_file: None,
@@ -2885,6 +2902,7 @@ async fn cmd_plan_run_engine(
     max_tasks: usize,
     budget_override: Option<f64>,
     no_budget: bool,
+    frozen_learning: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
@@ -2898,6 +2916,7 @@ async fn cmd_plan_run_engine(
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
+        with_frozen_learning,
     };
 
     let worktree_per_task = resolve_worktree_per_task(worktree_flag, workdir);
@@ -2953,7 +2972,7 @@ async fn cmd_plan_run_engine(
         }
     };
 
-    let exit_code = run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
+    let params = roko_cli::graph_execution::GraphPlanRunParams {
         plans_dir: plans_dir.to_path_buf(),
         workdir: workdir.to_path_buf(),
         quiet: cli.quiet,
@@ -2983,8 +3002,9 @@ async fn cmd_plan_run_engine(
         effort: None,
         no_cascade: false,
         metrics: None,
-    })
-    .await;
+    };
+    // `--frozen-learning` holds learned state fixed for this run alone.
+    let exit_code = with_frozen_learning(frozen_learning, run_graph_plan(params)).await;
 
     // Stop serving, and wait until the socket and token files are gone.
     #[cfg(unix)]

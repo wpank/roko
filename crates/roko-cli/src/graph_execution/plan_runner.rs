@@ -931,6 +931,24 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
     run_graph_plan_in_run(params, None).await
 }
 
+tokio::task_local! {
+    /// Whether the plan run of this task freezes learning for itself alone
+    /// ([`with_frozen_learning`]).
+    static FROZEN_LEARNING_RUN: bool;
+}
+
+/// Run `run`, a plan run such as [`run_graph_plan`], with learning frozen
+/// for that run alone when `frozen` (`roko plan run --frozen-learning`,
+/// decision 2218): its config reads `[learning] frozen = true` whatever
+/// `roko.toml` says. The switch is scoped to the run's task rather than
+/// carried in [`GraphPlanRunParams`], which more commands build.
+pub async fn with_frozen_learning<F>(frozen: bool, run: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    FROZEN_LEARNING_RUN.scope(frozen, run).await
+}
+
 /// [`run_graph_plan`] for a caller whose run already has an id: a single
 /// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
 /// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
@@ -1161,6 +1179,18 @@ async fn run_graph_plan_body(
     // `--effort` sets this run's reasoning effort (gap-9980c6).
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
+    }
+    // `--frozen-learning` freezes this run alone (`with_frozen_learning`),
+    // before the manifest, the feedback facade and the dispatcher are built,
+    // so every reader sees one value.
+    if FROZEN_LEARNING_RUN.try_with(|frozen| *frozen).unwrap_or(false) {
+        roko_config.learning.frozen = true;
+    }
+    if roko_config.learning.frozen {
+        tracing::info!(
+            "learning is frozen for this run: it reads learned state and writes none \
+             (decision 2218)"
+        );
     }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
@@ -2029,8 +2059,9 @@ async fn run_graph_plan_body(
     // routing observations survive across runs. Saving through the run's
     // journal truncates it once the snapshot holds its observations, so a
     // later load does not replay them again (bug-dfb28f). If the save fails,
-    // the journal keeps them for that load.
-    if let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
+    // the journal keeps them for that load. A frozen run saves none.
+    if !roko_config.learning.frozen
+        && let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
         && let Err(err) = journal.save(cascade)
     {
         tracing::warn!(
@@ -2260,6 +2291,11 @@ pub fn build_graph_feedback_context(
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
     let _ = std::fs::create_dir_all(&graph_learn_dir);
+    // A frozen run (decision 2218) sets none of the paths that only write
+    // learned state: playbook outcomes (prompts read playbooks from the
+    // workdir), prompt treatments, post-gate reflections and the holdout
+    // split. Paths that are also read stay; their writers check the flag.
+    let learning = !config.learning.frozen;
 
     // #144: one daimon state, shared by the feedback facade (plan-completion
     // persistence) and dispatch (affect modulation).
@@ -2302,6 +2338,7 @@ pub fn build_graph_feedback_context(
         graph_learn_dir.join("shadow-results.jsonl"),
     ));
 
+    let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
             workdir,
@@ -2313,17 +2350,17 @@ pub fn build_graph_feedback_context(
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
-        playbook_dir: Some(graph_learn_dir.join("playbooks")),
+        playbook_dir: learning.then(|| graph_learn_dir.join("playbooks")),
         // Reuse the daimon state constructed above so the feedback facade
         // persistence sink and dispatch-time modulation share the same
         // mutable state (#144).
         daimon_state: shared_daimon_state,
-        experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
+        experiment_store_path: learning.then(|| graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
+        post_gate_reflection_path: learning.then_some(post_gate_reflections),
         replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        holdout_experiment: Some(holdout_experiment),
+        holdout_experiment: learning.then_some(holdout_experiment),
         shadow_runner: Some(shadow_runner),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
@@ -2394,6 +2431,14 @@ pub fn build_graph_feedback_facade(
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
+    // A frozen run (decision 2218) registers no sink. Each learning sink
+    // writes learned state: episodes, hindsight, knowledge, error patterns,
+    // the router, dreams and the daimon state. The theta and delta sinks
+    // keep only in-memory state and wait for plan completion, which Graph
+    // runs never emit (q-6b7cca).
+    if config.learning.frozen {
+        return std::sync::Arc::new(crate::runtime_feedback::FeedbackFacade::new());
+    }
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
     let graph_episodes_path = graph_layout.root_episodes_path();
@@ -3141,6 +3186,10 @@ async fn run_one_plan(
         ctx.graph_task_dispatcher
             .attach_run_invocation(&run_id, inv);
     }
+    // The learning components the run's dispatcher has (S01 §5.8); a resume
+    // rewrites them, since its build may differ.
+    ctx.run_manifests
+        .write_census(&run_id, &ctx.graph_task_dispatcher.wiring_report());
     // A resumed run's attempts continue from the plan branch its earlier
     // process accepted work onto, and re-attach the checkouts it kept
     // (bug-056b40).
@@ -4955,6 +5004,203 @@ max_retries = 0
         );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// S01 §5.8: a plan run writes its run's `census.json` from the
+    /// dispatcher it built: every learning component S01 names, in census
+    /// order, with the attempt log wired, stamped with this harness build.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_run_writes_census_report() {
+        use roko_learn::telemetry::CensusReport;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        let runs_dir = dir.path().join(".roko/runs");
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs_dir)
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        let census = CensusReport::load(&run_dirs[0])
+            .expect("read the census")
+            .expect("the run wrote a census");
+        let run_id = run_dirs[0].file_name().and_then(|name| name.to_str());
+        assert_eq!(Some(census.run_id.as_str()), run_id);
+        assert_eq!(census.schema_version, "roko.census/1");
+        assert_eq!(census.harness_sha, env!("ROKO_GIT_HASH"));
+        let ids: Vec<&str> = census
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "sink.episode",
+                "sink.routing",
+                "sink.knowledge_ingestion",
+                "sink.playbook_outcome",
+                "sink.error_pattern",
+                "sink.section_effect",
+                "store.attempt_log",
+                "store.prompt_experiment",
+                "store.holdout",
+                "store.decision_writer",
+                "store.exposure_writer",
+                "store.record_access",
+                "reader.gate_thresholds",
+            ]
+        );
+        let attempt_log = census.component("store.attempt_log");
+        assert!(
+            attempt_log.is_some_and(|component| component.wired),
+            "{census:?}"
+        );
+        assert_eq!(
+            attempt_log.map(|component| component.kind.as_str()),
+            Some("store")
+        );
+    }
+
+    /// The manifest of the one run in workspace `dir`.
+    #[cfg(unix)]
+    fn only_run_manifest(dir: &Path) -> roko_learn::telemetry::RunProvenanceManifest {
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(dir.join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        roko_learn::telemetry::RunProvenanceManifest::load(&run_dirs[0])
+            .expect("read the manifest")
+            .expect("the run wrote a manifest")
+    }
+
+    /// Decision 2218: `--frozen-learning` (`with_frozen_learning`) freezes a
+    /// run's learning, and `[learning] frozen = true` every run's. Either
+    /// reaches the run's config, so its fingerprint is a frozen one, and its
+    /// manifest records `ablation_flags = ["learning_frozen"]`; neither
+    /// leaves the flags empty.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let live = only_run_manifest(dir.path());
+        assert!(
+            live.experiment.ablation_flags.is_empty(),
+            "{:?}",
+            live.experiment
+        );
+
+        // The run resumes with the flag: that invocation's config is frozen.
+        let resume = run_plan_set(dir.path(), Some(1), None);
+        let (exit_code, _, _) = with_frozen_learning(true, resume).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let frozen = only_run_manifest(dir.path());
+        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        let hashes: Vec<&str> = frozen
+            .invocations
+            .iter()
+            .filter_map(|invocation| invocation.config.as_ref())
+            .map(|config| config.hash.as_str())
+            .collect();
+        assert_eq!(hashes.len(), 2, "{:?}", frozen.invocations);
+        assert_ne!(hashes[0], hashes[1], "a frozen config is another config");
+        assert!(frozen.mixed_provenance, "a live run resumed frozen");
+
+        let configured = verified_plan_set(&[("a", "a.txt", &[])], "\n[learning]\nfrozen = true\n");
+        let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let manifest = only_run_manifest(configured.path());
+        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+    }
+
+    /// The wiring of the dispatcher a plan run builds for `config` in
+    /// `workdir`, with a cascade router and its journal, as a run builds
+    /// them. A frozen config leaves the write-only learning paths unset.
+    async fn production_wiring(
+        workdir: &Path,
+        config: &roko_core::config::schema::RokoConfig,
+    ) -> crate::graph_task_dispatch::WiringReport {
+        use crate::graph_task_dispatch::GraphTaskDispatcher;
+        use roko_learn::cascade_router::CascadeRouter;
+        use roko_learn::model_call_feedback::ModelCallJournal;
+
+        let shared = Arc::new(config.clone());
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()]));
+        let learn_dir = workdir.join(".roko/learn");
+        let journal = Arc::new(ModelCallJournal::for_learn_dir(&learn_dir));
+        let factory = crate::dispatch::SharedAgentFactory::new(
+            Arc::clone(&shared),
+            None,
+            Some(Arc::clone(&router)),
+            None,
+        )
+        .await;
+        let feedback = build_graph_feedback_context(
+            workdir,
+            config,
+            Some(&router),
+            Some(&journal),
+            factory.error_pattern_store(),
+        );
+        let frozen = config.learning.frozen;
+        assert_eq!(feedback.playbook_dir.is_none(), frozen);
+        assert_eq!(feedback.experiment_store_path.is_none(), frozen);
+        assert_eq!(feedback.post_gate_reflection_path.is_none(), frozen);
+        assert_eq!(feedback.holdout_experiment.is_none(), frozen);
+        assert!(feedback.runs_dir.is_some());
+        assert!(feedback.gate_thresholds_path.is_some());
+        let workdir = workdir.to_path_buf();
+        GraphTaskDispatcher::new(Arc::new(factory), shared, workdir)
+            .with_feedback(feedback)
+            .wiring_report()
+    }
+
+    /// Decision 2218: a frozen run's dispatcher has no learning sink, and
+    /// none of the paths that only write learned state (playbook outcomes,
+    /// prompt treatments, post-gate reflections, the holdout split). Its
+    /// telemetry and the state it also reads stay. A live run has them all.
+    #[tokio::test]
+    async fn frozen_run_registers_no_learning_sinks() {
+        const LEARNING: [&str; 7] = [
+            "sink.episode",
+            "sink.routing",
+            "sink.knowledge_ingestion",
+            "sink.playbook_outcome",
+            "sink.error_pattern",
+            "store.prompt_experiment",
+            "store.holdout",
+        ];
+        const KEPT: [&str; 4] = [
+            "store.attempt_log",
+            "store.decision_writer",
+            "store.exposure_writer",
+            "reader.gate_thresholds",
+        ];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        let live = production_wiring(temp.path(), &config).await;
+        config.learning.frozen = true;
+        let frozen = production_wiring(temp.path(), &config).await;
+
+        let wired = |report: &crate::graph_task_dispatch::WiringReport, id: &str| {
+            report
+                .component(id)
+                .is_some_and(|component| component.wired)
+        };
+        for id in LEARNING {
+            assert!(wired(&live, id), "a live run has {id}");
+            assert!(!wired(&frozen, id), "a frozen run has {id}");
+        }
+        assert!(frozen.facade_sinks.is_empty(), "{:?}", frozen.facade_sinks);
+        for id in KEPT {
+            assert!(wired(&live, id) && wired(&frozen, id), "{id}");
+        }
     }
 
     /// bug-0ba3d9: attempt records carry the invocation ordinal the run's

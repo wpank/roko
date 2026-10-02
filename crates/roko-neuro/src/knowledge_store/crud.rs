@@ -551,6 +551,33 @@ impl KnowledgeStore {
         })
     }
 
+    /// Count a retrieval access to each of `entry_ids` (S01 P0-9): increment
+    /// `access_count` and set `last_accessed`, and leave `half_life_days` as
+    /// it is. Graph dispatch counts the entries a prompt included this way.
+    /// [`Self::record_access`] also spaces the half-life, which is knowledge
+    /// decay, held for now (dec-e70592).
+    ///
+    /// Returns the number of entries counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    pub fn count_access(&self, entry_ids: &[&str]) -> Result<usize> {
+        let id_set: HashSet<&str> = entry_ids.iter().copied().collect();
+        if id_set.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now();
+        self.update_entries(|entry| {
+            if !id_set.contains(entry.id.as_str()) {
+                return false;
+            }
+            entry.access_count = entry.access_count.saturating_add(1);
+            entry.last_accessed = Some(now);
+            true
+        })
+    }
+
     /// P3-13: Record a retrieval-access for a batch of entry IDs.
     ///
     /// Increments `access_count` and sets `last_accessed` for each matched

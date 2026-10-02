@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, RunFile, Stamped,
-    TelemetryRecord, chain_key,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionRecord,
+    ExposureRecord, RunFile, Stamped, TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
@@ -45,6 +45,10 @@ pub enum TelemetryEvent {
     Verdict(Box<AttemptVerdictRecord>),
     /// A `roko.decision/1` route decision.
     Decision(Box<RoutingDecisionLog>),
+    /// A `roko.decision/1` content decision.
+    ContentDecision(Box<ContentDecisionRecord>),
+    /// A `roko.exposure/1` line.
+    Exposure(Box<ExposureRecord>),
 }
 
 impl From<AttemptOpenRecord> for TelemetryEvent {
@@ -62,6 +66,18 @@ impl From<AttemptVerdictRecord> for TelemetryEvent {
 impl From<RoutingDecisionLog> for TelemetryEvent {
     fn from(record: RoutingDecisionLog) -> Self {
         Self::Decision(Box::new(record))
+    }
+}
+
+impl From<ContentDecisionRecord> for TelemetryEvent {
+    fn from(record: ContentDecisionRecord) -> Self {
+        Self::ContentDecision(Box::new(record))
+    }
+}
+
+impl From<ExposureRecord> for TelemetryEvent {
+    fn from(record: ExposureRecord) -> Self {
+        Self::Exposure(Box::new(record))
     }
 }
 
@@ -250,6 +266,8 @@ impl Worker {
                 TelemetryEvent::AttemptOpen(record) => self.write(&*record),
                 TelemetryEvent::Verdict(record) => self.write(&*record),
                 TelemetryEvent::Decision(record) => self.write(&*record),
+                TelemetryEvent::ContentDecision(record) => self.write(&*record),
+                TelemetryEvent::Exposure(record) => self.write(&*record),
             }
         }
     }

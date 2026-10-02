@@ -1,12 +1,13 @@
 //! Canonical telemetry records for S01 Phase 0: the attempt key, the
-//! attempt-open line, the settled verdict, the run manifest and the line
-//! envelope every run file shares.
+//! attempt-open line, the settled verdict, the run manifest, the decision
+//! and exposure rows, and the line envelope every run file shares.
 //!
 //! Records are append-only facts. Unknown values are `null`, never `0`, and
 //! fields added after a schema's first version carry `#[serde(default)]` so
 //! older rows keep parsing. Route decisions reuse
-//! [`RoutingDecisionLog`](crate::routing_log::RoutingDecisionLog) rather than
-//! a third decision-record type.
+//! [`RoutingDecisionLog`](crate::routing_log::RoutingDecisionLog); content
+//! decisions (knowledge, playbooks, sections, error patterns) are
+//! [`ContentDecisionRecord`]s in the same file.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,8 +16,9 @@ use std::path::{Path, PathBuf};
 use roko_core::usage::UsageSource;
 use serde::{Deserialize, Serialize};
 
+use super::assign::Arm;
 use crate::prompt_experiment::PromptAttemptKey;
-use crate::routing_log::RoutingDecisionLog;
+use crate::routing_log::{DecisionState, RoutingDecisionLog};
 
 // ── Schema names and run files ────────────────────────────────────────
 
@@ -26,6 +28,8 @@ pub const ATTEMPT_OPEN_SCHEMA: &str = "roko.attempt_open/1";
 pub const VERDICT_SCHEMA: &str = "roko.verdict/1";
 /// `schema_version` of a decision row (S01 §5.3).
 pub const DECISION_SCHEMA: &str = "roko.decision/1";
+/// `schema_version` of an exposure row (S01 §5.4).
+pub const EXPOSURE_SCHEMA: &str = "roko.exposure/1";
 /// `schema_version` of `manifest.json` (S01 §5.1).
 pub const RUN_MANIFEST_SCHEMA: &str = "roko.run_manifest/1";
 
@@ -36,6 +40,8 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const ATTEMPTS_FILE: &str = "attempts.jsonl";
 /// `.roko/runs/<run_id>/decisions.jsonl`: decision rows.
 pub const DECISIONS_FILE: &str = "decisions.jsonl";
+/// `.roko/runs/<run_id>/exposures.jsonl`: exposure rows.
+pub const EXPOSURES_FILE: &str = "exposures.jsonl";
 
 /// An append-only telemetry file inside a run directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,11 +50,13 @@ pub enum RunFile {
     Attempts,
     /// [`DECISIONS_FILE`].
     Decisions,
+    /// [`EXPOSURES_FILE`].
+    Exposures,
 }
 
 impl RunFile {
     /// Every append-only run file.
-    pub const ALL: [Self; 2] = [Self::Attempts, Self::Decisions];
+    pub const ALL: [Self; 3] = [Self::Attempts, Self::Decisions, Self::Exposures];
 
     /// File name inside the run directory.
     #[must_use]
@@ -56,6 +64,7 @@ impl RunFile {
         match self {
             Self::Attempts => ATTEMPTS_FILE,
             Self::Decisions => DECISIONS_FILE,
+            Self::Exposures => EXPOSURES_FILE,
         }
     }
 
@@ -762,7 +771,10 @@ pub struct AttemptCost {
     pub price_snapshot_id: Option<String>,
 }
 
-/// How many content items were retrieved and included for the attempt.
+/// How many content items were retrieved and included for the attempt
+/// (S01 P0-9): the knowledge entries, cited episodes, playbooks and error
+/// patterns of its exposure rows, those past the per-attempt row cap too.
+/// The prompt's own sections have exposure rows but are not counted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExposureCounts {
     /// Items retrieved for the prompt.
@@ -847,6 +859,12 @@ pub struct AttemptLadder {
     /// ladder is exhausted, and the task needs a split or a replan.
     #[serde(default)]
     pub exhausted: bool,
+    /// The cascade router's own pick beside the rung, which did not run
+    /// (its shadow pick, G56); `None` without a cascade router, and for a
+    /// pinned model. The attempt's route row has it as `proposals.learned`;
+    /// this copy keeps the verdict readable alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_pick: Option<String>,
 }
 
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
@@ -1002,6 +1020,263 @@ pub enum DecisionSource {
     Control,
     /// The self-model's choice (S04).
     SelfModel,
+}
+
+/// A content decision point (S01 §4.5): where a prompt chooses which
+/// retrieved items it includes. Route decisions are `route`
+/// ([`ROUTE_DECISION_POINT`](crate::routing_log::ROUTE_DECISION_POINT)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentDecisionPoint {
+    /// Durable knowledge entries, and the prior episodes a prompt cites.
+    Knowledge,
+    /// Learned playbooks.
+    Playbooks,
+    /// The prompt's own sections.
+    Sections,
+    /// Known error patterns.
+    ErrorPatterns,
+    /// Post-gate reflections.
+    Reflections,
+    /// Dream routing advice.
+    DreamAdvice,
+}
+
+impl ContentDecisionPoint {
+    /// Wire value, e.g. `error_patterns`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge",
+            Self::Playbooks => "playbooks",
+            Self::Sections => "sections",
+            Self::ErrorPatterns => "error_patterns",
+            Self::Reflections => "reflections",
+            Self::DreamAdvice => "dream_advice",
+        }
+    }
+}
+
+/// What a retrieved item is (`item_kind`, S01 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExposureItemKind {
+    /// A durable knowledge entry.
+    Knowledge,
+    /// A prior episode the prompt cites, apart from knowledge
+    /// (`PromptDiagnostics::episode_ids`).
+    Episode,
+    /// A learned playbook.
+    Playbook,
+    /// A prompt section the composer could include.
+    Section,
+    /// A known error pattern.
+    ErrorPattern,
+    /// A post-gate reflection.
+    Reflection,
+    /// Dream routing advice.
+    DreamAdvice,
+}
+
+impl ExposureItemKind {
+    /// Wire value, e.g. `error_pattern`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge",
+            Self::Episode => "episode",
+            Self::Playbook => "playbook",
+            Self::Section => "section",
+            Self::ErrorPattern => "error_pattern",
+            Self::Reflection => "reflection",
+            Self::DreamAdvice => "dream_advice",
+        }
+    }
+
+    /// The decision point that chooses items of this kind. Knowledge and the
+    /// episodes a prompt cites are one decision: both feed its knowledge.
+    #[must_use]
+    pub const fn decision_point(self) -> ContentDecisionPoint {
+        match self {
+            Self::Knowledge | Self::Episode => ContentDecisionPoint::Knowledge,
+            Self::Playbook => ContentDecisionPoint::Playbooks,
+            Self::Section => ContentDecisionPoint::Sections,
+            Self::ErrorPattern => ContentDecisionPoint::ErrorPatterns,
+            Self::Reflection => ContentDecisionPoint::Reflections,
+            Self::DreamAdvice => ContentDecisionPoint::DreamAdvice,
+        }
+    }
+}
+
+/// Why a retrieved item did not reach the prompt (`excluded_reason`,
+/// S01 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcludedReason {
+    /// Its section was dropped, or cut short, to fit the token budget.
+    TokenBudget,
+    /// The attempt's arm withholds it (S02, S03).
+    WithheldArm,
+    /// A bandit left it out.
+    BanditExcluded,
+    /// A screen removed it.
+    Screened,
+    /// The role's prompt has no place for it.
+    RoleFilter,
+}
+
+/// One candidate of a content decision (`candidates[]`, S01 §5.3): a
+/// retrieved item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentCandidate {
+    /// The item's id.
+    pub id: String,
+    /// 1-based position in the retrieval's ranking, when it ranks.
+    #[serde(default)]
+    pub rank: Option<u32>,
+    /// The retrieval's score, when it scores.
+    #[serde(default)]
+    pub score: Option<f64>,
+    /// Whether the policy could include it.
+    #[serde(default = "eligible_by_default")]
+    pub eligible: bool,
+    /// Probability the logging policy included it.
+    #[serde(default)]
+    pub p: Option<f64>,
+}
+
+fn eligible_by_default() -> bool {
+    true
+}
+
+/// `roko.decision/1` at a content decision point (S01 §4.5, §5.3): the items
+/// an attempt's prompt retrieved there are the candidates, and the set it
+/// included is the choice. It shares `decisions.jsonl` with the route rows,
+/// which have no content `decision_point`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentDecisionRecord {
+    /// The attempt that made the decision.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Where the prompt chose.
+    pub decision_point: ContentDecisionPoint,
+    /// The ranking that produced the candidates, e.g. `keyword_overlap_top3`.
+    pub policy: String,
+    /// Every retrieved item, in rank order.
+    pub candidates: Vec<ContentCandidate>,
+    /// Ids of the candidates the prompt included: a set decision's `chosen`
+    /// is an array.
+    pub chosen: Vec<String>,
+    /// Probability the logging policy gave `chosen`: 1 for a fixed ranking.
+    #[serde(default)]
+    pub chosen_propensity: Option<f64>,
+    /// Who produced `chosen`.
+    #[serde(default)]
+    pub source: Option<DecisionSource>,
+    /// The learned state the candidates came from (S01 P0-10), in the form
+    /// route rows use; `None` when the decision point reads none.
+    #[serde(default)]
+    pub state: Option<DecisionState>,
+    /// `b3:` digest of the gate thresholds in force
+    /// (`learn/gate-thresholds.json`); `None` when there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds_digest: Option<String>,
+}
+
+/// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
+/// (`exposure_id`, S01 §5.4).
+#[must_use]
+pub fn exposure_id(attempt_key: &str, item_kind: ExposureItemKind, item_id: &str) -> String {
+    let parts = [attempt_key, item_kind.as_str(), item_id];
+    b3_digest(parts.join("|").as_bytes())
+}
+
+/// `roko.exposure/1` (S01 §5.4): one item an attempt's prompt retrieved,
+/// and whether it reached the prompt. It holds digests and counts, never
+/// the item's text (S01 §4.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExposureRecord {
+    /// The attempt whose prompt retrieved the item.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// [`exposure_id`] of the item in this attempt.
+    pub exposure_id: String,
+    /// The decision point that chose whether to include the item.
+    pub decision_point: ContentDecisionPoint,
+    /// The loop that reads the item's outcome (S03), e.g. `L-know`.
+    #[serde(default)]
+    pub loop_id: Option<String>,
+    /// What the item is.
+    pub item_kind: ExposureItemKind,
+    /// The item's id in its store.
+    pub item_id: String,
+    /// The item's version, e.g. `kn-2f81@v7`.
+    #[serde(default)]
+    pub item_version: Option<String>,
+    /// How the item came to exist, e.g. `distilled`.
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// The retrieval path that found it, e.g. `neuro_lexical_cache`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 1-based position in the retrieval's ranking, when it ranks.
+    #[serde(default)]
+    pub rank: Option<u32>,
+    /// The retrieval's score, when it scores.
+    #[serde(default)]
+    pub score: Option<f64>,
+    /// The prompt's sources retrieved the item. Always true today.
+    pub retrieved: bool,
+    /// Its section reached the prompt, and so did its rendered text.
+    pub included: bool,
+    /// Why it did not, when it did not.
+    #[serde(default)]
+    pub excluded_reason: Option<ExcludedReason>,
+    /// The prompt section that carries the item, e.g. `domain_context`.
+    #[serde(default)]
+    pub section_id: Option<String>,
+    /// Estimated tokens of the item's rendered text.
+    #[serde(default)]
+    pub tokens: Option<u32>,
+    /// `sha256` of the item's rendered text.
+    #[serde(default)]
+    pub rendered_sha256: Option<String>,
+    /// The arm the attempt's assignment put this decision in (S02, S03).
+    #[serde(default)]
+    pub arm: Option<Arm>,
+}
+
+impl ExposureRecord {
+    /// An item the prompt of `identity`'s attempt retrieved, not included
+    /// until the caller says so, chosen at its kind's decision point.
+    #[must_use]
+    pub fn new(
+        identity: AttemptIdentity,
+        item_kind: ExposureItemKind,
+        item_id: impl Into<String>,
+    ) -> Self {
+        let item_id = item_id.into();
+        Self {
+            exposure_id: exposure_id(&identity.attempt_key, item_kind, &item_id),
+            identity,
+            decision_point: item_kind.decision_point(),
+            loop_id: None,
+            item_kind,
+            item_id,
+            item_version: None,
+            origin: None,
+            source: None,
+            rank: None,
+            score: None,
+            retrieved: true,
+            included: false,
+            excluded_reason: None,
+            section_id: None,
+            tokens: None,
+            rendered_sha256: None,
+            arm: None,
+        }
+    }
 }
 
 // ── Run manifest ──────────────────────────────────────────────────────
@@ -1264,6 +1539,30 @@ impl TelemetryRecord for RoutingDecisionLog {
     }
 }
 
+/// One content decision per decision point of an attempt.
+impl TelemetryRecord for ContentDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, self.decision_point.as_str(), "", "")
+    }
+}
+
+/// The item is its kind and id, so a knowledge entry and an episode that
+/// share an id stay two exposures.
+impl TelemetryRecord for ExposureRecord {
+    const SCHEMA: &'static str = EXPOSURE_SCHEMA;
+    const FILE: RunFile = RunFile::Exposures;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        let item = format!("{}:{}", self.item_kind.as_str(), self.item_id);
+        record_id(Self::SCHEMA, key, self.decision_point.as_str(), &item, "")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1319,6 +1618,20 @@ mod tests {
             "attempts_opened": 4, "attempts_settled": 4, "abandoned": 0,
             "telemetry_dropped": 0, "runaway_guard_trips": 0
         }
+    }"#;
+
+    /// The S01 §5.4 example, with its elisions filled in.
+    const EXPOSURE_EXAMPLE: &str = r#"{
+        "schema_version": "roko.exposure/1", "record_id": "b3:5e1f", "exposure_id": "b3:c4d0",
+        "seq": 21, "ts": "2026-10-02T14:03:11.530Z",
+        "run_id": "gr-7f3c2a91", "plan_id": "loop-census", "task_id": "T2", "node_id": "task:T2",
+        "attempt": 2, "inv": 1, "attempt_key": "gr-7f3c2a91:loop-census:T2:2",
+        "chain_key": "gr-7f3c2a91:loop-census:T2",
+        "decision_point": "knowledge", "loop_id": "L-know", "item_kind": "knowledge",
+        "item_id": "kn-2f81", "item_version": "kn-2f81@v7", "origin": "distilled",
+        "source": "neuro_lexical_cache", "rank": 1, "score": 0.62, "retrieved": true,
+        "included": true, "excluded_reason": null, "section_id": "task_context.domain_notes",
+        "tokens": 143, "rendered_sha256": "9f2c", "arm": "learned"
     }"#;
 
     fn identity(task: &str, attempt: u32) -> AttemptIdentity {
@@ -1619,5 +1932,104 @@ mod tests {
         let open = AttemptOpenRecord::new(identity("T2", 2), 0);
         assert_ne!(open.record_id(), verdict.record_id());
         assert_eq!(RunFile::Attempts.file_name(), ATTEMPTS_FILE);
+    }
+
+    #[test]
+    fn exposure_record_round_trips_s01_example() {
+        let line: Stamped<ExposureRecord> =
+            serde_json::from_str(EXPOSURE_EXAMPLE).expect("example");
+        assert_eq!(line.schema_version, EXPOSURE_SCHEMA);
+        assert_eq!(line.seq, 21);
+        let record = &line.record;
+        assert_eq!(record.identity.key(), AttemptKey::new(RUN, PLAN, "T2", 2));
+        assert_eq!(record.decision_point, ContentDecisionPoint::Knowledge);
+        assert_eq!(record.item_kind, ExposureItemKind::Knowledge);
+        assert_eq!(record.item_version.as_deref(), Some("kn-2f81@v7"));
+        assert_eq!((record.rank, record.tokens), (Some(1), Some(143)));
+        assert_eq!(record.score, Some(0.62));
+        assert!(record.retrieved && record.included);
+        assert_eq!(record.excluded_reason, None);
+        assert_eq!(record.arm, Some(Arm::Learned));
+
+        let json = serde_json::to_string(&line).expect("serialize");
+        let back: Stamped<ExposureRecord> = serde_json::from_str(&json).expect("reparse");
+        assert_eq!(back, line);
+        assert_eq!(RunFile::Exposures.file_name(), EXPOSURES_FILE);
+        assert!(RunFile::ALL.contains(&RunFile::Exposures));
+
+        // A cited episode is a knowledge decision, and a dropped item names
+        // why. Its ids follow S01 §4.7 and §5.4.
+        let mut episode =
+            ExposureRecord::new(identity("T2", 2), ExposureItemKind::Episode, "kn-2f81");
+        episode.excluded_reason = Some(ExcludedReason::TokenBudget);
+        let json = serde_json::to_value(&episode).expect("serialize");
+        assert_eq!(json["decision_point"], "knowledge");
+        assert_eq!(json["item_kind"], "episode");
+        assert_eq!(json["included"], false);
+        assert_eq!(json["excluded_reason"], "token_budget");
+        assert_eq!(json["attempt_key"], "gr-7f3c2a91:loop-census:T2:2");
+        let expected = b3_digest(b"gr-7f3c2a91:loop-census:T2:2|episode|kn-2f81");
+        assert_eq!(episode.exposure_id, expected);
+        let back: ExposureRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, episode);
+
+        // A knowledge entry with the episode's id is another exposure.
+        let entry = ExposureRecord::new(identity("T2", 2), ExposureItemKind::Knowledge, "kn-2f81");
+        assert_ne!(entry.exposure_id, episode.exposure_id);
+        assert_ne!(entry.record_id(), episode.record_id());
+        for kind in [
+            ExposureItemKind::Playbook,
+            ExposureItemKind::Section,
+            ExposureItemKind::ErrorPattern,
+        ] {
+            let json = serde_json::to_value(kind.decision_point()).expect("serialize");
+            assert_eq!(json, kind.decision_point().as_str());
+        }
+    }
+
+    #[test]
+    fn content_decision_rows_choose_a_set_and_carry_the_route_state_slot() {
+        let state = DecisionState {
+            read: true,
+            version: "kn:n=2".to_string(),
+            digest: b3_digest(b"knowledge"),
+            age_s: None,
+            n_obs: 2,
+        };
+        let candidate = |id: &str, rank: u32, p: f64| ContentCandidate {
+            id: id.to_string(),
+            rank: Some(rank),
+            score: Some(1.0),
+            eligible: true,
+            p: Some(p),
+        };
+        let record = ContentDecisionRecord {
+            identity: identity("T2", 2),
+            decision_point: ContentDecisionPoint::Knowledge,
+            policy: "keyword_overlap_top3".to_string(),
+            candidates: vec![candidate("kn-1", 1, 1.0), candidate("kn-2", 2, 0.0)],
+            chosen: vec!["kn-1".to_string()],
+            chosen_propensity: Some(1.0),
+            source: Some(DecisionSource::Default),
+            state: Some(state),
+            thresholds_digest: None,
+        };
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["decision_point"], "knowledge");
+        assert_eq!(json["chosen"], serde_json::json!(["kn-1"]));
+        assert_eq!(json["source"], "default");
+        assert_eq!(json["state"]["version"], "kn:n=2");
+        assert!(json.get("thresholds_digest").is_none());
+        let back: ContentDecisionRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        // One row per decision point of an attempt; route rows stay apart.
+        let key = AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key();
+        let expected = record_id(DECISION_SCHEMA, &key, "knowledge", "", "");
+        assert_eq!(record.record_id(), expected);
+        assert_ne!(
+            record.record_id(),
+            record_id(DECISION_SCHEMA, &key, "route", "", "")
+        );
     }
 }

@@ -99,6 +99,26 @@ pub enum ErrorClass {
     Unknown,
 }
 
+impl ErrorClass {
+    /// The class of a short lowercase error kind label (`"rate_limit"`,
+    /// `"auth_failure"`, ...), as the shared failure classifier names them;
+    /// [`Self::Unknown`] for any other label.
+    #[must_use]
+    pub fn from_kind(error_kind: &str) -> Self {
+        match error_kind {
+            "rate_limit" => Self::RateLimit,
+            "timeout" => Self::Timeout,
+            "server_error" => Self::ServerError,
+            "auth_failure" => Self::AuthFailure,
+            "insufficient_credits" | "billing" => Self::Billing,
+            "provider_exhausted" => Self::Exhausted,
+            "content_policy" => Self::ContentPolicy,
+            "context_overflow" => Self::ContextOverflow,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Cooldown for an [`ErrorClass::Exhausted`] failure whose reset time is
 /// unknown: long enough to stop hammering a refused subscription, short
 /// enough to notice an early reset.
@@ -1292,19 +1312,8 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
     }
 
     fn record_provider_failure(&self, provider_id: &str, error_kind: &str) {
-        let error_class = match error_kind {
-            "rate_limit" => ErrorClass::RateLimit,
-            "timeout" => ErrorClass::Timeout,
-            "server_error" => ErrorClass::ServerError,
-            "auth_failure" => ErrorClass::AuthFailure,
-            "insufficient_credits" | "billing" => ErrorClass::Billing,
-            "provider_exhausted" => ErrorClass::Exhausted,
-            "content_policy" => ErrorClass::ContentPolicy,
-            "context_overflow" => ErrorClass::ContextOverflow,
-            _ => ErrorClass::Unknown,
-        };
         // Normalization happens inside record_failure.
-        self.record_failure(provider_id, error_class);
+        self.record_failure(provider_id, ErrorClass::from_kind(error_kind));
     }
 }
 

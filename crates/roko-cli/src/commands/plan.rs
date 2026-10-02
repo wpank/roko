@@ -1595,11 +1595,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let decision = if approve { "approved" } else { "rejected" };
             let attempt_key = roko_cli::graph_task_dispatch::record_review(
-                &wd,
-                &plan_id,
-                &task_id,
-                decision,
-                &note,
+                &wd, &plan_id, &task_id, decision, &note,
             )?;
             if cli.json {
                 println!(

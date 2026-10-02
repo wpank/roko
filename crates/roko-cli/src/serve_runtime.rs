@@ -1036,7 +1036,11 @@ fn run_prompt_plan_on_local_runtime(
         })
         .await?;
         let snapshot = state_hub.current_snapshot();
-        Ok(prompt_plan_result(&report, &snapshot, cancel.is_cancelled()))
+        Ok(prompt_plan_result(
+            &report,
+            &snapshot,
+            cancel.is_cancelled(),
+        ))
     })
 }
 

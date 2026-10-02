@@ -378,7 +378,9 @@ fn guarded_command_violation(command: &str, cwd: &Path) -> Option<String> {
     let refusal = refuse_key_file_in_command(command, cwd)
         .err()
         .or_else(git_refusal)?;
-    Some(format!("command_execution denied by roko's guard: {refusal}"))
+    Some(format!(
+        "command_execution denied by roko's guard: {refusal}"
+    ))
 }
 
 /// How deep [`shell_scripts`] reads shells started by shells.
@@ -1899,7 +1901,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         let worktree = tempfile::tempdir().expect("tempdir");
         let started = |command: &str| {
             let item = serde_json::json!({"type": "command_execution", "command": command});
-            format!("{}\n", serde_json::json!({"type": "item.started", "item": item}))
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "item.started", "item": item})
+            )
         };
         let denial = |command: &str| {
             let (denied_tx, mut denied_rx) = oneshot::channel();

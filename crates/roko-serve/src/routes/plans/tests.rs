@@ -1729,7 +1729,11 @@ async fn plan_status_reports_terminal_state() {
         assert_eq!(status["status"], expected, "{status}");
         assert_eq!(status["finished"], true, "{status}");
         assert!(status["finished_at"].is_string(), "{status}");
-        assert_eq!(status["error"].is_string(), expected == "failed", "{status}");
+        assert_eq!(
+            status["error"].is_string(),
+            expected == "failed",
+            "{status}"
+        );
     }
 }
 

@@ -237,7 +237,9 @@ async fn call_tool(
     if let Some(context) = auth
         && !is_scope_sufficient(&context.scope, scope)
     {
-        return Ok(tool_error(&format!("the {name} tool needs the {scope} scope")));
+        return Ok(tool_error(&format!(
+            "the {name} tool needs the {scope} scope"
+        )));
     }
     let arguments = params
         .get("arguments")

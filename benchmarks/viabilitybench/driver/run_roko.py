@@ -146,6 +146,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -246,7 +247,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     started, clock = harness.utc_now(), time.monotonic()
     settings = ctx.arm.get("roko", {})
     max_retries = int(settings.get("max_retries", 2))
-    bound = caps.worst_task_usd(ctx.caps, ctx.price_row)
+    bound = _worst_task_usd(ctx.arm, ctx.snapshot, ctx.caps, ctx.price_row)
     task_bound = ctx.caps.usd_per_task if bound is None else bound
     network = network_rule(ctx.endpoint)
     jail = sandbox.command([], deny=ctx.deny, network=network, sockets=[ctx.workdir])  # every roko process's prefix
@@ -263,7 +264,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         emitted = planemit.emit(spec, ctx.workdir)
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
-        env = _roko_env(ctx, spec.api_key_env, emitted.config_path)
+        env = _roko_env(ctx, {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)}, emitted.config_path)
         build = _build(binary, env, settings.get("build") or None, transcript, jail)
         head = _head(binary, ctx.workdir, ctx.model)
         checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
@@ -338,7 +339,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
     Raises RunnerError."""
     binary = binary_path(arm)
     price_row = snapshot.row(model)
-    bound = caps.worst_task_usd(limits, price_row)
+    bound = _worst_task_usd(arm, snapshot, limits, price_row)
     with tempfile.TemporaryDirectory(prefix="vb-roko-preflight-") as scratch:
         workspace = Path(scratch) / "workspace"
         for relpath, text in PREFLIGHT_TREE.items():
@@ -352,7 +353,7 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         except planemit.PlanEmitError as err:
             raise RunnerError(f"the arm cannot emit a plan: {err}") from None
         env = {**agent_env.build(home=Path(scratch) / "home"), "ROKO_CONFIG": str(emitted.config_path),
-               spec.api_key_env: OFFLINE_KEY}
+               **{name: OFFLINE_KEY for name in {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)}}}
         jail = sandbox.command([], deny=(), network=sandbox.NETWORK_NONE, sockets=[workspace])  # validate needs none
         checked = _roko([*_head(binary, workspace, model), "plan", "validate", "--strict", "--dag",
                          str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S, jail)
@@ -360,6 +361,17 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         said = (checked.stdout + checked.stderr).strip()[-500:]
         raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
                           f"{'timed out' if checked.timed_out else f'exited {checked.returncode}'}: {said}")
+
+
+def _worst_task_usd(arm: dict, snapshot: ledger.Snapshot, limits: caps.Caps, price_row: dict | None) -> float | None:
+    """The most one task can cost under `limits`: the most expensive of a routed arm's rungs (3312, 3313), so
+    Roko's own plan budget (`PlanSpec.usd_cap`, below) is never priced off the cheap start rung alone and starved
+    once the task escalates; `price_row`'s own worst case, unchanged, for a pinned arm (one models_allow entry)."""
+    allowed = arm["arm"]["models_allow"]
+    if len(allowed) <= 1:
+        return caps.worst_task_usd(limits, price_row)
+    worst = [caps.worst_task_usd(limits, snapshot.row(rung_model)) for rung_model in allowed]
+    return None if any(one is None for one in worst) else max(worst)
 
 
 def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, price_row: dict | None,
@@ -778,13 +790,16 @@ def _wrapper_command(ctx: harness.TaskContext) -> str | None:
     return wrapper.name if found and Path(found).absolute() == wrapper.absolute() else str(wrapper)
 
 
-def _roko_env(ctx: harness.TaskContext, api_key_env: str, config_path: Path) -> dict[str, str]:
-    """The agent environment, ROKO_CONFIG and a placeholder key; a network endpoint is refused (module docstring)."""
+def _roko_env(ctx: harness.TaskContext, api_key_envs: str | Iterable[str], config_path: Path) -> dict[str, str]:
+    """The agent environment, ROKO_CONFIG and a placeholder key for every env var the emitted roko.toml names: one
+    name, or several (one per provider for a routed arm's rungs, 3312, not just the start rung's). A network
+    endpoint is refused (module docstring)."""
     if not ctx.endpoint.offline:
         raise RunnerError(f"{ctx.endpoint.provider} is a network provider, which Roko reaches only through the "
                           "metering proxy, the one holder of its key: run it with `vb run` (which proxies every billed "
                           "network run, and any run with --proxy) and a key file (--key-file)")
-    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), api_key_env: OFFLINE_KEY}
+    names = [api_key_envs] if isinstance(api_key_envs, str) else list(api_key_envs)
+    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), **{name: OFFLINE_KEY for name in names}}
 
 
 def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: list[dict],

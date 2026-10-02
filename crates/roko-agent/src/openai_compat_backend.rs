@@ -745,7 +745,8 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     let line_str = String::from_utf8_lossy(&line);
                     let line_str = line_str.trim_end_matches(['\r', '\n']);
 
-                    if let Some(event) = parse_sse_line(line_str) {
+                    // One chunk can carry several events (backlog 1110).
+                    for event in parse_sse_line(line_str) {
                         // Record TTFT on the first non-error content/tool/reasoning chunk.
                         if !ttft_recorded {
                             let is_content_chunk = matches!(
@@ -814,7 +815,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             if !pending.is_empty() {
                 let line_str = String::from_utf8_lossy(&pending);
                 let line_str = line_str.trim_end_matches(['\r', '\n']);
-                if let Some(event) = parse_sse_line(line_str) {
+                for event in parse_sse_line(line_str) {
                     if matches!(event.kind, StreamEventKind::Done { .. }) {
                         sent_done = true;
                     }
@@ -1705,7 +1706,10 @@ mod tests {
         // Streaming: the final chunk's usage, collected into the response the
         // tool loop prices.
         let chunk = serde_json::json!({ "choices": [], "usage": usage_block });
-        let usage_event = parse_sse_line(&format!("data: {chunk}")).expect("a usage chunk");
+        let usage_event = parse_sse_line(&format!("data: {chunk}"))
+            .into_iter()
+            .next()
+            .expect("a usage chunk");
         assert!(matches!(usage_event.kind, StreamEventKind::Usage(_)));
         let events = vec![
             Ok(usage_event),

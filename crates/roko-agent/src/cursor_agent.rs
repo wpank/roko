@@ -376,13 +376,19 @@ impl CursorAgent {
             return;
         }
 
-        if let Some(chunk) = parse_sse_line(line) {
-            let _ = tx.send(Ok(chunk)).await;
+        let events = parse_sse_line(line);
+        if !events.is_empty() {
+            // One chunk can carry several events (backlog 1110).
+            for event in events {
+                let _ = tx.send(Ok(event)).await;
+            }
             return;
         }
 
+        // A JSON chunk with nothing new (an empty delta) is not malformed.
         if let Some(data) = extract_sse_data(line)
             && !data.is_empty()
+            && serde_json::from_str::<Value>(data).is_err()
         {
             tracing::warn!("dropping malformed Cursor SSE frame: {}", data);
         }

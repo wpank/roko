@@ -953,7 +953,7 @@ fn append_stream_value(
     }
 
     let line = sse_line(value.clone());
-    if let Some(event) = parse_sse_line(line.trim_end()) {
+    for event in parse_sse_line(line.trim_end()) {
         match &event.kind {
             StreamEventKind::ReasoningDelta(text) => {
                 expected_chunks.push(ExpectedChunk::Reasoning(text.clone()));

@@ -161,16 +161,10 @@ pub struct OpenAiSseParser;
 
 impl StreamJsonParser for OpenAiSseParser {
     fn parse_line(&self, line: &str) -> Vec<UnifiedStreamEvent> {
-        match parse_sse_line(line) {
-            Some(event) => {
-                if let Some(unified) = UnifiedStreamEvent::from_stream_event(event) {
-                    vec![unified]
-                } else {
-                    Vec::new()
-                }
-            }
-            None => Vec::new(),
-        }
+        parse_sse_line(line)
+            .into_iter()
+            .filter_map(UnifiedStreamEvent::from_stream_event)
+            .collect()
     }
 
     fn parser_name(&self) -> &str {
@@ -199,31 +193,31 @@ impl StreamJsonParser for ClaudeCliParser {
     }
 }
 
-/// Parse a single OpenAI-compatible SSE line into a canonical stream event.
+/// Parse one SSE line of an OpenAI-compatible stream into its events.
 ///
-/// Returns a [`StreamEvent`] ready for direct use with [`crate::tool_loop::collect_stream_to_response`]
-/// and the `stream_turn` API.
-///
-/// Uses [`roko_core::sse::extract_sse_data`] for consistent `data:` prefix
-/// stripping (RFC 8895: exactly one leading space stripped). `[DONE]` lines
-/// are handled here before the call to produce a `Done` event.
-#[must_use]
-pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
-    // Strip "data:" prefix; return None for non-data: lines.
-    let rest = line.strip_prefix("data:")?;
+/// A non-`data:` line, or a payload that is not JSON, yields no events. A
+/// chunk yields every event it carries, in order: reasoning, content, one
+/// tool-call start or delta per `tool_calls` element, usage, then the finish
+/// reason (backlog 1110). Every event keeps the model and session ids its
+/// chunk named.
+pub fn parse_sse_line(line: &str) -> Vec<StreamEvent> {
+    // Strip "data:" prefix; a non-data: line carries no events.
+    let Some(rest) = line.strip_prefix("data:") else {
+        return Vec::new();
+    };
     // Strip exactly one leading space per RFC 8895 §9.2.6, matching the
     // shared sse::extract_sse_data / strip_one_space behaviour.
     let value = rest.strip_prefix(' ').unwrap_or(rest);
 
     if value == "[DONE]" {
-        return Some(StreamEvent::now(StreamEventKind::Done {
+        return vec![StreamEvent::now(StreamEventKind::Done {
             finish_reason: "stop".to_string(),
-        }));
+        })];
     }
 
-    let line = value;
-
-    let json: Value = serde_json::from_str(line).ok()?;
+    let Ok(json) = serde_json::from_str::<Value>(value) else {
+        return Vec::new();
+    };
     // Each chunk names the model that serves it (bug-bfd241), and some name
     // the response, session and thread ids.
     let model = json
@@ -232,97 +226,113 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
-    parse_sse_chunk(&json).map(|event| {
-        event
-            .with_model(model)
-            .with_session(crate::tool_loop::session_ids(&json))
-    })
+    let session = crate::tool_loop::session_ids(&json);
+    parse_sse_chunk(&json)
+        .into_iter()
+        .map(|event| {
+            event
+                .with_model(model.clone())
+                .with_session(session.clone())
+        })
+        .collect()
 }
 
-/// The event of an OpenAI-compatible stream chunk, parsed from its JSON.
-fn parse_sse_chunk(json: &Value) -> Option<StreamEvent> {
+/// The events of an OpenAI-compatible stream chunk, parsed from its JSON.
+///
+/// A chunk can carry several fields at once: Z.ai sends its usage and
+/// finish reason next to an empty `content`, and a tool call can share a
+/// chunk with text or reasoning. None of them is dropped.
+fn parse_sse_chunk(json: &Value) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
     let delta = json.pointer("/choices/0/delta").unwrap_or(&Value::Null);
 
     // GLM streams reasoning before content, so surface that first.
-    if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-        return Some(StreamEvent::now(StreamEventKind::ReasoningDelta(
+    if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+        && !reasoning.is_empty()
+    {
+        events.push(StreamEvent::now(StreamEventKind::ReasoningDelta(
             reasoning.to_string(),
         )));
     }
-    if let Some(content) = delta.get("content").and_then(Value::as_str) {
-        return Some(StreamEvent::now(StreamEventKind::TextDelta(
+    if let Some(content) = delta.get("content").and_then(Value::as_str)
+        && !content.is_empty()
+    {
+        events.push(StreamEvent::now(StreamEventKind::TextDelta(
             content.to_string(),
         )));
     }
     if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-        for tc in tool_calls {
-            // The `index` field is always present in OpenAI streaming deltas
-            // and uniquely identifies each parallel tool call within a turn.
-            // The `id` field is only present on the first chunk for each call.
-            let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
-            let id = tc
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_default();
-            let name = tc
-                .pointer("/function/name")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_default();
-            let arguments = tc
-                .pointer("/function/arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-
-            // Use index as the stable key for linking start/delta events.
-            // The real provider id is stored separately in the accumulator.
-            let index_key = format!("__idx_{index}");
-
-            // When id or name is present, this is a tool call start.
-            if !id.is_empty() || !name.is_empty() {
-                // Embed the real id after a NUL separator so the accumulator
-                // can recover it: "__idx_0\0call_abc123".
-                // If there are initial arguments in the same chunk, append
-                // them after a SOH (\x01) separator so the accumulator can
-                // seed the entry: "__idx_0\0call_abc123\x01{\"value\":".
-                let mut keyed_id = if id.is_empty() {
-                    index_key
-                } else {
-                    format!("{index_key}\0{id}")
-                };
-                if !arguments.is_empty() {
-                    keyed_id.push('\x01');
-                    keyed_id.push_str(&arguments);
-                }
-                return Some(StreamEvent::now(StreamEventKind::ToolCallStart {
-                    id: keyed_id,
-                    name,
-                }));
-            }
-            // Otherwise it's a delta with partial arguments — use the same
-            // index key so the accumulator can find the matching start.
-            return Some(StreamEvent::now(StreamEventKind::ToolCallDelta {
-                id: index_key,
-                json_fragment: arguments,
-            }));
-        }
+        events.extend(tool_calls.iter().map(tool_call_event));
     }
-    if json.get("usage").is_some() {
-        return Some(StreamEvent::now(StreamEventKind::Usage(parse_usage(json))));
+    // OpenAI sends `"usage": null` on every chunk but the last when usage is
+    // requested; only a real usage block is an event.
+    if json.get("usage").is_some_and(|usage| !usage.is_null()) {
+        events.push(StreamEvent::now(StreamEventKind::Usage(parse_usage(json))));
     }
     if let Some(reason) = json
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
     {
         let finish_reason = normalize_finish_reason(reason);
-        return Some(StreamEvent::now(StreamEventKind::Done {
+        events.push(StreamEvent::now(StreamEventKind::Done {
             finish_reason: format!("{finish_reason:?}"),
         }));
     }
+    events
+}
 
-    None
+/// The start or argument delta of one element of a chunk's `tool_calls`.
+fn tool_call_event(tc: &Value) -> StreamEvent {
+    // The `index` field is always present in OpenAI streaming deltas and
+    // uniquely identifies each parallel tool call within a turn. The `id`
+    // field is only present on the first chunk for each call.
+    let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+    let id = tc
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let name = tc
+        .pointer("/function/name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let arguments = tc
+        .pointer("/function/arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    // Use index as the stable key for linking start/delta events. The real
+    // provider id is stored separately in the accumulator.
+    let index_key = format!("__idx_{index}");
+
+    // When id or name is present, this is a tool call start.
+    if !id.is_empty() || !name.is_empty() {
+        // Embed the real id after a NUL separator so the accumulator can
+        // recover it: "__idx_0\0call_abc123". If there are initial arguments
+        // in the same chunk, append them after a SOH (\x01) separator so the
+        // accumulator can seed the entry: "__idx_0\0call_abc123\x01{\"value\":".
+        let mut keyed_id = if id.is_empty() {
+            index_key
+        } else {
+            format!("{index_key}\0{id}")
+        };
+        if !arguments.is_empty() {
+            keyed_id.push('\x01');
+            keyed_id.push_str(&arguments);
+        }
+        return StreamEvent::now(StreamEventKind::ToolCallStart {
+            id: keyed_id,
+            name,
+        });
+    }
+    // Otherwise it's a delta with partial arguments: use the same index key
+    // so the accumulator can find the matching start.
+    StreamEvent::now(StreamEventKind::ToolCallDelta {
+        id: index_key,
+        json_fragment: arguments,
+    })
 }
 
 #[cfg(test)]
@@ -330,9 +340,14 @@ mod tests {
     use super::{UnifiedStreamEvent, parse_sse_line};
     use crate::tool_loop::{StreamEvent, StreamEventKind};
 
+    /// The first event `line` yields, if any.
+    fn first_event(line: &str) -> Option<StreamEvent> {
+        parse_sse_line(line).into_iter().next()
+    }
+
     #[test]
     fn sse_parser_reads_reasoning_delta() {
-        let event = parse_sse_line(
+        let event = first_event(
             r#"data: {"choices":[{"delta":{"reasoning_content":"Need to inspect the file."}}]}"#,
         );
 
@@ -345,7 +360,7 @@ mod tests {
     #[test]
     fn sse_parser_reads_content_delta() {
         let event =
-            parse_sse_line(r#"data: {"choices":[{"delta":{"content":"I can answer now."}}]}"#);
+            first_event(r#"data: {"choices":[{"delta":{"content":"I can answer now."}}]}"#);
 
         assert!(matches!(
             event.map(|e| e.kind),
@@ -357,11 +372,11 @@ mod tests {
     #[test]
     fn sse_parser_keeps_the_chunk_model() {
         let named =
-            parse_sse_line(r#"data: {"model":"glm-4.7","choices":[{"delta":{"content":"hi"}}]}"#)
+            first_event(r#"data: {"model":"glm-4.7","choices":[{"delta":{"content":"hi"}}]}"#)
                 .expect("a content chunk");
         assert_eq!(named.model.as_deref(), Some("glm-4.7"));
 
-        let unnamed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
+        let unnamed = first_event(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
             .expect("a content chunk");
         assert_eq!(unnamed.model, None);
     }
@@ -370,7 +385,7 @@ mod tests {
     /// named (bug-ea7723).
     #[test]
     fn stream_events_carry_session_ids() {
-        let named = parse_sse_line(
+        let named = first_event(
             r#"data: {"id":"chatcmpl-1","session_id":"sess-1","thread_id":"thread-1","choices":[{"delta":{"content":"hi"}}]}"#,
         )
         .expect("a content chunk");
@@ -383,14 +398,14 @@ mod tests {
             })
         );
 
-        let unnamed = parse_sse_line(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
+        let unnamed = first_event(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
             .expect("a content chunk");
         assert_eq!(unnamed.session, None);
     }
 
     #[test]
     fn sse_parser_reads_tool_call_start() {
-        let event = parse_sse_line(
+        let event = first_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_glm_","function":{"name":"edit_file","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
         );
 
@@ -414,7 +429,7 @@ mod tests {
 
     #[test]
     fn sse_parser_reads_usage() {
-        let event = parse_sse_line(
+        let event = first_event(
             r#"data: {"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":4}}}"#,
         );
 
@@ -431,7 +446,7 @@ mod tests {
     #[test]
     fn sse_parser_reads_finish_reason() {
         let event =
-            parse_sse_line(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+            first_event(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
 
         assert!(matches!(
             event.map(|e| e.kind),
@@ -441,7 +456,7 @@ mod tests {
 
     #[test]
     fn sse_parser_reads_done_marker() {
-        let event = parse_sse_line("data: [DONE]");
+        let event = first_event("data: [DONE]");
 
         assert!(matches!(
             event.map(|e| e.kind),
@@ -449,9 +464,64 @@ mod tests {
         ));
     }
 
+    /// backlog 1110: a chunk yields every field it carries, in order, and
+    /// each event keeps the chunk's model. The chunks follow Z.ai's shapes.
+    #[test]
+    fn sse_chunk_keeps_usage_finish_and_every_tool_call() {
+        // The final chunk: usage and finish reason next to an empty content.
+        let last = parse_sse_line(
+            r#"data: {"model":"glm-4.7","choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}}"#,
+        );
+        assert_eq!(last.len(), 2, "{last:?}");
+        assert!(matches!(
+            &last[0].kind,
+            StreamEventKind::Usage(usage) if usage.input_tokens == 120 && usage.output_tokens == 30
+        ));
+        assert!(matches!(
+            &last[1].kind,
+            StreamEventKind::Done { finish_reason } if finish_reason == "ToolCalls"
+        ));
+        assert!(
+            last.iter()
+                .all(|event| event.model.as_deref() == Some("glm-4.7"))
+        );
+
+        // Reasoning and a tool call in one chunk: both survive, in order.
+        let mixed = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"Need the file.","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]}}]}"#,
+        );
+        assert_eq!(mixed.len(), 2, "{mixed:?}");
+        assert!(matches!(
+            &mixed[0].kind,
+            StreamEventKind::ReasoningDelta(reasoning) if reasoning == "Need the file."
+        ));
+        assert!(matches!(
+            &mixed[1].kind,
+            StreamEventKind::ToolCallStart { id, name }
+                if id.starts_with("__idx_0\0call_1") && name == "read_file"
+        ));
+
+        // Two tool calls in one chunk: two starts, with distinct keys.
+        let parallel = parse_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read_file","arguments":""}},{"index":1,"id":"call_b","function":{"name":"write_file","arguments":""}}]}}]}"#,
+        );
+        let starts = parallel
+            .iter()
+            .filter_map(|event| match &event.kind {
+                StreamEventKind::ToolCallStart { id, name } => Some((id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(starts.len(), 2, "{parallel:?}");
+        assert!(starts[0].0.starts_with("__idx_0\0call_a"));
+        assert_eq!(starts[0].1, "read_file");
+        assert!(starts[1].0.starts_with("__idx_1\0call_b"));
+        assert_eq!(starts[1].1, "write_file");
+    }
+
     #[test]
     fn sse_parser_ignores_non_data_lines() {
-        assert!(parse_sse_line("event: message").is_none());
+        assert!(first_event("event: message").is_none());
     }
 
     #[test]
@@ -478,7 +548,7 @@ mod tests {
     #[test]
     fn sse_parser_tool_call_start_embeds_index_and_real_id() {
         // First chunk of a tool call: has id, name, and index.
-        let event = parse_sse_line(
+        let event = first_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"read_file","arguments":""}}]}}]}"#,
         );
         match event.map(|e| e.kind) {
@@ -497,7 +567,7 @@ mod tests {
     #[test]
     fn sse_parser_tool_call_delta_uses_index_key() {
         // Subsequent chunk: no id, no name — just index and arguments.
-        let event = parse_sse_line(
+        let event = first_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}"#,
         );
         match event.map(|e| e.kind) {
@@ -512,10 +582,10 @@ mod tests {
     #[test]
     fn sse_parser_parallel_tool_calls_use_distinct_index_keys() {
         // Two parallel tool calls use different indices.
-        let event0 = parse_sse_line(
+        let event0 = first_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":""}}]}}]}"#,
         ).unwrap();
-        let event1 = parse_sse_line(
+        let event1 = first_event(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"write","arguments":""}}]}}]}"#,
         ).unwrap();
 

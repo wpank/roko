@@ -19,7 +19,7 @@ fn disconnect_fixture_produces_partial_content_no_done() {
     let mut event_count = 0u32;
 
     for line in DISCONNECT_FIXTURE.lines() {
-        if let Some(event) = parse_sse_line(line) {
+        for event in parse_sse_line(line) {
             event_count += 1;
             match &event.kind {
                 StreamEventKind::TextDelta(delta) => content.push_str(delta),
@@ -55,9 +55,10 @@ fn disconnect_fixture_all_lines_parse_without_panic() {
     let mut skipped = 0u32;
 
     for line in DISCONNECT_FIXTURE.lines() {
-        match parse_sse_line(line) {
-            Some(_) => parsed += 1,
-            None => skipped += 1,
+        if parse_sse_line(line).is_empty() {
+            skipped += 1;
+        } else {
+            parsed += 1;
         }
     }
 
@@ -74,23 +75,26 @@ fn truncated_sse_chunk_does_not_panic() {
     let truncated =
         r#"data: {"id":"chatcmpl-hermes-crash","choices":[{"index":0,"delta":{"content":"partial"#;
     let result = parse_sse_line(truncated);
-    // Should return None (invalid JSON), not panic.
+    // Should yield no events (invalid JSON), not panic.
     assert!(
-        result.is_none(),
+        result.is_empty(),
         "truncated JSON should fail gracefully, got: {result:?}"
     );
 }
 
-/// An empty data line returns None.
+/// An empty data line yields no events.
 #[test]
 fn empty_data_line_returns_none() {
-    assert!(parse_sse_line("data:").is_none() || parse_sse_line("data: ").is_none());
+    assert!(parse_sse_line("data:").is_empty() || parse_sse_line("data: ").is_empty());
 }
 
 /// A standard [DONE] line produces a Done event.
 #[test]
 fn done_marker_produces_done_event() {
-    let event = parse_sse_line("data: [DONE]").expect("should parse [DONE]");
+    let event = parse_sse_line("data: [DONE]")
+        .into_iter()
+        .next()
+        .expect("should parse [DONE]");
     assert!(
         matches!(event.kind, StreamEventKind::Done { .. }),
         "expected Done event, got: {:?}",

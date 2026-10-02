@@ -76,17 +76,32 @@ impl SandboxLevel {
         }
     }
 
-    /// Whether provider permission/sandbox bypass flags are acceptable.
+    /// Whether a provider CLI's interactive permission prompt may be skipped
+    /// (the Claude CLI's `--dangerously-skip-permissions`) when the runner
+    /// config enables `dangerously_skip_permissions`, so the CLI can write
+    /// files unattended.
     ///
-    /// `None`, `Observe`, and `Restrict` all permit bypass when the runner
-    /// config explicitly enables `dangerously_skip_permissions`.  `Restrict`
-    /// still enforces its own path/network policy via [`SandboxPolicy`] — this
-    /// flag only controls whether the *child CLI process* gets its interactive
-    /// permission gate disabled so it can write files unattended.  `Isolate`
-    /// and `Quarantine` never allow bypass regardless of config.
+    /// `None`, `Observe`, and `Restrict` allow it; `Isolate` and `Quarantine`
+    /// never do. A permission prompt is not a sandbox: `Restrict` still
+    /// enforces its own path/network policy via [`SandboxPolicy`], and a CLI's
+    /// own OS sandbox is governed by [`Self::allows_sandbox_bypass`] instead.
     #[must_use]
     pub const fn allows_permission_bypass(self) -> bool {
         matches!(self, Self::None | Self::Observe | Self::Restrict)
+    }
+
+    /// Whether a provider CLI's own OS sandbox may be switched off when the
+    /// runner config enables `dangerously_skip_permissions`: Codex's
+    /// `--dangerously-bypass-approvals-and-sandbox` in place of
+    /// `--sandbox workspace-write`.
+    ///
+    /// Only `None` and `Observe` allow it. From `Restrict` up, a CLI that has
+    /// a sandbox keeps it: a vendor sandbox is the only OS-level confinement
+    /// an agent has, and `codex exec` asks for no approvals, so skipping
+    /// permissions never needs it off.
+    #[must_use]
+    pub const fn allows_sandbox_bypass(self) -> bool {
+        matches!(self, Self::None | Self::Observe)
     }
 }
 
@@ -270,6 +285,23 @@ mod tests {
             SandboxLevel::from(PluginTier::Untrusted),
             SandboxLevel::Quarantine
         );
+    }
+
+    #[test]
+    fn only_none_and_observe_switch_a_cli_sandbox_off() {
+        for level in [SandboxLevel::None, SandboxLevel::Observe] {
+            assert!(level.allows_sandbox_bypass(), "{level:?}");
+        }
+        for level in [
+            SandboxLevel::Restrict,
+            SandboxLevel::Isolate,
+            SandboxLevel::Quarantine,
+        ] {
+            assert!(!level.allows_sandbox_bypass(), "{level:?}");
+        }
+        // Skipping the Claude CLI's permission prompt is a different matter.
+        assert!(SandboxLevel::Restrict.allows_permission_bypass());
+        assert!(!SandboxLevel::Isolate.allows_permission_bypass());
     }
 
     #[test]

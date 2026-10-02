@@ -6,6 +6,7 @@ use roko_cli::DashboardData;
 use roko_cli::tui::dashboard::AgentSummary;
 use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
+use roko_learn::run_metrics::RunMetricsRecord;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -51,6 +52,9 @@ impl ShowTarget {
 
 /// Default `--since` span of the activity views.
 const DEFAULT_ACTIVITY_WINDOW: &str = "7d";
+
+/// How many of the latest plan runs `roko show costs` lists (backlog 2122).
+const RECENT_RUNS: usize = 10;
 
 /// The efficiency events the activity views count, from `--since`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +145,9 @@ struct ShowState {
     work_items: Vec<WorkItemSummary>,
     /// The `--since` window of the activity views.
     window: ActivityWindow,
+    /// The latest plan runs' summaries in `.roko/learn/run-metrics.jsonl`,
+    /// newest first.
+    recent_runs: Vec<RunMetricsRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,12 +248,19 @@ fn load_show_state(workdir: &Path, window: ActivityWindow) -> ShowState {
     let layout = RokoLayout::for_project(workdir);
     let data = DashboardData::load_best_effort(workdir);
     let work_items = collect_work_items(workdir, &layout, &data);
+    let run_metrics = layout.learn_dir().join("run-metrics.jsonl");
+    let recent_runs = roko_learn::run_metrics::read_recent(&run_metrics, RECENT_RUNS)
+        .unwrap_or_else(|error| {
+            tracing::warn!(path = %run_metrics.display(), %error, "cannot read recent runs");
+            Vec::new()
+        });
     ShowState {
         workdir: workdir.to_path_buf(),
         layout,
         data,
         work_items,
         window,
+        recent_runs,
     }
 }
 
@@ -396,7 +410,51 @@ fn render_costs(state: &ShowState) -> String {
             );
         }
     }
+
+    push_recent_runs(&mut out, state);
     out
+}
+
+/// The latest plan runs in the window, newest first, from the summary each
+/// run appends to `.roko/learn/run-metrics.jsonl` (backlog 2122).
+fn push_recent_runs(out: &mut String, state: &ShowState) {
+    push_section(out, "recent runs");
+    let runs: Vec<&RunMetricsRecord> = state
+        .recent_runs
+        .iter()
+        .filter(|run| state.window.contains(&run.timestamp))
+        .collect();
+    if runs.is_empty() {
+        push_empty(
+            out,
+            &format!(
+                "No plan run {} in .roko/learn/run-metrics.jsonl.",
+                state.window.label()
+            ),
+        );
+        return;
+    }
+    for run in runs {
+        let started = event_time(&run.timestamp).map_or_else(
+            || run.timestamp.clone(),
+            |time| time.format("%Y-%m-%d %H:%M").to_string(),
+        );
+        push_kv(
+            out,
+            &started,
+            &format!(
+                "{} | {} completed, {} failed, {} unverified | {} in / {} out | {} | {}",
+                run.run_id,
+                run.tasks_completed,
+                run.tasks_failed,
+                run.tasks_unverified,
+                format_count(run.total_tokens_in),
+                format_count(run.total_tokens_out),
+                format_cost(run.total_cost_usd),
+                format_duration_ms(run.duration_ms as f64)
+            ),
+        );
+    }
 }
 
 fn render_agents(state: &ShowState) -> String {
@@ -1379,6 +1437,7 @@ mod tests {
             data,
             work_items: Vec::new(),
             window,
+            recent_runs: Vec::new(),
         }
     }
 
@@ -1443,6 +1502,54 @@ mod tests {
             assert!(costs.contains(&kv(key, value)), "{key}: {costs}");
         }
         assert!(!costs.contains("all time  "), "{costs}");
+    }
+
+    /// backlog 2122: `roko show costs` lists the latest plan runs from
+    /// `.roko/learn/run-metrics.jsonl`, newest first, with their tasks,
+    /// tokens, cost and duration, within the `--since` window.
+    #[test]
+    fn show_costs_lists_recent_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".roko/learn/run-metrics.jsonl");
+        for (run_id, timestamp, cost) in [
+            ("run-old", "2026-09-30T08:00:00Z", 0.25),
+            ("run-new", "2026-10-01T09:30:00Z", 1.5),
+        ] {
+            let record = RunMetricsRecord {
+                run_id: run_id.to_string(),
+                timestamp: timestamp.to_string(),
+                duration_ms: 90_000,
+                total_tasks: 3,
+                tasks_completed: 2,
+                tasks_already_satisfied: 0,
+                tasks_failed: 1,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
+                total_cost_usd: cost,
+                total_tokens_in: 12_000,
+                total_tokens_out: 3_400,
+                total_agent_calls: 4,
+                budget_exhausted: false,
+                plans: Vec::new(),
+            };
+            roko_learn::run_metrics::append_run_metrics(&path, &record).expect("append");
+        }
+
+        let costs = render_costs(&load_show_state(temp.path(), ActivityWindow::All));
+        let newest = kv(
+            "2026-10-01 09:30",
+            "run-new | 2 completed, 1 failed, 0 unverified | 12,000 in / 3,400 out | $1.5000 \
+             | 90.00s",
+        );
+        let (Some(new_at), Some(old_at)) = (costs.find(&newest), costs.find("run-old")) else {
+            panic!("both runs are listed: {costs}");
+        };
+        assert!(new_at < old_at, "newest first: {costs}");
+
+        let window = since("2026-10-01T00:00:00Z");
+        let recent = render_costs(&load_show_state(temp.path(), window));
+        assert!(recent.contains("run-new"), "{recent}");
+        assert!(!recent.contains("run-old"), "{recent}");
     }
 
     #[test]

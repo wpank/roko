@@ -78,6 +78,27 @@ pub fn append_run_metrics(path: &Path, record: &RunMetricsRecord) -> std::io::Re
     roko_core::io::append_jsonl(path, record)
 }
 
+/// The last `n` records appended to `path`, newest first (`roko show costs`).
+/// Lossy: a line that does not parse is skipped, and a missing file holds
+/// none.
+///
+/// # Errors
+///
+/// Returns an error when the file exists but cannot be read.
+pub fn read_recent(path: &Path, n: usize) -> std::io::Result<Vec<RunMetricsRecord>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(content
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .take(n)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +178,49 @@ mod tests {
 
         let parsed: RunMetricsRecord = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed.run_id, "r1");
+    }
+
+    /// `read_recent` returns the last rows first, at most `n`, skipping a
+    /// line that does not parse; a missing file holds none.
+    #[test]
+    fn read_recent_returns_the_newest_rows_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run-metrics.jsonl");
+        assert!(read_recent(&path, 10).unwrap().is_empty());
+
+        for run_id in ["r1", "r2", "r3"] {
+            let record = RunMetricsRecord {
+                run_id: run_id.into(),
+                timestamp: "2026-10-02T00:00:00Z".into(),
+                duration_ms: 1_000,
+                total_tasks: 1,
+                tasks_completed: 1,
+                tasks_already_satisfied: 0,
+                tasks_failed: 0,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
+                total_cost_usd: 0.01,
+                total_tokens_in: 500,
+                total_tokens_out: 200,
+                total_agent_calls: 1,
+                budget_exhausted: false,
+                plans: vec![],
+            };
+            append_run_metrics(&path, &record).unwrap();
+            if run_id == "r2" {
+                roko_core::io::append_jsonl(&path, &serde_json::json!({"torn": true})).unwrap();
+            }
+        }
+
+        let ids = |n| -> Vec<String> {
+            read_recent(&path, n)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.run_id)
+                .collect()
+        };
+        assert_eq!(ids(10), ["r3", "r2", "r1"]);
+        assert_eq!(ids(2), ["r3", "r2"]);
     }
 
     /// Rows written before the unverified and skipped counts existed still

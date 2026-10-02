@@ -2821,7 +2821,9 @@ fn route_execution_commands(
                     match directives.queue(plan_id, &cmd.command_id, *kind, text.as_str()) {
                         Ok(_) => (
                             CommandAckStatus::Accepted,
-                            Some(format!("waits for the next task of plan '{plan_id}' to start")),
+                            Some(format!(
+                                "waits for the next task of plan '{plan_id}' to start"
+                            )),
                         ),
                         Err(reason) => reject_command(&cmd, &reason),
                     }

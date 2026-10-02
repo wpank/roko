@@ -383,9 +383,8 @@ fn invalidate_unverified_activities(
         .filter(|record| !refused.contains(&record.line))
         .map(|record| (record.entry.node_id.as_str(), record.entry.tick))
         .collect();
-    invalidated.retain(|activity| {
-        !replayable.contains(&(activity.node_id.as_str(), activity.tick))
-    });
+    invalidated
+        .retain(|activity| !replayable.contains(&(activity.node_id.as_str(), activity.tick)));
     (refused, invalidated)
 }
 
@@ -1773,8 +1772,8 @@ fn select_generation(
     let (refused, invalidated) =
         invalidate_unverified_activities(&records, graph, &committed.refused_records);
     committed.refused_records = refused;
-    let replayer = ActivityReplayer::from_records(records, &committed.refused_records)
-        .with_context(load)?;
+    let replayer =
+        ActivityReplayer::from_records(records, &committed.refused_records).with_context(load)?;
     Ok(SelectedGeneration {
         committed,
         replayer,
@@ -4307,12 +4306,7 @@ depends_on = ["T1"]
         let mut recorder = fresh.take_recorder();
         // task-1's verify steps never passed; task-2 has none to pass.
         recorder
-            .record(
-                "p",
-                "task-1",
-                0,
-                verdict_output("BLOCK: not applied", None),
-            )
+            .record("p", "task-1", 0, verdict_output("BLOCK: not applied", None))
             .expect("record task-1");
         recorder
             .record(

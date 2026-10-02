@@ -219,12 +219,15 @@ mod unix {
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&server.socket, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| {
-                    format!("chmod 0600 inject socket {}", server.socket.display())
-                })?;
+                .with_context(|| format!("chmod 0600 inject socket {}", server.socket.display()))?;
         }
         let exchange = Arc::new(tokio::sync::Mutex::new(Exchange::new(link)));
-        tokio::spawn(accept_requests(listener, token, exchange, server.shutdown.clone()));
+        tokio::spawn(accept_requests(
+            listener,
+            token,
+            exchange,
+            server.shutdown.clone(),
+        ));
         Ok(server)
     }
 

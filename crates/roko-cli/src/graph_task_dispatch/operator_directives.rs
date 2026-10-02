@@ -46,7 +46,9 @@ impl OperatorDirectives {
             return Err("there is no text to deliver".to_string());
         }
         if text.len() > MAX_INJECTED_BYTES {
-            return Err(format!("the text is longer than {MAX_INJECTED_BYTES} bytes"));
+            return Err(format!(
+                "the text is longer than {MAX_INJECTED_BYTES} bytes"
+            ));
         }
         let mut queues = self.queues.lock();
         if queues.seen.contains(request_id) {
@@ -118,9 +120,8 @@ mod tests {
     #[test]
     fn a_text_waits_for_one_prompt_and_is_queued_once() {
         let directives = OperatorDirectives::default();
-        let queue = |request_id: &str| {
-            directives.queue(PLAN, request_id, InjectedKind::Directive, TEXT)
-        };
+        let queue =
+            |request_id: &str| directives.queue(PLAN, request_id, InjectedKind::Directive, TEXT);
 
         assert_eq!(queue("req-1"), Ok(true));
         assert_eq!(queue("req-1"), Ok(false), "the same request again");

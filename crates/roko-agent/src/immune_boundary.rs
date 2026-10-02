@@ -449,8 +449,8 @@ impl ImmuneScreenedAgent {
         let (mut result, (exceeded, first_output)) =
             tokio::join!(self.inner.run_streaming(input, ctx, buffer_tx), collect);
         if result.ttft_ms.is_none() {
-            result.ttft_ms = first_output
-                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+            result.ttft_ms =
+                first_output.map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
         }
         (result, exceeded)
     }
@@ -1603,7 +1603,11 @@ mod tests {
     #[async_trait::async_trait]
     impl Agent for TimedStreamingAgent {
         async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
-            AgentResult::ok(input.derive(Kind::AgentOutput, Body::text("timed output")).build())
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("timed output"))
+                    .build(),
+            )
         }
 
         fn name(&self) -> &str {

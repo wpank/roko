@@ -396,17 +396,21 @@ pub fn list_agent_controls(workspace_root: &Path) -> io::Result<Vec<AgentControl
 ///
 /// # Errors
 ///
-/// Fails for an invalid agent id, `by` or `reason` (each 1..=256 bytes
-/// without control characters), an invalid ledger, or a filesystem error.
+/// [`io::ErrorKind::InvalidInput`] for a malformed agent id, `by` or
+/// `reason` (each must be 1..=256 bytes without control characters);
+/// [`io::ErrorKind::InvalidData`] for an invalid ledger; or a filesystem
+/// error.
 pub fn release_agent_control(
     workspace_root: &Path,
     agent_id: &str,
     by: &str,
     reason: &str,
 ) -> io::Result<Option<ReleasedControl>> {
-    validate_boundary_label(agent_id, "agent ID")?;
-    validate_boundary_label(by, "release principal")?;
-    validate_boundary_label(reason, "release reason")?;
+    let invalid_input =
+        |error: io::Error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string());
+    validate_boundary_label(agent_id, "agent ID").map_err(invalid_input)?;
+    validate_boundary_label(by, "release principal").map_err(invalid_input)?;
+    validate_boundary_label(reason, "release reason").map_err(invalid_input)?;
     let key = agent_control_key(agent_id);
     let audit_path = agent_control_releases_path(workspace_root);
     roko_fs::with_locked_json_transaction_bounded::<AgentControlLedger, _, io::Error, _>(

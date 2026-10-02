@@ -2015,10 +2015,25 @@ fn target_supports_per_call_local_mcp(target: &ProviderDispatchSpec) -> bool {
             }))
 }
 
-fn validate_contract_support(
+/// Refuse a provider that cannot enforce the request's agent contract.
+///
+/// Codex's built-in tools have no binding allowlist, so it cannot honour a
+/// contract that names the only tools a role may use (gap-baab0a); Graph
+/// failover moves such a task to a provider that can.
+pub(crate) fn validate_contract_support(
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
 ) -> Result<(), DispatchV2Error> {
+    let allowlist = request
+        .agent_contract
+        .as_ref()
+        .is_some_and(|contract| contract.allowed_tools.is_some());
+    if allowlist && target.provider_kind == ProviderKind::CodexCli {
+        return Err(DispatchV2Error::ContractUnsupported {
+            provider_id: target.provider_id.clone(),
+            kind: target.provider_kind,
+        });
+    }
     if request.agent_contract.is_none()
         || matches!(
             target.provider_kind,
@@ -3467,6 +3482,50 @@ mod tests {
                 provider_kind: ProviderKind::OpenClaw
             }
         ));
+    }
+
+    /// gap-baab0a: Codex cannot enforce a tool allowlist, so a contract with
+    /// one is refused for it. Codex with forbidden tools alone passes, and so
+    /// does another provider with the allowlist.
+    #[test]
+    fn codex_cannot_take_a_contract_with_a_tool_allowlist() {
+        use roko_agent::safety::contract::GovernanceRule;
+
+        let target = |kind: ProviderKind| ProviderDispatchSpec {
+            provider_id: "p".to_string(),
+            provider_kind: kind,
+            model_key: "m".to_string(),
+            model_slug: "m".to_string(),
+            model_profile: None,
+            provider_config: None,
+            runtime: ProviderRuntime::AgentResultBridge {
+                provider_kind: kind,
+            },
+        };
+        let mut request = fake_claude_request(Path::new("."), 1_000);
+        request.agent_contract = Some(AgentContract {
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            ..AgentContract::default()
+        });
+
+        let refused = validate_contract_support(&request, &target(ProviderKind::CodexCli));
+        assert!(
+            matches!(
+                refused,
+                Err(DispatchV2Error::ContractUnsupported {
+                    kind: ProviderKind::CodexCli,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        assert!(validate_contract_support(&request, &target(ProviderKind::ClaudeCli)).is_ok());
+
+        request.agent_contract = Some(AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
+            ..AgentContract::default()
+        });
+        assert!(validate_contract_support(&request, &target(ProviderKind::CodexCli)).is_ok());
     }
 
     #[test]

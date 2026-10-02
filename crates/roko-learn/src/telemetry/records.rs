@@ -571,8 +571,9 @@ pub struct FailoverRefusal {
     /// The refused model's provider.
     pub provider: String,
     /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
-    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured` or
-    /// `not_dispatchable`.
+    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured`,
+    /// `not_dispatchable` or `contract_unsupported` (the provider cannot
+    /// enforce the task's agent contract).
     pub class: String,
     /// The provider's own words, or why it could not be called.
     pub reason: String,

@@ -23,7 +23,7 @@ use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::ToolResult;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +47,10 @@ pub enum CodexOperationType {
     CommandExecution,
     /// File read/write (`file_change` events).
     FileChange,
+    /// Web search, including opening a result page (`web_search` events).
+    WebSearch,
+    /// A call to a tool on an MCP server (`mcp_tool_call` events).
+    McpToolCall,
 }
 
 impl CodexOperationType {
@@ -56,6 +60,8 @@ impl CodexOperationType {
         match self {
             Self::CommandExecution => "command_execution",
             Self::FileChange => "file_change",
+            Self::WebSearch => "web_search",
+            Self::McpToolCall => "mcp_tool_call",
         }
     }
 
@@ -65,12 +71,18 @@ impl CodexOperationType {
         match s {
             "command_execution" => Some(Self::CommandExecution),
             "file_change" => Some(Self::FileChange),
+            "web_search" => Some(Self::WebSearch),
+            "mcp_tool_call" => Some(Self::McpToolCall),
             _ => None,
         }
     }
 
     /// Map roko canonical/provider tool names that correspond to this Codex
     /// operation type.  Used when deriving a policy from an [`AgentContract`].
+    ///
+    /// Codex reports every MCP call as one operation type, so any `mcp__`
+    /// tool name stands for all of them: forbidding one MCP tool denies
+    /// Codex's MCP calls (fail-closed).
     ///
     /// [`AgentContract`]: crate::safety::contract::AgentContract
     fn matches_tool_name(&self, name: &str) -> bool {
@@ -92,6 +104,13 @@ impl CodexOperationType {
                     || lower == "file_change"
                     || lower == "notebook_edit"
             }
+            Self::WebSearch => {
+                lower == "web_search"
+                    || lower == "websearch"
+                    || lower == "web_fetch"
+                    || lower == "webfetch"
+            }
+            Self::McpToolCall => lower == "mcp_tool_call" || lower.starts_with("mcp__"),
         }
     }
 }
@@ -148,14 +167,19 @@ impl CodexOperationPolicy {
     /// - If `allowed_tools` is `Some([…])`, only operations whose tool names
     ///   appear in the allowlist are permitted.
     /// - `ForbiddenTools` governance rules are always applied as a denylist.
+    /// - Web search is denied unless the contract permits the network.
     ///
     /// [`AgentContract`]: crate::safety::contract::AgentContract
     #[must_use]
     pub fn from_contract(contract: &crate::safety::contract::AgentContract) -> Self {
         let forbidden = contract.forbidden_tool_names();
+        let offline = !contract.permits_network();
         let denied: Vec<CodexOperationType> = ALL_CODEX_OPERATION_TYPES
             .iter()
-            .filter(|op| forbidden.iter().any(|name| op.matches_tool_name(name)))
+            .filter(|op| {
+                (offline && **op == CodexOperationType::WebSearch)
+                    || forbidden.iter().any(|name| op.matches_tool_name(name))
+            })
             .cloned()
             .collect();
 
@@ -201,11 +225,14 @@ impl CodexOperationPolicy {
 const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
     CodexOperationType::CommandExecution,
     CodexOperationType::FileChange,
+    CodexOperationType::WebSearch,
+    CodexOperationType::McpToolCall,
 ];
 
 // ── JSONL operation broker ───────────────────────────────────────────────────
 
-/// Scan raw Codex JSONL output for operation types that violate `policy`.
+/// Scan raw Codex JSONL output for operation types that violate `policy`,
+/// and for file changes outside `write_root`.
 ///
 /// Returns `Ok(())` when all observed operations are permitted, or `Err` with
 /// a human-readable description of the first policy violation found.
@@ -217,13 +244,14 @@ const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
 fn check_codex_output_against_policy(
     raw: &str,
     policy: &CodexOperationPolicy,
+    write_root: Option<&Path>,
 ) -> Result<(), String> {
     if !policy.has_constraints() {
         return Ok(());
     }
     match raw
         .lines()
-        .find_map(|line| codex_line_violation(line, policy))
+        .find_map(|line| codex_line_violation(line, policy, write_root))
     {
         Some(violation) => Err(violation),
         None => Ok(()),
@@ -231,8 +259,13 @@ fn check_codex_output_against_policy(
 }
 
 /// The violation in one line of Codex JSONL: a description of the operation
-/// it starts or completes, when `policy` denies that operation.
-fn codex_line_violation(line: &str, policy: &CodexOperationPolicy) -> Option<String> {
+/// it starts or completes, when `policy` denies that operation or the
+/// operation changes a file outside `write_root`.
+fn codex_line_violation(
+    line: &str,
+    policy: &CodexOperationPolicy,
+    write_root: Option<&Path>,
+) -> Option<String> {
     let line = line.trim();
     if line.is_empty() {
         return None;
@@ -246,35 +279,60 @@ fn codex_line_violation(line: &str, policy: &CodexOperationPolicy) -> Option<Str
     let item = event.get("item")?;
     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let op = CodexOperationType::from_item_type(item_type)?;
-    if policy.permits(&op) {
-        return None;
+    if !policy.permits(&op) {
+        return Some(denied_operation(&op, item));
     }
-    let detail = match op {
+    // A permitted file change must still stay inside the worktree.
+    let root = write_root.filter(|_| op == CodexOperationType::FileChange)?;
+    let outside = file_change_paths(item)
+        .into_iter()
+        .find(|path| !crate::safety::path::is_within_worktree(root, &root.join(path)))?;
+    Some(format!("file_change outside the worktree denied by policy: {outside}"))
+}
+
+/// What a denied operation `item` was, for the violation message.
+fn denied_operation(op: &CodexOperationType, item: &serde_json::Value) -> String {
+    match op {
         CodexOperationType::CommandExecution => {
-            let cmd = item
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<unknown>");
-            format!("command_execution denied by policy: {cmd}")
+            let command = item_text(item, "command");
+            format!("command_execution denied by policy: {command}")
         }
         CodexOperationType::FileChange => {
-            let paths: Vec<&str> = item
-                .get("changes")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let paths = file_change_paths(item);
             if paths.is_empty() {
                 "file_change denied by policy".to_string()
             } else {
                 format!("file_change denied by policy: {}", paths.join(", "))
             }
         }
-    };
-    Some(detail)
+        CodexOperationType::WebSearch => {
+            let query = item_text(item, "query");
+            format!("web_search denied by policy: {query}")
+        }
+        CodexOperationType::McpToolCall => {
+            let (server, tool) = (item_text(item, "server"), item_text(item, "tool"));
+            format!("mcp_tool_call denied by policy: {server}/{tool}")
+        }
+    }
+}
+
+/// The string field `key` of a Codex `item`, or a placeholder.
+fn item_text<'a>(item: &'a serde_json::Value, key: &str) -> &'a str {
+    item.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unknown>")
+}
+
+/// The paths a `file_change` item changes.
+fn file_change_paths(item: &serde_json::Value) -> Vec<&str> {
+    item.get("changes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Checks Codex's JSONL while the process runs, so that `ExecAgent` can stop
@@ -282,6 +340,8 @@ fn codex_line_violation(line: &str, policy: &CodexOperationPolicy) -> Option<Str
 /// Codex exits.
 struct CodexStreamBroker {
     policy: CodexOperationPolicy,
+    /// The worktree that file changes must stay inside, when known.
+    write_root: Option<PathBuf>,
     /// Bytes of output already checked; they always end at a newline.
     checked: usize,
     /// Told the first denied operation; `None` once it has been.
@@ -298,7 +358,8 @@ impl CodexStreamBroker {
             };
             let line = String::from_utf8_lossy(&rest[..end]);
             self.checked += end + 1;
-            if let Some(violation) = codex_line_violation(&line, &self.policy)
+            let write_root = self.write_root.as_deref();
+            if let Some(violation) = codex_line_violation(&line, &self.policy, write_root)
                 && let Some(denied) = self.denied.take()
             {
                 let _ = denied.send(violation);
@@ -463,9 +524,11 @@ impl ExecAgent {
     /// Attach a Codex operation policy broker.
     ///
     /// When set and `extract_codex_jsonl` is enabled, the raw JSONL output is
-    /// checked for `command_execution` and `file_change` operation events as
-    /// Codex writes it. The first operation that violates the policy stops
-    /// the process, and the entire agent turn is rejected (fail-closed).
+    /// checked for `command_execution`, `file_change`, `web_search` and
+    /// `mcp_tool_call` operation events as Codex writes it, and file changes
+    /// against the working directory. The first operation that violates the
+    /// policy stops the process, and the entire agent turn is rejected
+    /// (fail-closed).
     ///
     /// Use [`CodexOperationPolicy::from_contract`] to derive a policy from an
     /// [`AgentContract`](crate::safety::contract::AgentContract).
@@ -827,7 +890,10 @@ impl Agent for ExecAgent {
         // unrecognised-in-policy operation rejects the whole turn.
         if self.extract_codex_jsonl {
             if let Some(ref policy) = self.codex_operation_policy {
-                if let Err(violation) = check_codex_output_against_policy(&raw_stdout, policy) {
+                let write_root = self.current_dir.as_deref();
+                if let Err(violation) =
+                    check_codex_output_against_policy(&raw_stdout, policy, write_root)
+                {
                     tracing::warn!(
                         agent = %self.name,
                         %violation,
@@ -922,6 +988,7 @@ impl ExecAgent {
         }
         Some(CodexStreamBroker {
             policy: policy.clone(),
+            write_root: self.current_dir.clone(),
             checked: 0,
             denied: Some(denied),
         })
@@ -1525,17 +1592,113 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
             r#""changes":[{"path":"src/a.rs"},{"path":"src/b.rs"}]}}"#,
             "\n",
         );
-        let violation = check_codex_output_against_policy(output, &policy).unwrap_err();
+        let violation = check_codex_output_against_policy(output, &policy, None).unwrap_err();
         assert_eq!(
             violation,
             "file_change denied by policy: src/a.rs, src/b.rs"
         );
 
         let allow_all = CodexOperationPolicy::allow_all();
-        assert!(check_codex_output_against_policy(output, &allow_all).is_ok());
+        assert!(check_codex_output_against_policy(output, &allow_all, None).is_ok());
         let message = r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#;
         let deny_all = CodexOperationPolicy::deny_all();
-        assert!(check_codex_output_against_policy(message, &deny_all).is_ok());
+        assert!(check_codex_output_against_policy(message, &deny_all, None).is_ok());
+    }
+
+    /// gap-baab0a: web search and MCP calls are Codex operations a contract
+    /// governs too. A role kept off the network may not search, and a
+    /// forbidden MCP tool denies Codex's MCP calls, which it can't tell apart.
+    #[test]
+    fn codex_policy_covers_web_search_and_mcp_calls() {
+        use crate::safety::contract::{AgentContract, GovernanceRule, Invariant};
+
+        let implementer = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".into(),
+                "web_search".into(),
+            ])],
+            ..AgentContract::default()
+        };
+        let policy = CodexOperationPolicy::from_contract(&implementer);
+        assert!(!policy.permits(&CodexOperationType::WebSearch));
+        assert!(policy.permits(&CodexOperationType::McpToolCall));
+
+        let offline = AgentContract {
+            invariants: vec![Invariant::NoNetworkAccess],
+            ..AgentContract::default()
+        };
+        let policy = CodexOperationPolicy::from_contract(&offline);
+        assert!(!policy.permits(&CodexOperationType::WebSearch));
+        let open = CodexOperationPolicy::from_contract(&AgentContract::default());
+        assert!(open.permits(&CodexOperationType::WebSearch));
+
+        let forbids_one_mcp_tool = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "mcp__github__delete_repo".into(),
+            ])],
+            ..AgentContract::default()
+        };
+        let policy = CodexOperationPolicy::from_contract(&forbids_one_mcp_tool);
+        assert!(!policy.permits(&CodexOperationType::McpToolCall));
+
+        let deny_all = CodexOperationPolicy::deny_all();
+        let search = r#"{"type":"item.started","item":{"type":"web_search","query":"rust"}}"#;
+        let violation = codex_line_violation(search, &deny_all, None);
+        assert_eq!(violation.as_deref(), Some("web_search denied by policy: rust"));
+        let mcp = concat!(
+            r#"{"type":"item.started","item":{"type":"mcp_tool_call","#,
+            r#""server":"github","tool":"delete_repo"}}"#,
+        );
+        let violation = codex_line_violation(mcp, &deny_all, None);
+        let expected = "mcp_tool_call denied by policy: github/delete_repo";
+        assert_eq!(violation.as_deref(), Some(expected));
+    }
+
+    /// gap-baab0a: a file change the policy permits must still stay inside
+    /// the worktree, whether Codex reports a relative or an absolute path.
+    #[test]
+    fn codex_file_change_outside_the_worktree_is_denied() {
+        let worktree = tempfile::tempdir().expect("tempdir");
+        let root = worktree.path();
+        let policy = CodexOperationPolicy {
+            allowed: None,
+            denied: vec![CodexOperationType::CommandExecution],
+        };
+        let change = |path: &str| {
+            let changes = serde_json::json!([{"path": path, "kind": "update"}]);
+            let item = serde_json::json!({"type": "file_change", "changes": changes});
+            serde_json::json!({"type": "item.started", "item": item}).to_string()
+        };
+
+        let inside = root.join("src/lib.rs");
+        for path in ["src/lib.rs", inside.to_str().expect("utf-8 path")] {
+            let violation = codex_line_violation(&change(path), &policy, Some(root));
+            assert_eq!(violation, None, "{path}");
+        }
+        for path in ["../escape.rs", "/etc/passwd"] {
+            let violation = codex_line_violation(&change(path), &policy, Some(root));
+            let violation = violation.expect(path);
+            assert!(violation.starts_with("file_change outside the worktree"), "{violation}");
+        }
+        // Without a worktree to hold changes to, only the policy applies.
+        let violation = codex_line_violation(&change("/etc/passwd"), &policy, None);
+        assert_eq!(violation, None);
+    }
+
+    /// gap-baab0a: the broker is Codex's alone. Another exec provider whose
+    /// output looks like a denied Codex operation runs as before, even with a
+    /// deny-all policy attached.
+    #[tokio::test]
+    async fn exec_agents_other_than_codex_are_not_policed() {
+        let line = r#"{"type":"item.started","item":{"type":"command_execution","command":"ls"}}"#;
+        let script = format!("printf '%s\\n' '{line}'");
+        let agent = exec_agent("sh", vec!["-c".into(), script])
+            .with_codex_operation_policy(CodexOperationPolicy::deny_all());
+
+        let result = agent.run(&prompt(""), &Context::now()).await;
+
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.body.as_text().unwrap().trim(), line);
     }
 
     #[test]
@@ -1543,6 +1706,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         let (denied_tx, mut denied_rx) = oneshot::channel();
         let mut broker = CodexStreamBroker {
             policy: CodexOperationPolicy::deny_all(),
+            write_root: None,
             checked: 0,
             denied: Some(denied_tx),
         };

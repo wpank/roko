@@ -9,9 +9,9 @@ size = "M"
 goal = "tooling"
 subsystem = ["roko-core/config"]
 created = 2026-09-25
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
@@ -192,6 +192,26 @@ on the Graph path.
   `graph_task_dispatch/verification.rs` are under wk-honestbench's bug-e0f472 and reg-c7ecf6, and `plan_runner.rs` is
   under wk-planrun's gap-7c9e48, and this item asks to coordinate with find-4b4344 (open, unclaimed). Next step: once
   those land, do steps 1-2 in one change.
+
+- 2026-10-02 (wk-cfg): the remainder (plan steps 1 and 2) is implemented on work/bug-ccfa0d; cargo verification is
+  deferred to the batch check. Who reads what at `f8906b3c0`:
+  - Graph plan runs learn thresholds through `runner::persist::GateThresholds`, whose EMA used a fixed alpha of 0.1.
+    Their `AdaptiveThresholds` (retry budgets) applies `[gates]` but reads only the retry bounds.
+  - ACP loads `AdaptiveThresholds` from `gate-thresholds.json` and never applies `[gates]`, so it uses the alpha and
+    skip streak the file holds.
+  - The TUI, `roko status` and serve apply `[gates]` only to display.
+- Chose wiring. `GateThresholds::observe_with_alpha` takes the alpha, `observe_verify_steps` passes it, and Graph
+  verify runs give it `GatesConfig::effective_ema_alpha()` (a value outside (0, 1) counts as the default 0.1), so
+  `gates.ema_alpha` now drives the Graph EMA. The test-only `observe` keeps the default. `gates.ema_alpha` left the
+  inert list. `AdaptiveThresholds::from_gates_config` is deleted, being `new()` plus `apply_gates_config` with no
+  production caller; its tests use that pair. Test `gate_threshold_ema_uses_the_configured_alpha` runs a dispatcher
+  with `ema_alpha = 0.5` and shows a failure moving the EMA halfway. The `ema_alpha` field doc said smaller values
+  weight recent outcomes more; it is the reverse, and the doc now says so.
+- Still listed as inert, with an accurate reason: `gates.skip_streak_threshold` (plan runs never skip a verify step;
+  ACP reads the streak saved in the file, not the config) and `gates.convergence_min_observations` (its only reader,
+  `AdaptiveThresholds::promote_converged`, has no production caller). The repo's roko.toml sets both at their
+  defaults, so `config doctor` reports neither. Suggested follow-up: delete `convergence_min_observations`, and either
+  make ACP apply `[gates]` (its `PipelineConfig` would need the values) or delete `skip_streak_threshold`.
 
 ## Original notes
 

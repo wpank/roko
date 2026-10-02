@@ -238,9 +238,11 @@ pub struct GatesConfig {
     /// EMA decay factor for pass-rate tracking.
     ///
     /// Controls how quickly the exponential moving average adapts to new
-    /// observations. Smaller values weight recent observations more heavily.
-    /// Range: (0.0, 1.0). Default: 0.1 (the tuned spec value from
-    /// docs/04-verification/06-adaptive-thresholds.md).
+    /// observations. Larger values weight recent observations more heavily.
+    /// Range: (0.0, 1.0); a value outside it counts as the default
+    /// ([`Self::effective_ema_alpha`]). Default: 0.1 (the tuned spec value
+    /// from docs/04-verification/06-adaptive-thresholds.md). Graph plan runs
+    /// update `.roko/learn/gate-thresholds.json` with it.
     #[serde(default = "default_ema_alpha")]
     pub ema_alpha: f64,
 
@@ -316,6 +318,17 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// The smoothing factor of the gate pass-rate EMAs: `ema_alpha` when it
+    /// lies in (0, 1), the default otherwise.
+    #[must_use]
+    pub fn effective_ema_alpha(&self) -> f64 {
+        if self.ema_alpha > 0.0 && self.ema_alpha < 1.0 {
+            self.ema_alpha
+        } else {
+            default_ema_alpha()
+        }
+    }
+
     /// Output-token cap of an attempt of `role` (`max_output_tokens`), or
     /// `None` when the cap is off.
     #[must_use]

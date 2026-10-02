@@ -139,6 +139,8 @@ struct VerifyRun {
     /// The CodingOracle's test pass-rate forecast, taken before the steps
     /// ran.
     test_pass_forecast: Option<(f64, f64)>,
+    /// The pass-rate EMAs' smoothing factor, `[gates] ema_alpha`.
+    ema_alpha: f64,
 }
 
 impl VerifyRun {
@@ -156,7 +158,8 @@ impl VerifyRun {
     /// the oracle residual of the forecast (P1-08), which this returns.
     fn apply(&self, thresholds: &mut GateThresholds) -> Vec<(u32, f64)> {
         thresholds.apply_profile(&self.profile);
-        thresholds.observe_verify_steps(&self.step_outcomes, self.test_pass_forecast)
+        let forecast = self.test_pass_forecast;
+        thresholds.observe_verify_steps(&self.step_outcomes, forecast, self.ema_alpha)
     }
 }
 
@@ -269,6 +272,7 @@ impl GraphTaskDispatcher {
             profile: profile.clone(),
             step_outcomes: step_outcomes.to_vec(),
             test_pass_forecast,
+            ema_alpha: self.config.gates.effective_ema_alpha(),
         };
         let due = self.gate_threshold_writes.add(thresholds_path, run);
 
@@ -369,6 +373,7 @@ mod tests {
             profile: profile.clone(),
             step_outcomes: step_outcomes.to_vec(),
             test_pass_forecast,
+            ema_alpha: roko_core::config::GatesConfig::default().ema_alpha,
         };
         learning.residuals = run.apply(thresholds);
         learning
@@ -414,6 +419,37 @@ mod tests {
             4,
             "dropping the dispatcher writes what was left"
         );
+    }
+
+    /// gap-7a3527: a Graph verify run moves the pass-rate EMA by
+    /// `[gates] ema_alpha`, so a larger alpha weights the latest outcome more.
+    #[tokio::test]
+    async fn gate_threshold_ema_uses_the_configured_alpha() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("learn").join("gate-thresholds.json");
+        let feedback = GraphFeedbackContext {
+            gate_thresholds_path: Some(path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                config.learning.gate_threshold_flush_interval = 1;
+                config.gates.ema_alpha = 0.5;
+            },
+            feedback,
+        )
+        .await;
+        let spec = make_spec(&task);
+
+        // The first outcome replaces the prior; the failure then moves the
+        // EMA halfway down (alpha 0.5), not a tenth of the way.
+        dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", true)]), None);
+        dispatcher.settle_gate_learning(&spec, &task, &steps(&[("compile", false)]), None);
+        let thresholds = GateThresholds::load_or_default(&path).expect("load thresholds");
+        let ema = thresholds.rungs[&0].ema_pass_rate;
+        assert!((ema - 0.5).abs() < 1e-9, "ema {ema}");
     }
 
     /// Two attempts of one task through the file a Graph verify run writes:

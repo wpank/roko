@@ -340,14 +340,26 @@ impl GateThresholds {
         self.rungs.values().map(|s| s.total_count).sum()
     }
 
+    /// Fold one gate outcome into `rung`'s pass-rate EMA with the default
+    /// `[gates] ema_alpha`. Graph runs pass the configured one
+    /// ([`Self::observe_with_alpha`]).
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, rung: u32, passed: bool) {
+        let alpha = roko_core::config::GatesConfig::default().ema_alpha;
+        self.observe_with_alpha(rung, passed, alpha);
+    }
+
+    /// Fold one gate outcome into `rung`'s pass-rate EMA with smoothing
+    /// factor `alpha`, `[gates] ema_alpha` on Graph runs (gap-7a3527). A
+    /// rung's first observation replaces its prior.
+    pub(crate) fn observe_with_alpha(&mut self, rung: u32, passed: bool, alpha: f64) {
         let stats = self.rungs.entry(rung).or_default();
         let value = if passed { 1.0 } else { 0.0 };
 
         if stats.total_count == 0 {
             stats.ema_pass_rate = value;
         } else {
-            stats.ema_pass_rate = 0.1_f64.mul_add(value, 0.9 * stats.ema_pass_rate);
+            stats.ema_pass_rate = alpha.mul_add(value, (1.0 - alpha) * stats.ema_pass_rate);
         }
 
         stats.total_count += 1;
@@ -375,9 +387,9 @@ impl GateThresholds {
 
     /// Feed one Graph verify sequence, as `(phase, passed)` per step, into
     /// the thresholds: each step whose phase names a canonical rung updates
-    /// that rung's EMA. A test-rung step also feeds
-    /// [`Self::observe_residual`] with how far the CodingOracle's test
-    /// pass-rate forecast for the attempt missed, when that forecast
+    /// that rung's EMA with smoothing factor `ema_alpha`. A test-rung step
+    /// also feeds [`Self::observe_residual`] with how far the CodingOracle's
+    /// test pass-rate forecast for the attempt missed, when that forecast
     /// (`(predicted, confidence)`, taken before the steps ran, so it never
     /// saw them) is confident enough to act on. Returns the `(rung,
     /// residual)` pairs observed.
@@ -385,6 +397,7 @@ impl GateThresholds {
         &mut self,
         step_outcomes: &[(String, bool)],
         test_pass_forecast: Option<(f64, f64)>,
+        ema_alpha: f64,
     ) -> Vec<(u32, f64)> {
         /// The CodingOracle's own bar for acting on its forecast.
         const MIN_FORECAST_CONFIDENCE: f64 = 0.1;
@@ -401,7 +414,7 @@ impl GateThresholds {
             else {
                 continue;
             };
-            self.observe(rung, *passed);
+            self.observe_with_alpha(rung, *passed, ema_alpha);
             if let Some(predicted) = forecast.filter(|_| rung == test_rung) {
                 let residual = predicted - if *passed { 1.0 } else { 0.0 };
                 self.observe_residual(rung, residual);
@@ -416,7 +429,7 @@ impl GateThresholds {
     /// Sets rung priors from the profile when the rung has no prior
     /// observations, giving domain-appropriate initial expectations. Graph
     /// verify runs apply their task's profile before observing. A rung's
-    /// first observation replaces its prior ([`Self::observe`]).
+    /// first observation replaces its prior ([`Self::observe_with_alpha`]).
     pub(crate) fn apply_profile(
         &mut self,
         profile: &roko_gate::adaptive_threshold::ThresholdProfile,
@@ -1582,7 +1595,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let steps = [("test".to_string(), index % 2 == 0)];
                     GateThresholds::update_locked(&path, |thresholds| {
-                        thresholds.observe_verify_steps(&steps, None)
+                        thresholds.observe_verify_steps(&steps, None, 0.1)
                     })
                     .expect("locked update");
                 })
@@ -1759,7 +1772,7 @@ mod tests {
         ];
 
         // The oracle forecast a 0.8 pass rate; the test step failed.
-        let residuals = thresholds.observe_verify_steps(&steps, Some((0.8, 0.5)));
+        let residuals = thresholds.observe_verify_steps(&steps, Some((0.8, 0.5)), 0.1);
         assert_eq!(residuals.len(), 1);
         assert_eq!(residuals[0].0, 2);
         assert!((residuals[0].1 - 0.8).abs() < 1e-9);
@@ -1777,10 +1790,14 @@ mod tests {
         let mut unforecast = GateThresholds::default();
         assert!(
             unforecast
-                .observe_verify_steps(&steps, Some((0.8, 0.1)))
+                .observe_verify_steps(&steps, Some((0.8, 0.1)), 0.1)
                 .is_empty()
         );
-        assert!(unforecast.observe_verify_steps(&steps, None).is_empty());
+        assert!(
+            unforecast
+                .observe_verify_steps(&steps, None, 0.1)
+                .is_empty()
+        );
         assert_eq!(unforecast.rungs[&2].total_count, 2);
     }
 }

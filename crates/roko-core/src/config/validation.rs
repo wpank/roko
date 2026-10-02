@@ -207,6 +207,13 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         }
     }
 
+    // 3210: the spec-quality gate's thresholds are scores out of 100, the
+    // block threshold sits at or below the allow threshold, and the holdout
+    // is a share.
+    for (config_path, message) in config.spec_quality.problems() {
+        results.push(invariant(9, InvariantSeverity::Error, config_path, message));
+    }
+
     results
 }
 

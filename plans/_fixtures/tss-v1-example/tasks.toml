@@ -1,0 +1,52 @@
+# TSS v1 example (S07 §4.1, modelled on the F4 example of §4.6): one implementer task that sets
+# every field of the task-spec standard, with context files that exist in this repository.
+# `roko plan validate --strict` accepts it (crates/roko-cli/tests/plan_validate.rs,
+# tss_v1_example_passes_strict_validation). It is an example, not a backlog task: plan discovery
+# skips `_fixtures/`, so `roko plan run plans/` never picks it up.
+
+[meta]
+plan = "tss-v1-example"
+total = 1
+
+[[task]]
+id = "T1"
+title = "speclint --only-hard-fails lists just the blocked tasks"
+goal = "With `--only-hard-fails`, speclint's text report lists only the tasks that have a hard fail."
+description = """Add an `--only-hard-fails` flag to `benchmarks/viabilitybench/speclint/speclint.py`.
+With it, the text report skips every task whose `hard_fail` list is empty; the JSONL records and
+the summary line stay as they are. AC ids refer to the acceptance list."""
+role = "implementer"
+tier = "focused"
+files = ["benchmarks/viabilitybench/speclint/speclint.py"]
+max_loc = 30
+depends_on = []
+non_goals = [
+  "Do not change any rule, weight or the linter id",
+  "Do not change the JSONL records or the exit code",
+]
+assumptions = ["The summary line still counts every task, with or without hard fails"]
+# What the planner could not settle. A question left here keeps the plan from running (PLAN_045).
+open_questions = []
+acceptance = [
+  "AC1: with `--only-hard-fails`, a plan with one HF2 task and one clean task prints the HF2 task and not the clean one",
+  "AC2: without the flag, the report is byte-identical to before",
+]
+
+[task.context]
+read_files = [
+  { path = "benchmarks/viabilitybench/speclint/speclint.py", why = "main() and the text report the flag filters" },
+  { path = "benchmarks/viabilitybench/speclint/tests/test_speclint.py", why = "how the CLI tests call main()" },
+]
+symbols = ["main"]
+anti_patterns = ["Do not filter the records before they are written"]
+
+[task.hidden]
+suite = "auto"
+interface = ["benchmarks/viabilitybench/speclint/speclint.py::main"]
+properties = ["a plan without hard fails prints no task line", "several plans"]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m pytest benchmarks/viabilitybench/speclint/tests/test_speclint.py -k only_hard_fails -q"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"

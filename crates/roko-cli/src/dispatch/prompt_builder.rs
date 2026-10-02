@@ -2095,6 +2095,7 @@ impl PromptAssembler {
             user_prompt.push_str(description);
             user_prompt.push('\n');
         }
+        user_prompt.push_str(&task.tss_sections());
         if let Some(context) = &task.context {
             if !context.read_files.is_empty()
                 || !context.symbols.is_empty()
@@ -2156,6 +2157,11 @@ impl PromptAssembler {
             for step in &task.verify {
                 user_prompt.push_str("- ");
                 user_prompt.push_str(task_accept::prompt_command(&step.command));
+                if !step.covers.is_empty() {
+                    user_prompt.push_str(" (covers ");
+                    user_prompt.push_str(&step.covers.join(", "));
+                    user_prompt.push(')');
+                }
                 user_prompt.push('\n');
             }
             if task.verify.iter().any(task_accept::is_pinned_step) {
@@ -3116,6 +3122,8 @@ mod tests {
                 fail_msg: None,
                 timeout_ms: 60_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             timeout_secs: 60,
             max_retries: 1,
@@ -3126,6 +3134,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }
@@ -3826,6 +3835,75 @@ formulas = ["retries = 2 * (k + 1) - 1"]
             .assemble(&task(), &PromptContext::from_task(&task(), &ctx()))
             .unwrap();
         assert!(!plain.user_prompt.contains("## Specification"));
+    }
+
+    /// 3207: a task's TSS v1 fields reach its prompt: the goal, non-goals and
+    /// assumptions, the hidden-test hook without its suite, and the criteria
+    /// each verify step covers.
+    #[test]
+    fn tss_v1_fields_reach_the_user_prompt() {
+        let t = crate::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "p"
+
+[[task]]
+id = "t"
+title = "Wire it up"
+role = "implementer"
+goal = "`roko plan validate` prints PLAN_043 for an unknown key."
+non_goals = ["Do not change the parser"]
+assumptions = ["A warning is enough"]
+acceptance = ["AC1: an unknown key prints PLAN_043"]
+
+[task.hidden]
+suite = "suite-17"
+interface = ["crates/roko-cli/src/plan_validate.rs::validate_tasks_file"]
+properties = ["nested tables"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli plan_validate"
+covers = ["AC1"]
+"#,
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        let p = PromptAssembler::minimal()
+            .assemble(&t, &PromptContext::from_task(&t, &ctx()))
+            .unwrap();
+        for section in [
+            "\n## Goal\n`roko plan validate` prints PLAN_043 for an unknown key.\n",
+            "\n## Non-goals\n- Do not change the parser\n",
+            "\n## Assumptions\n- A warning is enough\n",
+            "- Interface: `crates/roko-cli/src/plan_validate.rs::validate_tasks_file`\n",
+            "- Property: nested tables\n",
+            "- cargo test -p roko-cli plan_validate (covers AC1)\n",
+        ] {
+            assert!(
+                p.user_prompt.contains(section),
+                "{section:?} missing: {}",
+                p.user_prompt
+            );
+        }
+        assert!(!p.user_prompt.contains("suite-17"), "{}", p.user_prompt);
+
+        let plain = PromptAssembler::minimal()
+            .assemble(&task(), &PromptContext::from_task(&task(), &ctx()))
+            .unwrap();
+        for heading in ["## Goal", "## Non-goals", "## Assumptions", "## Hidden"] {
+            assert!(
+                !plain.user_prompt.contains(heading),
+                "{heading} in a task without TSS v1 fields: {}",
+                plain.user_prompt
+            );
+        }
+        assert!(
+            !plain.user_prompt.contains("(covers"),
+            "{}",
+            plain.user_prompt
+        );
     }
 
     /// gap-d6fd85: a plan's `brief.md` reaches its tasks' prompts.

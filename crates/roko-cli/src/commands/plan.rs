@@ -2382,10 +2382,52 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
         );
     }
     if blocking.is_empty() {
-        None
+        spec_gate_before_run(plans_dir, workdir)
     } else {
         tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
         Some(1)
+    }
+}
+
+/// 3211: run the spec gate ([`roko_cli::spec_gate`]) over the plans `plan
+/// run` is about to start, with the `[spec_quality]` settings of the
+/// workspace's `roko.toml` (the defaults when it has none or does not
+/// parse). Logs each finding with its task, rule and detail, and returns
+/// `Some(1)` when a task is blocked, before any agent starts.
+fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
+    let config = std::fs::read_to_string(workdir.join("roko.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
+        .map(|config| config.spec_quality)
+        .unwrap_or_default();
+    let files = match plan_validate::collect_tasks_files(plans_dir) {
+        Ok(files) => files,
+        Err(error) => {
+            tracing::error!(error = %error, "spec gate: cannot list the plans to check");
+            return Some(1);
+        }
+    };
+    let red_on_base = std::collections::BTreeMap::new();
+    let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
+    for decision in report.blocked() {
+        for finding in &decision.findings {
+            tracing::error!(
+                plan = %decision.plan_path,
+                task = %decision.task_id,
+                rule = finding.rule,
+                detail = %finding.detail,
+                "spec gate: task blocked"
+            );
+        }
+    }
+    if report.blocks() {
+        tracing::error!(
+            "plan refused before dispatch: fix the task specs above ([spec_quality] in roko.toml \
+             sets what the gate checks)"
+        );
+        Some(1)
+    } else {
+        None
     }
 }
 
@@ -3111,6 +3153,101 @@ depends_on_plan = ["missing-foundation"]
     fn graph_approval_is_accepted_for_all_engines() {
         assert!(validate_graph_execution_options(PlanEngine::Graph, true).is_ok());
         assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
+    }
+
+    /// 3209: a task with an open question keeps its plan from running: plan
+    /// validation fails with PLAN_045, which lists the question, and `plan
+    /// run` stops before any agent starts. Answered and deleted, it runs.
+    #[test]
+    fn open_questions_block_dispatch() {
+        let workspace = tempdir().expect("tempdir");
+        let plans = workspace.path().join("plans");
+        std::fs::create_dir_all(plans.join("questions")).expect("plan dir");
+        let write_plan = |questions: &str| {
+            let tasks = format!(
+                r#"
+[meta]
+plan = "questions"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+open_questions = [{questions}]
+verify = [{{ phase = "test", command = "cargo test -p demo --lib retry" }}]
+"#
+            );
+            std::fs::write(plans.join("questions/tasks.toml"), tasks).expect("write the plan");
+        };
+
+        write_plan(r#""Is the limit per call or per task?""#);
+        let report = plan_validate::validate_plans_dir(&plans, None).expect("validate");
+        let questions: Vec<_> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diagnostic| diagnostic.rule_id == "PLAN_045")
+            .collect();
+        assert_eq!(questions.len(), 1, "{report:?}");
+        assert_eq!(questions[0].severity, plan_validate::Severity::Error);
+        assert!(
+            questions[0]
+                .message
+                .ends_with(":\n- Is the limit per call or per task?"),
+            "{}",
+            questions[0].message
+        );
+        let text = plan_validate::render_text(&report);
+        assert!(
+            text.contains("\n                 - Is the limit per call or per task?\n"),
+            "the question is printed under the task: {text}"
+        );
+        assert_eq!(validate_before_run(&plans, workspace.path()), Some(1));
+
+        write_plan("");
+        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+    }
+
+    /// 3211: `plan run` refuses a plan whose verify step can never fail
+    /// before any agent starts. With `[spec_quality] mode = "off"` it does
+    /// not, and a low-scoring task without a hard fail runs.
+    #[test]
+    fn plan_run_refuses_a_vacuous_verify_step() {
+        let workspace = tempdir().expect("tempdir");
+        let plans = workspace.path().join("plans");
+        std::fs::create_dir_all(plans.join("vacuous")).expect("plan dir");
+        let write_plan = |command: &str| {
+            let tasks = format!(
+                r#"
+[meta]
+plan = "vacuous"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = "Add the retry limit to `parse_config`."
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+verify = [{{ phase = "compile", command = "{command}" }}]
+"#
+            );
+            std::fs::write(plans.join("vacuous/tasks.toml"), tasks).expect("write the plan");
+        };
+
+        write_plan("cargo check -p x || true");
+        assert_eq!(validate_before_run(&plans, workspace.path()), Some(1));
+
+        let config = workspace.path().join("roko.toml");
+        std::fs::write(&config, "[spec_quality]\nmode = \"off\"\n").expect("write roko.toml");
+        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+        std::fs::remove_file(&config).expect("remove roko.toml");
+
+        // Scores advise: a vague but checkable task still runs.
+        write_plan("cargo test -p x --lib retry");
+        assert_eq!(validate_before_run(&plans, workspace.path()), None);
     }
 
     /// gap-d60281: `plan run` stops on a flag the Graph engine does not

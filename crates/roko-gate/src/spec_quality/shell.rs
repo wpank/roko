@@ -7,7 +7,8 @@
 //! compile runs (SQ05).
 //!
 //! This is a port of the shell analysis in `benchmarks/viabilitybench/speclint/speclint.py`
-//! (linter `sq-2`). The two must class every step alike, so change them together.
+//! (linter `sq-3`). The two must class every step alike, so change them together. [`named_paths`]
+//! lists the paths a step names, for sq-3's planner-written test (decision 3202).
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -864,6 +865,57 @@ pub fn analyze_step(command: &str, task_files: &BTreeSet<String>) -> StepAnalysi
         analysis.scopes.clear();
     }
     analysis
+}
+
+/// A dotted Python module, such as `tests.test_slug`.
+static DOTTED_MODULE: LazyLock<Regex> =
+    LazyLock::new(|| compile_regex(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$"));
+
+/// sq-3: the paths the words of a verify step name, relative to the repo root.
+///
+/// Each word after a command's program that is not a flag or a variable, without a pytest
+/// `::selector`, resolved against the step's `cd`. A dotted Python module (`tests.test_slug`)
+/// names its file (`tests/test_slug.py`) as well.
+pub fn named_paths(command: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut cwd = String::new();
+    for simple in parse_shell(command) {
+        let argv = strip_wrappers(&simple.words);
+        if argv.first().is_some_and(|word| word == "cd") {
+            let target = first_positional(&argv[1..]);
+            cwd = if target.is_empty() || target.starts_with(['$', '~', '/', '-']) {
+                String::new()
+            } else {
+                resolve(&cwd, target)
+            };
+            if cwd == "." || cwd.starts_with("..") {
+                cwd.clear();
+            }
+            continue;
+        }
+        for word in argv.iter().skip(1) {
+            let word = word.split("::").next().unwrap_or_default();
+            if word.is_empty() || word.starts_with(['-', '$', '~', '/']) {
+                continue;
+            }
+            let mut candidates = vec![word.to_string()];
+            if DOTTED_MODULE.is_match(word) {
+                candidates.push(format!("{}.py", word.replace('.', "/")));
+            }
+            for candidate in candidates {
+                let path = resolve(&cwd, &candidate);
+                if path != "." && !path.starts_with("..") && !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// Whether a path names a test: one of its parts is `test`, `tests`, `spec` or a test runner.
+pub fn is_test_path(path: &str) -> bool {
+    has_token(&name_tokens(path), TEST_TOKENS)
 }
 
 /// What the program of one simple command proves; `bash -c`, `npx` and `npm exec` yield the uses

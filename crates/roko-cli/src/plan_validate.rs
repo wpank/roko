@@ -14,7 +14,11 @@ use roko_gate::AcceptanceContract;
 use serde::Serialize;
 use toml::Value;
 
-use roko_cli::task_parser::normalize_model_alias;
+use roko_cli::task_parser::{
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, VERIFY_KEYS, normalize_model_alias,
+    suggest_field_correction,
+};
+use roko_gate::spec_quality::ac_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -226,6 +230,10 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
+/// A line break in a diagnostic's message, indented to where `render_text`
+/// starts the message.
+const MESSAGE_INDENT: &str = "\n                 ";
+
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -242,12 +250,13 @@ pub fn render_text(report: &ValidationReport) -> String {
 
         let _ = writeln!(out, "{}", plan.path);
         for diagnostic in &plan.diagnostics {
+            // A message's later lines (PLAN_045's questions) sit under its first.
+            let message = diagnostic.message.replace('\n', MESSAGE_INDENT);
             let _ = writeln!(
                 out,
-                "  {:<5} {:<8} {}",
+                "  {:<5} {:<8} {message}",
                 diagnostic.severity.label(),
-                diagnostic.rule_id,
-                diagnostic.message
+                diagnostic.rule_id
             );
         }
     }
@@ -426,6 +435,176 @@ fn negates_a_grep(command: &str) -> bool {
     })
 }
 
+/// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
+/// read, naming its table, so `--strict` rejects it. The parser drops such a
+/// key without a word, which turns a precise spec into a vague one: R3's
+/// plans set `read_files` beside `files`, and no task got its context file.
+fn unknown_key_diagnostics(parsed: &Value, plan_id: &str) -> Vec<Diagnostic> {
+    let warning = |task_id: Option<String>, message: String| Diagnostic {
+        severity: Severity::Warning,
+        rule_id: "PLAN_043".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id,
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    if let Some(meta) = parsed.get("meta").and_then(Value::as_table) {
+        for key in unknown_keys(meta, META_KEYS) {
+            let message = unknown_key_message("[meta]", key, META_KEYS);
+            diagnostics.push(warning(None, message));
+        }
+        for (index, step) in table_items(meta.get("verify")).enumerate() {
+            let owner = format!("[[meta.verify]] step {}", index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(None, message));
+            }
+        }
+    }
+    for (index, task) in table_items(parsed.get("task")).enumerate() {
+        let task_id = string_field(task.get("id"));
+        let label = task_id
+            .clone()
+            .unwrap_or_else(|| format!("task #{}", index + 1));
+        for key in unknown_keys(task, TASK_KEYS) {
+            let message = if CONTEXT_KEYS.contains(&key) {
+                format!(
+                    "task '{label}' sets `{key}` at the top level of [[task]], where plan run \
+                     ignores it; move it under [task.context]"
+                )
+            } else {
+                unknown_key_message(&format!("task '{label}' [[task]]"), key, TASK_KEYS)
+            };
+            diagnostics.push(warning(task_id.clone(), message));
+        }
+        if let Some(context) = task.get("context").and_then(Value::as_table) {
+            let owner = format!("task '{label}' [task.context]");
+            for key in unknown_keys(context, CONTEXT_KEYS) {
+                let message = unknown_key_message(&owner, key, CONTEXT_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+        for (step_index, step) in table_items(task.get("verify")).enumerate() {
+            let owner = format!("task '{label}' verify step {}", step_index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// 3208: PLAN_044 for a task whose verify steps name acceptance criteria in
+/// `covers`, by the ids the spec-quality score uses ([`ac_id`]): an error for
+/// an id its `acceptance` does not define, and a warning for a criterion no
+/// step covers. A task that uses no `covers` gets neither.
+fn covers_diagnostics(task: &TaskDef, plan_id: &str) -> Vec<Diagnostic> {
+    if task.verify.iter().all(|step| step.covers.is_empty()) {
+        return Vec::new();
+    }
+    let ids: Vec<String> = task
+        .acceptance
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ac_id(item, index))
+        .collect();
+    let diagnostic = |severity, message| Diagnostic {
+        severity,
+        rule_id: "PLAN_044".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id: Some(task.id.clone()),
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    let mut covered = BTreeSet::new();
+    for (index, step) in task.verify.iter().enumerate() {
+        for id in step.covers.iter().map(|id| id.trim()) {
+            if ids.iter().any(|known| known == id) {
+                covered.insert(id);
+                continue;
+            }
+            let defined = if ids.is_empty() {
+                "it has no acceptance criteria".to_string()
+            } else {
+                format!("its criteria are {}", ids.join(", "))
+            };
+            let message = format!(
+                "task '{}' verify step {} covers `{id}`, which is not one of its acceptance \
+                 criteria: {defined}",
+                task.id,
+                index + 1
+            );
+            diagnostics.push(diagnostic(Severity::Error, message));
+        }
+    }
+    for (id, item) in ids.iter().zip(&task.acceptance) {
+        if !covered.contains(id.as_str()) {
+            let message = format!(
+                "task '{}' acceptance criterion {id} is covered by no verify step: {item}",
+                task.id
+            );
+            diagnostics.push(diagnostic(Severity::Warning, message));
+        }
+    }
+    diagnostics
+}
+
+/// 3209: what PLAN_045 says about a task with open questions, one question
+/// per line, or `None` when it has none.
+fn open_questions_message(task: &TaskDef) -> Option<String> {
+    let questions: Vec<&str> = task
+        .spec
+        .open_questions
+        .iter()
+        .map(|question| question.trim())
+        .filter(|question| !question.is_empty())
+        .collect();
+    if questions.is_empty() {
+        return None;
+    }
+    let mut message = format!(
+        "task '{}' has open questions, so its plan cannot run; answer each in the spec, then \
+         delete it from open_questions:",
+        task.id
+    );
+    for question in questions {
+        message.push_str("\n- ");
+        message.push_str(question);
+    }
+    Some(message)
+}
+
+/// The keys of `table` that `known` does not list.
+fn unknown_keys<'a>(
+    table: &'a toml::map::Map<String, Value>,
+    known: &'a [&'a str],
+) -> impl Iterator<Item = &'a str> {
+    table
+        .keys()
+        .map(String::as_str)
+        .filter(move |key| !known.contains(key))
+}
+
+/// The tables of an array field: `[[task]]`, or a list of verify steps.
+fn table_items(value: Option<&Value>) -> impl Iterator<Item = &toml::map::Map<String, Value>> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_table)
+}
+
+/// What PLAN_043 says about `key` in `owner`, with the key it most likely
+/// means when one is close.
+fn unknown_key_message(owner: &str, key: &str, known: &[&str]) -> String {
+    let mut message = format!("{owner} has unknown key `{key}`, which plan run ignores");
+    if let Some(correction) = suggest_field_correction(key, known) {
+        let _ = write!(message, "; did you mean `{correction}`?");
+    }
+    message
+}
+
 /// The `tasks.toml` files of the plans under `dir`, sorted: `dir` itself
 /// when it is one, otherwise those of the plans `roko plan run` finds there
 /// ([`find_plan_dirs`]), so `plan validate` checks the plans that run
@@ -507,6 +686,12 @@ fn validate_tasks_file(
         .get("meta")
         .and_then(Value::as_table)
         .is_some_and(is_architecture_queue_meta);
+    // 3212: only the plan itself can let its tasks end unverified.
+    let allow_unverified = parsed
+        .get("meta")
+        .and_then(|meta| meta.get("allow_unverified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut diagnostics = Vec::new();
 
@@ -560,6 +745,24 @@ fn validate_tasks_file(
                              instead, with a test or a compile",
                             task.id, step.command
                         ),
+                    });
+                }
+            }
+            // 3208: a verify step names the acceptance criteria it checks.
+            for task in &tasks_file.tasks {
+                diagnostics.extend(covers_diagnostics(task, &plan_id));
+            }
+            // 3209: a task whose planner left open questions keeps its plan
+            // from running until the author answers them in the spec and
+            // deletes them.
+            for task in &tasks_file.tasks {
+                if let Some(message) = open_questions_message(task) {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule_id: "PLAN_045".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message,
                     });
                 }
             }
@@ -618,6 +821,8 @@ fn validate_tasks_file(
             });
         }
     }
+    // 3206: `plan run` drops a key it does not read without a word.
+    diagnostics.extend(unknown_key_diagnostics(&parsed, &plan_id));
     let tasks = parsed
         .get("task")
         .and_then(Value::as_array)
@@ -689,18 +894,27 @@ fn validate_tasks_file(
             });
         }
 
-        // gap-29a84b: a task that runs no verify step ends unverified, and a
-        // plan with an unverified task does not succeed. A warning, so
-        // `--strict` rejects it.
+        // gap-29a84b, 3212: a task that runs no verify step ends unverified,
+        // and a plan with an unverified task does not succeed. An error for
+        // every role, unless the plan sets `[meta] allow_unverified`; then a
+        // warning, which `--strict` rejects.
         if !task.has_verify_steps {
+            let (severity, remedy) = if allow_unverified {
+                (Severity::Warning, "")
+            } else {
+                (
+                    Severity::Error,
+                    "; give it a verify step, or set [meta] allow_unverified = true",
+                )
+            };
             diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
+                severity,
                 rule_id: "PLAN_037".to_string(),
                 plan_id: Some(plan_id.clone()),
                 task_id: task.task_id.clone(),
                 message: format!(
                     "task '{}' has no verify steps: it can only end unverified, and then \
-                     its plan does not succeed",
+                     its plan does not succeed{remedy}",
                     task.label()
                 ),
             });
@@ -1847,10 +2061,11 @@ read_files = [
         );
     }
 
-    /// gap-29a84b: a task with no verify steps is a PLAN_037 warning, which
-    /// `plan validate --strict` rejects.
+    /// gap-29a84b, 3212: a task with no verify steps is a PLAN_037 error,
+    /// whatever its role; in a plan that sets `allow_unverified` it is a
+    /// warning, which `plan validate --strict` rejects.
     #[test]
-    fn task_without_verify_is_rejected_in_strict_mode() {
+    fn task_without_verify_is_an_error_unless_the_plan_allows_it() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("plans/demo")).unwrap();
@@ -1888,6 +2103,25 @@ depends_on = ["T1"]
             .collect::<Vec<_>>();
         assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].task_id.as_deref(), Some("T2"));
+        assert_eq!(unverifiable[0].severity, Severity::Error);
+        assert_eq!(report.totals.errors, 1, "{report:?}");
+        assert_eq!(report.exit_code(false), 1, "an error without --strict");
+
+        let tasks = root.join("plans/demo/tasks.toml");
+        let content = fs::read_to_string(&tasks).unwrap();
+        let allowed = content.replace(
+            "plan = \"demo\"\n",
+            "plan = \"demo\"\nallow_unverified = true\n",
+        );
+        fs::write(&tasks, allowed).unwrap();
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+        let unverifiable = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_037")
+            .collect::<Vec<_>>();
+        assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].severity, Severity::Warning);
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");
@@ -2043,6 +2277,81 @@ verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
         assert_eq!(negative.len(), 1, "{report:?}");
         assert_eq!(negative[0].severity, Severity::Warning);
         assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// 3208: a verify step's `covers` must name one of its task's acceptance
+    /// criteria (a PLAN_044 error), and a task that uses `covers` gets a
+    /// PLAN_044 warning for each criterion no step covers. A task without
+    /// `covers` gets neither.
+    #[test]
+    fn covers_must_name_an_acceptance_criterion() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+acceptance = [
+  "AC1: a negative limit is rejected",
+  "the default limit is 3",
+  "AC7: the limit is logged",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib retry"
+covers = ["AC1", "AC9"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib config"
+covers = ["AC2"]
+
+[[task]]
+id = "T2"
+title = "Retry docs"
+role = "implementer"
+files = ["docs/retry.md"]
+depends_on = []
+acceptance = ["the docs name the limit"]
+verify = [{ phase = "structural", command = "grep -q limit docs/retry.md" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let covers = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_044")
+            .collect::<Vec<_>>();
+        assert_eq!(covers.len(), 2, "{report:?}");
+        assert_eq!(covers[0].severity, Severity::Error);
+        assert_eq!(covers[0].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[0].message,
+            "task 'T1' verify step 1 covers `AC9`, which is not one of its acceptance criteria: \
+             its criteria are AC1, AC2, AC7"
+        );
+        assert_eq!(covers[1].severity, Severity::Warning);
+        assert_eq!(covers[1].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[1].message,
+            "task 'T1' acceptance criterion AC7 is covered by no verify step: AC7: the limit is \
+             logged"
+        );
+        assert_eq!(report.totals.errors, 1, "{report:?}");
     }
 
     /// gap-9ed15e: `plan validate` checks the plans `plan run` finds: none

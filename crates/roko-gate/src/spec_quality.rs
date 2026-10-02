@@ -1,19 +1,23 @@
-//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-2` (S07.7).
+//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-3` (S07.7).
 //!
 //! [`lint_files`] scores every `[[task]]` of a set of `tasks.toml` files against rules SQ01–SQ12
 //! and the hard fails HF1–HF5 of S07 §4.2 (`tmp/cybernetic-harness/specs/S07-spec-quality.md`),
 //! one [`SpecQualityRecord`] per task. `roko plan validate --spec-quality` prints the records.
 //!
 //! The rules are a port of speclint (`benchmarks/viabilitybench/speclint/speclint.py`), whose
-//! definitions are frozen as `sq-2`. The test `spec_quality_matches_speclint_golden_fixtures`
+//! definitions are frozen as `sq-3`; this port implements the current id only (speclint keeps
+//! `--linter sq-2` for published figures). The test `spec_quality_matches_speclint_golden_fixtures`
 //! holds this port to speclint's golden fixtures, vendored under `tests/fixtures/speclint/`.
 //! Change a rule only together with speclint and the linter id; speclint's docstring lists what
 //! each id changed.
 //!
-//! Static mode runs nothing, so SQ06 (red on base) scores 0 and HF3 is not evaluated; every
-//! static record lists both under `unknown`. A caller that ran the verify steps on the unchanged
-//! base (speclint's `--dynamic`) passes each task's [`RedOnBase`] to [`lint_files_with`] or
-//! [`score_task`].
+//! sq-3 (decision 3202) credits a planner-written test the task cannot edit as its acceptance
+//! (SQ02 = SQ03 = 1), and scores a task out of the rules its mode and plan can evaluate: static
+//! mode runs nothing, so SQ06 (red on base) is left out and HF3 is not evaluated, and every static
+//! record lists both under `unknown`; SQ12 counts only in a plan with `[meta] hidden_suites =
+//! true`. Each record lists the rules left out under `excluded`. A caller that ran the verify
+//! steps on the unchanged base (speclint's `--dynamic`) passes each task's [`RedOnBase`] to
+//! [`lint_files_with`] or [`score_task`].
 
 mod shell;
 
@@ -26,10 +30,12 @@ use regex::Regex;
 use serde::Serialize;
 use toml::{Table, Value};
 
-pub use shell::{Scope, StepAnalysis, VerifyClass, analyze_step, vacuous_reason};
+pub use shell::{
+    Scope, StepAnalysis, VerifyClass, analyze_step, is_test_path, named_paths, vacuous_reason,
+};
 
 /// The linter id. The rule definitions in this module are frozen under it.
-pub const LINTER: &str = "sq-2";
+pub const LINTER: &str = "sq-3";
 
 /// One weighted rule of the score.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -529,6 +535,8 @@ pub struct PlanContext<'a> {
     pub tasks_by_id: HashMap<&'a str, &'a SpecTask>,
     /// The files each plan's tasks write, by plan id, for `depends_on_plan`.
     pub plan_outputs: &'a HashMap<String, BTreeSet<String>>,
+    /// `[meta] hidden_suites`: the plan's tasks have hidden test suites, so SQ12 counts.
+    pub hidden_suites: bool,
 }
 
 /// Files written by the task's transitive dependencies and its prerequisite plans (PLAN_031).
@@ -586,6 +594,9 @@ pub struct SpecQualityRecord {
     pub hard_fail_detail: BTreeMap<&'static str, Vec<String>>,
     /// What this mode could not evaluate: `HF3` and `SQ06` in static mode.
     pub unknown: Vec<&'static str>,
+    /// The rules the score leaves out: `SQ06` in static mode, `SQ12` in a plan without hidden
+    /// suites.
+    pub excluded: Vec<&'static str>,
     /// Each rule's score in [0, 1], rounded to 4 places.
     pub rules: BTreeMap<&'static str, f64>,
     /// The class of each verify step.
@@ -643,6 +654,8 @@ pub struct SpecFeatures {
     pub has_non_goals: bool,
     /// Whether the task has a `[task.hidden]` table.
     pub has_hidden_hook: bool,
+    /// Whether a planner-written test the task cannot edit is its acceptance (sq-3).
+    pub planner_test: bool,
     /// Refinement rounds; always 0 for an authored spec.
     pub refine_rounds: u32,
 }
@@ -728,6 +741,14 @@ pub fn score_task(
         1.0
     } else {
         0.5
+    };
+
+    // sq-3: a planner-written test the task cannot edit is its acceptance, and traces to itself.
+    let planner_test = planner_written_test(task, &analyses, ctx.workspace);
+    let (sq02, sq03) = if planner_test {
+        (1.0, 1.0)
+    } else {
+        (sq02, sq03)
     };
 
     // SQ06 red on base: dynamic; unknown scores 0 and is flagged.
@@ -827,14 +848,24 @@ pub fn score_task(
     let values = [
         sq01, sq02, sq03, sq04, sq05, sq06, sq07, sq08, sq09, sq10, sq11, sq12,
     ];
-    let score = round_to(
-        RULES
-            .iter()
-            .zip(values)
-            .map(|(rule, value)| f64::from(rule.weight) * value)
-            .sum::<f64>(),
-        2,
-    );
+    // sq-3: the score is out of the rules this mode and plan can evaluate.
+    let excluded = excluded_rules(red_on_base, ctx.hidden_suites);
+    let counted: Vec<(u32, f64)> = RULES
+        .iter()
+        .zip(values)
+        .filter(|(rule, _)| !excluded.contains(&rule.id))
+        .map(|(rule, value)| (rule.weight, value))
+        .collect();
+    let points = counted
+        .iter()
+        .map(|(weight, value)| f64::from(*weight) * value)
+        .sum::<f64>();
+    let score = if excluded.is_empty() {
+        round_to(points, 2)
+    } else {
+        let weight: u32 = counted.iter().map(|(weight, _)| weight).sum();
+        round_to(100.0 * points / f64::from(weight), 2)
+    };
     let is_static = red_on_base == RedOnBase::Unknown;
     SpecQualityRecord {
         ev: "spec.quality",
@@ -854,6 +885,7 @@ pub fn score_task(
         } else {
             Vec::new()
         },
+        excluded,
         rules: RULES
             .iter()
             .zip(values)
@@ -889,9 +921,47 @@ pub fn score_task(
             max_loc: task.max_loc,
             has_non_goals,
             has_hidden_hook: task.hidden_interface.is_some(),
+            planner_test,
             refine_rounds: 0,
         },
     }
+}
+
+/// sq-3 (decision 3202): whether a planner-written test the task cannot edit is its acceptance.
+///
+/// A pinned `[task.accept]` test is one. So is a scoped test-run step whose command names a test
+/// file that exists on the base (the workspace, in static mode) and is not one of the task's
+/// `files`: the Goodhart guard is that the test is named in the step and read-only to the task.
+fn planner_written_test(
+    task: &SpecTask,
+    analyses: &[StepAnalysis],
+    workspace: &Workspace,
+) -> bool {
+    if task.accept_tests > 0 {
+        return true;
+    }
+    task.verify.iter().zip(analyses).any(|(step, analysis)| {
+        analysis.class == VerifyClass::Test
+            && !analysis.scopes.is_empty()
+            && analysis.scopes.iter().all(|scope| *scope == Scope::Scoped)
+            && named_paths(&step.command).iter().any(|path| {
+                !task.outputs.contains(path)
+                    && is_test_path(path)
+                    && workspace.text(path).is_some()
+            })
+    })
+}
+
+/// sq-3: the rules a score leaves out: SQ06 in static mode, SQ12 in a plan without hidden suites.
+fn excluded_rules(red_on_base: RedOnBase, hidden_suites: bool) -> Vec<&'static str> {
+    let mut excluded = Vec::new();
+    if red_on_base == RedOnBase::Unknown {
+        excluded.push("SQ06");
+    }
+    if !hidden_suites {
+        excluded.push("SQ12");
+    }
+    excluded
 }
 
 /// The hard fails of a task, and what caused them.
@@ -985,8 +1055,9 @@ fn round_to(value: f64, places: usize) -> f64 {
     format!("{value:.places$}").parse().unwrap_or(value)
 }
 
-/// An acceptance item's id: its `ACn` prefix, or `AC<position>`.
-fn ac_id(item: &str, index: usize) -> String {
+/// An acceptance item's id: its `ACn` prefix, or `AC<position>` for the item at 0-based `index`.
+/// A verify step's `covers` names criteria by these ids; `plan validate` checks them (PLAN_044).
+pub fn ac_id(item: &str, index: usize) -> String {
     AC_ID
         .captures(item)
         .and_then(|captures| captures.get(1))
@@ -1200,7 +1271,7 @@ pub fn lint_files_with(
     red_on_base: &BTreeMap<(String, String), RedOnBase>,
 ) -> SpecQualityReport {
     let workspace = Workspace::new(root);
-    let mut plans: Vec<(String, String, Vec<SpecTask>)> = Vec::new();
+    let mut plans: Vec<(String, String, bool, Vec<SpecTask>)> = Vec::new();
     let mut parse_errors = Vec::new();
     for file in files {
         let path = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
@@ -1208,7 +1279,13 @@ pub fn lint_files_with(
         match read_tasks_toml(&path) {
             Ok(data) => {
                 let tasks = tables(data.get("task")).map(SpecTask::from_toml).collect();
-                plans.push((plan_path, plan_id(&path, &data), tasks));
+                let hidden_suites = data
+                    .get("meta")
+                    .and_then(Value::as_table)
+                    .and_then(|meta| meta.get("hidden_suites"))
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                plans.push((plan_path, plan_id(&path, &data), hidden_suites, tasks));
             }
             Err(error) => parse_errors.push(SpecParseError {
                 path: plan_path,
@@ -1218,7 +1295,7 @@ pub fn lint_files_with(
     }
 
     let mut plan_outputs: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for (_, id, tasks) in &plans {
+    for (_, id, _, tasks) in &plans {
         let outputs = plan_outputs.entry(id.clone()).or_default();
         for task in tasks {
             outputs.extend(task.outputs.iter().cloned());
@@ -1226,7 +1303,7 @@ pub fn lint_files_with(
     }
 
     let mut records = Vec::new();
-    for (plan_path, id, tasks) in &plans {
+    for (plan_path, id, hidden_suites, tasks) in &plans {
         let ctx = PlanContext {
             workspace: &workspace,
             plan_id: id.clone(),
@@ -1238,6 +1315,7 @@ pub fn lint_files_with(
                 .map(|task| (task.id.trim(), task))
                 .collect(),
             plan_outputs: &plan_outputs,
+            hidden_suites: *hidden_suites,
         };
         for task in tasks {
             let key = (plan_path.clone(), task.id.clone());
@@ -1389,8 +1467,8 @@ mod tests {
         let dirs = fixture_dirs();
         assert_eq!(
             dirs.len(),
-            17,
-            "one fixture per rule and static hard fail, plus [task.accept]"
+            18,
+            "one fixture per rule and static hard fail, plus [task.accept] and sq-3's planner test"
         );
         let mut focused = Vec::new();
         for dir in &dirs {
@@ -1586,6 +1664,62 @@ mod tests {
         assert_eq!(t2.hard_fail, ["HF3"]);
     }
 
+    /// 3213, sq-3 (decision 3202): an exact, test-backed task, whose scoped test-run step names a
+    /// planner-written test it reads and cannot edit, gets SQ02 = SQ03 = 1 and scores band B or
+    /// better statically, out of the rules static mode can evaluate. The same task whose test is
+    /// one of its own files, or whose step names no test file, gets no such credit.
+    #[test]
+    fn exact_test_backed_task_scores_band_b_or_better() {
+        let dir = fixture_dirs()
+            .into_iter()
+            .find(|dir| dir.ends_with("sq02-planner-test"))
+            .expect("the sq-3 planner-test fixture");
+        let report = lint_files(&[dir.join("tasks.toml")], &dir);
+        let exact = record(&report, "T1");
+        assert_eq!(exact.linter, "sq-3");
+        assert!(exact.features.planner_test);
+        assert_eq!(exact.rules["SQ02"], 1.0);
+        assert_eq!(exact.rules["SQ03"], 1.0);
+        assert_eq!(exact.excluded, ["SQ06", "SQ12"]);
+        assert!(exact.hard_fail.is_empty(), "{:?}", exact.hard_fail);
+        assert!(exact.score >= 70.0, "{}", exact.score);
+        assert!(["A", "B"].contains(&exact.band), "{}", exact.band);
+
+        for task_id in ["T2", "T3"] {
+            let other = record(&report, task_id);
+            assert!(!other.features.planner_test, "{task_id}");
+            assert_eq!(other.rules["SQ02"], 0.0, "{task_id}");
+            assert!(other.score < exact.score, "{task_id}");
+        }
+
+        assert_eq!(
+            named_paths("python3 -m unittest tests.slug_cases"),
+            ["unittest", "tests.slug_cases", "tests/slug_cases.py"]
+        );
+        assert!(is_test_path("tests/slug_cases.py"));
+        assert!(!is_test_path("src/slug.py"));
+    }
+
+    /// sq-3: SQ12 counts only in a plan that declares hidden suites, and SQ06 only once red on
+    /// base is known.
+    #[test]
+    fn hidden_suites_and_red_on_base_set_the_denominator() {
+        assert_eq!(excluded_rules(RedOnBase::Unknown, false), ["SQ06", "SQ12"]);
+        assert!(excluded_rules(RedOnBase::Fail, true).is_empty());
+        let dir = fixture_dirs()
+            .into_iter()
+            .find(|dir| dir.ends_with("sq12-hidden-hook"))
+            .expect("the sq12 fixture");
+        let report = lint_files(&[dir.join("tasks.toml")], &dir);
+        let hooked = record(&report, "T1");
+        assert_eq!(hooked.excluded, ["SQ06"]);
+        assert!(
+            close(hooked.score, 100.0 * 42.0 / 85.0, 0.01),
+            "{}",
+            hooked.score
+        );
+    }
+
     #[test]
     fn weights_sum_to_one_hundred() {
         assert_eq!(RULES.iter().map(|rule| rule.weight).sum::<u32>(), 100);
@@ -1639,10 +1773,10 @@ mod tests {
             .expect("the hf2 fixture");
         let report = lint_files(&[dir.join("tasks.toml")], &dir);
         let text = render_text(&report);
-        assert!(text.starts_with("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"));
+        assert!(text.starts_with("spec quality (sq-3, static: HF3 and SQ06 not evaluated)\n"));
         assert!(text.contains("\ntasks.toml\n"), "{text}");
         assert!(
-            text.contains("T3  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1"),
+            text.contains("T3  21.25 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1"),
             "{text}"
         );
         assert!(text.contains("hard=HF2"), "{text}");
@@ -1651,7 +1785,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.ends_with("6 tasks: 0 A, 0 B, 0 C, 6 D; 4 with hard fails"),
+            text.ends_with("6 tasks: 0 A, 0 B, 1 C, 5 D; 4 with hard fails"),
             "{text}"
         );
         assert_eq!(report.exit_code(false), 0);

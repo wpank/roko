@@ -76,6 +76,8 @@ fn step(phase: &str, command: impl Into<String>) -> VerifyStep {
         fail_msg: None,
         timeout_ms: crate::task_parser::default_verify_timeout(),
         scope: Vec::new(),
+        covers: Vec::new(),
+        expect: None,
     }
 }
 

@@ -116,6 +116,8 @@ const LOOP_CENSUS_TASKS: &str = r#"[meta]
 plan = "loop-census"
 max_parallel = 1
 skip_enrichment = true
+# T3 ends unverified on purpose; without this, plan run refuses the plan (PLAN_037).
+allow_unverified = true
 
 [[task]]
 id = "T1"
@@ -126,7 +128,7 @@ status = "ready"
 tier = "focused"
 model_hint = "census-model"
 files = ["t1.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 max_retries = 0
 
@@ -164,7 +166,7 @@ status = "ready"
 tier = "focused"
 model_hint = "census-unconfigured-model"
 files = ["t4.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 max_retries = 0
 "#;

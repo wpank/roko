@@ -29,7 +29,7 @@ use crate::agent_exec::{
 use crate::model_selection::resolve_planner_model;
 use crate::plan_authoring::AuthoringSpend;
 use crate::runner::tui_bridge::TuiBridge;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{META_KEYS, TASK_KEYS, TasksFile, VERIFY_KEYS, suggest_field_correction};
 use crate::workspace_paths::{
     drafts_dir, ideas_path, plans_dir as workspace_plans_dir, prd_dir, published_dir,
 };
@@ -2746,194 +2746,14 @@ fn update_prd_plans_generated(prd_path: &std::path::Path, plan_slug: &str) -> an
 
 // ---- post-generation plan TOML validation --------------------------------
 
-/// Known field names for the `[meta]` section.
-const KNOWN_META_FIELDS: &[&str] = &[
-    "plan",
-    "iteration",
-    "total",
-    "done",
-    "status",
-    "max_parallel",
-    "estimated_total_minutes",
-    "skip_enrichment",
-    "failure_policy",
-    "workspace_rungs",
-    "verify",
-    "approval",
-];
-
 /// Required field names for the `[meta]` section.
 const REQUIRED_META_FIELDS: &[&str] = &["plan", "total", "status"];
-
-/// Known field names for a `[[task]]` entry.
-const KNOWN_TASK_FIELDS: &[&str] = &[
-    "id",
-    "title",
-    "description",
-    "role",
-    "status",
-    "tier",
-    "frequency",
-    "model_hint",
-    "replan_strategy",
-    "max_loc",
-    "files",
-    "write_files",
-    "allowed_tools",
-    "denied_tools",
-    "mcp_servers",
-    "depends_on",
-    "depends_on_plan",
-    "split_into",
-    "context",
-    "verify",
-    "timeout_secs",
-    "max_retries",
-    "acceptance",
-    "acceptance_contract",
-    "accept",
-    "domain",
-    "gate_rung",
-    // `roko_core::TaskHints`
-    "category",
-    "complexity_band",
-    "reasoning_level",
-    "speed_priority",
-    "preferred_model",
-    "preferred_provider",
-    "escalate_on_retry",
-    "rung",
-    "quality_profile",
-    "test_invariants",
-    "context_weight",
-    "skills",
-    "example_pattern",
-    "context_files",
-    "plan_section",
-    "types_to_define",
-    "formulas",
-    "imports",
-    "research_before_edit",
-    "parallel_group",
-    "exclusive_files",
-    "tags",
-    "dependency_tags",
-    "fixture_keys",
-    "sidecar_requirements",
-    "integration_surfaces",
-];
 
 /// Required field names for each `[[task]]`.
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
-/// Known field names for each `[[task.verify]]` entry.
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
-
 /// Required field names for each `[[task.verify]]` entry.
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
-
-/// Common typos the LLM produces and their corrections.
-const FIELD_TYPO_CORRECTIONS: &[(&str, &str)] = &[
-    ("pha", "phase"),
-    ("phas", "phase"),
-    ("cmd", "command"),
-    ("comand", "command"),
-    ("commnad", "command"),
-    ("commmand", "command"),
-    ("descrption", "description"),
-    ("descripion", "description"),
-    ("desc", "description"),
-    ("stat", "status"),
-    ("staus", "status"),
-    ("tite", "title"),
-    ("titl", "title"),
-    ("modle_hint", "model_hint"),
-    ("model", "model_hint"),
-    ("modelhint", "model_hint"),
-    ("depnds_on", "depends_on"),
-    ("dependson", "depends_on"),
-    ("depend_on", "depends_on"),
-    ("filse", "files"),
-    ("fles", "files"),
-    ("verfy", "verify"),
-    ("verfiy", "verify"),
-    ("tiemout_secs", "timeout_secs"),
-    ("fail_message", "fail_msg"),
-    ("failure_msg", "fail_msg"),
-    ("timeout", "timeout_ms"),
-    // Singular/plural variants
-    ("denied_tool", "denied_tools"),
-    ("deni_tools", "denied_tools"),
-    ("allowed_tool", "allowed_tools"),
-    ("mcp_server", "mcp_servers"),
-    ("file", "files"),
-    ("write_file", "write_files"),
-    // Truncated field names
-    ("stus", "status"),
-    ("rol", "role"),
-    ("tie", "tier"),
-    ("tit", "title"),
-    ("max_lo", "max_loc"),
-    ("model_hin", "model_hint"),
-    ("depends_o", "depends_on"),
-    ("timeout_sec", "timeout_secs"),
-    ("max_retrie", "max_retries"),
-    // Common misspellings
-    ("discription", "description"),
-    ("dependancies", "depends_on"),
-    ("dependecies", "depends_on"),
-];
-
-/// Suggest a correction for a possibly-misspelled field.
-/// Returns an owned `String` to avoid lifetime issues with the caller.
-fn suggest_field_correction(field: &str, known: &[&str]) -> Option<String> {
-    // Check explicit typo table first.
-    for &(typo, correction) in FIELD_TYPO_CORRECTIONS {
-        if field == typo {
-            return Some(correction.to_string());
-        }
-    }
-    // Fallback: find the closest known field by edit distance (threshold <= 2).
-    let mut best: Option<(&str, usize)> = None;
-    for &known_field in known {
-        let dist = strsim_distance(field, known_field);
-        if dist > 0 && dist <= 2 {
-            if best.map_or(true, |(_, best_dist)| dist < best_dist) {
-                best = Some((known_field, dist));
-            }
-        }
-    }
-    best.map(|(s, _)| s.to_string())
-}
-
-/// Minimal Levenshtein distance (no allocations for short strings).
-fn strsim_distance(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    let m = a_bytes.len();
-    let n = b_bytes.len();
-    if m == 0 {
-        return n;
-    }
-    if n == 0 {
-        return m;
-    }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
-}
 
 /// Validate and fix a generated plan TOML string.
 ///
@@ -2980,8 +2800,8 @@ fn validate_and_fix_generated_plan(
             // Flag unknown meta fields.
             let meta_keys: Vec<String> = meta.keys().cloned().collect();
             for key in &meta_keys {
-                if !KNOWN_META_FIELDS.contains(&key.as_str()) {
-                    if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
+                if !META_KEYS.contains(&key.as_str()) {
+                    if let Some(correction) = suggest_field_correction(key, META_KEYS) {
                         if let Some(value) = meta.remove(key.as_str()) {
                             tracing::warn!(
                                 "prd plan: [meta] field '{key}' is unknown; \
@@ -3045,10 +2865,8 @@ fn validate_and_fix_generated_plan(
                     // Flag unknown task fields.
                     let task_keys: Vec<String> = task.keys().cloned().collect();
                     for key in &task_keys {
-                        if !KNOWN_TASK_FIELDS.contains(&key.as_str()) {
-                            if let Some(correction) =
-                                suggest_field_correction(key, KNOWN_TASK_FIELDS)
-                            {
+                        if !TASK_KEYS.contains(&key.as_str()) {
+                            if let Some(correction) = suggest_field_correction(key, TASK_KEYS) {
                                 if let Some(value) = task.remove(key.as_str()) {
                                     tracing::warn!(
                                         "prd plan: {task_id_label}: field '{key}' is unknown; \
@@ -3145,9 +2963,9 @@ fn validate_and_fix_generated_plan(
                                 if let Some(step) = step_val.as_table_mut() {
                                     let step_keys: Vec<String> = step.keys().cloned().collect();
                                     for key in &step_keys {
-                                        if !KNOWN_VERIFY_FIELDS.contains(&key.as_str()) {
+                                        if !VERIFY_KEYS.contains(&key.as_str()) {
                                             if let Some(correction) =
-                                                suggest_field_correction(key, KNOWN_VERIFY_FIELDS)
+                                                suggest_field_correction(key, VERIFY_KEYS)
                                             {
                                                 if let Some(value) = step.remove(key.as_str()) {
                                                     tracing::warn!(
@@ -4933,32 +4751,6 @@ command = "cargo test -p <crate> -- <test_name>"
         );
         // Verify it's still valid TOML.
         let _parsed: toml::Value = toml::from_str(&result).unwrap();
-    }
-
-    #[test]
-    fn strsim_distance_basic() {
-        assert_eq!(strsim_distance("phase", "phase"), 0);
-        assert_eq!(strsim_distance("pha", "phase"), 2);
-        assert_eq!(strsim_distance("stat", "status"), 2);
-        assert_eq!(strsim_distance("", "abc"), 3);
-        assert_eq!(strsim_distance("abc", ""), 3);
-    }
-
-    #[test]
-    fn suggest_correction_finds_typos() {
-        assert_eq!(
-            suggest_field_correction("pha", KNOWN_VERIFY_FIELDS),
-            Some("phase".to_string())
-        );
-        assert_eq!(
-            suggest_field_correction("stat", KNOWN_TASK_FIELDS),
-            Some("status".to_string())
-        );
-        // Unknown field with no close match returns None.
-        assert_eq!(
-            suggest_field_correction("zzzzunknown", KNOWN_TASK_FIELDS),
-            None
-        );
     }
 
     // ---- next_tier_model tests ----

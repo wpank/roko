@@ -401,6 +401,8 @@ command = "true"
             fail_msg: None,
             timeout_ms: 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
 
         // The default floor is a task's default max_retries (3).
@@ -460,6 +462,8 @@ command = "true"
             fail_msg: None,
             timeout_ms: 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
         let knowledge = KnowledgeStore::for_workdir(dir.path());
         let budget = || {

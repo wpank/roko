@@ -486,8 +486,10 @@ def lint(
     timeout: float = STEP_TIMEOUT_S,
     scratch: Path | None = None,
     fixture: bool = False,
+    linter: str = speclint.LINTER,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
-    """Check every task of ``files`` on its base, then score them like :func:`speclint.lint_files`.
+    """Check every task of ``files`` on its base, then score them like :func:`speclint.lint_files`
+    under ``linter``.
 
     Returns (records without `ts`, parse errors). Raises :class:`CheckError` when the check
     cannot start.
@@ -521,7 +523,8 @@ def lint(
                     continue
                 checks[key] = check_task(task, trees, sha, path.parent, timeout)
                 checks[key].base_reason = why
-    records, errors = speclint.lint_files(files, root, {key: check.red_on_base for key, check in checks.items()})
+    red_on_base = {key: check.red_on_base for key, check in checks.items()}
+    records, errors = speclint.lint_files(files, root, red_on_base, linter)
     for record in records:
         check = checks.get((record["plan_path"], record["task_id"]))
         record["mode"] = "dynamic"

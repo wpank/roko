@@ -68,7 +68,7 @@ role = "implementer"
 status = "ready"
 tier = "mechanical"
 files = ["t1.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 
 [[task]]
@@ -105,7 +105,7 @@ status = "ready"
 tier = "mechanical"
 rung = "top"
 files = ["t4.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 
 [[task]]
@@ -116,7 +116,7 @@ role = "implementer"
 status = "ready"
 tier = "integrative"
 files = ["t5.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 "#;
 

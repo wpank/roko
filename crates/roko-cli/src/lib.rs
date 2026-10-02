@@ -214,6 +214,7 @@ pub mod secrets;
 pub mod share;
 pub mod snapshot_migrate;
 pub mod snapshot_reconcile;
+pub mod spec_gate;
 pub mod spinner;
 pub mod status;
 pub mod subscriptions;

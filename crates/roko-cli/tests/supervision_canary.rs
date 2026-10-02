@@ -48,7 +48,7 @@ status = "ready"
 tier = "focused"
 model_hint = "silent-model"
 files = ["t1.txt"]
-verify = [{ phase = "structural", command = "true" }]
+verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 120
 max_retries = 1
 "#;

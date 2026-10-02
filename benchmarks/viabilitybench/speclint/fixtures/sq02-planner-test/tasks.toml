@@ -1,0 +1,58 @@
+# speclint golden fixture: SQ02 under sq-3 (decision 3202). An R3-style task: an exact description,
+# one file, a planner-written test it must not edit, read through [task.context], and one scoped
+# test-runner verify step. sq-3 credits the test as the acceptance (T1); a test the task may edit
+# (T2) or a step that names no test file (T3) gets no credit. sq-2 gives none of them acceptance.
+[meta]
+plan = "sq02-planner-test"
+total = 3
+
+[[task]]
+id = "T1"
+title = "Slugify titles"
+description = """Write `slugify(title)` in `slug.py`: lowercase the title, turn each run of characters other than letters and digits into one hyphen, and trim hyphens at both ends. Do not edit `tests/slug_cases.py`."""
+role = "implementer"
+files = ["slug.py"]
+max_loc = 20
+
+[task.context]
+read_files = [
+  { path = "tests/slug_cases.py", why = "the planner-written tests slugify must pass" },
+]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.slug_cases"
+
+[[task]]
+id = "T2"
+title = "Slugify titles"
+description = """Write `slugify(title)` in `slug.py`: lowercase the title, turn each run of characters other than letters and digits into one hyphen, and trim hyphens at both ends. Do not edit `tests/slug_cases.py`."""
+role = "implementer"
+files = ["slug.py", "tests/slug_cases.py"]
+max_loc = 20
+
+[task.context]
+read_files = [
+  { path = "tests/slug_cases.py", why = "the planner-written tests slugify must pass" },
+]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.slug_cases"
+
+[[task]]
+id = "T3"
+title = "Slugify titles"
+description = """Write `slugify(title)` in `slug.py`: lowercase the title, turn each run of characters other than letters and digits into one hyphen, and trim hyphens at both ends. Do not edit `tests/slug_cases.py`."""
+role = "implementer"
+files = ["slug.py"]
+max_loc = 20
+
+[task.context]
+read_files = [
+  { path = "tests/slug_cases.py", why = "the planner-written tests slugify must pass" },
+]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest discover -s tests"

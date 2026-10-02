@@ -11,7 +11,7 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { WirePlanSummary } from '@/api/contracts';
+import type { WirePlanDiff, WirePlanSummary } from '@/api/contracts';
 import {
   usePlanTasks,
   useRunPlan,
@@ -35,6 +35,7 @@ import { TaskList } from '@/components/stage/TaskList';
 import { ValidationBadge } from '@/components/stage/ValidationBadge';
 import { SourceEditor } from '@/components/stage/SourceEditor';
 import { PromptPanel } from '@/components/stage/PromptPanel';
+import { RevisionDiff } from '@/components/stage/RevisionDiff';
 
 // ── usePrimaryAction ───────────────────────────────────────────────────────────
 
@@ -223,6 +224,8 @@ export function PlanView({
 
   const [editing, setEditing] = useState(false);
   const [revising, setRevising] = useState(false);
+  // What the last revision changed, shown until dismissed (3229).
+  const [revisionDiff, setRevisionDiff] = useState<WirePlanDiff | null>(null);
   // The editor's unsaved text is marked in the store, where Run, the `r` key,
   // Run all and the selection all see it. An open editor that holds none (or
   // shows the "not supported" notice) blocks nothing.
@@ -318,7 +321,7 @@ export function PlanView({
     [onSelectTask],
   );
 
-  const handleRevisionDone = useCallback(async () => {
+  const handleRevisionDone = useCallback(async (_slug: string, diff?: WirePlanDiff) => {
     // A revision lands only when its operation completes — after the 202 that
     // useRevisePlan's onSuccess fired on. Refreshing on the 202 alone left the
     // old tasks on screen because the server had not yet written the new tasks.
@@ -330,6 +333,7 @@ export function PlanView({
       queryClient.invalidateQueries({ queryKey: queryKeys.planSource(plan.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.validation(plan.id) }),
     ]);
+    setRevisionDiff(diff ?? null);
     setRevising(false);
   }, [queryClient, plan.id]);
 
@@ -414,6 +418,9 @@ export function PlanView({
           </Button>
         </div>
       </div>
+
+      {/* ── 1b. What the last revision changed (3229) ─────────────────────── */}
+      <RevisionDiff diff={revisionDiff} onDismiss={() => setRevisionDiff(null)} />
 
       {/* ── 2. Status line ────────────────────────────────────────────────── */}
 

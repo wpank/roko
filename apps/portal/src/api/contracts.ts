@@ -454,11 +454,33 @@ export interface WireInvalidPlan {
 // ---------------------------------------------------------------------------
 
 /** Status of an async operation (e.g. plan import, run start). */
+/** One key a revision changed, each side as TOML text; `null` where absent. */
+export interface WireKeyChange {
+  key: string;
+  before: string | null;
+  after: string | null;
+}
+
+/** The keys of one task that a revision changed. */
+export interface WireTaskChange {
+  id: string;
+  keys: WireKeyChange[];
+}
+
+/** What a revision changed in a plan, task by task (`PlanDiffDto`, 3216). */
+export interface WirePlanDiff {
+  meta: WireKeyChange[];
+  added: string[];
+  removed: string[];
+  changed: WireTaskChange[];
+}
+
 export interface WireOperation {
   id: string;
   kind?: string;
   status: string;
-  result?: { slug?: string; task_count?: number } | null;
+  /** A revision's result also carries its plan diff (3229). */
+  result?: { slug?: string; task_count?: number; diff?: WirePlanDiff | null } | null;
   error?: string | null;
 }
 

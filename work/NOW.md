@@ -26,7 +26,7 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 7 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -60,7 +60,7 @@ _15 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-10-01
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_4 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -68,7 +68,7 @@ _4 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 - **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-10-01
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
 
-_1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -76,7 +76,7 @@ _1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_8 more open · 6 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_8 more open · 5 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

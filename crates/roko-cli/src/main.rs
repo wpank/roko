@@ -626,22 +626,6 @@ Examples:
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// (Removed) Use `roko run --plan "<prompt>"`.
-    #[command(hide = true)]
-    Develop {
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        r#continue: bool,
-        #[arg(long)]
-        workdir: Option<PathBuf>,
-        #[arg(long)]
-        provider: Option<String>,
-        #[arg(value_name = "PROMPT")]
-        prompt: Vec<String>,
-    },
     /// Print signal counts, most recent episode, and gate pass/fail.
     #[command(
         visible_alias = "s",
@@ -1895,9 +1879,10 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             )
             .await
         }
-        // `do`, `develop` and `prd` were folded into `roko run` (tmp/workflow-audit).
-        // They still parse for one release and exit with the migration, without
-        // any provider, server or git effect.
+        // `do` and `prd` were folded into `roko run` (tmp/workflow-audit). They
+        // still parse for one release and exit with the migration, without any
+        // provider, server or git effect. (`develop`, an error since 2026-09-04,
+        // is gone: clap reports it as an unknown subcommand.)
         Command::Do { .. } => Ok(removed_command(
             cli,
             "do",
@@ -1905,13 +1890,6 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
              for a plan first, `roko run --plan \"<prompt>\"`.",
             "roko run \"<prompt>\"",
             "2026-10-02",
-        )),
-        Command::Develop { .. } => Ok(removed_command(
-            cli,
-            "develop",
-            "Use `roko run --plan \"<prompt>\"` instead.",
-            "roko run --plan \"<prompt>\"",
-            "2026-09-04",
         )),
         Command::Prd { .. } => Ok(removed_command(
             cli,

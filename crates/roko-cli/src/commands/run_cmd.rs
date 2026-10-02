@@ -1,8 +1,8 @@
 //! `roko run`: run a prompt, or a plan directory, through the Graph engine.
 //!
-//! `roko run` is the one entry point for work. `roko do`, `roko develop` and
-//! the PRD pipeline (`roko prd`) were folded into it on 2026-10-02
-//! (tmp/workflow-audit): a prompt either runs as one checked task or becomes
+//! `roko run` is the one entry point for work. `roko do` and the PRD pipeline
+//! (`roko prd`) were folded into it on 2026-10-02 (tmp/workflow-audit), and
+//! `roko develop` is gone: a prompt either runs as one checked task or becomes
 //! a plan, and a plan directory runs as `roko plan run` runs it.
 //!
 //! ## Routes

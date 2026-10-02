@@ -384,9 +384,9 @@ max_retries = 0
     );
 }
 
-/// `roko prd`, `roko do` and `roko develop` were folded into `roko run`
-/// (tmp/workflow-audit). They still parse, and each exits 1 with its
-/// replacement instead of a usage error, offline.
+/// `roko prd` and `roko do` were folded into `roko run` (tmp/workflow-audit).
+/// They still parse, and each exits 1 with its replacement instead of a usage
+/// error, offline.
 #[test]
 fn removed_commands_print_their_replacement() {
     let tmp = TempDir::new().expect("tempdir");
@@ -396,7 +396,6 @@ fn removed_commands_print_their_replacement() {
         (&["prd", "list"][..], "roko plan generate"),
         (&["prd", "idea", "add", "login"][..], "roko run --plan"),
         (&["do", "fix the bug"][..], "roko run"),
-        (&["develop", "add login"][..], "roko run --plan"),
     ] {
         let assert = Command::cargo_bin("roko")
             .unwrap()

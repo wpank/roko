@@ -439,8 +439,9 @@ fn removed_commands_still_parse_so_they_can_report_the_migration() {
     assert!(matches!(cli.command, Some(Command::Do { .. })));
     let cli = Cli::try_parse_from(["roko", "d", "fix it"]).unwrap();
     assert!(matches!(cli.command, Some(Command::Do { .. })));
-    let cli = Cli::try_parse_from(["roko", "develop", "--yes", "build it"]).unwrap();
-    assert!(matches!(cli.command, Some(Command::Develop { .. })));
+    // `develop` printed its migration for a month (since 2026-09-04) and is
+    // now an unknown subcommand.
+    assert!(try_parse_cli(["roko", "develop", "build", "it"]).is_err());
     for args in [
         vec!["roko", "prd"],
         vec!["roko", "prd", "list"],
@@ -460,7 +461,7 @@ fn removed_commands_still_parse_so_they_can_report_the_migration() {
 fn removed_commands_stay_out_of_help() {
     let mut cmd = Cli::command();
     cmd.build();
-    for name in ["do", "develop", "prd"] {
+    for name in ["do", "prd"] {
         let sub = cmd
             .get_subcommands()
             .find(|sub| sub.get_name() == name)

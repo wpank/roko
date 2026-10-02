@@ -115,8 +115,9 @@ cargo run -p roko-cli -- status
 `roko run --plan "<prompt>"` does steps 1 and 4 in one go: it writes the plan, shows it, and asks
 before running it (`--yes` skips the question). A small change needs no plan:
 `roko run "<prompt>"` sizes the prompt and runs a small one as one checked task. The PRD pipeline
-(`roko prd`), `roko do` and `roko develop` were removed on 2026-10-02 (`tmp/workflow-audit/`);
-they still parse and exit 1 with their replacement.
+(`roko prd`) and `roko do` were removed on 2026-10-02 (`tmp/workflow-audit/`); for one release
+they still parse and exit 1 with their replacement. `roko develop` (an error since 2026-09-04) is
+gone.
 
 ### Opt-in FAST self-development
 
@@ -149,7 +150,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
-| `roko diagnose <plan-id>` | Diagnose why a plan failed (structured JSON output) |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed: a readable report (`--json` for JSON, `--verbose` adds the tasks that completed) |
 | `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
 | `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
 | `roko think "<question>"` | Research a question without executing agents or changing files |

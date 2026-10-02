@@ -2125,15 +2125,15 @@ These items are actively being worked on and may change behavior in the next rel
 ## Removed commands
 
 The PRD pipeline was removed: plans are the only unit of work, and `roko run` is the one
-entry point. `roko do`, `roko develop` and `roko prd ...` still parse as hidden commands for
-one release; each prints ``error: `roko X` was removed ...`` with its replacement and exits 1
-(a JSON object with `--json`). Use this table to migrate scripts and older docs:
+entry point. `roko do` and `roko prd ...` still parse as hidden commands for one release;
+each prints ``error: `roko X` was removed ...`` with its replacement and exits 1 (a JSON
+object with `--json`). `roko develop` is now an unknown command. Use this table to migrate scripts and older docs:
 
 | Removed | Replacement |
 |---|---|
 | `roko prd idea` / `list` / `status` / `draft new` / `draft edit` / `draft promote` / `draft list` / `plan` / `consolidate` | `roko run --plan "<prompt>"`, or `roko plan generate "<prompt>"` then `roko run plans/<slug>` |
 | `roko do "<prompt>"` (alias `d`) | `roko run "<prompt>"` (same sizing); `roko do --plan` becomes `roko run --plan` |
-| `roko develop "<prompt>"` (already an error since 2026-09-04) | `roko run --plan "<prompt>"` |
+| `roko develop "<prompt>"` (an error since 2026-09-04; now an unknown command) | `roko run --plan "<prompt>"` |
 | `roko research enhance-prd <slug>` | `roko research enhance-plan <slug>` |
 | `roko backlog import` (imported `tmp/backlog` specs as PRD ideas) | `roko plan generate --from-backlog <ids>` |
 | HTTP `/api/prds`, `/api/prds/ideas`, `/api/prds/status`, `/api/prds/{slug}`, `/api/prds/{slug}/draft`, `/api/prds/{slug}/promote`, `/api/prds/{slug}/plan`, `/api/prd/consolidate`, `/api/prds/consolidate` | `POST /api/plans/generate {"prompt": "..."}` (takes `prompt` only; `slug` is rejected with 422) |

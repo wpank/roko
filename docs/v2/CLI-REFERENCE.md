@@ -563,8 +563,8 @@ roko plan regenerate <plan-dir> [--dry-run]
 ### Removed commands
 
 Plans come straight from a prompt, so the PRD pipeline and the extra entry points are gone.
-For one release these commands still parse, print an error that names the replacement, and
-exit 1.
+For one release `roko prd` and `roko do` still parse, print an error that names the
+replacement, and exit 1; `roko develop` is an unknown command.
 
 | Removed | Use instead |
 |---|---|

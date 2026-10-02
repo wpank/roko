@@ -1548,10 +1548,11 @@ async fn run_graph_plan_body(
         );
     }
 
-    // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
-    // Wired into each CellContext so the task executor cell can check it
-    // between agent turns (cells check this flag between turns; a paused
-    // cell waits until the flag is cleared).
+    // Shared pause flag: set and cleared by the Pause and Resume commands of
+    // every control surface. Pause holds (decision 1206): while it is set the
+    // plan-set driver starts no plan and each task's dispatch starts no
+    // attempt, a retry included (`hold_while_paused`); running attempts
+    // finish, and the deadline keeps running.
     let shared_pause_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     // ── Spawn interactive TUI thread ─────────────────────────────────
@@ -1781,7 +1782,13 @@ async fn run_graph_plan_body(
             reran_plans = true;
         }
 
-        let admission = scheduler.admit();
+        // A paused run starts no plan (decision 1206).
+        let paused = shared_pause_flag.load(Ordering::Acquire);
+        let admission = if paused {
+            super::plan_set::Admission::default()
+        } else {
+            scheduler.admit()
+        };
         for (plan_id, reason) in admission.blocked {
             report_blocked_plan(&graph_tui_bridge, &plan_id, &reason);
             plan_outcomes.insert(plan_id, false);
@@ -1818,7 +1825,8 @@ async fn run_graph_plan_body(
             running.push(run_admitted_plan(&run_context, plan, control));
         }
 
-        if running.is_empty() {
+        // A paused run with plans still to start waits for resume.
+        if running.is_empty() && (!paused || scheduler.is_settled()) {
             break;
         }
         tokio::select! {
@@ -1847,10 +1855,8 @@ async fn run_graph_plan_body(
                 plan_outcomes.insert(plan_id.clone(), outcome.succeeded());
                 scheduler.finish(&plan_id, outcome);
                 graph_task_dispatcher.plan_finished(&plan_id);
-                if running.is_empty() {
-                    // Clear any residual pause once no plan is running.
-                    shared_pause_flag.store(false, Ordering::Release);
-                }
+                // A pause outlives the plan that was running: the next plan
+                // waits for resume.
             }
             () = tokio::time::sleep(PLAN_WATCH_INTERVAL) => {}
         }
@@ -2729,7 +2735,8 @@ fn report_blocked_plan(
 /// - Cancel reaches the plan it names when that plan is running, drops it
 ///   when it has not started, and reaches every running plan when it names
 ///   none.
-/// - Pause and resume set the pause flag every plan shares.
+/// - Pause and resume set the pause flag every plan shares. Pause holds: no
+///   plan or attempt starts until resume, and running attempts finish.
 /// - Skip stops the running agent of the task it names (`task_stops`); that
 ///   task fails as stopped by the operator, and its plan runs on.
 /// - Soft retry, repair and reset run again a plan that failed or was
@@ -2774,13 +2781,13 @@ fn route_execution_commands(
                 pause.store(true, Ordering::Release);
                 tracing::info!(
                     command_id = %cmd.command_id,
-                    "TUI pause: execution paused after current task"
+                    "pause: no new task starts until resume; running attempts finish"
                 );
                 (CommandAckStatus::Completed, None)
             }
             ExecutionCommandKind::Resume => {
                 pause.store(false, Ordering::Release);
-                tracing::info!(command_id = %cmd.command_id, "TUI resume: execution resumed");
+                tracing::info!(command_id = %cmd.command_id, "resume: tasks start again");
                 (CommandAckStatus::Completed, None)
             }
             ExecutionCommandKind::SoftRetry
@@ -3193,8 +3200,8 @@ async fn run_one_plan(
     if let Some(replayer) = checkpoint.take_replayer() {
         engine = engine.with_replayer(replayer);
     }
-    // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
-    // check it between turns and yield when the TUI sends Pause.
+    // The shared pause flag reaches each task's dispatch through its
+    // CellContext: a paused run starts no attempt (decision 1206).
     // Set when a stopping plan's attempts must stop (bug-2b1ddc).
     let stop_attempts = Arc::new(AtomicBool::new(false));
     let cell_ctx = plan_cell_context(
@@ -3266,8 +3273,8 @@ async fn run_one_plan(
     //
     // Every 100 ms while the plan runs: honour a stop request and an
     // operator cancel the plan-set driver routed to this plan. Pause and
-    // resume act through the shared pause flag, which cells check between
-    // turns.
+    // resume act through the shared pause flag, which each task's dispatch
+    // checks before it starts an attempt.
     loop {
         if !flow_handle.is_running() {
             break;

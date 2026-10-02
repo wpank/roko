@@ -21,9 +21,9 @@
 //! engine.execute(&ctx).await?;
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +56,71 @@ pub struct RecordEntry {
     pub dispatched_at_ms: Option<u64>,
 }
 
+/// A record of a durable Activity log with the number of its line.
+///
+/// Lines are numbered from 0. The log is append-only, so a record keeps its
+/// line number, and a resume refuses a record by that number instead of
+/// rewriting the log (gap-dc1d16).
+#[derive(Debug, Clone)]
+pub struct LoggedRecord {
+    /// Zero-based number of the line that holds the record.
+    pub line: u64,
+    /// The record.
+    pub entry: RecordEntry,
+}
+
+/// The records in `log`, the bytes of a durable Activity log, in order.
+///
+/// Every reader of a checkpoint's log parses it with this function
+/// (gap-dc1d16). Blank lines are skipped. A line that is not a record of
+/// graph `graph_id` and run `run_id` is an `InvalidData` error: a durable
+/// checkpoint never drops a record silently. Pass only the log's committed
+/// prefix, since a partial last line is an error like any other.
+pub fn activity_records<'a>(
+    log: &'a [u8],
+    graph_id: &'a str,
+    run_id: &'a str,
+) -> impl Iterator<Item = std::io::Result<LoggedRecord>> + 'a {
+    log.split(|byte| *byte == b'\n')
+        .enumerate()
+        .filter_map(move |(index, line)| {
+            let line = line.trim_ascii();
+            if line.is_empty() {
+                return None;
+            }
+            Some(scoped_record(line, index as u64, graph_id, run_id))
+        })
+}
+
+/// Parse `line`, line `index` of a durable Activity log, as a record of
+/// graph `graph_id` and run `run_id`.
+fn scoped_record(
+    line: &[u8],
+    index: u64,
+    graph_id: &str,
+    run_id: &str,
+) -> std::io::Result<LoggedRecord> {
+    let entry: RecordEntry = serde_json::from_slice(line).map_err(|error| {
+        invalid_data(format!(
+            "unparseable Activity record at line {}: {error}",
+            index + 1
+        ))
+    })?;
+    if entry.graph_id != graph_id || entry.run_id != run_id {
+        return Err(invalid_data(format!(
+            "record at line {} belongs to graph/run '{}/{}', expected '{graph_id}/{run_id}'",
+            index + 1,
+            entry.graph_id,
+            entry.run_id,
+        )));
+    }
+    Ok(LoggedRecord { line: index, entry })
+}
+
+fn invalid_data(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
 /// Writes Activity node outputs to a JSONL file for later replay.
 ///
 /// Each successful Activity execution is appended as one JSON line.
@@ -64,6 +129,9 @@ pub struct ActivityRecorder {
     run_id: String,
     path: PathBuf,
     writer: BufWriter<File>,
+    /// Commits each record once it is durable (see
+    /// [`Self::with_commit_hook`]).
+    commit_hook: Option<Box<dyn Fn(&[u8]) -> std::io::Result<()> + Send + Sync>>,
 }
 
 impl ActivityRecorder {
@@ -78,6 +146,7 @@ impl ActivityRecorder {
             run_id: run_id.into(),
             path,
             writer: BufWriter::new(file),
+            commit_hook: None,
         })
     }
 
@@ -99,7 +168,23 @@ impl ActivityRecorder {
             run_id: run_id.into(),
             path,
             writer: BufWriter::new(file),
+            commit_hook: None,
         })
+    }
+
+    /// Call `hook` with the bytes of each record once they are written and
+    /// synced, before [`Self::record`] returns.
+    ///
+    /// A checkpoint commits the record there (gap-dc1d16), so a record whose
+    /// hook did not return is uncommitted. An error from `hook` fails the
+    /// record, whose bytes stay in the log.
+    #[must_use]
+    pub fn with_commit_hook(
+        mut self,
+        hook: impl Fn(&[u8]) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.commit_hook = Some(Box::new(hook));
+        self
     }
 
     /// Return the path of the underlying JSONL file.
@@ -139,7 +224,8 @@ impl ActivityRecorder {
     /// ready and when it was dispatched, to the JSONL file.
     ///
     /// # Errors
-    /// Returns an `std::io::Error` if the write or flush fails.
+    /// Returns an `std::io::Error` if the write or flush fails, or the commit
+    /// hook fails.
     pub fn record_timed(
         &mut self,
         graph_id: &str,
@@ -159,11 +245,15 @@ impl ActivityRecorder {
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let line = roko_core::obs::scrub_secrets_in_jsonl(&line);
-        self.writer.write_all(line.as_bytes())?;
-        self.writer.write_all(b"\n")?;
+        let mut record = roko_core::obs::scrub_secrets_in_jsonl(&line).into_owned();
+        record.push('\n');
+        self.writer.write_all(record.as_bytes())?;
         self.writer.flush()?;
-        self.writer.get_ref().sync_data()
+        self.writer.get_ref().sync_data()?;
+        match &self.commit_hook {
+            Some(hook) => hook(record.as_bytes()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -175,8 +265,9 @@ impl ActivityRecorder {
 pub struct ActivityReplayer {
     /// Map from (node_id, tick) to the recorded output signals.
     entries: HashMap<(String, u64), Vec<roko_core::Signal>>,
-    /// Records whose gate verdict forbids replay (for example a forced
-    /// accept). They are never substituted, so the node re-executes.
+    /// Records refused for replay: their gate verdict forbids it (for
+    /// example a forced accept), or the caller refused them by line. They are
+    /// never substituted, so the node re-executes.
     rejected: Vec<(String, u64)>,
 }
 
@@ -189,7 +280,28 @@ impl ActivityReplayer {
     /// # Errors
     /// Returns an `std::io::Error` if the file cannot be opened.
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        Self::load_inner(path.as_ref(), None, u64::MAX)
+        let log = std::fs::read(path)?;
+        let records = log
+            .split(|byte| *byte == b'\n')
+            .enumerate()
+            .filter(|(_, line)| !line.trim_ascii().is_empty())
+            .filter_map(|(index, line)| {
+                match serde_json::from_slice::<RecordEntry>(line) {
+                    Ok(entry) => Some(LoggedRecord {
+                        line: index as u64,
+                        entry,
+                    }),
+                    Err(e) => {
+                        tracing::warn!(
+                            line = index + 1,
+                            error = %e,
+                            "replay: skipping unparseable JSONL line"
+                        );
+                        None
+                    }
+                }
+            });
+        Self::build(records, &BTreeSet::new(), false)
     }
 
     /// Load a recording and reject malformed entries or entries from another
@@ -201,11 +313,7 @@ impl ActivityReplayer {
         expected_graph_id: &str,
         expected_run_id: &str,
     ) -> std::io::Result<Self> {
-        Self::load_inner(
-            path.as_ref(),
-            Some((expected_graph_id, expected_run_id)),
-            u64::MAX,
-        )
+        Self::load_scoped_committed(path, expected_graph_id, expected_run_id, u64::MAX)
     }
 
     /// [`Self::load_scoped`] over the first `committed_len` bytes of the
@@ -221,87 +329,65 @@ impl ActivityReplayer {
         expected_run_id: &str,
         committed_len: u64,
     ) -> std::io::Result<Self> {
-        Self::load_inner(
-            path.as_ref(),
-            Some((expected_graph_id, expected_run_id)),
-            committed_len,
-        )
+        let mut log = std::fs::read(path)?;
+        log.truncate(usize::try_from(committed_len).unwrap_or(usize::MAX));
+        let records = activity_records(&log, expected_graph_id, expected_run_id)
+            .collect::<std::io::Result<Vec<_>>>()?;
+        Self::from_records(records, &BTreeSet::new())
     }
 
-    fn load_inner(
-        path: &Path,
-        expected: Option<(&str, &str)>,
-        limit: u64,
+    /// Build a replayer from a durable log's records, as [`activity_records`]
+    /// reads them, leaving out those whose line numbers are in `refused`.
+    ///
+    /// A refused record stays in the log, so a resume refuses records without
+    /// rewriting committed bytes (gap-dc1d16). Like a record whose gate
+    /// verdict is not a pass, it is never substituted: its node re-executes,
+    /// and the node's fresh record supersedes it.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` for two replayable records of one node and tick.
+    pub fn from_records(
+        records: impl IntoIterator<Item = LoggedRecord>,
+        refused: &BTreeSet<u64>,
     ) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file.take(limit));
+        Self::build(records, refused, true)
+    }
+
+    fn build(
+        records: impl IntoIterator<Item = LoggedRecord>,
+        refused: &BTreeSet<u64>,
+        strict: bool,
+    ) -> std::io::Result<Self> {
         let mut entries: HashMap<(String, u64), Vec<roko_core::Signal>> = HashMap::new();
         let mut rejected = Vec::new();
-
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+        for LoggedRecord { line, entry } in records {
+            let key = (entry.node_id, entry.tick);
+            if refused.contains(&line) {
+                rejected.push(key);
                 continue;
             }
-            match serde_json::from_str::<RecordEntry>(trimmed) {
-                Ok(entry) => {
-                    if let Some((expected_graph_id, expected_run_id)) = expected
-                        && (entry.graph_id != expected_graph_id || entry.run_id != expected_run_id)
-                    {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "record at line {} belongs to graph/run '{}/{}', expected '{}/{}'",
-                                line_num + 1,
-                                entry.graph_id,
-                                entry.run_id,
-                                expected_graph_id,
-                                expected_run_id
-                            ),
-                        ));
-                    }
-                    let key = (entry.node_id, entry.tick);
-                    // A recorded output whose verdict is not a pass (e.g. a
-                    // forced accept) must never be replayed as a completed
-                    // node. Skipping it also lets the re-executed node's
-                    // fresh record supersede it without a duplicate error.
-                    if TaskGateVerdict::from_signals(&entry.signals)
-                        .is_some_and(|verdict| !verdict.is_replayable())
-                    {
-                        tracing::warn!(
-                            node_id = %key.0,
-                            tick = key.1,
-                            "replay: recorded Activity output is not verified; node will re-run"
-                        );
-                        rejected.push(key);
-                        continue;
-                    }
-                    if entries.insert(key.clone(), entry.signals).is_some() && expected.is_some() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "duplicate Activity record at line {} for node '{}' tick {}",
-                                line_num + 1,
-                                key.0,
-                                key.1
-                            ),
-                        ));
-                    }
-                }
-                Err(e) => {
-                    if expected.is_some() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("unparseable Activity record at line {}: {e}", line_num + 1),
-                        ));
-                    }
-                    tracing::warn!(
-                        line = line_num + 1,
-                        error = %e,
-                        "replay: skipping unparseable JSONL line"
-                    );
-                }
+            // A recorded output whose verdict is not a pass (e.g. a forced
+            // accept) must never be replayed as a completed node. Skipping it
+            // also lets the re-executed node's fresh record supersede it
+            // without a duplicate error.
+            if TaskGateVerdict::from_signals(&entry.signals)
+                .is_some_and(|verdict| !verdict.is_replayable())
+            {
+                tracing::warn!(
+                    node_id = %key.0,
+                    tick = key.1,
+                    "replay: recorded Activity output is not verified; node will re-run"
+                );
+                rejected.push(key);
+                continue;
+            }
+            if entries.insert(key.clone(), entry.signals).is_some() && strict {
+                return Err(invalid_data(format!(
+                    "duplicate Activity record at line {} for node '{}' tick {}",
+                    line + 1,
+                    key.0,
+                    key.1
+                )));
             }
         }
 
@@ -323,8 +409,8 @@ impl ActivityReplayer {
         self.entries.len()
     }
 
-    /// `(node_id, tick)` keys of records refused for replay because their
-    /// gate verdict is not a pass.
+    /// `(node_id, tick)` keys of records refused for replay: their gate
+    /// verdict is not a pass, or the caller refused them by line.
     #[must_use]
     pub fn rejected_entries(&self) -> &[(String, u64)] {
         &self.rejected
@@ -362,15 +448,16 @@ impl ActivityReplayer {
     }
 }
 
-/// Length of the committed part of the Activity log `bytes`: everything up
-/// to and including its last newline. [`ActivityRecorder`] ends each record
-/// with a newline, so the bytes after the last one are a record whose write
-/// did not finish.
-fn committed_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
+/// Length in bytes of the complete records at the start of Activity log `log`.
+///
+/// That is everything up to and including its last newline.
+/// [`ActivityRecorder`] ends each record with a newline, so the bytes after
+/// the last one are a record whose write did not finish.
+#[must_use]
+pub fn complete_records_len(log: &[u8]) -> u64 {
+    log.iter()
         .rposition(|byte| *byte == b'\n')
-        .map_or(0, |last| last + 1)
+        .map_or(0, |last| last as u64 + 1)
 }
 
 /// Length in bytes of the committed part of the Activity log at `path`:
@@ -381,7 +468,7 @@ fn committed_len(bytes: &[u8]) -> usize {
 /// Returns an `std::io::Error` if the log exists but cannot be read.
 pub fn committed_activity_len(path: impl AsRef<Path>) -> std::io::Result<u64> {
     match std::fs::read(path) {
-        Ok(bytes) => Ok(committed_len(&bytes) as u64),
+        Ok(bytes) => Ok(complete_records_len(&bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
     }
@@ -403,15 +490,42 @@ pub fn set_aside_uncommitted_activities(
     path: impl AsRef<Path>,
 ) -> std::io::Result<Option<PathBuf>> {
     let path = path.as_ref();
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let committed = committed_len(&bytes);
-    if committed == bytes.len() {
-        return Ok(None);
+    match std::fs::read(path) {
+        Ok(bytes) => set_aside_after(path, &bytes, complete_records_len(&bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
+}
+
+/// Set aside the bytes of the Activity log at `path` after its first `kept`.
+///
+/// They move to `<log>.uncommitted.<unix ms>`, and the log is cut back to
+/// `kept` bytes, such as the prefix a checkpoint committed (gap-dc1d16).
+/// Returns the file that now holds those bytes, or `None` when the log holds
+/// no more than `kept` bytes or is missing.
+///
+/// # Errors
+/// Returns an `std::io::Error` if the log cannot be read or cut back, or the
+/// bytes cannot be saved. The log is cut only once they are saved.
+pub fn set_aside_activities_after(
+    path: impl AsRef<Path>,
+    kept: u64,
+) -> std::io::Result<Option<PathBuf>> {
+    let path = path.as_ref();
+    match std::fs::read(path) {
+        Ok(bytes) => set_aside_after(path, &bytes, kept),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Move `log`, the bytes of the Activity log at `path`, past its first
+/// `kept` bytes to a file of their own, and cut the log back to `kept`.
+fn set_aside_after(path: &Path, log: &[u8], kept: u64) -> std::io::Result<Option<PathBuf>> {
+    let rest = match usize::try_from(kept).ok().and_then(|kept| log.get(kept..)) {
+        Some(rest) if !rest.is_empty() => rest,
+        _ => return Ok(None),
+    };
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -421,12 +535,12 @@ pub fn set_aside_uncommitted_activities(
     let aside = PathBuf::from(aside);
     {
         let mut file = File::create_new(&aside)?;
-        file.write_all(&bytes[committed..])?;
+        file.write_all(rest)?;
         file.sync_all()?;
     }
-    let log = OpenOptions::new().write(true).open(path)?;
-    log.set_len(committed as u64)?;
-    log.sync_all()?;
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(kept)?;
+    file.sync_all()?;
     Ok(Some(aside))
 }
 
@@ -616,6 +730,128 @@ mod tests {
         drop(rec);
         let rep = ActivityReplayer::load_scoped(&path, "g", "run").unwrap();
         assert_eq!(rep.entry_count(), 2);
+    }
+
+    /// gap-dc1d16: every reader of a durable log parses it the same way.
+    #[test]
+    fn activity_records_number_every_line_and_fail_closed() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        rec.record("g", "a", 0, vec![make_signal("a")]).unwrap();
+        drop(rec);
+        // A blank line keeps its number.
+        let mut file = OpenOptions::new().append(true).open(tmp.path()).unwrap();
+        file.write_all(b"\n").unwrap();
+        drop(file);
+        let mut rec = ActivityRecorder::create("run", tmp.path()).unwrap();
+        rec.record("g", "b", 0, vec![make_signal("b")]).unwrap();
+        drop(rec);
+
+        let log = std::fs::read(tmp.path()).unwrap();
+        let records: Vec<LoggedRecord> = activity_records(&log, "g", "run")
+            .collect::<std::io::Result<_>>()
+            .unwrap();
+        let lines: Vec<(u64, &str)> = records
+            .iter()
+            .map(|record| (record.line, record.entry.node_id.as_str()))
+            .collect();
+        assert_eq!(lines, [(0, "a"), (2, "b")]);
+
+        let foreign = activity_records(&log, "g", "other-run").next().unwrap();
+        assert_eq!(foreign.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        let torn = &log[..log.len() - 2];
+        let error = activity_records(torn, "g", "run")
+            .nth(1)
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unparseable Activity record at line 3")
+        );
+    }
+
+    /// gap-dc1d16: a resume refuses a record by its line, and the log keeps
+    /// it; the node's record from its next run is the one replayed.
+    #[test]
+    fn records_refused_by_line_stay_in_the_log_and_never_replay() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        rec.record("g", "kept", 0, vec![make_signal("a")]).unwrap();
+        rec.record("g", "refused", 0, vec![make_signal("unverified")])
+            .unwrap();
+        rec.record(
+            "g",
+            "refused",
+            0,
+            vec![verdict_signal("fixed", TaskGateVerdict::Passed)],
+        )
+        .unwrap();
+        drop(rec);
+        let log = std::fs::read(tmp.path()).unwrap();
+        let records = || {
+            activity_records(&log, "g", "run")
+                .collect::<std::io::Result<Vec<_>>>()
+                .unwrap()
+        };
+
+        // Without the refusal, the node's two records collide.
+        assert!(ActivityReplayer::from_records(records(), &BTreeSet::new()).is_err());
+        let rep = ActivityReplayer::from_records(records(), &BTreeSet::from([1])).unwrap();
+        assert_eq!(rep.entry_count(), 2);
+        assert_eq!(rep.rejected_entries(), &[("refused".to_string(), 0)]);
+        let replayed = rep.lookup("refused", 0).expect("the re-run's record");
+        assert_eq!(replayed[0].body.as_text().unwrap(), "fixed");
+        assert_eq!(std::fs::read(tmp.path()).unwrap(), log);
+    }
+
+    /// gap-dc1d16: the commit hook sees exactly the bytes each record added
+    /// to the log, after they are synced.
+    #[test]
+    fn the_commit_hook_sees_each_durable_record() {
+        let tmp = NamedTempFile::new().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook_seen = std::sync::Arc::clone(&seen);
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path())
+            .unwrap()
+            .with_commit_hook(move |record| {
+                hook_seen.lock().unwrap().extend_from_slice(record);
+                Ok(())
+            });
+        rec.record("g", "a", 0, vec![make_signal("a")]).unwrap();
+        rec.record("g", "b", 0, vec![make_signal("b")]).unwrap();
+        drop(rec);
+        assert_eq!(*seen.lock().unwrap(), std::fs::read(tmp.path()).unwrap());
+
+        // A failed commit fails the record, whose bytes stay in the log.
+        let mut rec = ActivityRecorder::create("run", tmp.path())
+            .unwrap()
+            .with_commit_hook(|_| Err(std::io::Error::other("commit refused")));
+        let error = rec.record("g", "c", 0, Vec::new()).unwrap_err();
+        assert_eq!(error.to_string(), "commit refused");
+        let log = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(activity_records(&log, "g", "run").count(), 3);
+    }
+
+    #[test]
+    fn set_aside_after_keeps_exactly_the_committed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activities.jsonl");
+        let mut rec = ActivityRecorder::create_fresh("run", &path).unwrap();
+        rec.record("g", "committed", 0, Vec::new()).unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        rec.record("g", "uncommitted", 0, Vec::new()).unwrap();
+        drop(rec);
+        let log = std::fs::read(&path).unwrap();
+        let kept = committed.len() as u64;
+
+        let aside = set_aside_activities_after(&path, kept)
+            .unwrap()
+            .expect("the uncommitted record is set aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), &log[committed.len()..]);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(set_aside_activities_after(&path, kept).unwrap(), None);
+        assert_eq!(complete_records_len(&committed), kept);
     }
 
     fn verdict_signal(text: &str, verdict: TaskGateVerdict) -> Signal {

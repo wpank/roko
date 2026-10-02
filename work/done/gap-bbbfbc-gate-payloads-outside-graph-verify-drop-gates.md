@@ -2,7 +2,7 @@
 id = "gap-bbbfbc"
 kind = "gap"
 title = "Gate payloads outside Graph verify drop [gates] env_passthrough"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/gate_dispatch", "roko-acp"]
 created = 2026-09-29
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "ebdc0f5d5"
+last_verified_rev = "f88210c84"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
 anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal", "crates/roko-acp/src/runner.rs::build_gate_signal", "crates/roko-gate/src/gate_service.rs::run_gates"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-7d7200"], supersedes = [
 
 [[verify]]
 command = "{ ! grep -q 'fn gate_signal(' crates/roko-cli/src/runner/gate_dispatch.rs || grep -q '\\.with_env_passthrough(' crates/roko-cli/src/runner/gate_dispatch.rs; } && { ! grep -q 'fn build_gate_signal(' crates/roko-acp/src/runner.rs || grep -q '\\.with_env_passthrough(' crates/roko-acp/src/runner.rs; } && ! grep -rq 'struct DefaultGateService' crates/roko-gate/src && grep -q 'with_env_passthrough(gate_env_passthrough)' crates/roko-serve/src/service_factory.rs && cargo test -p roko-gate --lib gate_payload_carries_env_passthrough"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:41Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T16:11:58Z"
+forced = false
+evidence = "GateService::run_gates applies [gates] env_passthrough, serve passes it, the uncalled DefaultGateService is deleted; gate_payload_carries_env_passthrough passes (wk-gates 7c528557e); gate 6i passed at f4347b8eb (cargo check, clippy -D warnings, lib tests of roko-acp/cli/core/gate/learn/runtime/serve, canaries C1-C8 and integration tests, roko-acp integration tests, roko-cli doctor, learning_wiring_census and graph_plan_callers tests, 447 bin tests, run_evidence py); two fixes in 09aa7e009 re-tested; merged in f88210c84"
 +++
 
 ## Problem

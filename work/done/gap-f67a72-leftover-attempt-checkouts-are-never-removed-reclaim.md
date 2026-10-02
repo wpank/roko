@@ -2,7 +2,7 @@
 id = "gap-f67a72"
 kind = "gap"
 title = "Leftover attempt checkouts are never removed: reclaim_idle has no production caller"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/orchestrator"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "f88210c84"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-bdfb1d"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/cleanup.rs", "crates/roko-cli/src/doctor.rs"]
@@ -23,6 +23,16 @@ command = "grep -rqw 'fn leftover_checkouts_go_only_when_their_plan_has_ended' c
 
 [[verify]]
 command = "grep -rqw 'fn cli_parses_doctor_disk_fix' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko cli_parses_doctor_disk_fix"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:42Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-02T01:20:12Z"
+forced = false
+evidence = "roko doctor disk --fix removes leftover attempt checkouts by the recorded retention rule and keeps branches, dirty and locked checkouts; leftover_checkouts_go_only_when_their_plan_has_ended and cli_parses_doctor_disk_fix pass (wk-planrun 848ff330c; removal uses one --force, 09aa7e009); gate 6i passed at f4347b8eb (cargo check, clippy -D warnings, lib tests of roko-acp/cli/core/gate/learn/runtime/serve, canaries C1-C8 and integration tests, roko-acp integration tests, roko-cli doctor, learning_wiring_census and graph_plan_callers tests, 447 bin tests, run_evidence py); two fixes in 09aa7e009 re-tested; merged in f88210c84"
 +++
 
 ## Problem

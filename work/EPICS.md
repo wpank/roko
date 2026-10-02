@@ -28,10 +28,6 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 - open by lane: paper 2
 - next: [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue
 
-## [spec-b7303f](items/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt
-
-- **39/39 closed** · goal `truth` · severity p0
-
 ## [spec-f09094](items/spec-f09094-epic-golden-path-acceptance-tests.md) golden-path acceptance tests
 
 - **1/2 closed** · goal `golden-path` · severity p1
@@ -72,6 +68,10 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 - **17/17 closed** · goal `truth` · severity p0
 
+## [spec-b7303f](done/spec-b7303f-epic-one-settled-record-per-attempt.md) one settled record per attempt (done)
+
+- **39/39 closed** · goal `truth` · severity p0
+
 ## [spec-9230a9](done/spec-9230a9-epic-check-each-attempt-s-diff-for.md) check each attempt's diff for tampering and scope (done)
 
 - **9/9 closed** · goal `golden-path` · severity p1
@@ -103,9 +103,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | bench | 47 | 59 | 12 (0) |
 | docs | 17 | 19 | 2 (0) |
 | frontend | 3 | 3 | 0 (0) |
-| none | 316 | 391 | 75 (75) |
+| none | 319 | 391 | 72 (72) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 177 | 189 | 12 (1) |
-| rust-hot | 124 | 129 | 5 (0) |
+| rust-cold | 179 | 189 | 10 (0) |
+| rust-hot | 126 | 129 | 3 (0) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

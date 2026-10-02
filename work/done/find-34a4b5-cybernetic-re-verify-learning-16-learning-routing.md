@@ -2,7 +2,7 @@
 id = "find-34a4b5"
 kind = "finding"
 title = "16 learning/routing closures wired into deleted Runner-v2 event_loop.rs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn"]
 created = 2026-09-06
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "fed9d10e8"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::with_neuro_gate_hints", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
@@ -19,6 +19,18 @@ links = { depends_on = [], blocks = [], related = ["gap-5fb9a7", "reg-ff6e1a", "
 
 [[verify]]
 command = "! grep -q 'knowledge_ids: vec!\\[\\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; } && ! grep -rqE 'PromptEfficiencyScore|ToolRecommender|ToolMetricsStore|FormatBandit|TrackAndStopBandit' crates --include='*.rs'"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:34:47Z"
+commit = "fed9d10e8"
+by = "wk-learn2"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-02T01:21:08Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Every closure is re-attached, deleted or parked. Deleted unwired: P0-13 PromptEfficiencyScore (54976e29e), P4-19 ToolRecommender (d2de76f60), P4-17 roko-learn ToolMetricsStore (d5d618afc), P1-22 the tool-format bandit stack (310f984b6); docs/v3 marks them removed (fed9d10e8). P3-17 and P4-04's automatic proposals never had code (98e849394). Re-attached earlier: P0-04, P0-07, P0-09, P1-09, P2-15, P3-32, P4-04 assignment. Parked: P0-01, P0-02, P1-19, P1-20. The verify (grep guards) passes; cargo verification is the batch gate's."
 +++
 
 ## Problem

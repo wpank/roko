@@ -12,11 +12,14 @@
 //!   loop-census plan through the real `roko` binary with a scripted provider
 //!   and checks, from the files alone, that every attempt settles exactly
 //!   once and that every learning row joins an attempt.
+//! - `loop_census_routed_task_logs_fallback_decision` runs the same plan and
+//!   checks its route decisions: one per attempt, and routed T4's labelled a
+//!   fallback, since a guard replaced the cascade router's pick.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use assert_cmd::cargo::cargo_bin;
@@ -24,6 +27,9 @@ use roko_cli::graph_execution::plan_runner::build_graph_feedback_context;
 use roko_cli::graph_task_dispatch::{GraphTaskDispatcher, WiringReport};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_call_feedback::ModelCallJournal;
+use roko_learn::routing_log::RoutingDecisionLog;
+use roko_learn::telemetry::DecisionSource;
+use roko_learn::telemetry::report::{RunRecords, route_report};
 use serde_json::Value;
 
 /// Every learning component of S01 §5.8, in census order.
@@ -65,7 +71,10 @@ printf '%s\n' '{"type":"result","session_id":"census","model":"claude-sonnet-4-6
 /// verified tasks, and `census-unverified` for T3 alone, so T3's routing
 /// statistics are its own. `census-model` is the cheaper one, so the helper
 /// calls after a failed verify step (which take the cheapest model) run on
-/// it too.
+/// it too. `census-disabled` runs on `census-off`, which `[routing]
+/// disabled_providers` lists: the cascade router may pick it, but no task
+/// runs on it. The ladder is off, so a task without a model hint is the
+/// cascade router's to route.
 fn write_workspace(workdir: &Path) {
     let provider = workdir.join("fake-provider.sh");
     fs::write(&provider, PROVIDER).expect("write provider script");
@@ -98,6 +107,23 @@ context_window = 200000
 cost_input_per_m = 50.0
 cost_output_per_m = 50.0
 
+[providers.census-off]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.census-disabled]
+provider = "census-off"
+slug = "census-disabled-model"
+context_window = 200000
+cost_input_per_m = 50.0
+cost_output_per_m = 50.0
+
+[routing]
+disabled_providers = ["census-off"]
+
+[routing.ladder]
+enabled = false
+
 [gates]
 sibling_settle_secs = 0
 "#,
@@ -109,8 +135,9 @@ sibling_settle_secs = 0
 }
 
 /// The loop-census plan (S01 P0-12): T1 passes its verify step; T2 fails it
-/// with one retry; T3 has no verify step; T4 pins a model no provider
-/// serves.
+/// with one retry; T3 has no verify step; T4 has no model hint, so the
+/// cascade router routes it. T4 runs first, before any attempt of the run
+/// writes knowledge that could weigh into its pick.
 const LOOP_CENSUS_TASKS: &str = r#"[meta]
 plan = "loop-census"
 max_parallel = 1
@@ -127,6 +154,7 @@ status = "ready"
 tier = "focused"
 model_hint = "census-model"
 files = ["t1.txt"]
+depends_on = ["T4"]
 verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
 max_retries = 0
@@ -140,6 +168,7 @@ status = "ready"
 tier = "focused"
 model_hint = "census-model"
 files = ["t2.txt"]
+depends_on = ["T4"]
 verify = [{ phase = "structural", command = "false", fail_msg = "T2 fails" }]
 timeout_secs = 60
 max_retries = 1
@@ -153,17 +182,17 @@ status = "ready"
 tier = "focused"
 model_hint = "census-unverified"
 files = ["t3.txt"]
+depends_on = ["T4"]
 timeout_secs = 60
 max_retries = 0
 
 [[task]]
 id = "T4"
-title = "Unconfigured model"
-description = "It pins a model no provider serves."
+title = "Routed task"
+description = "It has no model hint: the cascade router routes it."
 role = "implementer"
 status = "ready"
 tier = "focused"
-model_hint = "census-unconfigured-model"
 files = ["t4.txt"]
 verify = [{ phase = "structural", command = "test -d ." }]
 timeout_secs = 60
@@ -288,11 +317,26 @@ fn jsonl(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-#[test]
-fn loop_census_fixture_settles_one_record_per_attempt() {
+/// The cascade router's starting state for the loop-census run: its static
+/// stage picks `census-disabled-model` for implementers, a model on a
+/// disabled provider, so a guard must replace routed T4's pick. The model
+/// list is the workspace's, as a plan run loads it (sorted slugs).
+const SEEDED_ROUTER: &str = r#"{
+    "model_slugs": ["census-disabled-model", "claude-opus-4-1", "claude-sonnet-4-6"],
+    "role_table": {"implementer": "census-disabled-model"},
+    "confidence_stats": {}
+}"#;
+
+/// Run the loop-census plan through the real `roko` binary in a fresh
+/// workspace whose cascade router starts from [`SEEDED_ROUTER`]. Returns the
+/// workspace, the run's directory under `.roko/runs`, and the run's output.
+fn run_loop_census() -> (tempfile::TempDir, PathBuf, String) {
     let temp = tempfile::tempdir().expect("tempdir");
     let workdir = temp.path();
     write_workspace(workdir);
+    let learn = workdir.join(".roko/learn");
+    fs::create_dir_all(&learn).expect("create .roko/learn");
+    fs::write(learn.join("cascade-router.json"), SEEDED_ROUTER).expect("seed the router");
     let plan_dir = workdir.join("plans/loop-census");
     fs::create_dir_all(&plan_dir).expect("create plan directory");
     fs::write(plan_dir.join("tasks.toml"), LOOP_CENSUS_TASKS).expect("write tasks.toml");
@@ -317,13 +361,20 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
         "T2 fails, so the plan does: {log}"
     );
 
-    let roko = workdir.join(".roko");
-    let run_dirs: Vec<_> = fs::read_dir(roko.join("runs"))
+    let mut run_dirs: Vec<PathBuf> = fs::read_dir(workdir.join(".roko/runs"))
         .expect("the run wrote .roko/runs")
         .map(|entry| entry.expect("run directory").path())
         .collect();
     assert_eq!(run_dirs.len(), 1, "{run_dirs:?}\n{log}");
-    let lines = jsonl(&run_dirs[0].join("attempts.jsonl"));
+    let run_dir = run_dirs.remove(0);
+    (temp, run_dir, log)
+}
+
+#[test]
+fn loop_census_fixture_settles_one_record_per_attempt() {
+    let (temp, run_dir, _log) = run_loop_census();
+    let roko = temp.path().join(".roko");
+    let lines = jsonl(&run_dir.join("attempts.jsonl"));
     let schema = |line: &Value| {
         line["schema_version"]
             .as_str()
@@ -421,4 +472,76 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
             "T3's model {model} gained routing trials: {router:#}"
         );
     }
+}
+
+/// S01 §7.1 and §7.4: every attempt of the loop-census run leaves one route
+/// decision. T1–T3 pin their models; T4 is routed, and since the cascade
+/// router's pick runs on a disabled provider, a guard falls back to the
+/// default and the row says so, which `route-report` counts as an honest
+/// fallback rather than a masked route.
+#[test]
+fn loop_census_routed_task_logs_fallback_decision() {
+    let (_temp, run_dir, log) = run_loop_census();
+    let run = RunRecords::load(&run_dir).expect("load the run");
+    assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+    assert_eq!(
+        run.decisions.len(),
+        5,
+        "one route decision per attempt\n{log}"
+    );
+    let decisions_of = |task: &str| -> Vec<&RoutingDecisionLog> {
+        run.decisions
+            .iter()
+            .map(|line| &line.record)
+            .filter(|row| row.task_id == task)
+            .collect()
+    };
+    for row in run.decisions.iter().map(|line| &line.record) {
+        let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
+        assert!((total - 1.0).abs() < 1e-9, "{row:?}");
+    }
+    for task in ["T1", "T2", "T3"] {
+        for row in decisions_of(task) {
+            assert_eq!(row.source, Some(DecisionSource::TaskHint), "{row:?}");
+        }
+    }
+    let t4 = decisions_of("T4");
+    assert_eq!(t4.len(), 1, "{t4:?}");
+    let t4 = t4[0];
+    assert_eq!(t4.source, Some(DecisionSource::Fallback), "{t4:?}");
+    assert_eq!(t4.fallback_reason.as_deref(), Some("provider_disabled"));
+    assert_eq!(
+        t4.proposals.learned.as_deref(),
+        Some("census-disabled-model")
+    );
+    assert_eq!(t4.selected_model, roko_core::defaults::MODEL_FOCUSED);
+    let pick = t4
+        .candidates
+        .iter()
+        .find(|candidate| candidate.model == "census-disabled-model")
+        .expect("the router's pick is a candidate");
+    assert!(!pick.eligible, "{pick:?}");
+    assert_eq!(pick.ineligible_reason.as_deref(), Some("provider_disabled"));
+
+    let report = route_report(std::slice::from_ref(&run), None);
+    let row = |source: &str| {
+        report
+            .rows
+            .iter()
+            .find(|row| row.source == source)
+            .unwrap_or_else(|| panic!("no {source} row: {report:?}"))
+    };
+    let fallback = row("fallback");
+    assert_eq!(fallback.attempts.len(), 1);
+    assert_eq!(fallback.masked, Some(Vec::new()), "a fallback is not masked");
+    let pinned = row("task_hint");
+    assert_eq!(pinned.attempts.len(), 4);
+    assert_eq!(pinned.unlabeled.len(), 1, "T3 has no label");
+    assert!(
+        report
+            .rows
+            .iter()
+            .all(|row| row.masked.as_ref().is_none_or(Vec::is_empty)),
+        "{report:?}"
+    );
 }

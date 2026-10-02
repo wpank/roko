@@ -649,7 +649,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         _ => None,
     });
     let workdir = workdir.to_path_buf();
-    let result = async {
+    async {
         let t_total = Instant::now();
         let t_phase = Instant::now();
         let source = ReadSource::read(source)?;
@@ -1474,9 +1474,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             outcome,
         ))
     }
-    .await;
-
-    result
+    .await
 }
 
 pub(crate) fn augment_generator_system_prompt(

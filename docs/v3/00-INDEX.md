@@ -455,8 +455,6 @@ Standalone MCP servers used by agents via `--mcp-config`.
 |---|---|---|---|
 | `roko-mcp-code` | `crates/roko-mcp-code/` | Code-intelligence MCP server | Wired |
 | `roko-mcp-github` | `crates/roko-mcp-github/` | GitHub integration MCP | Partial |
-| `roko-mcp-slack` | `crates/roko-mcp-slack/` | Slack integration MCP | Partial |
-| `roko-mcp-scripts` | `crates/roko-mcp-scripts/` | Scripts execution MCP | Partial |
 | `roko-mcp-stdio` | `crates/roko-mcp-stdio/` | Stdio transport MCP | Wired |
 
 ### User-facing surfaces

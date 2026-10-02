@@ -9,9 +9,9 @@
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse, content addressing), [02-CELL](02-CELL.md) (Cell, Pipeline pattern, Verify/Route/Observe protocols), [03-GRAPH](03-GRAPH.md) (Graph wiring, Pipeline specialization), [05-AGENT](05-AGENT.md) (CorticalState, regime conditioning, vitality), [08-LEARNING](08-LEARNING.md) (CascadeRouter, UCB1 bandits, cascade routing)
 
-**Implementation status (2026-09-15):** **COMPLETE (E26 12/12).** `roko-gateway`
-owns the provider-neutral protocol, bounded keyless handles, nine-stage pipeline,
-two-layer cache, loop/convergence controls, tool/output/thinking budgets, provider
+**Implementation status (2026-09-15):** **PARTIAL: `roko serve` only; plan runs do not use the
+gateway (E26 manifest 12/12).** `roko-gateway` owns the provider-neutral protocol, bounded
+keyless handles, nine-stage pipeline, two-layer cache, loop/convergence controls, tool/output/thinking budgets, provider
 fallback/key rotation contracts, cost persistence, three-level backpressure, batch
 queue, HTTP adapters, and loader-verified TOML graph definition. `roko-serve`
 constructs it from the live `ModelCallService`, `CascadeRouter`, cost table, and

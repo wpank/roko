@@ -1056,8 +1056,8 @@ a specific subsystem in detail.
 | 08 | [v1/18-tools/08-service-integrations.md](../v1/18-tools/08-service-integrations.md) | Service Integrations | Three-layer architecture, chain services, operations adapters |
 | 09 | [v1/18-tools/09-mcp-architecture.md](../v1/18-tools/09-mcp-architecture.md) | MCP Architecture | JSON-RPC 2.0, stdio transport, tool converter, dynamic registry, capabilities |
 | 10 | [v1/18-tools/10-mcp-github.md](../v1/18-tools/10-mcp-github.md) | roko-mcp-github | 17 GitHub tools with full JSON Schema |
-| 11 | [v1/18-tools/11-mcp-slack.md](../v1/18-tools/11-mcp-slack.md) | roko-mcp-slack | 8 Slack tools, Socket Mode, Block Kit |
-| 12 | [v1/18-tools/12-mcp-scripts.md](../v1/18-tools/12-mcp-scripts.md) | roko-mcp-scripts | Config-driven tool wrappers, scripts.toml format |
+| 11 | [v1/18-tools/11-mcp-slack.md](../v1/18-tools/11-mcp-slack.md) | roko-mcp-slack (never built) | 8 Slack tools, Socket Mode, Block Kit |
+| 12 | [v1/18-tools/12-mcp-scripts.md](../v1/18-tools/12-mcp-scripts.md) | roko-mcp-scripts (never built) | Config-driven tool wrappers, scripts.toml format |
 | 13 | [v1/18-tools/13-mcp-stdio.md](../v1/18-tools/13-mcp-stdio.md) | roko-mcp-stdio | McpToolHandler trait, McpServerBuilder, protocol handler |
 | 14 | [v1/18-tools/14-plugin-sdk.md](../v1/18-tools/14-plugin-sdk.md) | Plugin SDK | Five-tier SPI, manifest shape, examples |
 | 15 | [v1/18-tools/15-event-sources.md](../v1/18-tools/15-event-sources.md) | Event Sources | Cron, FileWatch, webhooks, dispatch loop |

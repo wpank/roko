@@ -37,8 +37,8 @@ Tier 8: Chain & Economy
   roko-chain
 
 Tier 7: MCP, Plugin & Gateway
-  roko-mcp-code, roko-mcp-github, roko-mcp-slack, roko-mcp-scripts
-  roko-mcp-stdio, roko-plugin, roko-gateway, roko-eval
+  roko-mcp-code, roko-mcp-github, roko-mcp-stdio, roko-plugin, roko-gateway,
+  roko-eval
 
 Tier 6: Code Intelligence
   roko-index, roko-lang-rust, roko-lang-typescript, roko-lang-go
@@ -270,9 +270,7 @@ roko-mcp-stdio -> (none)
     No workspace dependencies at all.
 
 roko-mcp-github -> roko-mcp-stdio
-roko-mcp-slack -> roko-mcp-stdio
-roko-mcp-scripts -> roko-mcp-stdio
-    MCP server binaries. Each depends only on the shared transport.
+    MCP server binary. It depends only on the shared transport.
     Form a self-contained compilation island.
 
 roko-mcp-code -> roko-core, roko-index, roko-mcp-stdio
@@ -378,8 +376,6 @@ clarity. Read bottom-to-top: foundations at the bottom, user-facing at the top.
    roko-mcp-stdio (leaf)
      |
      +-- roko-mcp-github
-     +-- roko-mcp-slack
-     +-- roko-mcp-scripts
 
    roko-mcp-code -> roko-index -> roko-lang-{rust,typescript,go} -> roko-core
 
@@ -407,7 +403,7 @@ Level 2 (depends only on Level 1):
 Level 3 (depends on Levels 1-2):
   roko-fs, roko-graph, roko-chain, roko-plugin, roko-eval,
   roko-daimon, roko-lang-rust, roko-lang-typescript, roko-lang-go,
-  roko-mcp-github, roko-mcp-slack, roko-mcp-scripts
+  roko-mcp-github
 
 Level 4 (depends on Levels 1-3):
   roko-std, roko-agent, roko-index
@@ -516,8 +512,6 @@ each other (except through roko-core):
 ```
 roko-mcp-stdio (leaf, no workspace deps)
   +-- roko-mcp-github
-  +-- roko-mcp-slack
-  +-- roko-mcp-scripts
 ```
 
 These four crates form a completely independent island. Changes to the main tree

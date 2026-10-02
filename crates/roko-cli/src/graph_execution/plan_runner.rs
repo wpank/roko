@@ -3171,15 +3171,11 @@ async fn run_one_plan(
     let plan_dir_str = plan.dir.display().to_string();
 
     let (mut graph, registry) = if ctx.rich_topology {
-        // ── Rich 11-node-per-task production topology ──────────────────
-        // Warn: enricher cells are currently PassthroughCell stubs and do
-        // not yet add runtime value. The richer topology is available for
-        // incremental implementation of each enricher cell type.
+        // ── Rich 5-node-per-task production topology ───────────────────
         if !ctx.quiet && !ctx.json {
             tracing::info!(
-                "--rich-topology is active; enricher cells (knowledge, \
-                 episodes, playbook, modulation, safety, experiment) are \
-                 currently passthrough stubs"
+                "--rich-topology is active: each task runs as task-context, compose, executor, \
+                 gate and success-boundary nodes"
             );
         }
         let topo =

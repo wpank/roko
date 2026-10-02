@@ -3,17 +3,20 @@
 //! `ProductionPlanTopology` builds the canonical per-task subgraph:
 //!
 //! ```text
-//! [TaskContextCell] --> [KnowledgeCell]    --+
-//!                  --> [EpisodesCell]      --|
-//!                  --> [PlaybookCell]      --|-> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
-//!                  --> [ModulationCell]    --|
-//!                  --> [SafetyCell]        --|
-//!                  --> [ExperimentCell]    --+
+//! [TaskContextCell] -> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
 //! ```
 //!
-//! All enrichment edges are parallel (same wave). ComposeCell receives 7 inputs:
-//! 6 enrichment Signals + 1 TaskContext Signal. Inter-task dependencies connect
-//! the predecessor's `SuccessBoundary` to the dependent's `TaskContextCell`.
+//! ComposeCell turns the TaskContext Signal into the task's prompt. Inter-task
+//! dependencies connect the predecessor's `SuccessBoundary` to the dependent's
+//! `TaskContextCell`.
+//!
+//! The subgraph used to fan the context out to six enricher nodes
+//! (`plan.enricher.*`: knowledge, episodes, playbook, modulation, safety,
+//! experiment). They were passthrough stubs that changed nothing, and the
+//! task's prompt is enriched by the dispatcher's prompt builder, so they were
+//! removed (9206). A checkpoint an older `--rich-topology` run wrote names
+//! those nodes, so its graph fingerprint no longer matches, and resuming it
+//! stops with the usual advice to use `--fresh` or `--force-resume`.
 //!
 //! "Controller effects" (completion sinks, delivery, resource release, terminal
 //! state write) run in the host's `drive_controller` loop *outside* the graph
@@ -24,16 +27,6 @@ use std::collections::{HashMap, HashSet};
 use crate::types::{Edge, EdgeCondition, ExecutionClass, Graph, GraphError, GraphMetadata, Node};
 
 // ─── Node ID conventions ─────────────────────────────────────────────────────
-
-/// Enricher cell types in the per-task subgraph (all run in parallel).
-const ENRICHER_SUFFIXES: &[&str] = &[
-    "knowledge",
-    "episodes",
-    "playbook",
-    "modulation",
-    "safety",
-    "experiment",
-];
 
 /// Build a namespaced node ID: `task.<task_id>.<suffix>`.
 fn task_node_id(task_id: &str, suffix: &str) -> String {
@@ -80,9 +73,9 @@ pub struct TopologyTaskInfo {
 
 /// The production plan execution graph layout.
 ///
-/// Each task gets a subgraph of 11 nodes (context + 6 enrichers + compose +
-/// executor + gate + success-boundary). Inter-task edges connect predecessor
-/// success boundaries to dependent task context nodes.
+/// Each task gets a subgraph of 5 nodes (context + compose + executor + gate +
+/// success-boundary). Inter-task edges connect predecessor success boundaries
+/// to dependent task context nodes.
 ///
 /// This is a pure data structure -- it builds a `Graph` but does not execute
 /// it. The caller passes the resulting `Graph` to `GraphEngine` for execution.
@@ -221,8 +214,7 @@ impl ProductionPlanTopology {
         Ok((graph, report))
     }
 
-    /// Add the 11-node subgraph for a single task.
-    #[allow(clippy::too_many_lines)]
+    /// Add the 5-node subgraph for a single task.
     fn add_task_subgraph(
         &self,
         graph: &mut Graph,
@@ -243,29 +235,7 @@ impl ProductionPlanTopology {
             exclusive: vec![],
         })?;
 
-        // 2. Enricher nodes (all parallel, all Workflow class).
-        for suffix in ENRICHER_SUFFIXES {
-            let enricher_id = task_node_id(tid, suffix);
-            let cell_type = format!("plan.enricher.{suffix}");
-            graph.add_node(Node {
-                id: enricher_id.clone(),
-                cell_type,
-                config: toml::Value::Table(toml::map::Map::new()),
-                inputs: vec![],
-                outputs: vec![],
-                execution_class: ExecutionClass::Workflow,
-                exclusive: vec![],
-            })?;
-
-            // Edge: context -> enricher (unconditional).
-            graph.add_edge(Edge {
-                from: context_id.clone(),
-                to: enricher_id,
-                condition: Some(EdgeCondition::Always),
-            })?;
-        }
-
-        // 3. Compose node (fan-in from all enrichers + context).
+        // 2. Compose node: the task's prompt from its context.
         let compose_id = task_node_id(tid, "compose");
         graph.add_node(Node {
             id: compose_id.clone(),
@@ -277,23 +247,14 @@ impl ProductionPlanTopology {
             exclusive: vec![],
         })?;
 
-        // Edges: each enricher -> compose.
-        for suffix in ENRICHER_SUFFIXES {
-            let enricher_id = task_node_id(tid, suffix);
-            graph.add_edge(Edge {
-                from: enricher_id,
-                to: compose_id.clone(),
-                condition: Some(EdgeCondition::Always),
-            })?;
-        }
-        // Edge: context -> compose (direct, for the 7th input).
+        // Edge: context -> compose.
         graph.add_edge(Edge {
-            from: context_id.clone(),
+            from: context_id,
             to: compose_id.clone(),
             condition: Some(EdgeCondition::Always),
         })?;
 
-        // 4. TaskExecutor node (Activity: non-deterministic LLM dispatch).
+        // 3. TaskExecutor node (Activity: non-deterministic LLM dispatch).
         let executor_id = task_node_id(tid, "executor");
         let executor_config = self.build_executor_config(task);
         graph.add_node(Node {
@@ -317,7 +278,7 @@ impl ProductionPlanTopology {
             condition: Some(EdgeCondition::Always),
         })?;
 
-        // 5. Gate node (Activity: runs gate pipeline).
+        // 4. Gate node (Activity: runs gate pipeline).
         let gate_id = task_node_id(tid, "gate");
         let gate_config = self.build_gate_config(task);
         graph.add_node(Node {
@@ -337,7 +298,7 @@ impl ProductionPlanTopology {
             condition: Some(EdgeCondition::Success),
         })?;
 
-        // 6. Success boundary (Workflow: no-op passthrough anchor).
+        // 5. Success boundary (Workflow: no-op passthrough anchor).
         let success_id = task_node_id(tid, "success");
         graph.add_node(Node {
             id: success_id.clone(),
@@ -493,12 +454,11 @@ impl ProductionPlanTopology {
 ///
 /// Wires real implementations for the three core topology cells:
 /// - `plan.task-context` → [`TaskContextCell`]: assembles task metadata and predecessor state.
-/// - `plan.compose` → [`PlanComposeCell`]: fan-in enricher merge into a single Prompt signal.
+/// - `plan.compose` → [`PlanComposeCell`]: turns the task context into a single Prompt signal.
 /// - `plan.gate` → [`PlanGateCell`]: runs the gate pipeline via `SharedGateEvaluator`.
 ///
-/// The six enricher cells (`plan.enricher.*`) and the `plan.success-boundary` anchor
-/// remain [`PassthroughCell`] stubs; real enricher implementations are injected by
-/// host adapters that have access to the knowledge store, episode log, etc.
+/// The `plan.success-boundary` anchor remains a [`PassthroughCell`]: it only
+/// orders dependent tasks after a task's gate.
 pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
     use crate::cells::stubs::PassthroughCell;
     use crate::registry::CellDescriptor;
@@ -519,29 +479,7 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
         |config| Box::new(crate::cells::TaskContextCell::new(&config)),
     );
 
-    // Enricher cells: each consumes TaskContext output and produces enrichment signals.
-    for suffix in ENRICHER_SUFFIXES {
-        let cell_type = format!("plan.enricher.{suffix}");
-        let cell_type_clone = cell_type.clone();
-        let display = format!("{}Enricher", suffix[..1].to_uppercase() + &suffix[1..]);
-        registry.register_with_descriptor(
-            // leak the string for 'static lifetime -- these are registered once at startup
-            Box::leak(cell_type.clone().into_boxed_str()),
-            CellDescriptor {
-                id: cell_type.clone(),
-                version: (0, 1, 0),
-                input_schema: None,
-                output_schema: None,
-                is_stub: true,
-                protocols: Vec::new(),
-                is_predictive: false,
-                display_name: Some(display),
-            },
-            move |_config| Box::new(PassthroughCell::new(cell_type_clone.clone())),
-        );
-    }
-
-    // Compose: fan-in from enrichers + context -> single Prompt signal.
+    // Compose: task context -> single Prompt signal.
     registry.register_with_descriptor(
         "plan.compose",
         CellDescriptor {
@@ -615,13 +553,13 @@ mod tests {
     }
 
     #[test]
-    fn single_task_produces_11_nodes() {
+    fn single_task_produces_5_nodes() {
         let topo = ProductionPlanTopology::new("test-plan", "/tmp", 1);
         let tasks = vec![make_task("T1", &[])];
         let (graph, report) = topo.build(&tasks).unwrap();
 
-        // 1 context + 6 enrichers + 1 compose + 1 executor + 1 gate + 1 success = 11
-        assert_eq!(graph.node_count(), 11);
+        // 1 context + 1 compose + 1 executor + 1 gate + 1 success = 5
+        assert_eq!(graph.node_count(), 5);
         assert_eq!(report.task_count, 1);
         assert_eq!(report.entry_tasks, vec!["T1"]);
         assert_eq!(report.exit_tasks, vec!["T1"]);
@@ -633,15 +571,8 @@ mod tests {
         let tasks = vec![make_task("T1", &[])];
         let (graph, _) = topo.build(&tasks).unwrap();
 
-        // Intra-task edges:
-        // context -> 6 enrichers = 6
-        // 6 enrichers -> compose = 6
-        // context -> compose = 1  (direct 7th input)
-        // compose -> executor = 1
-        // executor -> gate = 1
-        // gate -> success = 1
-        // Total = 16
-        assert_eq!(graph.edge_count(), 16);
+        // Intra-task edges: context -> compose -> executor -> gate -> success.
+        assert_eq!(graph.edge_count(), 4);
     }
 
     #[test]
@@ -650,10 +581,10 @@ mod tests {
         let tasks = vec![make_task("T1", &[]), make_task("T2", &["T1"])];
         let (graph, report) = topo.build(&tasks).unwrap();
 
-        assert_eq!(graph.node_count(), 22); // 11 * 2
-        // Intra-task: 16 * 2 = 32
+        assert_eq!(graph.node_count(), 10); // 5 * 2
+        // Intra-task: 4 * 2 = 8
         // Inter-task: T1.success -> T2.context = 1
-        assert_eq!(graph.edge_count(), 33);
+        assert_eq!(graph.edge_count(), 9);
         assert_eq!(report.entry_tasks, vec!["T1"]);
         assert_eq!(report.exit_tasks, vec!["T2"]);
     }
@@ -669,10 +600,10 @@ mod tests {
         ];
         let (graph, report) = topo.build(&tasks).unwrap();
 
-        assert_eq!(graph.node_count(), 44); // 11 * 4
-        // Intra-task: 16 * 4 = 64
+        assert_eq!(graph.node_count(), 20); // 5 * 4
+        // Intra-task: 4 * 4 = 16
         // Inter-task: T1->T2, T1->T3, T2->T4, T3->T4 = 4
-        assert_eq!(graph.edge_count(), 68);
+        assert_eq!(graph.edge_count(), 20);
         assert_eq!(report.entry_tasks, vec!["T1"]);
         assert_eq!(report.exit_tasks, vec!["T4"]);
         assert_eq!(report.task_count, 4);
@@ -688,10 +619,44 @@ mod tests {
         ];
         let (graph, report) = topo.build(&tasks).unwrap();
 
-        assert_eq!(graph.node_count(), 33); // 11 * 3
-        assert_eq!(graph.edge_count(), 48); // 16 * 3, no inter-task edges
+        assert_eq!(graph.node_count(), 15); // 5 * 3
+        assert_eq!(graph.edge_count(), 12); // 4 * 3, no inter-task edges
         assert_eq!(report.entry_tasks.len(), 3);
         assert_eq!(report.exit_tasks.len(), 3);
+    }
+
+    /// 9206: a task's subgraph runs context -> compose -> executor -> gate ->
+    /// success. The six `plan.enricher.*` passthrough stubs, which changed
+    /// nothing, are gone from the subgraph and from the registry.
+    #[test]
+    fn rich_topology_task_subgraph_has_no_passthrough_enrichers() {
+        let topo = ProductionPlanTopology::new("lean", "/tmp", 1);
+        let (graph, _) = topo.build(&[make_task("T1", &[])]).unwrap();
+
+        let mut cell_types: Vec<&str> = graph
+            .inner
+            .node_weights()
+            .map(|node| node.cell_type.as_str())
+            .collect();
+        cell_types.sort_unstable();
+        assert_eq!(
+            cell_types,
+            [
+                "plan.compose",
+                "plan.gate",
+                "plan.success-boundary",
+                "plan.task-context",
+                "task-executor",
+            ]
+        );
+
+        let mut registry = crate::registry::CellRegistry::new();
+        register_topology_cells(&mut registry);
+        let enrichers: Vec<&str> = registry
+            .cell_types()
+            .filter(|cell_type| cell_type.starts_with("plan.enricher."))
+            .collect();
+        assert!(enrichers.is_empty(), "{enrichers:?}");
     }
 
     #[test]
@@ -728,12 +693,6 @@ mod tests {
 
         // Verify all expected node IDs exist.
         assert!(graph.get_node("task.T1.context").is_some());
-        assert!(graph.get_node("task.T1.knowledge").is_some());
-        assert!(graph.get_node("task.T1.episodes").is_some());
-        assert!(graph.get_node("task.T1.playbook").is_some());
-        assert!(graph.get_node("task.T1.modulation").is_some());
-        assert!(graph.get_node("task.T1.safety").is_some());
-        assert!(graph.get_node("task.T1.experiment").is_some());
         assert!(graph.get_node("task.T1.compose").is_some());
         assert!(graph.get_node("task.T1.executor").is_some());
         assert!(graph.get_node("task.T1.gate").is_some());
@@ -752,12 +711,12 @@ mod tests {
         let gate = graph.get_node("task.T1.gate").unwrap();
         assert_eq!(gate.execution_class, ExecutionClass::Activity);
 
-        // Enrichers are Workflow (deterministic).
+        // Context and compose are Workflow (deterministic).
         let context = graph.get_node("task.T1.context").unwrap();
         assert_eq!(context.execution_class, ExecutionClass::Workflow);
 
-        let knowledge = graph.get_node("task.T1.knowledge").unwrap();
-        assert_eq!(knowledge.execution_class, ExecutionClass::Workflow);
+        let compose = graph.get_node("task.T1.compose").unwrap();
+        assert_eq!(compose.execution_class, ExecutionClass::Workflow);
 
         let success = graph.get_node("task.T1.success").unwrap();
         assert_eq!(success.execution_class, ExecutionClass::Workflow);

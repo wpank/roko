@@ -100,9 +100,10 @@ tool, and assert return shapes.
 Roko ships a few adjacent MCP servers for integrations other than code:
 
 - `roko-mcp-github` — repo + issue + PR access
-- `roko-mcp-slack` — channel + DM + search
-- `roko-mcp-scripts` — run whitelisted shell scripts
 - `roko-mcp-stdio` — generic stdio adapter
+
+There is no Slack or scripts MCP server: Slack reaches roko only through its
+webhook (`POST /webhooks/slack`).
 
 See each crate's own source; they follow the same launch pattern.
 

@@ -2,49 +2,14 @@
 //!
 //! This module owns the typed delivery request, the ordered state machine,
 //! durable receipts, and the async service trait that host adapters implement.
-//!
-//! The types here originated from the fire-and-forget `MergeRequest`/`MergeEnqueuer`
-//! in `engine.rs`. That pair is preserved for backward compatibility but new
-//! callers should use [`CompletionDeliveryService`] for durable merge/regression/
-//! publication receipts.
+//! A plan's branch is integrated only through [`CompletionDeliveryService`],
+//! whose host implementation (roko-cli's git delivery backend) merges the
+//! verified commit and records merge, regression and publication receipts.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-
-// ---- Re-export the legacy seam so existing callers keep compiling ----
-
-/// A merge request produced by the graph engine after a successful plan execution.
-///
-/// This mirrors the live runner's merge request but lives in roko-graph to
-/// avoid a circular dependency from the graph layer into CLI orchestration.
-/// The orchestrator's runner bridges this to the real `MergeQueue` via the
-/// [`MergeEnqueuer`] trait.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeRequest {
-    /// Plan identifier (typically the graph name).
-    pub plan_id: String,
-    /// Branch name to merge from.
-    pub branch_name: String,
-    /// Files changed by this plan execution.
-    pub files_changed: Vec<String>,
-    /// Merge priority (higher merges first).
-    pub priority: u32,
-}
-
-/// Trait for enqueueing merge requests after graph execution.
-///
-/// The graph engine holds an optional `Arc<dyn MergeEnqueuer>`. After a
-/// successful graph execution that represents a plan, the engine calls
-/// [`MergeEnqueuer::enqueue`] with the plan's changed files.
-///
-/// Implement this trait to bridge to your merge queue implementation
-/// (e.g., the CLI runner's `MergeQueue`).
-pub trait MergeEnqueuer: Send + Sync + std::fmt::Debug {
-    /// Enqueue a merge request. Returns `true` if the request was accepted.
-    fn enqueue(&self, request: MergeRequest) -> bool;
-}
 
 // ---- Delivery state machine ----
 

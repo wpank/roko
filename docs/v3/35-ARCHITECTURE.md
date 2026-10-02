@@ -554,7 +554,7 @@ roko knowledge query "auth"   # search the durable knowledge store
 
 ## 7. Crate Map
 
-All 39 workspace members organized by function. Status reflects verified runtime
+The 36 workspace members, except the `demo/speed-test` tool, organized by function. Status reflects verified runtime
 wiring, not just whether the code compiles.
 
 ```mermaid
@@ -574,8 +574,6 @@ graph TD
     subgraph T7 ["Tier 7: MCP, Plugin & Gateway"]
         mcpgh["roko-mcp-github"]
         mcpstdio["roko-mcp-stdio"]
-        mcpslack["roko-mcp-slack"]
-        mcpscript["roko-mcp-scripts"]
         plugin["roko-plugin"]
         gateway["roko-gateway"]
         eval["roko-eval"]
@@ -717,8 +715,6 @@ Tool ecosystem and inference pipeline.
 |-------|-------------|--------|
 | **roko-mcp-github** | GitHub MCP server (shipped binary). Plan PRs, CI integration. | Wired |
 | **roko-mcp-stdio** | Shared JSON-RPC 2.0 transport for all MCP servers. | Wired |
-| **roko-mcp-slack** | Slack MCP server. | Disconnected |
-| **roko-mcp-scripts** | Script execution MCP server. | Disconnected |
 | **roko-plugin** | Plugin SDK: signed dependency graphs, WASM hooks, strict admission, kernel confinement. | Wired (E32 8/8) |
 | **roko-gateway** | Nine-stage inference gateway: routing/fallback, caching, tool controls, cost accounting, key rotation, backpressure. | Wired (E26 12/12) |
 | **roko-eval** | Evaluation framework: evidence collector, criterion, profile traits. | Wired |
@@ -918,7 +914,7 @@ After cloning the repository, run these commands to verify that everything is wo
 ```bash
 cd /path/to/roko
 rustup update stable          # requires Rust 1.91+
-cargo build --workspace       # build all 39 workspace members
+cargo build --workspace       # build all 36 workspace members
 ```
 
 ### Run the test suite
@@ -1043,8 +1039,8 @@ The v2 docs contain detailed subsystem guides:
 | Repository | `https://github.com/nunchi/roko` |
 | Language | Rust (stable 1.91+, nightly for formatting) |
 | License | MIT OR Apache-2.0 (dual-licensed) |
-| Workspace members | 37 |
+| Workspace members | 36 |
 | Lines of code | ~1,000,000 |
 | Tests | 10,300+ |
-| Epics | 48/48 accepted |
+| Epics | 48/48 epics accepted as programme manifests; most code was built outside this workflow |
 | Default binary targets | `roko-cli`, `roko-mcp-code`, `roko-mcp-github` |

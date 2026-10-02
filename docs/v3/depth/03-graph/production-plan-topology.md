@@ -1,9 +1,15 @@
 # Production Plan Topology
 
-> ProductionPlanTopology builds the canonical per-task 11-node subgraph that
+> ProductionPlanTopology builds the canonical per-task 5-node subgraph that
 > transforms a `tasks.toml` plan into an executable Graph. This file documents
 > the subgraph structure, node roles, inter-task wiring and cell
 > registration.
+>
+> **Status (2026-10-03):** the six `plan.enricher.*` nodes shown below were
+> passthrough stubs that changed nothing, and were removed (9206). A task's
+> subgraph is now context -> compose -> executor -> gate -> success: 5 nodes
+> and 4 edges. The enricher nodes, rows and counts below record the removed
+> 11-node layout.
 
 ---
 
@@ -15,9 +21,9 @@
 
 ---
 
-## Per-Task Subgraph (11 Nodes, 16 Edges)
+## Per-Task Subgraph (removed 11-node layout)
 
-Each task in a plan expands into an 11-node subgraph:
+Before 9206, each task in a plan expanded into an 11-node subgraph:
 
 ```
   [TaskContextCell]----+---> [KnowledgeEnricher]  ---+

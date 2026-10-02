@@ -256,23 +256,19 @@ pub fn plan_to_graph(
 
 **Source:** `crates/roko-graph/src/topology.rs`
 
-Builds a richer 11-node subgraph per task. Each task becomes:
+Builds a richer 5-node subgraph per task (`plan run --rich-topology`). Each
+task becomes:
 
 ```
-[TaskContextCell] --> [KnowledgeCell]    --+
-                  --> [EpisodesCell]      --|
-                  --> [PlaybookCell]      --|-> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
-                  --> [ModulationCell]    --|
-                  --> [SafetyCell]        --|
-                  --> [ExperimentCell]    --+
+[TaskContextCell] -> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
 ```
 
-The six enricher nodes run in parallel (same wave). ComposeCell receives
-seven inputs: six enrichment Signals plus the TaskContext Signal. Inter-task
+ComposeCell turns the TaskContext Signal into the task's prompt. Inter-task
 dependencies connect predecessor SuccessBoundary nodes to dependent
-TaskContext nodes.
+TaskContext nodes. Six `plan.enricher.*` passthrough stubs that used to sit
+between context and compose changed nothing and were removed (9206).
 
-For a plan with N tasks, the production topology produces 11N nodes. A
+For a plan with N tasks, the production topology produces 5N nodes. A
 `TopologyReport` summarizes totals, entry tasks, and exit tasks.
 
 Cross-plan dependencies (`depends_on_plan`) are outside single-graph
@@ -512,13 +508,11 @@ executor actions in a plan graph:
 |---|---|---|
 | Dispatch agent | `task-executor` | Build prompt, launch LLM provider, collect response |
 | Run gate | `plan.gate` | Invoke compile/test/clippy pipeline, emit verdict |
-| Compose prompt | `plan.compose` | Assemble system prompt from enrichment signals |
-| Enrich context | `plan.knowledge`, `plan.episodes`, etc. | Query knowledge store, episodes, playbooks |
+| Compose prompt | `plan.compose` | Assemble the task's prompt from its context |
 | Success boundary | `plan.success-boundary` | Mark task complete, emit downstream signal |
 
-For the production topology, each task flows through all 11 nodes in
-sequence: context -> 6 enrichers (parallel) -> compose -> executor -> gate
--> success boundary.
+For the production topology, each task flows through its 5 nodes in
+sequence: context -> compose -> executor -> gate -> success boundary.
 
 ---
 
@@ -735,15 +729,17 @@ is not judged.
 
 ## 11. Merge Queue
 
-> **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,
-> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it:
-> only tests construct `MergeQueue`, and `PlanMerger` was deleted (gap-3505fb). Graph runs
-> with per-task worktrees (the default) deliver each finished plan into the run's batch
-> branch with git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
+> **Status (2026-10-03): DELETED.** The merge queue served Runner-v2,
+> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it.
+> `PlanMerger` was deleted (gap-3505fb), and the queue, its orchestrator snapshot and the
+> Graph engine's merge-queue hook followed (9204, 9205). Graph runs with per-task worktrees
+> (the default) deliver each finished plan into the run's batch branch with git plumbing
+> (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`). The rest of this section
+> records the removed design.
 
-The merge queue serializes plan merges to prevent file conflicts.
+The merge queue serialized plan merges to prevent file conflicts.
 
-**Source:** `crates/roko-cli/src/orchestrator/merge_queue.rs`
+**Source (deleted):** `crates/roko-cli/src/orchestrator/merge_queue.rs`
 
 ### Conflict detection
 
@@ -1039,7 +1035,7 @@ cargo run -p roko-cli -- resume [run-id]
 | # | File | Topic |
 |---|---|---|
 | 01 | `depth/04-01-plan-discovery.md` | Plan scanning, frontmatter parsing, ranking, validation |
-| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 11-node subgraph |
+| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 5-node subgraph |
 | 03 | `depth/04-03-unified-task-dag.md` | Cross-plan DAG, wave computation, critical path, crate overlaps |
 | 04 | `depth/04-04-graph-engine-execution.md` | `GraphEngine`, topological waves, node activation, conditional routing |
 | 05 | `depth/04-05-plan-phases.md` | Phase lifecycle, state transitions, retry loops |

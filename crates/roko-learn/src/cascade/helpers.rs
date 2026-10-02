@@ -19,101 +19,51 @@ use crate::model_router::COLD_START_THRESHOLD;
 
 // ─── Static role -> model table ─────────────────────────────────────────────
 
-/// Build the default static role-to-model mapping.
+/// Build the default static role-to-model mapping from the configured
+/// models.
 ///
-/// Fast-tier roles prefer Gemini Flash-Lite, Standard-tier roles prefer
-/// Gemini Flash, and Premium-tier roles prefer Opus with Gemini Pro Preview
-/// as the premium fallback.
-///
-/// Candidate lists intentionally include older slugs (e.g. `claude-sonnet-4-5`)
-/// as trailing fallbacks. `pick_static_slug` only returns a candidate when it
-/// appears in `model_slugs` (the configured model set), so stale candidates
-/// harmlessly fall through to the next entry and do not cause mis-routing.
-pub(crate) fn default_role_model_table(model_slugs: &[String]) -> HashMap<AgentRole, String> {
-    let mut table = HashMap::new();
-
-    // Research role -> Perplexity Sonar when available, standard-tier fallback.
-    table.insert(
-        AgentRole::Researcher,
-        pick_static_slug(
-            model_slugs,
-            &[
-                "sonar-pro",
-                "sonar",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "kimi-k2.5",
-                "claude-sonnet-4-6",
-                "claude-sonnet-4-5",
-            ],
-        ),
-    );
-
-    let all_roles: Vec<AgentRole> = std::iter::once(AgentRole::Conductor)
+/// Each role gets [`static_slug_for_tier`] of its tier (`role.model_tier()`),
+/// read through `tier_map` with the slug heuristics as fallback. The
+/// researcher prefers a configured Perplexity `sonar` model, for its web
+/// search. No entry names a model the workspace has not configured, and with
+/// no model configured the table is empty (9207).
+pub(crate) fn default_role_model_table(
+    model_slugs: &[String],
+    tier_map: &HashMap<String, ModelTier>,
+) -> HashMap<AgentRole, String> {
+    std::iter::once(AgentRole::Conductor)
         .chain(AgentRole::ALL_AGENTS.iter().copied())
-        .collect();
-    for role in all_roles {
-        if table.contains_key(&role) {
-            continue;
-        }
-        let slug = match role.model_tier() {
-            ModelTier::Fast => {
-                pick_static_slug(model_slugs, &["gemini-2.5-flash-lite", "claude-haiku-4-5"])
-            }
-            ModelTier::Premium => pick_static_slug(
-                model_slugs,
-                &[
-                    "claude-opus-4-6",
-                    "gemini-3.1-pro-preview",
-                    "gemini-2.5-pro",
-                ],
-            ),
-            // Standard and forward-compat
-            _ => pick_static_slug(
-                model_slugs,
-                &[
-                    "gemini-2.5-flash",
-                    "gemini-2.5-pro",
-                    "kimi-k2.5",
-                    "kimi-k2-thinking",
-                    "claude-sonnet-4-6",
-                    "claude-sonnet-4-5",
-                ],
-            ),
-        };
-        table.insert(role, slug);
-    }
-    table
+        .filter_map(|role| {
+            let sonar = if role == AgentRole::Researcher {
+                model_slugs
+                    .iter()
+                    .find(|slug| slug_family(slug) == Some("sonar"))
+            } else {
+                None
+            };
+            let slug = match sonar {
+                Some(slug) => slug.clone(),
+                None => static_slug_for_tier(model_slugs, role.model_tier(), tier_map)?,
+            };
+            Some((role, slug))
+        })
+        .collect()
 }
 
-pub(crate) fn pick_static_slug(model_slugs: &[String], candidates: &[&str]) -> String {
-    for candidate in candidates {
-        if let Some(slug) = model_slugs
-            .iter()
-            .find(|slug| slugs_match(slug, candidate))
-            .cloned()
-        {
-            return slug;
-        }
-    }
-    candidates[0].to_string()
-}
-
-pub(crate) fn pick_available_static_slug(model_slugs: &[String], candidates: &[&str]) -> String {
-    for candidate in candidates {
-        if let Some(slug) = model_slugs
-            .iter()
-            .find(|slug| slugs_match(slug, candidate))
-            .cloned()
-        {
-            return slug;
-        }
-    }
-
+/// The configured model a static route picks for `tier`: the first of
+/// `model_slugs` whose tier (from `tier_map`, else the slug heuristics) is
+/// `tier`, else the first configured model; `None` with no model configured.
+/// It never names a model outside `model_slugs`.
+pub(crate) fn static_slug_for_tier(
+    model_slugs: &[String],
+    tier: ModelTier,
+    tier_map: &HashMap<String, ModelTier>,
+) -> Option<String> {
     model_slugs
-        .first()
+        .iter()
+        .find(|slug| slug_to_tier(slug, tier_map) == tier)
+        .or_else(|| model_slugs.first())
         .cloned()
-        .unwrap_or_else(|| candidates[0].to_string())
 }
 
 /// Default latency SLA for a model tier (milliseconds).

@@ -133,32 +133,23 @@ tasks.toml
 plan_to_graph() / ProductionPlanTopology::build()
     |
     v
-Graph of 11N nodes (N tasks)
+Graph of N task nodes, or 5N with --rich-topology
     |
     v
 For each task (as soon as its dependencies finish):
     |
     +-- TaskContextCell      --> parse task metadata, set scope
-    +-- KnowledgeCell        --> query durable knowledge store
-    +-- EpisodesCell         --> retrieve relevant past episodes
-    +-- PlaybookCell         --> match when/then rules, inject lessons
-    +-- ModulationCell       --> apply affect/DaimonState bias
-    +-- SafetyCell           --> check capability intersection, taint
-    +-- ExperimentCell       --> assign prompt variant (if active experiment)
-    |        |
-    |        v  (all six enrichers run in parallel)
-    |
-    +-- ComposeCell          --> assemble 9-layer system prompt from enrichment
+    +-- ComposeCell          --> the task's prompt from its context
     +-- TaskExecutorCell     --> dispatch to LLM provider, collect response
     +-- GateCell             --> run compile, lint and test rungs (`PlanGateCell`)
     +-- SuccessBoundary      --> mark task complete, emit downstream signal
 ```
 
 Each step of this pipeline is a Cell in a Graph -- the same primitive used
-everywhere else in the system. The production topology (11 nodes per task) is
+everywhere else in the system. The production topology (5 nodes per task) is
 built by `ProductionPlanTopology::build()` in `crates/roko-graph/src/topology.rs`.
-It runs only with `plan run --rich-topology`, and its six enricher cells are still
-passthrough stubs (the plan runner warns when the flag is used). By default
+It runs only with `plan run --rich-topology`; its six passthrough enricher stubs
+were removed (9206), and the dispatcher's prompt builder enriches the prompt. By default
 `plan_to_graph()` builds one `TaskExecutorCell` per task, which dispatches the agent
 and then runs the task's authored `verify` commands.
 
@@ -331,7 +322,7 @@ applies deterministic structural mutations to the plan itself.
 
 > **Cross-references:** [depth/31-self-hosting/02-replan-loop.md](depth/31-self-hosting/02-replan-loop.md)
 
-### 3.1 Five Replan Strategies
+### 3.1 Replan Strategies (design only; not built on the Graph path)
 
 The controller tries strategies in fixed order, each at most once per
 (strategy, evidence_fingerprint) pair:

@@ -43,10 +43,12 @@ pub struct CatalogModel {
     pub supports_thinking: bool,
     /// Whether the model supports vision/image input.
     pub supports_vision: bool,
-    /// Cost per million input tokens (USD).
-    pub cost_input_per_m: f64,
-    /// Cost per million output tokens (USD).
-    pub cost_output_per_m: f64,
+    /// Cost per million input tokens (USD). `None` for a model the built-in
+    /// price table ([`BUILTIN_PRICING`](crate::config::model_registry::BUILTIN_PRICING))
+    /// prices: its rates come from there, not from a copy here (bug-0c0747).
+    pub cost_input_per_m: Option<f64>,
+    /// Cost per million output tokens (USD), `None` as for `cost_input_per_m`.
+    pub cost_output_per_m: Option<f64>,
 }
 
 /// Status of a provider in the user's environment.
@@ -122,8 +124,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: true,
-                cost_input_per_m: 3.0,
-                cost_output_per_m: 15.0,
+                cost_input_per_m: None,
+                cost_output_per_m: None,
             },
             CatalogModel {
                 slug: "claude-opus-4-6",
@@ -133,8 +135,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: true,
-                cost_input_per_m: 15.0,
-                cost_output_per_m: 75.0,
+                cost_input_per_m: None,
+                cost_output_per_m: None,
             },
             CatalogModel {
                 slug: "claude-haiku-3-5",
@@ -144,8 +146,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: false,
                 supports_vision: true,
-                cost_input_per_m: 0.80,
-                cost_output_per_m: 4.0,
+                cost_input_per_m: Some(0.80),
+                cost_output_per_m: Some(4.0),
             },
         ],
     },
@@ -164,8 +166,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: false,
                 supports_vision: true,
-                cost_input_per_m: 2.0,
-                cost_output_per_m: 8.0,
+                cost_input_per_m: Some(2.0),
+                cost_output_per_m: Some(8.0),
             },
             CatalogModel {
                 slug: "gpt-4.1-mini",
@@ -175,8 +177,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: false,
                 supports_vision: true,
-                cost_input_per_m: 0.40,
-                cost_output_per_m: 1.60,
+                cost_input_per_m: Some(0.40),
+                cost_output_per_m: Some(1.60),
             },
             CatalogModel {
                 slug: "o3-mini",
@@ -186,8 +188,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: false,
-                cost_input_per_m: 1.10,
-                cost_output_per_m: 4.40,
+                cost_input_per_m: Some(1.10),
+                cost_output_per_m: Some(4.40),
             },
         ],
     },
@@ -205,8 +207,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: true,
             supports_vision: false,
-            cost_input_per_m: 0.27,
-            cost_output_per_m: 1.10,
+            cost_input_per_m: Some(0.27),
+            cost_output_per_m: Some(1.10),
         }],
     },
     ProviderCatalogEntry {
@@ -224,8 +226,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: true,
-                cost_input_per_m: 0.15,
-                cost_output_per_m: 0.60,
+                cost_input_per_m: None,
+                cost_output_per_m: None,
             },
             CatalogModel {
                 slug: "gemini-2.5-pro",
@@ -235,8 +237,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
                 supports_tools: true,
                 supports_thinking: true,
                 supports_vision: true,
-                cost_input_per_m: 1.25,
-                cost_output_per_m: 10.0,
+                cost_input_per_m: None,
+                cost_output_per_m: None,
             },
         ],
     },
@@ -254,8 +256,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: true,
             supports_vision: true,
-            cost_input_per_m: 3.0,
-            cost_output_per_m: 15.0,
+            cost_input_per_m: Some(3.0),
+            cost_output_per_m: Some(15.0),
         }],
     },
     ProviderCatalogEntry {
@@ -272,8 +274,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: false,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 3.0,
-            cost_output_per_m: 15.0,
+            cost_input_per_m: None,
+            cost_output_per_m: None,
         }],
     },
     ProviderCatalogEntry {
@@ -290,8 +292,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.0,
-            cost_output_per_m: 0.0,
+            cost_input_per_m: Some(0.0),
+            cost_output_per_m: Some(0.0),
         }],
     },
     ProviderCatalogEntry {
@@ -308,8 +310,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: true,
-            cost_input_per_m: 0.0,
-            cost_output_per_m: 0.0,
+            cost_input_per_m: Some(0.0),
+            cost_output_per_m: Some(0.0),
         }],
     },
     ProviderCatalogEntry {
@@ -326,8 +328,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.90,
-            cost_output_per_m: 0.90,
+            cost_input_per_m: Some(0.90),
+            cost_output_per_m: Some(0.90),
         }],
     },
     ProviderCatalogEntry {
@@ -344,8 +346,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.88,
-            cost_output_per_m: 0.88,
+            cost_input_per_m: Some(0.88),
+            cost_output_per_m: Some(0.88),
         }],
     },
     ProviderCatalogEntry {
@@ -362,8 +364,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.84,
-            cost_output_per_m: 0.84,
+            cost_input_per_m: Some(0.84),
+            cost_output_per_m: Some(0.84),
         }],
     },
     ProviderCatalogEntry {
@@ -380,8 +382,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.0,
-            cost_output_per_m: 0.0,
+            cost_input_per_m: Some(0.0),
+            cost_output_per_m: Some(0.0),
         }],
     },
     ProviderCatalogEntry {
@@ -398,8 +400,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: false,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.0,
-            cost_output_per_m: 0.0,
+            cost_input_per_m: Some(0.0),
+            cost_output_per_m: Some(0.0),
         }],
     },
     ProviderCatalogEntry {
@@ -416,8 +418,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.0,
-            cost_output_per_m: 0.0,
+            cost_input_per_m: Some(0.0),
+            cost_output_per_m: Some(0.0),
         }],
     },
     ProviderCatalogEntry {
@@ -434,8 +436,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.35,
-            cost_output_per_m: 0.40,
+            cost_input_per_m: Some(0.35),
+            cost_output_per_m: Some(0.40),
         }],
     },
     ProviderCatalogEntry {
@@ -452,8 +454,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 0.70,
-            cost_output_per_m: 0.70,
+            cost_input_per_m: Some(0.70),
+            cost_output_per_m: Some(0.70),
         }],
     },
     ProviderCatalogEntry {
@@ -470,8 +472,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: true,
             supports_vision: false,
-            cost_input_per_m: 0.80,
-            cost_output_per_m: 2.0,
+            cost_input_per_m: Some(0.80),
+            cost_output_per_m: Some(2.0),
         }],
     },
     ProviderCatalogEntry {
@@ -488,8 +490,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 1.0,
-            cost_output_per_m: 1.0,
+            cost_input_per_m: Some(1.0),
+            cost_output_per_m: Some(1.0),
         }],
     },
     ProviderCatalogEntry {
@@ -506,8 +508,8 @@ static CATALOG: &[ProviderCatalogEntry] = &[
             supports_tools: true,
             supports_thinking: false,
             supports_vision: false,
-            cost_input_per_m: 1.38,
-            cost_output_per_m: 5.60,
+            cost_input_per_m: Some(1.38),
+            cost_output_per_m: Some(5.60),
         }],
     },
 ];

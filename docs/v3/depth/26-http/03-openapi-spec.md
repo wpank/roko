@@ -1,6 +1,6 @@
 # 26.03 -- OpenAPI Specification
 
-> Depth file for [26-HTTP.md](../../26-HTTP.md).
+> Depth file for [26-HTTP-API.md](../../26-HTTP-API.md).
 
 ---
 
@@ -193,7 +193,7 @@ The spec follows OpenAPI 3.0 conventions.
 
 ## Limitations
 
-Not all ~376 canonical routes are documented in the OpenAPI spec. The
+Not every canonical route (counted in `tools/http_route_inventory.snapshot.json`) is documented in the OpenAPI spec. The
 `utoipa::path` macros cover the most-used endpoints (~200 paths). Routes added
 by feature-gated modules (e.g., `chain` under `alloy-backend`) are documented
 only when the feature is enabled at compile time.

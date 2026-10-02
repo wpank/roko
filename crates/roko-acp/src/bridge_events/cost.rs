@@ -486,6 +486,17 @@ pub(crate) fn acp_role_for_mode(mode: &str) -> AgentRole {
     }
 }
 
+/// The role whose bundled `AgentContract` gates an ACP session's tools. Contracts are
+/// named after roles, not modes, so `code` maps to `implementer`, `plan` to
+/// `strategist` and `research` to `researcher`. Any other mode keeps its name, finds no
+/// contract, and gets the deny-all restricted fallback.
+pub(crate) fn acp_contract_role_for_mode(mode: &str) -> String {
+    match mode.trim() {
+        mode @ ("code" | "plan" | "research") => acp_role_for_mode(mode).to_string(),
+        other => other.to_owned(),
+    }
+}
+
 /// Intersect the ACP client's session declarations with the selected role's
 /// permission ceiling. Interactive allow/always-allow decisions remain a
 /// separate per-call gate in `AcpBuiltinToolHandler`.

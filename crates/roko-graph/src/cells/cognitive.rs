@@ -357,7 +357,11 @@ impl Cell for CognitiveComposeCell {
 
 // ─── ActCell ─────────────────────────────────────────────────────────────────
 
-/// Dispatches the composed prompt to an LLM agent and collects the response.
+/// The point where the composed prompt is to be dispatched to an LLM agent.
+///
+/// A stub: it passes its input through and dispatches nothing until it is
+/// wired to a provider (gap-3d5cce), so the registry marks `act` and
+/// `claude-agent` as stubs and production starts refuse them.
 ///
 /// Protocol: `Connect` (external agent dispatch).
 pub struct ActCell {
@@ -394,6 +398,9 @@ impl Cell for ActCell {
     }
     fn cell_version(&self) -> CellVersion {
         (0, 1, 0)
+    }
+    fn is_stub(&self) -> bool {
+        true
     }
     fn protocols(&self) -> Vec<ProtocolId> {
         vec![ProtocolId::Connect]

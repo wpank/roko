@@ -3,7 +3,7 @@
 > **Version**: 2.0
 > **Date**: 2026-09-05
 > **Scope**: Executable contract defining the post-convergence engine architecture. Graph is the sole engine; WorkflowEngine is retired (#276); Runner-v2 is retained as `--engine legacy` only. This document is the single unambiguous ownership and boundary reference for the converged engine.
-> **Implementation status:** IMPLEMENTED -- Engine convergence is complete. Graph is the default and sole production engine. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Runner-v2 remains available as `--engine legacy` (alias `runner-v2`) for one deprecation cycle. `RuntimeServices` provides the shared service facade across all 7 `RuntimeProfile` variants. `ProductionPlanTopology` builds the canonical per-task subgraph, `GuaranteedFinallyController` provides guaranteed cleanup, and the 12-row `FeedbackSettler` drives completion sinks.
+> **Implementation status:** IMPLEMENTED -- Engine convergence is complete. Graph is the default and sole production engine. WorkflowEngine has been deleted (#276); its serializable contract types are preserved in `roko-runtime::workflow_contract`. Runner-v2 remains available as `--engine legacy` (alias `runner-v2`) for one deprecation cycle. `RuntimeServices` provides the shared service facade across all 7 `RuntimeProfile` variants. `ProductionPlanTopology` builds the canonical per-task subgraph, and the 12-row `FeedbackSettler` drives completion sinks. A `GuaranteedFinallyController` was drafted but never compiled; it was deleted on 2026-10-01 (gap-ff6e83).
 > **Backlog**: #242
 
 ---
@@ -25,7 +25,7 @@ This contract defined the parity requirements for replacing Runner-v2 and `Workf
 - **WorkflowEngine** has been deleted (#276). Its serializable types (`WorkflowConfig`, `WorkflowRunConfig`, `WorkflowRunReport`, `CommitOutcome`, `Phase`) are preserved in `roko-runtime::workflow_contract` for downstream consumers.
 - **RuntimeServices** provides the shared service facade. 7 `RuntimeProfile` variants (`FullPlan`, `GraphPlan`, `Workflow`, `DirectLight`, `AgentServer`, `ChatLight`, `AuthoredGraph`) select which of the 6 `ServiceBundleId` bundles (Dispatch, Prompt, Feedback, Extensions, Observation, Guards) are required, optional, or forbidden.
 - **ProductionPlanTopology** (`roko-graph::topology`) builds the canonical 11-node per-task subgraph: TaskContext + 6 enrichers (knowledge, episodes, playbook, modulation, safety, experiment) + Compose + TaskExecutor + Gate + SuccessBoundary.
-- **GuaranteedFinallyController** (`roko-graph::finally`) wraps graph execution with absolute cleanup guarantees (terminal receipt, lease release, agent stop, snapshot flush) regardless of success, failure, panic, or cancellation.
+- **GuaranteedFinallyController** was drafted in `roko-graph/src/finally.rs`, but roko-graph never compiled it (no `mod finally`), and it was deleted on 2026-10-01 (gap-ff6e83). `run_one_plan` in roko-cli does a plan run's cleanup.
 - **FeedbackSettler** (`roko-execution::feedback::settler`) drives 12 ordered completion sinks with exactly-once idempotency per receipt: attempt_receipt, actual_cost, structured_audit (critical), then episode, efficiency, routing, error_pattern, playbook, knowledge, daimon, conductor, projection (optional).
 - **CellResources** (`roko-graph::cell`) injects shared service handles (e.g., `SharedGateEvaluator`) into `CellContext` for each Cell execution.
 
@@ -201,7 +201,6 @@ Each runtime variant is classified for its current support after engine converge
 | Telemetry Lens routing | live | live | absent | absent | absent | absent |
 | Plugin/MCP cell dispatch | live | live | absent | absent | absent | absent |
 | ProductionPlanTopology | live | absent | absent | absent | absent | absent |
-| GuaranteedFinallyController | live | absent | absent | absent | absent | absent |
 | 12-row FeedbackSettler | live | absent | absent | absent | absent | absent |
 | CellResources injection | live | live | absent | absent | absent | absent |
 | Single-prompt compose-gate | live (via template) | absent | absent | live | absent | absent |
@@ -285,5 +284,6 @@ No fixture invokes a live provider, git operation, feedback sink, or publication
 
 | Version | Date | Changes |
 |---|---|---|
+| 2.1 | 2026-10-01 | Removed `GuaranteedFinallyController`: roko-graph never compiled it, and `finally.rs` was deleted (gap-ff6e83). |
 | 2.0 | 2026-09-05 | Post-convergence update. Graph is the sole engine; WorkflowEngine retired (#276); Runner-v2 retained as `--engine legacy`. Updated capability matrix, implementation status, cutover invariants, and post-convergence architecture summary documenting RuntimeServices (7 profiles), ProductionPlanTopology, GuaranteedFinallyController, 12-row FeedbackSettler, and CellResources injection. |
 | 1.0 | 2026-09-03 | Initial contract. Frozen boundary table, golden schema, three fixtures, capability matrix, cutover invariants. Backlog #242. |

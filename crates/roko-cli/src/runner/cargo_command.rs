@@ -88,7 +88,7 @@ pub(super) fn command_uses_cargo(command: &str) -> bool {
 /// profile; Cargo does not select that profile unless the command includes
 /// `--profile`. Shell composition and quoted commands are intentionally left
 /// untouched because rewriting them safely requires a shell parser.
-pub(super) fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
+pub(crate) fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
     let tokens = simple_command_tokens(command)?;
     if tokens.first().copied() != Some("cargo")
         || !matches!(tokens.get(1).copied(), Some("check" | "clippy" | "test"))
@@ -114,7 +114,7 @@ pub(super) fn cargo_command_with_profile(command: &str, profile: &str) -> Option
     Some(selected.join(" "))
 }
 
-pub(super) fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
+pub(crate) fn cargo_profile_available(workdir: &Path, profile: &str) -> bool {
     std::fs::read_to_string(workdir.join("Cargo.toml"))
         .ok()
         .and_then(|manifest| toml::from_str::<toml::Value>(&manifest).ok())

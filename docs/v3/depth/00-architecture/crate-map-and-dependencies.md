@@ -108,7 +108,7 @@ integration test harnesses.
 | Crate | Path | LOC | Tests | Status | Description |
 |---|---|---|---|---|---|
 | roko-cli | `crates/roko-cli/` | ~279,400 | 3,109 | Main entry point | CLI commands, plan DAG/runner, Graph execution, merge queue, worktree manager, ratatui TUI (F1-F10), chat, research, prd, status, doctor, dashboard |
-| roko-serve | `crates/roko-serve/` | ~107,400 | 462 | Wired | HTTP control plane: ~376 canonical REST routes (~421 incl. aliases) + SSE + WebSocket on :6677 |
+| roko-serve | `crates/roko-serve/` | ~107,400 | 462 | Wired | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 |
 | roko-acp | `crates/roko-acp/` | ~22,100 | 120 | 8/8 (E17) | ACP (Agent Client Protocol) server for Cursor/external editor integration. 180 ACP tests pass |
 | roko-agent-server | `crates/roko-agent-server/` | ~7,700 | 21 | Wired | Per-agent HTTP sidecar: 14 routes including `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` |
 | roko-execution | `crates/roko-execution/` | ~12,000 | 239 | Wired | RuntimeServices builder (#243), diagnostic service, execution control, feedback settlement. Profile-driven shared service facade for CLI/serve/ACP |

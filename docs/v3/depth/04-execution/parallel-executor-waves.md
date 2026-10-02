@@ -246,8 +246,8 @@ The `GraphPolicy.fail_fast` flag controls behavior on node failure:
 
 The `ProcessSupervisor` (from `roko-runtime`) tracks spawned agent
 processes. When a plan completes or fails, the supervisor ensures all
-child processes are terminated. The `GuaranteedFinallyController`
-invokes supervisor shutdown as part of its cleanup guarantee.
+child processes are terminated. On an interrupt, `run_one_plan` also sends SIGTERM to in-flight agent
+process trees and kills those that ignore it.
 
 The shutdown sequence is: cancel token, SIGTERM, 10-second grace period,
 SIGKILL. This ensures that runaway agent processes do not outlive their

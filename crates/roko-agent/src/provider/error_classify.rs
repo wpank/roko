@@ -246,6 +246,37 @@ pub fn is_billing_message(lower: &str) -> bool {
     false
 }
 
+/// Whether a lower-cased error message reports HTTP status 401: a standalone
+/// `401` within three words of `http`, `status`, `code`, `unauthorized`,
+/// `request` or `returned` (bug-e03f92, the shape of roko-cli's bug-28c193
+/// check). A 401 inside a path, an id or a longer number (`run-1401/`,
+/// `req_401`, `14015 tokens`) is not a status.
+#[must_use]
+pub fn mentions_http_401(lower: &str) -> bool {
+    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json`
+    // is one word.
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(at, &word)| {
+        word == "401"
+            && words[at.saturating_sub(3)..words.len().min(at + 4)]
+                .iter()
+                .copied()
+                .any(is_http_status_word)
+    })
+}
+
+fn is_http_status_word(word: &str) -> bool {
+    word.starts_with("http")
+        || matches!(
+            word,
+            "status" | "code" | "unauthorized" | "request" | "returned"
+        )
+}
+
 /// Classify a 429/529 response from its error message and `Retry-After`.
 ///
 /// Billing text wins, then usage-window exhaustion (named in the message, or a
@@ -1194,6 +1225,28 @@ mod tests {
             Some(20_000),
         );
         assert!(matches!(err, ProviderError::InsufficientCredits), "{err:?}");
+    }
+
+    /// bug-e03f92: 401 counts only as an HTTP status, never inside a path,
+    /// an id or a longer number.
+    #[test]
+    fn http_401_matches_only_an_http_status() {
+        for status in [
+            "http 401: bad key",
+            "request returned status 401",
+            "HTTP/1.1 401 Unauthorized",
+            "error code 401.",
+        ] {
+            assert!(mentions_http_401(&status.to_ascii_lowercase()), "{status}");
+        }
+        for other in [
+            "wrote 14015 bytes",
+            "/tmp/run-1401/checkpoint.json: no such file",
+            "task 401 of plan p1 failed verification",
+            "the turn used 401 tokens",
+        ] {
+            assert!(!mentions_http_401(&other.to_ascii_lowercase()), "{other}");
+        }
     }
 }
 

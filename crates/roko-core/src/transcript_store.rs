@@ -495,6 +495,11 @@ pub enum ReplayMismatch {
 /// Control events (tool terminal, run terminal, errors) are buffered in
 /// an unbounded sub-channel and are never dropped. Text/delta events use
 /// a bounded channel and can be dropped under pressure.
+///
+/// Not on the live path a user watches: Graph dispatch publishes into the
+/// StateHub, whose bounded broadcast drops events of every kind for a lagging
+/// consumer. The TUI counts those drops and takes plan, task and gate state
+/// from the snapshot instead (gap-633184).
 pub struct PriorityEventChannel {
     /// Unbounded control channel — never drops.
     control: RwLock<Vec<TranscriptRecord>>,

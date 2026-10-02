@@ -1,6 +1,6 @@
 //! `ExecutorAction` — the vocabulary of side-effects the executor can request.
 //!
-//! Each [`tick()`](super::ParallelExecutor::tick) call returns a `Vec<ExecutorAction>`.
+//! [`PlanStateMachine::next_action`](super::PlanStateMachine::next_action) returns one.
 //! The caller (runtime harness) is responsible for dispatching these actions to
 //! the appropriate subsystem (agent pool, gate runner, git merge, etc.).
 

@@ -1070,6 +1070,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            metrics: None,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {
@@ -2262,8 +2263,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             );
         }
 
+        // Validate the plan this call wrote, not the whole plans root: a broken
+        // plan beside it must not fail the generation (bug-2d06bf).
         match crate::plan_validate::validate_plans_dir_with_workdir(
-            &plans_root,
+            &plan_dir,
             None,
             Some(workdir_ref),
         ) {
@@ -4045,16 +4048,9 @@ mod tests {
         );
     }
 
-    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
-    /// other. An old-format plan and a generated plan, which names no model,
-    /// keep their tasks.toml byte for byte, and the planner is called once.
+    /// Write the published PRD `widget` in `workdir`, and return its path.
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_prd_plan_does_not_regenerate_other_plans() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path();
+    fn write_widget_prd(workdir: &Path) -> PathBuf {
         ensure_dirs(workdir).expect("PRD directories");
         let prd_path = published_dir(workdir).join("widget.md");
         std::fs::write(
@@ -4063,45 +4059,34 @@ mod tests {
              # Widget\n\nAdd a widget module.\n",
         )
         .expect("write PRD");
+        prd_path
+    }
 
-        // Two plans are already in plans/: one in the old format, and one as
-        // the generator writes it, without a model_hint. Each has a plan.md a
-        // regeneration could start from.
-        let plans = workdir.join("plans");
-        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
-                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
-        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
-             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
-             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
-             depends_on = []\n\n[task.context]\nread_files = []\n\n\
-             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
-        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
-            let dir = plans.join(name);
-            std::fs::create_dir_all(&dir).expect("plan directory");
-            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
-            std::fs::write(
-                dir.join("plan.md"),
-                format!("---\nplan: {name}\n---\n# {name}\n"),
-            )
-            .expect("plan.md");
-        }
+    /// The plan the fake planner answers with in the tests below.
+    #[cfg(unix)]
+    const WIDGET_PLAN: &str = "\
+        [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+        [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+        description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+        role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+        depends_on = []\n\n[task.context]\nread_files = []\n\n\
+        [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
 
-        // The planner answers every call with the widget plan, and logs it.
-        let bin = tempfile::tempdir().expect("tempdir");
-        let widget_toml = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
-             [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
-             description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
-             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
-             depends_on = []\n\n[task.context]\nread_files = []\n\n\
-             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
-        let reply = bin.path().join("reply.jsonl");
+    /// Make `workdir`'s `planner` model a fake `claude_cli` script in `bin`
+    /// that answers every call with `plan_toml` and logs it, and return the
+    /// call log.
+    #[cfg(unix)]
+    fn write_fake_planner(workdir: &Path, bin: &Path, plan_toml: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let reply = bin.join("reply.jsonl");
         std::fs::write(
             &reply,
             format!(
                 "{}\n{}\n",
                 serde_json::json!({
                     "type": "content_block_delta",
-                    "delta": {"text": format!("```toml\n{widget_toml}```\n")},
+                    "delta": {"text": format!("```toml\n{plan_toml}```\n")},
                 }),
                 serde_json::json!({
                     "type": "result",
@@ -4116,9 +4101,9 @@ mod tests {
         .expect("planner reply");
         // Work after a call (episode distillation) runs on the default model,
         // a second fake that answers nothing, so the log counts planner calls.
-        let calls = bin.path().join("calls.log");
-        let planner = bin.path().join("planner.sh");
-        let background = bin.path().join("background.sh");
+        let calls = bin.join("calls.log");
+        let planner = bin.join("planner.sh");
+        let background = bin.join("background.sh");
         for (script, body) in [
             (
                 &planner,
@@ -4153,6 +4138,43 @@ mod tests {
             ),
         )
         .expect("roko.toml");
+        calls
+    }
+
+    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
+    /// other. An old-format plan and a generated plan, which names no model,
+    /// keep their tasks.toml byte for byte, and the planner is called once.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_prd_plan_does_not_regenerate_other_plans() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+
+        // Two plans are already in plans/: one in the old format, and one as
+        // the generator writes it, without a model_hint. Each has a plan.md a
+        // regeneration could start from.
+        let plans = workdir.join("plans");
+        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
+        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let dir = plans.join(name);
+            std::fs::create_dir_all(&dir).expect("plan directory");
+            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
+            std::fs::write(
+                dir.join("plan.md"),
+                format!("---\nplan: {name}\n---\n# {name}\n"),
+            )
+            .expect("plan.md");
+        }
+
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
 
         generate_plan_from_prd_with_model("widget", &prd_path, false, Some("planner"))
             .await
@@ -4175,6 +4197,39 @@ mod tests {
         );
         // A plan that names no model is modern: only `old` counts as old.
         assert_eq!(old_format_plan_dirs(&plans), [plans.join("old")]);
+    }
+
+    /// bug-2d06bf: a broken plan beside the generated one does not fail the
+    /// generation: generate_plan validates only the plan it wrote.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_plan_validates_only_the_plan_it_wrote() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+        let broken = workdir.join("plans").join("broken");
+        std::fs::create_dir_all(&broken).expect("plan directory");
+        std::fs::write(broken.join("tasks.toml"), "[meta\nplan = ").expect("tasks.toml");
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+
+        let report = outcome.validation_report.expect("validation report");
+        assert_eq!(report["totals"]["plans_checked"], 1, "{report}");
+        // The report lists only plans with findings: never the broken sibling.
+        let plans = report["plans"].as_array().expect("plans");
+        assert!(
+            plans.iter().all(|plan| plan["plan_id"] == "widget"),
+            "{report}"
+        );
+        assert!(!report.to_string().contains("PLAN_001"), "{report}");
     }
 
     #[test]

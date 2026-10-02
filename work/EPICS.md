@@ -92,8 +92,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) hygiene and cheap wins
 
-- **23/27 closed** · goal `tooling` · severity p2
-- open by lane: rust-cold 2, none 1, rust-hot 1
+- **24/27 closed** · goal `tooling` · severity p2
+- open by lane: none 1, rust-cold 1, rust-hot 1
 - next: [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined
 
 ## [spec-f2463d](done/spec-f2463d-epic-a-record-of-how-the-backlog.md) a record of how the backlog gets done (done)
@@ -105,11 +105,11 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
 | bench | 47 | 59 | 12 (0) |
-| docs | 14 | 18 | 4 (0) |
+| docs | 17 | 19 | 2 (0) |
 | frontend | 2 | 2 | 0 (0) |
-| none | 280 | 391 | 111 (111) |
+| none | 303 | 391 | 88 (88) |
 | paper | 59 | 65 | 6 (3) |
-| rust-cold | 136 | 166 | 30 (0) |
-| rust-hot | 81 | 116 | 35 (0) |
+| rust-cold | 156 | 178 | 22 (0) |
+| rust-hot | 103 | 117 | 14 (0) |
 | tests | 1 | 1 | 0 (0) |
-| tracker | 20 | 24 | 4 (2) |
+| tracker | 21 | 24 | 3 (2) |

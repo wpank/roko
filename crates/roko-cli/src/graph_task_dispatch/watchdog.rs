@@ -208,6 +208,7 @@ impl InterruptedCall {
             target,
             result: roko_agent::AgentResult::fail(output).with_usage_obs(usage_obs),
             events: Vec::new(),
+            tool_calls: Vec::new(),
         };
         (dispatch, self.call.failover)
     }
@@ -576,11 +577,17 @@ impl GraphTaskDispatcher {
     /// tell a model that is thinking from a tool that is running, the
     /// conductor to see the agent's messages. They stay in the tap: the TUI
     /// still gets them only under [`LiveAgentOutput::Trusted`].
+    ///
+    /// A tap also records the tool calls the provider streams in
+    /// `tool_calls` (bug-264c41), with the outcomes its tool results report
+    /// once the tap is trusted. Recording alone opens no tap, and widens no
+    /// trust: a tap makes the provider stream its call.
     pub(super) fn live_output_tap(
         &self,
         attempt: &WatchedAttempt<'_>,
         progress: Option<AttemptProgress>,
         feed: Option<AttemptFeed>,
+        tool_calls: Option<LiveToolCalls>,
     ) -> Option<LiveOutput> {
         let tui = self.tui_bridge.clone().zip(self.live_agent_output);
         if tui.is_none() && progress.is_none() && feed.is_none() {
@@ -594,10 +601,14 @@ impl GraphTaskDispatcher {
         let plan_id = attempt.plan_id.to_string();
         let task_id = attempt.task_id.to_string();
         let mut feed = feed;
-        tokio::spawn(async move {
+        let record = tool_calls.clone();
+        let tap = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 if let Some(progress) = &progress {
                     progress.observe(&event);
+                }
+                if let Some(tool_calls) = &tool_calls {
+                    tool_calls.observe(&event);
                 }
                 if let Some(feed) = feed.as_mut() {
                     feed.push_live(&event);
@@ -609,6 +620,9 @@ impl GraphTaskDispatcher {
                 }
             }
         });
+        if let Some(record) = record {
+            record.attach(tap);
+        }
         Some(LiveOutput { sink, trusted })
     }
 
@@ -748,6 +762,7 @@ mod tests {
         LiveAgentEvent::Unscreened(StreamEventKind::ToolResult {
             id: id.to_string(),
             output: "ok".to_string(),
+            is_error: false,
         })
     }
 
@@ -1199,13 +1214,13 @@ exec sleep 60
         };
 
         let unwatched = dispatcher
-            .live_output_tap(&attempt, None, None)
+            .live_output_tap(&attempt, None, None, None)
             .expect("the TUI reads live output");
         assert!(!unwatched.trusted, "without the watchdog nothing changes");
 
         let watch = StallWatch::new(thresholds(1, 2));
         let live = dispatcher
-            .live_output_tap(&attempt, Some(watch.progress()), None)
+            .live_output_tap(&attempt, Some(watch.progress()), None, None)
             .expect("the watchdog reads live output");
         assert!(live.trusted);
         live.sink

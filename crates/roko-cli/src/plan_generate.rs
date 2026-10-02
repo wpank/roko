@@ -631,10 +631,10 @@ mod template_tests {
             .expect("the end-to-end example");
         let parsed = crate::task_parser::TasksFile::parse_str(example).expect("parse the example");
         let task = &parsed.tasks[0];
-        assert!(task.goal.as_deref().is_some_and(|goal| !goal.is_empty()));
+        assert!(task.spec.goal.as_deref().is_some_and(|goal| !goal.is_empty()));
         assert!(task.acceptance.iter().all(|item| item.starts_with("AC")));
-        assert!(!task.non_goals.is_empty());
-        assert!(task.open_questions.is_empty());
+        assert!(!task.spec.non_goals.is_empty());
+        assert!(task.spec.open_questions.is_empty());
         assert_eq!(task.verify[0].covers, ["AC1", "AC2"]);
         assert!(task.verify[0].expect.is_some());
 

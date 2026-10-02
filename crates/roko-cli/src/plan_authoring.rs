@@ -1245,6 +1245,7 @@ command = "cargo test -p x parse"
             success: false,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
         };
         let output = "verify[0:test] (`cargo test -p x parse`) failed: exit status 101\n\
                       ---- parse::rejects_an_empty_limit stdout ----\n\

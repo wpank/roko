@@ -2140,8 +2140,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         // the plan already has), and the tests of the plan that is written
         // go beside its tasks.toml.
         let spec_config = resolved.config.spec_quality.clone();
-        let accept_for: std::cell::RefCell<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
-            std::cell::RefCell::default();
+        // A Mutex, not a RefCell: the closure below lives across awaits, and
+        // the serve route needs this future to be Send.
+        let accept_for: std::sync::Mutex<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
+            std::sync::Mutex::default();
         let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
             let validated = extract_and_validate(raw)?;
             let accept = accept_blocks::extract(raw)?;
@@ -2158,7 +2160,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .join("\n")
                 )),
                 _ => {
-                    accept_for.borrow_mut().insert(validated.clone(), accept);
+                    accept_for
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(validated.clone(), accept);
                     Ok(validated)
                 }
             }
@@ -2358,7 +2363,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
 
         if let Ok(validated_toml) = validated_toml {
             let accept = accept_for
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&validated_toml)
                 .unwrap_or_default();
             if let Some(regeneration) = &source.regeneration {

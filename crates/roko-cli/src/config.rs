@@ -76,6 +76,10 @@ pub struct Config {
     /// Persistent workspace directory for cloud deployments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<PathBuf>,
+    /// The spec-quality gate's settings (`[spec_quality]`), which plan
+    /// generation's retries score drafts against (3218).
+    #[serde(default)]
+    pub spec_quality: roko_core::config::SpecQualityConfig,
 }
 
 impl Default for Config {
@@ -100,6 +104,7 @@ impl Default for Config {
             log_format: None,
             bind: None,
             data_dir: None,
+            spec_quality: roko_core::config::SpecQualityConfig::default(),
         }
     }
 }
@@ -187,6 +192,7 @@ impl Config {
             log_format: None,
             bind: None,
             data_dir: None,
+            spec_quality: core.spec_quality.clone(),
         })
     }
 }

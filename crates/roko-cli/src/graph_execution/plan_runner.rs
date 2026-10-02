@@ -2594,9 +2594,9 @@ impl PlanRerun {
             Self::Resume => format!(
                 "plan '{plan_id}' runs again from its checkpoint: the tasks that passed stay done"
             ),
-            Self::Fresh => format!(
-                "plan '{plan_id}' runs again from scratch: its checkpoint is archived"
-            ),
+            Self::Fresh => {
+                format!("plan '{plan_id}' runs again from scratch: its checkpoint is archived")
+            }
         }
     }
 }

@@ -158,7 +158,11 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
     lines.push(kb("F", "force-advance past current task", theme));
-    lines.push(kb("R", "reset a failed plan: run it again (confirm)", theme));
+    lines.push(kb(
+        "R",
+        "reset a failed plan: run it again (confirm)",
+        theme,
+    ));
     lines.push(kb("C", "cancel plan (confirm)", theme));
     lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));

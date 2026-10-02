@@ -999,7 +999,9 @@ impl PlanSetScheduler {
         if self.stopped
             || !matches!(
                 self.states.get(plan_id),
-                Some(SlotState::Done(PlanOutcome::Failed | PlanOutcome::Cancelled))
+                Some(SlotState::Done(
+                    PlanOutcome::Failed | PlanOutcome::Cancelled
+                ))
             )
         {
             return false;
@@ -1025,17 +1027,17 @@ impl PlanSetScheduler {
     /// prerequisite ended without succeeding, or a plan failed in a
     /// fail-fast run.
     fn blocked_now(&self, plan_id: &str) -> bool {
-        let prerequisite_failed = self
-            .dependencies
-            .get(plan_id)
-            .into_iter()
-            .flatten()
-            .any(|prerequisite| {
-                matches!(
-                    self.states.get(prerequisite),
-                    Some(SlotState::Done(outcome)) if !outcome.succeeded()
-                )
-            });
+        let prerequisite_failed =
+            self.dependencies
+                .get(plan_id)
+                .into_iter()
+                .flatten()
+                .any(|prerequisite| {
+                    matches!(
+                        self.states.get(prerequisite),
+                        Some(SlotState::Done(outcome)) if !outcome.succeeded()
+                    )
+                });
         prerequisite_failed || (self.failed && self.fail_fast)
     }
 

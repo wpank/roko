@@ -1329,9 +1329,17 @@ exec sleep 5
         .await;
         let policy = &verdicts[0]["executed"]["tool_policy"];
         assert_eq!(policy["enforcement"], "broker", "{policy}");
-        let forbidden = policy["forbidden_tools"].as_array().expect("forbidden tools");
-        assert!(forbidden.contains(&serde_json::json!("web_search")), "{policy}");
-        assert_eq!(policy["denied_operations"], serde_json::json!(["web_search"]));
+        let forbidden = policy["forbidden_tools"]
+            .as_array()
+            .expect("forbidden tools");
+        assert!(
+            forbidden.contains(&serde_json::json!("web_search")),
+            "{policy}"
+        );
+        assert_eq!(
+            policy["denied_operations"],
+            serde_json::json!(["web_search"])
+        );
         assert_eq!(policy["network_off"], true);
         assert_eq!(policy["denial"], "web_search denied by policy: rust");
     }

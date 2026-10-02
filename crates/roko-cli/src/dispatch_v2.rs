@@ -3594,7 +3594,9 @@ mod tests {
         });
         let denial = "web_search denied by policy: rust";
         let output = Signal::builder(Kind::AgentOutput)
-            .body(Body::text(format!("Codex operation policy violation: {denial}")))
+            .body(Body::text(format!(
+                "Codex operation policy violation: {denial}"
+            )))
             .tag(roko_agent::exec::CODEX_POLICY_DENIAL_TAG, denial)
             .build();
         let result = AgentResult::fail(output);

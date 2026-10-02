@@ -717,13 +717,13 @@ The `roko.toml` file controls all behavior. Here is a minimal working configurat
 [providers.anthropic]
 kind = "anthropic_api"
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-sonnet-4-6"
 
 # Optional: model routing tiers
 [models.routing]
-tier0 = "claude-haiku-3"          # Fast, cheap tasks
-tier1 = "claude-sonnet-4-20250514"     # Default complexity
-tier2 = "claude-opus-4-20250514"         # Hard tasks
+tier0 = "claude-haiku-4-5"     # Fast, cheap tasks
+tier1 = "claude-sonnet-4-6"    # Default complexity
+tier2 = "claude-opus-4-6"      # Hard tasks
 
 # Optional: gate configuration
 [gates]

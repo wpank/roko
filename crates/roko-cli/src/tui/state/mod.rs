@@ -551,6 +551,10 @@ pub struct AgentOutputHistory {
     /// transcript. They are removed (while preserving tool steps) when
     /// [`settle_screened_transcript`] is called.
     live_unscreened_seqs: HashMap<String, HashSet<u64>>,
+    /// Agents whose current attempt's screened transcript has begun
+    /// (bug-cc61a3): their unscreened text is settled, and more that arrives
+    /// late is dropped until [`Self::begin_attempt`].
+    settled_agents: HashSet<String>,
     /// Per agent whose output arrives only through task-output rings: the
     /// ring last taken in, and the sequence number that followed it.
     ring_tails: HashMap<String, (Vec<String>, u64)>,
@@ -749,6 +753,8 @@ impl AgentOutputHistory {
         self.oldest_seq.remove(agent_id);
         self.next_seq.remove(agent_id);
         self.ring_tails.remove(agent_id);
+        self.live_unscreened_seqs.remove(agent_id);
+        self.settled_agents.remove(agent_id);
     }
 
     /// Take in the lines a task-output ring adds for an agent whose output
@@ -795,11 +801,19 @@ impl AgentOutputHistory {
     /// published live (`TuiState::ingest_agent_output`) and the same line
     /// backfilled from a snapshot give the same record.
     pub fn ingest_line(&mut self, agent_id: &str, line: &str, role: &str) {
+        let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
+        if is_live_unscreened && self.settled_agents.contains(agent_id) {
+            // Late unscreened text of an attempt whose screened copy is
+            // already here: the live forwarder runs on a task of its own.
+            return;
+        }
+        if is_screened_transcript_line(line) {
+            self.settle_unscreened(agent_id);
+        }
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
         // Assign the sequence number before push so we can track it.
         let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
         self.push(
@@ -824,46 +838,36 @@ impl AgentOutputHistory {
     }
 
     /// Replace live-unscreened non-tool records for `agent_id` with the
-    /// settled screened transcript.
-    ///
-    /// Called when the first non-`live` record arrives for an agent (or when
-    /// `agent_completed` is signalled). Drops all previously tracked
-    /// unscreened records from the deque while preserving every tool step.
-    /// The new `settled_lines` are then ingested as normal screened records.
+    /// settled screened transcript `settled_lines`, preserving every tool
+    /// step. [`Self::ingest_line`] does the same when the first record of a
+    /// screened transcript arrives on its own.
     pub fn settle_screened_transcript(
         &mut self,
         agent_id: &str,
         settled_lines: &[String],
         role: &str,
     ) {
-        // Remove the unscreened non-tool records.
-        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id) {
-            if let Some(deque) = self.records.get_mut(agent_id) {
-                deque.retain(|r| !unscreened.contains(&r.seq));
-            }
-        }
+        self.settle_unscreened(agent_id);
+        self.ingest_lines(agent_id, settled_lines, role);
+    }
 
-        // Ingest the settled, screened lines.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        for line in settled_lines {
-            let (kind, tool_id, tool_name, _) = classify_output_line(line);
-            self.push(
-                agent_id,
-                AgentOutputRecord {
-                    seq: 0,
-                    timestamp_ms: now_ms,
-                    role: role.to_string(),
-                    kind,
-                    text: line.clone(),
-                    redacted: false,
-                    tool_id,
-                    tool_name,
-                },
-            );
+    /// Drop the unscreened text and reasoning `agent_id` streamed, keeping
+    /// every tool step, and any more that arrives late, until the agent's
+    /// next attempt ([`Self::begin_attempt`]): the screened transcript
+    /// replaces them (bug-cc61a3).
+    fn settle_unscreened(&mut self, agent_id: &str) {
+        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id)
+            && let Some(deque) = self.records.get_mut(agent_id)
+        {
+            deque.retain(|record| !unscreened.contains(&record.seq));
         }
+        self.settled_agents.insert(agent_id.to_string());
+    }
+
+    /// A new attempt of `agent_id` starts (`AgentSpawned`): what it streams
+    /// unscreened shows until its own screened transcript settles it.
+    pub fn begin_attempt(&mut self, agent_id: &str) {
+        self.settled_agents.remove(agent_id);
     }
 }
 
@@ -874,6 +878,20 @@ fn ring_overlap(previous: &[String], ring: &[String]) -> usize {
         .rev()
         .find(|&overlap| previous[previous.len() - overlap..] == ring[..overlap])
         .unwrap_or(0)
+}
+
+/// Whether `line` is a record of an attempt's screened transcript, which is
+/// published once the attempt's turn ends: a stream record that is not live
+/// (bug-cc61a3). A tool result is never the first one, and carries no flag.
+fn is_screened_transcript_line(line: &str) -> bool {
+    use super::widgets::stream_output::{StreamRecord, parse_stream_line};
+
+    matches!(
+        parse_stream_line(line),
+        StreamRecord::Text { live: false, .. }
+            | StreamRecord::Reasoning { live: false, .. }
+            | StreamRecord::ToolStart { live: false, .. }
+    )
 }
 
 /// Classify a raw output line into an `OutputRecordKind` with optional

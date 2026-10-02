@@ -76,6 +76,8 @@ pub struct Conductor {
     /// INT-19: Most recently detected compound patterns from the last evaluate() call.
     /// Callers can retrieve these to trigger coordination-driven dreams.
     last_compound_patterns: Mutex<Vec<CompoundPattern>>,
+    /// Registry that counts evaluations ([`Self::attach_metrics`]).
+    metrics: std::sync::OnceLock<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 impl std::fmt::Debug for Conductor {
@@ -286,6 +288,26 @@ impl Conductor {
             threshold_learner: Mutex::new(ThresholdLearner::new()),
             pattern_detector: Mutex::new(PatternDetector::default()),
             last_compound_patterns: Mutex::new(Vec::new()),
+            metrics: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Count each evaluation in `registry` as well as in the tracing field
+    /// (gap-a95898); a run that serve hosts attaches the registry `/metrics`
+    /// renders. The first registry attached stays.
+    pub fn attach_metrics(&self, registry: Arc<roko_core::obs::metrics::MetricRegistry>) {
+        let _ = self.metrics.set(registry);
+    }
+
+    /// Count one evaluation in the attached registry, if any.
+    fn count_evaluation(&self) {
+        use roko_core::obs::metrics::LabelSet;
+        use roko_core::obs::schema::ROKO_CONDUCTOR_EVALUATIONS_TOTAL_DESCRIPTOR as EVALUATIONS;
+
+        if let Some(registry) = self.metrics.get() {
+            registry
+                .register_counter(EVALUATIONS.name, EVALUATIONS.help, LabelSet::new())
+                .inc();
         }
     }
 
@@ -374,6 +396,7 @@ impl Conductor {
             monotonic_counter.roko_conductor_evaluations_total = 1_u64,
             "conductor evaluation invoked"
         );
+        self.count_evaluation();
 
         let plan_id = extract_plan_id(stream);
 
@@ -1066,5 +1089,25 @@ mod tests {
         let simple = c.evaluate(&stream, &ctx);
         let full = c.evaluate_full(&stream, &ctx);
         assert_eq!(simple.label(), full.decision.label());
+    }
+
+    /// gap-a95898: a conductor with a metric registry attached counts each
+    /// evaluation in it, beside the tracing field.
+    #[test]
+    fn conductor_counts_evaluations_in_attached_registry() {
+        use roko_core::obs::metrics::{LabelSet, MetricRegistry};
+
+        let registry = Arc::new(MetricRegistry::new());
+        let conductor = Conductor::default();
+        conductor.attach_metrics(Arc::clone(&registry));
+        let stream = ghost_stream(3);
+        let ctx = Context::at(0);
+        let _ = conductor.evaluate(&stream, &ctx);
+        let _ = conductor.evaluate_full(&stream, &ctx);
+
+        let evaluations = registry
+            .get_counter("roko_conductor_evaluations_total", &LabelSet::new())
+            .expect("the evaluations counter");
+        assert_eq!(evaluations.get(), 2);
     }
 }

@@ -9,7 +9,7 @@ size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-10-01
+updated = 2026-10-02
 last_verified = 2026-10-01
 last_verified_rev = "6531d787e"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
@@ -136,6 +136,66 @@ Expected: before each privileged tool effect there is an acknowledged pre-effect
   unknown version); step 5 (replay idempotency); step 6 (no run attaches the sink yet: thread it through
   `AgentOptions` into `build_provider_tool_dispatcher`, then `DispatchFactory`/`dispatch_v2` and `run_one_plan`,
   which should also call `attach_safety_provenance`); `safety_provenance_restores_taint_after_restart`.
+- 2026-10-02 (wk-tamper): Plan step 4 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `PreparedGraphCheckpoint::open_safety_provenance` decodes `roko.safety-provenance@1` through
+    `stored_safety_provenance`, which fails closed on another version of the namespace or an undecodable value. It
+    then restores the sink with `GraphProvenanceSink::resume`, attaches it and writes the manifest. A run calls it
+    before any task runs.
+  - `resume` fails closed when the custody chain does not verify (`custody::chain_violations`, which
+    `cmd_custody_verify` now shares), when a stored head is not in its log, or when a provenance custody record names
+    a missing or altered witness vertex, or one with a missing parent. It also fails when the stored taint index is
+    lower than what the run's records up to the stored custody head prove (`TaintTracker::levels`, new).
+  - The run's records after the stored head, written after the last save, are tracked on top, so a crash between
+    saves loses no taint. A checkpoint without the extension (fresh, or older) rebuilds the run's taint from the
+    logs. Nothing resets to trusted while records exist.
+  - Appends within one process are serialized (`APPEND_LOCK`). Two processes appending at once can still fork the
+    custody chain, and the next resume then fails closed.
+  - `register_known_namespaces` keeps the extension optional: older checkpoints have none, and the restore needs
+    none.
+  - Tests (roko-cli lib): `safety_provenance_restores_taint_after_restart`,
+    `safety_provenance_restore_tracks_calls_after_the_last_save`, and the four fail-closed tests for a tampered
+    custody log, a missing witness root, a taint downgrade and an unknown version.
+  Still open: step 6 (no run opens the sink yet), step 5, and the policy fingerprints.
+- 2026-10-02 (wk-tamper): Plan step 6 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - `AgentOptions::provenance_sink` (roko-agent) reaches `build_provider_tool_dispatcher`, which every API-provider
+    tool loop uses (Anthropic, OpenAI-compatible, Cerebras, Gemini, Perplexity). The exhaustive `AgentOptions`
+    literals in roko-agent, roko-cli tests, roko-dreams and roko-serve set it to `None`.
+  - `run_graph_plan_body` gives the shared factory a `ProvenanceSinks` registry, and the factory hands it to each
+    `AgentDispatcherV2`. `agent_options` picks the sink of the request's run (from its attempt key).
+  - `run_one_plan` calls `checkpoint.open_safety_provenance` right after the checkpoint is prepared, so a resumed
+    run's restore runs before any task. It registers the sink for the plan's lifetime, and a failed restore stops
+    the plan. Every Graph plan run now records its API-provider tool calls.
+  - CLI providers (Claude CLI, Codex CLI) run their own tool loops, so their calls are not recorded. Chat, serve and
+    ACP attach no sink.
+  - Tests: `agent_options_carry_the_runs_safety_provenance_sink` (roko-cli dispatch_v2) and
+    `provenance_sinks_hold_a_runs_sink_while_it_is_registered` (roko-cli lib).
+  Still open: step 5 (replay idempotency), the policy and contract fingerprints, and a live run showing
+  `roko knowledge custody list` records (Done when).
+- 2026-10-02 (wk-tamper): Plan step 5 on work/gap-7147bb; cargo verification deferred to the batch check.
+  - A provenance record's identity is the hash of its canonical JSON (RFC 8785): call IDs (run, task, attempt,
+    turn, call), argument digest, taint, and for an outcome its verdict, reason and result digest.
+    `GraphProvenanceSink` acknowledges an intent it already holds with its first record's id, and skips an outcome
+    it already holds, so neither is written twice. On resume it loads the run's records from the logs.
+  - Whether an external effect happened stays with the activity and receipt ledger; an acknowledged intent does
+    not prove it. A Graph resume re-dispatches with new S01 attempt keys, so a replay of the same attempt's calls
+    only arises from a provider re-sending a call.
+  - Test: `graph_provenance_sink_records_a_replayed_record_once` (roko-cli lib).
+  Still open: the policy and contract fingerprints in the summary, and a live API-provider run showing
+  `roko knowledge custody list` records, as the Done when asks.
+- 2026-10-02 (wk-tamper): fresh runs no longer depend on custody history (coordinator's review of step 6).
+  - A run whose checkpoint stores no provenance starts fresh (`GraphProvenanceSink::start`). Whatever the custody
+    log already holds (older builds, the old DefaultHasher path, concurrent processes), the run's records extend it
+    from its last record. A history that does not verify is warned about once, never refused.
+  - Only a resume verifies, from the run's own first record (`custody_root`, new in the summary) on: the custody
+    links and hashes, the run's heads, its witness vertices, and the taint index. A checkpoint that saved no records
+    tracks what the logs still hold of the run, which can only add taint.
+  - Test: `safety_provenance_starts_on_broken_history_and_checks_only_its_own_records` (a garbage, edited and forked
+    `custody.jsonl` still runs a fresh plan, and the run's resume still fails closed once its own records are
+    edited).
+  - `.roko/state/safety-provenance.key` is created 0600 (the sink test checks the mode). It is never logged, and
+    neither `Debug` impl prints it. `scripts/run_evidence.py` copies only its listed ledgers and
+    `.roko/state/graph/<plan>/`. The secret canaries scan files but copy none, and the cloud worker never commits
+    `.roko/`.
 
 ## Original notes
 

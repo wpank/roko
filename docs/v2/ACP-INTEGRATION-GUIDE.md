@@ -1931,7 +1931,7 @@ slug = "claude-sonnet-4-6"
 
 [models.haiku]
 provider = "anthropic"
-slug = "claude-haiku-3-5"
+slug = "claude-haiku-4-5"
 ```
 
 Model keys in `[models.*]` become the selectable values for the `model` config

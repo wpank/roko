@@ -212,9 +212,11 @@ impl DreamAgentConfig {
             trace_sink: None,
             metrics_sink: None,
             tool_correlation: None,
+            provenance_sink: None,
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
         }
     }
 }

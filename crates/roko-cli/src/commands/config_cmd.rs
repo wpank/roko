@@ -3,6 +3,7 @@
 use crate::*;
 use indexmap::IndexMap;
 use roko_cli::resolved_overrides::{ConfigEditTarget, ConfigSetInput, ResolvedExecutionOverrides};
+use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::tool::{ToolRegistry, ToolSource};
 use roko_fs::RokoLayout;
 use serde::Serialize;
@@ -850,6 +851,10 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
 
     let result = match provider.kind {
         AnthropicApi => {
+            // The registry's cheapest Anthropic model: the probe only needs an answer.
+            let Some(model) = cheapest_builtin_model(AnthropicApi) else {
+                return "skip (no built-in anthropic model)".to_string();
+            };
             let base = provider
                 .base_url
                 .as_deref()
@@ -857,7 +862,7 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
                 .trim_end_matches('/');
             let endpoint = format!("{base}/v1/messages");
             let body = json!({
-                "model": "claude-3-5-haiku-20241022",
+                "model": model.slug,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}]
             });

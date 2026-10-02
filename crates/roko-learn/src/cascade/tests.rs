@@ -2054,7 +2054,10 @@ fn category_stats_survive_a_save() {
             .get(&(slug.to_string(), category.label().to_string()))
             .copied()
     };
-    assert_eq!(counts("claude-sonnet-4-5", TaskCategory::Research), Some((4, 3)));
+    assert_eq!(
+        counts("claude-sonnet-4-5", TaskCategory::Research),
+        Some((4, 3))
+    );
     assert_eq!(counts("claude-haiku-4-5", TaskCategory::Docs), Some((1, 0)));
     assert_eq!(stats.len(), 2, "{stats:?}");
 }
@@ -2067,7 +2070,10 @@ fn category_stats_merge_keeps_retractions() {
     let counts = |trials, successes| {
         HashMap::from([(
             "claude-sonnet-4-5".to_string(),
-            HashMap::from([(TaskCategory::Research, CategoryModelStats { trials, successes })]),
+            HashMap::from([(
+                TaskCategory::Research,
+                CategoryModelStats { trials, successes },
+            )]),
         )])
     };
     let base = CascadeSnapshot {

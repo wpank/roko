@@ -7,6 +7,445 @@ use anyhow::Context as _;
 use roko_cli::plan_validate;
 use roko_fs::RokoLayout;
 
+/// Execution engine for `roko plan run`.
+///
+/// The Graph Engine is the sole execution engine. The `--engine legacy` and
+/// `--engine runner-v2` values are still accepted to avoid breaking existing
+/// scripts, but they print a deprecation error and exit.
+///
+/// **#336**: The legacy engine variant is scheduled for removal. Scripts using
+/// `--engine legacy` or `--engine runner-v2` should remove the flag entirely
+/// (the graph engine is the default and sole engine).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum PlanEngine {
+    /// Graph Engine (default and sole engine).
+    #[default]
+    #[value(name = "graph")]
+    Graph,
+    /// Legacy Runner-v2 (REMOVED). Accepted for backward compatibility but
+    /// prints a deprecation error and exits. Use `--engine graph` (the default).
+    /// Scheduled for removal in the next release (#336).
+    #[value(name = "legacy", alias = "runner-v2", hide = true)]
+    RunnerV2,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PlanCmd {
+    /// List all plans in the workspace.
+    List {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Group plans by execution wave (cross-plan dependency analysis).
+        #[arg(long)]
+        waves: bool,
+    },
+    /// Show details of a specific plan.
+    Show {
+        /// Plan ID.
+        plan_id: String,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Create a new plan.
+    Create {
+        /// Plan ID.
+        plan_id: String,
+        /// Plan title.
+        #[arg(long)]
+        title: String,
+        /// Plan description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Lint every `tasks.toml` under a plans directory without executing it.
+    Validate {
+        /// Plans root directory.
+        #[arg(default_value = "plans/")]
+        dir: PathBuf,
+        /// Fail on warnings, not only errors.
+        #[arg(long)]
+        strict: bool,
+        /// Output machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Show DAG analysis: plan/task/edge counts, wave breakdown,
+        /// critical path, and dangling dependency references.
+        #[arg(long)]
+        dag: bool,
+        /// Score each task's spec with the speclint rules (`sq-2`): score,
+        /// band, rule scores and hard fails. With `--strict`, a hard fail
+        /// exits 1.
+        #[arg(long)]
+        spec_quality: bool,
+    },
+    /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
+    /// (its artifacts, task map and risks), which dispatch adds to each of its
+    /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
+    /// PRD. No model runs unless `--full`. Documents that exist are kept
+    /// unless `--force`.
+    Prepare {
+        /// The plan directory, holding `tasks.toml`.
+        plan_dir: PathBuf,
+        /// Also have the planner model write `decomposition.md` (numbered
+        /// steps with checkpoints) and `rubric.md` (review criteria).
+        #[arg(long)]
+        full: bool,
+        /// Overwrite companion documents that exist.
+        #[arg(long)]
+        force: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Rebuild or verify the deterministic plans index.
+    Index {
+        /// Verify exact generated content without writing any files.
+        #[arg(long)]
+        check: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Run a plan directory through the orchestration loop.
+    #[command(after_help = "\
+Examples:
+  roko plan run plans/              Run all plans (graph engine, default)
+  roko plan run plans/my-plan       Run a specific plan
+  roko plan run plans/ --approval   Run with interactive TUI approval
+  roko plan run plans/ --dry-run    Preview without executing
+  roko plan run plans/ --fresh      Archive old state and start clean
+  roko plan run plans/ --max-parallel-plans 3   Run up to 3 independent plans at once
+  roko plan run plans/ --resume-plan .roko/state/graph                              Resume Graph Activities
+
+The legacy Runner-v2 engine has been removed. --engine legacy is accepted but exits with an error.")]
+    Run {
+        /// Path to the plans directory.
+        plans_dir: PathBuf,
+        /// Execution engine to use for plan execution.
+        ///
+        /// The Graph engine is the sole engine. `--engine legacy` and
+        /// `--engine runner-v2` are accepted for backward compatibility
+        /// but print a deprecation error and exit.
+        #[arg(long, default_value = "graph", value_enum)]
+        engine: PlanEngine,
+        /// Working directory (repo root). Defaults to current directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Resume from engine state. Bare `--resume-plan` resumes the canonical
+        /// Graph checkpoints under `.roko/state/graph/` (any number of plans);
+        /// pass a checkpoint directory, or a checkpoint file for a single plan.
+        #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
+        resume_plan: Option<PathBuf>,
+        /// Launch the connected inline TUI while Runner-v2 runs.
+        /// Use this to monitor agent output, tokens, and gate progress in real time.
+        /// The TUI remains open after completion or failure until you quit it.
+        /// Without this flag, plan run outputs plain text logs.
+        #[arg(long, visible_alias = "tui")]
+        approval: bool,
+        /// Disable the inline TUI even in interactive terminals.
+        ///
+        /// By default, the TUI is auto-enabled when stdout is a TTY.
+        /// Pass `--no-tui` to suppress it and use plain log output instead.
+        #[arg(long)]
+        no_tui: bool,
+        /// Maximum retry attempts per task (overrides per-task and config values).
+        #[arg(long)]
+        max_retries: Option<u32>,
+        /// Maximum concurrent tasks per plan (0 keeps the config/default value).
+        #[arg(long, default_value_t = 0)]
+        max_tasks: usize,
+        /// Parse and display the plan without executing. Shows tasks, dependencies, and estimates.
+        #[arg(long)]
+        dry_run: bool,
+        /// Archive old run state and start from scratch (ignores the unified state snapshot and legacy files).
+        #[arg(long)]
+        fresh: bool,
+        /// Re-queue drifted tasks instead of aborting when resuming from a snapshot.
+        #[arg(long)]
+        force_resume: bool,
+        /// Override the plan cost ceiling for this run.
+        ///
+        /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
+        /// replacing whatever is configured in roko.toml. Once the plan has
+        /// spent it, no further task starts, as with a configured ceiling.
+        /// `--budget-override 0` removes the plan ceiling; the per-task and
+        /// daily ceilings still apply.
+        #[arg(long, value_name = "AMOUNT")]
+        budget_override: Option<f64>,
+        /// Disable budget enforcement entirely for this run.
+        ///
+        /// No plan, per-task or daily ceiling stops a dispatch; spend is still
+        /// recorded.
+        #[arg(long, conflicts_with = "budget_override")]
+        no_budget: bool,
+        /// Skip the disk-space pre-check and start the plan even when free disk
+        /// is below `resources.min_free_disk_mb`. Use with caution: the plan
+        /// may fail mid-run if disk space is exhausted.
+        #[arg(long)]
+        force: bool,
+        /// Skip agent permission prompts for this run. UNSAFE: agents will execute
+        /// tools without approval. Prefer setting `runner.dangerously_skip_permissions = true`
+        /// in roko.toml for persistent use.
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
+        /// Write structured JSONL event log to this file during execution.
+        ///
+        /// Every runner lifecycle event (task start, gate result, agent dispatch,
+        /// run completion, etc.) is serialized as a single JSON line and flushed.
+        #[arg(long, value_name = "PATH")]
+        log_file: Option<PathBuf>,
+        /// Skip the preflight environment checks (config, credentials, toolchain,
+        /// plans, stale lock) and proceed directly to plan execution.
+        #[arg(long)]
+        skip_preflight: bool,
+        // NOTE: `--force-backend` was removed from this subcommand and
+        // consolidated into the global `--model` flag (hidden alias).
+        // Use `roko plan run --model <slug> plans/` instead.
+        /// Capture event-driven screenshots during execution.
+        ///
+        /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/` with
+        /// a manifest.json linking each screenshot to its trigger event.
+        /// Triggered at: plan startup, task completion, gate completion, wave
+        /// completion, agent spawn/exit, and errors.
+        #[arg(long)]
+        screenshots: bool,
+        /// Maximum seconds between periodic full-state screenshot captures.
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = 60,
+            value_parser = clap::value_parser!(u64).range(1..=86_400)
+        )]
+        screenshot_interval: u64,
+        /// Exact directory for this run's screenshot timeline. Relative paths
+        /// are resolved against the plan workdir. Existing paths receive a
+        /// collision-safe numeric suffix.
+        #[arg(long, value_name = "PATH")]
+        screenshot_dir: Option<PathBuf>,
+        /// Pause execution for review after every N plan completions.
+        /// Natural checkpoints for overnight or batch runs.
+        #[arg(long, value_name = "N")]
+        batch_size: Option<usize>,
+        /// Run each task in an isolated git worktree so agents cannot
+        /// interfere with each other or the user's working tree. This is the
+        /// default (`[runner] worktree_per_task = true`); the flag overrides
+        /// a config that turns it off.
+        ///
+        /// Each task dispatch creates a fresh worktree, runs the agent and
+        /// verify steps inside it, and cleans it up on completion. Failed
+        /// worktrees are retained for post-mortem. Finished plans are
+        /// delivered into the run's batch branch, `roko/batch/<run-id>`; your
+        /// checkout is never changed, and the run ends with the command that
+        /// takes the work into it. Without this flag, a workdir that is not
+        /// the top level of a git checkout with a commit runs its tasks in
+        /// the shared working tree. Only applies to the Graph engine.
+        #[arg(long)]
+        worktree_per_task: bool,
+        /// Run every task in the shared working tree, whatever
+        /// `[runner] worktree_per_task` says: tasks edit your checkout
+        /// directly.
+        #[arg(long, conflicts_with = "worktree_per_task")]
+        no_worktree_per_task: bool,
+        /// Use the rich 11-node-per-task production topology instead of the
+        /// simple single-Activity-per-task converter.
+        ///
+        /// When enabled, each task becomes a subgraph of:
+        ///   [TaskContext] -> 6 parallel enrichers (knowledge, episodes,
+        ///   playbook, modulation, safety, experiment) -> [Compose] ->
+        ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
+        ///
+        /// Each task's [Gate] runs the compile, lint and test rungs in the
+        /// worktree its attempt ran in, and accepts the attempt onto the plan
+        /// branch when they pass, so this needs per-task worktrees (the
+        /// default; see `--worktree-per-task`).
+        ///
+        /// Note: enricher cells are currently passthrough stubs. The richer
+        /// topology does not yet add runtime value over the simple converter,
+        /// but makes the structure available for incremental implementation of
+        /// each enricher cell type. Only applies to the Graph engine.
+        #[arg(long)]
+        rich_topology: bool,
+        /// After every plan is delivered into the run's batch branch
+        /// (`roko/batch/<run-id>`), promote the batch into BRANCH and tag it
+        /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
+        /// such as your own checkout's, is not moved: the promotion is parked
+        /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.
+        /// Needs per-task worktrees, the default (see `--worktree-per-task`).
+        #[arg(long, value_name = "BRANCH", conflicts_with = "no_worktree_per_task")]
+        promote: Option<String>,
+        /// Run up to N plans of a plan set at the same time.
+        ///
+        /// Plans start in execution order once their `depends_on_plan`
+        /// prerequisites have succeeded. Plans that write or build
+        /// overlapping parts of the working tree never run at the same time.
+        /// Defaults to `[conductor] max_parallel_plans` (1: one plan at a
+        /// time). Per-task worktrees run one plan at a time for now: with
+        /// them from config, the plans run in turn with a warning, and with
+        /// `--worktree-per-task` a run of several plans is refused.
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u64).range(1..=64)
+        )]
+        max_parallel_plans: Option<u64>,
+        /// Start no further plans after the first plan fails. Plans already
+        /// running finish; the rest are reported as blocked.
+        #[arg(long)]
+        fail_fast: bool,
+    },
+    /// Generate implementation plans from a prompt, file, or PRD.
+    Generate {
+        /// Source: free-text prompt, or path to a file (PRD, requirements, etc).
+        source: Vec<String>,
+        /// Treat source as a file path to read (instead of inline text).
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+        /// Additional context files/dirs/globs to include in the prompt.
+        #[arg(long = "context", value_name = "PATH")]
+        context: Vec<PathBuf>,
+        /// Read notes from .roko/notes/ and generate one plan per cluster.
+        #[arg(long)]
+        from_notes: bool,
+        /// Filter notes by tag when using --from-notes.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Generate plan(s) from backlog spec(s). Accepts a single ID or
+        /// comma-separated IDs: `--from-backlog 206` or `--from-backlog 206,120,119`.
+        /// Reads the spec from `tmp/backlog/<id>-*.md`, generates a deterministic
+        /// slug, and writes the plan to `plans/<slug>/tasks.toml`.
+        #[arg(long, value_name = "IDS")]
+        from_backlog: Option<String>,
+    },
+    /// Pause a running plan executor. Writes a pause signal to `.roko/state/control.json`.
+    Pause {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Resume a paused plan executor. Clears the pause signal.
+    Resume {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Cancel a running plan. Writes a cancel signal to `.roko/state/control.json`.
+    Cancel {
+        /// Plan ID to cancel. If omitted, cancels the current run.
+        #[arg(long)]
+        plan_id: Option<String>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Retry failed tasks in a plan. Writes a retry signal to `.roko/state/control.json`.
+    Retry {
+        /// Specific task ID to retry. If omitted, retries all failed tasks.
+        task_id: Option<String>,
+        /// Plan ID containing the task. If omitted, targets the active plan.
+        #[arg(long)]
+        plan_id: Option<String>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Approve or reject a task held for review (`[meta] approval =
+    /// "per_task"`). The plan run holding it merges the task on approval; a
+    /// rejection fails the attempt, and the note is the next attempt's
+    /// feedback.
+    Review {
+        /// Plan id.
+        plan_id: String,
+        /// Task id.
+        task_id: String,
+        /// Approve the task's held attempt.
+        #[arg(long, conflicts_with = "reject", required_unless_present = "reject")]
+        approve: bool,
+        /// Reject the task's held attempt.
+        #[arg(long)]
+        reject: bool,
+        /// The reviewer's note, which a rejected task's next attempt gets.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Regenerate an existing plan from its source PRD / plan extract.
+    Regenerate {
+        /// Path to the plan directory (containing tasks.toml).
+        plan_dir: PathBuf,
+        /// Preview changes without overwriting.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Queue manifest operations: show, validate, and init milestone definitions.
+    Queue {
+        #[command(subcommand)]
+        cmd: QueueCmd,
+    },
+    /// Show the lightweight runner status from `.roko/state/status.json`.
+    ///
+    /// Reads the < 500 byte status file written by the runner on every tick
+    /// (debounced 1/sec). This is fast because it does not require
+    /// deserializing the full executor snapshot.
+    ///
+    /// When a plan directory is provided, shows task-level status for that
+    /// specific plan (from its tasks.toml and executor snapshot).
+    /// When omitted, shows the global runner status (phase, plans, agents).
+    #[command(after_help = "\
+Examples:
+  roko plan status                          Show global runner status
+  roko plan status plans/demos/demo-hello   Show task status for a specific plan")]
+    Status {
+        /// Optional plan directory to show status for (e.g. plans/my-plan).
+        /// When provided, shows task-level status for that specific plan.
+        /// When omitted, shows the global runner status.
+        plan_dir: Option<PathBuf>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Shorthand: `roko plan "add cursor support"` routes to plan generate.
+    #[command(external_subcommand)]
+    Shorthand(Vec<String>),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum QueueCmd {
+    /// Display milestone status and plan assignments.
+    Show {
+        /// Path to queue manifest file.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        file: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Validate queue manifest structure and plan references.
+    Validate {
+        /// Path to queue manifest file.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        file: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Generate a starter queue.toml from discovered plans.
+    Init {
+        /// Output path for the generated manifest.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        output: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
 fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>) {
     let Some(handle) = handle else {
         return;
@@ -463,6 +902,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Prepare {
             plan_dir,
+            full,
             force,
             workdir,
         } => {
@@ -473,7 +913,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 workdir.join(plan_dir)
             };
             let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
-            let prepared = roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?;
+            let prepared = if full {
+                let model = cli.model.clone();
+                roko_cli::plan_brief::prepare_full(&plan_dir, &workdir, force, model).await?
+            } else {
+                roko_cli::plan_brief::prepare(&plan_dir, &workdir, force)?
+            };
             if !cli.quiet {
                 for path in &prepared.written {
                     println!("wrote {}", path.display());
@@ -1413,6 +1858,15 @@ async fn cmd_plan_dir_status(
     // Why the plan's whole-plan check failed, when it did (gap-60233f).
     let plan_check_failure =
         roko_cli::graph_checkpoint::recorded_plan_check_failure(workdir, &plan_id);
+    // Where a delivered plan's work is, and how to take it into the checkout,
+    // which the run never changes (gap-4ec59f).
+    let delivery = roko_cli::graph_checkpoint::recorded_batch_delivery(workdir, plan_id);
+    let merge_command = match &delivery {
+        Some(delivery) => {
+            roko_cli::graph_execution::batch::merge_command(workdir, &delivery.branch).await
+        }
+        None => None,
+    };
 
     if cli.json {
         let task_entries: Vec<serde_json::Value> = tasks_file
@@ -1439,6 +1893,11 @@ async fn cmd_plan_dir_status(
                 "completed": status_str == "complete",
                 "status": status_str,
                 "plan_check_failure": plan_check_failure,
+                "delivery": delivery.as_ref().map(|delivery| serde_json::json!({
+                    "branch": delivery.branch,
+                    "merge_commit": delivery.merge_commit,
+                    "merge_command": merge_command,
+                })),
                 "tasks": task_entries,
             }))?
         );
@@ -1449,6 +1908,15 @@ async fn cmd_plan_dir_status(
         println!("status:          {status_str}");
         if let Some(failure) = &plan_check_failure {
             println!("plan check:      {failure}");
+        }
+        if let Some(delivery) = &delivery {
+            println!(
+                "delivered:       {} at {}",
+                delivery.branch, delivery.merge_commit
+            );
+            if let Some(command) = &merge_command {
+                println!("take it with:    {command}");
+            }
         }
         println!();
         if tasks_file.tasks.is_empty() {
@@ -2455,6 +2923,7 @@ async fn cmd_plan_run_engine(
         dangerously_skip_permissions,
         log_file: log_file.map(|p| p.to_path_buf()),
         worktree_per_task,
+        worktree_per_task_explicit: worktree_flag == Some(true),
         rich_topology,
         promote,
         no_tui,
@@ -2484,14 +2953,29 @@ async fn cmd_plan_run_engine(
 
 /// Whether a plan run in `workdir` isolates each task in its own git
 /// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
-/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f).
+/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). The setting
+/// alone does not isolate a workdir that cannot be isolated, such as one that
+/// is not the top level of a git checkout with a commit (see
+/// `worktree_isolation_blocker`); an explicit flag there fails the run.
 fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
-    flag.unwrap_or_else(|| {
-        roko_core::config::loader::load_config_unified(workdir)
-            .unwrap_or_default()
-            .runner
-            .worktree_per_task
-    })
+    if let Some(flag) = flag {
+        return flag;
+    }
+    let configured = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .runner
+        .worktree_per_task;
+    if configured
+        && let Some(blocker) = roko_cli::graph_execution::batch::worktree_isolation_blocker(workdir)
+    {
+        tracing::warn!(
+            workdir = %workdir.display(),
+            "[runner] worktree_per_task is on, but the workdir {blocker}: the tasks run in the \
+             shared working tree"
+        );
+        return false;
+    }
+    configured
 }
 
 #[cfg(test)]
@@ -2500,7 +2984,8 @@ mod tests {
     use tempfile::tempdir;
 
     /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
-    /// `[runner] worktree_per_task` otherwise.
+    /// `[runner] worktree_per_task` otherwise, which isolates only a git
+    /// checkout with a commit to start worktrees from.
     #[test]
     fn worktree_per_task_follows_the_flag_then_the_runner_config() {
         let dir = tempdir().expect("tempdir");
@@ -2509,9 +2994,39 @@ mod tests {
             "[runner]\nworktree_per_task = true\n",
         )
         .expect("write roko.toml");
+        assert!(
+            !resolve_worktree_per_task(None, dir.path()),
+            "not a git checkout: the setting falls back to the shared tree"
+        );
+        assert!(resolve_worktree_per_task(Some(true), dir.path()));
+
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
         assert!(resolve_worktree_per_task(None, dir.path()));
         assert!(!resolve_worktree_per_task(Some(false), dir.path()));
-        assert!(resolve_worktree_per_task(Some(true), dir.path()));
     }
 
     #[test]

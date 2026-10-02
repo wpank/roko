@@ -248,8 +248,8 @@ pub struct ModelPricing {
 /// no current price page lists keep the rates they had and are named in
 /// [`UNVERIFIED_PRICING`].
 ///
-/// Lookup uses the same exact-then-longest-prefix rule as
-/// `CostTable::lookup`, so date- or variant-suffixed slugs
+/// Lookup matches a slug exactly or as a snapshot of a key
+/// ([`is_snapshot_of`]), as `CostTable::lookup` does, so dated slugs
 /// (`claude-sonnet-4-6-20250514`) resolve to their base model's rates.
 pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
     // Anthropic: https://platform.claude.com/docs/en/about-claude/pricing,
@@ -334,12 +334,32 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         },
     ),
     (
+        "gpt-4o-mini",
+        ModelPricing {
+            input_per_m: 0.15,
+            output_per_m: 0.60,
+            cache_read_per_m: 0.075,
+            cache_write_per_m: 0.15,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
         "o3",
         ModelPricing {
             input_per_m: 2.00,
             output_per_m: 8.00,
             cache_read_per_m: 0.50,
             cache_write_per_m: 2.00,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "o3-mini",
+        ModelPricing {
+            input_per_m: 1.10,
+            output_per_m: 4.40,
+            cache_read_per_m: 0.55,
+            cache_write_per_m: 1.10,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -416,9 +436,9 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         },
     ),
     // Perplexity: https://docs.perplexity.ai/getting-started/pricing, checked
-    // 2026-10-01. Sonar also bills per request; that fee lives on
-    // `ModelProfile::cost_per_request`. Neither model has a cache-write
-    // price, and Sonar Pro has no cache price at all.
+    // 2026-10-01. The Sonar models also bill per request; that fee lives on
+    // `ModelProfile::cost_per_request`. None has a cache-write price, and
+    // only Sonar has a cache price.
     (
         "sonar",
         ModelPricing {
@@ -439,6 +459,21 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 1.0,
         },
     ),
+    (
+        "sonar-reasoning-pro",
+        ModelPricing {
+            input_per_m: 2.00,
+            output_per_m: 8.00,
+            cache_read_per_m: 2.00,
+            cache_write_per_m: 2.00,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    // Sonar Deep Research has no row. Besides $2/M input and $8/M output it
+    // bills citation tokens ($2/M), reasoning tokens ($3/M) and search queries
+    // ($5 per 1K) (https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02), which `ModelPricing` cannot express. Its cost is
+    // unknown rather than understated (bug-c0602b).
     // Google Gemini: https://ai.google.dev/gemini-api/docs/pricing, paid
     // tier, checked 2026-10-01. A cache read is the context-caching price;
     // cache storage is billed per hour, which a token rate cannot express.
@@ -459,6 +494,16 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             output_per_m: 2.50,
             cache_read_per_m: 0.03,
             cache_write_per_m: 0.30,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "gemini-2.5-flash-lite",
+        ModelPricing {
+            input_per_m: 0.10,
+            output_per_m: 0.40,
+            cache_read_per_m: 0.01,
+            cache_write_per_m: 0.10,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -486,8 +531,8 @@ pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
 
 /// Look up pricing for a model slug.
 ///
-/// Tries an exact match first, then any table key that is a prefix of the
-/// slug separated by `-` or `.` (longest prefix wins). Matching is
+/// Tries an exact match first, then a table key the slug is a snapshot of
+/// ([`is_snapshot_of`]; the longest such key wins). Matching is
 /// case-insensitive. Returns `None` for unknown slugs.
 #[must_use]
 pub fn builtin_pricing(slug: &str) -> Option<ModelPricing> {
@@ -497,13 +542,46 @@ pub fn builtin_pricing(slug: &str) -> Option<ModelPricing> {
     }
     BUILTIN_PRICING
         .iter()
-        .filter(|(key, _)| {
-            lower.len() > key.len()
-                && lower.starts_with(key)
-                && matches!(lower.as_bytes().get(key.len()), Some(b'-' | b'.'))
-        })
+        .filter(|(key, _)| is_snapshot_of(&lower, key))
         .max_by_key(|(key, _)| key.len())
         .map(|(_, pricing)| *pricing)
+}
+
+/// Whether `slug` names the model `key` names: `key` itself, or `key` with a
+/// snapshot suffix, a date or zero-padded version (`-20250514`,
+/// `-2024-08-06`, `-001`), `-latest` or `-preview`. Any other suffix names
+/// another model (`o3-mini`, `gemini-2.5-flash-lite`, `sonar-reasoning-pro`,
+/// `glm-5.2`), which is not priced at `key`'s rates (bug-1f81ab).
+#[must_use]
+pub fn is_snapshot_of(slug: &str, key: &str) -> bool {
+    let Some(suffix) = slug.strip_prefix(key) else {
+        return false;
+    };
+    if suffix.is_empty() {
+        return true;
+    }
+    let Some(suffix) = suffix.strip_prefix(['-', '.']) else {
+        return false;
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let mut parts = suffix.split(['-', '.']);
+    let snapshot = parts.next().is_some_and(|first| {
+        matches!(first, "latest" | "preview") || (first.len() >= 3 && digits(first))
+    });
+    snapshot && parts.all(digits)
+}
+
+/// The cheapest built-in model of `kind` by input price: the model a probe
+/// that only needs the provider to answer, such as a credit check, requests.
+/// `None` when no priced built-in model has that kind.
+#[must_use]
+pub fn cheapest_builtin_model(kind: ProviderKind) -> Option<&'static BuiltinModel> {
+    BUILTIN_MODELS
+        .iter()
+        .filter(|model| model.provider_kind == kind)
+        .filter_map(|model| Some((model, builtin_pricing(model.slug)?.input_per_m)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(model, _)| model)
 }
 
 /// Resolved metadata for a model slug: the single source of truth shared by
@@ -523,7 +601,7 @@ pub struct ModelMeta {
     pub context_window: Option<u64>,
     /// Maximum output tokens, when the slug is in [`BUILTIN_MODELS`].
     pub max_output: Option<u64>,
-    /// Pricing from [`BUILTIN_PRICING`] (exact or longest-prefix match).
+    /// Pricing from [`BUILTIN_PRICING`] (exact or snapshot match).
     pub pricing: Option<ModelPricing>,
     /// Canonical registry slug when resolved via [`BUILTIN_MODELS`] or
     /// [`ALIASES`]; `None` for unregistered slugs.
@@ -589,7 +667,7 @@ fn tier_for_slug(slug: &str) -> ModelTier {
 ///
 /// Resolution order: registry exact/alias ([`builtin_model`]) supplies the
 /// canonical slug and context sizes; [`builtin_pricing`] supplies pricing
-/// (exact then longest-prefix, so dated variants resolve), retried against
+/// (exact then snapshot match, so dated variants resolve), retried against
 /// the canonical slug when the input was an alias; family and tier come from
 /// substring heuristics that also cover unregistered slugs. Matching is
 /// case-insensitive.
@@ -612,6 +690,14 @@ pub fn model_meta(slug: &str) -> ModelMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cheapest_builtin_anthropic_model_is_haiku() {
+        let model = cheapest_builtin_model(ProviderKind::AnthropicApi).expect("anthropic");
+        assert_eq!(model.slug, "claude-haiku-4-5");
+        // No built-in model is served by a CLI provider.
+        assert!(cheapest_builtin_model(ProviderKind::ClaudeCli).is_none());
+    }
 
     #[test]
     fn exact_slug_lookup() {
@@ -716,6 +802,58 @@ mod tests {
         // No partial-word matches; unknown slugs yield None.
         assert!(builtin_pricing("glmx").is_none());
         assert!(builtin_pricing("my-fine-tuned-model").is_none());
+    }
+
+    /// bug-1f81ab: a dated, versioned, `-latest` or `-preview` snapshot of a
+    /// model takes its rates.
+    #[test]
+    fn builtin_pricing_prefix_takes_a_snapshot_suffix() {
+        for (snapshot, model) in [
+            ("claude-sonnet-4-6-20250514", "claude-sonnet-4-6"),
+            ("gpt-4o-2024-08-06", "gpt-4o"),
+            ("gemini-2.5-flash-001", "gemini-2.5-flash"),
+            ("gemini-2.5-pro-preview-06-05", "gemini-2.5-pro"),
+            ("codex-mini-latest", "codex-mini"),
+            ("gpt-5.6-sol-2026", "gpt-5.6-sol"),
+        ] {
+            assert!(builtin_pricing(snapshot).is_some(), "{snapshot}");
+            assert_eq!(
+                builtin_pricing(snapshot),
+                builtin_pricing(model),
+                "{snapshot}"
+            );
+        }
+    }
+
+    /// bug-1f81ab: a suffix that names another model does not take the
+    /// shorter slug's rates. A sibling with its own row gets that row, and
+    /// one without stays unpriced.
+    #[test]
+    fn builtin_pricing_prefix_refuses_another_models_suffix() {
+        let input = |slug: &str| builtin_pricing(slug).map(|pricing| pricing.input_per_m);
+        assert_eq!(input("o3-mini"), Some(1.10));
+        assert_eq!(input("gpt-4o-mini"), Some(0.15));
+        assert_eq!(input("gemini-2.5-flash-lite"), Some(0.10));
+        assert_eq!(input("sonar-reasoning-pro"), Some(2.00));
+        for other in [
+            "o3-pro",
+            "gpt-5.4-nano",
+            "gemini-2.5-flash-image",
+            "sonar-reasoning",
+            "sonar-deep-research",
+            "glm-5.2",
+        ] {
+            assert_eq!(builtin_pricing(other), None, "{other}");
+        }
+    }
+
+    /// bug-c0602b: Sonar Deep Research bills charges a price row cannot
+    /// express, so it stays unpriced: its cost is unknown, not Sonar's $1/$1.
+    #[test]
+    fn sonar_deep_research_price() {
+        assert_eq!(builtin_pricing("sonar-deep-research"), None);
+        assert_eq!(model_meta("sonar-deep-research").pricing, None);
+        assert!(builtin_pricing("sonar").is_some());
     }
 
     #[test]

@@ -184,7 +184,8 @@ fn perplexity_tool_loop_agent(
     let tool_loop = ToolLoop::new(translator, dispatcher, backend.clone())
         .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
-        .with_model_profile(model.clone());
+        .with_model_profile(model.clone())
+        .with_optional_data_llm(options.data_llm.clone());
 
     let name = agent_name(options, &format!("perplexity-tool-loop:{}", model.slug));
     let mut agent = PerplexityToolLoopAgent::new(tool_loop, backend, model.slug.clone())

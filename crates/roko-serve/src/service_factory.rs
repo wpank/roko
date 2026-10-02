@@ -272,8 +272,8 @@ impl ServiceFactory {
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
             // Nothing else costs serve's model calls, so their feedback
             // records each call's cost (bug-c1f6b8).
-            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir)
-                .with_cost_records();
+            let feedback_service =
+                FeedbackService::from_roko_dir_with_episodes(&config.roko_dir).with_cost_records();
             match &cascade_router {
                 Some(router) => Arc::new(
                     feedback_service
@@ -466,8 +466,8 @@ impl ServiceFactory {
 
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
             // As in `build`, the feedback records each call's cost.
-            let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir)
-                .with_cost_records();
+            let feedback_service =
+                FeedbackService::from_roko_dir_with_episodes(&config.roko_dir).with_cost_records();
             match &cascade_router {
                 Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
                 None => Arc::new(feedback_service),

@@ -1689,6 +1689,17 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
         });
     }
 
+    // So may the data LLM (gap-b0d514).
+    if let Some(data_llm) = &config.agent.data_llm
+        && !explicit_model_keys.contains(data_llm.model.trim())
+        && super::model_registry::builtin_model(data_llm.model.trim()).is_none()
+    {
+        warnings.push(ValidationWarning::UnknownModel {
+            field: "agent.data_llm.model".to_string(),
+            model: data_llm.model.trim().to_string(),
+        });
+    }
+
     // Routing tier model slugs.
     for (field, slug) in [
         (
@@ -2584,7 +2595,11 @@ pub struct CoreRunnerConfig {
     #[serde(default)]
     pub delete_attempt_branches: bool,
     /// Whether `roko plan run` runs each task in its own git worktree, as
-    /// `--worktree-per-task` asks. `--worktree-per-task` and
+    /// `--worktree-per-task` asks. Defaults to `true`: finished plans are
+    /// delivered into the run's batch branch, `roko/batch/<run-id>`, and the
+    /// operator's checkout is never changed. A workdir that is not the top
+    /// level of a git checkout with a commit runs its tasks in the shared
+    /// working tree instead. `--worktree-per-task` and
     /// `--no-worktree-per-task` override it per run; a server's runs follow
     /// the server's value (gap-4ec59f).
     #[serde(default = "CoreRunnerConfig::default_worktree_per_task")]
@@ -2624,9 +2639,9 @@ impl CoreRunnerConfig {
         100
     }
 
-    /// Default task isolation: tasks share the working tree.
+    /// Default task isolation: each task in its own git worktree.
     pub const fn default_worktree_per_task() -> bool {
-        false
+        true
     }
 }
 
@@ -3228,6 +3243,38 @@ max_output = 16384
                 w,
                 ValidationWarning::UnknownModel { field, .. }
                     if field == "authoring.planner_model"
+            )),
+            "builtin slug should not produce a warning, got: {warnings:?}"
+        );
+    }
+
+    /// gap-b0d514: `[agent.data_llm]` must name a model roko can resolve:
+    /// a `[models.*]` entry or a builtin slug.
+    #[test]
+    fn validate_references_warns_on_unknown_data_llm_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig {
+            model: "nonexistent-data-model".to_string(),
+            ..Default::default()
+        });
+        let warnings = validate_references(&cfg);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "agent.data_llm.model" && model == "nonexistent-data-model"
+            )),
+            "expected warning for unknown data_llm model, got: {warnings:?}"
+        );
+
+        // The default, a builtin slug, needs no `[models.*]` entry.
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig::default());
+        let warnings = validate_references(&cfg);
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. } if field == "agent.data_llm.model"
             )),
             "builtin slug should not produce a warning, got: {warnings:?}"
         );

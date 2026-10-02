@@ -310,11 +310,10 @@ async fn budget_is_deducted_after_successful_request() {
 
     let _ = handle.infer(test_request("test-model", "spend")).await;
 
-    // Budget should have decreased (cost model applies some cost for 15 tokens).
-    // With an empty cost table the fallback pricing applies.
+    // An empty cost table prices no model, so the call's cost is unknown and
+    // nothing is deducted (bug-39d15f); a priced model's call is.
     let remaining = handle.remaining_budget();
-    // We just check that the handle budget was consumed at all or stays the same
-    // (depends on whether fallback pricing produces a nonzero cost for empty table).
+    // We just check that the handle budget never grows.
     assert!(
         remaining <= initial_budget,
         "budget should not increase: remaining={remaining}, initial={initial_budget}"

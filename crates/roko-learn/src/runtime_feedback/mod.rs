@@ -198,8 +198,12 @@ enum RecoveredUpdate<'a> {
     /// An observation.
     Observation(RecoveredObservation<'a>),
     /// A success that a hindsight relabel retracted from the model's
-    /// confidence stats (bug-583e50).
-    Retraction { model_slug: &'a str },
+    /// confidence stats (bug-583e50), and from `category`'s counts when the
+    /// entry names one (bug-a6a3cd).
+    Retraction {
+        model_slug: &'a str,
+        category: Option<TaskCategory>,
+    },
 }
 
 impl<'a> RecoveredUpdate<'a> {
@@ -207,7 +211,7 @@ impl<'a> RecoveredUpdate<'a> {
     fn model_slug(&self) -> &'a str {
         match self {
             Self::Observation(observation) => observation.model_slug,
-            Self::Retraction { model_slug } => *model_slug,
+            Self::Retraction { model_slug, .. } => model_slug,
         }
     }
 }
@@ -220,6 +224,8 @@ struct RecoveredObservation<'a> {
     success: bool,
     /// Share of a full observation its `LinUCB` update carried.
     weight: f64,
+    /// Task category whose per-category counts it moved too (bug-a6a3cd).
+    category: Option<TaskCategory>,
 }
 
 /// The cascade router update `entry` journals, unless a saved snapshot
@@ -230,8 +236,16 @@ fn recovered_update<'a>(
 ) -> Option<RecoveredUpdate<'a>> {
     // A retraction undoes a success replayed before it, or one that the
     // snapshot holds already.
-    if let WalEntry::SuccessRetraction { model_slug, .. } = entry {
-        return Some(RecoveredUpdate::Retraction { model_slug });
+    if let WalEntry::SuccessRetraction {
+        model_slug,
+        category,
+        ..
+    } = entry
+    {
+        return Some(RecoveredUpdate::Retraction {
+            model_slug,
+            category: *category,
+        });
     }
     recovered_observation(entry, folded).map(RecoveredUpdate::Observation)
 }
@@ -248,6 +262,7 @@ fn recovered_observation<'a>(
             context_features,
             reward,
             success,
+            category,
             ..
         } => Some(RecoveredObservation {
             model_slug,
@@ -255,6 +270,7 @@ fn recovered_observation<'a>(
             reward: *reward,
             success: *success,
             weight: 1.0,
+            category: *category,
         }),
         // A model-call surface or a Graph run journaled this observation,
         // but no saved snapshot contains it (find-0dc1d5, bug-dfb28f).
@@ -265,6 +281,7 @@ fn recovered_observation<'a>(
             reward,
             success,
             weight,
+            category,
             ..
         } if !folded.contains(id.as_str()) => Some(RecoveredObservation {
             model_slug,
@@ -272,6 +289,7 @@ fn recovered_observation<'a>(
             reward: *reward,
             success: *success,
             weight: *weight,
+            category: *category,
         }),
         _ => None,
     }
@@ -303,7 +321,17 @@ fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bo
     for update in &updates {
         let observation = match update {
             RecoveredUpdate::Observation(observation) => observation,
-            RecoveredUpdate::Retraction { model_slug } => {
+            RecoveredUpdate::Retraction {
+                model_slug,
+                category: Some(category),
+            } => {
+                router.retract_success(model_slug, *category);
+                continue;
+            }
+            RecoveredUpdate::Retraction {
+                model_slug,
+                category: None,
+            } => {
                 router.replay_retraction(model_slug);
                 continue;
             }
@@ -319,6 +347,9 @@ fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bo
             observation.success,
             observation.weight,
         );
+        if let Some(category) = observation.category {
+            router.record_category_outcome(observation.model_slug, category, observation.success);
+        }
     }
     match router.save(snapshot_path) {
         Ok(()) => true,
@@ -1256,10 +1287,14 @@ impl LearningRuntime {
             model_idx,
             reward: 0.0,
             success: false,
+            category: Some(routing_context.task_category),
             ts_ms: Utc::now().timestamp_millis(),
         });
         if let Err(err) = self.save_cascade_router() {
-            eprintln!("[learn] cascade router save failed after conductor intervention: {err}");
+            tracing::warn!(
+                error = %err,
+                "[learn] cascade router save failed after conductor intervention"
+            );
         }
         true
     }
@@ -1507,7 +1542,7 @@ impl LearningRuntime {
 
         if update.router_updated {
             if let Err(e) = self.save_cascade_router() {
-                eprintln!("[learn] cascade router save failed: {e}");
+                tracing::warn!(error = %e, "[learn] cascade router save failed");
             }
         }
 
@@ -1570,15 +1605,22 @@ impl LearningRuntime {
                         &self.paths.experiment_winners_json,
                         &committed,
                     ) {
-                        eprintln!("[learn] experiment winner artifact save failed: {e}");
+                        tracing::warn!(
+                            error = %e,
+                            "[learn] experiment winner artifact save failed"
+                        );
                     }
                     if static_table_updated && let Err(e) = self.save_cascade_router() {
-                        eprintln!(
-                            "[learn] cascade router save failed after experiment conclusion: {e}"
+                        tracing::warn!(
+                            error = %e,
+                            "[learn] cascade router save failed after experiment conclusion"
                         );
                     }
                 }
-                Err(e) => eprintln!("[learn] experiment store transaction failed: {e}"),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "[learn] experiment store transaction failed"
+                ),
             }
         }
 
@@ -1738,6 +1780,7 @@ impl LearningRuntime {
             model_idx,
             reward,
             success: episode.success,
+            category: Some(ctx.task_category),
             ts_ms: Utc::now().timestamp_millis(),
         });
         true
@@ -1763,9 +1806,11 @@ impl LearningRuntime {
         if !self.cascade_router.update_static_table(role, winner_slug) {
             return false;
         }
-        eprintln!(
-            "[learn] experiment concluded -- updated static routing table: experiment={} winner={} role={}",
-            experiment.experiment_id, winner_slug, role_raw
+        tracing::info!(
+            experiment = %experiment.experiment_id,
+            winner = winner_slug,
+            role = %role_raw,
+            "[learn] experiment concluded -- updated static routing table"
         );
         true
     }

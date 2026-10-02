@@ -735,17 +735,21 @@ record the selected config key and cascade stage.
         "text": "Add error handling to the login function"
       },
       {
-        "type": "resource",
-        "resource": {
-          "type": "file",
-          "uri": "file:///path/to/project/src/auth/login.rs"
-        }
+        "type": "resource_link",
+        "uri": "file:///path/to/project/src/auth/login.rs",
+        "name": "login.rs"
       }
     ],
     "includeContext": false
   }
 }
 ```
+
+Roko reads a `resource_link` to a `file://` path inside the workspace and adds the
+file to the model's context (capped at 32 KB). An embedded `resource` block,
+`{"type": "resource", "resource": {"uri": ..., "text": ..., "mimeType": ...}}`, is
+used as sent; a `blob` resource is accepted but not added. Roko's older form,
+`{"type": "resource", "resource": {"type": "file", "uri": ...}}`, still works.
 
 **Response (arrives after all notifications):**
 
@@ -775,12 +779,16 @@ pub struct SessionPromptParams {
 pub enum ContentBlock {
     Text { text: String },
     Resource { resource: ResourceRef },
+    ResourceLink { uri: String, name: String, mime_type: Option<String> },
+    Image { data: String, mime_type: String },
     Diff { path: String, diff: String },
 }
 
-// Tag: "type" (snake_case)
+// Spec forms {uri, text} and {uri, blob}; roko's {"type": "file", uri}.
 pub enum ResourceRef {
     File { uri: String },
+    Text { uri: String, text: String, mime_type: Option<String> },
+    Blob { uri: String, blob: String, mime_type: Option<String> },
 }
 
 pub struct SessionPromptResult {
@@ -1386,7 +1394,7 @@ IDs for compatibility, but they are not currently advertised as editor options.
 pub struct ConfigOption {
     pub id: String,
     pub name: String,
-    pub option_type: ConfigOptionType,   // select | toggle
+    pub option_type: ConfigOptionType,   // select | boolean (spec names; roko sends selects)
     pub category: String,
     pub current_value: serde_json::Value,
     pub description: Option<String>,
@@ -1923,7 +1931,7 @@ slug = "claude-sonnet-4-6"
 
 [models.haiku]
 provider = "anthropic"
-slug = "claude-haiku-3-5"
+slug = "claude-haiku-4-5"
 ```
 
 Model keys in `[models.*]` become the selectable values for the `model` config

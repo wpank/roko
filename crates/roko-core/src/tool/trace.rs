@@ -227,7 +227,8 @@ pub const fn classify_tool_error(error: &ToolError) -> FailureKind {
         ToolError::PermissionDenied(_)
         | ToolError::CommandNotAllowed(_)
         | ToolError::NetworkBlocked(_)
-        | ToolError::KeyFileBlocked(_) => FailureKind::PermissionDenied,
+        | ToolError::KeyFileBlocked(_)
+        | ToolError::UntrustedContentWithheld(_) => FailureKind::PermissionDenied,
         ToolError::Timeout { .. } => FailureKind::Timeout,
         ToolError::Cancelled => FailureKind::Cancelled,
         ToolError::PathOutsideWorktree(_) => FailureKind::PathEscape,
@@ -1237,6 +1238,7 @@ mod tests {
             ToolError::CommandNotAllowed("d".into()),
             ToolError::NetworkBlocked("e".into()),
             ToolError::Cancelled,
+            ToolError::UntrustedContentWithheld("g".into()),
             ToolError::Other("f".into()),
         ];
         for err in &all_errors {

@@ -52,9 +52,9 @@ pub fn plan_to_graph(
      one after the other even when both are ready. The task that waits holds
      no `max_concurrent_nodes` slot, and the engine logs which running task
      it waits for. A task with no `files` never waits. The paths are left
-     out of the plan fingerprint, so checkpoints still resume. Under
-     `--worktree-per-task` each task writes its own checkout, so the run
-     clears every node's `exclusive` paths.
+     out of the plan fingerprint, so checkpoints still resume. With
+     per-task worktrees (the default) each task writes its own checkout, so
+     the run clears every node's `exclusive` paths.
 
 3. **Add edges.** For each task's `depends_on` list, a directed `Edge` is
    created from the dependency to the dependent. Unknown dependency IDs
@@ -149,7 +149,8 @@ the subgraph holds any paths. Each node holds the paths only while it runs,
 so an overlapping task can still run between a task's executor and its gate.
 That cannot change what the gate checks. The gate judges the attempt's own
 isolated checkout, never the shared working tree, and fails closed when the
-attempt ran in the shared tree (run the plan with `--worktree-per-task`).
+attempt ran in the shared tree (per-task worktrees are the default;
+`--no-worktree-per-task` turns them off).
 
 ### Why the Workflow/Activity distinction matters
 

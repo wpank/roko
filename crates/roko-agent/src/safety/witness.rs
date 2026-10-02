@@ -17,6 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use roko_core::ContentHash;
+use roko_core::config::fingerprint::canonical_json;
 use serde::{Deserialize, Serialize};
 
 /// The five vertex types in the reasoning chain.
@@ -37,11 +38,14 @@ pub enum VertexKind {
 
 /// A single vertex in the witness DAG.
 ///
-/// Each vertex is identified by the BLAKE3 hash of its canonical JSON content.
-/// Parent edges link to prior vertices that contributed to this one.
+/// Each vertex is identified by the BLAKE3 hash of its canonical JSON content
+/// (RFC 8785: sorted keys, no whitespace), so the id does not depend on the
+/// map order of a `serde_json::Value`, which the `preserve_order` feature
+/// changes from build to build. Parent edges link to prior vertices that
+/// contributed to this one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WitnessVertex {
-    /// Content-addressed identifier (BLAKE3 of `content`).
+    /// Content-addressed identifier (BLAKE3 of `content`'s canonical JSON).
     pub id: ContentHash,
     /// Vertex type in the reasoning chain.
     pub kind: VertexKind,
@@ -67,10 +71,8 @@ impl WitnessVertex {
         parents: Vec<ContentHash>,
         content: serde_json::Value,
     ) -> Self {
-        let canonical = serde_json::to_vec(&content).unwrap_or_default();
-        let id = ContentHash::of(&canonical);
         Self {
-            id,
+            id: content_id(&content),
             kind,
             agent_id: agent_id.into(),
             timestamp_ms,
@@ -90,10 +92,13 @@ impl WitnessVertex {
     /// Verify that this vertex's ID matches its content.
     #[must_use]
     pub fn verify_id(&self) -> bool {
-        let canonical = serde_json::to_vec(&self.content).unwrap_or_default();
-        let expected = ContentHash::of(&canonical);
-        self.id == expected
+        self.id == content_id(&self.content)
     }
+}
+
+/// The id of a vertex with `content`: the BLAKE3 hash of its canonical JSON.
+fn content_id(content: &serde_json::Value) -> ContentHash {
+    ContentHash::of(canonical_json(content).as_bytes())
 }
 
 /// An integrity violation found during DAG verification.
@@ -301,6 +306,27 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
+    }
+
+    /// bug-a1fc98: the id hashes canonical JSON, so the order in which the
+    /// content's keys were inserted, which the `preserve_order` feature
+    /// keeps, does not change it.
+    #[test]
+    fn witness_vertex_id_is_canonical() {
+        let mut inner = serde_json::Map::new();
+        inner.insert("d".into(), 4.into());
+        inner.insert("c".into(), 3.into());
+        let mut outer = serde_json::Map::new();
+        outer.insert("b".into(), serde_json::Value::Object(inner));
+        outer.insert("a".into(), 2.into());
+        let content = serde_json::Value::Object(outer);
+        let vertex = WitnessVertex::new(VertexKind::Observation, "agent-1", 0, vec![], content);
+
+        let sorted = serde_json::json!({"a": 2, "b": {"c": 3, "d": 4}});
+        let same = WitnessVertex::new(VertexKind::Observation, "agent-1", 0, vec![], sorted);
+        assert_eq!(vertex.id, same.id);
+        assert_eq!(vertex.id, ContentHash::of(br#"{"a":2,"b":{"c":3,"d":4}}"#));
+        assert!(vertex.verify_id());
     }
 
     #[test]

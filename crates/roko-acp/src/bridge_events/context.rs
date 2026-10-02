@@ -17,6 +17,7 @@ pub(crate) fn extract_prompt_text(prompt: &[ContentBlock]) -> String {
         .map(|block| match block {
             ContentBlock::Text { text } => text.clone(),
             ContentBlock::Resource { .. } => String::new(),
+            ContentBlock::ResourceLink { uri, name, .. } => format!("[{name}]({uri})"),
             ContentBlock::Image { mime_type, .. } => format!("[image: {mime_type}]"),
             ContentBlock::Diff { path, diff, .. } => {
                 format!("diff {path}:\n{}", diff.as_deref().unwrap_or(""))
@@ -44,6 +45,9 @@ pub(crate) fn model_input_blocks_from_prompt(prompt: &[ContentBlock]) -> Vec<Mod
                 "diff {path}:\n{}",
                 diff.as_deref().unwrap_or("")
             ))),
+            ContentBlock::ResourceLink { uri, name, .. } => {
+                Some(ModelInputBlock::text(format!("[{name}]({uri})")))
+            }
             ContentBlock::Text { .. } | ContentBlock::Resource { .. } | ContentBlock::Unknown => {
                 None
             }
@@ -236,7 +240,8 @@ pub(crate) fn model_input_messages_from_wire(
     Ok(structured)
 }
 
-/// Extracts `file://` URIs from Resource blocks in the prompt.
+/// Extracts the URIs of workspace files the prompt names: roko's file
+/// resources and `file://` resource links.
 pub(crate) fn extract_resource_uris(prompt: &[ContentBlock]) -> Vec<String> {
     use crate::types::ResourceRef;
     prompt
@@ -245,9 +250,35 @@ pub(crate) fn extract_resource_uris(prompt: &[ContentBlock]) -> Vec<String> {
             ContentBlock::Resource {
                 resource: ResourceRef::File { uri },
             } => Some(uri.clone()),
+            ContentBlock::ResourceLink { uri, .. } if uri.starts_with("file://") => {
+                Some(uri.clone())
+            }
             _ => None,
         })
         .collect()
+}
+
+/// Renders the text resources a client embedded in the prompt as XML-tagged
+/// file context, each capped like a file read from disk.
+pub(crate) fn embedded_resource_context(prompt: &[ContentBlock]) -> String {
+    use crate::types::ResourceRef;
+    let mut context = String::new();
+    for block in prompt {
+        if let ContentBlock::Resource {
+            resource: ResourceRef::Text { uri, text, .. },
+        } = block
+        {
+            context.push_str(&embedded_file_block(uri, text));
+            context.push('\n');
+        }
+    }
+    context
+}
+
+fn embedded_file_block(uri: &str, text: &str) -> String {
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    let truncated = truncate_with_limit(text, 32_768, "... [truncated at 32KB]");
+    format!("<file path=\"{path}\">\n{truncated}\n</file>")
 }
 
 /// Reads file contents for the given URIs, returning XML-tagged file context.
@@ -314,6 +345,21 @@ pub(crate) async fn resolve_context_items(prompt: &[ContentBlock], workdir: &Pat
                     warn!(uri = %uri, error = %error, "failed to resolve file resource URI");
                 }
             },
+            ContentBlock::Resource {
+                resource: ResourceRef::Text { uri, text, .. },
+            } => parts.push(embedded_file_block(uri, text)),
+            ContentBlock::Resource {
+                resource: ResourceRef::Blob { uri, .. },
+            } => tracing::debug!(uri = %uri, "skipping binary resource in context resolution"),
+            ContentBlock::ResourceLink { uri, .. } if uri.starts_with("file://") => {
+                match resolve_file_uri(uri, workdir).await {
+                    Ok(content) => parts.push(content),
+                    Err(error) => {
+                        warn!(uri = %uri, error = %error, "failed to resolve linked file");
+                    }
+                }
+            }
+            ContentBlock::ResourceLink { .. } => {}
             ContentBlock::Text { text } => {
                 for label in extract_at_mentions(text) {
                     match resolve_at_mention(&label, workdir).await {

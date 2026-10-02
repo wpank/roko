@@ -103,7 +103,7 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] spec-f830c4: #404 — Batch Branch Integration (existing item)
 - [x] gap-60233f: [meta] verify: a whole-plan gate that runs on the integrated result
 - [x] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)
-- [ ] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
+- [x] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
 - [x] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
 - [x] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
 - [x] bug-aaa924: The delivery regression check builds the workspace from a cold target dir on every delivery

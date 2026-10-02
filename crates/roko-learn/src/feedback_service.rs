@@ -765,9 +765,14 @@ impl FeedbackSink for FeedbackService {
                 role,
                 latency_ms,
                 success,
+                cache_hit,
                 ..
             } => {
-                self.observe_model_call(model, *success, role, *latency_ms);
+                // A cache hit called no model, so it is no router trial
+                // (bug-982600).
+                if !*cache_hit {
+                    self.observe_model_call(model, *success, role, *latency_ms);
+                }
                 if *success {
                     if let Some(record) = self.remember_model_call_provenance(
                         run_id.as_ref(),
@@ -1032,7 +1037,10 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 1, "{costs}");
         let row = &rows[0];
-        assert_eq!((row.model.as_str(), row.provider.as_str()), ("sonnet", "anthropic"));
+        assert_eq!(
+            (row.model.as_str(), row.provider.as_str()),
+            ("sonnet", "anthropic")
+        );
         assert_eq!((row.input_tokens, row.output_tokens), (1_000, 100));
         assert!((row.cost_usd - 0.02).abs() < 1e-12);
         assert_eq!(row.task_id, "serve-run:1000:false");
@@ -1319,6 +1327,43 @@ mod tests {
 
         assert_eq!(router.total_observations(), 1);
         assert_eq!(router.confidence_snapshot()["sonnet"], (1, 0));
+    }
+
+    /// bug-982600: a cache hit answers from the cache without calling a
+    /// model, so the router counts only the call that reached one.
+    #[tokio::test]
+    async fn cache_hits_are_not_router_trials() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = Arc::new(CascadeRouter::new(vec!["sonnet".into(), "opus".into()]));
+        let svc =
+            FeedbackService::new(dir.path().to_path_buf()).with_cascade_router(Arc::clone(&router));
+        let call = |cache_hit: bool| FeedbackEvent::ModelCall {
+            run_id: Some("r1".into()),
+            request_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "implementer".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.01,
+            latency_ms: 2000,
+            success: true,
+            error_class: None,
+            model_reported: None,
+            attempt_key: None,
+            cache_hit,
+        };
+
+        svc.record(call(false)).await.unwrap();
+        svc.record(call(true)).await.unwrap();
+        svc.record(call(true)).await.unwrap();
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["sonnet"], (1, 1));
     }
 
     #[tokio::test]

@@ -529,8 +529,26 @@ Available override fields: `model`, `backend`, `effort`, `temperament`, `context
 |---|---|---|---|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live Runner/ACP enforcement level: `none`, `observe`, `restrict`, `isolate`, or `quarantine`; unknown values fail config parsing |
 
-`[agent.data_llm]` was removed (gap-7a3527): no dispatch path routed untrusted content to a separate data
-LLM, so the section isolated nothing. Loading drops it with a warning.
+#### `[agent.data_llm]` -- DataLlmConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
+| `max_tokens` | u64 | 4096 | Output token limit |
+| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. With it set, the tool loops roko runs itself send
+the output of MCP, plugin, web-search, retrieval and network tools through the data LLM: those of
+every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemini, Perplexity,
+Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
+were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
+must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
+turn fails, rather than run without the boundary.
 
 ### 8.5 `[[agents]]` -- agent definitions
 

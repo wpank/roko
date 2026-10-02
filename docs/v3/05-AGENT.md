@@ -264,7 +264,7 @@ graph LR
 | **Config key** | `kind = "anthropic_api"` |
 | **Protocol** | Anthropic Messages API over HTTP |
 | **Capabilities** | Tool calling, extended thinking, prompt caching (cache_read/cache_write tokens), vision, streaming |
-| **Models** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-3-5, etc. |
+| **Models** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5, etc. |
 | **Tool format** | `anthropic_blocks` (content blocks with `tool_use`/`tool_result` types) |
 | **Config** | `base_url`, `api_key_env` (ANTHROPIC_API_KEY), `timeout_ms`, `max_concurrent` |
 | **Limitations** | No built-in web search; vision requires `supports_vision = true` in profile |

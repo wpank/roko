@@ -265,8 +265,9 @@ pub static TOPICS: &[TopicEntry] = &[
                     `crates/roko-graph/src/cells/`. `TaskCell`, `PlanGateCell`, \
                     `PlanComposeCell`, `TaskContextCell`, and stub variants are the \
                     canonical set. The `GraphTopology` struct owns the compiled DAG. \
-                    Cell execution is driven by `WorkflowGraphController` in \
-                    `crates/roko-cli/src/graph_execution/`. Cell outputs are typed \
+                    The Graph engine (`crates/roko-graph/src/engine.rs`) drives cell \
+                    execution; `run_graph_plan` in `crates/roko-cli/src/graph_execution/` \
+                    runs plans on it. Cell outputs are typed \
                     `CellOutput` variants that gate downstream scheduling.",
     },
     TopicEntry {

@@ -6,9 +6,9 @@
 //!   task's `ThresholdProfile`.
 //! - P1-08: a test rung's EMA tightens by how far the CodingOracle's forecast
 //!   missed ([`GateThresholds::observe_verify_steps`]).
-//! - P1-11: `.roko/learn/gate-ratchet.json` keeps the highest rung each task
-//!   has passed. A later failure below it is a regression, which is logged
-//!   and shown on the dashboard.
+//! - P1-11: a regression is a verify step that passed on an earlier attempt
+//!   and fails now, told apart per step rather than per rung
+//!   ([`super::step_ratchet`], gap-6dba88).
 //! - P1-12: the temperament skip advisory is logged and never acted on.
 //!   Skipping an authored verify step would let an unverified change pass,
 //!   so every step runs.
@@ -19,7 +19,6 @@
 use std::sync::{Mutex, PoisonError};
 
 use roko_core::{TaskDomain, Temperament};
-use roko_gate::GateRatchet;
 use roko_gate::adaptive_threshold::ThresholdProfile;
 
 use super::*;
@@ -28,11 +27,6 @@ use super::*;
 /// each load, update and save them, and without it one task's save could drop
 /// another's update.
 static GATE_LEARNING_FILES: Mutex<()> = Mutex::new(());
-
-/// The ratchet file, beside `gate-thresholds.json`.
-pub(super) fn gate_ratchet_path(thresholds_path: &Path) -> PathBuf {
-    thresholds_path.with_file_name("gate-ratchet.json")
-}
 
 /// The `ThresholdProfile` whose priors a task's unobserved rungs start from
 /// (P1-10): `research` for a research domain or role, `security` for a
@@ -108,49 +102,28 @@ const GATE_DURATION_SECONDS: &str = "roko_gate_duration_seconds";
 pub(super) struct GateLearning {
     /// `(rung, residual)` of each oracle residual observed (P1-08).
     pub(super) residuals: Vec<(u32, f64)>,
-    /// `(rung, highest rung passed)` of each failed step below a rung the
-    /// task had already passed (P1-11).
-    pub(super) regressions: Vec<(u32, u8)>,
     /// `(rung, passed)` of each step the temperament advisory would have
     /// skipped (P1-12). Every one of them ran.
     pub(super) would_skip: Vec<(u32, bool)>,
 }
 
 /// What one verify run of a Graph task, `(phase, passed)` per step that ran,
-/// tells at once, from the state before it: a failed rung below one
-/// `ratchet` already holds for `task_key` is a regression (P1-11), and a
-/// step `thresholds` would let `temperament` skip is advice (P1-12). Each
-/// passed rung is then recorded in `ratchet`. The thresholds take the run
-/// later ([`VerifyRun::apply`]).
-fn advise_and_ratchet(
+/// gets at once from `thresholds` as they were before it: the steps they
+/// would let `temperament` skip (P1-12). The thresholds take the run later
+/// ([`VerifyRun::apply`]). Regressions are the step history's
+/// ([`super::step_ratchet`]).
+fn skip_advice(
     thresholds: &GateThresholds,
-    ratchet: &mut GateRatchet,
-    task_key: &str,
     temperament: Temperament,
     step_outcomes: &[(String, bool)],
 ) -> GateLearning {
-    let rungs: Vec<(u32, bool)> = step_outcomes
-        .iter()
-        .filter_map(|(phase, passed)| {
-            rung_for_gate_name(phase).map(|rung| (rung.as_index(), *passed))
-        })
-        .collect();
     let mut learning = GateLearning::default();
-    for &(rung, passed) in &rungs {
-        if thresholds.should_skip_rung_for_temperament(rung, temperament) {
-            learning.would_skip.push((rung, passed));
-        }
-        let Ok(ratchet_rung) = u8::try_from(rung) else {
+    for (phase, passed) in step_outcomes {
+        let Some(rung) = rung_for_gate_name(phase).map(|rung| rung.as_index()) else {
             continue;
         };
-        if !passed && !ratchet.can_regress(task_key, ratchet_rung) {
-            let highest = ratchet.highest_pass(task_key).unwrap_or(ratchet_rung);
-            learning.regressions.push((rung, highest));
-        }
-    }
-    for (rung, passed) in rungs {
-        if passed && let Ok(rung) = u8::try_from(rung) {
-            ratchet.record_pass(task_key, rung);
+        if thresholds.should_skip_rung_for_temperament(rung, temperament) {
+            learning.would_skip.push((rung, *passed));
         }
     }
     learning
@@ -268,15 +241,14 @@ fn write_held_runs(pending: PendingRuns) {
 
 impl GraphTaskDispatcher {
     /// Settle what an attempt's verify run teaches the persisted gate
-    /// learning. The ratchet beside `gate-thresholds.json` takes the run at
-    /// once, with its regressions and skip advice ([`advise_and_ratchet`]).
-    /// The thresholds take it with the runs before it once they add up to
+    /// learning. Its skip advice is read at once ([`skip_advice`]). The
+    /// thresholds take the run with the runs before it once they add up to
     /// the flush interval ([`GateThresholdWrites`]), and the dashboard then
-    /// hears of them. Both files are updated in one read-modify-write under
-    /// the thresholds' file lock ([`GateThresholds::update_locked`]), so
-    /// tasks and processes that update them at once lose nothing
-    /// (bug-e0f472). A file that fails to load or save is logged and left to
-    /// the next task's update.
+    /// hears of them. The file is read and written in one read-modify-write
+    /// under its lock ([`GateThresholds::update_locked`]), so tasks and
+    /// processes that update it at once lose nothing (bug-e0f472). A file
+    /// that fails to load or save is logged and left to the next task's
+    /// update.
     pub(super) fn settle_gate_learning(
         &self,
         spec: &TaskExecutionSpec,
@@ -287,10 +259,6 @@ impl GraphTaskDispatcher {
         let Some(thresholds_path) = &self.feedback.gate_thresholds_path else {
             return;
         };
-        let ratchet_path = gate_ratchet_path(thresholds_path);
-        // Graph retries tasks, not plans, so the ratchet holds each task's
-        // highest rung.
-        let task_key = format!("{}/{}", spec.plan_id, task.id);
         let profile = threshold_profile(task);
         let temperament = self
             .config
@@ -307,34 +275,16 @@ impl GraphTaskDispatcher {
         let files = GATE_LEARNING_FILES
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        // The ratchet is only written here, under the thresholds' lock.
         let updated = GateThresholds::update_locked(thresholds_path, |thresholds| {
-            let mut ratchet = GateRatchet::load_or_new(&ratchet_path);
-            let mut learning = advise_and_ratchet(
-                thresholds,
-                &mut ratchet,
-                &task_key,
-                temperament,
-                step_outcomes,
-            );
+            let mut learning = skip_advice(thresholds, temperament, step_outcomes);
             for run in due.iter().flatten() {
                 learning.residuals.extend(run.apply(thresholds));
             }
-            (learning, ratchet.save(&ratchet_path))
+            learning
         });
         drop(files);
         let (thresholds, learning) = match updated {
-            Ok((thresholds, (learning, ratchet_saved))) => {
-                if let Err(err) = ratchet_saved {
-                    tracing::warn!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        error = %err,
-                        "P1-11: gate ratchet save failed (non-fatal)"
-                    );
-                }
-                (thresholds, learning)
-            }
+            Ok(updated) => updated,
             Err(err) => {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
@@ -354,19 +304,6 @@ impl GraphTaskDispatcher {
                 forecast = ?test_pass_forecast,
                 "P1-08: oracle residual fed to adaptive gate thresholds"
             );
-        }
-        for &(rung, highest_passed) in &learning.regressions {
-            tracing::warn!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                rung,
-                highest_passed,
-                "P1-11: gate ratchet regression: the task failed rung {rung} after it had \
-                 passed rung {highest_passed}"
-            );
-            if let Some(tui) = &self.tui_bridge {
-                tui.gate_regression(&spec.plan_id, &task.id, rung, highest_passed);
-            }
         }
         if !learning.would_skip.is_empty() {
             let failed = learning
@@ -419,18 +356,15 @@ mod tests {
     }
 
     /// One verify run through the gate learning at once, as a flush interval
-    /// of one writes it: the advice and the ratchet, then the thresholds.
+    /// of one writes it: the advice, then the thresholds.
     fn update_graph_gate_thresholds(
         thresholds: &mut GateThresholds,
-        ratchet: &mut GateRatchet,
-        task_key: &str,
         profile: &ThresholdProfile,
         temperament: Temperament,
         step_outcomes: &[(String, bool)],
         test_pass_forecast: Option<(f64, f64)>,
     ) -> GateLearning {
-        let mut learning =
-            advise_and_ratchet(thresholds, ratchet, task_key, temperament, step_outcomes);
+        let mut learning = skip_advice(thresholds, temperament, step_outcomes);
         let run = VerifyRun {
             profile: profile.clone(),
             step_outcomes: step_outcomes.to_vec(),
@@ -482,32 +416,26 @@ mod tests {
         );
     }
 
-    /// Two attempts of one task through the files a Graph verify run writes:
+    /// Two attempts of one task through the file a Graph verify run writes:
     /// the first passes compile and clippy and fails its tests, the second
-    /// fails compile. The thresholds get the profile's priors and the
-    /// residual, the ratchet the highest rung passed, and the second attempt
-    /// is a regression.
+    /// fails compile. The thresholds get the profile's priors, each step's
+    /// observation and the residual.
     #[test]
     fn graph_verify_feeds_gate_thresholds() {
         let dir = tempdir().expect("tempdir");
         let thresholds_path = dir.path().join("gate-thresholds.json");
-        let ratchet_path = gate_ratchet_path(&thresholds_path);
         let profile = ThresholdProfile::research();
         let attempt = |outcomes: &[(&str, bool)], forecast| {
             let mut thresholds =
                 GateThresholds::load_or_default(&thresholds_path).expect("load thresholds");
-            let mut ratchet = GateRatchet::load_or_new(&ratchet_path);
             let learning = update_graph_gate_thresholds(
                 &mut thresholds,
-                &mut ratchet,
-                "plan/T1",
                 &profile,
                 Temperament::Balanced,
                 &steps(outcomes),
                 forecast,
             );
             thresholds.save(&thresholds_path).expect("save thresholds");
-            ratchet.save(&ratchet_path).expect("save ratchet");
             (thresholds, learning)
         };
 
@@ -515,7 +443,6 @@ mod tests {
             &[("compile", true), ("clippy", true), ("test", false)],
             Some((0.8, 0.5)),
         );
-        assert!(first.regressions.is_empty(), "{first:?}");
         assert!(first.would_skip.is_empty(), "{first:?}");
         // The forecast said 0.8 and the tests failed.
         assert_eq!(first.residuals.len(), 1, "{first:?}");
@@ -527,31 +454,11 @@ mod tests {
         assert!((symbol.ema_pass_rate - 0.40).abs() < 1e-9, "{symbol:?}");
         assert_eq!(thresholds.rungs[&0].total_count, 1);
         assert_eq!(thresholds.rungs[&2].pass_count, 0);
-        // The ratchet file holds clippy, the highest rung passed.
-        assert_eq!(
-            GateRatchet::load(&ratchet_path)
-                .expect("ratchet file")
-                .highest_pass("plan/T1"),
-            Some(1)
-        );
 
-        let (_, second) = attempt(&[("compile", false)], None);
-        assert_eq!(second.regressions, vec![(0, 1)]);
+        let (thresholds, second) = attempt(&[("compile", false)], None);
         assert!(second.residuals.is_empty(), "{second:?}");
-
-        // Another task of the plan has no history to regress from.
-        let mut thresholds = GateThresholds::load_or_default(&thresholds_path).expect("load");
-        let mut ratchet = GateRatchet::load_or_new(&ratchet_path);
-        let other = update_graph_gate_thresholds(
-            &mut thresholds,
-            &mut ratchet,
-            "plan/T2",
-            &profile,
-            Temperament::Balanced,
-            &steps(&[("compile", false)]),
-            None,
-        );
-        assert!(other.regressions.is_empty(), "{other:?}");
+        assert_eq!(thresholds.rungs[&0].total_count, 2);
+        assert_eq!(thresholds.rungs[&0].pass_count, 1);
     }
 
     /// A residual tightens a test rung that only ever passed.
@@ -563,8 +470,6 @@ mod tests {
         }
         let learning = update_graph_gate_thresholds(
             &mut thresholds,
-            &mut GateRatchet::new(),
-            "plan/T1",
             &ThresholdProfile::coding(),
             Temperament::Balanced,
             &steps(&[("test", true)]),
@@ -587,8 +492,6 @@ mod tests {
         let advise = |temperament| {
             update_graph_gate_thresholds(
                 &mut thresholds.clone(),
-                &mut GateRatchet::new(),
-                "plan/T1",
                 &ThresholdProfile::coding(),
                 temperament,
                 &run,

@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::safety::authz::AuthorizationEvidence;
 
@@ -115,7 +116,7 @@ pub struct Custody {
     /// SHA-256 hash of the previous record in the chain (`None` for the first record).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_hash: Option<String>,
-    /// SHA-256 hash of this record's canonical payload (all fields except `prev_hash` and `hash`).
+    /// SHA-256 chain hash of this record: see [`Custody::compute_hash`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 }
@@ -186,47 +187,27 @@ impl Custody {
 
     // ── P4-14: Custody chain hash computation ──────────────────────────
 
-    /// Compute the SHA-256 hash of this record's canonical payload.
+    /// Compute this record's chain hash, the lowercase hex SHA-256 of
+    /// `prev_hash` (empty for the first record) followed by the canonical
+    /// payload: the record's JSON with `prev_hash` and `hash` left out.
     ///
-    /// The hash covers all fields except `prev_hash` and `hash` themselves,
-    /// ensuring a deterministic digest of the record's content.
+    /// This is the digest `roko knowledge custody` writes and verifies, so
+    /// a chain verifies the same way here and there.
     #[must_use]
     pub fn compute_hash(&self) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.action.hash(&mut hasher);
-        self.principal.hash(&mut hasher);
-        self.when.hash(&mut hasher);
-        for auth in &self.authorized {
-            format!("{auth:?}").hash(&mut hasher);
-        }
-        for h in &self.why_heuristics {
-            h.hash(&mut hasher);
-        }
-        for c in &self.why_claims {
-            c.hash(&mut hasher);
-        }
-        if let Some(ref sim) = self.simulation {
-            sim.hash(&mut hasher);
-        }
-        for g in &self.gates_passed {
-            g.hash(&mut hasher);
-        }
-        format!("{:?}", self.taint).hash(&mut hasher);
-        if let Some(ref r) = self.result {
-            r.hash(&mut hasher);
-        }
-        if let Some(ref w) = self.witness {
-            w.hash(&mut hasher);
-        }
-        format!("{:?}", self.attestation).hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let mut payload = self.clone();
+        let prev_hash = payload.prev_hash.take().unwrap_or_default();
+        payload.hash = None;
+        let mut hasher = Sha256::new();
+        hasher.update(prev_hash.as_bytes());
+        hasher.update(serde_json::to_vec(&payload).unwrap_or_default());
+        format!("{:x}", hasher.finalize())
     }
 
     /// Seal this record with computed hash and link to previous.
     ///
     /// Sets `prev_hash` to the given previous hash (or `None` for genesis)
-    /// and computes `hash` from the canonical payload plus `prev_hash`.
+    /// and computes `hash` from `prev_hash` and the canonical payload.
     pub fn seal(&mut self, prev_hash: Option<String>) {
         self.prev_hash = prev_hash;
         self.hash = Some(self.compute_hash());
@@ -455,5 +436,30 @@ mod tests {
     fn taint_with_none_does_not_set_field() {
         let custody = Custody::new("test", "p", 0, vec![]).with_taint(Taint::None);
         assert!(custody.taint.is_none());
+    }
+
+    /// bug-3ba5d8: the chain hash is SHA-256 over `prev_hash` and the
+    /// record's JSON, the digest roko-cli's custody chain uses; it used to be
+    /// a `DefaultHasher` digest, which is not stable across Rust releases.
+    #[test]
+    fn custody_hash_is_sha256() {
+        let mut first = Custody::new("write_file", "agent-1", 1000, vec![]);
+        first.seal(None);
+        let first_hash = "f5f0e5873812b7c7ceeca713963ee6360088c087b917b16d5b42c155bcd2a716";
+        assert_eq!(first.hash.as_deref(), Some(first_hash));
+
+        let mut second = Custody::new("read_file", "agent-1", 2000, vec![]);
+        second.seal(first.hash.clone());
+        let second_hash = "8c80f41843ab79f8a5e1c2dd885859c999a45a088c8c6d63a86a7963ca86a783";
+        assert_eq!(second.hash.as_deref(), Some(second_hash));
+        assert!(second.verify_hash());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let logger = CustodyLogger::new(tmp.path().join("custody.jsonl"));
+        logger.log_chained(&mut first.clone()).unwrap();
+        logger.log_chained(&mut second.clone()).unwrap();
+        let chain = logger.verify_chain().unwrap();
+        assert!(chain.valid);
+        assert_eq!(chain.sealed_count, 2);
     }
 }

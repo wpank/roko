@@ -378,6 +378,10 @@ pub struct AcpSession {
     /// Runtime-scoped configured RPM/TPM pool shared by ACP sessions.
     #[serde(skip, default)]
     pub(crate) provider_rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// Requests that arrived while a prompt ran. The server answers them, in
+    /// arrival order, once the prompt finishes.
+    #[serde(skip, default)]
+    pub(crate) deferred_requests: Vec<crate::types::JsonRpcRequest>,
 }
 
 fn default_true() -> bool {
@@ -433,6 +437,7 @@ impl AcpSession {
             accumulated_cost_usd: 0.0,
             provider_health_registry: None,
             provider_rate_limiter: None,
+            deferred_requests: Vec::new(),
         }
     }
 
@@ -485,6 +490,7 @@ impl AcpSession {
             accumulated_cost_usd: 0.0,
             provider_health_registry: None,
             provider_rate_limiter: None,
+            deferred_requests: Vec::new(),
         }
     }
 
@@ -1333,6 +1339,15 @@ impl SessionManager {
     #[must_use]
     pub fn get_session(&self, id: &str) -> Option<&AcpSession> {
         self.sessions.get(id)
+    }
+
+    /// Takes the requests that arrived while a session's prompt ran, in arrival
+    /// order.
+    pub fn drain_deferred_requests(&mut self) -> Vec<crate::types::JsonRpcRequest> {
+        self.sessions
+            .values_mut()
+            .flat_map(|session| std::mem::take(&mut session.deferred_requests))
+            .collect()
     }
 
     /// Returns a mutable reference to a known session.

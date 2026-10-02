@@ -2049,9 +2049,11 @@ fn build_agent(
             trace_sink: None,
             metrics_sink: None,
             tool_correlation: None,
+            provenance_sink: None,
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -3543,8 +3545,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         assert_eq!(health.total_successes, 1);
 
         // The template's call is costed once, under its role (bug-c1f6b8).
-        let costs = std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl"))
-            .expect("read costs");
+        let costs =
+            std::fs::read_to_string(workdir.join(".roko/learn/costs.jsonl")).expect("read costs");
         let template_rows: Vec<CostRecord> = costs
             .lines()
             .filter_map(|line| serde_json::from_str::<CostRecord>(line).ok())

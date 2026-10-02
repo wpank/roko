@@ -71,3 +71,10 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK28 (gap-c06ff3).
 - Suggested model: opus.
+
+## Progress
+
+- 7104: implemented at 4dd56c632 (on `work/gap-dff960`; cargo verification deferred to the batch gate)
+- 7105: implemented at 5a3e2be50 (on `work/gap-dff960`; cargo verification deferred to the batch gate)
+- 7106: implemented at c20dc5f5c (on `work/gap-dff960`; cargo verification deferred to the batch gate)
+- 7108: implemented at 00b05e510 (its verify passes in the bench venv: `test_battery.py`, 6 passed)

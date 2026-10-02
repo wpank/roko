@@ -26,8 +26,11 @@ What it cannot do: an agent under the same uid can still read a file it names by
 own environment with `ps -E` or `/proc/<pid>/environ`. So `secret.preflight` keeps the secret and every provider key out
 of the driver's environment (the keys live in a driver-only key file, bug-979a06), and registers both with `forbid`.
 Canaries catch reads of benchmark files, and the tripwire catches a read of the secret file or the key file, which
-must be chmod'ed first while agents run (`census`, gap-308373). A container per task is the stronger option (S08
-decision 4).
+must be chmod'ed first while agents run (`census`, gap-308373). The same limit reaches the operator's macOS login
+keychain: in the fd_claude arm the agent's shell can read the Claude Code subscription credential through the arm's
+`security` wrapper (`run_cli.KEYCHAIN_WRAPPER`), a direct `/usr/bin/security` call, or the keychain file's path, which
+`census` detects (place `keychain`, label `vb-keychain`, gap-3cfe4f) but no host-only sandbox prevents. A container per
+task is the stronger option (S08 decision 4).
 
 **Proxies** (gap-0bd49a, 3305). `build` passes no proxy variable of the operator's. A runner whose agent reaches the
 network only through the egress proxy (`egress`, the Claude Code arm) adds `proxy_env(url)`: HTTPS_PROXY, HTTP_PROXY

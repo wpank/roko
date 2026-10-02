@@ -109,3 +109,28 @@ data-LLM calls, Hermes HTTP adapter), and likely more backends that rely on `col
 confirmed whether the CLI's main graph-dispatch path (which appears to go through `openai_compat_backend.rs`'s own,
 correctly-lowercased `stream_response_to_json`) is also affected by some other route — check for a second affected
 path when fixing this.
+
+## Progress
+
+- bug-e3940b: implemented on `work/bug-e3940b` at 09a103c81; cargo verification deferred to the batch gate. Premise
+  re-checked at 248d279c7 and confirmed. `FinishReason::as_str` (roko-core) is now the one text form for a finish
+  reason: the SSE parser, `ChatResponse::to_signal` and the four hand-copied wire mappings (`openai_compat_backend`,
+  `cursor_agent`, the sidecar's `messaging` and `relay_client`) use it, and `hit_length_limit` reads through
+  `normalize_finish_reason`.
+- Second affected path (the Notes' question): yes. `ToolLoop::send_turn_streaming`, which `dispatch_v2` and the ACP
+  bridge reach through `run_streaming`, collects through `collect_stream_to_response`, so the CLI's Graph dispatch on
+  an OpenAI-compatible backend was affected. The "correct" contrast path, `stream_response_to_json` in
+  `openai_compat_backend.rs` (and its copy in `cursor_agent.rs`), has no callers.
+- Other sites with the same mismatch, fixed: the sidecar's `response_finish_reason` read every streamed reason back as
+  an error (`Error("Stop")`, `Error("Length")`) and Gemini's `STOP`/`MAX_TOKENS` as errors; `to_signal` tagged `Stop`.
+  roko-cli has no finish-reason comparison of its own (`dispatch_v2` drops the string).
+- Tests: `collected_length_finish_reason_is_recognized_as_truncated` (the verify),
+  `sse_parser_writes_canonical_finish_reasons`, `finish_reason_text_round_trips`, `finish_reason_text_is_the_wire_form`,
+  `streamed_finish_reason_keeps_its_meaning` and `gemini_finish_reasons_read_lower_cased`. Five assertions that pinned
+  `ToolCalls`, `Length` or `Stop` now expect the canonical text.
+- Behaviour change to expect at the gate and in live runs: a streamed turn that ends on `length` now stops the loop with
+  `BackendError("model hit output token limit (finish_reason=length)")`, as a non-streamed turn already did.
+- Left for separate items: `extract_finish_reason_raw` reads only `choices[0].finish_reason`, so the non-streaming
+  Anthropic tool-loop response (top-level `stop_reason`) and Gemini native (`candidates[0].finishReason`) report no
+  finish reason and `hit_length_limit` misses their truncations; the Hermes HTTP adapter and the safety data-LLM never
+  read the finish reason, so a truncated answer there is still accepted as complete.

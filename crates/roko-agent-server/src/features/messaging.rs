@@ -137,15 +137,7 @@ fn session_json(session: &SessionState) -> Value {
 }
 
 fn finish_reason_json(finish_reason: Option<FinishReason>) -> Value {
-    finish_reason.map_or(Value::Null, |reason| {
-        Value::String(match reason {
-            FinishReason::Stop => "stop".to_string(),
-            FinishReason::Length => "length".to_string(),
-            FinishReason::ToolCalls => "tool_calls".to_string(),
-            FinishReason::ContentFilter => "content_filter".to_string(),
-            FinishReason::Error(reason) => reason,
-        })
-    })
+    finish_reason.map_or(Value::Null, |reason| Value::from(reason.as_str()))
 }
 
 async fn send_socket_payload(socket: &mut WebSocket, payload: Value) -> Result<(), ()> {

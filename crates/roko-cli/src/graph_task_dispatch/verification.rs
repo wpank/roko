@@ -103,7 +103,6 @@ impl GraphTaskDispatcher {
             .run_verify_steps(
                 spec,
                 task,
-                dispatch,
                 effective_workdir,
                 retry_key,
                 attempt_number,
@@ -157,7 +156,6 @@ impl GraphTaskDispatcher {
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
-        dispatch: &crate::dispatch_v2::AgentResultDispatch,
         effective_workdir: &Path,
         retry_key: &str,
         attempt_number: u32,
@@ -817,96 +815,15 @@ impl GraphTaskDispatcher {
             // Steps an earlier attempt passed that fail now (gap-6dba88).
             let regressed = self.settle_step_regressions(spec, task, &steps, &step_outcomes);
 
-            // ── Post-verify: GateGamingDetector + HoldoutExperiment ─────
+            // ── Post-verify: HoldoutExperiment ──────────────────────────
             //
-            // These run after all verify steps complete (or early-terminate)
+            // This runs after all verify steps complete (or early-terminate)
             // regardless of pass/fail, matching the Runner-v2 gate completion
-            // callback pattern.
+            // callback pattern. Nothing feeds the gate-gaming detector here: a
+            // quality score tied to the verdict cannot show "pass rate up,
+            // quality down", so the paid quality judge on a failure and the
+            // fixed 0.9 on a pass are gone until audits supply the labels.
             let all_passed = failures.is_empty();
-            let model_slug = &dispatch.target.model_slug;
-
-            // ── quality_judge + P1-01 GateGamingDetector (best-effort) ────
-            //
-            // The judge score only feeds the gaming detector: it never gates
-            // the retry decision or the retry prompt, so it runs in the
-            // background instead of blocking the retry. The LLM judge is only
-            // consulted when verify failed and a detector is configured; all
-            // passed maps to the deterministic high-quality score.
-            if let Some(detector) = self.feedback.gate_gaming_detector.clone() {
-                // P3-17: Modulate the judge score with daimon affect valence.
-                let affect_bonus = self
-                    .feedback
-                    .daimon_state
-                    .as_ref()
-                    .and_then(|d| d.lock().ok())
-                    .map(|state| state.state.alma.effective_affect().pleasure)
-                    .unwrap_or(0.0);
-                let judge = if all_passed { None } else { self.cheap_agent() };
-                let judge_timeout = self.config.timeouts.llm_call();
-                let agent_text = dispatch
-                    .result
-                    .output
-                    .body
-                    .as_text()
-                    .unwrap_or("")
-                    .to_string();
-                let title = spec.title.clone();
-                let plan_id = spec.plan_id.clone();
-                let task_id = task.id.clone();
-                let model_slug = model_slug.clone();
-                tokio::spawn(async move {
-                    let judge_quality_score: f64 = if all_passed {
-                        0.9
-                    } else if let Some(cheap_agent) = judge {
-                        let rubric = "Did the agent make meaningful progress toward the task even though verify steps failed?";
-                        match tokio::time::timeout(
-                            judge_timeout,
-                            roko_learn::quality_judge::judge_quality(
-                                &cheap_agent,
-                                &title,
-                                &agent_text,
-                                rubric,
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(score) => {
-                                tracing::debug!(
-                                    plan_id = %plan_id,
-                                    task_id = %task_id,
-                                    model = %model_slug,
-                                    quality_score = score,
-                                    "quality_judge: gate output scored"
-                                );
-                                score
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    plan_id = %plan_id,
-                                    task_id = %task_id,
-                                    "quality_judge timed out; using heuristic score"
-                                );
-                                0.2
-                            }
-                        }
-                    } else {
-                        // No model configured — fall through to heuristic score.
-                        0.2
-                    };
-                    let quality_score = (judge_quality_score + affect_bonus * 0.1).clamp(0.0, 1.0);
-                    let mut det = detector.lock().await;
-                    if let Err(err) = det
-                        .observe_and_detect(&model_slug, all_passed, quality_score)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            model = %model_slug,
-                            "P1-01: gate gaming detection I/O error (non-fatal)"
-                        );
-                    }
-                });
-            }
 
             // P1-04: HoldoutExperiment outcome recording and learning gate.
             if let Some(holdout) = &self.feedback.holdout_experiment {

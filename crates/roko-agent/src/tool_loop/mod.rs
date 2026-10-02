@@ -34,7 +34,9 @@ use crate::provider::ProviderError;
 use crate::retry::{ErrorClass, RetryPolicy};
 use crate::safety::Taint;
 use crate::safety::data_llm::{DataLlmBoundary, tool_source_taint};
-use crate::translate::{BackendResponse, RenderedTools, SessionState, Translator};
+use crate::translate::{
+    BackendResponse, FinishReason, RenderedTools, SessionState, Translator, normalize_finish_reason,
+};
 use crate::usage::Usage;
 
 /// Per-turn progress information emitted by [`ToolLoop`] via its `on_turn` callback.
@@ -1370,9 +1372,11 @@ impl ToolLoop {
                     usage_source: turn_usage_source,
                 });
                 let finish_reason_raw = response.extract_finish_reason_raw();
+                // Read through the canonical mapping, so every spelling of a
+                // length finish counts (bug-e3940b).
                 let hit_length_limit = finish_reason_raw
                     .as_deref()
-                    .is_some_and(|r| r == "length" || r == "max_tokens");
+                    .is_some_and(|r| normalize_finish_reason(r) == FinishReason::Length);
                 tracing::info!(
                     iterations,
                     final_text_len = final_text.len(),
@@ -2541,6 +2545,113 @@ mod tests {
         let text = result.output.body.as_text().expect("text output");
         assert!(text.starts_with("empty_response"), "{text}");
         assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
+    }
+
+    /// Replays an OpenAI-compatible SSE body through the shared parser, as
+    /// the OpenAI-compatible backend streams a turn.
+    struct SseReplayBackend {
+        lines: Vec<&'static str>,
+    }
+
+    impl SseReplayBackend {
+        fn events(&self) -> Vec<Result<StreamEvent, LlmError>> {
+            self.lines
+                .iter()
+                .copied()
+                .flat_map(crate::streaming::parse_sse_line)
+                .map(Ok)
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl LlmBackend for SseReplayBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let stream = Box::pin(futures::stream::iter(self.events()));
+            collect_stream_to_response(stream, std::time::Instant::now()).await
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            Ok(Box::pin(futures::stream::iter(self.events())))
+        }
+    }
+
+    /// bug-e3940b: a stream that names `finish_reason: "length"`, collected
+    /// by `collect_stream_to_response`, reads as truncated. The SSE parser
+    /// wrote the `Debug` name `Length`, which `hit_length_limit` never
+    /// matched, so a cut answer passed as a normal stop.
+    #[tokio::test]
+    async fn collected_length_finish_reason_is_recognized_as_truncated() {
+        let cut = SseReplayBackend {
+            lines: vec![
+                r#"data: {"choices":[{"delta":{"content":"The answer is"}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+                "data: [DONE]",
+            ],
+        };
+        let stream = Box::pin(futures::stream::iter(cut.events()));
+        let collected = collect_stream_to_response(stream, std::time::Instant::now())
+            .await
+            .expect("the stream collects");
+        assert_eq!(
+            collected.extract_finish_reason_raw().as_deref(),
+            Some("length")
+        );
+
+        // The streaming loop, the path `dispatch_v2` takes, fails the cut
+        // answer instead of returning it as a normal stop.
+        let (stream_tx, _stream_rx) = mpsc::channel(roko_core::defaults::DEFAULT_CHANNEL_BUFFER);
+        let out = make_tool_loop(Arc::new(cut), 25)
+            .run_streaming(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+                stream_tx,
+            )
+            .await;
+        assert_eq!(
+            out.stop_reason,
+            StopReason::BackendError(
+                "model hit output token limit (finish_reason=length)".to_string(),
+            )
+        );
+
+        // A blank cut answer fails as `empty_response`, which names the
+        // finish reason in the form the check reads.
+        let blank = SseReplayBackend {
+            lines: vec![
+                r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+                "data: [DONE]",
+            ],
+        };
+        let out = make_tool_loop(Arc::new(blank), 25)
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
+            .await;
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.starts_with("empty_response"), "{message}");
+                assert!(message.contains("finish_reason=length"), "{message}");
+            }
+            other => panic!("expected empty_response, got {other:?}"),
+        }
     }
 
     /// A blank closing turn after tool work still ends the run as `Stop`:

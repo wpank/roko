@@ -367,9 +367,11 @@ fn parse_sse_chunk(json: &Value) -> Vec<StreamEvent> {
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
     {
+        // The canonical text (`length`), which the checks downstream match;
+        // the `Debug` name (`Length`) matched none of them (bug-e3940b).
         let finish_reason = normalize_finish_reason(reason);
         events.push(StreamEvent::now(StreamEventKind::Done {
-            finish_reason: format!("{finish_reason:?}"),
+            finish_reason: finish_reason.as_str().to_string(),
         }));
     }
     events
@@ -544,7 +546,7 @@ mod tests {
         assert_eq!(finish.len(), 1, "{finish:?}");
         assert!(matches!(
             &finish[0].kind,
-            StreamEventKind::Done { finish_reason } if finish_reason == "ToolCalls"
+            StreamEventKind::Done { finish_reason } if finish_reason == "tool_calls"
         ));
 
         let last = parse_sse_line(
@@ -566,8 +568,34 @@ mod tests {
 
         assert!(matches!(
             event.map(|e| e.kind),
-            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "ToolCalls"
+            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "tool_calls"
         ));
+    }
+
+    /// A chunk's finish reason becomes its canonical text, the text the tool
+    /// loop's checks match, never the `Debug` name of `FinishReason`: a
+    /// `length` finish read as `Length` was never seen as a truncation
+    /// (bug-e3940b).
+    #[test]
+    fn sse_parser_writes_canonical_finish_reasons() {
+        for (wire, canonical) in [
+            ("length", "length"),
+            ("max_tokens", "length"),
+            ("stop", "stop"),
+            ("end_turn", "stop"),
+            ("tool_calls", "tool_calls"),
+            ("sensitive", "content_filter"),
+            ("model_context_window_exceeded", "context_overflow"),
+        ] {
+            let chunk = serde_json::json!({"choices": [{"delta": {}, "finish_reason": wire}]});
+            assert!(
+                matches!(
+                    first_event(&format!("data: {chunk}")).map(|e| e.kind),
+                    Some(StreamEventKind::Done { finish_reason }) if finish_reason == canonical
+                ),
+                "{wire} should read as {canonical}"
+            );
+        }
     }
 
     /// `[DONE]` names no finish reason, so it does not read as `stop`
@@ -616,7 +644,7 @@ mod tests {
         ));
         assert!(matches!(
             &last[1].kind,
-            StreamEventKind::Done { finish_reason } if finish_reason == "ToolCalls"
+            StreamEventKind::Done { finish_reason } if finish_reason == "tool_calls"
         ));
         assert!(
             last.iter()

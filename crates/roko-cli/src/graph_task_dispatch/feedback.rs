@@ -44,14 +44,10 @@ pub struct GraphFeedbackContext {
     pub replan_on_gate_failure: bool,
     /// P0-04: CodingOracle for post-gate build/test observations.
     pub coding_oracle: Option<Arc<CodingOracle>>,
-    /// P1-01: GateGamingDetector for flagging gaming patterns.
-    pub gate_gaming_detector: Option<Arc<tokio::sync::Mutex<roko_learn::GateGamingDetector>>>,
     /// P1-04: HoldoutExperiment for gating learning updates (80/20 train/holdout split).
     pub holdout_experiment: Option<Arc<tokio::sync::Mutex<roko_learn::HoldoutExperiment>>>,
     /// P2-01: ShadowRunner for recording shadow dispatch decisions.
     pub shadow_runner: Option<Arc<ShadowRunner>>,
-    /// P0-02: Whether eval generation is enabled for standard+ tier tasks.
-    pub eval_generation_enabled: bool,
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
     /// adaptive EMA threshold updates after each verify run.
     ///
@@ -111,10 +107,8 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("post_gate_reflection_path", &self.post_gate_reflection_path)
             .field("replan_on_gate_failure", &self.replan_on_gate_failure)
             .field("coding_oracle", &self.coding_oracle.is_some())
-            .field("gate_gaming_detector", &self.gate_gaming_detector.is_some())
             .field("holdout_experiment", &self.holdout_experiment.is_some())
             .field("shadow_runner", &self.shadow_runner.is_some())
-            .field("eval_generation_enabled", &self.eval_generation_enabled)
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
@@ -136,10 +130,8 @@ impl Default for GraphFeedbackContext {
             post_gate_reflection_path: None,
             replan_on_gate_failure: false,
             coding_oracle: None,
-            gate_gaming_detector: None,
             holdout_experiment: None,
             shadow_runner: None,
-            eval_generation_enabled: false,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
             runs_dir: None,

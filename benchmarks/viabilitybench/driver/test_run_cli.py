@@ -20,6 +20,7 @@ import pytest
 
 import agent_env
 import caps
+import census
 import egress
 import harness
 import layout
@@ -147,6 +148,11 @@ if scenario.startswith("fetch") and "WebFetch" in tools:  # a model that fetches
     fetch(None)
 if scenario == "subagent_fetch":  # a subagent's fetch, which the init event's tool list does not show
     fetch("toolu_task")
+if scenario == "keychain":  # gap-3cfe4f: the agent's shell reads the operator's login keychain; never run here
+    assistant(9, model, {"type": "tool_use", "id": "toolu_kc", "name": "Bash",
+                         "input": {"command": CONFIG["keychain_command"]}}, input_tokens=120, output_tokens=20)
+    emit({"type": "user", "parent_tool_use_id": None, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_kc", "content": CONFIG["keychain_result"]}]}})
 if scenario == "spend":
     for number in range(1, 1000):
         assistant(number, model, {"type": "text", "text": "Still reading."}, input_tokens=150000, output_tokens=5000)
@@ -782,3 +788,97 @@ def test_the_recorded_probe_parses():
     assert set(RESULT) <= set(result) and set(RESULT["usage"]) <= set(result["usage"])
     for entry in RESULT["modelUsage"].values():
         assert set(entry) <= set(result["modelUsage"][MODEL])
+
+
+def test_agent_shell_cannot_read_the_real_keychain(places):
+    """gap-3cfe4f: the fd_claude arm's `.vb-bin/security` wrapper lets Claude Code find the subscription login under
+    the session's own HOME, but a same-uid agent shell can read the operator's real Anthropic OAuth credential the same
+    way -- the wrapper, a direct `security find-generic-password`, or the keychain file by its path. No host-only
+    sandbox prevents it (the whole claude tree shares one sandbox for the egress rule, and macOS refuses a nested
+    sandbox; S08 decision 4's container is the only prevention). So the census detects it: a run whose transcript shows
+    the agent naming the keychain is `leak_suspected`, excluded and counted. The fake never runs the command and no
+    real keychain is read."""
+    command = '"$HOME/.vb-bin/security" find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    program, _ = fake_claude(places, "keychain", keychain_command=command,
+                             keychain_result="(the fake does not run the command)")
+    assert run_vb(places, arm_file(places, program), "--transcripts") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "leak_suspected"  # excluded from the report, and counted
+    assert "keychain" in record["provenance"]["canary_places"] and record["provenance"]["canary_hits"] >= 1
+    # The agent wrote a correct solution, so the VS checks still pass; `leak_suspected` excludes the run regardless.
+    transcript = (run_dir(places) / record["provenance"]["transcript_ref"]).read_text()
+    assert "Claude Code-credentials" in transcript  # the attempt reached the transcript, where the census caught it
+
+
+def test_the_keychain_detector_flags_only_real_keychain_access():
+    """gap-3cfe4f: `census._keychain_access` flags the operations and paths an agent uses to read the login keychain,
+    and leaves a bare mention of the word `security` alone, so an honest coding task is not falsely `leak_suspected`."""
+    for flagged in ('security find-generic-password -s "Claude Code-credentials"',
+                    "/usr/bin/security dump-keychain -d",
+                    "~/.vb-bin/security find-generic-password -w",
+                    "cat ~/Library/Keychains/login.keychain-db",
+                    "open /Users/op/Library/Keychains/login.keychain-db"):
+        assert census._keychain_access(flagged) == [census.KEYCHAIN_LABEL], flagged
+    for benign in ("please review the security of the parser",
+                   "import security_headers", "grep -rn find_password src/",
+                   "run the tests in tests/security/", "cargo add password-hash"):
+        assert census._keychain_access(benign) == [], benign
+
+
+def test_a_supplied_credential_fingerprint_catches_an_exfiltrated_token():
+    """gap-3cfe4f, token-free: `census._credential_fingerprints` matches a sha256-hex-prefix fingerprint (computed out
+    of band, so the driver never holds the token) against the token-shaped runs of a text, and reports the fingerprint,
+    never the token. It catches a raw credential an agent printed, and needs at least eight hex of fingerprint."""
+    import hashlib
+    token = "sk-ant-oat01-" + "Zx9Q" * 12
+    fp = hashlib.sha256(token.encode()).hexdigest()[:12]
+    assert census._credential_fingerprints(f"the agent echoed {token} into its log", [fp]) == [fp]
+    assert census._credential_fingerprints(f"printed {token}", []) == []  # none supplied: nothing scanned
+    assert census._credential_fingerprints("no credential here at all", [fp]) == []
+    assert census._credential_fingerprints(token, ["abc"]) == []  # too short to be a fingerprint
+    assert fp not in token  # the match is by hash; the fingerprint itself never appears in the token
+
+
+def test_keychain_fingerprint_is_token_free(tmp_path):
+    """gap-3cfe4f: `run_cli.keychain_fingerprint` pipes the credential straight into shasum, so the token never enters
+    the driver; it returns the 16-hex prefix of its sha256, or None when the lookup fails. Tested against a fake
+    `security`, never the real keychain -- a failing one returns None, not the hash of empty input."""
+    import hashlib
+    dummy = "DUMMY-NOT-A-REAL-CREDENTIAL-0000"
+    good = tmp_path / "security-ok"
+    good.write_text(f"#!/bin/sh\nprintf %s {shlex.quote(dummy)}\n")
+    good.chmod(0o755)
+    assert run_cli.keychain_fingerprint("whoever", security=str(good)) == hashlib.sha256(dummy.encode()).hexdigest()[:16]
+    bad = tmp_path / "security-fail"  # "Not logged in": nonzero and silent -> None, never sha256 of an empty string
+    bad.write_text("#!/bin/sh\nexit 44\n")
+    bad.chmod(0o755)
+    assert run_cli.keychain_fingerprint("whoever", security=str(bad)) is None
+    assert run_cli.keychain_fingerprint("whoever", security=str(tmp_path / "does-not-exist")) is None
+
+
+def test_a_credential_fingerprint_flags_an_exfiltrated_token(places):
+    """gap-3cfe4f end to end: `vb run --credential-fingerprint <hex>` makes the census leak_suspect a run whose
+    transcript carries a token that hashes to the fingerprint -- token-free, since the driver holds the fingerprint and
+    never the token. Here the agent names the keychain and the fake login lands in its shell output, so both the
+    keychain and the credential places fire."""
+    import hashlib
+    token = "sk-ant-oat01-" + "Zx9Q" * 12
+    fp = hashlib.sha256(token.encode()).hexdigest()[:16]
+    command = 'security find-generic-password -a "$USER" -w -s "Claude Code-credentials"'
+    program, _ = fake_claude(places, "keychain", keychain_command=command, keychain_result=f"-> {token}")
+    assert run_vb(places, arm_file(places, program), "--transcripts", "--credential-fingerprint", fp) == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert record["execution"]["status"] == "leak_suspected"
+    hit = record["provenance"]["canary_places"]
+    assert "keychain" in hit and "credential" in hit
+    transcript = (run_dir(places) / record["provenance"]["transcript_ref"]).read_text()
+    assert token in transcript and fp not in transcript  # matched by hash; the fingerprint itself never appears
+
+
+def test_a_non_hex_credential_fingerprint_is_refused(places):
+    """gap-3cfe4f: a --credential-fingerprint that is not at least eight hex characters is refused before any task."""
+    program, _ = fake_claude(places, "solve")
+    assert run_vb(places, arm_file(places, program), "--credential-fingerprint", "nothex!!") == 2
+    assert not (run_dir(places) / "records.jsonl").exists()

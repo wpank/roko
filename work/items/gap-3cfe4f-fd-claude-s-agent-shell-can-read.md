@@ -112,3 +112,66 @@ carries, but filed no follow-up item for it.
   keychain wrapper or mention OAuth/session credentials.
 - `run_cli.py:62`'s own words: "the same-uid limit `agent_env` describes" — this item makes that specific instance
   trackable instead of only prose in a docstring.
+
+### Decision note for Will (residual risk, 2026-10-02)
+
+**Outcome: detection, not prevention.** Prevention without a container is infeasible on macOS, tested on 26.4:
+
+1. **Same uid.** The login keychain (`~/Library/Keychains`, a 0711 dir whose files are same-uid readable) and
+   `/usr/bin/security` (not setuid) are both reachable by the agent's shell. File permissions cannot tell Claude
+   Code's own process from its Bash tool's children.
+2. **One shared sandbox.** The fd_claude arm runs the whole `claude` tree under one `sandbox-exec` profile (always on,
+   for the egress network rule). A keychain deny there would also stop Claude Code's own `security` login lookup.
+3. **No nested sandbox.** macOS refuses `sandbox_apply` inside an existing sandbox (`Operation not permitted`), even
+   under `(allow default)`. So a tighter per-command sandbox via `CLAUDE_CODE_SHELL_PREFIX`, to confine only the
+   agent's Bash children while Claude Code authenticates unconfined, cannot be applied. (File-read deny *does* work,
+   but only tree-wide — see 2.)
+4. **Credential delivery can't dodge it.** A token in the environment reaches the Bash children (Claude Code hands its
+   env to them, per the live probe), and a copied `.credentials.json` is readable same-uid too; a wrapper gated by
+   parent/argv/one-shot is bypassed by a direct `security` call or a keychain-file read. All three ideas in the brief
+   fail for 1-3.
+
+**What is detected** (census, both make a run `leak_suspected`, which the report excludes and counts):
+- **The access** (place `keychain`): the agent naming a keychain operation, the `.vb-bin/security` wrapper, or a
+  keychain path in a shell command or tool input. Reliable and token-free; reading is the precondition to any
+  exfiltration, so this is the real protection.
+- **The exfiltrated value** (place `credential`), *only if* the operator opts in with `vb run
+  --credential-fingerprint <hex>`: a token in the transcript/output that hashes to the supplied sha256 prefix. The
+  driver never holds the token; `run_cli.keychain_fingerprint` computes the fingerprint by piping `security` into
+  `shasum` and is operator-invoked, never auto-run.
+
+**Residual risk.** Same-uid, the credential *is* readable; we detect, we do not prevent. An agent that reads the
+keychain by a means the `keychain` regex misses **and** prints the token verbatim **without** a supplied fingerprint
+would evade detection. The access detector covers the known vectors, so the window is narrow.
+
+**Your decision.** Either (a) **accept the same-uid risk** on a personal machine — run the benchmark from a login that
+holds nothing you would not let an agent read, and rotate the Claude Code credential after any `leak_suspected` run
+(as gap-308373 already does for the benchmark secret); this is the same ceiling S08 decision 4 records as
+accepted-for-now — or (b) adopt a **container per task** (S08 decision 4) for true prevention, which must then carry
+the CLI credential into the container. Recommended: (a) now, with the detector as the floor and
+`--credential-fingerprint` as an opt-in backstop; revisit (b) with the rest of S08 decision 4.
+
+## Progress
+
+2026-10-02 (static worker on `work/gap-3cfe4f`, base f49242f63): implemented at 6f514371d.
+
+- **Analysis.** Confirmed on macOS 26.4 that `/usr/bin/security` and `/usr/bin/sandbox-exec` are not setuid (so the
+  agent can exec `security` inside the outer sandbox, and nesting is not blocked by setuid), the keychain dir is
+  same-uid readable, `(deny file* (subpath ...))` blocks a read with a resolved path, and **nested `sandbox-exec` is
+  refused** (`sandbox_apply: Operation not permitted`) even under `(allow default)`. That rules out the differentiated
+  sandbox, so prevention needs a container (S08 decision 4). Details in the decision note above.
+- **Detection (committed).** `census` adds place `keychain` (label `vb-keychain`) for any transcript command/tool
+  input that names a keychain operation, the arm's `security` wrapper, or a keychain path; and place `credential`
+  (label `vb-credential`) that matches operator-supplied sha256-hex fingerprints (`vb run --credential-fingerprint`,
+  repeatable) against token-shaped runs of the transcript/diff/outputs, token-free. `run_cli.keychain_fingerprint`
+  computes the fingerprint without the token entering the driver. Docstrings updated in `run_cli`, `agent_env`,
+  `census`.
+- **Tests (all pass in the bench venv).** `test_agent_shell_cannot_read_the_real_keychain` (the `[[verify]]`, a fake
+  claude that names the keychain -> `leak_suspected`, place `keychain`; no real keychain touched);
+  `test_the_keychain_detector_flags_only_real_keychain_access` (precision: flags the operations/paths, leaves a bare
+  "security" alone); `test_a_supplied_credential_fingerprint_catches_an_exfiltrated_token` and
+  `test_a_credential_fingerprint_flags_an_exfiltrated_token` (fingerprint match, end to end);
+  `test_keychain_fingerprint_is_token_free`; `test_a_non_hex_credential_fingerprint_is_refused`. The `[[verify]]`
+  passes; `test_run_cli.py` 26 passed, `test_secret.py`+`test_driver.py` 31 passed. No cargo (Python-only change).
+- **Not done.** No live `claude` probe (forbidden; the approved probe already ran). Prevention (container, S08
+  decision 4) is deferred pending Will's decision above.

@@ -9,8 +9,9 @@ use roko_std::roles::domain_profile;
 use super::*;
 
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
-/// factory bridge so `error_enrichment` and `quality_judge` can use the
-/// live provider without rebuilding the full dispatch stack.
+/// factory bridge so `error_enrichment`, the gate reflection and the LLM
+/// judge can use the live provider without rebuilding the full dispatch
+/// stack.
 ///
 /// The adapter is intentionally lightweight: it constructs a minimal
 /// `AgentDispatchRequest` with no tools, no MCP, and no contract, targeting
@@ -73,8 +74,8 @@ impl roko_agent::Agent for CheapFactoryAgent {
     }
 }
 
-/// Choose the model for best-effort one-shot helper calls (quality judge,
-/// error enrichment, gate reflections).
+/// Choose the model for best-effort one-shot helper calls (error
+/// enrichment, gate reflections, the opt-in LLM judge).
 ///
 /// Prefers `routing.fast_task_model` when it names (by `[models.*]` key or
 /// slug) a dispatchable model. Otherwise picks the cheapest dispatchable

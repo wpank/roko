@@ -363,11 +363,17 @@ impl ImmuneScreenedAgent {
         reason_code: &str,
         record: Option<ContentHash>,
     ) -> AgentResult {
+        // Every denial names its reason, in the log and in the result text
+        // (backlog 1103).
+        tracing::warn!(
+            agent_id = %self.agent_id,
+            reason = reason_code,
+            record = ?record,
+            "provider result denied by immune boundary"
+        );
+        let text = format!("provider result denied by immune boundary (reason: {reason_code})");
         let mut output = input
-            .derive(
-                Kind::AgentOutput,
-                Body::text("provider result denied by immune boundary"),
-            )
+            .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::trusted("immune-provider-boundary"))
             .tag("immune_denied", "true")
             .tag("immune_reason", reason_code)
@@ -468,10 +474,20 @@ impl ImmuneScreenedAgent {
                         | StreamEventKind::ToolCallEnd { .. }
                         | StreamEventKind::ToolResult { .. }
                 );
-                chunk_count = chunk_count.saturating_add(1);
-                byte_count = byte_count.saturating_add(stream_event_bytes(&event));
-                exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
-                    || byte_count > MAX_PROVIDER_STREAM_BYTES;
+                // The limits bound one model call: the tool loop tees every
+                // event of each turn here and `Done` ends each call. A tool's
+                // own result is host output the tool boundary screens, so it
+                // counts towards neither limit (backlog 1103).
+                if !matches!(event.kind, StreamEventKind::ToolResult { .. }) {
+                    chunk_count = chunk_count.saturating_add(1);
+                    byte_count = byte_count.saturating_add(stream_event_bytes(&event));
+                    exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
+                        || byte_count > MAX_PROVIDER_STREAM_BYTES;
+                }
+                if matches!(event.kind, StreamEventKind::Done { .. }) {
+                    chunk_count = 0;
+                    byte_count = 0;
+                }
                 if let Some((ref sink, trusted)) = live_sink {
                     match &event.kind {
                         StreamEventKind::ToolCallEnd { id, name, args } => {
@@ -896,7 +912,7 @@ impl Agent for ImmuneScreenedAgent {
         if let Some(denied) = self.preflight(input).await {
             let _ = event_tx
                 .send(StreamEvent::now(StreamEventKind::Done {
-                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                    finish_reason: stream_failure_reason(&denied),
                 }))
                 .await;
             return denied;
@@ -911,7 +927,7 @@ impl Agent for ImmuneScreenedAgent {
                 self.denied_result(input, Some(&result), "provider_stream_limit_exceeded", None);
             let _ = event_tx
                 .send(StreamEvent::now(StreamEventKind::Done {
-                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                    finish_reason: stream_failure_reason(&denied),
                 }))
                 .await;
             return denied;
@@ -934,14 +950,10 @@ impl Agent for ImmuneScreenedAgent {
                     .await;
             }
         } else {
-            let empty = screened.output.tag("provider_error") == Some("empty_response");
-            let finish_reason = if empty {
-                format!("error: {EMPTY_RESPONSE_TEXT}")
-            } else {
-                "error: provider stream denied by immune boundary".to_string()
-            };
             let _ = event_tx
-                .send(StreamEvent::now(StreamEventKind::Done { finish_reason }))
+                .send(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: stream_failure_reason(&screened),
+                }))
                 .await;
         }
         screened
@@ -1010,6 +1022,8 @@ fn is_model_output(kind: &StreamEventKind) -> bool {
     )
 }
 
+/// Bytes `event` adds to its model call's stream. A tool result is host
+/// output, not provider output, and adds none.
 fn stream_event_bytes(event: &StreamEvent) -> usize {
     match &event.kind {
         StreamEventKind::ReasoningDelta(text) | StreamEventKind::TextDelta(text) => text.len(),
@@ -1018,8 +1032,23 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
         StreamEventKind::ToolCallEnd { id, name, args } => {
             id.len() + name.len() + args.to_string().len()
         }
-        StreamEventKind::ToolResult { id, output, .. } => id.len() + output.len(),
-        StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => 0,
+        StreamEventKind::ToolResult { .. }
+        | StreamEventKind::Usage(_)
+        | StreamEventKind::Done { .. } => 0,
+    }
+}
+
+/// The finish reason a failed streamed run reports: an empty response, or a
+/// denial and its reason.
+fn stream_failure_reason(result: &AgentResult) -> String {
+    if result.output.tag("provider_error") == Some("empty_response") {
+        return format!("error: {EMPTY_RESPONSE_TEXT}");
+    }
+    match result.output.tag("immune_reason") {
+        Some(reason) => {
+            format!("error: provider stream denied by immune boundary (reason: {reason})")
+        }
+        None => "error: provider stream denied by immune boundary".to_string(),
     }
 }
 
@@ -1783,7 +1812,7 @@ mod tests {
         );
         assert_eq!(
             result.output.body.as_text().expect("safe denial"),
-            "provider result denied by immune boundary"
+            "provider result denied by immune boundary (reason: containment_persistence_failed)"
         );
         assert!(result.trace.is_empty());
     }
@@ -1932,6 +1961,163 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert!(
             matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
+    }
+
+    /// Streams `deltas` one-token text deltas split over `calls` model calls,
+    /// each followed by a tool result and ending in `Done`, then answers.
+    struct MultiCallStreamingAgent {
+        deltas: usize,
+        calls: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for MultiCallStreamingAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("final answer"))
+                    .build(),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "multi-call-stream-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            let per_call = self.deltas.div_ceil(self.calls);
+            let mut sent = 0;
+            for call in 0..self.calls {
+                let batch = per_call.min(self.deltas - sent);
+                for _ in 0..batch {
+                    let _ = event_tx
+                        .send(StreamEvent::now(StreamEventKind::TextDelta("x".to_string())))
+                        .await;
+                }
+                sent += batch;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::Done {
+                        finish_reason: "tool_calls".to_string(),
+                    }))
+                    .await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::ToolResult {
+                        id: format!("call-{call}"),
+                        output: "y".repeat(MAX_PROVIDER_STREAM_BYTES),
+                        is_error: false,
+                    }))
+                    .await;
+            }
+            self.run(input, ctx).await
+        }
+    }
+
+    /// backlog 1103: the stream limits apply to one model call, and a tool's
+    /// own result counts towards neither, so a long honest tool loop is not
+    /// denied after it finished.
+    #[tokio::test]
+    async fn multi_turn_stream_over_4096_events_is_accepted() {
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(MultiCallStreamingAgent {
+                deltas: 5_000,
+                calls: 3,
+            }),
+            "multi-call-stream-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, _rx) = mpsc::channel(8);
+        let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
+
+        assert!(result.success, "{:?}", result.output.body);
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "final answer"
+        );
+    }
+
+    /// Records the fields of every tracing event as `name=value` text.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl CapturedEvents {
+        fn lines(&self) -> Vec<String> {
+            self.0.lock().expect("captured events").clone()
+        }
+    }
+
+    struct EventFields(String);
+
+    impl tracing::field::Visit for EventFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!("{}={value:?} ", field.name()));
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = EventFields(String::new());
+            event.record(&mut fields);
+            self.0.lock().expect("captured events").push(fields.0);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// backlog 1103: a denial names its reason in a log line and in the
+    /// result text, here for one model call over the per-call cap.
+    #[tokio::test]
+    async fn every_immune_denial_logs_its_reason() {
+        let captured = CapturedEvents::default();
+        let _guard = tracing::subscriber::set_default(captured.clone());
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(MultiCallStreamingAgent {
+                deltas: MAX_PROVIDER_STREAM_CHUNKS + 1,
+                calls: 1,
+            }),
+            "oversized-call-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output.tag("immune_reason"),
+            Some("provider_stream_limit_exceeded")
+        );
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "provider result denied by immune boundary (reason: provider_stream_limit_exceeded)"
+        );
+        let done = rx.recv().await.expect("a Done event");
+        assert!(
+            matches!(&done.kind, StreamEventKind::Done { finish_reason }
+                if finish_reason.contains("provider_stream_limit_exceeded")),
+            "{done:?}"
+        );
+        let lines = captured.lines();
+        assert!(
+            lines.iter().any(|line| line.contains("provider_stream_limit_exceeded")
+                && line.contains("oversized-call-agent")),
+            "{lines:?}"
         );
     }
 

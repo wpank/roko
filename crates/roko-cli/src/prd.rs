@@ -4221,6 +4221,9 @@ mod tests {
         let last = bin.join(format!("reply-{}.jsonl", plans.len().saturating_sub(1)));
         // Work after a call (episode distillation) runs on the default model,
         // a second fake that answers nothing, so the log counts planner calls.
+        // A validation retry climbs `[agent.tier_models]` from the planner
+        // (to claude-opus-4-6 by default, which no fake serves); with the
+        // planner as the only tier, every retry reaches the scripted planner.
         let calls = bin.join("calls.log");
         let planner = bin.join("planner.sh");
         let background = bin.join("background.sh");
@@ -4253,6 +4256,7 @@ mod tests {
             format!(
                 "[agent]\ndefault_model = \"background\"\ncommand = {background:?}\n\
                  bare_mode = false\n\n\
+                 [agent.tier_models]\nsonnet = \"planner\"\n\n\
                  [providers.fake]\nkind = \"claude_cli\"\ncommand = {planner:?}\n\n\
                  [providers.quiet]\nkind = \"claude_cli\"\ncommand = {background:?}\n\n\
                  [models.planner]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\

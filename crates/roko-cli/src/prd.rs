@@ -1334,7 +1334,10 @@ impl PlannerBudget {
 
 /// The context window a `[models.*]` entry (by key, else by slug) states for
 /// `model`.
-fn planner_context_window(models: &IndexMap<String, ModelProfile>, model: &str) -> Option<u64> {
+pub(crate) fn planner_context_window(
+    models: &IndexMap<String, ModelProfile>,
+    model: &str,
+) -> Option<u64> {
     models
         .get(model)
         .or_else(|| models.values().find(|profile| profile.slug.trim() == model))

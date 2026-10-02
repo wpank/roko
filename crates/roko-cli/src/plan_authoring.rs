@@ -12,6 +12,8 @@
 //! - [`build_revision_prompt`] — build a prompt for revising an existing plan.
 //! - [`apply_revision_output`] — extract, repair, validate, and write the revised plan.
 //! - [`revise_plan_source`] — run the planning agent and apply the revision.
+//! - [`last_run_failure_context`] — how the plan's last run failed, with the
+//!   failed steps' gate output, for a revision prompt.
 //! - [`AuthoringSpend`] — record what the agent calls of a generation or revision cost.
 
 use std::path::{Path, PathBuf};
@@ -368,37 +370,122 @@ pub fn apply_revision_output(
 /// Most failed tasks a revision prompt lists from the plan's last run.
 const MAX_REVISION_FAILED_TASKS: usize = 5;
 
-/// Longest last-run failure summary a revision prompt carries, in characters.
-const MAX_REVISION_FAILURE_CHARS: usize = 2_000;
+/// Most distinct failed verify steps a revision prompt lists per failed task.
+const MAX_REVISION_FAILED_STEPS: usize = 3;
 
-/// How the plan's last run failed, for a revision prompt: each failed task with
-/// why it failed and its last error, from the report `roko diagnose` prints.
-/// `None` when the plan has no failed run on record.
-fn last_run_failure(workdir: &Path, plan_id: &str) -> Option<String> {
+/// The fewest characters the last-run section of a revision prompt may take,
+/// whatever the planner's context window.
+pub const MIN_REVISION_FAILURE_CHARS: usize = 8_000;
+
+/// The characters the last-run section of a revision prompt may take: a
+/// quarter of the planner's context window at about four characters a token,
+/// as plan generation budgets its source, and at least
+/// [`MIN_REVISION_FAILURE_CHARS`].
+pub fn revision_failure_budget(context_window: Option<u64>) -> usize {
+    context_window
+        .map_or(0, |window| usize::try_from(window).unwrap_or(usize::MAX))
+        .max(MIN_REVISION_FAILURE_CHARS)
+}
+
+/// How the plan's last run failed, for a revision or regeneration prompt
+/// (3215): for each failed task (at most 5), why it failed, its attempts and
+/// the models they ran on, then each distinct failed verify step, newest
+/// first and at most 3, with its command, its failure class and the gate's
+/// output, from the report `roko diagnose` prints. At most `budget`
+/// characters (never fewer than [`MIN_REVISION_FAILURE_CHARS`]), cut with a
+/// visible marker. `None` when the plan has no failed run on record.
+pub fn last_run_failure_context(workdir: &Path, plan_id: &str, budget: usize) -> Option<String> {
     use crate::commands::diagnose::{TaskState, build_report};
 
     let report = build_report(workdir, plan_id, false).ok()?;
     if report.status != "failed" {
         return None;
     }
-    let lines: Vec<String> = report
+    let sections: Vec<String> = report
         .tasks
         .iter()
         .filter(|task| task.state == TaskState::Failed)
         .take(MAX_REVISION_FAILED_TASKS)
-        .map(|task| {
-            let error = task
-                .last_error
-                .as_deref()
-                .map_or_else(String::new, |error| format!("; last error: {error}"));
-            format!("- task `{}`: {}{error}", task.task_id, task.reason)
-        })
+        .map(failed_task_context)
         .collect();
-    if lines.is_empty() {
+    if sections.is_empty() {
         return None;
     }
-    let summary = lines.join("\n");
-    Some(summary.chars().take(MAX_REVISION_FAILURE_CHARS).collect())
+    let text = sections.join("\n");
+    let budget = budget.max(MIN_REVISION_FAILURE_CHARS);
+    if text.chars().count() <= budget {
+        return Some(text);
+    }
+    let marker = format!("\n[... the last-run failure is cut here at {budget} characters ...]");
+    let kept: String = text
+        .chars()
+        .take(budget.saturating_sub(marker.chars().count()))
+        .collect();
+    Some(kept + &marker)
+}
+
+/// One failed task's part of [`last_run_failure_context`].
+fn failed_task_context(task: &crate::commands::diagnose::TaskDiagnosis) -> String {
+    use crate::commands::diagnose::enum_label;
+
+    let mut lines = vec![format!("- task `{}`: {}", task.task_id, task.reason)];
+    let mut models: Vec<&str> = Vec::new();
+    for attempt in &task.attempts {
+        if !models.contains(&attempt.model.as_str()) {
+            models.push(&attempt.model);
+        }
+    }
+    lines.push(format!(
+        "  attempts: {} ({} failed, {} timed out); models tried: {}",
+        task.attempt_count,
+        task.failed_attempts,
+        task.timed_out_attempts,
+        if models.is_empty() {
+            "none recorded".to_string()
+        } else {
+            models.join(", ")
+        }
+    ));
+    // Each distinct failure (by step and output), newest first, with how
+    // often it happened.
+    let mut distinct: Vec<(&crate::commands::diagnose::GateFailureInfo, usize)> = Vec::new();
+    for failure in task.gate_failures.iter().rev() {
+        let step = failure.verify_step.as_ref().map(|step| step.index);
+        let seen = distinct.iter_mut().find(|(other, _)| {
+            other.verify_step.as_ref().map(|step| step.index) == step
+                && other.summary == failure.summary
+        });
+        match seen {
+            Some((_, times)) => *times += 1,
+            None => distinct.push((failure, 1)),
+        }
+    }
+    for (failure, times) in distinct.into_iter().take(MAX_REVISION_FAILED_STEPS) {
+        let step = failure.verify_step.as_ref();
+        let name = step.map_or_else(
+            || "a verify step".to_string(),
+            |step| match &step.phase {
+                Some(phase) => format!("verify step {} ({phase})", step.index + 1),
+                None => format!("verify step {}", step.index + 1),
+            },
+        );
+        let command = step
+            .and_then(|step| step.command.as_deref())
+            .map_or_else(String::new, |command| format!(": `{command}`"));
+        lines.push(format!(
+            "  failed {name}{command}, {times} time{}; class {}, {} failure; gate output:",
+            if times == 1 { "" } else { "s" },
+            enum_label(&failure.primary_class),
+            enum_label(&failure.failure_kind)
+        ));
+        lines.extend(failure.summary.lines().map(|line| format!("    {line}")));
+    }
+    if task.gate_failures.is_empty()
+        && let Some(error) = &task.last_error
+    {
+        lines.push(format!("  last error: {error}"));
+    }
+    lines.join("\n")
 }
 
 /// Run the planning agent to revise an existing plan and write the result.
@@ -455,7 +542,9 @@ pub async fn revise_plan_source(
         }
     };
 
-    let last_failure = last_run_failure(workdir, plan_id);
+    let budget =
+        revision_failure_budget(crate::prd::planner_context_window(models, &planner_model));
+    let last_failure = last_run_failure_context(workdir, plan_id, budget);
 
     // First attempt.
     let first_prompt =
@@ -912,6 +1001,146 @@ command = "echo ok"
         assert!(!plain.contains("last run"), "{plain}");
     }
 
+    /// 3215: the revision prompt carries the failed attempts' gate output,
+    /// not a one-line summary. T2 failed `cargo test -p x parse` twice the
+    /// same way: the prompt names the step's command, its failure class and
+    /// an excerpt of its output, once, with how often it failed. A small
+    /// budget cuts the section with a visible marker.
+    #[test]
+    fn revision_prompt_carries_failed_gate_output() {
+        use crate::graph_checkpoint::{GraphCheckpointStatus, start_plan_checkpoint};
+        use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
+        use roko_learn::telemetry::CostSource;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path();
+        let plan_dir = workdir.join("plans").join("my-plan");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks = minimal_valid_toml("my-plan").replace("total = 1", "total = 2")
+            + r#"
+[[task]]
+id = "T2"
+title = "Parse the retry limit"
+description = "Parse `retries` in `parse_config`."
+role = "implementer"
+tier = "focused"
+files = ["src/parse.rs"]
+depends_on = ["T1"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p x parse"
+"#;
+        std::fs::write(plan_dir.join("tasks.toml"), &tasks).expect("write tasks.toml");
+        let plan = crate::runner::plan_loader::Plan {
+            id: "my-plan".to_string(),
+            dir: plan_dir.clone(),
+            tasks: TasksFile::parse(&plan_dir.join("tasks.toml")).expect("parse tasks.toml"),
+            prd_excerpt: String::new(),
+        };
+        let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
+        checkpoint
+            .take_cost_ledger()
+            .persist(0, 0)
+            .expect("cost ledger");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish the run");
+
+        let now = chrono::Utc::now();
+        let attempt = |seconds: i64| CostRecord {
+            timestamp: (now + chrono::Duration::seconds(seconds)).to_rfc3339(),
+            model: "glm-4.7".into(),
+            provider: "openai_compat".into(),
+            role: "implementer".into(),
+            plan_id: "my-plan".into(),
+            task_id: "T2".into(),
+            complexity_band: "focused".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cached_tokens: 0,
+            cost_usd: 0.01,
+            duration_ms: 60_000,
+            success: false,
+            session_id: String::new(),
+            cost_source: CostSource::CliUsage,
+        };
+        let output = "verify[0:test] (`cargo test -p x parse`) failed: exit status 101\n\
+                      ---- parse::rejects_an_empty_limit stdout ----\n\
+                      thread 'parse::rejects_an_empty_limit' panicked at src/parse.rs:12:5:\n\
+                      assertion failed: limit.is_err()\n\
+                      test result: FAILED. 3 passed; 1 failed";
+        let failure = |seconds: i64| GateFailureRecord {
+            plan_id: "my-plan".into(),
+            task_id: "T2".into(),
+            gate_name: "graph-verify".into(),
+            rung: 0,
+            failure_kind: GateFailureKind::Permanent,
+            primary_class: FailureClass::TestExpectationFailure,
+            summary: output.into(),
+            recommended_action: GateFailureAction::Retry,
+            cargo_fix_candidate: false,
+            replan_candidate: false,
+            error_count: 1,
+            warning_count: 0,
+            timestamp: now + chrono::Duration::seconds(seconds),
+        };
+        let learn = workdir.join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("learn dir");
+        let jsonl = |rows: Vec<String>| rows.join("\n") + "\n";
+        let costs = [attempt(10), attempt(20)]
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize"))
+            .collect();
+        std::fs::write(learn.join("costs.jsonl"), jsonl(costs)).expect("costs");
+        let failures = [failure(11), failure(21)]
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize"))
+            .collect();
+        std::fs::write(learn.join("gate-failures.jsonl"), jsonl(failures)).expect("failures");
+
+        let context = last_run_failure_context(workdir, "my-plan", MIN_REVISION_FAILURE_CHARS)
+            .expect("the failed run is on record");
+        assert!(context.starts_with("- task `T2`:"), "{context}");
+        assert!(context.contains("models tried: glm-4.7"), "{context}");
+        assert!(
+            context.contains("failed verify step 1 (test): `cargo test -p x parse`, 2 times"),
+            "{context}"
+        );
+        assert!(
+            context.contains("class test_expectation_failure, permanent failure"),
+            "{context}"
+        );
+        assert!(
+            context.contains("    assertion failed: limit.is_err()"),
+            "{context}"
+        );
+        assert_eq!(context.matches("rejects_an_empty_limit stdout").count(), 1);
+
+        let prompt = build_revision_prompt("my-plan", &tasks, "split T2", Some(context.as_str()));
+        assert!(prompt.contains("test result: FAILED. 3 passed; 1 failed"), "{prompt}");
+
+        // The budget is a quarter of the planner's window, never under the
+        // floor; a section over it is cut with a marker.
+        assert_eq!(revision_failure_budget(None), MIN_REVISION_FAILURE_CHARS);
+        assert_eq!(revision_failure_budget(Some(200_000)), 200_000);
+        let padded = "x".repeat(MIN_REVISION_FAILURE_CHARS * 2);
+        std::fs::write(
+            learn.join("gate-failures.jsonl"),
+            jsonl(vec![
+                serde_json::to_string(&GateFailureRecord {
+                    summary: format!("verify[0:test] failed\n{padded}"),
+                    ..failure(30)
+                })
+                .expect("serialize"),
+            ]),
+        )
+        .expect("failures");
+        let cut = last_run_failure_context(workdir, "my-plan", 0).expect("still failed");
+        assert_eq!(cut.chars().count(), MIN_REVISION_FAILURE_CHARS);
+        assert!(cut.ends_with("characters ...]"), "{}", &cut[cut.len() - 80..]);
+    }
+
     /// A plan with no run on record has no failure to put in a revision
     /// prompt.
     #[test]
@@ -921,7 +1150,10 @@ command = "echo ok"
         std::fs::create_dir_all(&plan_dir).unwrap();
         std::fs::write(plan_dir.join("tasks.toml"), minimal_valid_toml("my-plan")).unwrap();
 
-        assert_eq!(last_run_failure(tmp.path(), "my-plan"), None);
+        assert_eq!(
+            last_run_failure_context(tmp.path(), "my-plan", MIN_REVISION_FAILURE_CHARS),
+            None
+        );
     }
 
     fn wrap_toml(toml: &str) -> String {

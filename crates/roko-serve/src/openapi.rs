@@ -394,7 +394,47 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         receive_heartbeat,
         list_history,
         get_history_session,
-        batch_submit
+        batch_submit,
+        batch_status,
+        inference_complete,
+        list_integrations,
+        get_integration,
+        adaptive_thresholds,
+        cascade,
+        learn_router_snapshot,
+        cost_tiers,
+        costs,
+        efficiency,
+        experiments,
+        gate_thresholds,
+        model_scorecard,
+        playbooks,
+        provider_outcomes,
+        reflexes,
+        retries,
+        role_costs,
+        learning_learn_router_snapshot,
+        runtime_feedback,
+        section_outcomes,
+        learning_costs,
+        learning_model_scorecard,
+        learning_playbooks,
+        learning_provider_outcomes,
+        learning_reflexes,
+        learning_retries,
+        learning_role_costs,
+        learning_runtime_feedback,
+        learning_section_outcomes,
+        show_artifact,
+        market_browse,
+        fork_artifact,
+        publish_artifact,
+        market_search,
+        metrics,
+        c_factor_metrics,
+        coverage,
+        engagement,
+        experiments_metric
     ),
     components(schemas(
         ApiErrorResponse,
@@ -1481,6 +1521,86 @@ doc_get_param!(
     "status",
     "gate_name"
 );
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get_param!(batch_status, "/inference/batch/{id}", "gateway", "id");
+doc_post_value!(inference_complete, "/inference/complete", "gateway");
+
+// ── integrations (gap-c50b85) ──────────────────────────────────────────────────────
+doc_get!(list_integrations, "/integrations", "integrations");
+doc_get_param!(
+    get_integration,
+    "/integrations/{name}",
+    "integrations",
+    "name"
+);
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(
+    adaptive_thresholds,
+    "/learn/adaptive-thresholds",
+    "learning"
+);
+doc_get!(cascade, "/learn/cascade", "learning");
+doc_get!(learn_router_snapshot, "/learn/cascade-router", "learning");
+doc_get!(cost_tiers, "/learn/cost-tiers", "learning");
+doc_get!(costs, "/learn/costs", "learning");
+doc_get!(efficiency, "/learn/efficiency", "learning");
+doc_get!(experiments, "/learn/experiments", "learning");
+doc_get!(gate_thresholds, "/learn/gate-thresholds", "learning");
+doc_get!(model_scorecard, "/learn/model-scorecard", "learning");
+doc_get!(playbooks, "/learn/playbooks", "learning");
+doc_get!(provider_outcomes, "/learn/provider-outcomes", "learning");
+doc_get!(reflexes, "/learn/reflexes", "learning");
+doc_get!(retries, "/learn/retries", "learning");
+doc_get!(role_costs, "/learn/role-costs", "learning");
+doc_get!(learning_learn_router_snapshot, "/learn/router", "learning");
+doc_get!(runtime_feedback, "/learn/runtime-feedback", "learning");
+doc_get!(section_outcomes, "/learn/section-outcomes", "learning");
+doc_get!(learning_costs, "/learning/costs", "learning");
+doc_get!(
+    learning_model_scorecard,
+    "/learning/model-scorecard",
+    "learning"
+);
+doc_get!(learning_playbooks, "/learning/playbooks", "learning");
+doc_get!(
+    learning_provider_outcomes,
+    "/learning/provider-outcomes",
+    "learning"
+);
+doc_get!(learning_reflexes, "/learning/reflexes", "learning");
+doc_get!(learning_retries, "/learning/retries", "learning");
+doc_get!(learning_role_costs, "/learning/role-costs", "learning");
+doc_get!(
+    learning_runtime_feedback,
+    "/learning/runtime-feedback",
+    "learning"
+);
+doc_get!(
+    learning_section_outcomes,
+    "/learning/section-outcomes",
+    "learning"
+);
+
+// ── marketplace (gap-c50b85) ───────────────────────────────────────────────────────
+doc_get_param!(
+    show_artifact,
+    "/marketplace/artifacts/{ref}",
+    "marketplace",
+    "ref"
+);
+doc_get!(market_browse, "/marketplace/browse", "marketplace");
+doc_post_value!(fork_artifact, "/marketplace/fork", "marketplace");
+doc_post_value!(publish_artifact, "/marketplace/publish", "marketplace");
+doc_get!(market_search, "/marketplace/search", "marketplace");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(metrics, "/metrics", "status");
+doc_get!(c_factor_metrics, "/metrics/c_factor", "status");
+doc_get!(coverage, "/metrics/coverage", "status");
+doc_get!(engagement, "/metrics/engagement", "status");
+doc_get!(experiments_metric, "/metrics/experiments", "status");
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {

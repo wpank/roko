@@ -77,8 +77,6 @@ pub mod error;
 pub mod error_enrichment;
 /// Persistent storage for error patterns discovered during plan execution.
 pub mod error_pattern_store;
-/// Event subscriber that fans runtime events into learning subsystems.
-pub mod event_subscriber;
 /// Unified learning events emitted by routing, evaluation, and runtime feedback.
 pub mod events;
 /// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.

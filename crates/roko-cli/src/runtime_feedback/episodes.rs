@@ -17,7 +17,7 @@ use roko_learn::episode_logger::{
 };
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
-use roko_learn::telemetry::AttemptVerdictRecord;
+use roko_learn::telemetry::{AttemptVerdictRecord, VerifyStepVerdict};
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -108,15 +108,13 @@ impl FeedbackSink for EpisodeSink {
                     serde_json::Value::String(class.to_string()),
                 );
             }
-            // An authored verify gate failed: record the verdict, and any
-            // sibling task the failure is attributed to, for hindsight.
+            // An authored verify gate failed: record any sibling task the
+            // failure is attributed to, for hindsight. The steps' own
+            // verdicts come from the settled verdict (backlog 2106).
             if let Some(reason) = failure_reason
                 .as_deref()
                 .filter(|r| r.starts_with("verify: "))
             {
-                episode
-                    .gate_verdicts
-                    .push(EpisodeGateVerdict::new("verify", false));
                 let blamed = super::hindsight::blamed_tasks(plan_id, reason);
                 if !blamed.is_empty() {
                     episode
@@ -231,6 +229,21 @@ impl FeedbackSink for EpisodeSink {
     }
 }
 
+/// The episode's gate verdict of one of the attempt's verify steps: its rung,
+/// result, exit code, duration and skip reason. Its command stays out.
+fn step_gate_verdict(step: &VerifyStepVerdict) -> EpisodeGateVerdict {
+    EpisodeGateVerdict {
+        gate: step.rung.clone(),
+        passed: step.passed == Some(true),
+        signature: None,
+        exit_code: step.exit_code,
+        duration_ms: step.duration_ms,
+        timed_out: step.timed_out,
+        skipped: step.skipped,
+        skip_reason: step.skip_reason.clone(),
+    }
+}
+
 /// Place the episode at its attempt's start and settlement, from the
 /// settled verdict's timing, not at the moment the row is written (backlog
 /// 2105). Without that timing it started `duration_ms` before it completed.
@@ -262,6 +275,9 @@ fn attach_attempt_times(
 /// never reported (bug-55fd84), and the helper model calls made for the
 /// attempt (bug-62e3f4), which stay out of `usage`: that is the agent run's.
 fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
+    // One gate verdict per verify step, on passes and failures alike
+    // (backlog 2106).
+    episode.gate_verdicts = settled.steps.iter().map(step_gate_verdict).collect();
     let executed = &settled.executed;
     episode.extra.insert(
         "model_reported".into(),
@@ -443,8 +459,11 @@ mod tests {
         );
     }
 
+    /// A verify failure keeps its whole reason and its class. Its gate
+    /// verdicts are the settled verdict's steps, which this event lacks: no
+    /// synthetic `verify` entry stands in for them (backlog 2106).
     #[tokio::test]
-    async fn verify_failure_keeps_the_full_reason_and_a_failed_verdict() {
+    async fn verify_failure_keeps_the_full_reason_and_its_class() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("episodes.jsonl");
         let sink = EpisodeSink::at(&path);
@@ -475,10 +494,7 @@ mod tests {
         let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
         assert_eq!(episode.failure_reason.as_deref(), Some(reason));
         assert_eq!(episode.extra["failure_class"], "verify");
-        assert_eq!(
-            episode.gate_verdicts,
-            [EpisodeGateVerdict::new("verify", false)]
-        );
+        assert!(episode.gate_verdicts.is_empty(), "{episode:?}");
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
     }
 
@@ -735,5 +751,88 @@ mod tests {
         assert_eq!(lasted(&episodes[0]), 1_500);
         // `outcome()` took 1234 ms.
         assert_eq!(lasted(&episodes[1]), 1_234);
+    }
+
+    /// A settled verdict of `outcome` whose verify steps did `steps`.
+    fn settled_with_steps(
+        outcome: roko_learn::telemetry::AttemptOutcome,
+        steps: Vec<VerifyStepVerdict>,
+    ) -> AttemptVerdictRecord {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
+
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(AttemptIdentity::new(&key), outcome, true);
+        verdict.steps = steps;
+        verdict
+    }
+
+    /// backlog 2106: an episode records one gate verdict per verify step of
+    /// its settled attempt, by the step's rung, with its exit code, duration
+    /// and skip reason; a passing attempt's steps record passes.
+    #[tokio::test]
+    async fn episode_records_per_rung_verdicts_and_skip_reasons() {
+        use roko_learn::telemetry::AttemptOutcome;
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let failed_step = VerifyStepVerdict {
+            rung: "verify:0/test".into(),
+            passed: Some(false),
+            exit_code: Some(101),
+            duration_ms: Some(812),
+            ..VerifyStepVerdict::default()
+        };
+        let skipped_step = VerifyStepVerdict {
+            rung: "verify:1/clippy".into(),
+            skipped: true,
+            skip_reason: Some("fail_fast".into()),
+            ..VerifyStepVerdict::default()
+        };
+        let passed_step = VerifyStepVerdict {
+            rung: "verify:0/test".into(),
+            passed: Some(true),
+            exit_code: Some(0),
+            duration_ms: Some(640),
+            ..VerifyStepVerdict::default()
+        };
+        let failed =
+            settled_with_steps(AttemptOutcome::GateFailed, vec![failed_step, skipped_step]);
+        let passed = settled_with_steps(AttemptOutcome::Passed, vec![passed_step]);
+        sink.on_event(&completed(Some(failed)))
+            .await
+            .expect("failed attempt's episode");
+        sink.on_event(&completed(Some(passed)))
+            .await
+            .expect("passing attempt's episode");
+
+        let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+        assert_eq!(
+            episodes[0].gate_verdicts,
+            [
+                EpisodeGateVerdict {
+                    gate: "verify:0/test".into(),
+                    exit_code: Some(101),
+                    duration_ms: Some(812),
+                    ..EpisodeGateVerdict::default()
+                },
+                EpisodeGateVerdict {
+                    gate: "verify:1/clippy".into(),
+                    skipped: true,
+                    skip_reason: Some("fail_fast".into()),
+                    ..EpisodeGateVerdict::default()
+                },
+            ]
+        );
+        assert_eq!(
+            episodes[1].gate_verdicts,
+            [EpisodeGateVerdict {
+                gate: "verify:0/test".into(),
+                passed: true,
+                exit_code: Some(0),
+                duration_ms: Some(640),
+                ..EpisodeGateVerdict::default()
+            }]
+        );
     }
 }

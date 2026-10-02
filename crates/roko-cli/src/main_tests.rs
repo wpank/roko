@@ -969,6 +969,28 @@ fn plan_run_rebuild_uses_the_command_workdir() {
     );
 }
 
+/// bug-17544e: `plan run --help` does not advertise the flags `plan run`
+/// rejects (gap-d60281). They still parse, so `plan run` can say what to
+/// use instead.
+#[test]
+fn plan_run_help_hides_the_flags_plan_run_rejects() {
+    let help = Cli::try_parse_from(["roko", "plan", "run", "--help"])
+        .expect_err("help")
+        .to_string();
+    assert!(help.contains("--log-file"), "{help}");
+    for flag in [
+        "--skip-preflight",
+        "--screenshots",
+        "--screenshot-interval",
+        "--screenshot-dir",
+        "--batch-size",
+    ] {
+        assert!(!help.contains(flag), "{flag} is advertised:\n{help}");
+    }
+    assert!(Cli::try_parse_from(["roko", "plan", "run", "plans", "--batch-size", "2"]).is_ok());
+    assert!(Cli::try_parse_from(["roko", "plan", "run", "plans", "--skip-preflight"]).is_ok());
+}
+
 #[test]
 fn cli_parses_plan_create() {
     let cli =

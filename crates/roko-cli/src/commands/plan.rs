@@ -199,37 +199,32 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// run completion, etc.) is serialized as a single JSON line and flushed.
         #[arg(long, value_name = "PATH")]
         log_file: Option<PathBuf>,
-        /// Skip the preflight environment checks (config, credentials, toolchain,
-        /// plans, stale lock) and proceed directly to plan execution.
-        #[arg(long)]
+        /// Rejected: the Graph engine always runs its provider preflight. Hidden
+        /// from `--help`; parsed so `plan run` can say so (gap-d60281).
+        #[arg(long, hide = true)]
         skip_preflight: bool,
         // NOTE: `--force-backend` was removed from this subcommand and
         // consolidated into the global `--model` flag (hidden alias).
         // Use `roko plan run --model <slug> plans/` instead.
-        /// Capture event-driven screenshots during execution.
-        ///
-        /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/` with
-        /// a manifest.json linking each screenshot to its trigger event.
-        /// Triggered at: plan startup, task completion, gate completion, wave
-        /// completion, agent spawn/exit, and errors.
-        #[arg(long)]
+        /// Rejected: plan runs take no screenshots (use `roko screenshot`).
+        /// Hidden from `--help`; parsed so `plan run` can say so (gap-d60281).
+        #[arg(long, hide = true)]
         screenshots: bool,
-        /// Maximum seconds between periodic full-state screenshot captures.
+        /// Rejected with `--screenshots`; hidden from `--help`.
         #[arg(
             long,
+            hide = true,
             value_name = "SECONDS",
             default_value_t = 60,
             value_parser = clap::value_parser!(u64).range(1..=86_400)
         )]
         screenshot_interval: u64,
-        /// Exact directory for this run's screenshot timeline. Relative paths
-        /// are resolved against the plan workdir. Existing paths receive a
-        /// collision-safe numeric suffix.
-        #[arg(long, value_name = "PATH")]
+        /// Rejected with `--screenshots`; hidden from `--help`.
+        #[arg(long, hide = true, value_name = "PATH")]
         screenshot_dir: Option<PathBuf>,
-        /// Pause execution for review after every N plan completions.
-        /// Natural checkpoints for overnight or batch runs.
-        #[arg(long, value_name = "N")]
+        /// Rejected: plan runs do not pause after N plans. Hidden from
+        /// `--help`; parsed so `plan run` can say so (gap-d60281).
+        #[arg(long, hide = true, value_name = "N")]
         batch_size: Option<usize>,
         /// Run each task in an isolated git worktree so agents cannot
         /// interfere with each other or the user's working tree. This is the

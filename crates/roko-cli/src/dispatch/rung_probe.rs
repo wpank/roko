@@ -22,7 +22,7 @@ use std::time::Duration;
 use roko_agent::dispatcher::HandlerResolver;
 use roko_agent::provider::{AgentOptions, LocalToolRuntime};
 use roko_agent::safety::contract::AgentContract;
-use roko_agent::{Agent, AgentResult, SafetyLayer, create_agent_for_model};
+use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::{
     ToolCall, ToolCategory, ToolContext, ToolDef, ToolHandler, ToolPermission, ToolResult,
@@ -182,7 +182,8 @@ async fn probe_rung(config: &RokoConfig, model: &str, workdir: &Path) -> RungPro
             allowed_tools: Some(vec![PROBE_TOOL.to_string()]),
             ..AgentContract::default()
         }),
-        safety_layer: Some(SafetyLayer::permissive()),
+        // No safety_layer: the factory builds the production one from these
+        // options, whose contract allows only the probe's echo tool.
         ..AgentOptions::default()
     };
     let verdict = match create_agent_for_model(config, model, options) {

@@ -2310,20 +2310,6 @@ pub fn build_graph_feedback_context(
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
-    // ── P2-01: ShadowRunner ─────────────────────────────────────────
-    //
-    // Records shadow dispatch decisions (infrastructure-only; no actual
-    // shadow task spawn). Uses the configured default model as the
-    // shadow alternative.
-    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
-        roko_learn::shadow::ShadowConfig {
-            model_slug: config.agent.default_model.clone(),
-            prompt_variant: None,
-            label: "graph-shadow".to_string(),
-        },
-        graph_learn_dir.join("shadow-results.jsonl"),
-    ));
-
     let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
@@ -2346,7 +2332,6 @@ pub fn build_graph_feedback_context(
         post_gate_reflection_path: learning.then_some(post_gate_reflections),
         replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        shadow_runner: Some(shadow_runner),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.

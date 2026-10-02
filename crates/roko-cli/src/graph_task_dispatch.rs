@@ -39,7 +39,6 @@ use roko_graph::cells::{
 use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::reflex_store::{ReflexObservation, ReflexStore};
-use roko_learn::shadow::ShadowRunner;
 use roko_learn::telemetry::{AttemptKeyed, AttemptOutcome};
 
 use crate::dispatch::{
@@ -952,21 +951,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // A plan with `[meta] skip_enrichment = true` is dispatched as
         // authored: no dream/cross-cut routing advice.
         let skip_enrichment = self.plan_skips_enrichment(spec);
-
-        // ── P2-01: ShadowRunner decision recording ──────────────────────
-        //
-        // Record whether this task would be shadowed. Infrastructure-only:
-        // we record the decision but do not actually spawn a shadow task.
-        if let Some(shadow) = &self.feedback.shadow_runner {
-            let should = shadow.should_shadow();
-            tracing::debug!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                should_shadow = should,
-                shadow_model = %shadow.config.model_slug,
-                "P2-01: shadow decision recorded (infrastructure-only)"
-            );
-        }
 
         // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
         //

@@ -138,8 +138,6 @@ pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
-/// Shadow testing loop (Loop 12) — runs alternative configs alongside production tasks for A/B comparison.
-pub mod shadow;
 pub mod skill_library;
 pub mod task_metric;
 pub mod telemetry;

@@ -2422,7 +2422,24 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
             pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
+            category_stats: self.persisted_category_stats(),
         }
+    }
+
+    /// The per-(model, category) counts in their persisted form: by model,
+    /// then category (bug-a6a3cd).
+    fn persisted_category_stats(
+        &self,
+    ) -> HashMap<String, HashMap<TaskCategory, CategoryModelStats>> {
+        let mut by_model: HashMap<String, HashMap<TaskCategory, CategoryModelStats>> =
+            HashMap::new();
+        for ((slug, category), stats) in self.category_stats.lock().iter() {
+            by_model
+                .entry(slug.clone())
+                .or_default()
+                .insert(*category, stats.clone());
+        }
+        by_model
     }
 
     /// Save what this router has learned into the snapshot at `path`.
@@ -2470,6 +2487,7 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state,
             pareto_frontier,
+            category_stats,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -2535,6 +2553,17 @@ impl CascadeRouter {
         if !pareto_frontier.is_empty() {
             let mut frontier_state = router.pareto_frontier.lock();
             frontier_state.frontier = pareto_frontier;
+        }
+
+        // Restore the per-category counts, under the slugs they were
+        // recorded for (bug-a6a3cd).
+        {
+            let mut restored = router.category_stats.lock();
+            for (slug, categories) in category_stats {
+                for (category, stats) in categories {
+                    restored.insert((slug.clone(), category), stats);
+                }
+            }
         }
 
         // The router has learned nothing yet. Its baseline keeps the counters

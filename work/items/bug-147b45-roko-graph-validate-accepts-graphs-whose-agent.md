@@ -3,13 +3,15 @@ id = "bug-147b45"
 kind = "bug"
 title = "roko graph validate accepts graphs whose agent nodes are pass-through stubs"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "core"
 size = "S"
 subsystem = ["roko-graph"]
 created = 2026-10-01
-updated = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "c7560e213"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-91a34e"
 anchors = ["crates/roko-graph/src/engine.rs", "crates/roko-cli/src/commands/graph.rs"]
@@ -17,7 +19,7 @@ lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = ["bug-91a34e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "cargo test -p roko-graph --lib validate_flags_stub_cells"
+command = "grep -qw 'fn validate_flags_stub_cells' crates/roko-graph/src/engine.rs && cargo test -p roko-graph --lib validate_flags_stub_cells"
 +++
 
 ## Problem
@@ -35,3 +37,20 @@ Make validate report stub cells: an error, or a warning that `run` will refuse t
 ## Notes
 
 - Reported on 2026-10-01 by wk-filer4, working on bug-91a34e, during the evening close-out round.
+- 2026-10-02 (wk-climain): implemented on work/bug-28c193; cargo verification deferred to the batch check.
+  `GraphEngine::validate` reports each node whose descriptor is a stub ("node 'act' is a stub cell ('claude-agent');
+  production starts refuse it"), sorted, unless the engine was built `with_allow_test_stubs(true)`. That is the
+  check `validate_for_start` makes, so `roko graph validate` now fails where `roko graph run` refuses, and
+  `graph run`'s preflight `validate()` reports the stub before the engine starts. Error, not warning: such a graph
+  cannot run in production. The example graphs that use `act`/`claude-agent` (cognitive-loop, conditional-branch,
+  score-compose, task-execution) now report it.
+  `roko-graph/tests/plan_conversion.rs::cognitive_loop_loads_and_validates` expected no issues for the loop's
+  `claude-agent` node; it now expects that one issue, and no issues with stubs allowed. Test:
+  `validate_flags_stub_cells`. The verify now guards the cargo filter with a grep for the test.
+- 2026-10-02 (wk-climain, gate 6e fix): `roko graph run` first runs `AuthoredGraphController::preflight`
+  (roko-execution), whose structural check built an engine without `with_allow_test_stubs` and so started
+  refusing the `noop` test stub. That broke roko-cli's `graph_command::tests::graph_run_with_json_flag_produces_json_output`
+  and `graph_run_with_quiet_flag_succeeds`, whose run engine allows stubs under `cfg!(test)`. The preflight now
+  allows stubs and leaves them to the start, which knows the run's policy. That is where stub refusal lived before
+  this item. In production `graph run` still refuses a stub graph, now at the run engine's `validate()`, and
+  `graph validate` still reports it. Test: `preflight_leaves_stub_cells_to_the_start` (roko-execution).

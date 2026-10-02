@@ -273,5 +273,13 @@ mod tests {
             "{}",
             lifetime.reason
         );
+
+        // The agent factory builds the data-LLM boundary (gap-b0d514).
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
+        assert!(
+            graph_engine_inert_settings(&config)
+                .iter()
+                .all(|setting| setting.key != "agent.data_llm")
+        );
     }
 }

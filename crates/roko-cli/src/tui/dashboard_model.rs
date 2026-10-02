@@ -877,11 +877,13 @@ impl TuiDashboardModel {
                     }
                 ),
             },
+            // The meta-patterns CrossEpisodeConsolidator finds across the
+            // loaded episodes, computed on each render.
             LearningSubsystemRow {
-                subsystem: "PatternMiner",
+                subsystem: "MetaPatterns",
                 updates: format!("{pattern_count} patterns"),
                 last: learning_patterns_last_updated(&self.episodes),
-                health: format!("● {}", if pattern_count > 0 { "mining" } else { "idle" }),
+                health: format!("● {}", if pattern_count > 0 { "found" } else { "idle" }),
             },
             LearningSubsystemRow {
                 subsystem: "ProviderHealth",

@@ -408,6 +408,8 @@ pub struct ProviderHealthRegistry {
     save_lock: Arc<Mutex<()>>,
     save_tx: Option<Sender<PersistCommand>>,
     save_worker: Option<JoinHandle<()>>,
+    /// Registry that counts recorded failures ([`Self::attach_metrics`]).
+    metrics: std::sync::OnceLock<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 impl std::fmt::Debug for ProviderHealthRegistry {
@@ -435,7 +437,36 @@ impl ProviderHealthRegistry {
             save_lock: Arc::new(Mutex::new(())),
             save_tx: None,
             save_worker: None,
+            metrics: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Count each failure this registry records in `registry` as well as in
+    /// the tracing field (gap-a95898); serve attaches the registry `/metrics`
+    /// renders. The first registry attached stays.
+    pub fn attach_metrics(&self, registry: Arc<roko_core::obs::metrics::MetricRegistry>) {
+        let _ = self.metrics.set(registry);
+    }
+
+    /// Count one failure of `provider` in the attached registry, if any.
+    fn count_failure(&self, provider: &str, error: ErrorClass) {
+        use roko_core::obs::metrics::LabelSet;
+        use roko_core::obs::schema::{
+            LABEL_ERROR_TYPE, LABEL_PROVIDER, ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR,
+        };
+
+        let Some(registry) = self.metrics.get() else {
+            return;
+        };
+        let error_type = format!("{error:?}");
+        let pairs = [
+            (LABEL_PROVIDER, provider),
+            (LABEL_ERROR_TYPE, error_type.as_str()),
+        ];
+        let failures = &ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR;
+        registry
+            .register_counter(failures.name, failures.help, LabelSet::from_pairs(&pairs))
+            .inc();
     }
 
     /// Record a successful request for `provider_id`.
@@ -466,6 +497,7 @@ impl ProviderHealthRegistry {
             error_class = ?error,
             "provider failure recorded"
         );
+        self.count_failure(&key, error);
         let mut providers = self.providers.lock();
         let health = providers
             .entry(key.clone())
@@ -502,6 +534,7 @@ impl ProviderHealthRegistry {
             until_ms,
             "provider usage exhaustion recorded"
         );
+        self.count_failure(&key, ErrorClass::Exhausted);
         let mut providers = self.providers.lock();
         let health = providers
             .entry(key.clone())
@@ -628,6 +661,7 @@ impl ProviderHealthRegistry {
             save_lock,
             save_tx: Some(save_tx),
             save_worker: Some(save_worker),
+            metrics: std::sync::OnceLock::new(),
         }
     }
 

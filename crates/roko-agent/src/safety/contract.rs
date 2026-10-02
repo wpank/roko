@@ -431,6 +431,17 @@ impl AgentContract {
         self
     }
 
+    /// Whether the role may reach the network: the contract has no
+    /// `NoNetworkAccess` invariant and lets the role call a network tool.
+    #[must_use]
+    pub fn permits_network(&self) -> bool {
+        let no_network = self
+            .invariants
+            .iter()
+            .any(|invariant| matches!(invariant, Invariant::NoNetworkAccess));
+        !no_network && NETWORK_TOOLS.iter().any(|tool| self.permits_tool(tool))
+    }
+
     /// Whether this contract imposes a tool capability restriction.
     #[must_use]
     pub fn has_tool_restrictions(&self) -> bool {

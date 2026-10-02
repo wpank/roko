@@ -97,6 +97,11 @@ impl GraphTaskDispatcher {
                     step,
                     reason,
                     exhausted: false,
+                    // The cascade router's shadow pick beside the rung (G56).
+                    router_pick: plan
+                        .route_decision
+                        .as_ref()
+                        .and_then(|decision| decision.proposals.learned.clone()),
                 };
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -129,6 +134,7 @@ impl GraphTaskDispatcher {
                     step: 0,
                     reason: LadderReason::Pinned,
                     exhausted: false,
+                    router_pick: None,
                 };
                 (pinned, false)
             }
@@ -241,6 +247,7 @@ mod tests {
 
     use roko_core::config::routing::LadderRung;
     use roko_graph::cells::NoopAttemptRecorder;
+    use roko_learn::cascade_router::CascadeRouter;
     use tempfile::tempdir;
 
     use super::*;
@@ -449,5 +456,68 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 .expect_err("every attempt fails verification");
         }
         assert_eq!(called_models(&temp), [CHEAP, CHEAP, TOP]);
+    }
+
+    /// While the ladder routes, an attempt's verdict names the cascade
+    /// router's shadow pick beside its rung (G56): the router's own pick its
+    /// route row records. Without a cascade router the verdict names none.
+    #[tokio::test]
+    async fn ladder_attempt_records_router_pick() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = || GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (plain, task) = ladder_fixture(&temp).await;
+        let config = Arc::clone(&plain.config);
+        let models = vec![CHEAP.to_string(), TOP.to_string()];
+        let router = Arc::new(CascadeRouter::new(models));
+        let factory = SharedAgentFactory::new(Arc::clone(&config), None, Some(router), None).await;
+        let routed = GraphTaskDispatcher::new(Arc::new(factory), config, temp.path().to_path_buf())
+            .with_feedback(feedback());
+        let plain = plain.with_feedback(feedback());
+        let spec = make_spec(&task);
+        for (dispatcher, run) in [(&routed, "routed"), (&plain, "plain")] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("the attempt fails its verify step");
+            dispatcher.close_run_attempts(run);
+        }
+        let rows = |run: &str, file: &str| -> Vec<serde_json::Value> {
+            std::fs::read_to_string(runs_dir.join(run).join(file))
+                .expect("the run's log")
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect()
+        };
+        let verdict = |run: &str| {
+            rows(run, "attempts.jsonl")
+                .into_iter()
+                .find(|row| row["schema_version"] == "roko.verdict/1")
+                .expect("the attempt's verdict")
+        };
+
+        let routed_verdict = verdict("routed");
+        assert_eq!(routed_verdict["ladder"]["reason"], "start");
+        let pick = routed_verdict["ladder"]["router_pick"]
+            .as_str()
+            .expect("the cascade router's shadow pick");
+        let decisions = rows("routed", "decisions.jsonl");
+        let route = decisions
+            .iter()
+            .find(|row| row["decision_point"] == "route")
+            .expect("the attempt's route row");
+        assert_eq!(route["source"], "ladder");
+        assert_eq!(route["proposals"]["learned"], pick);
+
+        let plain_verdict = verdict("plain");
+        assert_eq!(plain_verdict["ladder"]["reason"], "start");
+        assert!(
+            plain_verdict["ladder"].get("router_pick").is_none(),
+            "{plain_verdict}"
+        );
     }
 }

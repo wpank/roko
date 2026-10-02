@@ -856,6 +856,12 @@ pub struct AttemptLadder {
     /// ladder is exhausted, and the task needs a split or a replan.
     #[serde(default)]
     pub exhausted: bool,
+    /// The cascade router's own pick beside the rung, which did not run
+    /// (its shadow pick, G56); `None` without a cascade router, and for a
+    /// pinned model. The attempt's route row has it as `proposals.learned`;
+    /// this copy keeps the verdict readable alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_pick: Option<String>,
 }
 
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not

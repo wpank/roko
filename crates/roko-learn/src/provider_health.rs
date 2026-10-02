@@ -219,10 +219,14 @@ impl ProviderHealth {
             self.recent_outcomes.pop_front();
         }
 
-        // Condition 0: billing/credit and usage-window errors are definitive —
-        // trip immediately on the first occurrence so routing skips this
-        // provider.
-        let should_trip_billing = matches!(error, ErrorClass::Billing | ErrorClass::Exhausted);
+        // Condition 0: billing/credit, usage-window and auth errors are
+        // definitive — trip immediately on the first occurrence so routing
+        // skips this provider (an auth failure will not fix itself within a
+        // run, backlog 1115).
+        let should_trip_billing = matches!(
+            error,
+            ErrorClass::Billing | ErrorClass::Exhausted | ErrorClass::AuthFailure
+        );
 
         // Condition 1: trip to Open after 3 consecutive failures.
         let should_trip_consecutive = self.consecutive_failures >= 3;
@@ -400,12 +404,11 @@ impl ProviderHealth {
             ErrorClass::RateLimit => 60_000,
             ErrorClass::Timeout => 10_000,
             ErrorClass::ServerError => 30_000,
-            ErrorClass::AuthFailure => 300_000,
-            // Billing failures are not transient: they persist until the
-            // account holder resolves the payment/credit issue. Use a 24-hour
-            // cooldown so the provider is effectively excluded for the
-            // remainder of any realistic plan execution.
-            ErrorClass::Billing => 86_400_000,
+            // Billing and auth failures are not transient: they persist until
+            // the account holder resolves the payment/credit issue or logs in
+            // again. Use a 24-hour cooldown so the provider is effectively
+            // excluded for the remainder of any realistic plan execution.
+            ErrorClass::Billing | ErrorClass::AuthFailure => 86_400_000,
             ErrorClass::Exhausted => DEFAULT_EXHAUSTION_COOLDOWN_MS,
             _ => 5_000,
         }
@@ -1686,7 +1689,7 @@ mod tests {
         health.record_failure(ErrorClass::AuthFailure, 100);
         health.record_failure(ErrorClass::AuthFailure, 200);
         health.record_failure(ErrorClass::AuthFailure, 300);
-        assert_eq!(health.cooldown_until, Some(300_300));
+        assert_eq!(health.cooldown_until, Some(86_400_300));
     }
 
     /// Registry stores per-provider state and filters unavailable providers.
@@ -1922,9 +1925,9 @@ mod tests {
         assert_eq!(h.state, CircuitState::Open);
         assert_eq!(h.cooldown_until, Some(60_300));
 
-        // 5th failure with AuthFailure (300s cooldown) extends it
+        // 5th failure with AuthFailure (24h cooldown) extends it
         h.record_failure(ErrorClass::AuthFailure, 500);
-        assert_eq!(h.cooldown_until, Some(300_500));
+        assert_eq!(h.cooldown_until, Some(86_400_500));
         assert_eq!(h.consecutive_failures, 5);
     }
 
@@ -1935,7 +1938,7 @@ mod tests {
         assert_eq!(h.cooldown_ms(ErrorClass::RateLimit), 60_000);
         assert_eq!(h.cooldown_ms(ErrorClass::Timeout), 10_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ServerError), 30_000);
-        assert_eq!(h.cooldown_ms(ErrorClass::AuthFailure), 300_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::AuthFailure), 86_400_000);
         assert_eq!(h.cooldown_ms(ErrorClass::Billing), 86_400_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ContentPolicy), 5_000);
         assert_eq!(h.cooldown_ms(ErrorClass::ContextOverflow), 5_000);
@@ -1956,6 +1959,18 @@ mod tests {
         // 24h cooldown: 1_000 + 86_400_000 = 86_401_000
         assert_eq!(h.cooldown_until, Some(86_401_000));
         // Should be unavailable for the entire cooldown.
+        assert!(!h.is_available(86_400_999));
+    }
+
+    /// backlog 1115: a single auth failure takes the provider out at once,
+    /// for as long as a billing failure does: a login does not fix itself
+    /// within a run.
+    #[test]
+    fn auth_failure_trips_circuit_immediately() {
+        let mut h = new_provider_health("claude_cli");
+        h.record_failure(ErrorClass::AuthFailure, 1_000);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(h.cooldown_until, Some(86_401_000));
         assert!(!h.is_available(86_400_999));
     }
 
@@ -2493,7 +2508,7 @@ mod tests {
         registry.record_failure("bad", ErrorClass::AuthFailure);
         registry.record_failure("bad", ErrorClass::AuthFailure);
         registry.record_failure("bad", ErrorClass::AuthFailure);
-        // AuthFailure has 300s cooldown, so definitely still Open
+        // AuthFailure has a 24h cooldown, so definitely still Open
         assert!(!registry.is_healthy("bad"));
     }
 

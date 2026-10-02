@@ -43,6 +43,11 @@ const UNGUARDED_CLI_KINDS: [ProviderKind; 4] = [
 /// `role` of the cost and efficiency rows of a call failover refused.
 const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 
+/// Failover refusal class of a provider that rejected roko's credentials: a
+/// login does not fix itself within a run, so the refusal is definitive and
+/// the error says how to log in (backlog 1115).
+const AUTH_FAILURE: &str = "auth_failure";
+
 /// Why the provider behind a model cannot take this dispatch.
 #[derive(Debug, Clone)]
 struct ProviderRefusal {
@@ -56,8 +61,8 @@ struct ProviderRefusal {
     /// When the provider is expected to accept work again (unix ms).
     until_ms: Option<i64>,
     /// Calling the provider again cannot help (missing, not dispatchable, no
-    /// credentials, out of usage, billing), unlike an open circuit that may
-    /// already have recovered.
+    /// credentials, rejected credentials, out of usage, billing), unlike an
+    /// open circuit that may already have recovered.
     definitive: bool,
     /// Why, as a class ([`roko_learn::telemetry::FailoverRefusal::class`]).
     class: &'static str,
@@ -386,6 +391,7 @@ impl GraphTaskDispatcher {
         {
             Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
             Some(ErrorClass::Billing) => ("billing", "billing failure", true),
+            Some(ErrorClass::AuthFailure) => (AUTH_FAILURE, "not logged in or key rejected", true),
             _ => (
                 "circuit_open",
                 "circuit open after repeated failures",
@@ -593,21 +599,50 @@ impl GraphTaskDispatcher {
                 skipped.join("; ")
             )
         };
-        let wait = refusals
+        // A provider that rejected roko's credentials needs a login, which
+        // waiting does not bring (backlog 1115).
+        let mut fixes: Vec<String> = refusals
             .iter()
-            .filter_map(|refusal| refusal.until_ms)
-            .min()
-            .map_or_else(
-                || "wait for the provider to recover".to_string(),
-                |ms| format!("wait until {}", format_local_ms(ms)),
-            );
+            .filter(|refusal| refusal.class == AUTH_FAILURE)
+            .map(|refusal| self.credentials_hint(refusal))
+            .collect();
+        let auth_only = !fixes.is_empty() && fixes.len() == refusals.len();
+        fixes.push(fallback);
+        if auth_only {
+            fixes.push("Then re-run.".to_string());
+        } else {
+            let wait = refusals
+                .iter()
+                .filter(|refusal| refusal.class != AUTH_FAILURE)
+                .filter_map(|refusal| refusal.until_ms)
+                .min()
+                .map_or_else(
+                    || "wait for the provider to recover".to_string(),
+                    |ms| format!("wait until {}", format_local_ms(ms)),
+                );
+            fixes.push(format!("Otherwise {wait} and re-run."));
+        }
+        let fixes = fixes.join(" ");
         RokoError::Gateway {
             category: PROVIDER_EXHAUSTED_CATEGORY,
             retryable: false,
-            message: format!(
-                "no usable provider for this task: {refused}. {fallback} Otherwise {wait} and re-run."
-            ),
+            message: format!("no usable provider for this task: {refused}. {fixes}"),
         }
+    }
+
+    /// What to do about `refusal`'s provider rejecting roko's credentials,
+    /// and how to use it again before its skip ends (backlog 1115).
+    fn credentials_hint(&self, refusal: &ProviderRefusal) -> String {
+        let providers = self.config.effective_providers();
+        let key_env = providers
+            .get(&refusal.provider_id)
+            .and_then(|provider| provider.api_key_env.as_deref());
+        format!(
+            "`{}` rejected its credentials: {}, then delete its entry in \
+             .roko/learn/provider-health.json to use it before its skip ends.",
+            refusal.provider_id,
+            credentials_fix(refusal.provider_kind, key_env)
+        )
     }
 
     /// " (e.g. kimi-k2-5 needs MOONSHOT_API_KEY, …)" for configured API-key models.
@@ -630,6 +665,26 @@ impl GraphTaskDispatcher {
         } else {
             format!(" (e.g. {})", examples.join(", "))
         }
+    }
+}
+
+/// How to restore credentials a provider of `kind` rejected (backlog 1115): a
+/// CLI agent's login, which needs USER and HOME in its environment, or a valid
+/// key in the variable its config names.
+fn credentials_fix(kind: ProviderKind, key_env: Option<&str>) -> String {
+    let login = match kind {
+        ProviderKind::ClaudeCli => Some("claude /login"),
+        ProviderKind::CodexCli => Some("codex login"),
+        ProviderKind::GeminiCli => Some("gemini /auth"),
+        ProviderKind::CursorCli | ProviderKind::CursorAcp => Some("cursor-agent login"),
+        _ => None,
+    };
+    match (login, key_env) {
+        (Some(login), _) => format!("run `{login}`; under `env -i` also pass USER and HOME"),
+        (None, Some(env)) => {
+            format!("put a valid key in {env} (~/.roko/.env is loaded automatically at startup)")
+        }
+        (None, None) => "log its CLI in or give it valid credentials".to_string(),
     }
 }
 
@@ -1176,6 +1231,74 @@ exit 1
             1,
             "max_retries = 2 must not re-run an exhausted provider"
         );
+    }
+
+    /// backlog 1115: one auth failure takes its provider out of the run.
+    /// With no usable alternative the attempt fails non-retryably before any
+    /// call, and the error says how to log in rather than to wait.
+    #[tokio::test]
+    async fn auth_failure_refuses_provider_with_login_hint() {
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+echo called >> '{}'
+echo 'Not logged in' >&2
+exit 1
+"#,
+                calls.display()
+            ),
+        );
+        let config = Arc::new(failover_config(
+            &claude,
+            "http://127.0.0.1:9/v1",
+            &["keyless-model"],
+        ));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        health.record_failure("claude_cli", ErrorClass::AuthFailure);
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(health),
+        );
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell(dispatcher, "claude-sonnet-4-6")
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("a provider that rejected its credentials fails the task");
+
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_EXHAUSTED_CATEGORY);
+        assert!(!retryable);
+        assert!(
+            message.contains("not logged in or key rejected"),
+            "{message}"
+        );
+        assert!(message.contains("run `claude /login`"), "{message}");
+        assert!(message.contains("USER and HOME"), "{message}");
+        assert!(message.contains("Then re-run."), "{message}");
+        assert!(!message.contains("wait until"), "{message}");
+        assert_eq!(invocations(&calls), 0, "no call reaches the provider");
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

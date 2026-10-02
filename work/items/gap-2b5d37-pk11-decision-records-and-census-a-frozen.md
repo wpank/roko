@@ -64,3 +64,8 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK10 (gap-f61823).
 - Existing work items this package covers or touches: gap-644040. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+- 2222: implemented at 035749c5c (frozen settle_gate_learning returns before the thresholds; the post-gate reflection is skipped). Cargo verification deferred to the batch gate.
+- 2223: implemented at c243f761b (`frozen_learning_run_writes_no_learned_state` in plan_runner.rs; a frozen reflex check peeks instead of counting a hit; FeedbackService saves section effects and knowledge scores only when an outcome changed them). Cargo verification deferred to the batch gate. Its "Done when" also asks to close gap-644040 and tick it in spec-6ac537: left to the coordinator.

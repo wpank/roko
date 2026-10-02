@@ -33,8 +33,8 @@ const FAST_MAX_DECLARED_CONTEXT_BYTES: usize = 24 * 1024;
 const FAST_MAX_SERIAL_OWNERS_PER_FILE: usize = 2;
 const ANCHOR_CONTEXT_RADIUS: usize = 8;
 
-/// Binding default-template task ceiling used by direct plan generation and
-/// regeneration paths that do not originate from PRD template frontmatter.
+/// Binding default-template task ceiling for plan generation and regeneration
+/// (the `default` plan template).
 pub const DEFAULT_GENERATED_TASK_LIMIT: usize = 8;
 
 /// Structural limits applied to a plan before it can execute.
@@ -1273,7 +1273,6 @@ mod tests {
                 max_parallel: Some(1),
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
-                source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
@@ -1317,25 +1316,29 @@ mod tests {
         );
     }
 
-    /// A plan that still names a `source_prd` validates exactly like one
-    /// that does not: nothing looks for the PRD any more.
+    /// A plan written before the PRD pipeline went (2026-10-02) may still set
+    /// `[meta] source_prd`. It loads, and validates exactly like the same plan
+    /// without it: nothing reads the key any more.
     #[test]
-    fn source_prd_does_not_change_validation() {
+    fn a_plan_that_names_a_source_prd_still_loads() {
         let root = tempdir().expect("root");
         std::fs::create_dir(root.path().join("src")).expect("src");
         std::fs::write(root.path().join("src/lib.rs"), "pub struct Widget;\n").expect("source");
         let plan_dir = root.path().join("plans/p1");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(plan_dir.join("tasks.toml"), "[meta]").expect("manifest");
+        let toml = |meta: &str| {
+            format!(
+                "[meta]\nplan = \"p1\"\n{meta}\n[[task]]\nid = \"T1\"\ntitle = \"A\"\n\
+                 status = \"ready\"\n"
+            )
+        };
+        let with = TasksFile::parse_str(&toml("source_prd = \"missing-prd\"")).expect("old plan");
+        let without = TasksFile::parse_str(&toml("")).expect("plan");
         let validate = |plan: &TasksFile| {
             validate_plan_context(plan, root.path(), &plan_dir, PlanExecutionPolicy::normal())
         };
-        let without = validate(&tasks(task()));
-        for source_prd in ["missing-prd", "../not a slug"] {
-            let mut plan = tasks(task());
-            plan.meta.source_prd = Some(source_prd.into());
-            assert_eq!(validate(&plan), without, "source_prd = {source_prd:?}");
-        }
+        assert_eq!(validate(&with), validate(&without));
     }
 
     #[test]

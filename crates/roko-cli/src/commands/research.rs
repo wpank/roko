@@ -501,7 +501,7 @@ pub(crate) async fn cmd_research(
             if !episodes_path.exists() {
                 println!("No episodes found. Run some tasks first:");
                 println!("  roko plan run plans/<plan-dir>");
-                println!("  roko do \"<prompt>\"");
+                println!("  roko run \"<prompt>\"");
                 return Ok(1);
             }
 

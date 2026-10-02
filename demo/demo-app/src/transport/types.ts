@@ -77,23 +77,6 @@ export interface MarketplaceJob {
   auto_execute: boolean;
 }
 
-export interface PrdSummary {
-  slug: string;
-  title: string;
-  status: string;
-  plan_count: number;
-  task_total: number;
-  task_done: number;
-  task_failed: number;
-}
-
-export interface TaskSummary {
-  id: string;
-  title: string;
-  status: string;
-  agent: string;
-}
-
 export interface KnowledgeBrowseEntry {
   id: string;
   kind: string;
@@ -245,8 +228,6 @@ export interface DashboardSnapshot {
   cascade_router_json: string;
   gate_thresholds_json: string;
   marketplace_jobs: MarketplaceJob[];
-  atelier_prds: PrdSummary[];
-  atelier_tasks: Record<string, TaskSummary[]>;
   knowledge_entries: KnowledgeBrowseEntry[];
   payment_count: number;
   total_payment_korai: number;
@@ -286,7 +267,6 @@ export type DashboardEvent =
   | { type: 'gate_thresholds_updated'; snapshot_json: string }
   | { type: 'agent_completed'; agent_id: string; plan_id: string; task_id: string; attempt: number }
   | { type: 'marketplace_jobs_updated'; jobs: MarketplaceJob[] }
-  | { type: 'atelier_prds_updated'; prds: PrdSummary[]; tasks: Record<string, TaskSummary[]> }
   | { type: 'knowledge_entries_updated'; entries: KnowledgeBrowseEntry[] }
   | { type: 'job_execution_started'; job_id: string; job_type: string; agent_id: string }
   | { type: 'job_progress'; job_id: string; percent: number; message: string }
@@ -328,7 +308,6 @@ export const DASHBOARD_EVENT_TYPES = [
   'gate_thresholds_updated',
   'agent_completed',
   'marketplace_jobs_updated',
-  'atelier_prds_updated',
   'knowledge_entries_updated',
   'job_execution_started',
   'job_progress',
@@ -447,16 +426,6 @@ function isMarketplaceJob(value: unknown): value is MarketplaceJob {
     && isBoolean(value.auto_execute);
 }
 
-function isPrdSummary(value: unknown): value is PrdSummary {
-  if (!isRecord(value)) return false;
-  return hasStrings(value, ['slug', 'title', 'status'])
-    && hasUints(value, ['plan_count', 'task_total', 'task_done', 'task_failed']);
-}
-
-function isTaskSummary(value: unknown): value is TaskSummary {
-  return isRecord(value) && hasStrings(value, ['id', 'title', 'status', 'agent']);
-}
-
 function isKnowledgeEntry(value: unknown): value is KnowledgeBrowseEntry {
   if (!isRecord(value)) return false;
   return hasStrings(value, ['id', 'kind', 'content_preview', 'tier', 'created_at'])
@@ -552,10 +521,6 @@ export function parseDashboardEvent(raw: Record<string, unknown>): DashboardEven
       break;
     case 'marketplace_jobs_updated':
       valid = isArrayOf(event.jobs, isMarketplaceJob);
-      break;
-    case 'atelier_prds_updated':
-      valid = isArrayOf(event.prds, isPrdSummary)
-        && isRecordOf(event.tasks, (tasks): tasks is TaskSummary[] => isArrayOf(tasks, isTaskSummary));
       break;
     case 'knowledge_entries_updated':
       valid = isArrayOf(event.entries, isKnowledgeEntry);
@@ -760,8 +725,6 @@ function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
     && isString(value.cascade_router_json, MAX_WIRE_JSON)
     && isString(value.gate_thresholds_json, MAX_WIRE_JSON)
     && isArrayOf(value.marketplace_jobs, isMarketplaceJob)
-    && isArrayOf(value.atelier_prds, isPrdSummary)
-    && isRecordOf(value.atelier_tasks, (tasks): tasks is TaskSummary[] => isArrayOf(tasks, isTaskSummary))
     && isArrayOf(value.knowledge_entries, isKnowledgeEntry)
     && isUint(value.payment_count)
     && isNumber(value.total_payment_korai)

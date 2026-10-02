@@ -438,7 +438,6 @@ pub use job::{
     CreateJobRequest, FileJobStore, JobError, JobEvaluation, JobExecutionMode, JobExecutionService,
     JobFilter, JobGateResult, JobPriority, JobProgressEntry, JobStats, JobStatus, JobSubmission,
     JobTransitionReceipt, JobType, LegacyMigrationDiagnostic, MalformedJobFile, MarketplaceJob,
-    PrdSummary, TaskSummary as JobTaskSummary,
 };
 pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{

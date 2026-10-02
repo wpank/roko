@@ -910,7 +910,7 @@ pub struct GraphPlanRunParams {
     /// default_effort` (`roko run --effort`, gap-9980c6); `None` keeps the
     /// config's.
     pub effort: Option<String>,
-    /// Pick models without the cascade router (`roko do --no-cascade`,
+    /// Pick models without the cascade router (`roko run --no-cascade`,
     /// gap-9980c6): the routing ladder, else the default model, routes each
     /// task. The run's outcomes still teach the router.
     pub no_cascade: bool,

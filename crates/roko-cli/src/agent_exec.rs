@@ -1,6 +1,6 @@
-//! Agent execution helper for direct CLI flows such as PRD/research/plan generation.
+//! Agent execution helper for direct CLI flows such as research and plan generation.
 //!
-//! Used by `roko prd`, `roko research`, and `roko plan generate` to invoke
+//! Used by `roko research`, `roko plan generate` and `roko run --plan` to invoke
 //! an agent that can read/write files while preserving provider-aware routing,
 //! safety scoping, resume threading, and learning-episode persistence.
 

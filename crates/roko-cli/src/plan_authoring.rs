@@ -789,7 +789,7 @@ const AUTHORING_ROLE: &str = "strategist";
 /// instead: the same three records, attributed to the plan under a pseudo task
 /// id ([`GENERATION_SPEND_TASK_ID`] or [`REVISION_SPEND_TASK_ID`]). Each call
 /// is recorded as it returns, so a retry or a failed operation is counted too.
-/// Research, `roko do` and PRD drafting record through
+/// Research records through
 /// [`AuthoringSpend::operation`]: the same records, with no plan id, under the
 /// operation's own task id and role.
 pub struct AuthoringSpend {
@@ -827,7 +827,7 @@ impl AuthoringSpend {
     }
 
     /// Spend of a one-off agent operation in `workdir` outside any plan, such
-    /// as research, `roko do` or PRD drafting, recorded under `task_id` and
+    /// as research, recorded under `task_id` and
     /// `role` (bug-86ff56).
     #[must_use]
     pub fn operation(workdir: &Path, task_id: &str, role: &str) -> Self {

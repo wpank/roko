@@ -15,14 +15,14 @@ export const ORACLE_COMMANDS: CommandDef[] = [
   },
   {
     id: 'data-agent',
-    command: 'roko do "Query Aave V3 and Compound lending rates on the local Anvil fork. Write structured analysis to knowledge store."',
+    command: 'roko run "Query Aave V3 and Compound lending rates on the local Anvil fork. Write structured analysis to knowledge store."',
     description: 'Data agent writes DeFi rate analysis',
     timeout: 240000,
     target: { pane: 0 },
   },
   {
     id: 'strategy-agent',
-    command: 'roko do "Read DeFi rate analysis from knowledge store. Recommend optimal USDC allocation across protocols."',
+    command: 'roko run "Read DeFi rate analysis from knowledge store. Recommend optimal USDC allocation across protocols."',
     description: 'Strategy agent consumes knowledge',
     timeout: 240000,
     target: { pane: 1 },

@@ -1298,6 +1298,7 @@ impl PlanCmd {
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. }
             | Self::Generate { .. }
+            | Self::Revise { .. }
             | Self::Prepare { .. }
             | Self::Shorthand(_) => true,
         }

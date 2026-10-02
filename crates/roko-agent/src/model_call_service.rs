@@ -3550,9 +3550,9 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
         let estimate = svc.cost_predict(&req);
 
         assert_eq!(estimate.model, "mystery-model");
-        // Unknown models use SONNET_FALLBACK pricing so cost is non-zero
-        // when there are estimated tokens.
-        assert!(estimate.predicted_cost_usd >= 0.0);
+        // An unknown model is unpriced (gap-ad0d39): its predicted cost is
+        // the unknown 0.0, not Sonnet's rates.
+        assert!(estimate.predicted_cost_usd.abs() < 1e-12);
     }
 
     #[test]

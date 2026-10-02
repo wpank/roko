@@ -2353,12 +2353,17 @@ fn daimon_affect_path(workdir: &Path) -> PathBuf {
 }
 
 /// #144: the daimon state a plan run shares between the feedback facade and
-/// dispatch; `None` unless `[daimon] strategy_space.dimensions` has exactly
-/// 8 entries.
+/// dispatch. `None` unless `[daimon] enabled` turns affect on (it is held,
+/// dec-e70592, so off by default) and `strategy_space.dimensions` has
+/// exactly 8 entries. Without it no attempt is appraised, routing gets the
+/// neutral policy, and `.roko/daimon/affect.json` is neither read nor saved.
 fn graph_daimon_state(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
 ) -> Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>> {
+    if !config.daimon.enabled {
+        return None;
+    }
     let dims_vec = &config.daimon.strategy_space.dimensions;
     if dims_vec.len() == 8 {
         // SAFETY: len == 8 is checked above, so try_into() is infallible here.
@@ -3988,6 +3993,21 @@ mod tests {
         assert!(!state_dir.path().join("control.json").exists());
         forward_control_file(state_dir.path(), &sender);
         assert!(commands.try_recv().is_err(), "nothing more to route");
+    }
+
+    /// 1211: affect is held (dec-e70592), so a default plan run builds no
+    /// daimon state: it appraises no attempt and shifts no routing tier.
+    /// `[daimon] enabled = true` turns it on.
+    #[test]
+    fn default_config_builds_no_daimon_state() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+
+        assert!(graph_daimon_state(workdir.path(), &config).is_none());
+        assert!(!daimon_affect_path(workdir.path()).exists());
+
+        config.daimon.enabled = true;
+        assert!(graph_daimon_state(workdir.path(), &config).is_some());
     }
 
     #[test]

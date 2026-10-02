@@ -12,7 +12,12 @@
 //! - `terminal_projections_agree`: after a pass, a failed verify step, a
 //!   timeout and SIGTERM mid-task, the exit code, the `--log-file`
 //!   `run.completed` line, the checkpoint status and `roko plan status`
-//!   agree, and no agent the run registered is left alive.
+//!   agree, `run.completed` and the checkpoint name the same stop request,
+//!   and no agent the run registered is left alive.
+//! - `terminal_projections_agree_in_task_worktrees`: the timeout and
+//!   SIGTERM cases again, with the task in its own git worktree, which is
+//!   the default since gap-4ec59f. Every other case pins the shared working
+//!   tree, as `ScriptedPlanWorkspace` does.
 //! - `interrupt_settles_when_agent_ignores_sigterm`: an agent that ignores
 //!   SIGTERM is killed, and the run exits 143 in bounded time.
 //! - `timeout_retry_continues_from_partial_work`: a timed-out attempt's edits
@@ -131,7 +136,8 @@ fn hang() -> Turn {
 
 /// `roko` with `args` in the workspace's repository, as its user: provider
 /// keys, `ROKO_*` variables and the invoking environment's log and config
-/// variables are removed, as `ScriptedPlanWorkspace::run_plan` does.
+/// variables are removed, as `ScriptedPlanWorkspace::run_plan` does, and so
+/// are the variables that would point roko's git at another repository.
 fn roko(workspace: &ScriptedPlanWorkspace, args: &[&str]) -> Command {
     let mut command = Command::new(cargo_bin("roko"));
     command
@@ -149,7 +155,14 @@ fn roko(workspace: &ScriptedPlanWorkspace, args: &[&str]) -> Command {
             command.env_remove(name);
         }
     }
-    for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
+    for name in [
+        "RUST_LOG",
+        "XDG_CONFIG_HOME",
+        "CLAUDECODE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+    ] {
         command.env_remove(name);
     }
     // Warnings and errors on stderr, so a failure explains itself.
@@ -292,6 +305,13 @@ fn checkpoint_status(workspace: &ScriptedPlanWorkspace) -> String {
         .as_str()
         .unwrap_or_default()
         .to_string()
+}
+
+/// The stop [`PLAN`]'s checkpoint names in its `roko.run.stop@1` extension
+/// (gap-fab2cc), such as `SIGTERM` or `deadline`; `None` when no stop
+/// request ended its run.
+fn checkpoint_stop(workspace: &ScriptedPlanWorkspace) -> Option<String> {
+    roko_cli::graph_checkpoint::canonical_stop_cause(&workspace.repo, PLAN)
 }
 
 /// The status `roko plan status` reports for [`PLAN`].
@@ -453,7 +473,11 @@ struct Projections {
     exit_code: Option<i32>,
     outcome: String,
     logged_exit_code: Option<i64>,
+    /// The stop request `run.completed` names (`interrupted_by`).
+    logged_stop: Option<String>,
     checkpoint: String,
+    /// The stop request the checkpoint names (`roko.run.stop@1`).
+    checkpoint_stop: Option<String>,
     status: String,
 }
 
@@ -466,44 +490,129 @@ impl Projections {
             exit_code: ended.status.code(),
             outcome: end["outcome"].as_str().unwrap_or_default().to_string(),
             logged_exit_code: end["exit_code"].as_i64(),
+            logged_stop: end["interrupted_by"].as_str().map(str::to_string),
             checkpoint: checkpoint_status(workspace),
+            checkpoint_stop: checkpoint_stop(workspace),
             status: plan_status(workspace),
         }
     }
 
     /// A run that exited `exit_code`, which its `run.completed` line logs
     /// with `outcome`, whose checkpoint says `checkpoint`, and which `roko
-    /// plan status` reports as `status`.
+    /// plan status` reports as `status`. No stop request ended it.
     fn expected(exit_code: i32, outcome: &str, checkpoint: &str, status: &str) -> Self {
         Self {
             exit_code: Some(exit_code),
             outcome: outcome.to_string(),
             logged_exit_code: Some(i64::from(exit_code)),
+            logged_stop: None,
             checkpoint: checkpoint.to_string(),
+            checkpoint_stop: None,
             status: status.to_string(),
         }
     }
+
+    /// The same run, ended by the stop request `stop`, which its
+    /// `run.completed` line and its checkpoint both name (gap-1d8a49).
+    fn stopped_by(mut self, stop: &str) -> Self {
+        self.logged_stop = Some(stop.to_string());
+        self.checkpoint_stop = Some(stop.to_string());
+        self
+    }
 }
 
-/// Run [`PLAN`] with one task `T1` whose agent plays `turn`, and return its
-/// workspace, provider, and how it ended. With `terminate`, SIGTERM goes to
-/// `roko` once the agent has started.
-fn run_one_task(
+/// One way a one-task run of [`PLAN`] ends, and what its projections say.
+struct Ending {
+    name: &'static str,
     task: Task,
+    /// What the task's agent does.
     turn: Turn,
+    /// SIGTERM goes to `roko` once the agent has started.
     terminate: bool,
-) -> (
-    ScriptedPlanWorkspace,
-    common::scripted_provider::ScriptedProvider,
-    Ended,
-) {
+    /// The task runs in its own git worktree (`--worktree-per-task`).
+    task_worktrees: bool,
+    expected: Projections,
+}
+
+impl Ending {
+    /// A run in the shared working tree whose task `task`'s agent plays
+    /// `turn`, and whose projections say `expected`.
+    fn new(name: &'static str, task: Task, turn: Turn, expected: Projections) -> Self {
+        Self {
+            name,
+            task,
+            turn,
+            terminate: false,
+            task_worktrees: false,
+            expected,
+        }
+    }
+
+    /// The same run, sent SIGTERM once its agent has started.
+    fn terminated(mut self) -> Self {
+        self.terminate = true;
+        self
+    }
+
+    /// The same run, with its task in its own git worktree, as `plan run`
+    /// runs tasks by default since gap-4ec59f.
+    fn in_task_worktrees(mut self) -> Self {
+        self.task_worktrees = true;
+        self
+    }
+}
+
+/// A run whose task's attempt runs past its 3 s timeout.
+fn timeout_ending() -> Ending {
+    Ending::new(
+        "timeout",
+        Task::new("T1", "true", 3),
+        hang(),
+        Projections::expected(1, "failed", "failed", "failed"),
+    )
+}
+
+/// A run sent SIGTERM while its agent works.
+fn sigterm_ending() -> Ending {
+    Ending::new(
+        "SIGTERM mid-task",
+        Task::new("T1", "true", 60),
+        hang(),
+        Projections::expected(143, "cancelled", "interrupted", "interrupted")
+            .stopped_by("SIGTERM"),
+    )
+    .terminated()
+}
+
+/// Run `ending`, and check that its projections say what it expects, that
+/// its agent ran in the checkout it should, and that none of its agents is
+/// left alive.
+fn assert_ending(ending: Ending) {
+    let Ending {
+        name,
+        task,
+        turn,
+        terminate,
+        task_worktrees,
+        expected,
+    } = ending;
+    let case = if task_worktrees {
+        format!("{name}, task worktrees")
+    } else {
+        name.to_string()
+    };
     let (workspace, provider) = ScriptedPlanWorkspace::with_provider(
         PLAN,
         &tasks_toml(&[task]),
         &Script::new().otherwise(turn),
         CONFIG,
     );
-    let run = Run::start(plan_run(&workspace, &[]));
+    let args: &[&str] = if task_worktrees {
+        &["--worktree-per-task"]
+    } else {
+        &[]
+    };
+    let run = Run::start(plan_run(&workspace, args));
     let ended = if terminate {
         wait_for("the agent to start", || {
             provider.calls().iter().any(|call| call.pid.is_some())
@@ -513,69 +622,73 @@ fn run_one_task(
     } else {
         run.wait(RUN_LIMIT)
     };
-    (workspace, provider, ended)
+
+    assert_eq!(
+        Projections::of(&workspace, &ended),
+        expected,
+        "{case}\n{}",
+        ended.context()
+    );
+    let calls = provider.calls();
+    assert!(
+        !calls.is_empty(),
+        "{case}: no agent ran\n{}",
+        ended.context()
+    );
+    // A task worktree is a checkout under `.roko/worktrees/`; otherwise the
+    // agent works in the repository itself.
+    let worktrees = workspace.repo.join(".roko/worktrees");
+    for call in &calls {
+        assert_eq!(
+            call.cwd.starts_with(&worktrees),
+            task_worktrees,
+            "{case}: the agent ran in {}",
+            call.cwd.display()
+        );
+    }
+    let agents: Vec<u32> = calls
+        .iter()
+        .filter_map(|call| call.pid)
+        .chain(registered_agent_pids(&workspace))
+        .collect();
+    for pid in agents {
+        assert!(gone(pid), "{case}: agent {pid} outlived the run");
+    }
 }
 
 /// q-1faa0c, behaviour 2: whatever ends a run, its exit code, its
-/// `run.completed` line, its checkpoint and `roko plan status` agree, and
-/// none of its agents is left alive.
+/// `run.completed` line, its checkpoint and `roko plan status` agree, the
+/// stop request that ended it is named alike in `run.completed` and the
+/// checkpoint, and none of its agents is left alive.
 #[test]
 fn terminal_projections_agree() {
-    let cases = [
-        (
+    for ending in [
+        Ending::new(
             "pass",
             Task::new("T1", "true", 60),
             edit(),
-            false,
             Projections::expected(0, "succeeded", "succeeded", "complete"),
         ),
-        (
+        Ending::new(
             "failed verify step",
             Task::new("T1", "false", 60),
             edit(),
-            false,
             Projections::expected(1, "failed", "failed", "failed"),
         ),
-        (
-            "timeout",
-            Task::new("T1", "true", 3),
-            hang(),
-            false,
-            Projections::expected(1, "failed", "failed", "failed"),
-        ),
-        (
-            "SIGTERM mid-task",
-            Task::new("T1", "true", 60),
-            hang(),
-            true,
-            Projections::expected(143, "cancelled", "interrupted", "interrupted"),
-        ),
-    ];
-    for (case, task, turn, terminate, expected) in cases {
-        let (workspace, provider, ended) = run_one_task(task, turn, terminate);
-        assert_eq!(
-            Projections::of(&workspace, &ended),
-            expected,
-            "{case}\n{}",
-            ended.context()
-        );
-        if terminate {
-            assert_eq!(
-                run_completed(&workspace)["interrupted_by"],
-                "SIGTERM",
-                "{case}"
-            );
-        }
-        let agents: Vec<u32> = provider
-            .calls()
-            .iter()
-            .filter_map(|call| call.pid)
-            .chain(registered_agent_pids(&workspace))
-            .collect();
-        assert!(!agents.is_empty(), "{case}: no agent ran");
-        for pid in agents {
-            assert!(gone(pid), "{case}: agent {pid} outlived the run");
-        }
+        timeout_ending(),
+        sigterm_ending(),
+    ] {
+        assert_ending(ending);
+    }
+}
+
+/// gap-1d8a49: a timeout and SIGTERM end a run whose task runs in its own
+/// git worktree, the default since gap-4ec59f, as they end one in the
+/// shared working tree.
+#[test]
+fn terminal_projections_agree_in_task_worktrees() {
+    for ending in [timeout_ending(), sigterm_ending()] {
+        assert_ending(ending.in_task_worktrees());
     }
 }
 
@@ -593,8 +706,8 @@ exec sleep 120
 "#;
 
 /// q-1faa0c, behaviour 3: SIGTERM to a run whose agent ignores SIGTERM ends
-/// in bounded time: the run exits 143, its checkpoint says `interrupted`,
-/// and the agent is killed.
+/// in bounded time: the run exits 143, its checkpoint says `interrupted` and
+/// names SIGTERM as the stop, and the agent is killed.
 #[test]
 fn interrupt_settles_when_agent_ignores_sigterm() {
     let workspace = ScriptedPlanWorkspace::new(
@@ -626,6 +739,17 @@ fn interrupt_settles_when_agent_ignores_sigterm() {
         ended.context()
     );
     assert!(gone(pid), "the agent that ignored SIGTERM outlived the run");
+    // The checkpoint names the stop, and so does `run.completed` unless the
+    // run was forced out before it could write one (gap-1d8a49).
+    let stop = checkpoint_stop(&workspace);
+    assert_eq!(stop.as_deref(), Some("SIGTERM"), "{}", ended.context());
+    let logged = run_completed(&workspace)["interrupted_by"]
+        .as_str()
+        .map(str::to_string);
+    assert!(
+        logged.is_none() || logged == stop,
+        "run.completed names {logged:?}, the checkpoint {stop:?}"
+    );
 }
 
 // ── timeout_retry_continues_from_partial_work ───────────────────────────
@@ -683,9 +807,9 @@ fn timeout_retry_continues_from_partial_work() {
 
 /// q-1faa0c, behaviour 5: a FAST run (`ROKO_FAST_MODE`) stops at its
 /// deadline (`ROKO_FAST_PLAN_DEADLINE_SECS`) as SIGTERM stops a run: it
-/// exits 143, its `run.completed` line names the deadline, its checkpoint
-/// says `interrupted`, and its agent is gone. Per-attempt FAST clamps are
-/// gap-4a6dcb's.
+/// exits 143, its checkpoint says `interrupted`, its `run.completed` line
+/// and its checkpoint both name the deadline, and its agent is gone. The
+/// per-attempt FAST bounds (gap-4a6dcb) have tests of their own.
 #[test]
 fn fast_deadline_stops_the_run() {
     // A loaded machine may reach a short deadline before the agent starts:
@@ -714,11 +838,11 @@ fn fast_deadline_stops_the_run() {
 
         assert_eq!(
             Projections::of(&workspace, &ended),
-            Projections::expected(143, "cancelled", "interrupted", "interrupted"),
+            Projections::expected(143, "cancelled", "interrupted", "interrupted")
+                .stopped_by("deadline"),
             "{}",
             ended.context()
         );
-        assert_eq!(run_completed(&workspace)["interrupted_by"], "deadline");
         for pid in agents {
             assert!(gone(pid), "agent {pid} outlived the run");
         }

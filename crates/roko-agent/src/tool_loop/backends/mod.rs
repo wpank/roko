@@ -69,6 +69,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind);
             if let Some(ref env_var) = provider.api_key_env {
@@ -110,6 +111,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::PerplexityApi);
             if let Some(ref env_var) = provider.api_key_env {
@@ -143,6 +145,7 @@ pub fn create_openai_compat_backend(
                 )
                 .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::CerebrasApi);
             if let Some(ref env_var) = provider.api_key_env {
@@ -190,6 +193,7 @@ pub fn create_openai_compat_backend_with_limiter(
                         || should_use_max_completion_tokens(&model.slug),
                 )
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind)
                 .with_rate_limiter(rate_limiter);
@@ -215,6 +219,7 @@ pub fn create_openai_compat_backend_with_limiter(
                         || should_use_max_completion_tokens(&model.slug),
                 )
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_stream_usage(provider.stream_usage.unwrap_or(true))
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::CerebrasApi)
                 .with_rate_limiter(rate_limiter);
@@ -355,6 +360,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 
@@ -545,6 +551,51 @@ mod tests {
         }
     }
 
+    /// backlog 2101: the factory's backend asks for usage on a streaming
+    /// request, unless the provider sets `stream_usage = false`.
+    #[tokio::test]
+    async fn provider_stream_usage_opt_out_reaches_the_request() {
+        for (stream_usage, asks) in [(None, true), (Some(false), false)] {
+            let (base_url, captured, handle) = spawn_chat_server("data: [DONE]\n\n".to_string());
+            let provider = ProviderConfig {
+                base_url: Some(base_url),
+                api_key_env: None,
+                stream_usage,
+                ..zai_provider()
+            };
+            let backend = create_openai_compat_backend(
+                &provider,
+                &glm_5_1_profile(),
+                Arc::new(MockPoster::new(String::new())),
+            )
+            .expect("create backend");
+            let _events = backend
+                .stream_turn(
+                    &[json!({ "role": "user", "content": "hi" })],
+                    &RenderedTools::JsonArray(json!([])),
+                    &SessionState::default(),
+                    &crate::tool_loop::TurnConfig::default(),
+                )
+                .await
+                .expect("stream turn");
+            handle.join().expect("server thread");
+
+            let request = captured
+                .lock()
+                .expect("capture lock")
+                .clone()
+                .expect("captured request");
+            let (_, body) = request.split_once("\r\n\r\n").expect("request body");
+            let body: Value = serde_json::from_str(body).expect("request body json");
+            assert_eq!(body["stream"], true, "{stream_usage:?}");
+            assert_eq!(
+                body.pointer("/stream_options/include_usage") == Some(&Value::Bool(true)),
+                asks,
+                "{stream_usage:?}: {body}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn create_tool_loop_backend_routes_gemini_native_models_to_generate_content() {
         let response = json!({
@@ -572,6 +623,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let model = ModelProfile {
             provider: "gemini".to_string(),

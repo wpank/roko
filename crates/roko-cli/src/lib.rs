@@ -215,6 +215,7 @@ pub mod share;
 pub mod snapshot_migrate;
 pub mod snapshot_reconcile;
 pub mod spec_gate;
+pub mod spec_red_on_base;
 pub mod spinner;
 pub mod status;
 pub mod subscriptions;

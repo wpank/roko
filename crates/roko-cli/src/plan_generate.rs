@@ -127,8 +127,10 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
 /// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`].
 const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
-Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
-Do not include prose, explanations, Rust code, or markdown outside the TOML block.
+Your response MUST be a single ```toml fenced code block containing ONLY valid TOML, followed
+only by one ```accept:accept/<file> block for each acceptance test the plan pins (see
+"Planner-written acceptance tests" below).
+Do not include prose, explanations, Rust code, or markdown outside those blocks.
 
 MINIMUM VALID STRUCTURE (use this as your template):
 ```toml
@@ -183,6 +185,8 @@ You are a task decomposition engine for software projects. Your job is to take a
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
 5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
+6. **Executable spec (TSS v1)**: Every task states its `goal`, one observable outcome in a sentence. Its `acceptance` criteria are `AC1: …`, `AC2: …` items, each an input and its output, a state, an exit code or a message that a check can observe. Every test-class verify step names the criteria it proves in `covers = ["AC1"]` and says `expect = "fail_on_base"` (it fails on the unchanged code and passes once the task is done), or `expect = "pass_on_base"` for a regression check that must pass before and after. Every `read_files` entry has a `why`. `non_goals` lists what the task must not do or change. A compile check passes on the unchanged code, and a test filter that matches no test passes too, so a `fail_on_base` step checks what the task adds: a `grep -q` for the new item before the compile, or the test's pass count (`cargo test -p x new_test 2>&1 | grep -q 'ok. 1 passed'`).
+7. **Say what you don't know**: When the source leaves a choice open that changes the outcome (a limit, a format, which caller wins), write it in the task's `open_questions` instead of guessing; such a plan will not run until it is answered. Leave `open_questions` empty when nothing is open.
 
 ## Task tiers
 
@@ -211,7 +215,13 @@ status = "ready"
 [[task]]
 id = "T1"
 title = "Add FundingRate struct to core types"
+goal = "roko-core exports a FundingRate type that other crates can construct and read."
 description = "Define the FundingRate data structure in roko-core for storing funding rate observations."
+acceptance = [
+    "AC1: types.rs defines `pub struct FundingRate`, and `cargo check -p roko-core` passes.",
+]
+non_goals = ["Do not change any existing type in types.rs."]
+open_questions = []
 status = "ready"
 tier = "mechanical"       # mechanical | focused | integrative | architectural
 # model_hint omitted — runtime picks the best model automatically
@@ -237,12 +247,20 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-core"
+command = "grep -q 'pub struct FundingRate' crates/roko-core/src/types.rs && cargo check -p roko-core"
+covers = ["AC1"]
+expect = "fail_on_base"
 
 [[task]]
 id = "T2"
 title = "Wire FundingRate display into CLI status output"
+goal = "`roko status` prints the latest funding rate."
 description = "Import FundingRate from roko-core and add it to the status command output."
+acceptance = [
+    "AC1: `cargo test -p roko-cli status_shows_funding_rate` passes: the status output has a `funding rate:` line.",
+]
+non_goals = ["Do not modify roko-core."]
+open_questions = []
 status = "ready"
 tier = "focused"
 # model_hint omitted — runtime selects automatically
@@ -267,8 +285,10 @@ anti_patterns = [
 ]
 
 [[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli"
+phase = "test"
+command = "cargo test -p roko-cli status_shows_funding_rate 2>&1 | grep -q 'ok. 1 passed'"
+covers = ["AC1"]
+expect = "fail_on_base"
 ```
 
 ## Role selection
@@ -329,6 +349,42 @@ Detect the project language and use the right commands:
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
+## Planner-written acceptance tests ([task.accept])
+
+When a task's outcome can be checked by a test you can write now, write the test yourself and pin it in `[task.accept]`: the run copies your test into place before each check, so the implementer can neither edit nor weaken it.
+
+1. After the tasks.toml block, emit the test as its own fenced block whose info string is `accept:` followed by its path under `accept/` in the plan directory, for example ```accept:accept/test_slug.py on the opening line. At most 8 such blocks, each under 64 KB.
+2. Declare it in the task with the four keys:
+   - `src`: the block's path, relative to the plan directory (`accept/...`).
+   - `dest`: where the run copies the pinned test, relative to the repository root.
+   - `runner`: the command that runs it from the repository root; `{dest}` expands to the copied test's path and `{count}` to `count`.
+   - `count`: exactly how many tests the file holds; the check fails unless the runner reports exactly that many passing.
+
+Rules:
+- The test must fail on the unchanged code: it calls or imports what the task adds.
+- It states outcomes (inputs and the outputs, files, exit codes or messages they produce), not how the code gets there.
+- `count` is the number of tests in the file.
+- The task's own `files` never include `dest`: the run writes it, the implementer does not.
+- Keep the task's own `[[task.verify]]` step as well; the pinned test runs before it.
+
+Rust example, an integration test the run copies into the crate's `tests/`:
+
+```toml
+[task.accept]
+files = [
+    { src = "accept/slug_accept.rs", dest = "crates/roko-core/tests/slug_accept.rs", runner = "cargo test -p roko-core --test slug_accept", count = 3 },
+]
+```
+
+Python example:
+
+```toml
+[task.accept]
+files = [
+    { src = "accept/test_slug.py", dest = "tests/test_slug.py", runner = "python3 -m unittest tests.test_slug", count = 2 },
+]
+```
+
 ## Quality gates for YOUR output
 
 Before finalizing, verify your tasks against:
@@ -343,6 +399,12 @@ Before finalizing, verify your tasks against:
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
 - [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
+- [ ] Every task has a `goal` naming one observable outcome
+- [ ] `acceptance` items are `AC1: …`, `AC2: …`, each an input and output, a state, an exit code or a message
+- [ ] Every test-class verify step has `covers` naming its criteria and `expect = "fail_on_base"` (`"pass_on_base"` only for a regression check)
+- [ ] Every `read_files` entry has a `why`, and `non_goals` says what the task must leave alone
+- [ ] Every choice the source leaves open is an `open_questions` entry, not a guess
+- [ ] Each test you could write now is pinned: an ```accept:accept/<file> block plus a `[task.accept]` entry whose `count` matches the file and whose `dest` is not in the task's `files`
 
 ## File Path Rules
 
@@ -372,7 +434,16 @@ status = "ready"
 [[task]]
 id = "T1"
 title = "Implement and prove GET /health"
+goal = "GET /health answers 200 with a JSON body that says the server is up."
 description = "Add the response type and handler, register GET /health, and add one exact API integration test as one observable endpoint outcome."
+acceptance = [
+    "AC1: GET /health returns HTTP 200 with the JSON body {\"status\": \"ok\"}.",
+    "AC2: GET /health needs no token: a request without one also gets 200.",
+]
+non_goals = [
+    "Do not add readiness or dependency checks; /health reports only that the server answers.",
+]
+open_questions = []
 status = "ready"
 tier = "integrative"
 max_loc = 150
@@ -400,7 +471,9 @@ anti_patterns = ["Do NOT add new dependencies. Use only std and existing crate t
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve --test api_integration health_endpoint"
+command = "cargo test -p roko-serve --test api_integration health_endpoint 2>&1 | grep -q 'ok. 1 passed'"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"
 fail_msg = "The exact health endpoint integration test failed or was not found"
 ```
 "#;
@@ -527,6 +600,109 @@ mod template_tests {
 
         assert!(prompt.contains("## Workspace rules"));
         assert!(prompt.contains("NEVER reimplement what already exists."));
+    }
+
+    /// 3219: the generator prompt asks for every TSS v1 field and for open
+    /// questions, with a checklist line for them, and its end-to-end example
+    /// parses with all of them and has no spec hard fail in this repository.
+    #[test]
+    fn generator_prompt_carries_the_tss_checklist() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for field in [
+            "`goal`",
+            "`acceptance`",
+            "`AC1: …`",
+            "`covers = [\"AC1\"]`",
+            "`expect = \"fail_on_base\"`",
+            "`expect = \"pass_on_base\"`",
+            "has a `why`",
+            "`non_goals`",
+            "`open_questions`",
+            "such a plan will not run until it is answered",
+            "- [ ] Every choice the source leaves open is an `open_questions` entry",
+        ] {
+            assert!(prompt.contains(field), "the prompt names {field}");
+        }
+
+        let example = prompt
+            .rsplit("```toml\n")
+            .next()
+            .and_then(|tail| tail.split("```").next())
+            .expect("the end-to-end example");
+        let parsed = crate::task_parser::TasksFile::parse_str(example).expect("parse the example");
+        let task = &parsed.tasks[0];
+        assert!(
+            task.spec
+                .goal
+                .as_deref()
+                .is_some_and(|goal| !goal.is_empty())
+        );
+        assert!(task.acceptance.iter().all(|item| item.starts_with("AC")));
+        assert!(!task.spec.non_goals.is_empty());
+        assert!(task.spec.open_questions.is_empty());
+        assert_eq!(task.verify[0].covers, ["AC1", "AC2"]);
+        assert!(task.verify[0].expect.is_some());
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tasks.toml");
+        std::fs::write(&path, example).expect("write the example");
+        let report = roko_gate::spec_quality::lint_files(&[path], &root);
+        assert_eq!(report.tasks.len(), 1, "{report:?}");
+        assert!(
+            report.tasks[0].hard_fail.is_empty(),
+            "{:?}",
+            report.tasks[0]
+        );
+    }
+
+    /// 3222: the generator prompt teaches `[task.accept]`: the section, the
+    /// `accept:` block syntax and the four keys, with a Rust and a Python
+    /// example, and the Python example's entry passes `accept_issues`
+    /// against an example test file.
+    #[test]
+    fn generator_prompt_teaches_task_accept() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for needle in [
+            "## Planner-written acceptance tests ([task.accept])",
+            "```accept:accept/test_slug.py",
+            "`src`",
+            "`dest`",
+            "`runner`",
+            "`count`",
+            "`{dest}`",
+            "`{count}`",
+            "The test must fail on the unchanged code",
+            "never include `dest`",
+            "cargo test -p roko-core --test slug_accept",
+            "python3 -m unittest tests.test_slug",
+        ] {
+            assert!(prompt.contains(needle), "the prompt names {needle}");
+        }
+
+        let start = prompt.find("Python example").expect("the Python example");
+        let block = prompt[start..]
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|tail| tail.split("```").next())
+            .expect("its TOML");
+        let plan = format!(
+            "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Slugs\"\n\
+             role = \"implementer\"\nfiles = [\"src/slug.py\"]\n\
+             verify = [{{ phase = \"test\", command = \"test -f src/slug.py\" }}]\n\n{block}"
+        );
+        let parsed = crate::task_parser::TasksFile::parse_str(&plan).expect("parse the example");
+        let entry = &parsed.tasks[0]
+            .accept
+            .as_ref()
+            .expect("[task.accept]")
+            .files[0];
+        assert!(!parsed.tasks[0].files.contains(&entry.dest));
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("accept")).expect("accept dir");
+        std::fs::write(dir.path().join(&entry.src), "import unittest\n").expect("the test");
+        let issues = crate::task_accept::accept_issues(&parsed.tasks[0], dir.path());
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
@@ -799,97 +975,6 @@ pub fn resolve_backlog_spec(backlog_dir: &Path, id: u32) -> anyhow::Result<Backl
         files_to_modify,
         source_text,
     })
-}
-
-/// Build an enhanced generation prompt for a backlog spec.
-///
-/// Adds structured metadata (priority, size, crates, files to modify) and
-/// instructs the generator to write to `plans/<slug>/tasks.toml` with
-/// backlog metadata preserved in `[meta]`.
-pub fn build_backlog_generation_prompt(workdir: &Path, spec: &BacklogSpec, slug: &str) -> String {
-    let mut prompt = build_generator_system_prompt(workdir);
-    let _ = writeln!(prompt, "\n---\n");
-    let _ = writeln!(prompt, "## Workspace: {}\n", workdir.display());
-    let _ = writeln!(prompt, "## Source type: backlog-spec\n");
-
-    // Inject structured metadata.
-    let _ = writeln!(prompt, "## Backlog metadata");
-    let _ = writeln!(prompt, "- backlog_id: {}", spec.id);
-    if let Some(ref p) = spec.priority {
-        let _ = writeln!(prompt, "- priority: {p}");
-    }
-    if let Some(ref s) = spec.size {
-        let _ = writeln!(prompt, "- size: {s}");
-    }
-    if !spec.crates.is_empty() {
-        let _ = writeln!(prompt, "- crates: {}", spec.crates.join(", "));
-    }
-    let _ = writeln!(prompt);
-
-    // Instruct the generator to use the deterministic slug.
-    let _ = writeln!(prompt, "## IMPORTANT generation instructions");
-    let _ = writeln!(prompt, "- Set `meta.plan` to exactly: `\"{slug}\"`");
-    let _ = writeln!(
-        prompt,
-        "- Write the plan to `plans/{slug}/tasks.toml` (NOT `.roko/plans/`)"
-    );
-    let _ = writeln!(
-        prompt,
-        "- Include these backlog metadata fields in `[meta]`:"
-    );
-    let _ = writeln!(prompt, "  ```toml");
-    let _ = writeln!(prompt, "  backlog_id = {}", spec.id);
-    if let Some(ref p) = spec.priority {
-        let _ = writeln!(prompt, "  backlog_priority = \"{p}\"");
-    }
-    if let Some(ref s) = spec.size {
-        let _ = writeln!(prompt, "  backlog_size = \"{s}\"");
-    }
-    let _ = writeln!(prompt, "  source_file = \"{}\"", spec.path.display());
-    let _ = writeln!(prompt, "  ```");
-
-    // Auto-generate context.read_files guidance from files to modify.
-    if !spec.files_to_modify.is_empty() {
-        let _ = writeln!(prompt, "\n## Files to modify (from backlog spec)");
-        let _ = writeln!(
-            prompt,
-            "Generate `context.read_files` entries for each of these files. \
-             Each task that modifies one of these files MUST include it in \
-             `context.read_files` and `files`:"
-        );
-        for f in &spec.files_to_modify {
-            let _ = writeln!(prompt, "- `{f}`");
-        }
-    }
-
-    let _ = writeln!(prompt, "\n## Source content:\n\n{}", spec.source_text);
-    prompt
-}
-
-/// Build the task prompt for `--from-backlog` generation.
-#[must_use]
-pub fn build_backlog_task_prompt(spec: &BacklogSpec, slug: &str) -> String {
-    let mut prompt = format!(
-        "Read the backlog spec below and generate an implementation plan. \
-         Use the supplied bounded backlog/file context first; if one fact is absent, run at most \
-         one repository-rooted exact-symbol query capped at 20 matches. \
-         Write the plan to plans/{slug}/tasks.toml (create the directory). \
-         Create plan.md and tasks.toml files with tier, context (read_files with line ranges), \
-         mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n"
-    );
-
-    // Add context files inline if small enough.
-    if !spec.files_to_modify.is_empty() {
-        prompt.push_str("Files referenced by the spec that tasks should operate on:\n");
-        for f in &spec.files_to_modify {
-            let _ = writeln!(prompt, "- {f}");
-        }
-        prompt.push('\n');
-    }
-
-    prompt.push_str(&spec.source_text);
-    prompt
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────
@@ -1212,31 +1297,5 @@ mod tests {
                 "crates/roko-core/src/config/mod.rs",
             ]
         );
-    }
-
-    #[test]
-    fn backlog_generation_prompt_includes_metadata() {
-        let spec = BacklogSpec {
-            id: 206,
-            file_stem: "206-cargo-build-jobs-limit".to_string(),
-            path: std::path::PathBuf::from("tmp/backlog/206-cargo-build-jobs-limit.md"),
-            title: "Limit CARGO_BUILD_JOBS".to_string(),
-            priority: Some("P1".to_string()),
-            size: Some("XS".to_string()),
-            crates: vec!["roko-agent".to_string()],
-            files_to_modify: vec!["crates/roko-agent/src/provider/claude_cli.rs".to_string()],
-            source_text: "# Spec content here".to_string(),
-        };
-        let prompt = build_backlog_generation_prompt(
-            std::path::Path::new("/test"),
-            &spec,
-            "cargo-build-jobs-limit",
-        );
-        assert!(prompt.contains("backlog_id = 206"));
-        assert!(prompt.contains("backlog_priority = \"P1\""));
-        assert!(prompt.contains("backlog_size = \"XS\""));
-        assert!(prompt.contains("meta.plan"));
-        assert!(prompt.contains("cargo-build-jobs-limit"));
-        assert!(prompt.contains("crates/roko-agent/src/provider/claude_cli.rs"));
     }
 }

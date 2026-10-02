@@ -325,6 +325,11 @@ pub struct ProviderConfig {
     /// (auto-approve) for backward compatibility.
     #[serde(default, skip_serializing_if = "is_false")]
     pub require_confirmation: bool,
+    /// Whether streaming requests ask an OpenAI-compatible server to report
+    /// usage (`stream_options.include_usage`). Unset means they do; set
+    /// `false` for a server that rejects the field (backlog 2101).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_usage: Option<bool>,
 }
 
 impl Default for ProviderConfig {
@@ -342,6 +347,7 @@ impl Default for ProviderConfig {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 }

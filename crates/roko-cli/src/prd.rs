@@ -13,6 +13,7 @@
 //!     └── <slug>.md
 //! ```
 
+mod accept_blocks;
 mod dry_run_fs;
 
 use std::collections::{HashMap, HashSet};
@@ -1334,12 +1335,157 @@ impl PlannerBudget {
 
 /// The context window a `[models.*]` entry (by key, else by slug) states for
 /// `model`.
-fn planner_context_window(models: &IndexMap<String, ModelProfile>, model: &str) -> Option<u64> {
+pub(crate) fn planner_context_window(
+    models: &IndexMap<String, ModelProfile>,
+    model: &str,
+) -> Option<u64> {
     models
         .get(model)
         .or_else(|| models.values().find(|profile| profile.slug.trim() == model))
         .map(|profile| profile.context_window)
         .filter(|&window| window > 0)
+}
+
+/// A candidate plan's spec-quality scores, by the static rules
+/// ([`roko_gate::spec_quality`], sq-3), as generation acts on them (3218).
+#[derive(Debug, Clone)]
+struct SpecScores {
+    /// One `task <id> <rule>: <detail>` line per hard fail.
+    hard_fails: Vec<String>,
+    /// The mean task score, 0–100.
+    mean: f64,
+    /// The lowest task score.
+    min: f64,
+    /// Tasks per band.
+    bands: std::collections::BTreeMap<&'static str, usize>,
+    /// One line per task below `allow_threshold`, naming the rules it scored
+    /// 0 on.
+    weak: Vec<String>,
+}
+
+impl SpecScores {
+    /// Whether generation asks the planner once more: a plan mean below
+    /// `allow_threshold`, or a task below `block_threshold`.
+    fn is_weak(&self, config: &roko_core::config::SpecQualityConfig) -> bool {
+        self.mean < config.allow_threshold || self.min < config.block_threshold
+    }
+
+    /// The line generation prints.
+    fn summary_line(&self) -> String {
+        let bands: Vec<String> = ["A", "B", "C", "D"]
+            .iter()
+            .map(|band| format!("{band} {}", self.bands.get(band).copied().unwrap_or(0)))
+            .collect();
+        format!(
+            "Spec quality: mean {:.1}, lowest task {:.1}; bands {}",
+            self.mean,
+            self.min,
+            bands.join(", ")
+        )
+    }
+
+    /// What [`GenerationOutcome`] records.
+    fn record(&self, regenerated: bool) -> roko_learn::runtime_feedback::GenerationSpecQuality {
+        roko_learn::runtime_feedback::GenerationSpecQuality {
+            mean: self.mean,
+            min: self.min,
+            bands: self
+                .bands
+                .iter()
+                .map(|(band, count)| ((*band).to_string(), *count))
+                .collect(),
+            regenerated,
+        }
+    }
+}
+
+/// Score a candidate `tasks.toml` against the workspace at `workdir`; `None`
+/// when `[spec_quality] mode = "off"` or nothing could be scored.
+fn spec_scores(
+    candidate: &str,
+    workdir: &Path,
+    config: &roko_core::config::SpecQualityConfig,
+) -> Option<SpecScores> {
+    if !config.is_on() {
+        return None;
+    }
+    let scratch = tempfile::tempdir().ok()?;
+    let path = scratch.path().join("tasks.toml");
+    std::fs::write(&path, candidate).ok()?;
+    let report = roko_gate::spec_quality::lint_files(&[path], workdir);
+    if report.tasks.is_empty() {
+        return None;
+    }
+    let scores: Vec<f64> = report.tasks.iter().map(|record| record.score).collect();
+    let mean = scores.iter().sum::<f64>() / scores.len() as f64;
+    let min = scores.iter().copied().fold(f64::INFINITY, f64::min);
+    let mut bands = std::collections::BTreeMap::new();
+    let mut hard_fails = Vec::new();
+    let mut weak = Vec::new();
+    for record in &report.tasks {
+        *bands.entry(record.band).or_insert(0) += 1;
+        for &rule in &record.hard_fail {
+            let detail = record
+                .hard_fail_detail
+                .get(rule)
+                .filter(|details| !details.is_empty())
+                .map_or_else(
+                    || hard_fail_name(rule).to_string(),
+                    |details| details.join("; "),
+                );
+            hard_fails.push(format!("task {} {rule}: {detail}", record.task_id));
+        }
+        if record.score < config.allow_threshold {
+            let zero: Vec<String> = roko_gate::spec_quality::RULES
+                .iter()
+                .filter(|rule| !record.excluded.contains(&rule.id))
+                .filter(|rule| record.rules.get(rule.id).is_some_and(|score| *score <= 0.0))
+                .map(|rule| format!("{} ({})", rule.id, rule.name))
+                .collect();
+            weak.push(format!(
+                "- task {} (score {:.1}): {}",
+                record.task_id,
+                record.score,
+                if zero.is_empty() {
+                    "no rule scored 0; strengthen the partial ones".to_string()
+                } else {
+                    format!("scored 0 on {}", zero.join(", "))
+                }
+            ));
+        }
+    }
+    Some(SpecScores {
+        hard_fails,
+        mean,
+        min,
+        bands,
+        weak,
+    })
+}
+
+/// What a hard fail means, as `HARD_FAILS` names it.
+fn hard_fail_name(rule: &str) -> &'static str {
+    roko_gate::spec_quality::HARD_FAILS
+        .iter()
+        .find(|(id, _)| *id == rule)
+        .map_or("hard fail", |(_, name)| *name)
+}
+
+/// The prompt that asks the planner once more for a weak plan (3218): the
+/// original request, the plan it wrote, and each weak task's rules that
+/// scored 0.
+fn spec_regeneration_prompt(task_prompt: &str, plan: &str, scores: &SpecScores) -> String {
+    format!(
+        "{task_prompt}\n\n---\n\nYour plan below scored low on spec quality (mean {:.1}, \
+         lowest task {:.1}). Each weak task lists the spec rules it scored 0 on:\n{}\n\n\
+         ```toml\n{plan}\n```\n\n\
+         Rewrite the whole plan so every weak task meets those rules, and keep what already \
+         works. Output the complete plan as a single ```toml fenced block, followed only by \
+         the ```accept:accept/<file> blocks of the tests it pins.",
+        scores.mean,
+        scores.min,
+        scores.weak.join("\n")
+    )
 }
 
 /// A plan source, read for the planner.
@@ -1851,7 +1997,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         //
         // If extraction or validation fails, retry up to 2 times with a
         // stricter prompt requesting only the TOML block.
-        let try_extract_and_validate =
+        let extract_and_validate =
             |raw: &str| -> std::result::Result<String, String> {
                 let toml_content = extract_fenced_block(raw, "toml")
                     .or_else(|| extract_fenced_block(raw, "tasks.toml"))
@@ -1988,6 +2134,44 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 }
             };
 
+        // 3218: a spec hard fail (a verify step that can never fail, a missing
+        // context file, ...) is a validation failure, so the retries below
+        // name the task, the rule and the detail.
+        //
+        // 3221: the planner may write acceptance tests as `accept:<path>`
+        // blocks; every `[task.accept]` src must be one of them (or a test
+        // the plan already has), and the tests of the plan that is written
+        // go beside its tasks.toml.
+        let spec_config = resolved.config.spec_quality.clone();
+        // A Mutex, not a RefCell: the closure below lives across awaits, and
+        // the serve route needs this future to be Send.
+        let accept_for: std::sync::Mutex<HashMap<String, Vec<accept_blocks::AcceptBlock>>> =
+            std::sync::Mutex::default();
+        let try_extract_and_validate = |raw: &str| -> std::result::Result<String, String> {
+            let validated = extract_and_validate(raw)?;
+            let accept = accept_blocks::extract(raw)?;
+            accept_blocks::check_sources(&validated, &accept, &plan_dir)?;
+            match spec_scores(&validated, workdir_ref, &spec_config) {
+                Some(scores) if !scores.hard_fails.is_empty() => Err(format!(
+                    "generated plan has spec hard fails; every check must be able to fail \
+                     and every context file must exist:\n{}",
+                    scores
+                        .hard_fails
+                        .iter()
+                        .map(|line| format!("  - {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )),
+                _ => {
+                    accept_for
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(validated.clone(), accept);
+                    Ok(validated)
+                }
+            }
+        };
+
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
 
@@ -2050,8 +2234,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 let retry_prompt = format!(
                     "Previous attempt produced invalid TOML. Error: {error}\n\n\
                      Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
-                     Please regenerate a valid tasks.toml. Your ENTIRE response must be \
-                     a single ```toml fenced block with no other text.\n\n\
+                     Please regenerate a valid tasks.toml. Your response must be a single \
+                     ```toml fenced block, followed only by an ```accept:accept/<file> block for \
+                     each test its [task.accept] entries name.\n\n\
                      MINIMUM REQUIRED STRUCTURE:\n\
                      ```toml\n\
                      [meta]\n\
@@ -2133,7 +2318,58 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             }
         }
 
+        // 3218: score the plan. A weak one (a mean below `[spec_quality]
+        // allow_threshold`, or a task below `block_threshold`) is regenerated
+        // once with each weak task's missing rules, and the better plan is
+        // kept: no hard fail and a higher mean.
+        let mut spec_quality = None;
+        if let Ok(candidate) = &validated_toml
+            && let Some(scores) = spec_scores(candidate, workdir_ref, &spec_config)
+        {
+            let mut kept = (candidate.clone(), scores);
+            let weak = kept.1.is_weak(&spec_config);
+            if weak {
+                eprintln!(
+                    "  Spec quality is low (mean {:.1}, lowest task {:.1}); asking the planner \
+                     once more",
+                    kept.1.mean, kept.1.min
+                );
+                let prompt = spec_regeneration_prompt(&task_prompt, &kept.0, &kept.1);
+                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
+                    prompt: &prompt,
+                    workdir: workdir_ref,
+                    model: effective_model,
+                    effort: Some(planner_effort),
+                    system_prompt: Some(&system),
+                    resume_session: None,
+                    env_vars: &resolved.config.agent.env,
+                    role: Some("strategist"),
+                    allowed_tools: Some("Read,Grep,Glob"),
+                })
+                .await;
+                if let Ok(retry) = &retry {
+                    spend.record(retry).await;
+                }
+                if let Ok(retry) = retry
+                    && retry.exit_code == 0
+                    && let Ok(better) = try_extract_and_validate(&retry.output)
+                    && let Some(better_scores) = spec_scores(&better, workdir_ref, &spec_config)
+                    && better_scores.mean > kept.1.mean
+                {
+                    kept = (better, better_scores);
+                }
+            }
+            println!("📋 {}", kept.1.summary_line());
+            spec_quality = Some(kept.1.record(weak));
+            validated_toml = Ok(kept.0);
+        }
+
         if let Ok(validated_toml) = validated_toml {
+            let accept = accept_for
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&validated_toml)
+                .unwrap_or_default();
             if let Some(regeneration) = &source.regeneration {
                 write_regenerated_plan(regeneration, &plan_dir, &validated_toml)?;
             } else {
@@ -2180,6 +2416,11 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                         .with_context(|| format!("write plan.md to {}", plan_dir.display()))?;
                 }
             }
+
+            // 3221: the planner-written tests beside tasks.toml; a test the
+            // plan already had stays unless the planner wrote it again.
+            accept_blocks::write(&plan_dir, &accept)
+                .with_context(|| format!("write the accept tests to {}", plan_dir.display()))?;
 
             // Update PRD frontmatter: record the generated plan slug.
             if let PlanSource::Prd(prd_path) = source.origin {
@@ -2317,6 +2558,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             process_success: true,
             artifact_valid,
             validation_report,
+            spec_quality,
         };
 
         let _ = persist_capture_episode(
@@ -3543,16 +3785,19 @@ mod tests {
             process_success: true,
             artifact_valid: true,
             validation_report: None,
+            spec_quality: None,
         };
         let partial = GenerationOutcome {
             process_success: true,
             artifact_valid: false,
             validation_report: None,
+            spec_quality: None,
         };
         let failure = GenerationOutcome {
             process_success: false,
             artifact_valid: true,
             validation_report: None,
+            spec_quality: None,
         };
 
         assert!(success.fully_successful());
@@ -3569,6 +3814,7 @@ mod tests {
             process_success: true,
             artifact_valid: true,
             validation_report: Some(serde_json::json!({"totals": {"errors": 0}})),
+            spec_quality: None,
         };
         let path = PathBuf::from(".roko/plans/demo");
 
@@ -3592,6 +3838,7 @@ mod tests {
             process_success: true,
             artifact_valid: false,
             validation_report: Some(serde_json::json!({"totals": {"errors": 2}})),
+            spec_quality: None,
         };
         let path = PathBuf::from(".roko/plans/demo");
 
@@ -3615,6 +3862,7 @@ mod tests {
             process_success: false,
             artifact_valid: true,
             validation_report: Some(serde_json::json!({"ignored": true})),
+            spec_quality: None,
         };
 
         let artifact = ArtifactOutcome::from_generation_outcome(
@@ -3639,6 +3887,7 @@ mod tests {
             process_success: true,
             artifact_valid: true,
             validation_report: None,
+            spec_quality: None,
         };
         let path = PathBuf::from(".roko/plans/demo");
 
@@ -3917,52 +4166,88 @@ mod tests {
 
     /// Make `workdir`'s `planner` model a fake `claude_cli` script in `bin`
     /// that answers every call with `plan_toml` and logs it, and return the
-    /// call log.
+    /// call log. The plan is never regenerated for its spec score.
     #[cfg(unix)]
     fn write_fake_planner(workdir: &Path, bin: &Path, plan_toml: &str) -> PathBuf {
+        write_scripted_planner(
+            workdir,
+            bin,
+            &[plan_toml],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        )
+    }
+
+    /// Make `workdir`'s `planner` model a fake `claude_cli` script in `bin`
+    /// that answers its n-th call with `plans[n]` (the last plan after that;
+    /// a plan that starts with a fence is the whole reply),
+    /// keeps each call's arguments and input as `prompt-<n>.txt`, and logs
+    /// it; return the call log. `spec_quality` is the body of the
+    /// workspace's `[spec_quality]` section.
+    #[cfg(unix)]
+    fn write_scripted_planner(
+        workdir: &Path,
+        bin: &Path,
+        plans: &[&str],
+        spec_quality: &str,
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let reply = bin.join("reply.jsonl");
-        std::fs::write(
-            &reply,
-            format!(
-                "{}\n{}\n",
-                serde_json::json!({
-                    "type": "content_block_delta",
-                    "delta": {"text": format!("```toml\n{plan_toml}```\n")},
-                }),
-                serde_json::json!({
-                    "type": "result",
-                    "session_id": "planner",
-                    "model": "claude-sonnet-4-6",
-                    "total_cost_usd": 0.0,
-                    "usage": {"input_tokens": 1, "output_tokens": 1},
-                    "is_error": false,
-                }),
-            ),
-        )
-        .expect("planner reply");
+        for (index, plan_toml) in plans.iter().enumerate() {
+            let text = if plan_toml.starts_with("```") {
+                (*plan_toml).to_string()
+            } else {
+                format!("```toml\n{plan_toml}```\n")
+            };
+            std::fs::write(
+                bin.join(format!("reply-{index}.jsonl")),
+                format!(
+                    "{}\n{}\n",
+                    serde_json::json!({
+                        "type": "content_block_delta",
+                        "delta": {"text": text},
+                    }),
+                    serde_json::json!({
+                        "type": "result",
+                        "session_id": "planner",
+                        "model": "claude-sonnet-4-6",
+                        "total_cost_usd": 0.0,
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                        "is_error": false,
+                    }),
+                ),
+            )
+            .expect("planner reply");
+        }
+        let last = bin.join(format!("reply-{}.jsonl", plans.len().saturating_sub(1)));
         // Work after a call (episode distillation) runs on the default model,
         // a second fake that answers nothing, so the log counts planner calls.
+        // A validation retry climbs `[agent.tier_models]` from the planner
+        // (to claude-opus-4-6 by default, which no fake serves); with the
+        // planner as the only tier, every retry reaches the scripted planner.
         let calls = bin.join("calls.log");
         let planner = bin.join("planner.sh");
         let background = bin.join("background.sh");
+        let planner_body = format!(
+            "n=$(cat '{calls}' 2>/dev/null | wc -l | tr -d ' ')\n\
+             printf '%s\\n' \"$@\" > '{bin}/prompt-'\"$n\"'.txt'\n\
+             cat >> '{bin}/prompt-'\"$n\"'.txt'\n\
+             echo call >> '{calls}'\n\
+             reply='{bin}/reply-'\"$n\"'.jsonl'\n\
+             [ -f \"$reply\" ] || reply='{last}'\n\
+             cat \"$reply\"",
+            calls = calls.display(),
+            bin = bin.display(),
+            last = last.display()
+        );
         for (script, body) in [
+            (&planner, planner_body),
             (
-                &planner,
-                format!(
-                    "echo call >> '{}'\ncat '{}'",
-                    calls.display(),
-                    reply.display()
-                ),
+                &background,
+                format!("cat >/dev/null\nsed -n 2p '{}'", last.display()),
             ),
-            (&background, format!("sed -n 2p '{}'", reply.display())),
         ] {
-            std::fs::write(
-                script,
-                format!("#!/bin/sh\nset -eu\ncat >/dev/null\n{body}\n"),
-            )
-            .expect("fake provider script");
+            std::fs::write(script, format!("#!/bin/sh\nset -eu\n{body}\n"))
+                .expect("fake provider script");
             std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
                 .expect("make the script executable");
         }
@@ -3971,17 +4256,164 @@ mod tests {
             format!(
                 "[agent]\ndefault_model = \"background\"\ncommand = {background:?}\n\
                  bare_mode = false\n\n\
+                 [agent.tier_models]\nsonnet = \"planner\"\n\n\
                  [providers.fake]\nkind = \"claude_cli\"\ncommand = {planner:?}\n\n\
                  [providers.quiet]\nkind = \"claude_cli\"\ncommand = {background:?}\n\n\
                  [models.planner]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\
                  context_window = 200000\n\n\
-                 [models.background]\nprovider = \"quiet\"\nslug = \"claude-sonnet-4-6\"\n",
+                 [models.background]\nprovider = \"quiet\"\nslug = \"claude-sonnet-4-6\"\n\n\
+                 [spec_quality]\n{spec_quality}",
                 planner = planner.display().to_string(),
                 background = background.display().to_string()
             ),
         )
         .expect("roko.toml");
         calls
+    }
+
+    /// 3218: generation scores its plan. A stub planner whose first plan has
+    /// a verify step that can never fail and whose second is clean writes
+    /// the clean plan after exactly two calls, and the retry names the hard
+    /// fail. A stub whose plans stay weak is asked once more and no further,
+    /// and the outcome records the scores.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_regenerates_once_on_a_spec_hard_fail() {
+        let vacuous = WIDGET_PLAN.replace(
+            "\"test -f src/widget.rs\"",
+            "\"test -f src/widget.rs || true\"",
+        );
+        assert_ne!(vacuous, WIDGET_PLAN);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[&vacuous, WIDGET_PLAN],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        assert!(!written.contains("|| true"), "{written}");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the vacuous plan, then the clean one"
+        );
+        let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
+        assert!(
+            retry.contains("task T1 HF2: step 1: ends in `|| true`"),
+            "{retry}"
+        );
+        let scored = outcome.spec_quality.expect("the plan was scored");
+        assert!(!scored.regenerated, "{scored:?}");
+        assert_eq!(scored.bands.values().sum::<usize>(), 1, "{scored:?}");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[WIDGET_PLAN],
+            "allow_threshold = 100.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(log.lines().count(), 2, "one plan, then one regeneration");
+        let regenerate = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("ask");
+        assert!(
+            regenerate.contains("scored low on spec quality"),
+            "{regenerate}"
+        );
+        let scored = outcome.spec_quality.expect("the plan was scored");
+        assert!(scored.regenerated, "{scored:?}");
+        assert!(
+            scored.min <= scored.mean && scored.mean < 100.0,
+            "{scored:?}"
+        );
+    }
+
+    /// 3221: the planner can write its acceptance tests into the plan. A
+    /// reply with a tasks.toml block and an `accept:accept/test_slug.py`
+    /// block writes both; a `[task.accept]` src that the reply does not
+    /// emit sends the plan back to the planner, which emits it next time.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_writes_planner_accept_tests_into_the_plan() {
+        const ACCEPT_PLAN: &str = "\
+            [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the slug helper\"\n\
+            description = \"Create src/slug.py with slugify().\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/slug.py\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [task.accept]\nfiles = [{ src = \"accept/test_slug.py\", \
+            dest = \"tests/test_slug.py\", runner = \"python3 -m unittest tests.test_slug\", \
+            count = 1 }]\n\n\
+            [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/slug.py\"\n";
+        const TEST: &str = "import unittest\n\n\
+            class Slug(unittest.TestCase):\n    def test_slug(self):\n        \
+            from src.slug import slugify\n        \
+            self.assertEqual(slugify(\"A b\"), \"a-b\")\n";
+        let with_test =
+            format!("```toml\n{ACCEPT_PLAN}```\n\n```accept:accept/test_slug.py\n{TEST}```\n");
+
+        for replies in [
+            vec![with_test.as_str()],
+            vec![ACCEPT_PLAN, with_test.as_str()],
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let prd_path = write_widget_prd(workdir);
+            let bin = tempfile::tempdir().expect("tempdir");
+            let calls = write_scripted_planner(
+                workdir,
+                bin.path(),
+                &replies,
+                "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+            );
+            let request = PlanRequest {
+                model: Some("planner"),
+                ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+            };
+            generate_plan(request)
+                .await
+                .expect("generate the widget plan");
+            let plan_dir = workdir.join("plans/widget");
+            let tasks = std::fs::read_to_string(plan_dir.join("tasks.toml")).expect("tasks.toml");
+            assert!(tasks.contains("accept/test_slug.py"), "{tasks}");
+            let test = std::fs::read_to_string(plan_dir.join("accept/test_slug.py"))
+                .expect("the accept test beside tasks.toml");
+            assert_eq!(test, TEST);
+            let log = std::fs::read_to_string(&calls).expect("planner call log");
+            assert_eq!(log.lines().count(), replies.len(), "{replies:?}");
+            if replies.len() == 2 {
+                let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt"))
+                    .expect("the retry prompt");
+                assert!(
+                    retry.contains("src `accept/test_slug.py` is missing"),
+                    "{retry}"
+                );
+            }
+        }
     }
 
     /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no

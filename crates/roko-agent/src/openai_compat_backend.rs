@@ -174,6 +174,9 @@ pub struct OpenAiCompatLlmBackend {
     /// When true, emit `max_completion_tokens` instead of `max_tokens` in
     /// request bodies. Required for newer OpenAI models (o1, o3, gpt-5.x).
     use_max_completion_tokens: bool,
+    /// When true, streaming requests carry `stream_options.include_usage`:
+    /// OpenAI streams a usage chunk only when asked (backlog 2101).
+    stream_usage: bool,
     /// Provider kind used for error mapping to user-friendly messages.
     provider_kind: ProviderKind,
     /// Environment variable name holding the API key (for error messages).
@@ -212,6 +215,7 @@ impl OpenAiCompatLlmBackend {
             normalize_tool_call_content: false,
             ttft_timeout_ms: None,
             use_max_completion_tokens: false,
+            stream_usage: true,
             provider_kind: ProviderKind::OpenAiCompat,
             api_key_env: None,
             metrics: None,
@@ -345,6 +349,15 @@ impl OpenAiCompatLlmBackend {
     #[must_use]
     pub const fn with_use_max_completion_tokens(mut self, use_it: bool) -> Self {
         self.use_max_completion_tokens = use_it;
+        self
+    }
+
+    /// Ask for a usage chunk on streaming requests
+    /// (`stream_options.include_usage`). Defaults to `true`; turn it off for
+    /// a server that rejects the field.
+    #[must_use]
+    pub const fn with_stream_usage(mut self, stream_usage: bool) -> Self {
+        self.stream_usage = stream_usage;
         self
     }
 
@@ -514,6 +527,14 @@ impl OpenAiCompatLlmBackend {
             }
             if stream {
                 body_obj.insert("stream".to_string(), Value::Bool(true));
+                // Without it OpenAI streams no usage, and the call's spend
+                // reads as unknown (backlog 2101).
+                if self.stream_usage {
+                    body_obj.insert(
+                        "stream_options".to_string(),
+                        serde_json::json!({ "include_usage": true }),
+                    );
+                }
             }
             for (key, value) in &self.extra_body_params {
                 body_obj.insert(key.clone(), value.clone());
@@ -1204,6 +1225,38 @@ mod tests {
         assert_eq!(parsed["model"], "gpt-5.4");
         assert_eq!(parsed["max_completion_tokens"], 256);
         assert!(parsed.get("max_tokens").is_none());
+    }
+
+    /// backlog 2101: a streaming request asks for usage, which OpenAI streams
+    /// only when asked; a blocking request, or a backend whose provider opted
+    /// out, sends no `stream_options`.
+    #[test]
+    fn streaming_request_asks_for_usage() {
+        let body = |backend: &OpenAiCompatLlmBackend, stream: bool| -> Value {
+            let body = backend
+                .build_body(
+                    &[serde_json::json!({"role": "user", "content": "hello"})],
+                    &RenderedTools::JsonArray(serde_json::json!([])),
+                    &SessionState::default(),
+                    stream,
+                )
+                .expect("build body");
+            serde_json::from_slice(&body).expect("request body json")
+        };
+        let backend = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini");
+
+        let streaming = body(&backend, true);
+        assert_eq!(streaming["stream"], true);
+        assert_eq!(streaming["stream_options"]["include_usage"], true);
+
+        let blocking = body(&backend, false);
+        assert!(blocking.get("stream").is_none(), "{blocking}");
+        assert!(blocking.get("stream_options").is_none(), "{blocking}");
+
+        let opted_out = OpenAiCompatLlmBackend::new("test-key", "gpt-5.4-mini");
+        let opted_out = body(&opted_out.with_stream_usage(false), true);
+        assert_eq!(opted_out["stream"], true);
+        assert!(opted_out.get("stream_options").is_none(), "{opted_out}");
     }
 
     /// bug-d0b8b8: a text tool format's block joins the system message, or

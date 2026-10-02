@@ -93,6 +93,8 @@ impl GraphPlanBudgetSnapshot {
 struct PlanBudgetState {
     spent_micro_usd: u64,
     reserved_micro_usd: u64,
+    /// Calls of the plan whose cost was never priced (backlog 2111).
+    unpriced_calls: usize,
     checkpoint: Option<GraphCostLedgerCheckpoint>,
     persistence_error: Option<String>,
 }
@@ -174,8 +176,9 @@ impl GraphPlanBudgetLedger {
     }
 
     /// Why no further dispatch of `plan_id` can run: settled spend reached
-    /// the ceiling with no override to continue, or the cost ledger cannot be
-    /// persisted. In-flight reservations alone never stop a plan.
+    /// the ceiling with no override to continue, a call of the plan settled
+    /// unpriced so its spend is unknown (decision 2110), or the cost ledger
+    /// cannot be persisted. In-flight reservations alone never stop a plan.
     pub(super) fn dispatch_stop(
         &self,
         plan_id: &str,
@@ -189,6 +192,9 @@ impl GraphPlanBudgetLedger {
         let ceiling = policy
             .ceiling_micro_usd
             .filter(|_| !policy.continue_on_exhaustion)?;
+        if state.unpriced_calls > 0 {
+            return Some(unpriced_plan_stop(state.unpriced_calls, ceiling));
+        }
         (state.spent_micro_usd >= ceiling).then(|| {
             format!(
                 "plan budget exhausted: ${:.4} spent of ${:.4}",
@@ -258,6 +264,12 @@ impl GraphPlanBudgetLedger {
                 Some(ceiling.saturating_sub(state.spent_micro_usd))
             }
             Some(ceiling) => {
+                // A plan whose spend is unknown admits no further call
+                // (decision 2110), as the daily ceiling does (bug-ae28ac).
+                if state.unpriced_calls > 0 {
+                    let stop = unpriced_plan_stop(state.unpriced_calls, ceiling);
+                    return Err(ReserveRefusal::failed(RokoError::Config(stop)));
+                }
                 let committed = state
                     .spent_micro_usd
                     .saturating_add(state.reserved_micro_usd);
@@ -334,6 +346,15 @@ impl GraphPlanBudgetLedger {
         drop(plans);
         self.capacity.notify_waiters();
         Ok(())
+    }
+
+    /// Count a call of `plan_id` whose cost was never priced (backlog 2111).
+    /// Under a plan ceiling the plan then admits no further call: its spend
+    /// is unknown, so the ceiling cannot be enforced.
+    pub(super) fn record_unpriced(&self, plan_id: &str) {
+        let mut plans = self.plans.lock();
+        let state = plans.entry(plan_id.to_string()).or_default();
+        state.unpriced_calls = state.unpriced_calls.saturating_add(1);
     }
 
     fn release(&self, plan_id: &str, reserved_micro_usd: u64) {
@@ -620,6 +641,16 @@ impl std::fmt::Display for DailyStop {
     }
 }
 
+/// Why a plan under `ceiling_micro_usd` admits no further call once `calls`
+/// of its calls settled unpriced (decision 2110, backlog 2111).
+fn unpriced_plan_stop(calls: usize, ceiling_micro_usd: u64) -> String {
+    format!(
+        "plan budget cannot be enforced: {calls} unpriced call(s) against max_plan_usd = ${:.4}; \
+         give their models a price in [models], or run with --no-budget",
+        micro_usd_to_usd(ceiling_micro_usd)
+    )
+}
+
 /// Whether today's spend, `baseline` plus what the process recorded since
 /// (`now`), allows no further call under `ceiling`.
 fn daily_stop(
@@ -658,6 +689,10 @@ impl GraphTaskDispatcher {
     pub(super) fn record_task_spend(&self, plan_id: &str, task_id: &str, usage: &roko_core::Usage) {
         let key = format!("{plan_id}/{task_id}");
         self.task_spend.record(&key, usage);
+        // An unpriced call leaves the plan's spend unknown (backlog 2111).
+        if !usage.has_known_cost() {
+            self.budget_ledger.record_unpriced(plan_id);
+        }
         let spent = self.task_spend.task_total(&key);
         self.gate_retry_context
             .set_task_spend(plan_id, task_id, spent);
@@ -1307,6 +1342,7 @@ mod tests {
             success: true,
             session_id: "earlier-run".to_string(),
             cost_source: roko_learn::telemetry::CostSource::CliUsage,
+            priced: None,
         }
     }
 
@@ -1511,6 +1547,48 @@ mod tests {
             .await
             .expect_err("the first call used tokens at $0");
         assert!(matches!(error, RokoError::Config(_)), "got {error:?}");
+    }
+
+    /// backlog 2111 (decision 2110, option a): once a call of a plan with a
+    /// ceiling settles unpriced, the plan's spend is unknown, and it admits
+    /// no further call, as the daily ceiling fails closed. Without a ceiling
+    /// the plan dispatches on.
+    #[tokio::test]
+    async fn plan_ceiling_refuses_an_unpriced_call() {
+        for ceiling in [Some(1.0), None] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, task) = daily_dispatcher(&temp, 0.0, &[], false).await;
+            let dispatcher = match ceiling {
+                Some(ceiling) => dispatcher.with_plan_budget(ceiling, 0.0, false),
+                None => dispatcher,
+            };
+            let spec = make_spec(&task);
+            dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .expect("nothing is unknown yet");
+            let stop = dispatcher.plan_dispatch_stop(&spec.plan_id);
+            let mut other = task.clone();
+            other.id = "T-OTHER".to_string();
+            let next = dispatcher
+                .dispatch(&make_spec(&other), Vec::new(), &batch_ctx())
+                .await;
+            if ceiling.is_none() {
+                assert_eq!(stop, None);
+                next.expect("without a ceiling the plan dispatches on");
+                continue;
+            }
+            let stop = stop.expect("the first call used tokens at $0");
+            assert!(
+                stop.starts_with("plan budget cannot be enforced: 1 unpriced call(s)"),
+                "{stop}"
+            );
+            let error = next.expect_err("no further call of the plan is admitted");
+            assert!(
+                matches!(&error, RokoError::Config(message) if message == &stop),
+                "got {error:?}"
+            );
+        }
     }
 
     /// A negative, NaN or infinite ceiling refuses every dispatch.

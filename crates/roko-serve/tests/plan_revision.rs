@@ -164,6 +164,7 @@ impl CliRuntime for StubRevisionRuntime {
                 revised: true,
                 task_count,
                 validation: PlanValidationDto::from_diagnostics(Vec::new()),
+                diff: None,
             })),
             RevisionFixture::Rejected { error_count } => Ok(Some(RevisionDto {
                 revised: false,
@@ -178,6 +179,7 @@ impl CliRuntime for StubRevisionRuntime {
                         })
                         .collect(),
                 ),
+                diff: None,
             })),
         }
     }

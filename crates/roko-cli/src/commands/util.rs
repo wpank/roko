@@ -676,6 +676,8 @@ pub(crate) async fn cmd_status(
     } else {
         None
     };
+    // Calls whose cost is unknown, which the total leaves out (backlog 2109).
+    let unpriced_calls = costs_log.unpriced_calls().await.unwrap_or(0);
     let today_cost_usd = costs_log
         .daily_cost(1)
         .await
@@ -1065,6 +1067,11 @@ pub(crate) async fn cmd_status(
         println!("Cost Summary:");
         if let Some(total_cost_usd) = total_cost_usd {
             println!("  Total:    ${:.4}", total_cost_usd.max(0.0));
+        }
+        if unpriced_calls > 0 {
+            println!(
+                "  Unpriced: {unpriced_calls} calls, whose cost is unknown and not in the total"
+            );
         }
         if let Some(estimated) = estimated_cost_usd.filter(|cost| *cost > 0.0) {
             println!("  Estimated: ${estimated:.4} of the total, from usage no provider reported");

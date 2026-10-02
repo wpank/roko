@@ -891,6 +891,7 @@ fn model_call_cost_record(event: &FeedbackEvent) -> Option<CostRecord> {
         session_id: run_id.clone().unwrap_or_default(),
         // A model-call event does not say where its usage came from.
         cost_source: CostSource::Unknown,
+        priced: None,
     })
 }
 

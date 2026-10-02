@@ -714,6 +714,7 @@ impl ChatAgentSession {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             });
 
         let model_key = self.model_call_model_key();

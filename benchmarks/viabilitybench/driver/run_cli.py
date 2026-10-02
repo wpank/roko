@@ -53,10 +53,15 @@ refresh, say) is refused until the arm file lists it, which the probe below show
 
 **Credentials** (`[cli] credentials`). With `CLAUDE_CONFIG_DIR` set, Claude Code looks for its macOS keychain entry
 under a name suffixed with a hash of that directory, and misses the subscription login. `keychain`, the default, sets
-`CLAUDE_SECURESTORAGE_CONFIG_DIR=` (empty) to keep the default entry name; the variable is undocumented, so the probe
-confirms it. `credentials_file` copies the login's `.credentials.json` (Linux, or a file-based login) into the fresh
-directory instead. A token in the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not offered: Claude Code hands its
-environment to the agent's shell.
+`CLAUDE_SECURESTORAGE_CONFIG_DIR=` (empty) to keep the default entry name. Claude Code 2.1.282 then reads the login
+with `security find-generic-password -a "$USER" -w -s "Claude Code-credentials"`, `security` found on its PATH, so
+`agent_env` must pass the operator's USER. macOS finds the login keychain through HOME, though, and the session's HOME
+is its own: the live probe (gap-154f93) ended "Not logged in". So the session's `security` is a wrapper in its
+`.vb-bin` (`KEYCHAIN_WRAPPER`) that runs /usr/bin/security with the operator's HOME, and the session keeps its own
+HOME. The agent's shell can run the wrapper too, as it could already run /usr/bin/security on the login keychain by
+its path: the same-uid limit `agent_env` describes. `credentials_file` copies the login's `.credentials.json` (Linux,
+or a file-based login) into the fresh directory instead. A token in the environment (`CLAUDE_CODE_OAUTH_TOKEN`) is not
+offered: Claude Code hands its environment to the agent's shell.
 
 **Caps** (S08 §4.10, subscription arms: native behaviour with safety limits). `[caps] turns_per_task` goes to
 `--max-turns` and `usd_per_task` to `--max-budget-usd`, where Claude Code stops itself and still reports its usage.
@@ -88,7 +93,8 @@ it and the arm file, covers every flag.
 **Probe** (gap-c4f364, step 2): `run_cli.py probe --arm fd_claude --allow-network` runs one throwaway session with the
 arm's invocation and a trivial prompt, and saves its argv, environment, `init` and `result` events as JSON, with the
 network policy and what its egress proxy admitted and refused. It passes when the `init` event shows the pinned model
-and no MCP server, plugin, memory or web tool, and the session signed in.
+and no MCP server, memory, web tool or plugin beyond the ones Claude Code ships (`path` "builtin"; 2.1.282 lists
+agents-md and telemetry), and the session signed in.
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
@@ -112,6 +118,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -140,6 +147,10 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CREDENTIALS = ("keychain", "credentials_file")
 CACHE_WRITE_TTLS = ("5m", "1h")
 CREDENTIAL_FILE = ".credentials.json"
+SECURITY = "/usr/bin/security"  # what the session's `security` runs, under the operator's HOME (keychain credentials)
+KEYCHAIN_WRAPPER = '#!/bin/sh\n# macOS finds the login keychain through HOME; the session has a HOME of its own.\n' \
+                   'HOME={home} exec {security} "$@"\n'
+BUILTIN_PLUGIN = "builtin"  # the `path` of a plugin Claude Code ships, in the init event's `plugins`
 WEB_TOOLS = ("WebFetch", "WebSearch")  # disallowed, and denied in the settings (gap-f253cf)
 WEB_TOOL_PREFIX = "Web"  # a tool the init event offers under this prefix kills the session
 FIXED_FLAGS = ("--print", "--verbose", "--output-format", "stream-json", "--setting-sources", "",
@@ -172,8 +183,9 @@ The repository is your current working directory. Complete the task, then stop.
 PROBE_PROMPT = "Reply with the single word READY. Do not use any tools."
 
 PROMPT_SHA256 = hashlib.sha256(json.dumps([TASK_MESSAGE, FIXED_FLAGS, WORKDIR_FLAG, FIXED_ENV, SETTINGS, DENY_TOOLS,
-                                           WEB_TOOLS, CREDENTIAL_FILE, egress.DEFAULT_ALLOW, agent_env.PROXY_NAMES,
-                                           agent_env.NO_PROXY], sort_keys=True).encode()).hexdigest()
+                                           WEB_TOOLS, CREDENTIAL_FILE, KEYCHAIN_WRAPPER, SECURITY,
+                                           egress.DEFAULT_ALLOW, agent_env.PROXY_NAMES, agent_env.NO_PROXY],
+                                          sort_keys=True).encode()).hexdigest()
 
 
 class CliError(RuntimeError):
@@ -385,6 +397,7 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig, proxy: egress.Egr
     env = {**ctx.agent_env, **FIXED_ENV, "CLAUDE_CONFIG_DIR": str(config_dir)}
     if cli.credentials == "keychain":
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
+        _keychain_wrapper(Path(ctx.agent_env["HOME"]))
     if ctx.endpoint.offline:  # a loopback --provider-url: a real claude must not reach the API either
         env["ANTHROPIC_BASE_URL"] = ctx.endpoint.base_url
     if ctx.verify_wrapper is not None:
@@ -602,7 +615,7 @@ def _probe(args: argparse.Namespace, vb) -> int:
         "no_mcp_servers": init.get("mcp_servers") == [],
         "no_mcp_tools": tools is not None and not any(str(tool).startswith("mcp__") for tool in tools),
         "no_web_tools": tools is not None and not web_tools(init),
-        "no_plugins": not init.get("plugins"),
+        "no_plugins": not _added_plugins(init),
         "no_memory": not init.get("memory_paths"),
         "signed_in": status == "completed",
     }
@@ -710,6 +723,24 @@ def _seed_config_dir(config_dir: Path, credentials: str) -> None:
     fd = os.open(config_dir / CREDENTIAL_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(data)
+
+
+def _keychain_wrapper(home: Path) -> Path:
+    """The session's `security` for `credentials = "keychain"`, first on its PATH (`.vb-bin`): /usr/bin/security under
+    the operator's HOME, where macOS finds the login keychain (module docstring, gap-154f93)."""
+    wrapper = home / ".vb-bin" / "security"
+    wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    wrapper.write_text(KEYCHAIN_WRAPPER.format(home=shlex.quote(str(Path.home())), security=SECURITY))
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _added_plugins(init: Mapping) -> list:
+    """The plugins an `init` event lists beyond the ones Claude Code ships (`path` "builtin")."""
+    plugins = init.get("plugins") or []
+    if not isinstance(plugins, list):
+        return [plugins]
+    return [plugin for plugin in plugins if not (isinstance(plugin, dict) and plugin.get("path") == BUILTIN_PLUGIN)]
 
 
 def _message_usage(raw: object, cache_write_ttl: str) -> dict | None:

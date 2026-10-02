@@ -50,3 +50,12 @@ The verify passes; a fixture with a vacuous shell check is refused before dispat
 ## Notes
 
 Decided by Will, 2026-10-02 (coordinator question round). Backlog context: tmp/backlog/2026-10-02-complete-and-wire (3201, 3211).
+
+## Progress
+
+- Implemented at e53f21502 on `work/gap-e4bfbf` (worker claude-agent, 2026-10-02); cargo verification deferred to the batch
+  gate. `[spec_quality] red_on_base` defaults to true and `red_on_base_cargo` (false) decides whether cargo steps run;
+  `spec_red_on_base::gate_results` fills the map before `plan run` (a check that cannot start blocks nothing).
+  `plan validate --spec-quality --dynamic` follows the same cargo policy; plain `--spec-quality` stays static for speclint
+  parity. Git-backed test workspaces opt out explicitly: `tests/common/mod.rs` (scripted workspace and
+  `setup_sample_plan_workspace`) and `tests/plan_branch_integration.rs`. D14's record (backlog 3201) is amended.

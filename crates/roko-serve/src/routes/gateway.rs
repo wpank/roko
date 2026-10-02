@@ -1121,6 +1121,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 
@@ -1144,6 +1145,7 @@ mod tests {
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
 

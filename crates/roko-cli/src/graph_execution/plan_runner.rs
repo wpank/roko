@@ -1480,8 +1480,8 @@ async fn run_graph_plan_body(
     // the ticker evaluates it every `SUPERVISION_INTERVAL`: a `Restart`
     // cancels that attempt, which retries; a `Fail` stops the run the way
     // SIGTERM does, and the run returns an error naming the watcher. With
-    // `[conductor] silence_timeout_secs` and `task_stall_secs` both 0 there
-    // is no conductor and no ticker.
+    // `[conductor] supervise = false` (1210), or `silence_timeout_secs` and
+    // `task_stall_secs` both 0, there is no conductor and no ticker.
     if let (Some(conductor), Some(ring)) = (
         graph_run_config.conductor.clone(),
         graph_run_config.conductor_ring.clone(),

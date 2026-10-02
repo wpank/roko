@@ -13,7 +13,7 @@ const MAX_DO_NOT_CREATE_RENDERED: usize = 50;
 const MAX_SYMBOL_TEXT_CHARS: usize = 120;
 const TRUNCATION_MARKER: &str = "[truncated]";
 
-/// Bounded repository context for grounding PRD/plan generation prompts.
+/// Bounded repository context for grounding plan generation prompts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoContextPack {
     /// Workspace root directory (absolute path).
@@ -26,8 +26,6 @@ pub struct RepoContextPack {
     pub key_files: Vec<PathBuf>,
     /// Symbol matches from grep-like search (max 30).
     pub matching_symbols: Vec<SymbolHit>,
-    /// Related PRD paths found in `.roko/prd/` (max 5).
-    pub related_prds: Vec<PathBuf>,
     /// Related plan paths found in `.roko/plans/` (max 5).
     pub related_plans: Vec<PathBuf>,
     /// Names that already exist and must not be re-created (workspace members + known crates).
@@ -219,12 +217,6 @@ impl RepoContextPack {
         );
         render_path_section(
             &mut out,
-            "Related PRDs",
-            &self.related_prds,
-            MAX_RELATED_ITEMS_RENDERED,
-        );
-        render_path_section(
-            &mut out,
             "Related plans",
             &self.related_plans,
             MAX_RELATED_ITEMS_RENDERED,
@@ -296,7 +288,6 @@ pub async fn build_repo_context(
     let mut do_not_create = Vec::new();
     let mut key_files = Vec::new();
     let mut matching_symbols = Vec::new();
-    let mut related_prds = Vec::new();
     let mut related_plans = Vec::new();
     let mut timed_out = false;
 
@@ -348,20 +339,6 @@ pub async fn build_repo_context(
     if !timed_out && start.elapsed() < time_budget {
         let workdir = workdir.clone();
         let keywords = feature_keywords_owned.clone();
-        match run_blocking_step_with_budget(start, time_budget, "related PRDs", move || {
-            let keyword_refs: Vec<&str> = keywords.iter().map(String::as_str).collect();
-            find_related_prds(&workdir, &keyword_refs, 5)
-        })
-        .await
-        {
-            Some(results) => related_prds = results,
-            None => timed_out = true,
-        }
-    }
-
-    if !timed_out && start.elapsed() < time_budget {
-        let workdir = workdir.clone();
-        let keywords = feature_keywords_owned.clone();
         match run_blocking_step_with_budget(start, time_budget, "related plans", move || {
             let keyword_refs: Vec<&str> = keywords.iter().map(String::as_str).collect();
             find_related_plans(&workdir, &keyword_refs, 5)
@@ -396,7 +373,6 @@ pub async fn build_repo_context(
         workspace_members,
         key_files,
         matching_symbols,
-        related_prds,
         related_plans,
         do_not_create,
         keywords: feature_keywords_owned,
@@ -1189,7 +1165,6 @@ use ./module-c
             workspace_members: (0..12).map(|idx| format!("member-{idx}")).collect(),
             key_files: Vec::new(),
             matching_symbols: Vec::new(),
-            related_prds: Vec::new(),
             related_plans: Vec::new(),
             do_not_create: Vec::new(),
             keywords: vec![
@@ -1205,62 +1180,6 @@ use ./module-c
         assert!(section.contains("member-0, member-1"));
         assert!(section.contains("(and 2 more)"));
         assert!(section.contains("## Repository Context"));
-    }
-
-    #[test]
-    fn find_related_prds_returns_empty_when_dir_missing() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-
-        let results = find_related_prds(tmp.path(), &["usage"], 5);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn find_related_prds_matches_by_filename_and_caps_results() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let drafts = tmp.path().join(".roko").join("prd").join("drafts");
-        fs::create_dir_all(&drafts).expect("create drafts dir");
-        fs::write(drafts.join("usage-tracking.md"), "# Usage Tracking PRD\n").expect("write prd");
-        fs::write(drafts.join("usage-metering.md"), "# Usage Metering PRD\n").expect("write prd");
-        fs::write(drafts.join("unrelated.md"), "# Something Else\n").expect("write prd");
-
-        let results = find_related_prds(tmp.path(), &["usage"], 1);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].to_string_lossy().contains("usage-"));
-        assert!(results.iter().all(|path| !path.is_absolute()));
-    }
-
-    #[test]
-    fn find_related_prds_matches_by_content_preview() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let drafts = tmp.path().join(".roko").join("prd").join("drafts");
-        fs::create_dir_all(&drafts).expect("create drafts dir");
-        fs::write(
-            drafts.join("neutral.md"),
-            "# Scope\nThis PRD covers usage tracking for the workspace.\n",
-        )
-        .expect("write prd");
-
-        let results = find_related_prds(tmp.path(), &["usage"], 5);
-        assert!(!results.is_empty());
-        assert!(
-            results
-                .iter()
-                .any(|path| path.to_string_lossy().contains("neutral.md"))
-        );
-        assert!(results.iter().all(|path| !path.is_absolute()));
-    }
-
-    #[test]
-    fn find_related_prds_ignores_keywords_past_preview_limit() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let drafts = tmp.path().join(".roko").join("prd").join("drafts");
-        fs::create_dir_all(&drafts).expect("create drafts dir");
-        let contents = format!("{}usage\n", "a".repeat(500));
-        fs::write(drafts.join("post-limit.md"), contents).expect("write prd");
-
-        let results = find_related_prds(tmp.path(), &["usage"], 5);
-        assert!(results.is_empty());
     }
 
     #[test]
@@ -1319,7 +1238,6 @@ use ./module-c
         assert!(pack.workspace_members.is_empty());
         assert!(pack.key_files.is_empty());
         assert!(pack.matching_symbols.is_empty());
-        assert!(pack.related_prds.is_empty());
         assert!(pack.related_plans.is_empty());
         assert!(pack.do_not_create.is_empty());
         assert!(!pack.context_root_verified);
@@ -1475,7 +1393,6 @@ version = "0.1.0"
                     ),
                 })
                 .collect(),
-            related_prds: Vec::new(),
             related_plans: Vec::new(),
             do_not_create: crate_names,
             keywords: vec![String::from("crate"), String::from("workspace")],
@@ -1756,89 +1673,6 @@ fn is_binary_path(path: &Path) -> bool {
     };
 
     buffer[..bytes_read].contains(&0)
-}
-
-/// Find related PRDs by scanning `.roko/prd/drafts/` for keyword matches.
-///
-/// Matches by:
-/// - Filename stem contains any keyword (score 2)
-/// - First 500 bytes of file content contains any keyword (score 1)
-///
-/// Returns up to `max_results` paths, relative to `root`. Returns an empty
-/// vec (no error) when `.roko/prd/drafts/` does not exist.
-#[must_use]
-pub fn find_related_prds(root: &Path, keywords: &[&str], max_results: usize) -> Vec<PathBuf> {
-    if max_results == 0 {
-        return Vec::new();
-    }
-
-    let keywords = normalize_keywords(keywords);
-    if keywords.is_empty() {
-        return Vec::new();
-    }
-
-    let prd_dir = root.join(".roko").join("prd").join("drafts");
-    let entries = match std::fs::read_dir(&prd_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut scored: Vec<(u8, PathBuf)> = Vec::new();
-
-    for entry in entries.flatten() {
-        let abs = entry.path();
-        if !abs.is_file() {
-            continue;
-        }
-
-        let Some(extension) = abs.extension().and_then(|ext| ext.to_str()) else {
-            continue;
-        };
-        if !extension.eq_ignore_ascii_case("md") {
-            continue;
-        }
-
-        let rel = match abs.strip_prefix(root) {
-            Ok(rel) => rel.to_path_buf(),
-            Err(_) => continue,
-        };
-
-        let stem = abs
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let mut score: u8 = if keywords.iter().any(|keyword| stem.contains(keyword)) {
-            2
-        } else {
-            0
-        };
-
-        if score == 0 {
-            let Ok(mut file) = std::fs::File::open(&abs) else {
-                continue;
-            };
-
-            let mut buffer = [0_u8; 500];
-            let Ok(bytes_read) = std::io::Read::read(&mut file, &mut buffer) else {
-                continue;
-            };
-
-            let preview = String::from_utf8_lossy(&buffer[..bytes_read]).to_lowercase();
-            if keywords.iter().any(|keyword| preview.contains(keyword)) {
-                score = 1;
-            }
-        }
-
-        if score > 0 {
-            scored.push((score, rel));
-        }
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.truncate(max_results);
-    scored.into_iter().map(|(_, path)| path).collect()
 }
 
 /// Find related plans by scanning plan directories for keyword matches.
